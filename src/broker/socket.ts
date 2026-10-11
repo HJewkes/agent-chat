@@ -6,6 +6,7 @@ import {
   HUMAN,
   isAnswerChannel,
   isTeleportReason,
+  SURFACE_NAMES,
   type ClientMessage,
   type DeliveredMessage,
   type ItemShape,
@@ -29,6 +30,7 @@ import {
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import { asPlatform } from '../agents/teleport-config.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -177,6 +179,8 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
+  hostPlatform === undefined ? {} : { hostPlatform }
 
 /**
  * The socket transport. Everything here is about turning bytes into `core`
@@ -446,6 +450,12 @@ export class SocketServer {
         ok: false,
         reason: `unknown teleport reason "${String(msg.reason)}"`,
       })
+    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
+      })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -482,6 +492,8 @@ export class SocketServer {
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
       ...(msg.remoteControlSeen === undefined ? {} : { remoteControlSeen: msg.remoteControlSeen }),
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
+      ...(msg.surface === undefined ? {} : { surface: msg.surface }),
+      ...optionalPlatform(asPlatform(msg.hostPlatform)),
     })
     reply(conn, {
       t: 'teleport_result',

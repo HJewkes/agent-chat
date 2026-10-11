@@ -63,7 +63,7 @@ import {
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
-import { resolveSurface } from './surface-resolution.js'
+import { resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
@@ -3147,9 +3147,12 @@ export class Supervisor implements TeleportHost {
 
   /** CC-880: why a surface cannot launch here, so teleport refuses before ending anyone. */
   surfaceBlocker(surface: SurfaceName): string | undefined {
-    const platform = this.surfaceOptions?.platform ?? process.platform
-    if (!surface.startsWith('iterm') || platform === 'darwin') return undefined
-    return `iTerm2 surfaces need macOS (this broker is ${platform}); use surface 'headless'`
+    return surfaceBlockerFor(surface, this.surfacePlatform())
+  }
+
+  /** CC-951: the OS this broker launches on, faked in tests. */
+  surfacePlatform(): NodeJS.Platform {
+    return this.surfaceOptions?.platform ?? process.platform
   }
 
   /**

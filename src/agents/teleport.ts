@@ -6,8 +6,6 @@ import { newMsgId } from '../broker/event-log.js'
 import { logEvent } from '../broker/log.js'
 import {
   HUMAN,
-  isInteractiveSurface,
-  SURFACE_NAMES,
   type AgentIdentity,
   type IsolationName,
   type RemoteLaunch,
@@ -16,8 +14,9 @@ import {
   type TeleportReason,
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
-import { loadProfile, recordedRole } from './profiles.js'
-import { resolveSurface } from './surface-resolution.js'
+import { recordedRole } from './profiles.js'
+import { seatSurfaceFor } from './seats/charter.js'
+import { teleportConfig } from './teleport-config.js'
 import { shepherdRowsAsync } from './burndown/shepherd.js'
 import { latestTeleportSection } from './seats/boot-read.js'
 import { defaultAutonomyRoot } from './seats/io.js'
@@ -31,7 +30,6 @@ import {
   type WrapGap,
 } from './teleport-appendix.js'
 import { successorProvenance } from './spawn-provenance.js'
-import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
 /**
@@ -164,6 +162,10 @@ export interface TeleportRequest {
   /** CC-883: what the caller read from its own argv; read here instead when absent and on this host. */
   remoteControlSeen?: boolean
   reason?: TeleportReason
+  /** CC-951: the successor's surface, refused rather than replaced when the destination cannot run it. */
+  surface?: SurfaceName
+  /** CC-951: a remote caller's own OS, which picks its successor's default surface. */
+  hostPlatform?: NodeJS.Platform
 }
 
 export interface TeleportOutcome {
@@ -243,6 +245,8 @@ export interface TeleportHost {
   endSession(name: string, hostPid: number, host: string | undefined): { ok: boolean; reason?: string }
   /** Why a surface cannot launch on this broker's platform, if it cannot. */
   surfaceBlocker(surface: SurfaceName): string | undefined
+  /** CC-951: the broker's OS, which picks a local successor's default surface. */
+  surfacePlatform(): NodeJS.Platform
   relaunch(input: RelaunchInput): Promise<void>
   /** CC-881: record the successor and build its launch for another host, launching nothing here. */
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
@@ -283,6 +287,8 @@ interface Pending {
   remote?: RemoteWait
   /** CC-913: its successor could not be placed before this predecessor was retired, so it is kept. */
   landFailed?: boolean
+  /** CC-951: an asked-for surface opens fresh, never typed into the predecessor's pane. */
+  surfaceRequested: boolean
 }
 
 /** CC-913: an armed successor not yet registered; only the holder of `token` may report it unplaced. */
@@ -298,38 +304,6 @@ const sameToken = (a: string, b: string): boolean =>
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
-
-/**
- * A descendant of an ordinary human-started session, which has no profile to
- * copy: empty `model` and empty `allowedTools` mean INHERIT in `buildLaunchPlan`
- * — the model the session is observably running on, and the permission posture
- * the human's own settings give it. Emitting flags here would not reproduce the
- * session's configuration, it would invent one and call it continuity.
- */
-const inheritedProfile = (model: string | undefined): AgentProfile => ({
-  name: 'inherited',
-  description: 'the configuration the predecessor session was already running under',
-  model: model ?? '',
-  allowedTools: [],
-  isolation: 'none',
-  surface: 'iterm-tab',
-  role: 'coordinator',
-  promptPrelude: '',
-})
-
-const isSurfaceName = (value: string): value is SurfaceName =>
-  (SURFACE_NAMES as readonly string[]).includes(value)
-
-/**
- * Which account this session is on: what it is observably running under now,
- * falling back to what its spawn row recorded (CC-100).
- *
- * Observed first because it is the live fact — a session that came back through a
- * mode switch or a previous teleport is authoritative about its own environment,
- * and a spawn row several generations old is not.
- */
-const accountOf = (subject: TeleportSubject, identity: AgentIdentity): string | undefined =>
-  subject.configDir ?? identity.configDir
 
 /** The successor waits on this read, so it gets less time than burndown's. */
 const TELEPORT_SHEPHERD_MS = 5_000
@@ -371,9 +345,16 @@ export class Teleport {
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
 
-    const config = this.configFor(identity, subject, req.model)
-    if ('error' in config) return { ok: false, reason: config.error }
     const remote = onAnotherHost(subject)
+    const config = teleportConfig({
+      identity,
+      subject,
+      model: req.model,
+      requested: req.surface,
+      seatSurface: this.seatSurfaceOf(subject, remote),
+      platform: remote ? req.hostPlatform : this.host.surfacePlatform(),
+    })
+    if ('error' in config) return { ok: false, reason: config.error }
     const impossible = remote ? undefined : this.host.surfaceBlocker(config.surface)
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
@@ -400,6 +381,7 @@ export class Teleport {
       handoff: req.handoff,
       profile: config.profile,
       surface: config.surface,
+      surfaceRequested: config.requested,
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
       inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
@@ -429,7 +411,7 @@ export class Teleport {
     // A headless predecessor has no pane and no human watching it in the moment,
     // so a countdown would be latency bought in exchange for a veto nobody is
     // positioned to exercise. The asymmetry is deliberate; see §4.2.
-    if (!isInteractiveSurface(config.surface)) {
+    if (!config.visible) {
       void this.finish(subject.agentId)
       return result
     }
@@ -437,6 +419,13 @@ export class Teleport {
     entry.timer = setTimeout(() => void this.finish(subject.agentId), this.countdownMs)
     entry.timer.unref?.()
     return { ...result, countdownMs: this.countdownMs }
+  }
+
+  /** CC-951: the seat file's surface for the machine the successor lands on. */
+  private seatSurfaceOf(subject: TeleportSubject, remote: boolean): SurfaceName | undefined {
+    const machine = remote ? subject.host : brokerHost()
+    if (machine === undefined) return undefined
+    return seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), machine)
   }
 
   /** CC-863: the handoff is already stored when this runs, so a failed read drops the cursor and never the teleport. */
@@ -524,36 +513,6 @@ export class Teleport {
       )
     }
     return undefined
-  }
-
-  /**
-   * The descendant's launch configuration, inherited rather than chosen.
-   *
-   * A spawned agent has a profile recorded and keeps it. An adopted session has
-   * none — there was never a launch plan — so it gets the harness's own defaults
-   * plus whatever model it is observably running on. Neither path takes a
-   * profile, surface or tool list from the request.
-   */
-  private configFor(
-    identity: AgentIdentity,
-    subject: TeleportSubject,
-    model: string | undefined,
-  ): { profile: AgentProfile; surface: SurfaceName } | { error: string } {
-    if (identity.origin === 'adopted') {
-      // The transcript is under the session's OWN config dir, which for a session
-      // on a dedicated account is not the broker's: without it the model could not
-      // be observed and every teleport of such a session silently fell back to the
-      // harness default (CC-100).
-      const observed = observedModel(subject.cwd, identity.sessionId, accountOf(subject, identity))
-      const inherited = inheritedProfile(model ?? observed)
-      return { profile: inherited, surface: resolveSurface(inherited.surface) }
-    }
-    const profile = loadProfile(identity.profile)
-    if ('error' in profile) return { error: `cannot reload profile "${identity.profile}": ${profile.error}` }
-    return {
-      profile: model === undefined ? profile : { ...profile, model },
-      surface: resolveSurface(isSurfaceName(identity.surface) ? identity.surface : profile.surface),
-    }
   }
 
   /**
@@ -669,7 +628,8 @@ export class Teleport {
     })
 
     try {
-      const paneFree = subject.anchor !== undefined && (await this.waitForPaneFree(subject))
+      const paneFree =
+        subject.anchor !== undefined && !entry.surfaceRequested && (await this.waitForPaneFree(subject))
       await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
