@@ -80,6 +80,20 @@ describe('adopting a human-started session', () => {
     expect(core.agents.roster()[0]?.sessionId).toBe('sess-abc')
   })
 
+  it('records the account the session observed itself running on', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration({ observed: { configDir: '/profiles/personal' } }))
+
+    expect(core.agents.roster()[0]?.configDir).toBe('/profiles/personal')
+  })
+
+  it('records no account for a session that observed none', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration())
+
+    expect(core.agents.roster()[0]?.configDir).toBeUndefined()
+  })
+
   it('attributes the session to the human, since a human started it', () => {
     const core = makeCore()
     core.register(fakeConn(), registration())

@@ -324,15 +324,15 @@ export class AgentLog {
   }
 
   /**
-   * CC-408: a newer spawned identity under the same name, retired or not.
+   * CC-408: a newer identity under the same name, retired or not.
    *
    * Teleport successors keep the name, so once the newest is retired `byName`
    * falls back to an older generation; resuming that would wake a stale session.
+   * CC-959: an adopted successor counts too. A seat restarted by hand is adopted,
+   * and `byName` cannot see it, so it would otherwise resume the older spawned row.
    */
   supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
-    return this.all().find(
-      a => a.name === agent.name && a.origin === 'spawned' && a.spawnedAt > agent.spawnedAt,
-    )
+    return this.all().find(a => a.name === agent.name && a.spawnedAt > agent.spawnedAt)
   }
 
   /**

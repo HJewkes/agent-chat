@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventLog, type AgentEventRow } from '../broker/event-log.js'
 import { AgentLog, foldAgent, pairPresence, stoppedAt } from '../agents/identity.js'
 import type { AgentIdentity, AgentLifecycle, EventKind } from '../protocol.js'
@@ -361,6 +361,55 @@ describe('AgentLog over a real event log', () => {
     adopt(log, 'a1', 'scout', 'sess-1')
 
     expect(new AgentLog(log).byName('scout')).toBeUndefined()
+  })
+
+  describe('which identity supersedes a spawned one (CC-959)', () => {
+    afterEach(() => void vi.useRealTimers())
+
+    /** Appends each step a second after the last, so spawn order is unambiguous. */
+    function inOrder(...steps: Array<() => unknown>): void {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      for (const step of steps) {
+        vi.setSystemTime(Date.now() + 1_000)
+        step()
+      }
+    }
+
+    it('names the newest hand-started session under the name, across accounts', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'old', 'seat'),
+        () => adopt(log, 'new1', 'seat', 'sess-1'),
+        () => adopt(log, 'new2', 'seat', 'sess-2'),
+      )
+      const agents = new AgentLog(log)
+
+      const stale = agents.byName('seat')
+      expect(stale?.agentId).toBe('old')
+      expect(agents.supersededBy(stale!)?.agentId).toBe('new2')
+    })
+
+    it('does not count a hand-started session older than the spawned one', () => {
+      const log = freshLog()
+      inOrder(
+        () => adopt(log, 'earlier', 'seat', 'sess-1'),
+        () => spawn(log, 'current', 'seat'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('does not count a hand-started session under another name', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'other', 'elsewhere', 'sess-1'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
   })
 
   it('does not let a human session lease a name a later agent may need', () => {

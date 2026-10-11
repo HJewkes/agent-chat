@@ -179,7 +179,36 @@ describe('the watchdog resume', () => {
 
     expect(res.ok).toBe(false)
     expect(res.reason).toMatch(
-      /sess-old is stale: a newer seat-x \(agent succ, session sess-new\) is retired/,
+      /sess-old is stale: a newer seat-x \(agent succ, session sess-new on \S+\) is retired/,
+    )
+    expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
+  })
+
+  // CC-959 incident: spawned on server, then restarted twice by hand on personal; the watchdog woke the server row.
+  it('refuses a spawned session superseded by newer hand-started sessions on another account', async () => {
+    const cwd = tmp('by-id-cwd-')
+    const server = tmp('by-id-server-')
+    const personal = tmp('by-id-personal-')
+    const meta = { cwd, profile: 'explorer', isolation: 'none', surface: 'headless', config_dir: server }
+    spawnRow('7b1a88f1', 'seat-x', 'seat-x', { ...meta, session_id: 'f94d8441', generation: '9' })
+    await exitRow('7b1a88f1', 'seat-x')
+    const file = transcriptPath(cwd, 'f94d8441', server)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    for (const [id, session] of [
+      ['511dee1b', 'c34e5975'],
+      ['51174805', '7016a7ee'],
+    ] as const) {
+      spawnRow(id, 'seat-x', 'human', { origin: 'adopted', cwd, session_id: session, config_dir: personal })
+      core.append({ kind: 'agent_attached', actor: 'seat-x', ref: id })
+      core.append({ kind: 'agent_detached', actor: 'seat-x', ref: id })
+    }
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res.ok).toBe(false)
+    expect(res.reason).toContain(
+      `f94d8441 is stale: a newer adopted seat-x (agent 51174805, session 7016a7ee on ${personal}) is detached`,
     )
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })

@@ -2809,9 +2809,11 @@ export class Supervisor implements TeleportHost {
   private supersededRefusal(identity: AgentIdentity): string | undefined {
     const newer = this.core.agents.supersededBy(identity)
     if (newer === undefined) return undefined
+    const kind = newer.origin === 'adopted' ? 'adopted ' : ''
+    const account = newer.configDir === undefined ? '' : ` on ${newer.configDir}`
     return (
-      `${identity.name}'s session ${identity.sessionId || '(none)'} is stale: a newer ${identity.name} ` +
-      `(agent ${newer.agentId}, session ${newer.sessionId || '(none)'}) is ${newer.state}, so resuming the older one is refused`
+      `${identity.name}'s session ${identity.sessionId || '(none)'} is stale: a newer ${kind}${identity.name} ` +
+      `(agent ${newer.agentId}, session ${newer.sessionId || '(none)'}${account}) is ${newer.state}, so resuming the older one is refused`
     )
   }
 

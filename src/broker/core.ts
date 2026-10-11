@@ -271,6 +271,8 @@ export class BrokerCore<C = Conn> {
         name: msg.name,
         cwd: msg.cwd,
         session_id: msg.sessionId,
+        // CC-959: observed by the MCP subprocess, so the roster can show which account a hand-started seat bills.
+        ...(msg.observed?.configDir ? { config_dir: msg.observed.configDir } : {}),
         // Spawns this session requests are now its children, and depthOf() reads
         // the parent's recorded depth and adds one. Zero leaves them at exactly
         // the depth they had while a human session had no identity to be a
