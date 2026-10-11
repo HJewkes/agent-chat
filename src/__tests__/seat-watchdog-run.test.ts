@@ -1065,11 +1065,13 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(out).toContainEqual(expect.stringMatching(/not resumed: budget closed: .*per_day_points 10$/))
   })
 
-  it('does not resume a seat whose pool has no budget reading', async () => {
+  // CC-466: catches liveness given the old hold, which any closed budget filled, while the relaunch got the split one.
+  it('resumes once a seat whose pool has no budget reading, since its own boot takes one', async () => {
     const h = harness(DARK)
     h.deps.readBudget = () => ({ found: false, path: '/x' }) as BudgetRead
     dark(h, 30)
-    expect(await runs(h, 3)).toBe(0)
+    expect(await runs(h, 3)).toBe(1)
+    expect(resumes(h)).toBe(1)
   })
 
   it('never wakes by the idle path a dark seat whose resume a stop refused, and counts no wake against it', async () => {
@@ -1609,6 +1611,62 @@ describe('watchdog relaunch (CC-465)', () => {
     expect(relaunchLogs(h)).toEqual([`seat-a: ${line}`])
     expect(h.raised).toEqual([line])
     expect(first).toContain(line)
+  })
+
+  // CC-466: catches `pass.machine` dropped from the hold.
+  it('leaves a stale dark seat dark while the machine is under pressure', async () => {
+    const h = relaunching(DARK, 20)
+    h.deps.machineStop = () => 'machine under pressure: load5 31 (limit 28)'
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([])
+    expect(out).toContainEqual(expect.stringMatching(/not relaunched: machine under pressure/))
+  })
+
+  // CC-466: catches `noReading` ignored by the relaunch hold, or not set when no reading was ever kept.
+  it('relaunches a stale dark seat whose pool has no reading, still logging the pause', async () => {
+    const h = relaunching(DARK, 20)
+    h.deps.readBudget = () => ({ found: false, path: '/x' }) as BudgetRead
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([
+      { seat: 'seat-a', message: 'handoff for seat-a, quiet 20 min', connected: false },
+    ])
+    expect(relaunchLogs(h)).toHaveLength(1)
+    expect(h.logs).toContain(
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: no seven_day and five_hour reading for this pool',
+    )
+    expect(h.doc.seats['seat-a']?.budgetPaused).toBe(true)
+  })
+
+  // CC-466: catches the flag set on only one of the two no-reading closures.
+  it('relaunches a stale dark seat whose last good reading is too old to stand in', async () => {
+    const h = relaunching(DARK, 20)
+    const read = budget(h.fiveHour, h.sevenDay)
+    if (read.found) delete read.budget.rate_limits.five_hour
+    h.deps.readBudget = () => read
+    h.doc.lastReadings = { claude: { at: h.now() - 61 * 60_000, sevenDay: 19, fiveHour: 41 } }
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toHaveLength(1)
+    expect(h.logs).toContainEqual(expect.stringContaining('the last good one is 3660s old'))
+  })
+
+  // CC-466: catches any closed budget let through, not only a missing reading.
+  it('leaves a stale dark seat at its per_day_points stop dark', async () => {
+    const h = relaunching(DARK, 20)
+    h.doc.pools = { claude: { since: h.now() - 3_600_000, last: 19, spent: 9 } }
+    h.sevenDay = 20
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([])
+    expect(out).toContainEqual(expect.stringMatching(/not relaunched: budget closed: .*per_day_points 10/))
   })
 
   // Catches: a dry run that relaunches, logs or saves.

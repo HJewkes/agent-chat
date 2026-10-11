@@ -143,14 +143,12 @@ describe('planSeat below the ready floor (CC-986)', () => {
 })
 
 describe('readyDepth and planningCandidates', () => {
-  const check = { maxAgeDays: 14, now: NOW }
   const tasks = [task('A-1', [FRESH]), task('A-2', [FRESH]), task('A-3')]
-  const taskOf = (r: { id: string }) => tasks.find(t => t.id === r.id)
 
-  it('counts unclaimed fresh brief:ready rows plus ready slices', () => {
+  it('counts the rows the predicate accepts plus ready slices', () => {
     const order = tasks.map(t => ({ initiative: 'alpha', id: t.id }))
 
-    expect(readyDepth(order, taskOf, check, new Set(['A-2']), 3)).toBe(4)
+    expect(readyDepth(order, r => r.id !== 'A-2', 3)).toBe(5)
   })
 
   it('keeps only no-brief refusals, in order', () => {
@@ -163,5 +161,47 @@ describe('readyDepth and planningCandidates', () => {
     const kept = planningCandidates(refusals, new Map([['alpha', tasks]]))
 
     expect(kept.map(r => r.task)).toEqual(['A-3', 'A-2'])
+  })
+})
+
+describe('planSeat ready depth counts only what the tick dispatches (CC-1055)', () => {
+  const ready = IDS.map(id => task(id, [FRESH]))
+  const noBrief = ['B-1', 'B-2'].map(id => task(id))
+  const all = [...ready, ...noBrief]
+  const rows = all.map((t, i) => row(t.id, 90 - i * 5))
+  const floored = { ...GATE, readyFloor: 3 }
+
+  it('fires the briefers when every brief:ready row needs a grant', () => {
+    const needy = [...ready.map(t => ({ ...t, doneWhen: 'Run `deploy` to prod.' })), ...noBrief]
+    const seat = { ...SEAT, grants: [] }
+
+    const planned = plan(needy, floored, rows, seat)
+
+    expect(briefers(planned)).toEqual(['B-1', 'B-2'])
+    expect(planned.notes.some(n => n.includes('ready 0 below floor 3'))).toBe(true)
+  })
+
+  it('fires the briefers when every brief:ready row overlaps a landed file', () => {
+    const planned = planSeat({
+      seat: SEAT,
+      rows,
+      defaults: { initiative_decay: 0.5, share_caps: {} } as unknown as ScoringDefaults,
+      tasks: new Map([['alpha', all]]),
+      ledger: EMPTY_LEDGER,
+      budget: POOL,
+      brief: floored,
+      readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
+      collision: (_repo, work) =>
+        work.taskId.startsWith('A-') ? { kind: 'file-overlap', reason: 'x' } : undefined,
+    })
+
+    expect(briefers(planned)).toEqual(['B-1', 'B-2'])
+  })
+
+  it('does not fire briefers while dispatchable rows meet the floor', () => {
+    const planned = plan(all, floored, rows, { ...SEAT, caps: { ...SEAT.caps, planners: 20 } })
+
+    expect(briefers(planned)).toEqual([])
+    expect(planned.notes.some(n => n.includes('below floor'))).toBe(false)
   })
 })

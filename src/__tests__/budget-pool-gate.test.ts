@@ -111,7 +111,36 @@ describe('seat budget from the charter and seat file', () => {
       open: false,
       pool: 'pool-y',
       reason: 'BUDGET-PAUSE pool pool-y: no seven_day and five_hour reading for this pool',
+      noReading: true,
     })
+  })
+})
+
+describe('closures that say the pool has no reading (CC-466)', () => {
+  const windowless = (lastGood: AccountReading) =>
+    gatePool({
+      ...SEAT_B,
+      reading: { ageSeconds: 5, sevenDay: 40 },
+      lastGood,
+      history: [{ at: dayStart(at(15)) - HOUR, sevenDay: 40 }],
+      runStartAt: at(14).getTime(),
+      ctx: { now: at(15) },
+    })
+
+  it('flags a last good reading too old to stand in', () => {
+    const result = windowless({ ageSeconds: 3_601, sevenDay: 40, fiveHour: 10 })
+
+    expect(result).toMatchObject({ open: false, noReading: true })
+    expect(result.reason).toContain('the last good one is 3601s old')
+  })
+
+  it.each([
+    ['a borrowed window near its line', windowless({ ageSeconds: 600, sevenDay: 40, fiveHour: 75 })],
+    ['a stale reading', gate({ ageSeconds: 901 })],
+    ['a five_hour ceiling', gate({ fiveHour: 80 })],
+  ])('leaves %s unflagged', (_, result) => {
+    expect(result.open).toBe(false)
+    expect(result).not.toHaveProperty('noReading')
   })
 })
 

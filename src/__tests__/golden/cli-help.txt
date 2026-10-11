@@ -1274,6 +1274,21 @@ deny a tool call that would bypass the leak scan or post a finding
 Options:
   -h, --help  display help for command
 
+=== agent-chat seat-hook
+Usage: agent-chat seat-hook [options] <phase>
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat seat-blocks
+Usage: agent-chat seat-blocks [options]
+
+each seat's blocked minutes over a window, and any block still open
+
+Options:
+  --since <window>  window such as 90m, 24h or 7d (default: "24h")
+  -h, --help        display help for command
+
 === agent-chat ps
 Usage: agent-chat ps [options]
 

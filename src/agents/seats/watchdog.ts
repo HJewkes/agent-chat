@@ -52,6 +52,8 @@ export const SPAWNING_STUCK_MS = 10 * 60_000
 export interface BudgetVerdict {
   open: boolean
   reason: string
+  /** CC-466: closed only because the pool has no usable reading, which holds a wake but not a relaunch. */
+  noReading?: true
 }
 
 export interface Observation {
@@ -229,7 +231,11 @@ export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
     },
     { maxReadingAgeSeconds: input.maxReadingAgeSeconds ?? Number.POSITIVE_INFINITY },
   )
-  return { open: gate.open, reason: gate.reason }
+  return {
+    open: gate.open,
+    reason: gate.reason,
+    ...(!gate.open && gate.noReading ? { noReading: true } : {}),
+  }
 }
 
 const quietFor = (activityAt: number | undefined, nowMs: number): number | undefined =>

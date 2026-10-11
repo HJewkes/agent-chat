@@ -354,6 +354,26 @@ function addHiddenCommands(program: Command): void {
       await leakPretool()
     })
 
+  // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
+  program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
+    const { seatHook } = await import('./verbs/seat-hook.js')
+    await seatHook(phase)
+  })
+
+  program
+    .command('seat-blocks', { hidden: true })
+    .description("each seat's blocked minutes over a window, and any block still open")
+    .option('--since <window>', 'window such as 90m, 24h or 7d', '24h')
+    .action(async (options: { since: string }) => {
+      const { seatBlocks } = await import('./verbs/seat-hook.js')
+      try {
+        console.log(seatBlocks(options).join('\n'))
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err))
+        process.exitCode = 1
+      }
+    })
+
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })

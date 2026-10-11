@@ -109,6 +109,32 @@ const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 /** Seconds. The guard reads only regular files and never waits, so a run this long is already broken. */
 const PRETOOL_TIMEOUT_S = 15
 
+const SEAT_HOOK_TIMEOUT_S = 10
+
+const seatHookEntry = (entry: string, phase: 'pre' | 'post' | 'end', matcher?: string): HookEntry => ({
+  ...(matcher === undefined ? {} : { matcher }),
+  hooks: [
+    { type: 'command', command: hookCommand(entry, `seat-hook ${phase}`), timeout: SEAT_HOOK_TIMEOUT_S },
+  ],
+})
+
+/**
+ * CC-1056: the block instrument. A question opens a block at PreToolUse and closes it at
+ * PostToolUse; a prompt, stop or session end also closes it, since an interrupted question
+ * fires no PostToolUse. Only spawned agents get these, so a plain session pays nothing.
+ */
+function seatHooks(
+  entry: string,
+  staleGuard: { UserPromptSubmit?: HookEntry[] },
+): Record<string, HookEntry[]> {
+  return {
+    PostToolUse: [seatHookEntry(entry, 'post', 'AskUserQuestion')],
+    UserPromptSubmit: [...(staleGuard.UserPromptSubmit ?? []), seatHookEntry(entry, 'end')],
+    Stop: [seatHookEntry(entry, 'end')],
+    SessionEnd: [seatHookEntry(entry, 'end')],
+  }
+}
+
 /**
  * What a launch without the user settings source still takes from that account. Its deny
  * rules only narrow, so dropping them would hand a worker tools the owner denied everywhere
@@ -146,7 +172,7 @@ export function buildHookSettings(
   carried?: CarriedUserSettings,
   agentId?: string,
 ): Record<string, unknown> {
-  const staleGuard =
+  const staleGuard: { UserPromptSubmit?: HookEntry[] } =
     agentId === undefined
       ? {}
       : {
@@ -170,17 +196,18 @@ export function buildHookSettings(
       ],
     },
     ...(carried?.pretool ?? []),
+    seatHookEntry(entry, 'pre'),
   ]
   const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
   if (permissionTimeoutSeconds === undefined)
-    return { ...account, hooks: { PreToolUse: pretool, ...staleGuard } }
+    return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard) } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
     ...account,
     hooks: {
       PreToolUse: pretool,
-      ...staleGuard,
+      ...seatHooks(entry, staleGuard),
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],

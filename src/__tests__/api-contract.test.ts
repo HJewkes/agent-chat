@@ -76,6 +76,10 @@ const KINDS_AT_FREEZE = [
   // `decided` audit section instead. The log view renders it generically. Not
   // subscribable: its body is an answer to someone's question.
   'decided',
+  // CC-1056, added through this test. Written by seat tool hooks; the log view renders them generically. Not subscribable.
+  'seat_blocked',
+  'seat_unblocked',
+  'seat_activity',
 ]
 
 describe('SSE event names cover every EventKind', () => {

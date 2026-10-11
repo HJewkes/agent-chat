@@ -268,6 +268,18 @@ function restrictToOwner(file: string): void {
   fs.chmodSync(path.dirname(file), 0o700)
 }
 
+const toLogged = (row: Row): LoggedEventRow => ({
+  id: row.id,
+  kind: row.kind as EventKind,
+  ts: row.ts,
+  actor: row.actor,
+  target: row.target,
+  msgId: row.msg_id,
+  ref: row.ref,
+  body: row.body,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
+
 export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
   private readonly noticeTtlMs: () => number
@@ -453,6 +465,28 @@ export class EventLog implements EventStore {
       .prepare(`SELECT ts FROM events WHERE ref = ? AND kind = ? ORDER BY id DESC LIMIT 1`)
       .get(ref, kind) as { ts: number } | undefined
     return row?.ts
+  }
+
+  /** CC-1056: every block and unblock row up to `until`, oldest first, for pairing into intervals. */
+  seatBlockRows(since: number, until: number): LoggedEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events WHERE kind IN ('seat_blocked', 'seat_unblocked', 'seat_activity')
+         AND ts >= ? AND ts <= ? ORDER BY id ASC`,
+      )
+      .all(since, until) as unknown as Row[]
+    return rows.map(toLogged)
+  }
+
+  /** CC-1056: whether the session's latest block row opened a block or closed one. */
+  lastSeatBlockKind(ref: string): EventKind | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT kind FROM events WHERE ref = ? AND kind IN ('seat_blocked', 'seat_unblocked')
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(ref) as { kind: EventKind } | undefined
+    return row?.kind
   }
 
   darkSince(name: string): { id: number; at: number } | undefined {
@@ -782,17 +816,7 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(`SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`)
       .all(afterId, limit) as unknown as Row[]
-    return rows.map(row => ({
-      id: row.id,
-      kind: row.kind as EventKind,
-      ts: row.ts,
-      actor: row.actor,
-      target: row.target,
-      msgId: row.msg_id,
-      ref: row.ref,
-      body: row.body,
-      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
-    }))
+    return rows.map(toLogged)
   }
 
   latestId(): number {

@@ -1,4 +1,4 @@
-import { briefRefusal, type BriefCheck, type Refusal, type Task } from './eligibility.js'
+import type { Refusal, Task } from './eligibility.js'
 
 /**
  * CC-986 slice b: when a seat's dispatchable supply runs under the CC-967 ready floor, the plan sends briefers
@@ -6,26 +6,21 @@ import { briefRefusal, type BriefCheck, type Refusal, type Task } from './eligib
  */
 
 type Row = { initiative: string; id: string }
-type TaskOf = (row: Row) => Pick<Task, 'id' | 'tags'> | undefined
-
 /** Tags that mark a task no briefer should plan: a person's step, an umbrella, or a brief already awaiting approval. */
 const UNPLANNABLE = ['kind:owner', 'kind:operator', 'kind:epic']
 
 const proposed = (tag: string): boolean => tag === 'brief:proposed' || tag.startsWith('brief:proposed=')
 
-/** The seat's dispatchable supply: unclaimed placed rows with a fresh `brief:ready`, plus its ready slices. */
-export function readyDepth(
-  order: readonly Row[],
-  taskOf: TaskOf,
-  check: BriefCheck,
-  claimed: ReadonlySet<string>,
+/**
+ * The seat's dispatchable supply: placed rows the tick would not refuse, as `dispatchable` judges them
+ * with the tick's own checks, plus its ready slices.
+ */
+export function readyDepth<R extends Row>(
+  order: readonly R[],
+  dispatchable: (row: R) => boolean,
   readySlices: number,
 ): number {
-  const ready = order.filter(row => {
-    const task = taskOf(row)
-    return task !== undefined && !claimed.has(task.id) && briefRefusal(task, check) === undefined
-  })
-  return ready.length + readySlices
+  return order.filter(dispatchable).length + readySlices
 }
 
 /**
