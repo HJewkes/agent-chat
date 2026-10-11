@@ -421,6 +421,7 @@ export class BrokerCore<C = Conn> {
     text: string,
     inReplyTo?: string,
     source?: WakeSource,
+    sendMeta?: Record<string, string>,
   ): SeatHoldResult | undefined {
     if (!this.isSeat(to)) return undefined
     const verdict = holdVerdict(this.events, to, Date.now())
@@ -432,7 +433,7 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
+      meta: { ...sendMeta, held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
@@ -474,8 +475,9 @@ export class BrokerCore<C = Conn> {
     text: string,
     inReplyTo?: string,
     source?: WakeSource,
+    sendMeta?: Record<string, string>,
   ): SeatForwardResult | undefined {
-    const held = this.holdForSeat(from, steward, text, inReplyTo, source)
+    const held = this.holdForSeat(from, steward, text, inReplyTo, source, sendMeta)
     return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
   }
 
