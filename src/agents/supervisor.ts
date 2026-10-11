@@ -9,6 +9,7 @@ import {
   HUMAN,
   RESERVED_NAMES,
   type AgentIdentity,
+  type ExperimentArm,
   type IsolationName,
   type RemoteLaunch,
   type Subscription,
@@ -433,6 +434,8 @@ export interface SpawnRequest {
   resumeSession?: string
   /** CC-133: the agent whose work this one takes over; its last report and branch are briefed. */
   predecessor?: string
+  /** CC-168: the experiment and arm this spawn runs, written on the `agent_spawned` row. */
+  experiment?: ExperimentArm
   /** CC-286: `none` keeps the broker's return contract out of a brief that states its own report format. */
   returnContract?: 'none'
   /** CC-774: the burndown plan's tier for the task, written on the `dispatched` row. */
@@ -1827,7 +1830,10 @@ export class Supervisor implements TeleportHost {
       body: req.brief,
       meta: {
         name: req.name,
-        ...(briefing ? { briefing: briefing.slug } : {}),
+        // CC-171: the delivered brief's first `briefing_chars` characters are the
+        // injected block, so a reader can find the assignment without matching
+        // this module's heading strings.
+        ...(briefing ? { briefing: briefing.slug, briefing_chars: String(briefing.text.length) } : {}),
         parent: req.parentAgentId ?? '',
         profile: profile.name,
         model: profile.model,

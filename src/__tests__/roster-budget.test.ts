@@ -43,7 +43,12 @@ afterEach(() => {
   fs.rmSync(cacheDir, { recursive: true, force: true })
 })
 
-const stubBroker = (reply: ServerMessage) => ({ request: async () => reply }) as unknown as BrokerClient
+// agent_list also asks for the registered sessions (CC-217); a stub built for another reply has none.
+const stubBroker = (reply: ServerMessage) =>
+  ({
+    request: async (m: { t: string }) =>
+      m.t === 'list' && reply.t !== 'list_result' ? { t: 'list_result', sessions: [] } : reply,
+  }) as unknown as BrokerClient
 const textOf = (result: { content: { text: string }[] }): string => result.content[0]!.text
 
 describe('agent_list carries budget per row', () => {
