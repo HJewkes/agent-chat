@@ -66,45 +66,86 @@ export type ClaimOutcome =
  * independently. Under string equality `src/**` and `src/cli/foo.ts` do not
  * conflict, which is the single most likely real overlap.
  *
- * Exact and containment cases are decided exactly. Wildcard-against-wildcard
- * cannot be decided without enumerating the filesystem, so it falls back to
- * comparing literal prefixes, which is deliberately CONSERVATIVE: it may call an
- * overlap that no file realises, and the cost of that is a refused claim and a
- * conversation, against the cost of a missed one, which is a silently lost edit.
+ * The decision is exact for this glob dialect (`*` within a segment, `**`
+ * across segments, everything else literal): both sides describe regular
+ * languages, so whether any path matches both follows from the patterns alone,
+ * segment by segment, without enumerating the filesystem. A refused claim costs
+ * a conversation and a missed one a silently lost edit, so the one shape this
+ * does not decide (`**` inside a longer segment) is reported as an overlap.
  */
 export function patternsOverlap(a: string, b: string): boolean {
   if (a === b) return true
-  // A pattern with no wildcard is a concrete path, so the other can be asked
-  // directly whether it covers it.
-  if (!hasWildcard(b) && matchPattern(b, a)) return true
-  if (!hasWildcard(a) && matchPattern(a, b)) return true
-  if (isShallow(a) || isShallow(b)) return shallowOverlap(a, b)
-  const [prefixA, prefixB] = [literalPrefix(a), literalPrefix(b)]
-  return prefixA.startsWith(prefixB) || prefixB.startsWith(prefixA)
+  if (!hasWildcard(a) && !hasWildcard(b)) return matchPattern(a, b) || matchPattern(b, a)
+  const [globA, globB] = [asGlob(a), asGlob(b)]
+  if (isFilePath(a)) return matchPattern(a, globB)
+  if (isFilePath(b)) return matchPattern(b, globA)
+  return globsIntersect(globA, globB)
 }
 
 const hasWildcard = (pattern: string): boolean => pattern.includes('*')
 
-/** A wildcard confined to the last segment matches only files in its own directory. */
-const isShallow = (pattern: string): boolean =>
-  hasWildcard(pattern) && !pattern.includes('**') && !hasWildcard(directoryOf(pattern))
+const isFilePath = (pattern: string): boolean => !hasWildcard(pattern) && !pattern.endsWith('/')
 
-const directoryOf = (pattern: string): string => pattern.slice(0, pattern.lastIndexOf('/') + 1)
+/** A trailing-slash pattern is a directory prefix, which is what `dir/**` says. */
+const asGlob = (pattern: string): string => (pattern.endsWith('/') ? `${pattern}**` : pattern)
 
-/** At least one side is shallow; when the other cannot be placed, report an overlap. */
-function shallowOverlap(a: string, b: string): boolean {
-  const [shallow, other] = isShallow(a) ? [a, b] : [b, a]
-  const dir = directoryOf(shallow)
-  if (isShallow(other)) return directoryOf(other) === dir
-  return dir.startsWith(literalPrefix(other))
+const ANY_SEGMENTS = '**'
+
+/**
+ * A trailing `**` needs at least one segment and an interior one accepts none,
+ * so the trailing form is rewritten as one `*` segment followed by the interior
+ * form. Every `**` the walk sees then means "zero or more segments".
+ */
+function segmentsOf(glob: string): string[] {
+  const segments = glob.split('/')
+  return segments.at(-1) === ANY_SEGMENTS ? [...segments.slice(0, -1), '*', ANY_SEGMENTS] : segments
 }
 
-/** Everything up to the first wildcard, trimmed to a path boundary. */
-function literalPrefix(pattern: string): string {
-  const star = pattern.indexOf('*')
-  const head = star === -1 ? pattern : pattern.slice(0, star)
-  const cut = head.lastIndexOf('/')
-  return star === -1 ? head : cut === -1 ? '' : head.slice(0, cut + 1)
+function globsIntersect(a: string, b: string): boolean {
+  const [left, right] = [segmentsOf(a), segmentsOf(b)]
+  const undecided = (s: string): boolean => s.includes(ANY_SEGMENTS) && s !== ANY_SEGMENTS
+  if (left.some(undecided) || right.some(undecided)) return true
+  return walkSegments(left, right)
+}
+
+/** Can `left[i..]` and `right[j..]` match one common path? Memoised over (i, j). */
+function walkSegments(left: string[], right: string[]): boolean {
+  const memo = new Map<number, boolean>()
+  const from = (i: number, j: number): boolean => {
+    const key = i * (right.length + 1) + j
+    let result = memo.get(key)
+    if (result === undefined) {
+      result = step(i, j)
+      memo.set(key, result)
+    }
+    return result
+  }
+  const step = (i: number, j: number): boolean => {
+    if (left[i] === ANY_SEGMENTS) return from(i + 1, j) || (j < right.length && from(i, j + 1))
+    if (right[j] === ANY_SEGMENTS) return from(i, j + 1) || (i < left.length && from(i + 1, j))
+    if (i === left.length || j === right.length) return i === left.length && j === right.length
+    return segmentsIntersect(left[i]!, right[j]!) && from(i + 1, j + 1)
+  }
+  return from(0, 0)
+}
+
+function segmentsIntersect(a: string, b: string): boolean {
+  if (!hasWildcard(a)) return matchPattern(a, b)
+  if (!hasWildcard(b)) return matchPattern(b, a)
+  return starSegmentsIntersect(a, b)
+}
+
+/**
+ * Two `*` segments share a name exactly when their fixed heads agree and their
+ * fixed tails agree: the stars on each side can absorb the other's middle text.
+ */
+function starSegmentsIntersect(a: string, b: string): boolean {
+  const head = (s: string): string => s.slice(0, s.indexOf('*'))
+  const tail = (s: string): string => s.slice(s.lastIndexOf('*') + 1)
+  const [headA, headB, tailA, tailB] = [head(a), head(b), tail(a), tail(b)]
+  return (
+    (headA.startsWith(headB) || headB.startsWith(headA)) && (tailA.endsWith(tailB) || tailB.endsWith(tailA))
+  )
 }
 
 export class ClaimLedger {
@@ -152,11 +193,16 @@ export class ClaimLedger {
         }
     }
 
-    const conflicts = this.inWorktree(worktreePath).filter(
-      held => held.owner !== owner && collides(held, kind, patterns ?? []),
-    )
-    if (conflicts.length > 0)
-      return { ok: false, reason: describeConflicts(conflicts, worktreePath), conflicts }
+    const collisions = this.inWorktree(worktreePath).flatMap(claim => {
+      const collision = claim.owner === owner ? undefined : collisionWith(claim, kind, patterns ?? [])
+      return collision === undefined ? [] : [{ claim, collision }]
+    })
+    if (collisions.length > 0)
+      return {
+        ok: false,
+        reason: describeConflicts(collisions, worktreePath),
+        conflicts: collisions.map(({ claim }) => claim),
+      }
 
     const replaced = this.releaseIn(owner, worktreePath)
     const claim: Claim = {
@@ -198,17 +244,29 @@ export class ClaimLedger {
   }
 }
 
+/** A held pattern and a wanted one that some path matches both. */
+type Collision = { held: string; wanted: string } | 'worktree'
+
 /** A whole-worktree claim owns everything, so it collides with anything else in it. */
-function collides(held: Claim, kind: ClaimKind, patterns: readonly string[]): boolean {
-  if (held.kind === 'worktree' || kind === 'worktree') return true
-  return held.patterns.some(existing => patterns.some(wanted => patternsOverlap(existing, wanted)))
+function collisionWith(held: Claim, kind: ClaimKind, patterns: readonly string[]): Collision | undefined {
+  if (held.kind === 'worktree' || kind === 'worktree') return 'worktree'
+  for (const existing of held.patterns) {
+    const wanted = patterns.find(pattern => patternsOverlap(existing, pattern))
+    if (wanted !== undefined) return { held: existing, wanted }
+  }
+  return undefined
 }
 
-function describeConflicts(conflicts: Claim[], worktreePath: string): string {
-  const parts = conflicts.map(c =>
-    c.kind === 'worktree'
-      ? `"${c.owner}" holds the whole worktree`
-      : `"${c.owner}" holds ${c.patterns.join(', ')}`,
+function describeConflicts(
+  conflicts: Array<{ claim: Claim; collision: Collision }>,
+  worktreePath: string,
+): string {
+  const parts = conflicts.map(({ claim, collision }) =>
+    claim.kind === 'worktree'
+      ? `"${claim.owner}" holds the whole worktree`
+      : collision === 'worktree'
+        ? `"${claim.owner}" holds ${claim.patterns.join(', ')}`
+        : `"${claim.owner}" holds ${collision.held} (overlaps your ${collision.wanted})`,
   )
   return (
     `Refused: ${parts.join('; ')} in ${worktreePath}. Message them before editing there — a claim is ` +
