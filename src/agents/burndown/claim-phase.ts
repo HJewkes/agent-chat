@@ -7,9 +7,12 @@ import type { Claim, Phase } from './ledger.js'
  * edge, and reading a ledger from disk checks nothing.
  */
 
-/** A spawn's landing and an undone spawn both leave `spawning`; a release sends any held phase to `queued`. */
+/**
+ * A spawn's landing and an undone spawn both leave `spawning`; a release sends any held phase to `queued`.
+ * A queued slice finishes when the PR it is linked to merges (CC-978).
+ */
 export const PHASE_EDGES: Readonly<Record<Phase, readonly Phase[]>> = {
-  queued: ['spawning'],
+  queued: ['spawning', 'done'],
   spawning: ['queued', 'planning', 'implementing', 'parked', 'reviewing'],
   planning: ['spawning', 'queued', 'done'],
   implementing: ['spawning', 'queued', 'parked', 'shepherding', 'done'],
