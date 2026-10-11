@@ -3,10 +3,10 @@ import { advance, applyActions } from '../agents/burndown/advance.js'
 import type { RunResult } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
-import { claimPrReader, type RepoPull } from '../agents/burndown/pr-state.js'
+import { claimPrReader, claimPrState, type RepoPull } from '../agents/burndown/pr-state.js'
 import type { AgentIdentity } from '../protocol.js'
 
-/** CC-1054: the tick lets go of a claim whose PR merged, or whose agent is gone and left no PR, as seats did by hand. */
+/** CC-1054: the tick finishes a claim whose PR merged, which seats released by hand; a claim with no PR stays put. */
 
 const NOW = new Date('2026-10-11T12:00:00.000Z')
 const EARLIER = '2026-10-11T09:00:00.000Z'
@@ -66,14 +66,14 @@ function fakeGh(pulls: RepoPull[] | undefined): FakeGh {
 }
 
 /** Observe then advance and apply, as the tick does, with only the gh reader live. */
-async function tick(ledger: Ledger, gh: FakeGh, roster: Roster, reviewable = false): Promise<Ledger> {
+async function tick(ledger: Ledger, gh: FakeGh, roster: Roster): Promise<Ledger> {
   const held = ledger.claims.filter(c => c.phase !== 'done')
   const { observations } = await observe(held, roster, {
     inboxSince: async () => [],
     root: '/nowhere',
     shepherdRows: () => [],
     finalText: () => undefined,
-    diff: () => ({ reviewable, reason: 'stub' }),
+    diff: () => ({ reviewable: false, reason: 'stub' }),
     spendCap: () => undefined,
     progress: () => 'unreadable',
     activity: () => ({ ok: false, reason: 'stub' }) as never,
@@ -95,25 +95,30 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
     ])
   })
 
-  it('releases a stalled slice whose agent retired and left no PR', async () => {
-    const ledger = {
-      ...EMPTY_LEDGER,
-      claims: [claim({ stallCode: undefined, stalledReason: 'no final report' })],
-    }
+  it('finishes a whole-task claim parked on budget whose recorded PR merged', async () => {
+    const parked = claim({
+      slice: undefined,
+      pr: 'o/r#9',
+      stallCode: 'budget',
+      stalledReason: 'budget: spent $9 of $8',
+    })
 
-    const after = await tick(ledger, fakeGh([]), { agents: [agent('bd-cc-1-a', 'retired')] })
+    const after = await tick({ ...EMPTY_LEDGER, claims: [parked] }, fakeGh([pull()]), exited)
 
-    expect(after.claims).toEqual([])
-    expect(after.slicesReleased).toEqual({ 'CC-1': ['a'] })
+    expect(after.claims).toEqual([expect.objectContaining({ phase: 'done', pr: 'o/r#9' })])
   })
 
-  it('keeps a stalled claim whose agent left commits but no PR, for the owner', async () => {
-    const ledger = { ...EMPTY_LEDGER, claims: [claim()] }
+  it.each(['budget', 'retry-spent'] as const)(
+    'keeps a %s park whose agent retired and left no PR, for the ladder and the owner',
+    async code => {
+      const parked = claim({ stallCode: code, stalledReason: `${code}: parked`, stalledClass: 'failed' })
+      const ledger = { ...EMPTY_LEDGER, claims: [parked] }
 
-    const after = await tick(ledger, fakeGh([]), exited, true)
+      const after = await tick(ledger, fakeGh([]), { agents: [agent('bd-cc-1-a', 'retired')] })
 
-    expect(after).toEqual(ledger)
-  })
+      expect(after).toEqual(ledger)
+    },
+  )
 
   it('leaves a claim alone while its PR is open, for Shepherd', async () => {
     const ledger = { ...EMPTY_LEDGER, claims: [claim()] }
@@ -140,13 +145,14 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
     expect(after).toEqual(ledger)
   })
 
-  it('releases nothing when a full page of PRs may hide an open one', async () => {
+  it('reads a full page with no PR of the claim as could-not-tell, a short one as no PR', () => {
     const page = Array.from({ length: 100 }, (_, i) => pull({ number: 100 + i, branch: `other-${i}` }))
-    const ledger = { ...EMPTY_LEDGER, claims: [claim()] }
 
-    const after = await tick(ledger, fakeGh(page), exited)
+    const full = claimPrState(claim(), 'o/r', { pulls: page, complete: false })
+    const short = claimPrState(claim(), 'o/r', { pulls: page.slice(1), complete: true })
 
-    expect(after).toEqual(ledger)
+    expect(full).toBeUndefined()
+    expect(short).toEqual({ kind: 'none' })
   })
 
   it('reads each repo once per tick however many claims share it', async () => {
