@@ -16,7 +16,6 @@ import {
   type TeleportReason,
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
-import { markSuperseded } from './launch-files.js'
 import { loadProfile, recordedRole } from './profiles.js'
 import { resolveSurface } from './surface-resolution.js'
 import { shepherdRowsAsync } from './burndown/shepherd.js'
@@ -669,7 +668,6 @@ export class Teleport {
       ...(ended.ok ? {} : { meta: { shutdown: ended.reason ?? 'failed' } }),
     })
 
-    markSuperseded(agentId)
     try {
       const paneFree = subject.anchor !== undefined && (await this.waitForPaneFree(subject))
       await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
@@ -800,7 +798,6 @@ export class Teleport {
       ref: subject.agentId,
       body: 'superseded by teleport',
     })
-    markSuperseded(subject.agentId)
     this.pending.delete(subject.agentId)
     logEvent('teleport_completed', {
       name: subject.name,

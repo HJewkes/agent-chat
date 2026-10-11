@@ -29,7 +29,7 @@ describe('stale session guard', () => {
     expect(JSON.parse(written)).toMatchObject({ decision: 'block' })
   })
 
-  it('lets the seat’s own identity through, resumed or not', () => {
+  it('lets the seat’s own identity through when it is resumed after a predecessor was marked', () => {
     markSuperseded('old-agent')
     staleSessionGuard('current-agent')
     expect(written).toBe('')

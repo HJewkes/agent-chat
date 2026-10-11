@@ -31,6 +31,7 @@ import {
   hookSettingsPath,
   mcpConfigPath,
   readRuntimeState,
+  markSuperseded,
   writeLaunchFiles,
   writeRuntimeState,
 } from './launch-files.js'
@@ -3295,6 +3296,18 @@ export class Supervisor implements TeleportHost {
         ...input.meta,
       },
     })
+    this.markPredecessorSuperseded(input)
+  }
+
+  /** CC-762: from this row on the predecessor is superseded, so a transcript restored later must not take a turn. */
+  private markPredecessorSuperseded(input: RelaunchInput): void {
+    const from = input.meta?.teleport_from
+    if (from === undefined) return
+    try {
+      markSuperseded(from)
+    } catch (err) {
+      logEvent('superseded_marker_failed', { agentId: from, error: String(err) })
+    }
   }
 
   private announceSuccessor(input: RelaunchInput, sessionId: string, cwd: string): void {

@@ -16,7 +16,7 @@ import {
   PARK_LINE,
   REMOTE_LAUNCH_TIMEOUT_MS,
 } from '../agents/teleport.js'
-import { planPath } from '../agents/launch-files.js'
+import { planPath, supersededMarkerPath } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -327,6 +327,30 @@ describe('a headless predecessor', () => {
       'agent_stood_down',
       'agent_retired',
     ])
+  })
+
+  it('marks the predecessor superseded once its successor is recorded, and never the successor (CC-762)', async () => {
+    const agentId = await spawnAgent()
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(true)
+    expect(fs.existsSync(supersededMarkerPath(result.agentId as string))).toBe(false)
+  })
+
+  it('leaves the predecessor unmarked when no successor was recorded, so its resume still takes turns (CC-762)', async () => {
+    const agentId = await spawnAgent()
+    vi.spyOn(supervisor as unknown as { successorPlan: () => never }, 'successorPlan').mockImplementation(
+      () => {
+        throw new Error('plan failed')
+      },
+    )
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(false)
   })
 
   it('signals Claude Code, not the MCP subprocess', async () => {
