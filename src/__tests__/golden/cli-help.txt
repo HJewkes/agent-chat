@@ -1013,6 +1013,7 @@ Options:
   --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review, planner or other
   --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
                           iterm-tab, iterm-window, tmux-window
+  --spawned-as <who>      shepherd or burndown: the automation this spawn is on behalf of
   -h, --help              display help for command
 
 === agent-chat agent retire
