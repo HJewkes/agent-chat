@@ -1,6 +1,6 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
-import { parseIsoDay } from './score.js'
+import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
 /**
@@ -140,7 +140,8 @@ export function taskRefusal(
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
     return { kind: 'no-done-when', reason: 'no done_when, so no return contract' }
-  if (task.estimate === undefined) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
+  const wanted = wantsBrief(task.tags)
+  if (task.estimate === undefined && !wanted) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
   const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
   if (claimed.has(task.id)) return { kind: 'claimed', reason: 'held in the burndown claim ledger' }
@@ -149,7 +150,7 @@ export function taskRefusal(
     return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
   const gap = grantGap(task.doneWhen, grants)
   if (gap !== undefined) return { kind: 'needs-grant', reason: gap }
-  return brief?.gate === 'on' ? briefRefusal(task, brief) : undefined
+  return brief?.gate === 'on' && !wanted ? briefRefusal(task, brief) : undefined
 }
 
 const byPriorityThenSize = (a: Task, b: Task): number =>

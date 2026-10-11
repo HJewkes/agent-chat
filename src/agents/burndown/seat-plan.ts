@@ -141,6 +141,7 @@ type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
 
 const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
+  briefer: { role: 'planners', profile: PLANNER_PROFILE },
   planner: { role: 'planners', profile: PLANNER_PROFILE },
   implementer: { role: 'implementers', profile: IMPLEMENTER_PROFILE },
   'implementer-lite': { role: 'implementers', profile: 'bd-implementer-lite' },
@@ -504,7 +505,7 @@ function consider(
   const repo = repoForTask(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
-  const seeded = route.role === 'planners' ? seedFromPlan(row, walk) : undefined
+  const seeded = row.route === 'planner' ? seedFromPlan(row, walk) : undefined
   if (seeded !== undefined) return seeded
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {

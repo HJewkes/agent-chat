@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { ExceptionClass } from './exception.js'
 import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
+  briefWriterBrief,
   planPathFor,
   plannerBrief,
   reviewerBrief,
@@ -17,6 +18,7 @@ import { spawnFrame, type SpawnFrame, type Step } from './execute.js'
 import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
+import { wantsBrief } from './score.js'
 import { parseSlices } from './report.js'
 import { chargesOn, sonnetBand, type PoolGateResult } from './budget-gate.js'
 import type { SeatDispatch } from './seat-dispatch.js'
@@ -401,6 +403,12 @@ export function retrySteps(ledger: Ledger, roster: Roster): Step[] {
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
+function briefFor(d: Dispatch, t: TaskBrief, ctx: StepContext): string {
+  if (d.profile !== PLANNER_PROFILE) return workerBrief(t)
+  const tags = ctx.tasks.get(d.initiative)?.find(x => x.id === d.task)?.tags ?? []
+  return wantsBrief(tags) ? briefWriterBrief(t) : plannerBrief(t)
+}
+
 /** A new claim (or a queued slice moved to `spawning`), then its spawn; or why it cannot go. */
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {
   const initiative = ctx.initiatives.get(d.initiative)
@@ -430,7 +438,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   const frame = spawnFrame({
     name: d.agentName,
     profile: d.profile,
-    brief: planner ? plannerBrief(t) : workerBrief(t),
+    brief: briefFor(d, t, ctx),
     cwd: d.repo,
     configDir: t.configDir,
     initiative: d.initiative,
