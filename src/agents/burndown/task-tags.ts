@@ -2,11 +2,15 @@ import { parseIsoDay } from './score.js'
 
 /**
  * CC-626: the planning tags `milestone:`, `epic:`, `dep:`, `cos:`, `due:` and `ms-role:` on a task, parsed purely,
- * and CC-925's `brief:ready=<YYYY-MM-DD>`. Other tags, other `brief:` ones included, pass through untouched.
+ * and CC-925's `brief:ready=<YYYY-MM-DD>`. `brief:src=` reads as `briefSource`. Other tags, other `brief:` ones included, pass through untouched.
  */
 
 export const CLASSES_OF_SERVICE = ['expedite', 'fixed', 'standard', 'intangible'] as const
 export type ClassOfService = (typeof CLASSES_OF_SERVICE)[number]
+
+export const BRIEF_SOURCES = ['seat', 'briefer', 'template'] as const
+/** CC-953: who wrote the task's brief; `unknown` when the `brief:src=` tag is missing or not one of the three. */
+export type BriefSource = (typeof BRIEF_SOURCES)[number] | 'unknown'
 
 /** The fields the parser reads; `ScoredTask` satisfies it. */
 export interface PlanTask {
@@ -33,6 +37,16 @@ export interface TaggedTask {
   msRole?: MsRole
   /** CC-925: ISO day the seat finished the task's brief. */
   briefReady?: string
+  /** CC-953: from `brief:src=`; the first such tag wins. */
+  briefSource: BriefSource
+}
+
+const BRIEF_SRC_PREFIX = 'brief:src='
+
+function briefSourceOf(tags: readonly unknown[] | null | undefined): BriefSource {
+  const tag = (tags ?? []).find((t): t is string => typeof t === 'string' && t.startsWith(BRIEF_SRC_PREFIX))
+  const value = tag?.slice(BRIEF_SRC_PREFIX.length).trim()
+  return BRIEF_SOURCES.find(source => source === value) ?? 'unknown'
 }
 
 export type TagErrorCode =
@@ -142,7 +156,10 @@ export function parseTaskTags(task: PlanTask): { task: TaggedTask; errors: TagEr
     ...(msRole !== undefined && { msRole }),
     ...(briefReady !== undefined && { briefReady }),
   }
-  return { task: { id: task.id, ...optional, deps: [...deps], cos }, errors }
+  return {
+    task: { id: task.id, ...optional, deps: [...deps], cos, briefSource: briefSourceOf(task.tags) },
+    errors,
+  }
 }
 
 /**

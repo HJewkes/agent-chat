@@ -12,6 +12,7 @@ import {
   type RetireSpend,
 } from './dispatch-record.js'
 import type { RetireOutcome } from './retire-outcome.js'
+import { parseTaskTags, type BriefSource } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
 import { readText } from './io.js'
 import { seatOf, type SeatFile } from './seat-of.js'
@@ -200,14 +201,16 @@ export function dispatchLogPath(root: string, { seat, text }: SeatFile): string 
 function taskContext(
   activeWork: string,
   task: string | null,
-): { initiative: string | null; kind: string | null } {
+): { initiative: string | null; kind: string | null; briefSource?: BriefSource } {
   const none = { initiative: null, kind: null }
   if (task === null) return none
   for (const slug of initiatives(activeWork)) {
     const text = readText(path.join(activeWork, slug, 'tasks', `${task}.yml`))
     if (text === undefined) continue
-    const tag = parseTask(text, task).tags.find(t => t.startsWith('kind:'))
-    return { initiative: slug, kind: tag === undefined ? null : tag.slice('kind:'.length) }
+    const { tags } = parseTask(text, task)
+    const tag = tags.find(t => t.startsWith('kind:'))
+    const { briefSource } = parseTaskTags({ id: task, tags }).task
+    return { initiative: slug, kind: tag === undefined ? null : tag.slice('kind:'.length), briefSource }
   }
   return none
 }

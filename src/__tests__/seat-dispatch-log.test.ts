@@ -166,6 +166,26 @@ describe('task, initiative and kind', () => {
     })
   })
 
+  it.each(['seat', 'briefer', 'template'] as const)('records brief:src=%s on the dispatched row', source => {
+    taskFile('demo', 'AB-12', `[brief:ready=2026-10-01, brief:src=${source}]`)
+
+    writerOver().dispatched(facts())
+
+    const [row] = rowsOf(logFile('seat-x'))
+    expect(row).toMatchObject({ briefSource: source })
+    expect(foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8')).records[0]).toMatchObject({
+      briefSource: source,
+    })
+  })
+
+  it('records unknown for a task file with no or a bad brief:src tag', () => {
+    taskFile('demo', 'AB-12', '[brief:src=robot]')
+
+    writerOver().dispatched(facts())
+
+    expect(rowsOf(logFile('seat-x'))[0]).toMatchObject({ briefSource: 'unknown' })
+  })
+
   it('keeps the parsed task with null initiative and kind when no task file exists', () => {
     taskFile('demo', 'CD-34', '[kind:agent-tooling]')
 
