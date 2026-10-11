@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadResolvedConfig, type StorePaths } from '../agents/burndown/settings-store.js'
 import {
+  NOT_YET_LIVE,
   overrideClear,
   overrideSet,
   pauseSet,
@@ -40,7 +41,7 @@ beforeEach(() => {
     paused: path.join(dir, 'burndown.paused'),
   }
   fs.writeFileSync(paths.flat, JSON.stringify(FLAT))
-  env = { paths, now: NOW, brokerStale: () => false }
+  env = { paths, now: NOW, tickReadsSettings: true, brokerStale: () => false }
 })
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
 
@@ -119,6 +120,44 @@ describe('burndown preset verbs (CC-955)', () => {
   })
 })
 
+describe('repairing settings that no longer resolve (CC-955)', () => {
+  it('clears an active factory-only preset after reportTo is removed from the flat file', async () => {
+    await presetApply(env, 'factory-only', 'tp-operator')
+    fs.writeFileSync(paths.flat, JSON.stringify({ ...FLAT, reportTo: undefined }))
+
+    const report = await presetClear(env, 'tp-operator')
+
+    expect(report.ok).toBe(true)
+    expect(resolved().preset).toBeUndefined()
+    expect(logRows().map(r => r.verb)).toEqual(['preset.apply', 'preset.clear'])
+  })
+
+  it('resumes when the settings file is unreadable, saying the change went unlogged', async () => {
+    fs.writeFileSync(paths.paused, 'now\n')
+    fs.writeFileSync(paths.settings, '{')
+
+    const report = await pauseSet(env, false, 'tp-operator')
+
+    expect(report.ok).toBe(true)
+    expect(fs.existsSync(paths.paused)).toBe(false)
+    expect(report.lines[1]).toContain('not logged: burndown settings')
+  })
+})
+
+describe('before the tick reads the settings (CC-955 S2 pending)', () => {
+  it('says a settings change is not live yet', async () => {
+    const report = await seatSet({ ...env, tickReadsSettings: false }, 'coord-b', false, 'tp-operator')
+
+    expect(report.lines).toEqual(['seat coord-b off in settings', NOT_YET_LIVE])
+  })
+
+  it('does not say so for pause, whose marker the tick reads today', async () => {
+    const report = await pauseSet({ ...env, tickReadsSettings: false }, true, 'tp-operator')
+
+    expect(report.lines).toEqual([`paused: ${paths.paused} written`])
+  })
+})
+
 describe('burndown override verbs (CC-955)', () => {
   const patch = JSON.stringify({ seats: { 'coord-b': { on: false } } })
 
@@ -169,6 +208,15 @@ describe('burndown seat and pause verbs (CC-955)', () => {
     expect(report.lines).toEqual(['seat coord-b off in settings'])
     expect(resolved().tick.seats).toEqual(['coord-a'])
     expect(logRows()[0]).toMatchObject({ verb: 'seat.off', by: 'tp-operator' })
+  })
+
+  it('warns when turning on a seat the flat file never names', async () => {
+    const report = await seatSet(env, 'coord-z', true, 'tp-operator')
+
+    expect(report.lines).toEqual([
+      'seat coord-z on in settings',
+      'seat coord-z is new: burndown.config.json names no such seat; check the spelling',
+    ])
   })
 
   it('says when an active preset shadows the seat setting', async () => {

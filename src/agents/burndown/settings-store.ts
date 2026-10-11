@@ -78,6 +78,12 @@ export function loadResolvedConfig(opts: { paths?: SettingsPaths; now?: number }
   return resolveOver(paths, settings, override, opts.now)
 }
 
+/**
+ * False until CC-955 S2 points the tick and the broker gate at `loadResolvedConfig`; S2 flips it.
+ * While false, the settings verbs say that only `config show` reflects what they write.
+ */
+export const TICK_READS_SETTINGS = false
+
 /** The read paths plus what only a change touches: the audit log and the tick's pause marker. */
 export interface StorePaths extends SettingsPaths {
   log: string
@@ -150,18 +156,24 @@ export async function changeSettings(
   paths: StorePaths,
   change: Change,
   edit: (current: Snapshot) => Snapshot,
-): Promise<{ before: Resolved; after: Resolved }> {
+): Promise<{ before?: Resolved; after: Resolved }> {
   const locked = await withLedgerLock(paths.settings, () => {
     const at = new Date(change.now).toISOString()
     const before = readSnapshot(paths)
     const after = edit(before)
-    const resolvedBefore = resolveOver(paths, before.settings, before.override, change.now)
+    // A current state that no longer resolves must not block the change that repairs it.
+    let resolvedBefore: Resolved | undefined
+    try {
+      resolvedBefore = resolveOver(paths, before.settings, before.override, change.now)
+    } catch {
+      resolvedBefore = undefined
+    }
     // Resolving before the write refuses a change that would leave the settings unresolvable.
     const resolvedAfter = resolveOver(paths, after.settings, after.override, change.now)
     writeSnapshot(paths, before, after, at)
     const row = { at, by: change.by, verb: change.verb, ...delta(before, after) }
     fs.appendFileSync(paths.log, `${JSON.stringify(row)}\n`)
-    return { before: resolvedBefore, after: resolvedAfter }
+    return { ...(resolvedBefore === undefined ? {} : { before: resolvedBefore }), after: resolvedAfter }
   })
   if (!locked.ran) throw new Error(`burndown settings are locked by pid ${locked.holder}; try again`)
   return locked.value

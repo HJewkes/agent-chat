@@ -3,11 +3,13 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { BUILTIN_PRESETS, Preset } from '../../agents/burndown/settings.js'
 import type { Resolved, ResolvedSeat } from '../../agents/burndown/settings-resolve.js'
+import { loadTickConfig } from '../../agents/burndown/source.js'
 import {
   changeSettings,
   defaultStorePaths,
   loadResolvedConfig,
   readSnapshot,
+  TICK_READS_SETTINGS,
   type Snapshot,
   type StorePaths,
 } from '../../agents/burndown/settings-store.js'
@@ -70,30 +72,52 @@ export const burndownConfigShowVerb = defineVerb({
   },
 })
 
-/** Where a settings verb writes, its clock, and whether the running broker predates the build. */
+/** Where a settings verb writes, its clock, whether the tick reads the settings yet, and whether the broker is stale. */
 export interface SettingsEnv {
   paths: StorePaths
   now: number
+  tickReadsSettings: boolean
   brokerStale: () => boolean
 }
 
-/** No broker is not stale; one with no build stamp may predate the settings, so it counts. */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** No live broker is not stale; one with no build stamp may predate the settings, so it counts. */
 function liveBrokerStale(): boolean {
   const meta = readMeta()
-  if (meta === null) return false
+  if (meta === null || !alive(meta.pid)) return false
   return meta.buildMtime === undefined || stalenessWarning(meta.buildMtime, newestBuildMtime()) !== null
 }
 
 const liveEnv = (): SettingsEnv => ({
   paths: defaultStorePaths(),
   now: Date.now(),
+  tickReadsSettings: TICK_READS_SETTINGS,
   brokerStale: liveBrokerStale,
 })
 
 const failed = (err: unknown): Report => ({ ok: false, lines: [], errors: [(err as Error).message] })
 
+export const NOT_YET_LIVE =
+  'not live yet: the tick and the broker gate still read burndown.config.json alone (until CC-955 S2); only config show reflects this'
+
 /** The broker reads `handReserve` in-process, so a change to it waits for a broker restart (plan R3). */
-const BROKER_LAG = 'broker predates settings; handReserve applies to the tick only until restart'
+export const BROKER_LAG = 'broker predates settings; handReserve applies to the tick only until restart'
+
+/** What the change means for the tick: nothing yet before S2, and only the tick's half before a broker restart. */
+function liveness(env: SettingsEnv, before: Resolved | undefined, after: Resolved): string[] {
+  if (!env.tickReadsSettings) return [NOT_YET_LIVE]
+  const reserveMoved =
+    before === undefined || JSON.stringify(before.tick.handReserve) !== JSON.stringify(after.tick.handReserve)
+  return reserveMoved && env.brokerStale() ? [BROKER_LAG] : []
+}
 
 async function settingsChange(
   env: SettingsEnv,
@@ -104,9 +128,7 @@ async function settingsChange(
 ): Promise<Report> {
   try {
     const { before, after } = await changeSettings(env.paths, { verb, by, now: env.now }, edit)
-    const reserveMoved = JSON.stringify(before.tick.handReserve) !== JSON.stringify(after.tick.handReserve)
-    const lag = reserveMoved && env.brokerStale() ? [BROKER_LAG] : []
-    return { ok: true, lines: [...done(after), ...lag] }
+    return { ok: true, lines: [...done(after), ...liveness(env, before, after)] }
   } catch (err) {
     return failed(err)
   }
@@ -211,13 +233,21 @@ export async function overrideClear(env: SettingsEnv, by: string): Promise<Repor
   )
 }
 
+/** Seats the flat file names anywhere; a seat on nowhere else may be a typo that would become a real seat. */
+function flatKnows(paths: StorePaths, seat: string): boolean {
+  const flat = loadTickConfig(paths.flat)
+  return flat.seats.includes(seat) || seat in flat.briefGate || seat in flat.handReserve
+}
+
 /** A higher layer can shadow the seat's own setting, so the reply says what the tick will really see. */
 export async function seatSet(env: SettingsEnv, seat: string, on: boolean, by: string): Promise<Report> {
+  let newToSettings = false
   return settingsChange(
     env,
     on ? 'seat.on' : 'seat.off',
     by,
     s => {
+      newToSettings = s.settings.seats[seat] === undefined
       const seats = { ...s.settings.seats, [seat]: { ...s.settings.seats[seat], on } }
       return { ...s, settings: { ...s.settings, seats } }
     },
@@ -225,14 +255,18 @@ export async function seatSet(env: SettingsEnv, seat: string, on: boolean, by: s
       const source = after.sources[`seats.${seat}.on`]
       const shadowed =
         after.seats[seat]?.on !== on ? [`shadowed: ${source} keeps seat ${seat} ${on ? 'off' : 'on'}`] : []
-      return [`seat ${seat} ${on ? 'on' : 'off'} in settings`, ...shadowed]
+      const unknown =
+        on && newToSettings && !flatKnows(env.paths, seat)
+          ? [`seat ${seat} is new: burndown.config.json names no such seat; check the spelling`]
+          : []
+      return [`seat ${seat} ${on ? 'on' : 'off'} in settings`, ...shadowed, ...unknown]
     },
   )
 }
 
 /**
- * The pause marker stays the tick's switch; the change is logged like any other. Pause is the
- * kill switch, so a settings lock or an unresolvable settings file never stops the marker landing.
+ * The pause marker is the tick's own switch and is live today, so pause and resume never carry the
+ * not-live line, and a settings lock or an unresolvable settings file never stops the marker changing.
  */
 export async function pauseSet(env: SettingsEnv, paused: boolean, by: string): Promise<Report> {
   const done = paused ? `paused: ${env.paths.paused} written` : 'resumed'
@@ -243,8 +277,9 @@ export async function pauseSet(env: SettingsEnv, paused: boolean, by: string): P
     s => ({ ...s, paused }),
     () => [done],
   )
-  if (report.ok || !paused) return report
-  fs.writeFileSync(env.paths.paused, `${new Date(env.now).toISOString()}\n`)
+  if (report.ok) return { ok: true, lines: [done] }
+  if (paused) fs.writeFileSync(env.paths.paused, `${new Date(env.now).toISOString()}\n`)
+  else fs.rmSync(env.paths.paused, { force: true })
   return { ok: true, lines: [done, `not logged: ${(report.errors ?? []).join('; ')}`] }
 }
 
