@@ -51,7 +51,7 @@ const incident: SeatRelaunchPlan = {
     spawned: onServer,
   },
   // CC-959 review: whoever can write the seat file must not pick the profile or the cwd.
-  account: { configDir: PERSONAL, profile: 'operator', cwd: '/home/example/elsewhere' },
+  account: { configDir: PERSONAL, poolDir: PERSONAL, profile: 'operator', cwd: '/home/example/elsewhere' },
   message: 'Watchdog: resume',
   fresh: 'HANDOFF',
 }
@@ -280,5 +280,48 @@ describe('respawnSeat', () => {
     expect(out.detail).toBe(
       `relaunched session 7016a7ee on ${PERSONAL}, headless (iterm-window refused: iTerm2 is down)`,
     )
+  })
+
+  // CC-1053, catches: the check dropped, or moved after the retire (a retire frame appears).
+  it('refuses, retiring nothing, a seat file config_dir that is neither the pool dir nor the spawned row dir', async () => {
+    const plan: SeatRelaunchPlan = {
+      ...incident,
+      account: { ...incident.account, configDir: '/home/example/.profiles/workout' },
+    }
+    const b = broker([retired('7b1a88f1'), spawned])
+
+    const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
+
+    expect(b.frames).toEqual([])
+    expect(out).toEqual({
+      ok: false,
+      refused: true,
+      detail:
+        "not relaunched: seat config_dir /home/example/.profiles/workout is neither its pool's " +
+        `(${PERSONAL}) nor spawned row 7b1a88f1's (/home/example/.profiles/server)`,
+    })
+  })
+
+  // CC-1053, catches: an allow-list that holds only the pool dir.
+  it("relaunches on a seat file config_dir that matches the spawned row's recorded dir", async () => {
+    const server = '/home/example/.profiles/server'
+    const plan: SeatRelaunchPlan = { ...incident, account: { ...incident.account, configDir: server } }
+    const b = broker([retired('7b1a88f1'), spawned])
+
+    const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
+
+    expect(b.frames[1]).toMatchObject({ t: 'spawn', configDir: server })
+    expect(out.ok).toBe(true)
+  })
+
+  // CC-1053, catches: comparing against the spawned row's dir only, which refuses the pool's own account.
+  it("relaunches on the pool's dir when the spawned row recorded another", async () => {
+    const plan: SeatRelaunchPlan = { ...incident, account: { configDir: PERSONAL, poolDir: PERSONAL } }
+    const b = broker([retired('7b1a88f1'), spawned])
+
+    const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
+
+    expect(b.frames[1]).toMatchObject({ t: 'spawn', configDir: PERSONAL })
+    expect(out.ok).toBe(true)
   })
 })

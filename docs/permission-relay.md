@@ -304,6 +304,30 @@ so a session cannot use its own connection to file prompts under another name. A
 unregistered process can still file a prompt under any `session` label. That grants
 nothing: the verdict goes back only to the connection that filed it.
 
+### Repo skill writes (CC-694)
+
+Claude Code guards `<project>/.claude/{skills,agents,commands}` with a safety check that
+runs after the ordinary allow rules. A headless spawn's write there is therefore an `ask`,
+which reaches `agent-chat permission-hook` and waits on the owner. TD-461's SKILL.md write
+did this and timed out (event rows 63747 and 64185).
+
+Observed on claude 2.1.296, 2026-10-11, by `src/__tests__/live-skill-write.test.ts`
+(`AGENT_CHAT_LIVE=1`). Each arm is a `-p` session in a fresh linked worktree, launched with
+`--setting-sources project,local`, and writes `.claude/skills/probe/SKILL.md`:
+
+| Arm                                                       | Outcome | Transcript `permissionDecision` |
+| --------------------------------------------------------- | ------- | ------------------------------- |
+| `--allowed-tools Write,Edit`, no hook                     | refused | `reject`, source `config`       |
+| the same plus `Edit(./.claude/skills/**)`                 | refused | `reject`, source `config`       |
+| `Write,Edit` plus a PermissionRequest hook printing allow | written | `accept`, source `hook`         |
+
+Both refusals carry the same `tool_result`: "Claude requested permissions to write to …,
+but you haven't granted it yet." The owner-approved rule `Edit(./.claude/skills/**)` does
+not clear the check on its own. A PermissionRequest hook `allow` does. So the fix belongs
+in `agent-chat permission-hook` (CC-694 slices b to e), with the approved rule as the
+opt-in switch. Rerun the live test after each Claude Code bump: if the literal-rule arm
+starts writing the file, the hook self-grant is no longer needed.
+
 ## An approval row is session-relative — never compare rows across sessions
 
 The broker log records _that a session prompted_, which depends on that session's
