@@ -12,10 +12,16 @@ cat > "$W/gh" <<'FAKE'
 # Without --paginate it returns only page one, as the real gh does.
 kind=runs; case "$*" in */status*) kind=status ;; esac
 echo "$*" >> "$FIX/calls"
-# commits/<sha> --jq .sha (sha expansion): served from $FIX/commit as a bare sha, uncounted.
+# commits/<sha> --jq .sha: $FIX/commit.<n> by call count holds a bare sha, FAIL, or NOTFOUND (GitHub's 422).
 if [[ $2 =~ /commits/[0-9a-fA-F]+$ ]]; then
-  [ -f "$FIX/commit" ] && [ "$(cat "$FIX/commit")" != FAIL ] || exit 1
-  cat "$FIX/commit"; exit 0
+  n=$(( $(cat "$FIX/commit.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/commit.count"
+  f=$FIX/commit.$n; [ -f "$f" ] || f=$(ls "$FIX"/commit.[0-9]* 2>/dev/null | sort -t. -k2 -n | tail -1)
+  [ -n "$f" ] || exit 1
+  case $(cat "$f") in
+    FAIL) echo "gh: HTTP 502" >&2; exit 1 ;;
+    NOTFOUND) echo "gh: No commit found for SHA: ${2##*/} (HTTP 422)" >&2; exit 1 ;;
+  esac
+  cat "$f"; exit 0
 fi
 n=$(( $(cat "$FIX/$kind.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/$kind.count"
 f=$FIX/$kind.$n; [ -f "$f" ] || f=$(ls "$FIX"/$kind.[0-9]* | sort -t. -k2 -n | tail -1)
@@ -117,23 +123,32 @@ out=$("$BIN/ci-wait" o/r xyz1234 2>&1); rc=$?;            check "non-hex sha exi
 out=$("$BIN/ci-wait" o/r "$(printf 'a%.0s' {1..41})" 2>&1); rc=$?; check "sha longer than 40 exits 64" 64 '^usage:'
 
 FULL=abc1234567890abcdef1234567890abcdef12345
-fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo "$FULL" > "$FIX/commit"
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo "$FULL" > "$FIX/commit.1"
 out=$("$BIN/ci-wait" o/r ABC1234 --interval 0 2>&1); rc=$?
 check "abbreviated sha whose CI completed is expanded and green" 0 "^GREEN o/r $FULL\$"
 grep -q "repos/o/r/commits/$FULL/check-runs" "$FIX/calls" && ! grep -q 'commits/ABC1234/check-runs' "$FIX/calls" \
   && { echo "PASS check-runs polled with the full sha"; pass=$((pass+1)); } || { echo "FAIL check-runs sha"; failn=$((failn+1)); }
 
-fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo FAIL > "$FIX/commit"
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo NOTFOUND > "$FIX/commit.1"
 out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
-check "unresolvable abbreviated sha exits 64 at once" 64 '^need a full 40-hex sha: abc1234 did not resolve in o/r$'
-grep -q check-runs "$FIX/calls" && { echo "FAIL polled an unresolved sha"; failn=$((failn+1)); } || { echo "PASS no poll for an unresolved sha"; pass=$((pass+1)); }
+check "abbreviated sha GitHub does not have exits 64 at once" 64 '^need a full 40-hex sha of a pushed commit: no commit abc1234 in o/r$'
+grep -q check-runs "$FIX/calls" && { echo "FAIL polled an unknown sha"; failn=$((failn+1)); } || { echo "PASS no poll for an unknown sha"; pass=$((pass+1)); }
 
-fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo 0000000000000000000000000000000000000000 > "$FIX/commit"
+# The CC-849 incident: GitHub reports "pending" status for a commit it does not have.
+fresh; run 1 ""; stat_at 1 "$(st ci/legacy pending)"; echo NOTFOUND > "$FIX/commit.1"
+go --timeout 60 --interval 1; check "full sha GitHub does not have exits 64, not TIMEOUT" 64 '^need a full 40-hex sha of a pushed commit: no commit abc1234567890abcdef1234567890abcdef12345 in o/r$'
+
+fresh; run 1 "$(cr build queued)" "$(cr build completed success)"; stat_at 1 ""; echo FAIL > "$FIX/commit.1"
 out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
-check "expansion to a different sha exits 64" 64 '^need a full 40-hex sha'
+check "failed lookup is transient and keeps polling" 0 '^GREEN o/r abc1234$'
 
-fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; go --interval 0
-grep -Eq 'commits/[0-9a-f]+ ' "$FIX/calls" && { echo "FAIL full sha made a commits call"; failn=$((failn+1)); } || { echo "PASS full sha makes no commits call"; pass=$((pass+1)); }
+fresh; run 1 "$(cr build queued)"; stat_at 1 ""; echo FAIL > "$FIX/commit.1"; echo NOTFOUND > "$FIX/commit.2"
+out=$("$BIN/ci-wait" o/r abc1234 --timeout 5 --interval 1 2>&1); rc=$?
+check "lookup retried after a transient failure until GitHub answers" 64 '^need a full 40-hex sha'
+
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo 0000000000000000000000000000000000000000 > "$FIX/commit.1"
+out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
+check "lookup answering another sha keeps the input sha" 0 '^GREEN o/r abc1234$'
 
 fresh; run 1 "$(cj "$(many_runs 149 ok completed success)" "$(cr late completed failure)")"; stat_at 1 ""
 go --interval 0; check "150 check-runs with a failure on page 2 is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: late=failure$'
