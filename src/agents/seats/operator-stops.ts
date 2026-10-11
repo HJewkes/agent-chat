@@ -44,41 +44,73 @@ export interface MachineStopStatus {
   errors: string[]
 }
 
-/** The sender's name, optionally with a parenthetical, at the head of a message: "tp-ram (successor, ...): ". */
-// An acknowledgement ("ACK HOLD", "Re HOLD") is not a sender name, so it cannot open a hold.
-const SENDER = String.raw`(?:(?!(?:[Aa][Cc][Kk](?:[Ee][Dd])?|[Rr][Ee])\b)[\w-]+(?:\s*\([^)]*\))?(?: here)?[:,]?\s+)?`
-// "tp-operator: HOLD (forecast trip)", "tp-operator MACHINE HOLD, from 07:21", "BUILD HOLD 16:19: load5 ...",
-// "tp-ram-1003: LOAD HOLD from 09:53", "tp-operator: HOLD on NEW dispatch". Not "HOLD acked", "ACK HOLD",
-// "HOLD dispatch of <tasks>" or "HOLD on #187": those hold one piece of work, not the machine.
-const HOLD_KIND = '(?:MACHINE|BUILD|LOAD|MEMORY)'
-const HOLD_SCOPE = String.raw`\s*[(:,]|\s+from\b|\s+\d|\s+on\s+(?:NEW\s+|new\s+|all\s+)?(?:dispatch|spawns)\b`
-const HOLD_OPEN = new RegExp(String.raw`^${SENDER}(?:${HOLD_KIND}\s+)?HOLD(?:${HOLD_SCOPE})`)
-// "tp-operator HOLD LIFTED at 16:00", "build hold LIFTED", "the HOLD is released", "tp-operator: LIFT ...", "LOAD CLEAR".
-const HOLD_ENDED = /\bhold\s+(?:lifted|(?:is\s+)?released)\b/i
-const LIFT = new RegExp(String.raw`^${SENDER}(?:LIFT|(?:[A-Z]+[\s-])?CLEAR)\b`)
-const isLift = (body: string): boolean => HOLD_ENDED.test(body) || LIFT.test(body)
-
-const firstLine = (text: string): string => (text.split('\n')[0] ?? '').trim().slice(0, REASON_MAX)
-
-/** The text after the HOLD keyword, which is where every observed HOLD states its cause. */
-function holdReason(body: string): string {
-  const at = body.search(/HOLD/)
-  return firstLine(body.slice(at + 'HOLD'.length).replace(/^\s*[:,]?\s*/, '')) || firstLine(body)
+/** A message's head: its first sentence on its first line, where every observed stop and lift is stated. */
+const HEAD_MAX = 160
+export function messageHead(body: string): string {
+  const first = body.trimStart().split('\n')[0] ?? ''
+  const end = first.search(/[.!?;](?:\s|$)/)
+  return (end === -1 ? first : first.slice(0, end)).slice(0, HEAD_MAX)
 }
 
 /**
- * Active broadcast HOLDs, one per sender: a sender's HOLD stands from its first HOLD message
- * after its own last lift. A lift relayed by another sender does not lift it; the age cap does.
+ * Open by default (CC-957 review): a head carrying a stop word opens a hold, so a phrasing nobody
+ * foresaw ("HOLD now", "SPAWN HOLD at 15:28", "STOP ALL DISPATCH") is reported rather than dropped.
+ * Only the narrow exceptions below skip it.
+ */
+const STOP_WORD = /\bHOLD\b|\bSTOP[ -]ALL\b|\bMACHINE STOP\b|\bSTEP-BACK\b|\bREBOOT (?:NOTICE|QUIET)\b/
+/** The sender as messages open: "tp-operator: ", "tp-ram (successor of tp-ram-1003): ", "tp-operator 22:4x: ". */
+const SENDER = String.raw`^(?:[\w-]+(?:\s*\([^)]*\))?(?:\s+\d\d:\d[\dx])?[:,]?\s+)?`
+/**
+ * A lift is said in one of two shapes, and only these lift: the head opens with LIFT or a CLEAR
+ * ("tp-operator: LIFT at NORMAL pace", "LOAD CLEAR 22:34", "ALL-CLEAR on ee8b92f3"), or it says a hold or
+ * stop is lifted or released ("STOP ALL and the build hold are LIFTED", "REBOOT QUIET RELEASED 13:39").
+ * "no LIFT time known", "holding for LIFT" and "holding spawns until CLEAR" say a hold still stands.
+ */
+const LIFT_LEAD = new RegExp(String.raw`${SENDER}(?:LIFT\b|(?:[A-Z]+[ -])?CLEAR\b)`)
+const HOLD_ENDED = /(?<!restart\s)\b(?:hold|stop|quiet)s?\s+(?:is\s+|are\s+)?(?:lifted|released)\b/i
+const ACKNOWLEDGEMENT = /\back(?:ed|nowledged)?\b|\bre\s+[0-9a-f]{8}\b|^re\b/i
+/** A head citing another message ("under HOLD 058d18db", "tp-ram-1003 1f34db91") refers to a hold; it does not open one. */
+const CITES_MESSAGE = /\b[0-9a-f]{8}\b/
+/** "no memory HOLD now", "not a HOLD yet", "under your 08:59 HOLD", "My HOLD covers", "at the MACHINE STOP gate". */
+const REFERS_BACK =
+  /\b(?:no|not\s+a|under|my|your|the|still\s+in|during\s+a)\b[^,;.]{0,30}\b(?:HOLD|MACHINE STOP)\b|\bHOLD\s+(?:stays|still|covers|applies)\b/i
+/** A hold on one piece of work: "HOLD on #187", "HOLD dispatch of CC-763", "HOLD the PR", "#722 hold RELEASED". */
+const TASK_HOLD =
+  /\bHOLD\s+(?:on\s+#|dispatch\s+of\b|the\b|both\b|PR\b|#)|(?:#\d+|\b[A-Z]{2,5}-\d+)\s+holds?\b/i
+
+export type Classified = 'open' | 'lift' | 'none'
+
+export function classify(body: string): Classified {
+  const head = messageHead(body)
+  // A lift is read first, since most lifts name the hold they end ("HOLD LIFTED", "LIFT of HOLD 612eaf59").
+  if (!TASK_HOLD.test(head) && (LIFT_LEAD.test(head) || HOLD_ENDED.test(head))) return 'lift'
+  const exception = [ACKNOWLEDGEMENT, TASK_HOLD, CITES_MESSAGE, REFERS_BACK].some(rule => rule.test(head))
+  if (!STOP_WORD.test(head) || exception) return 'none'
+  return 'open'
+}
+
+const firstLine = (text: string): string => (text.split('\n')[0] ?? '').trim().slice(0, REASON_MAX)
+
+/** The text after the stop word, which is where every observed HOLD states its cause. */
+function holdReason(body: string): string {
+  const stop = STOP_WORD.exec(body)
+  if (stop === null) return firstLine(body)
+  const after = body.slice(stop.index + stop[0].length).replace(/^\s*[:,.]?\s*/, '')
+  return firstLine(after) || firstLine(body)
+}
+
+/**
+ * Active broadcast HOLDs, one per sender, each dated from that sender's first stop since the last
+ * lift. A lift from any sender ends every open hold: the hold is the machine's, and coordinators relay
+ * an operator's HOLD as their own but never lift it, so per-sender lifts left relays standing a day.
  */
 export function broadcastHolds(lines: readonly ChatLine[], nowMs: number): OperatorHold[] {
   const open = new Map<string, ChatLine>()
   const sorted = [...lines].filter(l => l.ts <= nowMs).sort((a, b) => a.ts - b.ts)
   for (const line of sorted) {
-    const body = line.body.trimStart()
-    // A HOLD that mentions an earlier lift ("HOLD (memory). Yesterday the hold lifted early") still opens.
-    if (HOLD_OPEN.test(body)) {
-      if (!open.has(line.actor)) open.set(line.actor, line)
-    } else if (isLift(body)) open.delete(line.actor)
+    const kind = classify(line.body)
+    if (kind === 'lift') open.clear()
+    else if (kind === 'open' && !open.has(line.actor)) open.set(line.actor, line)
   }
   return [...open.values()]
     .filter(line => nowMs - line.ts <= BROADCAST_HOLD_MAX_MS)

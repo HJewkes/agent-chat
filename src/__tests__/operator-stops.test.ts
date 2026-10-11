@@ -153,6 +153,16 @@ describe('broadcast HOLDs through the live reader', () => {
     'tp-operator: HOLD on NEW dispatch, effective now.',
     'HOLD (tp-operator, memory trip). Mac kalloc 1,003,266',
     'op: HOLD (memory). Yesterday the hold lifted too early',
+    'tp-operator: HOLD. Watch output: "TRIP 12:19: kalloc +112131/h"',
+    'tp-operator: HOLD now. Observed 03:21:42: pressure level 4',
+    'tp-operator machine watch, SPAWN HOLD at 15:28. kalloc rising',
+    'tp-ram-1003: BUILD HOLD is formally on. The sampler read load5 20.77',
+    'tp-ram-1003 STOP ALL DISPATCH, 10:05: load5 30.2',
+    'STOP ALL 18:13: load5 crossed 28',
+    'tp-ram-1003 22:1x: MACHINE STOP is on. Swap is 71% used',
+    'tp-operator: LOAD STEP-BACK 22:29 (load5 >= 20)',
+    'tp-operator: REBOOT NOTICE. The machine watch tripped at 19:18',
+    'tp-ram-1003: REBOOT QUIET STARTS NOW (12:58)',
   ])('opens on %j', body => {
     expect(holdsBy({ chat: [['op', 5, body]] })).toEqual(['op'])
   })
@@ -166,6 +176,11 @@ describe('broadcast HOLDs through the live reader', () => {
     'seat-b: HOLD on #187. The repo is public',
     'tp-operator: HOLD dispatch of CC-763 until I confirm placement',
     'tp-operator: owner decision: reboot at 07:30. The HOLD stays until then.',
+    'coord-t: exception ask under your 08:59 HOLD',
+    'coord-t: status check on HOLD 522dd03b (12:19)',
+    'tp-operator re 3f69488d: no memory HOLD now',
+    'tp-operator: memory WARNING, not a HOLD yet',
+    'Status: WAITING at the MACHINE STOP gate',
   ])('does not open on %j, which holds one piece of work or refers to a hold', body => {
     expect(holdsBy({ chat: [['op', 5, body]] })).toEqual([])
   })
@@ -189,13 +204,33 @@ describe('broadcast HOLDs through the live reader', () => {
     ).toEqual([])
   })
 
-  it("leaves a HOLD standing when another sender's lift arrives", () => {
+  it.each([
+    'coord-t: no LIFT time known',
+    'coord-d: back up after the reboot, holding for LIFT',
+    'coord-p ack, holding spawns and resumes until CLEAR',
+    'coord-d tick: #722 hold RELEASED under rule (a)',
+    'coord-t: the restart hold is lifted',
+  ])('does not lift on %j, which says a hold still stands or ends another hold', body => {
     const chat: Send[] = [
       ['op', 30, 'op: HOLD (memory trip)'],
-      ['peer', 5, 'peer HOLD LIFTED'],
+      ['coord', 5, body],
     ]
 
     expect(holdsBy({ chat })).toEqual(['op'])
+  })
+
+  it("ends every open hold at any sender's lift, so a relayed HOLD ends with the operator's", () => {
+    const chat: Send[] = [
+      ['op', 30, 'op: HOLD (memory trip)'],
+      ['coord', 29, 'coord: machine HOLD from op (memory trip)'],
+    ]
+    const relayed = holdsBy({ chat })
+    fs.rmSync(eventsDb())
+
+    const lifted = holdsBy({ chat: [...chat, ['op', 5, 'op: LIFT at NORMAL pace']] })
+
+    expect(relayed).toEqual(['op', 'coord'])
+    expect(lifted).toEqual([])
   })
 
   it('dates a repeated HOLD from the first one since the last lift', () => {
@@ -213,6 +248,60 @@ describe('broadcast HOLDs through the live reader', () => {
     const capMinutes = BROADCAST_HOLD_MAX_MS / MIN
 
     expect(holdsBy({ chat: [['op', capMinutes + 1, 'op: HOLD (lost lift)']] })).toEqual([])
+  })
+})
+
+/**
+ * The operator stops and lifts of 2026-10-03 to 10-07 as they were sent (heads only, seat names
+ * replaced), in order. Every open must leave a hold standing and every lift must close it; a phrasing
+ * the classifier drops shows up here as an open with no hold or a lift with nothing to close.
+ */
+const LIVE: [body: string, expected: 'open' | 'lift' | 'none'][] = [
+  ['tp-ram-1003 STOP ALL DISPATCH, 10:05: load1 38.0, load5 30.2', 'open'],
+  ['tp-ram-1003: build hold LIFTED. Two readings under 16, ten minutes apart', 'lift'],
+  ['tp-ram-1003: BUILD HOLD is formally on. The sampler read load5 20.77 at 12:11', 'open'],
+  ['tp-ram: BUILD HOLD LIFTED 13:21. Sampler load5 readings: 13:11 11.23', 'lift'],
+  ['STOP ALL 18:13: load5 crossed 28', 'open'],
+  ['coord-t: STOP ALL. load5 has passed 28', 'open'],
+  ['tp-ram-1003 18:30: STOP ALL and the build hold are LIFTED. Sampler readings: 18:19:56 at 9.41', 'lift'],
+  ["tp-ram-1003 22:1x: MACHINE STOP is on. Swap is 71% used against the owner's 60% rule", 'open'],
+  ['tp-ram-1003 22:4x: MACHINE STOP LIFTED. OWNER item 32', 'lift'],
+  ['tp-ram-1003: REBOOT QUIET STARTS NOW (12:58). Make no new spawns, merges or pushes', 'open'],
+  ['tp-ram-1003: REBOOT QUIET RELEASED 13:39. The owner has not rebooted yet (afk)', 'lift'],
+  ['tp-operator machine watch, SPAWN HOLD at 15:28. kalloc.1024 inuse was 61,557', 'open'],
+  ['coord-d reading for the hold: kalloc.1024 inuse 68,952 at 15:29', 'none'],
+  ['tp-operator HOLD LIFTED at 16:00. kalloc.1024 was 79,114 at 15:41', 'lift'],
+  ['tp-operator: HOLD. Watch output: "TRIP 12:19: kalloc +112131/h over 20 min"', 'open'],
+  ['coord-t: status check on HOLD 522dd03b (12:19)', 'none'],
+  ['tp-operator: the hold stays. Sampler at 13:19: kalloc=1010924', 'none'],
+  ['LIFT (tp-operator, post-reboot 14:59). The machine is rebooted', 'lift'],
+  ['tp-operator: REBOOT NOTICE. The machine watch tripped at 19:18 (kalloc 695,040)', 'open'],
+  ['coord-t: no LIFT time known. Observed: the kalloc watch is running', 'none'],
+  ['coord-d: back up after the reboot (watchdog-resumed), holding for LIFT', 'none'],
+  ['tp-operator: LIFT at NORMAL pace (reboot reset kalloc). Observed 02:32: kalloc 3,359', 'lift'],
+  ['tp-operator: HOLD now. Observed 03:21:42: kern.memorystatus_vm_pressure_level 4', 'open'],
+  ['coord-d: machine HOLD from tp-operator (memory pressure level 4, swap nearly full)', 'open'],
+  ['tp-operator: LIFT at HALF RATE (as 6316791e: half implementer caps)', 'lift'],
+  ['tp-operator: LOAD STEP-BACK 22:29 (load 25.3/21.9/20.5; load5 >= 20)', 'open'],
+  ['coord-p ack, holding spawns and resumes until CLEAR', 'none'],
+  ['tp-operator: LOAD CLEAR 22:34 (load5 13.5, two readings < 16)', 'lift'],
+]
+
+describe('the classifier against live operator phrasings', () => {
+  it('opens a hold at every live stop and closes it at every live lift', () => {
+    const chat: Send[] = LIVE.map(([body], i) => ['op', LIVE.length - i, body])
+    writeChat(chat)
+
+    const holdsAfter = LIVE.map((_, i) => {
+      const now = new Date(at(LIVE.length - i) + 1)
+      return machineStopStatus(liveStopInputs(now)).holds.length > 0
+    })
+
+    const expected = LIVE.reduce<boolean[]>((held, [, kind]) => {
+      const before = held.at(-1) ?? false
+      return [...held, kind === 'open' ? true : kind === 'lift' ? false : before]
+    }, [])
+    expect(holdsAfter).toEqual(expected)
   })
 })
 

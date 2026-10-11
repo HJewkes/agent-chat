@@ -44,7 +44,8 @@ export const machineStatusVerb = defineVerb({
   name: 'machine.status',
   description:
     'every stop on this machine, read-only (CC-957): operator HOLDs from the stop file and from chat ' +
-    `messages (a "<sender>: HOLD (...)" line stands until that sender's "HOLD LIFTED" or LIFT, at most ` +
+    'messages (a first sentence carrying HOLD, STOP ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET ' +
+    `stands until any sender's LIFT, CLEAR or "hold lifted", at most ` +
     `${BROADCAST_HOLD_MAX_MS / 3_600_000} h), the owner's stopped seats in seat-watchdog.json, and the ` +
     'memory, load, swap and pressure readings against the machine stop. `stopped` is a hold, the ' +
     'machine stop or a source that cannot be read; an owner stop holds only its own seat',
