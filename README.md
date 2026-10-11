@@ -425,7 +425,7 @@ refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
 **Every stop in one read.** `agent-chat machine status --json` reports operator
-HOLDs (the stop file `machine hold` writes, and chat lines such as
+HOLDs (the stop file `~/.agent-chat/operator.hold`, and chat lines such as
 `tp-operator: HOLD (memory trip)` until that sender's `HOLD LIFTED` or `LIFT`,
 at most 24 h), the owner's stopped seats, and the machine-stop readings. Its
 `stopped` field is true for a hold, the machine stop or an unreadable source; an

@@ -616,21 +616,16 @@ Usage: agent-chat machine [options] [command]
 operator HOLDs, owner stops and the machine stop
 
 Options:
-  -h, --help               display help for command
+  -h, --help        display help for command
 
 Commands:
-  status [options]         every stop on this machine, read-only (CC-957): operator HOLDs from the
-                           stop file and from chat messages (a "<sender>: HOLD (...)" line stands
-                           until that sender's "HOLD LIFTED" or LIFT, at most 24 h), the owner's
-                           stopped seats in seat-watchdog.json, and the memory, load, swap and
-                           pressure readings against the machine stop. `stopped` is a hold, the
-                           machine stop or a source that cannot be read; an owner stop holds only
-                           its own seat
-  hold [options] <reason>  write the operator stop file, which `machine status` reports until
-                           `machine lift`
-  lift                     remove the operator stop file; chat HOLDs lift by their sender sending
-                           "HOLD LIFTED"
-  help [command]           display help for command
+  status [options]  every stop on this machine, read-only (CC-957): operator HOLDs from the stop
+                    file and from chat messages (a "<sender>: HOLD (...)" line stands until that
+                    sender's "HOLD LIFTED" or LIFT, at most 24 h), the owner's stopped seats in
+                    seat-watchdog.json, and the memory, load, swap and pressure readings against the
+                    machine stop. `stopped` is a hold, the machine stop or a source that cannot be
+                    read; an owner stop holds only its own seat
+  help [command]    display help for command
 
 === agent-chat machine status
 Usage: agent-chat machine status [options]
@@ -644,23 +639,6 @@ read; an owner stop holds only its own seat
 Options:
   --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?}], ownerStops,
               machine, errors
-  -h, --help  display help for command
-
-=== agent-chat machine hold
-Usage: agent-chat machine hold [options] <reason>
-
-write the operator stop file, which `machine status` reports until `machine lift`
-
-Options:
-  --by <name>  who holds the machine
-  -h, --help   display help for command
-
-=== agent-chat machine lift
-Usage: agent-chat machine lift [options]
-
-remove the operator stop file; chat HOLDs lift by their sender sending "HOLD LIFTED"
-
-Options:
   -h, --help  display help for command
 
 === agent-chat debug

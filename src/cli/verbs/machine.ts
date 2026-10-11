@@ -1,8 +1,6 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
-import { requiredString } from '../../args.js'
 import { home, operatorHoldPath } from '../../paths.js'
 import { readDoc, readHoldMessages, readText } from '../../agents/seats/io.js'
 import {
@@ -66,36 +64,7 @@ export const machineStatusVerb = defineVerb({
   },
 })
 
-export const machineHoldVerb = defineVerb({
-  name: 'machine.hold',
-  description: 'write the operator stop file, which `machine status` reports until `machine lift`',
-  args: z.object({ reason: requiredString('reason'), by: requiredString('by') }),
-  result: Report,
-  cli: {
-    positional: ['reason'],
-    options: { by: { long: '--by <name>', description: 'who holds the machine' } },
-  },
-  async run({ reason, by }) {
-    const hold = { by, since: new Date().toISOString(), reason }
-    fs.writeFileSync(operatorHoldPath(), `${JSON.stringify(hold)}\n`)
-    return { ok: true, lines: [`held: ${operatorHoldPath()} written`] }
-  },
-})
-
-export const machineLiftVerb = defineVerb({
-  name: 'machine.lift',
-  description: 'remove the operator stop file; chat HOLDs lift by their sender sending "HOLD LIFTED"',
-  args: z.object({}),
-  result: Report,
-  async run() {
-    fs.rmSync(operatorHoldPath(), { force: true })
-    return { ok: true, lines: ['lifted'] }
-  },
-})
-
 export function addMachineCommands(program: Commander): void {
   const machine = program.command('machine').description('operator HOLDs, owner stops and the machine stop')
   addVerb(machine, machineStatusVerb)
-  addVerb(machine, machineHoldVerb)
-  addVerb(machine, machineLiftVerb)
 }

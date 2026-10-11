@@ -12,8 +12,7 @@ import {
   type ChatLine,
   type StopInputs,
 } from '../agents/seats/operator-stops.js'
-import { machineHoldVerb, machineLiftVerb, machineStatusReport } from '../cli/verbs/machine.js'
-import { operatorHoldPath } from '../paths.js'
+import { machineStatusReport } from '../cli/verbs/machine.js'
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
@@ -137,9 +136,9 @@ describe('broadcast HOLDs', () => {
   })
 
   it.each([
-    'titan-coord: HOLD acked; no spawns from me',
+    'coord-a: HOLD acked; no spawns from me',
     'platform-coord ACK HOLD 08:5x: no new dispatch',
-    'hjewkes-surplus: HOLD on #187. The repo is public',
+    'seat-b: HOLD on #187. The repo is public',
     'tp-operator: HOLD dispatch of CC-763 until I confirm placement',
     'tp-operator: owner decision: reboot at 07:30. The HOLD stays until then.',
   ])('does not open on %j, which holds one piece of work or refers to a hold', body => {
@@ -213,24 +212,11 @@ describe('readHoldMessages', () => {
   })
 })
 
-describe('machine status, hold and lift verbs', () => {
-  afterEach(() => fs.rmSync(operatorHoldPath(), { force: true }))
-
+describe('machine status verb', () => {
   it('prints one JSON document under --json', () => {
     const report = machineStatusReport(inputs(), true)
 
     expect(report.ok).toBe(true)
     expect(JSON.parse(report.lines.join('\n'))).toMatchObject({ stopped: false, holds: [] })
-  })
-
-  it('writes the stop file that the status reads, and removes it on lift', async () => {
-    const ctx = {} as Parameters<typeof machineHoldVerb.run>[1]
-    await machineHoldVerb.run({ reason: 'reboot at 07:30', by: 'tp-operator' }, ctx)
-    const held = machineStopStatus(inputs({ stopFile: () => fs.readFileSync(operatorHoldPath(), 'utf8') }))
-
-    await machineLiftVerb.run({}, ctx)
-
-    expect(held.holds).toMatchObject([{ kind: 'file', by: 'tp-operator', reason: 'reboot at 07:30' }])
-    expect(fs.existsSync(operatorHoldPath())).toBe(false)
   })
 })
