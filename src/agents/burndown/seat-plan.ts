@@ -260,11 +260,23 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
 
 type Outcome = Taken | Refused | Seeded
 
-/** The seat's ready depth before this tick dispatches anything, as the walk starts out claimed. */
+/** The seat's ready depth before this tick dispatches anything: the rows `consider` would not refuse. */
 function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk): number {
   const check = briefCheck(walk.inputs)
   if (check === undefined) return 0
-  return readyDepth(order, taskOfRow(walk.inputs), check, walk.claimed, slices)
+  const taskOf = taskOfRow(walk.inputs)
+  const dispatchable = (row: DispatchRow): boolean => {
+    const task = taskOf(row)
+    if (task === undefined || row.stopShort.length > 0) return false
+    const { seat } = walk.inputs
+    if (taskRefusal(task, seat.grants, walk.claimed, walk.held) !== undefined) return false
+    if (briefRefusal(task, check) !== undefined) return false
+    const repo = repoForTask(seat, row.initiative, task.tags)
+    if (repo === undefined || ROUTES[row.route] === undefined) return false
+    const work = { taskId: row.id, tags: task.tags, owns: [] }
+    return walk.inputs.collision?.(repo, work, landedRepos(seat)) === undefined
+  }
+  return readyDepth(order, dispatchable, slices)
 }
 
 /** A planner cap or a closed pool stops the pass; any other refusal leaves that row refused no-brief. */
