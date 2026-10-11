@@ -27,7 +27,7 @@ import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
 import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents/burndown/tick.js'
 import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
-import { loadTickConfig } from '../../agents/burndown/source.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
@@ -82,7 +82,7 @@ import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
-import { burndownConfigPath, burndownLedgerPath, home } from '../../paths.js'
+import { burndownLedgerPath, home } from '../../paths.js'
 import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats/in-flight-read.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -727,7 +727,7 @@ export const seatsRunStartVerb = defineVerb({
 })
 
 /** The status opens its own broker connection, so a broker that is down costs the boot only its status. */
-function bootDeps(root: string): BootDeps {
+export function bootDeps(root: string): BootDeps {
   return {
     now: () => new Date(),
     autonomyRoot: root,
@@ -747,7 +747,7 @@ function bootDeps(root: string): BootDeps {
     ready: async (seat, now) => {
       const opts = { seat, top: Infinity, today: localDate(now), autonomyRoot: root, readySet: true }
       const { plan, tasks, policy } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
-      const { briefMaxAgeDays, scopeTagAliases } = loadTickConfig(burndownConfigPath())
+      const { briefMaxAgeDays, scopeTagAliases } = loadResolvedConfig().tick
       const { scope } = readSeatScope(policy.seats, seat, root, scopeTagAliases)
       return { order: plan.order, tasks, scope, maxAgeDays: briefMaxAgeDays }
     },

@@ -112,7 +112,7 @@ import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
-import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { resolveCoordinatorGrantableTools } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
@@ -149,7 +149,7 @@ import { completionPayload, type CompletionPayload, type ExitFacts } from './wor
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
-import { loadTickConfig } from './burndown/source.js'
+import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
@@ -636,7 +636,7 @@ const reportRecipients = (spawner: string): string[] =>
 /** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
 function burndownReportTo(): string[] {
   try {
-    const { reportTo } = loadTickConfig(burndownConfigPath())
+    const { reportTo } = loadResolvedConfig().tick
     return reportTo === undefined ? [] : [reportTo]
   } catch {
     return []
