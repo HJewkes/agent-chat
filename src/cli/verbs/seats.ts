@@ -88,7 +88,9 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-import { sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
+import { identityTranscript } from '../../agents/resume-session.js'
 import { refreshSeatHeartbeat, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -99,10 +101,12 @@ const refused = (err: unknown): Report => ({
   errors: [err instanceof Error ? err.message : String(err)],
 })
 
-async function roster(client: BrokerClient): Promise<Roster> {
+/** `seen` keeps each identity by id, so the pass can look up a stuck successor's transcript. */
+async function roster(client: BrokerClient, seen: Map<string, AgentIdentity>): Promise<Roster> {
   try {
     const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
     const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+    for (const agent of agents.agents) seen.set(agent.agentId, agent)
     return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
   } catch (err) {
     // Only a missed reply is unknown; any other failure is a real fault and ends the run.
@@ -119,11 +123,12 @@ export interface DeclaredSurface {
 
 const UNDECLARED: DeclaredSurface = { surface: 'headless', from: 'none declared' }
 
-/** A broker built before `code` existed says it only in `agent-surface`'s refusal text. */
-const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
-
-const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
-  res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
+/**
+ * CC-465: owner answer to the CC-437 plan's question 1, any visible launch failure falls back to headless.
+ * A refusal before the launch (slots, ownership, a live agent) would refuse headless too, so it stands.
+ */
+const launchFailed = (res: Reply<'spawn_result'>): boolean =>
+  res.code === 'surface_refused' || (res.reason ?? '').startsWith('resume failed:')
 
 async function resumeOn(
   client: BrokerClient,
@@ -157,7 +162,24 @@ async function resumeVisible(
   return { ok: true, detail: `resumed on ${declared.surface} (${declared.from}); ${delivery}` }
 }
 
-/** CC-441: a stopped seat resumes on its declared surface, and headless only when iTerm refuses it. */
+/** The visible resume's result, or the launch failure that sends it headless; a thrown request is one too. */
+async function tryVisible(
+  client: BrokerClient,
+  seat: string,
+  message: string,
+  declared: DeclaredSurface,
+): Promise<WakeResult | { failed: string }> {
+  try {
+    const visible = await resumeVisible(client, seat, message, declared)
+    if (!('t' in visible)) return visible
+    const reason = visible.reason ?? 'resume refused'
+    return launchFailed(visible) ? { failed: reason } : { ok: false, detail: reason }
+  } catch (err) {
+    return { failed: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** CC-441, CC-465: a stopped seat resumes on its declared surface, and headless when that launch fails. */
 export async function wakeSeat(
   client: BrokerClient,
   seat: string,
@@ -168,11 +190,9 @@ export async function wakeSeat(
   if (connected) return sendAsOwner(client, seat, message)
   let why = declared.from
   if (declared.surface !== 'headless') {
-    const visible = await resumeVisible(client, seat, message, declared)
-    if (!('t' in visible)) return visible
-    const reason = visible.reason ?? 'resume refused'
-    if (!surfaceRefused(visible)) return { ok: false, detail: reason }
-    why = `${declared.surface} refused: ${reason}`
+    const visible = await tryVisible(client, seat, message, declared)
+    if (!('failed' in visible)) return visible
+    why = `${declared.surface} refused: ${visible.failed}`
   }
   const res = await resumeOn(client, seat, 'headless', message)
   return res.ok
@@ -208,6 +228,7 @@ function presence(seat: string): Presence | undefined {
 }
 
 function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
+  const identities = new Map<string, AgentIdentity>()
   return {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),
@@ -217,7 +238,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
     machineStop: () => readMachineStop()?.reason,
-    roster: () => roster(client),
+    roster: () => roster(client, identities),
     presence,
     eligible: seat => scorerEligible(root, seat),
     loadDoc: () => loadDoc(),
@@ -237,6 +258,12 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
     refreshHeartbeat: seat => refreshSeatHeartbeat(root, seat),
+    relaunchHandoff: (seat, quietMinutes, now) => buildRelaunchHandoff(root, seat, quietMinutes, now),
+    transcriptFound: agentId => {
+      const identity = identities.get(agentId)
+      return identity === undefined ? undefined : identityTranscript(identity).found
+    },
+    notifyHuman: notifyAsWatchdog,
   }
 }
 
