@@ -353,6 +353,21 @@ function addHiddenCommands(program: Command): void {
       await leakPretool()
     })
 
+  // Run by Claude Code as a PreToolUse/PostToolUse hook of the plugin (CC-1056).
+  program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
+    const { seatHook } = await import('./verbs/seat-hook.js')
+    if (phase === 'pre' || phase === 'post') await seatHook(phase)
+  })
+
+  program
+    .command('seat-blocks', { hidden: true })
+    .description("each seat's blocked minutes over a window, and any block still open")
+    .option('--since <window>', 'window such as 90m, 24h or 7d', '24h')
+    .action(async (options: { since: string }) => {
+      const { seatBlocks } = await import('./verbs/seat-hook.js')
+      console.log(seatBlocks(options).join('\n'))
+    })
+
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })
