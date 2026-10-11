@@ -1163,7 +1163,7 @@ describe('planSeat ready order (CC-926)', () => {
       const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
 
       expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
-        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4, readyFloor: 8 },
       })
     })
 
