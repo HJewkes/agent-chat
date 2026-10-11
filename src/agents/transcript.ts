@@ -5,6 +5,7 @@ import { profileDir } from './config-dir.js'
 import {
   claudeSourceFromPath,
   readRecentSessionTurnsSync,
+  SessionIdentityError,
   type RecentObservedValue,
 } from '@titan-design/session-read'
 
@@ -171,17 +172,14 @@ export function observedModel(cwd: string, sessionId: string, dir?: string): str
 /** Only the tail is read: a long session's transcript runs to megabytes. */
 const MODEL_TAIL_BYTES = 256 * 1024
 
-/** session-read throws `TypeError` on a window that names another session; that is a miss here. */
-const FOREIGN_SESSION =
-  /^Claude (transcript record belongs to native session|sidechain window names multiple)/
-
 function readModel(file: string): RecentObservedValue<string> | undefined {
   try {
     const source = claudeSourceFromPath(file, 'local')
     return readRecentSessionTurnsSync(source, { maxBytes: MODEL_TAIL_BYTES, maxTurns: 1, maxCharsPerTurn: 1 })
       .model
   } catch (error) {
-    if (error instanceof TypeError && FOREIGN_SESSION.test(error.message)) return undefined
+    // A window that names another session is a miss here, not a fault.
+    if (error instanceof SessionIdentityError) return undefined
     throw error
   }
 }
