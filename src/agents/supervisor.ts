@@ -26,6 +26,7 @@ import {
 } from './mode-switch.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
 import { cwdHoldsUserSettings } from './launch-policy.js'
+import { lintBrief, mentionsSyntheticData, type BriefLint, type RepoVisibility } from './brief-lint.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
@@ -630,6 +631,8 @@ export interface SupervisorOptions {
   poolPick?: PoolPickReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
   processProbe?: ProcessProbe
+  /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
+  repoVisibility?: (cwd: string) => Promise<RepoVisibility>
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -817,6 +820,7 @@ export class Supervisor implements TeleportHost {
   private readonly seatOverlap: SeatOverlapReaders | undefined
   private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
+  private readonly repoVisibility: ((cwd: string) => Promise<RepoVisibility>) | undefined
   private readonly reaper: DetachedReaper
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
@@ -844,6 +848,7 @@ export class Supervisor implements TeleportHost {
     this.seatOverlap = options.seatOverlap
     this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
+    this.repoVisibility = options.repoVisibility
     this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
       this.reapIfDead(agentId, probe),
     )
@@ -1721,6 +1726,8 @@ export class Supervisor implements TeleportHost {
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
     if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
+    const lint = await this.lintBrief(req, profile)
+    if (lint.refusal !== undefined) return this.refuse(req, lint.refusal)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
     if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
@@ -1774,6 +1781,7 @@ export class Supervisor implements TeleportHost {
     const floor = floorWarning(isolationName, profile.isolation)
     const warnings = [
       ...(profile.warnings ?? []),
+      ...lint.warnings,
       ...(reviewerRoot === undefined ? [] : [reviewerRewriteWarning(reviewerRoot)]),
       ...(floor ? [floor] : []),
       ...(await resolveIsolation([isolationName]).check(ctx)),
@@ -1833,6 +1841,14 @@ export class Supervisor implements TeleportHost {
       // CC-959: typed as resume's is, so a caller can fall back to headless without reading the text.
       return this.refuse(req, reason, err instanceof SurfaceRefused ? { code: 'surface_refused' } : {})
     }
+  }
+
+  /** CC-398: lints the caller's brief alone, before the return contract is appended to it. */
+  private async lintBrief(req: SpawnRequest, profile: AgentProfile): Promise<BriefLint> {
+    const read = mentionsSyntheticData(req.brief) ? undefined : this.repoVisibility
+    const repoVisibility =
+      read === undefined ? 'unknown' : await read(req.worktree ?? req.cwd ?? process.cwd())
+    return lintBrief({ brief: req.brief, profile, surface: this.spawnSurface(req, profile), repoVisibility })
   }
 
   /** CC-916: the primary checkout a reviewer spawn would run in, which it must not touch; an assigned worktree is the caller's own. */

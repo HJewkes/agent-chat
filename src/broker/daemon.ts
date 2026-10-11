@@ -4,6 +4,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { burndownConfigPath, burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
+import { repoVisibilityReader } from '../agents/brief-lint.js'
 import {
   resolveOrphanReapKill,
   resolveAgentSlots,
@@ -295,6 +296,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     {
       semaphore: newAgentSlots(),
       machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      repoVisibility: repoVisibilityReader(),
       ...(ledger === undefined ? {} : { ledger }),
       ...journal,
     },
