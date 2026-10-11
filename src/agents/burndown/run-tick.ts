@@ -59,6 +59,7 @@ import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
 import {
+  briefDepsOf,
   diskSeatDeps,
   loadSeats,
   planSeats,
@@ -537,12 +538,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
-      brief: {
-        briefGate: config.briefGate,
-        briefMaxAgeDays: config.briefMaxAgeDays,
-        maxAgents: config.maxAgents,
-        handReserve: config.handReserve,
-      },
+      brief: briefDepsOf(config),
       scopeTagAliases: config.scopeTagAliases,
     },
   )
