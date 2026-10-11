@@ -777,6 +777,25 @@ describe("the seat's spend caps", () => {
     expect(budget.stop).toBeNull()
   })
 
+  it('reports a watchdog heartbeat source with the cron and the last slot from the watchdog mark', async () => {
+    writeAutonomy({ seatLines: 'heartbeat_cron: 17,47 * * * *\nheartbeat_source: watchdog' })
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), heartbeat: { slot: at(9, 17) } }
+
+    const { heartbeat } = await status()
+
+    expect(heartbeat).toEqual({
+      source: 'watchdog',
+      cron: '17,47 * * * *',
+      lastSlot: new Date(at(9, 17)).toISOString(),
+    })
+  })
+
+  it('reports a seat with no heartbeat_source as cron and no last slot before the watchdog has ticked', async () => {
+    writeAutonomy({ seatLines: 'heartbeat_cron: 17,47 * * * *' })
+
+    expect((await status()).heartbeat).toEqual({ source: 'cron', cron: '17,47 * * * *', lastSlot: null })
+  })
+
   it('stops a per_run cap as unknown for a seat record that holds no run meter', async () => {
     writeAutonomy({ spend: { per_run_points: 5 } })
     doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45) }
