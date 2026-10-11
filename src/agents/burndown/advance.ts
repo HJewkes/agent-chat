@@ -126,7 +126,7 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
   spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
   planning: (claim, obs, now) =>
     !finished(obs) ? [] : claim.briefer === true ? afterBriefer(claim, obs) : afterPlanner(claim, obs, now),
-  implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : []),
+  implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : linkPr(claim, obs)),
   parked: afterAnswer,
   reviewing: (claim, obs) => (finished(obs) ? afterReviewer(claim, obs) : []),
   'awaiting-merge': afterMerge,
@@ -134,7 +134,10 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 }
 
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
+  if (claim.phase === 'done') return []
+  const merged = MERGES.has(claim.phase) ? landedRun(obs.shepherd) : undefined
+  if (merged !== undefined) return mergedPr(claim, merged)
+  if (claim.stalledReason !== undefined) return linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
   if (claim.respawn !== undefined) return []
@@ -262,15 +265,57 @@ function afterReviewer(claim: Claim, obs: Observation): Action[] {
 
 const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'cancelled'])
 
-/** Shepherd merges; the claim finishes once its run has landed the PR, and stalls on a run that ended any other way. */
+/** CC-978: phases a merged PR finishes, whatever the claim's agent or a stall says; a queued one is a slice linked to a hand-dispatched PR. */
+const MERGES: ReadonlySet<Claim['phase']> = new Set([
+  'queued',
+  'implementing',
+  'awaiting-merge',
+  'shepherding',
+])
+
+function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
+  const row = run?.row
+  if (row === undefined) return undefined
+  const merged =
+    row.phase === 'post-merge' ||
+    row.outcome?.kind === 'merged' ||
+    (row.phase === 'done' && run?.landed === true)
+  return merged ? row : undefined
+}
+
+const prRef = (row: ShepherdRow): string | undefined =>
+  row.pr === null ? undefined : `${row.repo}#${row.pr}`
+
+/** A queued claim ran no agent, so it has none to retire. */
+function mergedPr(claim: Claim, row: ShepherdRow): Action[] {
+  const pr = claim.pr ?? prRef(row)
+  const finish = update(claim, {
+    phase: 'done',
+    ...(pr === undefined ? {} : { pr }),
+    ...(row.headSha === null ? {} : { prHead: row.headSha }),
+    stalledReason: undefined,
+    stalledClass: undefined,
+    stallCode: undefined,
+  })
+  return claim.phase === 'queued' ? [finish] : [finish, retireAll(claim)]
+}
+
+/** CC-978: an implementer's PR Shepherd watches is recorded on its claim, so the claim counts as waiting on it. */
+function linkPr(claim: Claim, obs: Observation): Action[] {
+  const row = obs.shepherd?.row
+  if (claim.phase !== 'implementing' || claim.pr !== undefined || row === undefined || ENDED.has(row.phase))
+    return []
+  const pr = prRef(row)
+  return pr === undefined ? [] : [update(claim, { pr })]
+}
+
+/** Shepherd merges; `advanceClaim` finishes the claim once its run has landed the PR, and this stalls a run that ended any other way. */
 function afterMerge(claim: Claim, obs: Observation): Action[] {
   if (claim.pr === undefined) return [stall(claim, 'no PR recorded for Shepherd to merge', 'failed')]
   if (obs.shepherd === undefined) return []
-  const { row, landed } = obs.shepherd
+  const { row } = obs.shepherd
   if (row === undefined) return handOff(claim, claim.pr, workerOf(claim), {})
   const head = row.headSha === null ? {} : { prHead: row.headSha }
-  if (row.phase === 'post-merge' || (row.phase === 'done' && landed === true))
-    return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
   if (ENDED.has(row.phase)) {
     const why = row.stalled === null ? '' : `: ${row.stalled.reason}`
     return [

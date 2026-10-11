@@ -167,6 +167,38 @@ with the spawns before it on its pool, and new dispatches then gate on all of th
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
 
+### Stop the line (CC-629)
+
+Each tick runs `titan-factory service check --json` once, before it plans any seat, and
+keeps the read (its time and cause) in the ledger's `serviceCheck`. The check names the first
+failing cause.
+
+- **Stopping causes.** Every cause stops except the note-only ones below, including a cause
+  this build does not know, since nobody has judged it harmless: `stale pid`, `crash loop`,
+  `not loaded`, `GitHub down` and the like.
+- **Note-only causes.** `stale build` (serve still merges on an old build; it is a restart
+  hint), `tick failing` and `tick stale` (they describe the tick itself, which would otherwise
+  block itself). The tick reports them and the line runs.
+- **Fail closed.** A check that exits other than 0 or 1, times out, or prints anything but
+  its JSON is read as cause `unreadable`, which stops.
+- **Two reads.** One stopping read never stops the line, because one failed `/health` probe
+  can read as `stale pid` while serve is healthy (TP-1726). The line stops only when this
+  read and the previous persisted read both stop and the previous one is at most two tick
+  intervals (20 minutes) old; a tick that skipped runs starts the count again. One ok or
+  note read clears the stop at once.
+- **Exemptions.** While the line is stopped every new implementer is refused `stop-line`,
+  except a `cos:expedite` task (tier 0 takes the next free slot) and planners, since a plan
+  opens no PR. Claims already in flight carry on.
+
+`burndown plan --seat`, `seats tick --dry-run` and `seats compare` read the check too and
+judge it against the persisted read, but write nothing. `plan --seat` prints the state on the
+line under its header: `service check: ok`, `service check: <cause> (one stopping read, the
+line runs; ...)`, `service check: line stopped (<previous>, then <current>): ...`, or the
+note, `service check: <cause> (a note, the line runs): ...`.
+
+The downstream WIP gate that once sat beside this one was removed by CC-866 (decisions
+item 86(4)): seat concurrency caps govern implementer counts, and no `wip` refusal exists.
+
 ### Checking the seat plan against score.py: `seats compare` (CC-251)
 
 `agent-chat burndown seats compare --seat <name>` makes the seat's dry-run plan, as
@@ -180,7 +212,8 @@ is applied.
 It walks score.py's order and prints each ID with its raw and decayed score and one verdict:
 
 - `dispatched as pick <n>`;
-- `refused [<kind>]: <reason>`, the plan's refusal;
+- `refused [<kind>]: <reason>`, the plan's refusal, including `stop-line` while the line is
+  stopped. An expedite dispatch above a stopped row passes the reorder rule by its tier;
 - `held`, when the claim ledger holds the task;
 - `held [intangible]`, when `planOrder` holds the intangible task back for a ready row of a
   higher tier (CC-778);

@@ -18,6 +18,7 @@ import { sumSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
 import {
+  FINISHED_PHASES,
   rowFor,
   shepherdLanded,
   shepherdRows,
@@ -132,12 +133,48 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
     shepherdRows: memo(deps.shepherdRows ?? (() => shepherdRows())),
     spendCap: capsBySeat(deps.spendCap ?? defaultSpendCap(deps.root)),
   }
+  // Only a caller that passes its own reader, as the tick does, has implementing claims looked up in Shepherd.
+  const prRuns = deps.shepherdRows === undefined ? undefined : once
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else observations.set(claimKey(claim), result)
+    else observations.set(claimKey(claim), prRuns === undefined ? result : withPrRun(result, claim, prRuns))
   }
   return { observations, unread }
+}
+
+/**
+ * CC-978: the Shepherd run of an implementing claim's PR, or of a queued slice linked to a hand-dispatched
+ * one, so a merge finishes the claim whether or not its agent exited. A read that fails leaves the claim as observed.
+ */
+function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
+  if (claim.phase !== 'implementing' && !(claim.phase === 'queued' && claim.pr !== undefined)) return obs
+  const row = claimRun(claim, deps.shepherdRows?.() ?? [])
+  if (row === undefined || row.pr === null) return obs
+  if (row.phase !== 'done' || row.outcome?.kind === 'merged') return { ...obs, shepherd: { row } }
+  const landed = (deps.landed ?? (t => shepherdLanded(t)))({ repo: row.repo, pr: row.pr })
+  return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
+}
+
+/**
+ * The claim's recorded PR, else an open run its agents registered or whose branch is one of theirs. Agent
+ * names repeat across dispatches of a task, so a name match only links an open PR and never finishes the
+ * claim: a finished run under the same name may be an earlier dispatch's.
+ */
+export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRow | undefined {
+  if (claim.pr !== undefined) {
+    const target = shepherdTarget(claim.pr)
+    return target === undefined ? undefined : rowFor(rows, target)
+  }
+  const names = new Set([
+    ...(claim.spawned ?? []),
+    ...(claim.agentName === undefined ? [] : [claim.agentName]),
+  ])
+  const ours = (r: ShepherdRow): boolean =>
+    (r.implementer != null && names.has(r.implementer)) ||
+    (r.branch?.startsWith(BRANCH_PREFIX) === true && names.has(r.branch.slice(BRANCH_PREFIX.length)))
+  const open = (r: ShepherdRow): boolean => r.phase !== 'post-merge' && !FINISHED_PHASES.includes(r.phase)
+  return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
 async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
