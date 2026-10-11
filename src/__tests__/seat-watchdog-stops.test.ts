@@ -176,6 +176,27 @@ describe('readSeatLog', () => {
   it('reads an empty log as nothing', () => {
     expect(readSeatLog('', day)).toEqual({})
   })
+
+  it.each([['PARKED waiting on owner'], ['WRAP']])(
+    'stops on a latest "19:4x %s" line as on "19:42"',
+    line => {
+      const exact = readSeatLog(`19:30 dispatched hs-1\n19:42 ${line}\n`, day)
+      const xMinute = readSeatLog(`19:30 dispatched hs-1\n19:4x ${line}\n`, day)
+      expect(xMinute.stop).toBe(exact.stop)
+      expect(xMinute.stop).toBe(`seat logged "${line}"`)
+    },
+  )
+
+  it('reads an x minute digit as 0, so relaunch counts quiet time from the earliest the line was written', () => {
+    expect(readSeatLog('19:30 dispatched hs-1\n19:4x note\n', day)).toEqual({ activityAt: at(19, 40) })
+  })
+
+  it('does not count a watchdog line with an x minute as the seat activity', () => {
+    expect(readSeatLog('19:30 PARKED\n19:5x Watchdog: woke seat (m)\n', day)).toEqual({
+      stop: 'seat logged "PARKED"',
+      activityAt: at(19, 30),
+    })
+  })
 })
 
 describe('restartWindow', () => {

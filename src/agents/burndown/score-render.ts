@@ -7,6 +7,10 @@ import { parsePlanningTasks, type TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
 import { dormantInitiatives, loadPolicy, seatScope, type Policy } from './policy.js'
 import { readScoredTasks } from './score-source.js'
+import { planPathFor } from './brief.js'
+import { readSlices } from './report.js'
+import { classifyTask, profileFor } from './classify-task.js'
+import { readWorkflowTable, type Prior, type Profile, type WorkflowTable } from './workflow-table.js'
 import {
   checkToday,
   scoreAll,
@@ -21,8 +25,14 @@ import {
  * CC-628: the order is `planOrder`'s, over this week's milestone file when the autonomy root has one.
  */
 
+/** CC-637: a row with the workflow table's prior and profile, set only when a table is installed and passes its lint. */
+export interface ScoredRow extends PlannedRow {
+  prior?: Prior
+  profile?: Profile
+}
+
 export interface ScoredPlan {
-  order: PlannedRow[]
+  order: ScoredRow[]
   /** Initiatives in the seat's scope. */
   scope: number
   /** Open tasks read across that scope, excluded ones included. */
@@ -41,6 +51,8 @@ export interface ScoredPlan {
   epicsHeld?: string[]
   /** CC-644: self edges, missing deps, cycles and dependents of a failed upstream, with the task ids named. */
   edgeLines?: string[]
+  /** CC-637: the workflow table's lint problems; the rows then carry no prior. */
+  workflowTable?: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -189,7 +201,36 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
     read === undefined
       ? plan
       : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
-  return { plan: withWeek, tasks, policy }
+  return { plan: withPriors(withWeek, tasks, opts), tasks, policy }
+}
+
+function withPriors(plan: ScoredPlan, tasks: readonly ScoredTask[], opts: ScoredPlanDiskOptions): ScoredPlan {
+  const read = readWorkflowTable(opts.autonomyRoot)
+  if (read === undefined) return plan
+  if (read.table === undefined) return { ...plan, workflowTable: read.problems }
+  const byId = new Map(tasks.map(task => [task.id, task]))
+  const order = plan.order.map(row => {
+    const task = byId.get(row.id)
+    return task === undefined ? row : { ...row, ...priorOf(read.table, task, opts.activeWorkRoot) }
+  })
+  return { ...plan, order }
+}
+
+function priorOf(
+  table: WorkflowTable,
+  task: ScoredTask,
+  activeWorkRoot: string,
+): { prior: Prior; profile: Profile } {
+  const owns = ownsOf(planPathFor(path.join(activeWorkRoot, task.slug), task.id))
+  const { prior } = classifyTask(table, { ...task, owns })
+  return { prior, profile: profileFor(table, prior, task.estimate) }
+}
+
+/** The union of the plan's slice owns; empty with no plan or one that fails the slice lint. */
+function ownsOf(planFile: string): string[] {
+  if (!fs.existsSync(planFile)) return []
+  const slices = readSlices(fs.readFileSync(planFile, 'utf8')).slices ?? []
+  return [...new Set(slices.flatMap(slice => slice.owns))]
 }
 
 const COMPONENT_KEYS: Exclude<keyof Components, 'G'>[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
@@ -199,14 +240,15 @@ const fixed = (x: number, width: number) => x.toFixed(1).padStart(width)
 const optional = (x: number | undefined, digits: number) => (x === undefined ? '-' : x.toFixed(digits))
 
 /** The first columns follow score.py's text output so the two diff by eye; components, then the plan's tier, float and WSJF follow. */
-export function renderScoredRow(row: PlannedRow, rank: number): string {
+export function renderScoredRow(row: ScoredRow, rank: number): string {
+  const prior = row.prior === undefined ? '' : ` prior=${row.prior} profile=${row.profile}`
   const plan = `tier=${row.tier} float=${optional(row.float, 1)} wsjf=${optional(row.wsjf, 2)}`
   const components = COMPONENT_KEYS.map(k => `${k}=${row.components[k].toFixed(2)}`).join(' ')
   const flags = row.stopShort.length > 0 ? ` stop-short:${row.stopShort.join(',')}` : ''
   return (
     `${String(rank).padStart(2)} ${fixed(row.effective, 5)} (${fixed(row.score, 5)}) ` +
     `${row.id.padEnd(9)} ${row.initiative.slice(0, 16).padEnd(16)} ${row.kind}/${row.kindSource}  ` +
-    `${components} est=${row.estimate ?? '-'} route=${row.route} ${plan}${flags} | ${row.title.slice(0, TITLE_WIDTH)}`
+    `${components} est=${row.estimate ?? '-'} route=${row.route}${prior} ${plan}${flags} | ${row.title.slice(0, TITLE_WIDTH)}`
   )
 }
 
@@ -217,11 +259,13 @@ export function renderScored(plan: ScoredPlan): string[] {
   const milestones = plan.milestones
     ? [`milestones=${plan.milestones.week}, errors: ${plan.milestones.errors.join('; ') || 'none'}`]
     : []
+  const table = plan.workflowTable ? [`workflow table: ${plan.workflowTable.join('; ')}`] : []
   const tagErrors = plan.tagErrors?.length ? [`task tags errors: ${plan.tagErrors.join('; ')}`] : []
   const epics = plan.epicsHeld?.length ? [`epics held out of tier 2: ${plan.epicsHeld.join('; ')}`] : []
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
+    ...table,
     ...(plan.edgeLines ?? []),
     ...tagErrors,
     ...epics,

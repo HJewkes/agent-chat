@@ -22,6 +22,8 @@ export interface HeartbeatMark {
   slot?: number
   /** Epoch ms of the pause reset already woken for. */
   wokeFor?: number
+  /** CC-400: the `activityAt` whose quiet episode already got its idle-live wake. */
+  idleWokeFor?: number
 }
 
 export interface HeartbeatInput {
@@ -40,10 +42,9 @@ export interface HeartbeatInput {
   source: HeartbeatSource | undefined
 }
 
-export interface HeartbeatStep {
-  message?: string
-  mark: HeartbeatMark | undefined
-}
+/** A step that sends always carries the mark to save on delivery. */
+export type HeartbeatStep =
+  { message: string; mark: HeartbeatMark } | { message?: undefined; mark: HeartbeatMark | undefined }
 
 /** One cron field as the set of values it allows: `*`, `a`, `a-b`, lists, and `/n` steps. */
 function fieldValues(field: string, min: number, max: number): Set<number> | undefined {
@@ -107,4 +108,29 @@ export function heartbeatStep(input: HeartbeatInput): HeartbeatStep {
   const ownTick = input.source !== 'watchdog' && activityAt !== undefined && activityAt >= slot
   if (ownTick) return { mark: next }
   return { message: HEARTBEAT_MESSAGE, mark: next }
+}
+
+/** CC-400: how long a seat with agents in flight may go without a log line before the watchdog wakes it. */
+export const IDLE_LIVE_QUIET_MS = 20 * 60_000
+
+export const IDLE_LIVE_MESSAGE = (n: number, minutes: number): string =>
+  `Watchdog: ${n} agent(s) in flight and no seat log line for ${minutes} min; read their reports and act`
+
+export interface IdleLiveInput {
+  implementers: number
+  /** Epoch ms of the seat's latest own log line; a seat with none is the resume's or relaunch's. */
+  activityAt: number | undefined
+  stopped: boolean
+  paused: boolean
+  nowMs: number
+  mark: HeartbeatMark | undefined
+}
+
+/** One wake per quiet episode: a new log line moves `activityAt` and so re-arms it. */
+export function idleLiveStep(input: IdleLiveInput): HeartbeatStep {
+  const { implementers, activityAt, nowMs, mark } = input
+  if (implementers === 0 || input.stopped || input.paused || activityAt === undefined) return { mark }
+  if (nowMs - activityAt < IDLE_LIVE_QUIET_MS || mark?.idleWokeFor === activityAt) return { mark }
+  const minutes = Math.floor((nowMs - activityAt) / 60_000)
+  return { message: IDLE_LIVE_MESSAGE(implementers, minutes), mark: { ...mark, idleWokeFor: activityAt } }
 }
