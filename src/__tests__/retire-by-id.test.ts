@@ -332,3 +332,21 @@ describe('retire a stale seat row by id (CC-959)', () => {
     expect((await sup.retireStale('stale', 'seat-x')).ok).toBe(false)
   })
 })
+
+describe('a spawn whose surface refuses (CC-959)', () => {
+  // Catches: the refusal sent untyped, which left the watchdog's headless fallback unreachable.
+  it('carries code surface_refused, as a resume does', async () => {
+    const out = await sup.spawn({
+      name: 'seat-x',
+      profile: 'explorer',
+      brief: 'work',
+      requestedBy: 'human',
+      cwd: tmp('by-id-cwd-'),
+      isolation: 'none',
+      surface: 'iterm-window',
+      spawnerConfigDir: tmp('by-id-account-'),
+    })
+
+    expect(out).toMatchObject({ ok: false, code: 'surface_refused' })
+  })
+})

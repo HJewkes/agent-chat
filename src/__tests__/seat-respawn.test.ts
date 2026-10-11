@@ -30,6 +30,16 @@ const handStarted: SeatAgent = {
   cwd: SEAT_CWD,
 }
 
+/** Teleport 138, the last row the broker launched: its profile is the one the seat was granted. */
+const onServer: SeatAgent = {
+  ...handStarted,
+  agentId: '7b1a88f1',
+  origin: 'spawned',
+  profile: 'lead',
+  sessionId: 'f94d8441',
+  configDir: '/home/example/.profiles/server',
+}
+
 /** The incident: teleport 138 spawned on server, then teleport 140 started by hand on personal. */
 const incident: SeatRelaunchPlan = {
   target: {
@@ -38,8 +48,10 @@ const incident: SeatRelaunchPlan = {
     sessionId: '7016a7ee',
     cwd: SEAT_CWD,
     stale: ['7b1a88f1'],
+    spawned: onServer,
   },
-  account: { configDir: PERSONAL, profile: 'lead', cwd: SEAT_CWD },
+  // CC-959 review: whoever can write the seat file must not pick the profile or the cwd.
+  account: { configDir: PERSONAL, profile: 'operator', cwd: '/home/example/elsewhere' },
   message: 'Watchdog: resume',
   fresh: 'HANDOFF',
 }
@@ -122,8 +134,11 @@ describe('respawnSeat', () => {
 
   // Catches: a fresh launch that leaves the latest wrong-account row leasing the name, which the broker refuses.
   it('retires a latest spawned row on another account too, then spawns fresh with Remote Control', async () => {
-    const onServer: SeatAgent = { ...handStarted, agentId: 'g10', origin: 'spawned', profile: 'lead' }
-    const plan: SeatRelaunchPlan = { ...incident, target: { kind: 'fresh', latest: onServer, stale: ['g9'] } }
+    const g10: SeatAgent = { ...onServer, agentId: 'g10' }
+    const plan: SeatRelaunchPlan = {
+      ...incident,
+      target: { kind: 'fresh', latest: g10, stale: ['g9'], spawned: g10 },
+    }
     const b = broker([retired('g9'), retired('g10'), spawned])
 
     await respawnSeat(b.client, 'titan-coord', plan, { surface: 'tmux-window', from: 'seat file' })
@@ -134,7 +149,53 @@ describe('respawnSeat', () => {
       surface: 'tmux-window',
       remoteControl: true,
       configDir: PERSONAL,
+      profile: 'lead',
+      cwd: SEAT_CWD,
     })
+  })
+
+  // Catches: the profile or cwd read from the seat file again; the unregistered spawn skips the broker's escalation and cwd rules.
+  it('ignores a profile and cwd the seat file names, on the resume and on the fresh fallback', async () => {
+    const refused = { t: 'spawn_result', ok: false, reason: 'no transcript for resume_session 7016a7ee' }
+    const b = broker([retired('7b1a88f1'), refused, spawned])
+
+    await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+
+    expect(b.frames.slice(1).map(f => [f.profile, f.cwd])).toEqual([
+      ['lead', SEAT_CWD],
+      ['lead', SEAT_CWD],
+    ])
+  })
+
+  // Catches: falling back to the seat file's profile when no row was ever launched by the broker.
+  it('refuses, retiring nothing, when no spawned row gives the seat a granted profile', async () => {
+    const { spawned: _granted, ...noGrant } = incident.target as Extract<
+      SeatRelaunchPlan['target'],
+      { kind: 'resume-session' }
+    >
+    const b = broker([])
+
+    const out = await respawnSeat(b.client, 'titan-coord', { ...incident, target: noGrant }, HEADLESS)
+
+    expect(b.frames).toEqual([])
+    expect(out).toEqual({
+      ok: false,
+      detail: 'not relaunched: no spawned row under the seat name to take its granted profile from',
+    })
+  })
+
+  it('refuses when the granted row recorded no cwd', async () => {
+    const { cwd: _cwd, ...noCwd } = onServer
+    const plan: SeatRelaunchPlan = {
+      ...incident,
+      target: { kind: 'fresh', latest: noCwd, stale: [], spawned: noCwd },
+    }
+    const b = broker([])
+
+    const out = await respawnSeat(b.client, 'titan-coord', plan, HEADLESS)
+
+    expect(b.frames).toEqual([])
+    expect(out).toEqual({ ok: false, detail: 'not relaunched: row 7b1a88f1 recorded no cwd' })
   })
 
   it('falls back to headless when the visible launch fails', async () => {

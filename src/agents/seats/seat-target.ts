@@ -13,9 +13,17 @@ export type SeatTarget =
   /** The newest row is spawned on the seat's account, which is the row the broker resumes by name. */
   | { kind: 'resume-by-name' }
   /** The newest row cannot be resumed by name; its session is the one to relaunch on the seat's account. */
-  | { kind: 'resume-session'; latest: SeatAgent; sessionId: string; cwd?: string; stale: string[] }
+  | {
+      kind: 'resume-session'
+      latest: SeatAgent
+      sessionId: string
+      cwd?: string
+      stale: string[]
+      /** The newest row the broker launched, whose profile is the one the seat was granted. */
+      spawned?: SeatAgent
+    }
   /** The newest row runs on another or an unrecorded account, so only a fresh launch is safe. */
-  | { kind: 'fresh'; latest: SeatAgent; stale: string[] }
+  | { kind: 'fresh'; latest: SeatAgent; stale: string[]; spawned?: SeatAgent }
 
 /** CC-959: a target the broker cannot bring back by name. */
 export type RelaunchTarget = Exclude<SeatTarget, { kind: 'resume-by-name' }>
@@ -51,6 +59,8 @@ export function seatTarget(agents: SeatAgent[], seat: string, account: SeatAccou
   )
   const here = onAccount(latest, account)
   if (latest.origin !== 'adopted' && here === true) return { kind: 'resume-by-name' }
+  const spawned = [latest, ...older].find(agent => agent.origin !== 'adopted')
+  const launched = spawned === undefined ? {} : { spawned }
   if (latest.origin === 'adopted' && here !== false && latest.sessionId !== undefined)
     return {
       kind: 'resume-session',
@@ -58,8 +68,9 @@ export function seatTarget(agents: SeatAgent[], seat: string, account: SeatAccou
       sessionId: latest.sessionId,
       ...(latest.cwd === undefined ? {} : { cwd: latest.cwd }),
       stale,
+      ...launched,
     }
-  return { kind: 'fresh', latest, stale }
+  return { kind: 'fresh', latest, stale, ...launched }
 }
 
 /** CC-959: how soon after the seat went dark a new session in its cwd reads as its pane carrying on. */

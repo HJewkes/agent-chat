@@ -66,7 +66,7 @@
     {
       "path": "src/cli/verbs/seat-respawn.ts",
       "kind": "spawn-frame",
-      "why": "CC-959: the seat watchdog relaunches a dark seat under its own name when a by-name resume would wake a stale row. It sits behind the watchdog's stop, budget and liveness holds, as the resume door does. It pins the seat file's config_dir, which the broker validates and never re-routes. It never starts a planner or an implementer.",
+      "why": "CC-959: the seat watchdog relaunches a dark seat under the seat's own name when a by-name resume would wake a stale row. It sits behind the same watchdog stop, budget and liveness holds as the resume door. Its connection is unregistered, so the broker treats the spawn as the human's. That skips checkEscalation, checkCwd's location rules and the spawn rate limit. Registering the connection would make it a worker that cannot spawn at all. The broker still applies preflight, the machine guard, the slot semaphore, config_dir validation and the seat budget gate. A pinned config_dir is never re-routed. Because the escalation and cwd checks are skipped, the seat file picks only config_dir, which is the account the seat must bill. The profile is the one on the seat's newest spawned row, which the broker granted when it launched that row. The cwd is the row's own: the adopted session's cwd for a resumed transcript, otherwise the spawned row's. With no spawned row, or no recorded cwd, the relaunch is refused before anything is retired. This door never starts a planner or an implementer.",
       "owner": "owner",
       "coordinatorSideDoor": false
     },

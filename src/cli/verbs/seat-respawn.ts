@@ -13,8 +13,27 @@ export interface RespawnSurface {
 }
 
 /** CC-465: the same rule as the by-name resume; a visible launch that fails falls back to headless. */
-const launchFailed = (res: Reply<'spawn_result'>): boolean =>
-  res.code === 'surface_refused' || (res.reason ?? '').startsWith('resume failed:')
+const launchFailed = (res: Reply<'spawn_result'>): boolean => res.code === 'surface_refused'
+
+/** What the seat launches as: only what the broker granted it before, never what the seat file says. */
+interface LaunchedAs {
+  profile: string
+  cwd: string
+}
+
+/**
+ * CC-959: the watchdog's connection is unregistered, so the broker treats its spawn as the human's and
+ * skips the escalation and cwd rules. The seat file must therefore pick neither: the profile is the
+ * one the broker last launched the seat with, and the cwd is the row's own. Fails closed.
+ */
+function launchedAs({ target }: SeatRelaunchPlan, session: boolean): LaunchedAs | { refusal: string } {
+  const { spawned } = target
+  if (spawned === undefined || spawned.profile === '')
+    return { refusal: 'no spawned row under the seat name to take its granted profile from' }
+  const own = session && target.kind === 'resume-session' ? target.cwd : spawned.cwd
+  if (own === undefined) return { refusal: `row ${spawned.agentId ?? spawned.name} recorded no cwd` }
+  return { profile: spawned.profile, cwd: own }
+}
 
 /** The broker refuses a session whose transcript is not under the seat's account and cwd. */
 const sessionRefused = (res: Reply<'spawn_result'>): boolean => /resume_session/.test(res.reason ?? '')
@@ -54,21 +73,20 @@ function spawnFrame(
   seat: string,
   plan: SeatRelaunchPlan,
   surface: SurfaceName,
-  session: boolean,
+  { session, as }: { session: boolean; as: LaunchedAs },
 ): SpawnFrame {
   const { account, target } = plan
   const resumed = session && target.kind === 'resume-session' ? target : undefined
-  const cwd = resumed?.cwd ?? account.cwd ?? target.latest.cwd
   return {
     t: 'spawn',
     name: seat,
-    profile: account.profile || target.latest.profile,
+    profile: as.profile,
     brief: resumed === undefined ? plan.fresh : plan.message,
     isolation: 'none',
     surface,
     configDir: account.configDir,
     returnContract: 'none',
-    ...(cwd === undefined ? {} : { cwd }),
+    cwd: as.cwd,
     ...(resumed === undefined ? {} : { resumeSession: resumed.sessionId }),
     // CC-883: a seat runs with Remote Control; a headless launch has no pane to control.
     ...(surface === 'headless' ? {} : { remoteControl: true }),
@@ -81,8 +99,12 @@ async function spawnOn(
   plan: SeatRelaunchPlan,
   surface: SurfaceName,
 ): Promise<{ res: Reply<'spawn_result'>; how: string }> {
-  const request = async (session: boolean): Promise<Reply<'spawn_result'>> =>
-    (await client.request(spawnFrame(seat, plan, surface, session), 'spawn_result')) as Reply<'spawn_result'>
+  const request = async (session: boolean): Promise<Reply<'spawn_result'>> => {
+    const as = launchedAs(plan, session)
+    if ('refusal' in as) return { t: 'spawn_result', ok: false, reason: as.refusal }
+    const frame = spawnFrame(seat, plan, surface, { session, as })
+    return (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
+  }
   if (plan.target.kind !== 'resume-session') return { res: await request(false), how: 'fresh' }
   const resumed = await request(true)
   if (resumed.ok || !sessionRefused(resumed)) return { res: resumed, how: `session ${plan.target.sessionId}` }
@@ -99,6 +121,8 @@ export async function respawnSeat(
   plan: SeatRelaunchPlan,
   declared: RespawnSurface,
 ): Promise<RelaunchSeatResult> {
+  const launch = launchedAs(plan, true)
+  if ('refusal' in launch) return { ok: false, detail: `not relaunched: ${launch.refusal}` }
   const retired = await retireStale(client, seat, leaseHolders(plan))
   if (retired !== undefined) return retired
   let { surface, from: why } = declared

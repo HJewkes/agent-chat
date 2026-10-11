@@ -1154,7 +1154,9 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     reason: string,
     cause:
-      { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
+      | { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean }
+      | { code: 'surface_refused' }
+      | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
@@ -1750,7 +1752,8 @@ export class Supervisor implements TeleportHost {
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
-      return this.refuse(req, reason)
+      // CC-959: typed as resume's is, so a caller can fall back to headless without reading the text.
+      return this.refuse(req, reason, err instanceof SurfaceRefused ? { code: 'surface_refused' } : {})
     }
   }
 
