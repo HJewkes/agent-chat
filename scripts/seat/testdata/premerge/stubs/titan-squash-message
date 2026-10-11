@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stub titan-squash-message --json: logs stdin to $FIXDIR/fmt.in and answers {subject: "<title> (#<prNumber>)", body: <input body>}.
+# STUB_FMT_FAIL=1 exits 2 like the real CLI on bad input.
+[ "${1:-}" = --json ] || { echo "stub titan-squash-message: unsupported: $*" >&2; exit 2; }
+cat > "$FIXDIR/fmt.in"
+[ -n "${STUB_FMT_FAIL:-}" ] && { echo "titan-squash-message: prNumber must be a positive integer" >&2; exit 2; }
+jq -c '{subject: "\(.title) (#\(.prNumber))", body}' "$FIXDIR/fmt.in"
