@@ -149,11 +149,19 @@ interface TickAt {
   cause?: string | null
   held?: number
   dryRun?: boolean
+  clock?: () => Date
 }
 
-async function tick({ now = NOW, cause = null, held = 4, dryRun = false }: TickAt = {}) {
+async function tick({ now = NOW, cause = null, held = 4, dryRun = false, clock }: TickAt = {}) {
   const fake = fakeBroker(held)
-  const lines = await tickFromDisk({ dryRun, broker: fake.broker, now, log: () => {}, exec: factory(cause) })
+  const lines = await tickFromDisk({
+    dryRun,
+    broker: fake.broker,
+    now,
+    log: () => {},
+    exec: factory(cause),
+    ...(clock === undefined ? {} : { clock }),
+  })
   return { lines, frames: fake.frames }
 }
 
@@ -277,6 +285,30 @@ describe('a seat tick that dispatches nothing', () => {
       false,
     )
     expect(readSeatLog(fs.readFileSync(seatLog(), 'utf8'), NOW).stop).toMatch(/PARKED/)
+  })
+})
+
+/** A clock that reads `start`, then `step` minutes later on each further call. */
+function advancing(start: Date, step: number): () => Date {
+  let calls = 0
+  return () => new Date(start.getTime() + step * 60_000 * calls++)
+}
+
+describe('the time on a reason line (CC-220)', () => {
+  it('is the time the line is appended, not the tick start', async () => {
+    await tick({ held: 36, clock: advancing(later(3), 3) })
+
+    expect(logLines()).toEqual([expect.stringMatching(/^12:03 .*full cap/)])
+  })
+
+  it('puts a line appended after midnight in the next day’s file', async () => {
+    const lateNight = new Date(2026, 1, 3, 23, 59)
+    const nextDay = path.join(autonomyRoot(), 'logs', 'seat-t', '2026-02-04.md')
+
+    await tick({ now: lateNight, held: 36, clock: () => new Date(2026, 1, 4, 0, 1) })
+
+    expect(logLines()).toEqual([])
+    expect(fs.readFileSync(nextDay, 'utf8')).toMatch(/^00:01 .*full cap/)
   })
 })
 
