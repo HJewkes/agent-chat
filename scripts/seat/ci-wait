@@ -22,6 +22,17 @@ repo=${pos[0]} sha=${pos[1]}
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || usage
 [[ $sha =~ ^[0-9a-fA-F]{7,40}$ ]] || usage
 
+# check-runs and status never answer for an abbreviated sha, so it would poll to TIMEOUT (CC-849).
+# Expand it once, or fail fast with 64: a 2 would tell the caller to run again.
+if [ ${#sha} -lt 40 ]; then
+  short=$(tr 'A-F' 'a-f' <<<"$sha")
+  full=$("$GH" api "repos/$repo/commits/$sha" --jq .sha 2>/dev/null)
+  if [[ ! $full =~ ^[0-9a-f]{40}$ || $full != "$short"* ]]; then
+    echo "need a full 40-hex sha: $sha did not resolve in $repo" >&2; exit 64
+  fi
+  sha=$full
+fi
+
 # Prints "GREEN", "RED <list>" or "PENDING <names>" for the two --paginate --slurp payloads (arrays of pages).
 # Exits non-zero when the pages hold fewer items than total_count, so the caller retries.
 classify() {
