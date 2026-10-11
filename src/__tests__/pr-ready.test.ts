@@ -708,7 +708,9 @@ describe('pr-ready scan', () => {
     const result = await runPrReady(dir)
 
     expect(result.out).toContain('ok clean-tree')
-    expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`)
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
   })
 
   it('passes the clean-tree check with an untracked nested node_modules directory', async () => {
