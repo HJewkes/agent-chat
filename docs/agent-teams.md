@@ -1421,7 +1421,7 @@ kept branch has uncommitted changes, commits not on its upstream (or on `origin/
 when no upstream is set), commits not on the default branch when it has neither, or cannot
 be read. It also skips, with the reason `open PR (Shepherd wakes it)`, an agent whose branch
 has an open PR that no unfinished `titan-factory shepherd status --json` row names (CC-904).
-Once a run carries the agent's branch or name, the PR is registered and the agent is retired
+Once a run carries the agent's branch or implementer name, the PR is registered and the agent is retired
 and parked, its branch kept (CC-950). When Shepherd or `gh` cannot be read it skips too. Each remaining agent goes through
 the same retire as `agent retire <name>`, so its
 refusals still apply; the liveness check is repeated just before each one. A failed retire
