@@ -30,8 +30,9 @@ export interface BriefLint {
 /** A headless agent exits at turn end, so a wakeup it schedules never fires. */
 const HEADLESS_UNUSABLE = ['ScheduleWakeup', 'CronCreate']
 
-/** Only quiets a mention's warning; a refusal never depends on it. */
-const NEGATION = /\b(?:never|not|cannot|dont|no|without|avoid|instead|rather)\b|n't\b/i
+/** Any of these anywhere in a sentence, or in a heading over it, keeps it from being refused. */
+const NEGATION =
+  /\b(?:never|not|cannot|dont|no|nobody|nothing|without|avoid\w*|instead|rather|forbid\w*|prohibit\w*|den(?:y|ies|ied)|disallow\w*)\b|n't\b/i
 
 const SYNTHETIC_LINE = /synthetic/i
 
@@ -47,8 +48,6 @@ const CAMEL_CASE_TOOL = /^[A-Z][a-z]+[A-Z]\w*$/
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-const sentencesOf = (brief: string): string[] => brief.split(/[.!?;\n]+/)
-
 /** A brief that needs no visibility read: the synthetic-data line is already there. */
 export const mentionsSyntheticData = (brief: string): boolean => SYNTHETIC_LINE.test(brief)
 
@@ -57,32 +56,59 @@ interface Unusable {
   why: string
 }
 
+/** One sentence, and whether the heading governing its line negates it. */
+interface Sentence {
+  text: string
+  governed: boolean
+}
+
+/** A Markdown heading, or a line ending in a colon that introduces a list. */
+const HEADING = /^#+\s|:$/
+
+const LIST_ITEM = /^(?:[-*+>]|\d+[.)])\s/
+
 /**
- * How a brief names a term. `directive` is a clause that opens with an
- * imperative ("use X", "then run X"); `mention` is any other un-negated naming,
- * which is only warned on. The directive shape is an allowlist on purpose:
- * prohibitions and contrasts ("you cannot use X", "rather than use X", "you
- * mustn't call X") have too many phrasings to list, and none of them opens a
- * clause with the verb, so every phrasing not listed here falls to a warning
- * and a false refusal cannot block a spawn.
+ * Split on `.`, `!` and newlines only. A comma, colon, semicolon or question
+ * mark can separate a verb from the negation that governs it ("You must not,
+ * under any circumstances, use X"; "Use X? No"), so none of them ends a sentence.
+ * A heading's negation covers the list items under it until a non-item line.
+ */
+function sentencesOf(brief: string): Sentence[] {
+  const sentences: Sentence[] = []
+  let governed = false
+  for (const line of brief.split('\n').map(l => l.trim())) {
+    if (HEADING.test(line)) governed = NEGATION.test(line)
+    else if (!LIST_ITEM.test(line)) governed = false
+    for (const text of line.split(/[.!]+/)) sentences.push({ text, governed })
+  }
+  return sentences
+}
+
+/**
+ * How a brief names a term. A refusal blocks a spawn, so `directive` is kept
+ * narrow: a whole sentence that opens with "use", "run", "call" or "invoke" on
+ * the term, with no negation anywhere in it or in a heading over it. Any other
+ * un-negated naming is a `mention`, which only warns, so a phrasing this misses
+ * costs a warning rather than a blocked spawn.
  */
 type Ask = 'directive' | 'mention' | undefined
-
-const clausesOf = (brief: string): string[] => brief.split(/[.!?;:,\n]+/)
 
 /** Words that may precede the imperative without changing what it asks. */
 const LEAD_IN = String.raw`(?:(?:then|and|please|now|first|next|also|finally|so)\s+)*`
 
-/** A list marker or emphasis a clause may open with. */
 const MARKER = String.raw`(?:[-*+>]|\d+[.)])?\s*`
 
 function askOf(brief: string, term: string): Ask {
   const name = `${escape(term)}(?![\\w-])`
-  const mention = new RegExp(`(?<![\\w-])${name}`)
-  const directive = new RegExp(`^\\s*${MARKER}${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
-  if (clausesOf(brief).some(clause => directive.test(clause))) return 'directive'
-  const named = sentencesOf(brief).some(sentence => mention.test(sentence) && !NEGATION.test(sentence))
-  return named ? 'mention' : undefined
+  const mention = new RegExp(`(?<![\\w-])${name}`, 'i')
+  const directive = new RegExp(`^${MARKER}${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
+  let ask: Ask
+  for (const { text, governed } of sentencesOf(brief)) {
+    if (governed || NEGATION.test(text) || !mention.test(text)) continue
+    if (directive.test(text.trim())) return 'directive'
+    ask = 'mention'
+  }
+  return ask
 }
 
 /** The literal a deny entry blocks: a CamelCase tool name, or the verb inside `Bash(agent-chat <verb>:*)`. */

@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe('a spawn whose brief asks for a tool the agent cannot use', () => {
   it('is refused with the profile and the tool named', async () => {
-    const result = await sup.spawn(spawnReq('Open the PR, then use ScheduleWakeup to check back on CI.'))
+    const result = await sup.spawn(spawnReq('Use ScheduleWakeup to check back on CI.'))
 
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('implementer')
