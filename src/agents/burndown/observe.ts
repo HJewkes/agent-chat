@@ -156,7 +156,11 @@ function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observati
   return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
 }
 
-/** The claim's recorded PR, else a run its agents registered or whose branch is one of theirs; an open run outranks a merged one, and that a failed one. */
+/**
+ * The claim's recorded PR, else an open run its agents registered or whose branch is one of theirs. Agent
+ * names repeat across dispatches of a task, so a name match only links an open PR and never finishes the
+ * claim: a finished run under the same name may be an earlier dispatch's.
+ */
 export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRow | undefined {
   if (claim.pr !== undefined) {
     const target = shepherdTarget(claim.pr)
@@ -169,9 +173,8 @@ export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRo
   const ours = (r: ShepherdRow): boolean =>
     (r.implementer != null && names.has(r.implementer)) ||
     (r.branch?.startsWith(BRANCH_PREFIX) === true && names.has(r.branch.slice(BRANCH_PREFIX.length)))
-  const mine = rows.filter(r => r.pr !== null && ours(r))
   const open = (r: ShepherdRow): boolean => r.phase !== 'post-merge' && !FINISHED_PHASES.includes(r.phase)
-  return mine.find(open) ?? mine.find(r => r.phase === 'post-merge' || r.phase === 'done') ?? mine[0]
+  return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
 async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {

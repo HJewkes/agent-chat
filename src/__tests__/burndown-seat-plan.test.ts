@@ -322,6 +322,14 @@ describe('planSeat refusals', () => {
       expect(one('A-1', {}, {}, { ledger: dead, liveAgent }).dispatch).toHaveLength(1)
     })
 
+    it('counts a dead claim whose ladder respawn is about to spawn its successor', () => {
+      const respawn = { code: 'phase-timeout' as const, occurrence: '2026-09-29T09:00:00.000Z' }
+      const [live, dead] = ledger.claims as [Claim, Claim]
+      const respawning = { ...ledger, claims: [live, { ...dead, respawn }] }
+
+      expect(refusalOf(one('A-1', {}, {}, { ledger: respawning, liveAgent }))).toEqual([['A-1', 'role-cap']])
+    })
+
     it('counts every implementing claim when there is no roster', () => {
       const dead = { ...ledger, claims: ledger.claims.slice(0, 2) }
 

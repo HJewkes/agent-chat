@@ -86,12 +86,24 @@ async function tick(ledger: Ledger, rows: ShepherdRow[], roster: Roster = { agen
 const retires = (actions: Action[]) => actions.filter(a => a.kind === 'retire')
 
 describe('a merged PR finishes its claim (CC-978)', () => {
-  it('moves a single implementing claim to done once its live agent registered PR merges', async () => {
+  it('links the PR its live agent registered, then moves the claim to done once it merges', async () => {
+    const roster = { agents: [agent('bd-cc-1', 'live')] }
     const ledger = { ...EMPTY_LEDGER, claims: [claim()] }
 
-    const after = await tick(ledger, [run()], { agents: [agent('bd-cc-1', 'live')] })
+    const linked = await tick(ledger, [run({ phase: 'ci' })], roster)
+    const after = await tick(linked, [run()], roster)
 
+    expect(linked.claims).toEqual([expect.objectContaining({ phase: 'implementing', pr: 'o/r#9' })])
     expect(after.claims).toEqual([expect.objectContaining({ phase: 'done', pr: 'o/r#9', prHead: 'h9' })])
+  })
+
+  it("never finishes a claim with no recorded PR on an earlier dispatch's merged run under its name", async () => {
+    const roster = { agents: [agent('bd-cc-1', 'live')] }
+    const stale = [run(), run({ pr: 8, runId: 'run-8', phase: 'done', outcome: { kind: 'merged' } })]
+
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim()] }, stale, roster)
+
+    expect(after.claims).toEqual([claim()])
   })
 
   it('retires the agent of the merged claim', () => {
@@ -102,7 +114,11 @@ describe('a merged PR finishes its claim (CC-978)', () => {
   })
 
   it('finishes a stalled implementing claim whose PR merged and clears the stall', async () => {
-    const stalled = claim({ stalledReason: 'implementing past its timeout', stalledClass: 'stalled' })
+    const stalled = claim({
+      pr: 'o/r#9',
+      stalledReason: 'implementing past its timeout',
+      stalledClass: 'stalled',
+    })
 
     const after = await tick({ ...EMPTY_LEDGER, claims: [stalled] }, [run()])
 
@@ -111,7 +127,7 @@ describe('a merged PR finishes its claim (CC-978)', () => {
   })
 
   it('advances only merged slice a and leaves b and c queued, now ready', async () => {
-    const ledger = { ...EMPTY_LEDGER, claims: [slice('a'), slice('b'), slice('c')] }
+    const ledger = { ...EMPTY_LEDGER, claims: [slice('a', { pr: 'o/r#9' }), slice('b'), slice('c')] }
 
     const after = await tick(ledger, [run({ implementer: 'bd-cc-1-a' })])
 
@@ -131,16 +147,18 @@ describe('a merged PR finishes its claim (CC-978)', () => {
     expect(after.claims).toEqual([expect.objectContaining({ phase: 'implementing', pr: 'o/r#9' })])
   })
 
-  it("ignores another claim's merged run", async () => {
-    const after = await tick({ ...EMPTY_LEDGER, claims: [claim()] }, [run({ implementer: 'bd-cc-2' })])
-
-    expect(after.claims[0]?.phase).toBe('implementing')
-  })
-
-  it('waits while a second run of the same agent is still open', async () => {
-    const rows = [run(), run({ pr: 10, runId: 'run-10', phase: 'ci' })]
+  it("ignores another claim's open run", async () => {
+    const rows = [run({ phase: 'ci', implementer: 'bd-cc-2' })]
 
     const after = await tick({ ...EMPTY_LEDGER, claims: [claim()] }, rows)
+
+    expect(after.claims).toEqual([claim()])
+  })
+
+  it('leaves a claim whose recorded PR has not merged, though another run under its name has', async () => {
+    const rows = [run({ pr: 8, runId: 'run-8' }), run({ phase: 'ci' })]
+
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim({ pr: 'o/r#9' })] }, rows)
 
     expect(after.claims[0]?.phase).toBe('implementing')
   })

@@ -448,11 +448,16 @@ function startWalk(inputs: SeatPlanInputs): Walk {
 }
 
 /**
- * CC-978: an implementing claim holds an implementer slot while its agent may run or its PR is open; one whose
- * agent is gone and that has no PR is ledger state, not live work. A spawning claim always holds one.
+ * CC-978: an implementing claim holds an implementer slot while its agent may run, its PR is recorded, or a
+ * ladder respawn is about to spawn its successor; one whose agent is gone with neither is ledger state, not
+ * live work. A spawning claim always holds one.
  */
 const holdsSlot = (claim: Claim, live: SeatPlanInputs['liveAgent']): boolean =>
-  claim.phase !== 'implementing' || live === undefined || claim.pr !== undefined || live(claim.agentName)
+  claim.phase !== 'implementing' ||
+  live === undefined ||
+  claim.pr !== undefined ||
+  claim.respawn !== undefined ||
+  live(claim.agentName)
 
 /** CC-978: what the seat's implementers count against their cap, beside the ledger's own count when the two differ. */
 export const implementersUsed = (used: number, idle: number): string =>
