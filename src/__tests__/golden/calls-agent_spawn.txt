@@ -151,7 +151,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/g
 [
   {
     "type": "text",
-    "text": "Error: owns may name at most 24 globs; got 25"
+    "text": "Error: owns may name at most 24 globs; got 25; claim a directory (dir/**) or a prefix glob (dir/name*) instead"
   }
 ]
 

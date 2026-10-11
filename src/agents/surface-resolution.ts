@@ -1,5 +1,6 @@
 import type { SurfaceName } from '../protocol.js'
 import { resolveTmuxOnLinux } from '../config.js'
+import type { AgentRole } from './types.js'
 
 const ITERM_SURFACES: readonly SurfaceName[] = ['iterm-pane', 'iterm-tab', 'iterm-window']
 
@@ -29,6 +30,24 @@ export function surfaceBlockerFor(surface: SurfaceName, platform: NodeJS.Platfor
 export function platformDefaultSurface(platform: NodeJS.Platform): SurfaceName {
   if (platform === 'darwin') return 'iterm-tab'
   return platform === 'linux' ? 'tmux-window' : 'headless'
+}
+
+export interface SpawnSurfaceInput {
+  requested?: SurfaceName | undefined
+  profileSurface: SurfaceName
+  role: AgentRole
+  /** Whether a seat owns the spawn's name. */
+  seatSpawn: boolean
+}
+
+/**
+ * CC-485: the surface a spawn asks for before host resolution. A seat's worker runs headless when
+ * nothing names a surface, since a visible pane never exits after its final report and holds the
+ * seat's cap.
+ */
+export function defaultSpawnSurface(input: SpawnSurfaceInput): SurfaceName {
+  if (input.requested !== undefined) return input.requested
+  return input.seatSpawn && input.role === 'worker' ? 'headless' : input.profileSurface
 }
 
 export interface SurfaceChoiceInput {

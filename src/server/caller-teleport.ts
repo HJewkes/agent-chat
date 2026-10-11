@@ -5,6 +5,7 @@ import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
 import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
+import { isCarriedPermissionMode, isChannelToken } from '../broker/host-channels.js'
 import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -119,6 +120,15 @@ export function checkLaunch(spec: RemoteLaunch): string | undefined {
   if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
   if (flagWords(spec.profile).some(word => word.startsWith('-')))
     return 'the successor profile has a value that would be read as a flag'
+  return carriedFlagReason(spec)
+}
+
+/** CC-951: carried flags reach this host's argv, so each passes the allowlist a local read applies. */
+function carriedFlagReason(spec: RemoteLaunch): string | undefined {
+  const bad = (spec.channels ?? []).find(token => !isChannelToken(token))
+  if (bad !== undefined) return `the carried channel ${JSON.stringify(bad)} is not a channel target`
+  if (spec.permissionMode !== undefined && !isCarriedPermissionMode(spec.permissionMode))
+    return `the carried permission mode ${JSON.stringify(spec.permissionMode)} is not one a successor may inherit`
   return undefined
 }
 
@@ -167,6 +177,10 @@ export function buildCallerLaunch(
     ...(configDir ? { configDir } : { configDirUnset: true }),
     // CC-883: checked again here, so a worker never gets Remote Control whatever the broker sent.
     ...(spec.remoteControl && profile.role === 'coordinator' ? { remoteControl: true } : {}),
+    ...(spec.channels?.length ? { channels: spec.channels.filter(isChannelToken) } : {}),
+    ...(spec.permissionMode !== undefined && isCarriedPermissionMode(spec.permissionMode)
+      ? { permissionMode: spec.permissionMode }
+      : {}),
   })
   return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
 }
