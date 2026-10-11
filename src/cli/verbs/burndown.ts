@@ -38,6 +38,7 @@ import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { releaseTask, type RetireCall } from './burndown-release.js'
+import { burndownConfigShowVerb } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 
 const refused = (err: unknown): Report => ({
@@ -449,6 +450,10 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
   addVerb(brief, burndownBriefApproveVerb)
+  addVerb(
+    burndown.command('config').description('resolved burndown settings (CC-955)'),
+    burndownConfigShowVerb,
+  )
   addVerb(burndown, burndownInstallVerb)
   addVerb(burndown, burndownUninstallVerb)
   addVerb(burndown, burndownJobStatusVerb)
