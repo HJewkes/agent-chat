@@ -20,6 +20,7 @@ import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 import { ClaimLedger } from './claims.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
+import { TELEPORT_GAP_MS, midTeleport } from './teleport-window.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
@@ -332,14 +333,31 @@ export class BrokerCore<C = Conn> {
     const unpushed = this.reports.forget(conn)
     if (!name || !entry) return
     this.strand(name, unpushed)
-    // Claims are leases held by presence, so they end here rather than needing
-    // to be reaped: an agent that dies mid-task stops blocking its peers at
-    // once, and there is no such thing as a stale claim (CC-56).
-    this.claims.releaseAll(name)
+    this.releaseClaims(name)
     logEvent('deregistered', { name, reason: 'connection closed' })
     this.append({ kind: 'deregistered', actor: name, body: entry.workingOn, meta: { status: entry.status } })
     if (entry.agentId !== undefined)
       this.append({ kind: 'agent_detached', actor: name, ref: entry.agentId, body: 'connection closed' })
+  }
+
+  /**
+   * Claims are leases held by presence, so they end with the connection rather
+   * than needing to be reaped: an agent that dies mid-task stops blocking its
+   * peers at once (CC-56). A teleport is the exception (CC-397): the successor
+   * keeps the name, so it keeps the claims too, unless it never arrives.
+   */
+  private releaseClaims(name: string): void {
+    if (!midTeleport(this.events, name, Date.now())) {
+      this.claims.releaseAll(name)
+      return
+    }
+    logEvent('claims_kept_for_teleport', { name })
+    const gap = setTimeout(() => {
+      if (this.registry.connFor(name) !== undefined) return
+      this.claims.releaseAll(name)
+      logEvent('claims_released_after_teleport_gap', { name })
+    }, TELEPORT_GAP_MS)
+    gap.unref()
   }
 
   private strand(name: string, unpushed: DeliveredMessage[]): void {

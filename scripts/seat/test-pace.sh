@@ -78,5 +78,13 @@ out=$(unset AUTONOMY_ROOT ACTIVE_ROOT; "$here/pace" 2>&1); rc=$?
 [ "$rc" -eq 2 ] && case "$out" in *"AUTONOMY_ROOT and ACTIVE_ROOT unset"*) true ;; *) false ;; esac \
   && report "both roots unset fails loudly" ok || report "both roots unset fails loudly" "exit $rc: $out"
 
+home="$scratch/agent-chat-home"; mkdir -p "$home"
+cp "$PACE_WATCHDOG" "$home/seat-watchdog.json"; echo '{}' > "$home/pace.json"
+before=$(wc -l < "$H" | tr -d ' ')
+out=$(unset PACE_WATCHDOG PACE_FILE; AGENT_CHAT_HOME="$home" HOME="$scratch/no-home" PACE_NOW=$NOW "$here/pace" 2>&1)
+expect "the watchdog json defaults to AGENT_CHAT_HOME" agents "30 | target 49 | behind 19"
+[ "$(wc -l < "$H" | tr -d ' ')" -eq "$before" ] && report "pace.json defaults to AGENT_CHAT_HOME" ok \
+  || report "pace.json defaults to AGENT_CHAT_HOME" "$before rows before, $(wc -l < "$H") after"
+
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -85,6 +85,7 @@ import {
   type StatusDeps,
 } from '../../agents/seats/status.js'
 import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
+import { readWaitingPermission } from '../../agents/seats/waiting-permission.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -533,6 +534,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machine: readMachineStatus,
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
+    waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
   }
 }
 
