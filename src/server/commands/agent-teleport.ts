@@ -76,18 +76,15 @@ export const agentTeleport = defineTool({
     surface: z
       .enum(SURFACE_NAMES)
       .describe(
-        'Optional. Omit to land where your seat file, or failing that your current surface, says, ' +
-          'when this machine can run it, else in its OS default: tmux-window on Linux, iterm-tab on ' +
-          'macOS. Set it to open your successor somewhere else; a surface this machine cannot run ' +
-          '(iTerm on Linux) is refused, and you are not ended.',
+        'Optional. Omit for your seat or current surface when the destination runs it, else its OS ' +
+          'default (tmux-window on Linux, iterm-tab on macOS). One it cannot run is refused.',
       )
       .optional(),
     to: z
       .string()
       .describe(
-        'Optional. Omit to stay on the machine you run on now. Set it to a machine alias from the ' +
-          'broker\'s config (such as "mac" or "basement") or a hostname to land your successor ' +
-          'there. An unknown or unreachable machine is refused, naming the known ones, and you are not ended.',
+        'Optional. Omit to stay on this machine; else a machine alias from the broker config, or a ' +
+          'hostname. Unknown or unreachable is refused and never ends you.',
       )
       .optional(),
   }),
