@@ -13,9 +13,26 @@ import { matchPattern } from '../isolation/file-ownership.js'
  * dir followed by `-`. A fixture counts only when owned explicitly.
  */
 
+/** Generated or release boilerplate nearly every slice regenerates, so no slice should have to declare it (CC-1052); only the outside-owns stall uses it, never the protected-path check. */
+export const IMPLICIT_OWNS: readonly string[] = [
+  '.changeset/**',
+  'CAPABILITIES.md',
+  '**/CAPABILITIES.md',
+  'site/reference/**',
+  'site/.vitepress/reference-sidebar.json',
+  'site/guides/capabilities.md',
+  '.codewatch/check.json',
+  'golden/cli-help.txt',
+  '**/golden/cli-help.txt',
+  'audit/spawn-doors.json',
+  'README.md',
+  '**/README.md',
+]
+
 export function outsideOwns(files: readonly string[], owns: readonly string[]): string[] {
+  const allowed = [...owns, ...IMPLICIT_OWNS]
   return files.filter(
-    file => !owns.some(pattern => matchPattern(file, pattern) || isCompanion(file, pattern)),
+    file => !allowed.some(pattern => matchPattern(file, pattern) || isCompanion(file, pattern)),
   )
 }
 
