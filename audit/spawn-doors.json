@@ -64,6 +64,13 @@
       "coordinatorSideDoor": false
     },
     {
+      "path": "src/cli/verbs/seat-respawn.ts",
+      "kind": "spawn-frame",
+      "why": "CC-959: the seat watchdog relaunches a dark seat under its own name when a by-name resume would wake a stale row. It sits behind the watchdog's stop, budget and liveness holds, as the resume door does. It pins the seat file's config_dir, which the broker validates and never re-routes. It never starts a planner or an implementer.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
       "path": "src/agents/launch-agent.ts",
       "kind": "claude-launch",
       "why": "The broker's own launch of an agent's claude process, behind the spawn handler.",
