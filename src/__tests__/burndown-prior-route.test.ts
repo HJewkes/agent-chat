@@ -16,7 +16,7 @@ const TABLE_TEXT = fs.readFileSync(
 )
 const table = parseWorkflowTable(TABLE_TEXT).table!
 const on: PriorRouter = { mode: 'on', table }
-const LABEL = 'claude-channels CC-1 (seat titan-coord)'
+const LABEL = 'claude-channels CC-1 (seat core-seat)'
 
 const facts = (over: Partial<TaskFacts>): TaskFacts => ({
   estimate: 2,
@@ -69,7 +69,7 @@ describe('priorRoute', () => {
 
     expect(routed.profile).toBe('bd-implementer')
     expect(routed.note).toMatch(
-      /^route-change claude-channels CC-1 \(seat titan-coord\): bd-implementer-lite -> bd-implementer/,
+      /^route-change claude-channels CC-1 \(seat core-seat\): bd-implementer-lite -> bd-implementer/,
     )
     expect(routed.note).toContain('prior safety-path')
   })
