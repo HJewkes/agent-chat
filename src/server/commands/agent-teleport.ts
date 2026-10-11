@@ -4,7 +4,7 @@ import { SURFACE_NAMES, TELEPORT_REASONS, type ServerMessage } from '../../proto
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
 import { hostIdentity } from '../host.js'
-import { hostRemoteControl } from '../../broker/host-channels.js'
+import { hostCarriedFlags, hostRemoteControl } from '../../broker/host-channels.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
@@ -93,6 +93,7 @@ export const agentTeleport = defineTool({
     const model = present(requested)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
+    const launchSeen = hostCarriedFlags(hostIdentity().hostPid)
     const res = (await ctx.broker.request(
       {
         t: 'teleport',
@@ -104,6 +105,7 @@ export const agentTeleport = defineTool({
         ...(surface === undefined ? {} : { surface }),
         // CC-951: a broker on another host picks this session's default surface by its OS, not its own.
         hostPlatform: process.platform,
+        ...(launchSeen === undefined ? {} : { launchSeen }),
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

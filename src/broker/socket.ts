@@ -18,7 +18,9 @@ import {
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
+import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
+import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import {
   BrokerCore,
   readoptRegistration,
@@ -150,6 +152,19 @@ interface HookWait {
   session: string
 }
 
+/** A directed send's reply ref and CC-168 row meta, carried through its hold and forward paths. */
+interface SendExtras {
+  inReplyTo?: string | undefined
+  meta?: Record<string, string> | undefined
+}
+
+/** What a routed send's rows carry beyond the message itself. */
+interface RouteExtras {
+  tag?: string
+  forwardedFor?: string
+  meta?: Record<string, string> | undefined
+}
+
 /** The body a hook row closes with when nobody answered it; the mirror renders it as expired at the agent. */
 const HOOK_WITHDRAWN = 'withdrawn'
 
@@ -179,6 +194,9 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
+  launchSeen === undefined ? {} : { launchSeen }
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
@@ -494,6 +512,7 @@ export class SocketServer {
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...optionalPlatform(asPlatform(msg.hostPlatform)),
+      ...optionalCarried(sanitizeCarried(msg.launchSeen)),
     })
     reply(conn, {
       t: 'teleport_result',
@@ -723,15 +742,16 @@ export class SocketServer {
   }
 
   /** One named recipient. CC-320: a dark seat's message is held for it rather than failing to route. */
-  private handleSend(conn: Conn, to: string, text: string, inReplyTo?: string): void {
+  private handleSend(conn: Conn, to: string, text: string, extras: SendExtras): void {
     const { core } = this
+    const { inReplyTo, meta } = extras
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
-    if (unrouted && this.forwardSend(conn, from, to, text, inReplyTo)) return
-    const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
-    if (held === undefined) return this.handleRoute(conn, result, 'message', to)
-    if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
+    if (unrouted && this.forwardSend(conn, from, to, text, extras)) return
+    const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo, undefined, meta) : undefined
+    if (held === undefined) return this.handleRoute(conn, result, 'message', to, { meta })
+    if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to, { meta })
     replyHeld(conn, to, held.msgId)
   }
 
@@ -739,17 +759,18 @@ export class SocketServer {
    * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
    * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
    */
-  private forwardSend(conn: Conn, from: string, to: string, text: string, inReplyTo?: string): boolean {
+  private forwardSend(conn: Conn, from: string, to: string, text: string, extras: SendExtras): boolean {
     const { core } = this
+    const { inReplyTo, meta } = extras
     const steward = core.stewardFor(to, from)
     if (steward === undefined) return false
     const forwarded = forwardedText(to, text)
     if (core.registry.connFor(steward) !== undefined) {
       const result = core.registry.send(conn, steward, forwarded, inReplyTo)
-      this.handleRoute(conn, result, 'message', steward, undefined, to)
+      this.handleRoute(conn, result, 'message', steward, { forwardedFor: to, meta })
       return true
     }
-    const held = core.holdForSteward(from, steward, forwarded, inReplyTo)
+    const held = core.holdForSteward(from, steward, forwarded, inReplyTo, undefined, meta)
     if (held === undefined) return false
     replyHeld(conn, steward, held.msgId)
     return true
@@ -760,8 +781,7 @@ export class SocketServer {
     result: RouteResult<Conn>,
     kind: 'message' | 'broadcast',
     to: string,
-    tag?: string,
-    forwardedFor?: string,
+    { tag, forwardedFor, meta: sendMeta }: RouteExtras = {},
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -780,6 +800,7 @@ export class SocketServer {
       // in meta. EventKind is frozen into the SSE contract, so a new member
       // there would break readers broadly.
       const meta = {
+        ...sendMeta,
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
         ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
@@ -1466,6 +1487,10 @@ export class SocketServer {
       case 'unsubscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
       case 'send': {
+        const refusal = sendMetaRefusal(msg)
+        if (refusal !== undefined)
+          return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: refusal })
+        const meta = sendMeta(msg)
         // Tag addressing resolves to a set of names and then goes down the very
         // same multicast path, so there is exactly one fanout implementation to
         // keep budgeted. A tag matching nobody comes back ok:false from there.
@@ -1475,7 +1500,7 @@ export class SocketServer {
             core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
             'message',
             `tag ${msg.toTag}`,
-            msg.toTag,
+            { tag: msg.toTag, meta },
           )
         }
         if (msg.to === undefined) {
@@ -1487,7 +1512,8 @@ export class SocketServer {
           })
         }
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
-        if (!Array.isArray(msg.to)) return this.handleSend(conn, msg.to, msg.text, msg.inReplyTo)
+        if (!Array.isArray(msg.to))
+          return this.handleSend(conn, msg.to, msg.text, { inReplyTo: msg.inReplyTo, meta })
         // The human is a queue, not a session, and a multicast is a fan-out to
         // sessions. Splitting one call across both write paths is where the bugs
         // would live, so the whole call is refused rather than half-honoured.
@@ -1506,6 +1532,7 @@ export class SocketServer {
           core.registry.multicast(conn, msg.to, msg.text, msg.inReplyTo),
           'message',
           msg.to.join(', '),
+          { meta },
         )
       }
       case 'broadcast':

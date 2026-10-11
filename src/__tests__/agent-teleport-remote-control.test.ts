@@ -4,11 +4,15 @@ import type { ToolContext } from '../server/command.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
-const argv = vi.hoisted(() => ({ seen: undefined as boolean | undefined }))
+const argv = vi.hoisted(() => ({
+  seen: undefined as boolean | undefined,
+  carried: undefined as { channels: string[]; effort?: 'high' } | undefined,
+}))
 
 vi.mock('../broker/host-channels.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../broker/host-channels.js')>()),
   hostRemoteControl: () => argv.seen,
+  hostCarriedFlags: () => argv.carried,
 }))
 
 const { agentTeleport } = await import('../server/commands/agent-teleport.js')
@@ -48,6 +52,7 @@ const frame = { t: 'teleport', handoff: 'h', hostPlatform: process.platform }
 describe('agent_teleport reports the Remote Control its own session was launched with', () => {
   beforeEach(() => {
     argv.seen = undefined
+    argv.carried = undefined
   })
 
   it('tells the broker it saw --remote-control in its Claude Code argv', async () => {
@@ -65,5 +70,22 @@ describe('agent_teleport reports the Remote Control its own session was launched
   it('leaves an explicit remote_control to speak for itself', async () => {
     argv.seen = true
     expect(await teleportFrame({ remote_control: false })).toEqual({ ...frame, remoteControl: false })
+  })
+})
+
+/** CC-951: the flags a broker on another host cannot read from this session's argv. */
+describe('agent_teleport reports the launch flags its own session was launched with', () => {
+  beforeEach(() => {
+    argv.seen = undefined
+  })
+
+  it('sends what its argv shows as launchSeen', async () => {
+    argv.carried = { channels: ['plugin:voltras-channel@x'], effort: 'high' }
+    expect(await teleportFrame({})).toEqual({ ...frame, launchSeen: argv.carried })
+  })
+
+  it('sends none when the argv cannot be read', async () => {
+    argv.carried = undefined
+    expect(await teleportFrame({})).toEqual(frame)
   })
 })
