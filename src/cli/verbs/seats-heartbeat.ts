@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { HEARTBEAT_UNIT_PREFIX, type HeartbeatJobContext } from '../../agents/seats/heartbeat-external.js'
 import { installHeartbeats, refreshHeartbeat } from '../../agents/seats/heartbeat-install.js'
 import { defaultAutonomyRoot, readText, seatFileNames } from '../../agents/seats/io.js'
-import { jobEnv, launchdJobRefusals } from '../../mirror/plist.js'
+import { jobEnv } from '../../mirror/plist.js'
 import { cliEntry, linuxJobLogDir, systemdUserUnitDir } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
 
@@ -24,7 +24,12 @@ const seatFileReader =
 /** The watchdog's relaunch hook: refresh only units already in the systemd user dir; it never installs one. */
 export const refreshSeatHeartbeat = (root: string, seat: string): string | undefined =>
   refreshHeartbeat(
-    { readSeatFile: seatFileReader(root), ctx: jobContext(root), targetDir: systemdUserUnitDir() },
+    {
+      readSeatFile: seatFileReader(root),
+      ctx: jobContext(root),
+      targetDir: systemdUserUnitDir(),
+      tmpdir: os.tmpdir(),
+    },
     seat,
   )
 
@@ -62,17 +67,14 @@ export const seatsHeartbeatInstallVerb = defineVerb({
   },
   async run({ root, targetDir, dryRun, seat }) {
     const dir = root ?? defaultAutonomyRoot()
-    const ctx = jobContext(dir)
-    // A unit pointing into a worktree dies with MODULE_NOT_FOUND once the tree is parked.
-    const errors = dryRun === true ? [] : launchdJobRefusals({ ...ctx, tmpdir: os.tmpdir() })
-    if (errors.length > 0) return { ok: false, lines: [], errors }
     try {
       return installHeartbeats({
         seats: seat ?? seatFileNames(dir),
         readSeatFile: seatFileReader(dir),
-        ctx,
+        ctx: jobContext(dir),
         targetDir: path.resolve(targetDir ?? systemdUserUnitDir()),
         print: dryRun === true,
+        tmpdir: os.tmpdir(),
       })
     } catch (err) {
       return failed(err)

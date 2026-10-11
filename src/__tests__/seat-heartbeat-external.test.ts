@@ -117,13 +117,16 @@ describe('heartbeatUnits', () => {
 describe('installHeartbeats and refreshHeartbeat', () => {
   let dir: string
   const files: Record<string, string> = {}
-  const input = (print = false) => ({
+  const input = (print = false, ctx = CTX) => ({
     seats: Object.keys(files),
     readSeatFile: (seat: string) => files[seat],
-    ctx: CTX,
+    ctx,
     targetDir: dir,
     print,
+    tmpdir: '/scratch',
   })
+  /** The context a `seats watchdog` run from a worktree build would hand the refresh. */
+  const WORKTREE_CTX = { ...CTX, cliEntry: '/src/agent-chat/.worktrees/tc-x/dist/cli.js' }
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-units-'))
@@ -143,11 +146,22 @@ describe('installHeartbeats and refreshHeartbeat', () => {
     expect(result.lines).toContain('seat-b: skipped, no heartbeat_cron')
   })
 
-  // Catches: install enabling the timers, which is the owner's decision; it only names the command.
-  it('names the enable command without running it', () => {
-    const last = installHeartbeats(input()).lines.at(-1) ?? ''
-    expect(last).toMatch(/^not enabled: enabling is the owner's call/)
-    expect(last).toContain('systemctl --user enable --now agent-chat-heartbeat-seat-a.timer')
+  // Catches: install enabling the timers (the owner's decision), or an enable line built from every
+  // seat name, which names seat-b's timer although seat-b has no cron and got no units.
+  it('names the enable command for the rendered seats only, without running it', () => {
+    expect(installHeartbeats(input()).lines.at(-1)).toBe(
+      "not enabled: enabling is the owner's call; to enable, run systemctl --user daemon-reload && " +
+        'systemctl --user enable --now agent-chat-heartbeat-seat-a.timer',
+    )
+  })
+
+  // Catches: an install that writes units pointing into a worktree, which die once the tree is parked.
+  it('refuses to write units whose CLI entry is inside a worktree, and names no timer to enable', () => {
+    const result = installHeartbeats(input(false, WORKTREE_CTX))
+    expect(result.ok).toBe(false)
+    expect(result.errors).toEqual([expect.stringMatching(/^refused: CLI entry .* is inside a worktree/)])
+    expect(result.lines).toEqual(['seat-b: skipped, no heartbeat_cron'])
+    expect(fs.readdirSync(dir)).toEqual([])
   })
 
   // Catches: --dry-run writing files.
@@ -170,6 +184,18 @@ describe('installHeartbeats and refreshHeartbeat', () => {
     files['seat-a'] = seatFile('5,35 * * * *')
     expect(refreshHeartbeat(input(), 'seat-a')).toMatch(/^heartbeat units refreshed \(rewrite .*\.timer\)/)
     expect(fs.readFileSync(path.join(dir, 'agent-chat-heartbeat-seat-a.timer'), 'utf8')).toContain('*:05:00')
+  })
+
+  // Round 3 of #548. Catches: the watchdog's refresh path skipping the worktree guard, so a
+  // `seats watchdog` run from a worktree build repoints the owner's installed units into that tree.
+  it('refuses a refresh from a worktree build and leaves the installed unit untouched', () => {
+    installHeartbeats(input())
+    const service = path.join(dir, 'agent-chat-heartbeat-seat-a.service')
+    const before = fs.readFileSync(service, 'utf8')
+    expect(refreshHeartbeat(input(false, WORKTREE_CTX), 'seat-a')).toMatch(
+      /^heartbeat units not refreshed: refused: CLI entry .* is inside a worktree/,
+    )
+    expect(fs.readFileSync(service, 'utf8')).toBe(before)
   })
 })
 
