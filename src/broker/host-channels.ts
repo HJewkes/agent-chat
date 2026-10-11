@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { EFFORT_LEVELS, type EffortLevel } from '../agents/types.js'
 
 /**
  * Whether the Claude Code process hosting a session can actually receive a
@@ -131,4 +132,92 @@ export function hostRemoteControl(
   if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return undefined
   const line = read(pid)
   return line === undefined ? undefined : remoteControlFromArgv(line.split(/\s+/))
+}
+
+/** CC-951: the permission modes a successor may inherit; a bypass never crosses a teleport. */
+export const CARRIED_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto'] as const
+
+export type CarriedPermissionMode = (typeof CARRIED_PERMISSION_MODES)[number]
+
+/** CC-951: the launch flags, beyond Remote Control, a teleport successor inherits from its predecessor's argv. */
+export interface CarriedFlags {
+  /** Every `--channels` target except agent-chat's own, which every launch already adds. */
+  channels: string[]
+  permissionMode?: CarriedPermissionMode
+  effort?: EffortLevel
+}
+
+const CHANNEL_TOKEN = /^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/
+
+/** A channel target a launch may pass on: never a flag, never a bare word Claude Code would guess at. */
+export const isChannelToken = (token: string): boolean => CHANNEL_TOKEN.test(token)
+
+const isEffort = (level: string): level is EffortLevel => (EFFORT_LEVELS as readonly string[]).includes(level)
+
+export const isCarriedPermissionMode = (mode: string): mode is CarriedPermissionMode =>
+  (CARRIED_PERMISSION_MODES as readonly string[]).includes(mode)
+
+/** `--flag value` and `--flag=value` both, the first only when the next token is not itself a flag. */
+function flagValue(argv: readonly string[], i: number, flag: string): string | undefined {
+  const token = argv[i]!
+  if (token.startsWith(`${flag}=`)) return token.slice(flag.length + 1)
+  if (token !== flag) return undefined
+  const next = argv[i + 1]
+  return next === undefined || next.startsWith('-') ? undefined : next
+}
+
+/** The variadic targets after a `--channels` at `i`, up to the next flag or `--`. */
+function channelTargets(argv: readonly string[], i: number): string[] {
+  const targets: string[] = []
+  for (let j = i + 1; j < argv.length && !argv[j]!.startsWith('-'); j++) targets.push(argv[j]!)
+  return targets
+}
+
+/**
+ * CC-951: what a successor carries from its predecessor's argv. Stops at `--` so a prompt
+ * naming a flag carries nothing, and keeps only values a launch can pass on safely. Remote
+ * Control has its own reader above, since a coordinator seat keeps it whatever its argv says.
+ */
+export function carriedFlagsFromArgv(argv: readonly string[], server = 'agent-chat'): CarriedFlags {
+  const end = argv.indexOf('--')
+  const options = end < 0 ? argv : argv.slice(0, end)
+  const channels: string[] = []
+  let permissionMode: CarriedPermissionMode | undefined
+  let effort: EffortLevel | undefined
+  options.forEach((token, i) => {
+    if (token === '--channels') channels.push(...channelTargets(options, i))
+    const mode = flagValue(options, i, '--permission-mode')
+    if (mode !== undefined && isCarriedPermissionMode(mode)) permissionMode = mode
+    const level = flagValue(options, i, '--effort')
+    if (level !== undefined && isEffort(level)) effort = level
+  })
+  return {
+    channels: [...new Set(channels)].filter(t => isChannelToken(t) && !namesAgentChat(t, server)),
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(effort === undefined ? {} : { effort }),
+  }
+}
+
+/** CC-951: the flags the Claude Code at `pid` was launched with; `undefined` when its argv cannot be read. */
+export function hostCarriedFlags(
+  pid: number | undefined,
+  read: ArgvReader = psArgvReader,
+): CarriedFlags | undefined {
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return undefined
+  const line = read(pid)
+  return line === undefined ? undefined : carriedFlagsFromArgv(line.split(/\s+/))
+}
+
+/** CC-951: a caller-reported `launchSeen`, kept only where every value passes the same checks as a local read. */
+export function sanitizeCarried(raw: unknown): CarriedFlags | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const { channels, permissionMode, effort } = raw as Record<string, unknown>
+  const tokens = Array.isArray(channels) ? channels.filter((t): t is string => typeof t === 'string') : []
+  return {
+    channels: [...new Set(tokens)].filter(t => isChannelToken(t) && !namesAgentChat(t, 'agent-chat')),
+    ...(typeof permissionMode === 'string' && isCarriedPermissionMode(permissionMode)
+      ? { permissionMode }
+      : {}),
+    ...(typeof effort === 'string' && isEffort(effort) ? { effort } : {}),
+  }
 }
