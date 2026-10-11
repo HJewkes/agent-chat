@@ -384,7 +384,7 @@ function stuckSuccessor(pass: Pass, seat: string): string | undefined {
   return pass.deps.transcriptFound?.(newest.agentId) === false ? newest.agentId : undefined
 }
 
-/** CC-465: judged after liveness, and never for a seat liveness resumed or refused, or one the roster cannot place. */
+/** CC-465: judged after liveness for a seat with no connected session; never for one liveness resumed or refused, or the roster cannot place. */
 function seatRelaunch(
   pass: Pass,
   seat: string,
@@ -394,10 +394,11 @@ function seatRelaunch(
 ): SeatRelaunch | undefined {
   const { verdict } = liveness
   if (pass.deps.relaunchHandoff === undefined || verdict.resume || verdict.refused) return undefined
-  if (pass.roster.unknown !== undefined || rowLive(pass.roster, seat)) return undefined
+  const connected = pass.roster.connected.includes(seat)
+  if (connected || pass.roster.unknown !== undefined || rowLive(pass.roster, seat)) return undefined
   const previous = pass.doc.seats[seat]
   const relaunch = judgeRelaunch({
-    connected: pass.roster.connected.includes(seat),
+    connected,
     presence: liveness.presence,
     activityAt,
     hold,
@@ -409,12 +410,17 @@ function seatRelaunch(
   return { verdict: relaunch, ...(successor === undefined ? {} : { successor }) }
 }
 
-type RelaunchMark = Pick<SeatRecord, 'relaunchedAt' | 'relaunchTries' | 'teleportFailed'>
+const relaunchHold = (relaunch: SeatRelaunch | undefined): string | undefined =>
+  relaunch === undefined ? undefined : `relaunch: ${relaunch.verdict.reason}`
 
-const relaunchMark = (previous: SeatRecord | undefined): RelaunchMark => ({
+type CarriedMarks = Pick<SeatRecord, 'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'heartbeat'>
+
+/** The marks a pass keeps from the seat's last record unless an action this pass replaces them. */
+const carriedMarks = (previous: SeatRecord | undefined): CarriedMarks => ({
   ...(previous?.relaunchedAt === undefined ? {} : { relaunchedAt: previous.relaunchedAt }),
   ...(previous?.relaunchTries === undefined ? {} : { relaunchTries: previous.relaunchTries }),
   ...(previous?.teleportFailed === undefined ? {} : { teleportFailed: previous.teleportFailed }),
+  ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
 })
 
 interface Judgement {
@@ -464,18 +470,16 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const resumeHold = ownHold ?? (budget.open ? undefined : `budget closed: ${budget.reason}`)
   const liveness = seatLiveness(pass, seat.name, resumeHold)
   const relaunch = seatRelaunch(pass, seat.name, liveness, resumeHold, log.activityAt)
-  const hold = ownHold ?? liveness.verdict.idleHold
-  const obs = observe(pass, seat, budget, hold, log.activityAt)
-  const decision = decide(obs, previous, nowMs, pass.fireCap)
-  const capped = (decision.next.fires ?? 0) >= (pass.fireCap ?? FIRE_CAP)
+  // CC-465: a dark seat is the relaunch's, so the idle wake never resumes one the relaunch held back.
+  const hold = ownHold ?? liveness.verdict.idleHold ?? relaunchHold(relaunch)
+  const decision = decide(observe(pass, seat, budget, hold, log.activityAt), previous, nowMs, pass.fireCap)
   const record = {
     ...decision.next,
     ...(run === undefined ? {} : { run }),
     budgetPaused: !budget.open,
-    capped,
+    capped: (decision.next.fires ?? 0) >= (pass.fireCap ?? FIRE_CAP),
     ...liveness.mark,
-    ...relaunchMark(previous),
-    ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
+    ...carriedMarks(previous),
   }
   const extra = {
     ...(log.unreadable === undefined ? {} : { journalFault: log.unreadable }),
