@@ -527,8 +527,6 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'src/cli/verbs/agent-resume.ts',
     'src/cli/index.ts',
     'src/cli/verbs/seat-broker.ts',
-    'src/cli/index.ts',
-    'src/cli/verbs/seat-broker.ts',
     'src/cli/verbs/seats.ts',
     'src/cli/verbs/seats-heartbeat.ts',
     'src/mirror/systemd-unit.ts',
