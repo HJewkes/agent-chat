@@ -614,13 +614,16 @@ export class Teleport {
 
   /**
    * CC-951: the launcher probe is a wait, and the predecessor can disconnect, be taken over or
-   * retire during it. Only one that still holds its name on a live connection gets a handoff.
+   * retire during it. Only one that still holds its name on a live connection gets a handoff, and
+   * from the same Claude Code: the end step signals `subject.hostPid`, which a reconnect with the
+   * same identity from another process would leave running.
    */
   private goneDuringCheck(subject: TeleportSubject): string | undefined {
     const { registry, agents } = this.core
     const conn = registry.connFor(subject.name)
-    const holder = conn === undefined ? undefined : registry.entryFor(conn)?.agentId
-    if (holder === subject.agentId && agents.get(subject.agentId)?.state !== 'retired') return undefined
+    const holder = conn === undefined ? undefined : registry.entryFor(conn)
+    const sameProcess = holder?.agentId === subject.agentId && holder.hostPid === subject.hostPid
+    if (sameProcess && agents.get(subject.agentId)?.state !== 'retired') return undefined
     return `${subject.name} disconnected or was replaced while its destination was checked, so it was not teleported`
   }
 

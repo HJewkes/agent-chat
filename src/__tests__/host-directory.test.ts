@@ -259,6 +259,31 @@ describe('teleporting a local session to a launcher’s machine', () => {
     expect(frame(launcher, 'host_launch')).toBeUndefined()
   })
 
+  it('writes no handoff when the same identity comes back on another Claude Code during the probe', async () => {
+    const launcher = macLauncher()
+    const predecessor = localPredecessor()
+    const conn = core.registry.connFor('cc27')
+    const agentId = conn === undefined ? undefined : core.registry.entryFor(conn)?.agentId
+    await teleportToMac(predecessor)
+    predecessor.conn.emit('close')
+    wire().send({
+      t: 'register',
+      name: 'cc27',
+      workingOn: 'work',
+      cwd: home,
+      pid: 112,
+      host: os.hostname(),
+      hostPid: PREDECESSOR_PID + 1,
+      ...(agentId === undefined ? {} : { agentId }),
+    })
+    expect(core.registry.connFor('cc27')).toBeDefined()
+    answer(launcher, 'host_probe', true)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('disconnected or was replaced')
+    expect(kinds()).not.toContain('agent_handoff')
+  })
+
   it('refuses when the launcher does not answer its probe', async () => {
     macLauncher()
     const predecessor = localPredecessor()
