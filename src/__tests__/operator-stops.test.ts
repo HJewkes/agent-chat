@@ -12,7 +12,8 @@ import {
   type ChatLine,
   type StopInputs,
 } from '../agents/seats/operator-stops.js'
-import { machineStatusReport } from '../cli/verbs/machine.js'
+import { liveStopInputs, machineStatusReport } from '../cli/verbs/machine.js'
+import { operatorHoldPath } from '../paths.js'
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
@@ -70,6 +71,28 @@ describe('machine stop status', () => {
         msgId: '41c4a804',
       },
     ])
+  })
+
+  it('counts a stop file it cannot read as a stop, not as no file', () => {
+    const status = machineStopStatus(
+      inputs({
+        stopFile: () => {
+          throw new Error('EACCES: permission denied')
+        },
+      }),
+    )
+
+    expect(status.stopped).toBe(true)
+    expect(status.errors).toEqual(['stop file: EACCES: permission denied'])
+  })
+
+  it('counts a stop file whose since is not a time as a stop', () => {
+    const file = JSON.stringify({ by: 'owner', since: 'soon', reason: 'reboot' })
+
+    const status = machineStopStatus(inputs({ stopFile: () => file }))
+
+    expect(status.stopped).toBe(true)
+    expect(status.errors).toEqual(['the stop file since is not an ISO time'])
   })
 
   it('reports the stop file hold', () => {
@@ -138,6 +161,9 @@ describe('broadcast HOLDs', () => {
   it.each([
     'coord-a: HOLD acked; no spawns from me',
     'platform-coord ACK HOLD 08:5x: no new dispatch',
+    'ACK HOLD 08:50: no new dispatch',
+    'ACK HOLD (tp-operator): standing down',
+    'Re HOLD: which seats does it cover?',
     'seat-b: HOLD on #187. The repo is public',
     'tp-operator: HOLD dispatch of CC-763 until I confirm placement',
     'tp-operator: owner decision: reboot at 07:30. The HOLD stays until then.',
@@ -156,6 +182,12 @@ describe('broadcast HOLDs', () => {
     const lines = [line('op', 30, 'op: HOLD (memory trip)'), line('op', 5, body)]
 
     expect(broadcastHolds(lines, nowMs)).toEqual([])
+  })
+
+  it('opens a HOLD whose text mentions an earlier lift', () => {
+    const lines = [line('op', 5, 'op: HOLD (memory). Yesterday the hold lifted too early')]
+
+    expect(broadcastHolds(lines, nowMs).map(h => h.by)).toEqual(['op'])
   })
 
   it("leaves a HOLD standing when another sender's lift arrives", () => {
@@ -213,6 +245,24 @@ describe('readHoldMessages', () => {
 })
 
 describe('machine status verb', () => {
+  afterEach(() => fs.rmSync(operatorHoldPath(), { recursive: true, force: true }))
+
+  it('reads a stop file path that exists but cannot be read as a stop', () => {
+    fs.mkdirSync(operatorHoldPath(), { recursive: true })
+
+    const status = machineStopStatus(liveStopInputs(NOW))
+
+    expect(status.stopped).toBe(true)
+    expect(status.errors.some(e => e.startsWith('stop file: EISDIR'))).toBe(true)
+  })
+
+  it('reads a missing stop file as no hold', () => {
+    const status = machineStopStatus(liveStopInputs(NOW))
+
+    expect(status.holds.filter(h => h.kind === 'file')).toEqual([])
+    expect(status.errors.filter(e => e.startsWith('stop file'))).toEqual([])
+  })
+
   it('prints one JSON document under --json', () => {
     const report = machineStatusReport(inputs(), true)
 

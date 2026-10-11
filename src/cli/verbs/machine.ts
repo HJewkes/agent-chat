@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { home, operatorHoldPath } from '../../paths.js'
-import { readDoc, readHoldMessages, readText } from '../../agents/seats/io.js'
+import { readDoc, readHoldMessages, readTextIfPresent } from '../../agents/seats/io.js'
 import {
   BROADCAST_HOLD_MAX_MS,
   machineStopStatus,
@@ -27,7 +27,7 @@ export function liveStopInputs(now: Date): StopInputs {
   return {
     now,
     chat: holdMessages(now.getTime()),
-    stopFile: () => readText(operatorHoldPath()),
+    stopFile: () => readTextIfPresent(operatorHoldPath()),
     ownerStops: () => readDoc().stopped,
     readings,
     machineStop: readMachineStop(readings),

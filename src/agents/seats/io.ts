@@ -48,6 +48,10 @@ function ifPresent<T>(read: () => T): T | undefined {
   }
 }
 
+/** A file's text, or undefined only when it is missing; EACCES, EISDIR and the rest throw. */
+export const readTextIfPresent = (file: string): string | undefined =>
+  ifPresent(() => fs.readFileSync(file, 'utf8'))
+
 /** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
 const SCORER_TOP = 1000
 

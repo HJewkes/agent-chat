@@ -45,7 +45,8 @@ export interface MachineStopStatus {
 }
 
 /** The sender's name, optionally with a parenthetical, at the head of a message: "tp-ram (successor, ...): ". */
-const SENDER = String.raw`(?:[\w-]+(?:\s*\([^)]*\))?(?: here)?[:,]?\s+)?`
+// An acknowledgement ("ACK HOLD", "Re HOLD") is not a sender name, so it cannot open a hold.
+const SENDER = String.raw`(?:(?!(?:[Aa][Cc][Kk](?:[Ee][Dd])?|[Rr][Ee])\b)[\w-]+(?:\s*\([^)]*\))?(?: here)?[:,]?\s+)?`
 // "tp-operator: HOLD (forecast trip)", "tp-operator MACHINE HOLD, from 07:21", "BUILD HOLD 16:19: load5 ...",
 // "tp-ram-1003: LOAD HOLD from 09:53", "tp-operator: HOLD on NEW dispatch". Not "HOLD acked", "ACK HOLD",
 // "HOLD dispatch of <tasks>" or "HOLD on #187": those hold one piece of work, not the machine.
@@ -74,8 +75,10 @@ export function broadcastHolds(lines: readonly ChatLine[], nowMs: number): Opera
   const sorted = [...lines].filter(l => l.ts <= nowMs).sort((a, b) => a.ts - b.ts)
   for (const line of sorted) {
     const body = line.body.trimStart()
-    if (isLift(body)) open.delete(line.actor)
-    else if (HOLD_OPEN.test(body) && !open.has(line.actor)) open.set(line.actor, line)
+    // A HOLD that mentions an earlier lift ("HOLD (memory). Yesterday the hold lifted early") still opens.
+    if (HOLD_OPEN.test(body)) {
+      if (!open.has(line.actor)) open.set(line.actor, line)
+    } else if (isLift(body)) open.delete(line.actor)
   }
   return [...open.values()]
     .filter(line => nowMs - line.ts <= BROADCAST_HOLD_MAX_MS)
@@ -100,6 +103,7 @@ export function fileHold(text: string | undefined): OperatorHold | { error: stri
   const { by, since, reason } = (doc ?? {}) as Record<string, unknown>
   if (typeof by !== 'string' || typeof since !== 'string' || typeof reason !== 'string')
     return { error: 'the stop file needs string fields by, since and reason' }
+  if (!Number.isFinite(Date.parse(since))) return { error: 'the stop file since is not an ISO time' }
   return { kind: 'file', by, since, reason }
 }
 
