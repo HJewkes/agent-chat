@@ -255,8 +255,10 @@ Commands:
                             ceilings
   pause [options]           stop new spawns from the next tick on; running agents finish
   resume [options]          let the tick spawn again
-  release <task>            drop every claim on a task, stalled or not, so the tick may pick it
-                            again
+  release [options] <task>  drop every claim on a task, stalled or not, so the tick may pick it
+                            again; --slice drops only that slice
+  link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
+                            dispatches it and finishes it on merge
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -393,10 +395,24 @@ Options:
 === agent-chat burndown release
 Usage: agent-chat burndown release [options] <task>
 
-drop every claim on a task, stalled or not, so the tick may pick it again
+drop every claim on a task, stalled or not, so the tick may pick it again; --slice drops only that
+slice
 
 Options:
-  -h, --help  display help for command
+  --slice <value>  drop only this slice's claim; the task stays seeded and the slice no longer gates
+                   its dependents
+  -h, --help       display help for command
+
+=== agent-chat burndown link
+Usage: agent-chat burndown link [options] <task>
+
+record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on
+merge
+
+Options:
+  --slice <value>  the queued slice the PR implements
+  --pr <value>     the PR, as owner/repo#n or its URL
+  -h, --help       display help for command
 
 === agent-chat burndown config
 Usage: agent-chat burndown config [options] [command]

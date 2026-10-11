@@ -60,11 +60,14 @@ export type Seeding = { claims: Claim[]; plan: string } | { blocked: string }
 
 /**
  * The task's slices from its plan file, why the plan blocks it, or undefined when there is no
- * plan file and the planner runs as before. A task whose slices already ran is not seeded twice.
+ * plan file and the planner runs as before. A task whose slices already ran, or had one released, is not seeded twice.
  */
 export function seedSlices(parent: Parent, plan: PlanFile, ledger: Ledger, now: Date): Seeding | undefined {
   if (plan.text === undefined) return undefined
-  if (ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined))
+  const seeded =
+    ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined) ||
+    ledger.slicesReleased?.[parent.taskId] !== undefined
+  if (seeded)
     return {
       blocked: `${plan.path}: slices of ${parent.taskId} were already queued; close the task or replan it`,
     }
