@@ -260,6 +260,8 @@ Commands:
                             again; --slice drops only that slice
   link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
                             dispatches it and finishes it on merge
+  landed [options]          every open, unreconciled task in a seat's scope that a recent
+                            default-branch subject names (CC-611); writes nothing
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -414,6 +416,19 @@ Options:
   --slice <value>  the queued slice the PR implements
   --pr <value>     the PR, as owner/repo#n or its URL
   -h, --help       display help for command
+
+=== agent-chat burndown landed
+Usage: agent-chat burndown landed [options]
+
+every open, unreconciled task in a seat's scope that a recent default-branch subject names (CC-611);
+writes nothing
+
+Options:
+  --seat <value>           autonomy seat whose scope and repos to sweep
+  --days <value>           subjects from the last N days (default 7)
+  --json                   one JSON record per row, one per line
+  --autonomy-root <value>  directory holding charter.md and seats/
+  -h, --help               display help for command
 
 === agent-chat burndown config
 Usage: agent-chat burndown config [options] [command]
