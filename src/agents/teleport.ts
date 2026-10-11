@@ -40,10 +40,11 @@ import type { AgentProfile } from './types.js'
 
 /**
  * Teleport: a session ends itself deliberately and starts a successor that boots
- * from the current build. `docs/teleport.md` is the design; this is v0 of it, and
- * v0 has NO overlap window — the predecessor is gone before the descendant is
- * launched. Almost everything simple about this file follows from that one
- * decision, so read §5.1 before reintroducing an overlap.
+ * from the current build. `docs/teleport.md` is the design. v0 had NO overlap
+ * window. CC-951 adds a bounded one on the local path: the successor launches
+ * first, evicts its predecessor's registration when it registers, and only then
+ * is the predecessor ended. A successor reusing the predecessor's own pane still
+ * waits for it to end, since a command typed into a live pane is swallowed.
  *
  * The two properties worth restating here, because both are load-bearing and
  * neither is obvious from the code alone:
@@ -236,6 +237,8 @@ export interface RelaunchInput {
   /** CC-951: the predecessor's channel targets beside agent-chat's own. */
   channels?: string[]
   permissionMode?: CarriedFlags['permissionMode']
+  /** CC-951: the predecessor is still running and is ended only once this successor attaches. */
+  successorFirst?: boolean
 }
 
 /** CC-951: one `ps` per teleport, however many flags are read from the predecessor's argv. */
@@ -274,6 +277,10 @@ export interface TeleportHost {
   /** CC-951: the broker's OS, which picks a local successor's default surface. */
   surfacePlatform(): NodeJS.Platform
   relaunch(input: RelaunchInput): Promise<void>
+  /** CC-951: stop tracking a predecessor that is about to be ended. */
+  standDown(agentId: string): void
+  /** CC-951: a successor-first successor never attached, so its predecessor keeps what it had. */
+  keepPredecessor(input: RelaunchInput, reason: string): void
   /** CC-881: record the successor and build its launch for another host, launching nothing here. */
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
@@ -346,6 +353,8 @@ export class Teleport {
   private readonly pending = new Map<string, Pending>()
   /** CC-913: armed remote successors by id, each cleared when it registers or its window ends. */
   private readonly landings = new Map<string, Landing>()
+  /** CC-951: local successors whose predecessor waits on their attach; each settles once, with a failure or none. */
+  private readonly arrivals = new Map<string, (failure: string | undefined) => void>()
   private readonly unwatch: () => void
 
   constructor(
@@ -356,7 +365,9 @@ export class Teleport {
     private readonly seatTeleport: SeatTeleportDeps = defaultSeatTeleportDeps(),
   ) {
     this.unwatch = core.onAppend(row => {
-      if (row.kind === 'agent_attached' && row.ref !== undefined) this.closeLanding(row.ref)
+      if (row.kind !== 'agent_attached' || row.ref === undefined) return
+      this.closeLanding(row.ref)
+      this.arrivals.get(row.ref)?.(undefined)
     })
   }
 
@@ -638,36 +649,118 @@ export class Teleport {
     return { ok: false, reason: `no teleport is counting down for "${name}"` }
   }
 
-  /**
-   * Stand down, end the predecessor, then launch the descendant into the name it
-   * just freed. Order is not negotiable — see §4.3 — and step 3 appends
-   * `agent_retired` DIRECTLY rather than calling `Supervisor.retire`, which would
-   * also release the isolation the descendant is about to stand in.
-   */
   private async finish(agentId: string): Promise<void> {
     const entry = this.pending.get(agentId)
     if (entry === undefined) return
     delete entry.timer
-    const { subject } = entry
     if (entry.remote !== undefined) return this.finishRemote(entry, entry.remote)
+    if (entry.subject.anchor !== undefined && !entry.surfaceRequested) return this.finishInPane(entry)
+    return this.finishSuccessorFirst(entry)
+  }
 
+  /**
+   * CC-951: launch the successor, wait for it to attach (its registration evicts the
+   * predecessor's), then stand down and end the predecessor. A successor that never
+   * attaches is retired and the predecessor, never signalled, is told it is still live.
+   */
+  private async finishSuccessorFirst(entry: Pending): Promise<void> {
+    const arrival = this.awaitArrival(entry.descendantId)
+    let input: RelaunchInput | undefined
+    try {
+      input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
+      await this.host.relaunch(input)
+    } catch (err) {
+      this.successorFailed(entry.descendantId, (err as Error).message)
+    }
+    const failure = await arrival
+    if (failure !== undefined) return this.keepPredecessor(entry, input, failure)
+    this.endPredecessor(entry)
+  }
+
+  /** The successor holds the name now, so the predecessor is ended without waiting for it to free. */
+  private endPredecessor(entry: Pending): void {
+    const { subject, descendantId } = entry
+    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
+    this.host.standDown(subject.agentId)
+    const ended = this.host.endSession(subject.name, subject.hostPid as number, subject.host)
+    this.retirePredecessor(entry, ended)
+    this.pending.delete(subject.agentId)
+    logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId })
+  }
+
+  private retirePredecessor(entry: Pending, ended: { ok: boolean; reason?: string }): void {
+    const { subject } = entry
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: subject.name,
+      ref: subject.agentId,
+      body: 'superseded by teleport',
+      ...(ended.ok ? {} : { meta: { shutdown: ended.reason ?? 'failed' } }),
+    })
+  }
+
+  /** Fail closed: the predecessor was never signalled, so its successor's row retires and it carries on. */
+  private keepPredecessor(entry: Pending, input: RelaunchInput | undefined, reason: string): void {
+    const { subject, descendantId } = entry
+    this.pending.delete(subject.agentId)
+    if (this.core.agents.get(descendantId)?.state === 'spawning')
+      this.core.append({
+        kind: 'agent_retired',
+        actor: 'agent-chat',
+        target: subject.name,
+        ref: descendantId,
+        body: `teleport successor did not start: ${reason}`,
+      })
+    if (input !== undefined) this.host.keepPredecessor(input, reason)
+    this.tell(subject.name, `Your teleport did not happen: ${reason}. You are still live, on the old build.`)
+    logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason, kept: true })
+  }
+
+  /** CC-951: settles with a failure reason, or undefined once the successor's `agent_attached` row lands. */
+  private awaitArrival(agentId: string): Promise<string | undefined> {
+    return new Promise(resolve => {
+      const timer = setTimeout(
+        () => settle(`its successor did not register within ${LAND_WINDOW_MS / 1000}s`),
+        LAND_WINDOW_MS,
+      )
+      timer.unref?.()
+      const settle = (failure: string | undefined): void => {
+        clearTimeout(timer)
+        this.arrivals.delete(agentId)
+        resolve(failure)
+      }
+      this.arrivals.set(agentId, settle)
+    })
+  }
+
+  /** CC-951: the host found a successor-first successor dead before it attached; false when nothing waits on it. */
+  successorFailed(agentId: string, reason: string): boolean {
+    const settle = this.arrivals.get(agentId)
+    if (settle === undefined) return false
+    settle(reason)
+    return true
+  }
+
+  /**
+   * Stand down, end the predecessor, then launch the descendant into the pane it
+   * just freed. This order stays for pane reuse (CC-402): a command typed while the
+   * predecessor still owns its pane is swallowed. Step 3 appends `agent_retired`
+   * DIRECTLY rather than calling `Supervisor.retire`, which would also release the
+   * isolation the descendant is about to stand in.
+   */
+  private async finishInPane(entry: Pending): Promise<void> {
+    const { subject } = entry
+    const agentId = subject.agentId
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: agentId })
     // Non-null because `preflight` refuses a subject without one, and a pending
     // entry only exists once preflight has passed.
     const ended = this.host.endSession(subject.name, subject.hostPid as number, subject.host)
     await this.waitForNameFree(subject.name)
-    this.core.append({
-      kind: 'agent_retired',
-      actor: 'agent-chat',
-      target: subject.name,
-      ref: agentId,
-      body: 'superseded by teleport',
-      ...(ended.ok ? {} : { meta: { shutdown: ended.reason ?? 'failed' } }),
-    })
+    this.retirePredecessor(entry, ended)
 
     try {
-      const paneFree =
-        subject.anchor !== undefined && !entry.surfaceRequested && (await this.waitForPaneFree(subject))
+      const paneFree = await this.waitForPaneFree(subject)
       await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
@@ -971,6 +1064,7 @@ export class Teleport {
     for (const entry of this.pending.values()) if (entry.timer) clearTimeout(entry.timer)
     this.pending.clear()
     for (const agentId of [...this.landings.keys()]) this.closeLanding(agentId)
+    this.arrivals.clear()
     this.unwatch()
   }
 }

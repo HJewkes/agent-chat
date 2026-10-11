@@ -11,6 +11,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import {
   HANDOFF_MAX_BYTES,
+  LAND_WINDOW_MS,
   PANE_EXIT_TIMEOUT_MS,
   PANE_SETTLE_MS,
   PARK_LINE,
@@ -1848,5 +1849,130 @@ describe('the surface a successor opens in', () => {
     )
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/macOS \(this host is linux\)/) })
+  })
+})
+
+/**
+ * CC-951 slice d: on the local path the successor launches first, and its own
+ * registration is what evicts the predecessor, so the old session ends only once
+ * the new one holds the name. A successor that never registers costs nothing: the
+ * predecessor was never signalled and is told so.
+ */
+describe('successor-first ordering (CC-951)', () => {
+  const PREDECESSOR_PID = 9999
+
+  /** The predecessor's live connection, the way its MCP server holds the name. */
+  function connectAs(name: string, agentId: string): Conn {
+    const conn = fakeConn()
+    const reply = core.register(conn, {
+      t: 'register',
+      name,
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      agentId,
+      hostPid: PREDECESSOR_PID,
+      host: os.hostname(),
+    })
+    expect(reply.ok).toBe(true)
+    return conn
+  }
+
+  const signalled = () => killed.filter(k => k.pid === PREDECESSOR_PID)
+
+  it('ends the predecessor only after its successor registers and evicts it', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+    const evicted: Conn[] = []
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(signalled()).toEqual([])
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_stood_down')
+
+    const successorId = result.agentId as string
+    const successor = fakeConn()
+    const reply = core.register(
+      successor,
+      { t: 'register', name: 'scout', workingOn: 'w', cwd: '/tmp', pid: 2, agentId: successorId },
+      conn => evicted.push(conn),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(reply.ok).toBe(true)
+    expect(evicted).toEqual([predecessor])
+    expect(signalled()[0]).toEqual({ pid: PREDECESSOR_PID, signal: 'SIGTERM' })
+    const order = core.events
+      .agentEvents()
+      .filter(r => r.ref === agentId || r.ref === successorId || r.msgId === successorId)
+      .map(r => `${r.kind}:${r.ref === agentId ? 'old' : 'new'}`)
+    expect(order.indexOf('agent_spawned:new')).toBeLessThan(order.indexOf('agent_attached:new'))
+    expect(order.indexOf('agent_attached:new')).toBeLessThan(order.indexOf('agent_stood_down:old'))
+    expect(order).toContain('agent_retired:old')
+  })
+
+  it('refuses the evicted predecessor when its MCP server reconnects', async () => {
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+    const successor = fakeConn()
+    core.register(successor, {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: result.agentId as string,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const again = core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      agentId,
+      hostPid: PREDECESSOR_PID,
+    })
+
+    expect(again.ok).toBe(false)
+    expect(core.registry.connFor('scout')).toBe(successor)
+  })
+
+  it('keeps the predecessor and retires the successor when it never registers', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    const successorId = result.agentId as string
+    expect(signalled()).toEqual([])
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(successorId).map(r => r.kind)).toContain('agent_retired')
+    expect(core.registry.connFor('scout')).toBe(predecessor)
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(false)
+    expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(true)
+  })
+
+  it('still ends the predecessor first when the successor reuses its pane', async () => {
+    const agentId = await spawnAgent()
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }),
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(PANE_EXIT_TIMEOUT_MS)
+
+    const kindsInOrder = core.events
+      .agentEvents()
+      .filter(r => r.ref === agentId || r.msgId === result.agentId)
+      .map(r => r.kind)
+    expect(kindsInOrder.indexOf('agent_stood_down')).toBeLessThan(kindsInOrder.lastIndexOf('agent_spawned'))
   })
 })

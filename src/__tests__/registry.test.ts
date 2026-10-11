@@ -915,3 +915,36 @@ describe('Tag budgets', () => {
     expect(registry.tagsOf(alice)).toEqual([{ tag: 'owner:src', by: 'self', at: 0 }])
   })
 })
+
+/**
+ * CC-951: a teleport successor registers while its predecessor still holds the
+ * name, so the old session can be ended only once the new one is reachable.
+ * Only the holder the successor names is displaced; anyone else still refuses.
+ */
+describe('a teleport successor taking its predecessor name', () => {
+  const asAgent = (registry: Registry<object>, c: object, agentId: string, succeeds?: string) =>
+    registry.register(c, { name: 'scout', workingOn: 'w', cwd: '/tmp/scout', pid: 1, agentId }, succeeds)
+
+  it('evicts the holder whose agentId it succeeds', () => {
+    const registry = new Registry<object>()
+    const predecessor = conn('old')
+    const successor = conn('new')
+    asAgent(registry, predecessor, 'aaaa1111')
+
+    const result = asAgent(registry, successor, 'bbbb2222', 'aaaa1111')
+
+    expect(result).toMatchObject({ ok: true, evicted: predecessor, evictedAgentId: 'aaaa1111' })
+    expect(registry.connFor('scout')).toBe(successor)
+  })
+
+  it('still refuses when it succeeds some other agent', () => {
+    const registry = new Registry<object>()
+    const holder = conn('old')
+    asAgent(registry, holder, 'aaaa1111')
+
+    const result = asAgent(registry, conn('new'), 'bbbb2222', 'cccc3333')
+
+    expect(result).toEqual({ ok: false, reason: 'name "scout" is held by another session' })
+    expect(registry.connFor('scout')).toBe(holder)
+  })
+})

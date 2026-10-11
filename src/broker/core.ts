@@ -193,10 +193,11 @@ export class BrokerCore<C = Conn> {
     // holder. A session id is merely evidence of which Claude Code process this
     // is, and letting it evict would turn the name lease — the property that makes
     // "held by another session" mean anything — into a claim anyone can make.
-    const result = this.registry.register(conn, msg)
+    const result = this.registry.register(conn, msg, this.teleportPredecessor(msg.agentId))
     logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
     if (!result.ok) return { ok: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
-    if (result.evicted !== undefined) this.supersede(msg.name, msg.agentId, result.evicted, evict)
+    if (result.evicted !== undefined)
+      this.supersede(msg.name, msg.agentId, result.evictedAgentId, result.evicted, evict)
 
     this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
     this.noteWorkingOnCollision(msg)
@@ -275,15 +276,32 @@ export class BrokerCore<C = Conn> {
     })
   }
 
+  /**
+   * CC-951: the predecessor a still-spawning teleport successor may evict, so the
+   * old session ends only once the new one holds the name. Spawning only: once
+   * attached, the successor's id is an ordinary one again.
+   */
+  private teleportPredecessor(agentId: string | undefined): string | undefined {
+    const identity = agentId === undefined ? undefined : this.agents.get(agentId)
+    return identity?.state === 'spawning' ? identity.teleportFrom : undefined
+  }
+
   /** A takeover displaced a live connection: record the detach and close it. */
-  private supersede(name: string, agentId: string | undefined, evicted: C, evict?: (conn: C) => void): void {
+  private supersede(
+    name: string,
+    agentId: string | undefined,
+    evictedAgentId: string | undefined,
+    evicted: C,
+    evict?: (conn: C) => void,
+  ): void {
+    const reason = evictedAgentId === agentId ? 'superseded by resume' : 'superseded by teleport successor'
     // The predecessor's own close handler would append this too, but it may not
     // have fired yet and the entry is already gone — so record it here, and let
     // drop() find nothing left to record when it does fire.
-    if (agentId !== undefined)
-      this.append({ kind: 'agent_detached', actor: name, ref: agentId, body: 'superseded by resume' })
+    if (evictedAgentId !== undefined)
+      this.append({ kind: 'agent_detached', actor: name, ref: evictedAgentId, body: reason })
     this.strand(name, this.reports.forget(evicted))
-    logEvent('deregistered', { name, reason: 'superseded by resume' })
+    logEvent('deregistered', { name, reason })
     evict?.(evicted)
   }
 
