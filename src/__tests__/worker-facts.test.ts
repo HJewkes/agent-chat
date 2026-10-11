@@ -187,11 +187,11 @@ describe('the task id in an agent name', () => {
     ['ab-cc-625-a', 'CC-625'],
     ['scout', null],
     ['tc-review-fix', null],
-    ['tc-cc-763-fix', 'CC-763'],
-    ['tc-cc-763x', null],
+    ['ab-cc-763-fix', 'CC-763'],
+    ['ab-cc-763x', null],
     ['rv-pr-436', null],
     ['rv-PR-436', null],
-    ['rv-hjewkes-titan-platform-625', null],
+    ['rv-example-org-repo-625', null],
   ])('%s gives %s', (name, id) => {
     expect(taskIdOf(name)).toBe(id)
   })
