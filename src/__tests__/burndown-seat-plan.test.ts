@@ -297,6 +297,46 @@ describe('planSeat refusals', () => {
     expect(one('A-1', {}, {}, { ledger }).dispatch).toHaveLength(1)
   })
 
+  describe('implementing claims with no live agent and no PR (CC-978)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        claim('A-7', { agentName: 'sa-a-7' }),
+        claim('A-8', { agentName: 'sa-a-8' }),
+        claim('A-9', { agentName: 'sa-a-9', pr: 'o/r#9' }),
+      ],
+    }
+    const liveAgent = (name: string | undefined) => name === 'sa-a-7'
+
+    it('leaves a dead claim with no PR out of the cap, and counts a live one and one with a PR', () => {
+      const plan = one('A-1', {}, {}, { ledger, liveAgent })
+
+      expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 3)')
+      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 3)')
+    })
+
+    it('dispatches into the slot a dead claim no longer holds', () => {
+      const dead = { ...ledger, claims: ledger.claims.slice(0, 2) }
+
+      expect(one('A-1', {}, {}, { ledger: dead, liveAgent }).dispatch).toHaveLength(1)
+    })
+
+    it('counts a dead claim whose ladder respawn is about to spawn its successor', () => {
+      const respawn = { code: 'phase-timeout' as const, occurrence: '2026-09-29T09:00:00.000Z' }
+      const [live, dead] = ledger.claims as [Claim, Claim]
+      const respawning = { ...ledger, claims: [live, { ...dead, respawn }] }
+
+      expect(refusalOf(one('A-1', {}, {}, { ledger: respawning, liveAgent }))).toEqual([['A-1', 'role-cap']])
+    })
+
+    it('counts every implementing claim when there is no roster', () => {
+      const dead = { ...ledger, claims: ledger.claims.slice(0, 2) }
+
+      expect(refusalOf(one('A-1', {}, {}, { ledger: dead }))).toEqual([['A-1', 'role-cap']])
+    })
+  })
+
   it('stops at the role cap within one plan', () => {
     const rows = [row('A-1', 50), row('A-2', 40), row('A-3', 30)]
 
