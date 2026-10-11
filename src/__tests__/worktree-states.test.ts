@@ -7,6 +7,7 @@ import {
   repoSummary,
   rowState,
   stateRow,
+  volumeFreeBytes,
 } from '../agents/isolation/worktree-states.js'
 
 /** CC-284: the state words and the one headroom line a seat quotes instead of hand-counting. */
@@ -87,5 +88,11 @@ describe('low-disk warning', () => {
 
   it('stays quiet at 51 GB free', () => {
     expect(lowDiskWarning('/repo', 51 * GB)).toBeUndefined()
+  })
+
+  it('reads free space as unknown, and stays quiet, for a repo that no longer exists', () => {
+    const free = volumeFreeBytes('/nonexistent/cc-284/deleted-clone')
+    expect(free).toBeNull()
+    expect(lowDiskWarning('/nonexistent/cc-284/deleted-clone', free)).toBeUndefined()
   })
 })

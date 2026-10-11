@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { isReviewerSpawn } from '../reviewer-tree.js'
 import { BRANCH_PREFIX } from './worktree.js'
 import type { SweptWorktree } from './sweep.js'
@@ -25,7 +26,8 @@ export interface RepoHeadroom {
   nonSeat: number
   budget: number
   free: number
-  freeDiskBytes: number
+  /** Null when the volume could not be read, e.g. a repo deleted under a never-retired agent. */
+  freeDiskBytes: number | null
   rows: StateRow[]
 }
 
@@ -59,7 +61,7 @@ export function repoHeadroom(
   gitRoot: string,
   rows: StateRow[],
   budget: number,
-  freeDiskBytes: number,
+  freeDiskBytes: number | null,
 ): RepoHeadroom {
   const count = (state: WorktreeState): number => rows.filter(r => r.state === state).length
   const active = count('active')
@@ -71,8 +73,18 @@ export function repoHeadroom(
 export const repoSummary = (r: RepoHeadroom): string =>
   `${r.gitRoot}: active ${r.active}, parkable ${r.parkable}, non-seat ${r.nonSeat}, budget ${r.budget}, free ${r.free}`
 
-export function lowDiskWarning(gitRoot: string, freeDiskBytes: number): string | undefined {
-  if (freeDiskBytes >= LOW_DISK_BYTES) return undefined
+/** A repo the sweep found may be gone; unknown free space is reported, never fatal. */
+export function volumeFreeBytes(dir: string): number | null {
+  try {
+    const stats = fs.statfsSync(dir)
+    return stats.bavail * stats.bsize
+  } catch {
+    return null
+  }
+}
+
+export function lowDiskWarning(gitRoot: string, freeDiskBytes: number | null): string | undefined {
+  if (freeDiskBytes === null || freeDiskBytes >= LOW_DISK_BYTES) return undefined
   const gb = (freeDiskBytes / 1024 ** 3).toFixed(1)
   return `warning: ${gb} GB free on the volume holding ${gitRoot}, under 50 GB`
 }

@@ -2,7 +2,6 @@ import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/b
 import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
-import fs from 'node:fs'
 import { porcelain, reclaim, sweepWorktrees, type SweptWorktree } from '../agents/isolation/sweep.js'
 import { BRANCH_PREFIX, DEFAULT_WORKTREE_BUDGET } from '../agents/isolation/worktree.js'
 import {
@@ -12,6 +11,7 @@ import {
   repoHeadroom,
   repoSummary,
   stateRow,
+  volumeFreeBytes,
   type RepoHeadroom,
 } from '../agents/isolation/worktree-states.js'
 import { parseWorktreeList } from '../agents/seats/trees.js'
@@ -275,7 +275,7 @@ async function headroomByRepo(swept: SweptWorktree[], root: string | null): Prom
     const listed = parseWorktreeList(await porcelain(gitRoot).catch(() => ''))
     const nonSeat = listed.filter(t => !t.branch?.startsWith(BRANCH_PREFIX)).map(nonSeatRow)
     const seat = swept.filter(e => e.gitRoot === gitRoot).map(stateRow)
-    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, freeDiskBytes(gitRoot)))
+    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, volumeFreeBytes(gitRoot)))
   }
   return repos
 }
@@ -287,11 +287,6 @@ function headroomLines(repos: RepoHeadroom[]): string[] {
     ...repos.map(repoSummary),
     ...repos.flatMap(repo => lowDiskWarning(repo.gitRoot, repo.freeDiskBytes) ?? []),
   ]
-}
-
-function freeDiskBytes(dir: string): number {
-  const stats = fs.statfsSync(dir)
-  return stats.bavail * stats.bsize
 }
 
 /** The commander parser for `--surface`: a name outside SURFACE_NAMES is refused before any frame is sent. */
