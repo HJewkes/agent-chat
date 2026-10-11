@@ -437,21 +437,80 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
-  // Mutation: dropping the protected-path hold registers the run with no hold.
-  it('registers then holds a plainly titled PR whose diff touches a hooks path', () => {
+  // Mutation: dropping the protected-path hold registers each of these with no hold.
+  it.each([
+    'src/server/commands/chat-endorse.ts',
+    'src/cli/verbs/permission-hook.ts',
+    'src/cli/verbs/approve.ts',
+    'src/agents/trust.ts',
+    'src/agents/burndown/trust-gate.ts',
+    'src/agents/launch-guard.ts',
+    'src/agents/machine-guard.ts',
+    'src/agents/process-guard.ts',
+    'src/agents/isolation/worktree.ts',
+    'src/gh-write/write.ts',
+    'src/gh-shim/install.ts',
+    'src/agents/burndown/decider.ts',
+    'src/agents/burndown/owed-holds.ts',
+    'src/agents/burndown/pr-adopt-ports.ts',
+    'src/agents/burndown/leak-check.ts',
+    'src/agents/burndown/egress-runner.ts',
+    'src/agents/burndown/custody.ts',
+    'src/agents/burndown/exception.ts',
+    'src/agents/burndown/eligibility.ts',
+    'src/agents/burndown/anything-new.ts',
+    'src/agents/hooks.ts',
+    'src/agents/launch-policy.ts',
+    'src/agents/identity.ts',
+    'src/leak-guard/scan.ts',
+    'src/broker/core.ts',
+    'package.json',
+    'package-lock.json',
+    'scripts/release.sh',
+    'vitest.config.ts',
+    'src/__tests__/setup.ts',
+    'plugins/agent-chat/plugin.json',
+    'profiles/personal/profile.json',
+    'CLAUDE.md',
+    '.github/workflows/ci.yml',
+    'packages/authority/src/index.ts',
+    'packages/tool-guard/src/a.ts',
+    'packages/egress-scan/src/a.ts',
+    'packages/decider/src/a.ts',
+    'packages/owner-queue/src/a.ts',
+    'products/factory/src/shepherd/merge-facts.ts',
+    'products/factory/src/shepherd/hold-reason.ts',
+    'products/factory/src/shepherd/g10-release.ts',
+    'products/factory/src/shepherd/registration-policy.ts',
+    'products/factory/src/shepherd/seats.ts',
+    'products/factory/src/shepherd/override-gate.ts',
+    'products/factory/src/shepherd/freeze-window.ts',
+  ])('registers then holds a plainly titled PR whose diff touches %s', path => {
     const f = fake({
       pulls: [pull()],
       tasks: [task()],
-      files: [file('src/__tests__/a.test.ts'), file('src/agents/hooks.ts')],
+      files: [file('src/__tests__/a.test.ts'), file(path)],
     })
 
     tick(f)
 
     expect(f.calls).toEqual([
       'register Acme/Widgets#7',
-      'hold Acme/Widgets#7: g10-adversary: protected path src/agents/hooks.ts; T-1',
+      `hold Acme/Widgets#7: g10-adversary: protected path ${path}; T-1`,
     ])
   })
+
+  // Mutation: holding every non-test path would hold these.
+  it.each(['src/widgets/render.ts', 'src/service-check.ts', 'docs/guide.md', 'src/server/tools.ts'])(
+    'registers an ordinary path %s with no hold',
+    path => {
+      const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
+
+      tick(f)
+
+      expect(f.calls).toEqual(['register Acme/Widgets#7'])
+    },
+  )
 
   // Mutation: checking only `path` and not `previousPath` leaves a guard moved into tests unheld.
   it('holds a PR that renames a guard file into a test path', () => {
@@ -464,15 +523,6 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       'register Acme/Widgets#7',
       'hold Acme/Widgets#7: g10-adversary: protected path src/leak-guard/scan.ts; T-1',
     ])
-  })
-
-  // Mutation: holding every non-test path would hold this one.
-  it('registers an ordinary non-test path with no hold', () => {
-    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/widgets/render.ts')] })
-
-    tick(f)
-
-    expect(f.calls).toEqual(['register Acme/Widgets#7'])
   })
 
   it('registers a PR that changes only tests and docs', () => {

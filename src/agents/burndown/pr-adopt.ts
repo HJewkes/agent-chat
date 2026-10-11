@@ -140,24 +140,29 @@ const FLAG_ONLY_WORD = /secur/i
 /**
  * Paths whose change alters authority, a guard or merge policy, in agent-chat and in titan-platform
  * (a seat may work in either). A PR touching one is held, not refused: Shepherd's own protected-path
- * rule covers only CODEOWNERS and .gitmodules.
+ * rule covers only CODEOWNERS and .gitmodules. Derived from patterns, not names, so a new guard
+ * file is held without an edit here: a file name with a protected word, whole trees, build and
+ * test setup.
  */
+const PROTECTED_NAME =
+  /(guard|trust|permission|endorse|approve|policy|identity|leak|egress|custody|decider|hold|hook|setup)/i
+
 const PROTECTED_PATHS = [
-  /^src\/agents\/(hooks|launch-policy|identity)\.ts$/,
-  /^src\/agents\/burndown\/(policy|pr-adopt|hold-reason|shepherd)\.ts$/,
-  /^src\/leak-guard\//,
+  /^src\/agents\/burndown\//,
+  /^src\/agents\/isolation\//,
+  /^src\/(gh-shim|gh-write|leak-guard)\//,
   /^src\/broker\/core\.ts$/,
-  /(^|\/)(approve|endorse)[^/]*\.ts$/,
-  /^src\/gh-shim\//,
-  /^profiles\//,
+  /^(profiles|scripts|plugins)\//,
+  /(^|\/)package(-lock)?\.json$/,
+  /(^|\/)vitest\.config\.[^/]+$/,
   /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue)\//,
-  /^products\/factory\/src\/shepherd\/(merge-facts|hold[^/]*|release|g10-release|registration-policy|seats|override-gate|freeze[^/]*)\.ts$/,
-  /owner-guard/,
+  /^products\/factory\/src\/shepherd\/[^/]*(merge|hold|release|g10|registration|seats|override|freeze)[^/]*\.ts$/,
   /^\.github\//,
   /^CLAUDE\.md$/,
 ]
 
-const isProtectedPath = (p: string): boolean => PROTECTED_PATHS.some(re => re.test(p))
+const isProtectedPath = (p: string): boolean =>
+  PROTECTED_PATHS.some(re => re.test(p)) || PROTECTED_NAME.test(p.slice(p.lastIndexOf('/') + 1))
 
 function protectedPath(files: readonly ChangedFile[]): string | undefined {
   return files
@@ -321,7 +326,7 @@ function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): bo
   return false
 }
 
-/** The registration, or why the seat must decide. Unknown is never ordinary. */
+/** The registration, held when it touches a protected path or word, or why the seat must decide. An unmapped kind is flagged. */
 function classify(
   pull: OpenPull,
   target: ShepherdTarget,
