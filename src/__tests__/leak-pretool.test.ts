@@ -2514,6 +2514,8 @@ describe('a git config value that runs a program (TP-636)', () => {
   it.each([
     "git clone -c 'remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
     "git clone --config='remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
+    "git clone --conf='remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
+    "git clone -qc 'remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
   ])('denies a skipped hook in an ext:: config value after the subcommand: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
   })
@@ -2534,6 +2536,13 @@ describe('a config value git clone applies before it fetches (TP-636)', () => {
     'git clone -ccore.sshCommand="git push --no-verify" ssh://h/r x',
     'git clone --depth 1 -c "filter.x.smudge=git push --no-verify" /r x',
     'git clone -c "credential.helper=!git push --no-verify" https://h/r x',
+    'git clone -qc "core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone -nqc "core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone -qc"core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone --conf "core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone --conf="core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone --co "core.sshCommand=git push --no-verify" ssh://h/r x',
+    "git clone -q -c 'url.x.insteadOf=y' --conf 'core.pager=git push --no-verify' /r x",
   ])('denies a skipped hook in the value: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
   })
@@ -2545,15 +2554,22 @@ describe('a config value git clone applies before it fetches (TP-636)', () => {
     },
   )
 
-  it.each(['git clone -c "$(cat k)" /r x', 'git clone $OPTS /r x'])(
-    'denies a config word the guard cannot read: %s',
-    command => {
-      expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
-    },
-  )
+  it.each([
+    'git clone -c "$(cat k)" /r x',
+    'git clone $OPTS /r x',
+    'git clone -qc "$(cat k)" /r x',
+    'git clone --conf="$(cat k)" /r x',
+    'git clone -q"$F" "core.sshCommand=git push --no-verify" ssh://h/r x',
+    'git clone --con"$F" "core.sshCommand=git push --no-verify" ssh://h/r x',
+  ])('denies a config word the guard cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
 
   it.each([
     'git clone -c core.sshCommand="ssh -i key" ssh://h/r x',
+    'git clone -qc core.sshCommand="ssh -i key" ssh://h/r x',
+    'git clone -b main --depth=1 "$URL" x',
+    'git clone -o c "core.sshCommand=git push --no-verify"',
     'git clone --config user.name=x /r x',
     'git clone /r x -- -c',
     'git log -c core.pager="git push --no-verify"',

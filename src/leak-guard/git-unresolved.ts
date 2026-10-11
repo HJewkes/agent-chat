@@ -1,4 +1,5 @@
 import { GIT_BUILTINS } from './git-alias.js'
+import { CLONE_CONFIG, optionSpans } from './git-scripts.js'
 import { LIVE, NAME, unmark } from './shell-words.js'
 
 /**
@@ -20,7 +21,6 @@ const SCALAR = new RegExp(
   'g',
 )
 const CONFIG_ENV_OPT = '--config-env='
-const CONFIG_OPT = '--config='
 
 /**
  * One `-c`, `--config` or `--config-env` value: its resolved word, its marked source, where LIVE
@@ -69,14 +69,14 @@ const glued = (
   width: 1,
 })
 
-/** The `-c`, `--config` or `--config-env` word at `i`, attached to its option or in the word after it. */
+/** The `-c` or `--config-env` word at `i` in git's own options, attached to its option or in the word after it. */
 function configWord(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
   i: number,
 ): { word: ConfigWord; width: number } | undefined {
   const raw = unmark(marked[i] as string)
-  if (raw === '-c' || raw === '--config' || raw === '--config-env')
+  if (raw === '-c' || raw === '--config-env')
     return {
       word: {
         resolved: resolved[i + 1],
@@ -87,7 +87,6 @@ function configWord(
       width: 2,
     }
   if (raw.startsWith(CONFIG_ENV_OPT)) return glued(resolved, marked, i, CONFIG_ENV_OPT.length, true)
-  if (raw.startsWith(CONFIG_OPT)) return glued(resolved, marked, i, CONFIG_OPT.length, false)
   return /^-c./.test(raw) ? glued(resolved, marked, i, 2, false) : undefined
 }
 
@@ -122,10 +121,32 @@ function scanOptions(
   return { words, at: i }
 }
 
+/** The marked text from the `offset`th visible character on, keeping the LIVE before a character the shell expands. */
+function markedFrom(marked: string, offset: number): string {
+  let seen = 0
+  for (let k = 0; k < marked.length; k++) {
+    const start = k
+    if (marked[k] === LIVE) k++
+    if (seen === offset) return marked.slice(start)
+    seen++
+  }
+  return ''
+}
+
+/** An option word whose name part, before any `=`, the shell expands, such as `-q$X` or `--con"$Y"`. */
+function optionNameLive(marked: string): boolean {
+  if (!unmark(marked).startsWith('-')) return false
+  const live = marked.indexOf(LIVE)
+  const eq = marked.indexOf('=')
+  return live >= 0 && (eq < 0 || live < eq)
+}
+
 /**
- * The `-c` and `--config` words `git clone` applies to the new repository before it fetches or
- * checks out, so a program they set runs in the same call (TP-636). A word the shell may split
- * may hide one, so it is UNKNOWN.
+ * The config words `git clone` applies to the new repository before it fetches or checks out, so
+ * a program they set runs in the same call (TP-636). They are read by git's parse-options rules,
+ * the same reader as TP-634's script options: a short cluster such as `-qc <v>` or `-qc<v>`, and any
+ * prefix of `--config`, as `--conf <v>` or `--conf=<v>`. A word that may hide one but cannot be read
+ * exactly, because the shell may split it or expands its option name, is UNKNOWN.
  */
 function cloneConfigWords(
   resolved: readonly (string | undefined)[],
@@ -134,13 +155,18 @@ function cloneConfigWords(
   at: number,
 ): ConfigWord[] {
   if (resolved[at] !== 'clone') return []
-  const words: ConfigWord[] = []
-  for (let i = at + 1; i < marked.length && unmark(marked[i] as string) !== '--'; i++) {
-    if (expandsToWords(marked[i] as string, splits)) words.push(UNKNOWN)
-    const config = configWord(resolved, marked, i)
-    if (config === undefined) continue
-    words.push(config.word)
-    i += config.width - 1
+  const plain = marked.map(unmark)
+  const spans = optionSpans(plain, at, CLONE_CONFIG)
+  const words: ConfigWord[] = spans.map(({ from, offset }) => ({
+    resolved: resolved[from]?.slice(offset),
+    marked: markedFrom(marked[from] as string, offset),
+    fromEnv: false,
+    index: from,
+  }))
+  const read = new Set(spans.map(span => span.from))
+  for (let i = at + 1; i < marked.length && plain[i] !== '--'; i++) {
+    const word = marked[i] as string
+    if (!read.has(i) && (expandsToWords(word, splits) || optionNameLive(word))) words.push(UNKNOWN)
   }
   return words
 }

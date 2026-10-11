@@ -598,11 +598,14 @@ them: `core.pager`, every `pager.<cmd>`, `core.editor`, `sequence.editor`, `core
 config-defined hooks), `gc.recentObjectsHook`, `uploadpack.packObjectsHook` and `imap.tunnel`.
 
 Every config word one git invocation receives is read from one list: git's own `-c` and
-`--config-env` before the subcommand, and the `-c`, `--config` and `--config=` words of
-`git clone`, which git applies to the new repository before it fetches or checks out, so a program
-they set runs in the same call. The program-key check, the unreadable-config check and the
-`ext::` check below all read that list. A word after `clone` that the shell may split, such as an
-unquoted `$OPTS`, may hide a `-c`, so it denies as unreadable config.
+`--config-env` before the subcommand, and the config words of `git clone`, which git applies to
+the new repository before it fetches or checks out, so a program they set runs in the same call.
+clone's words are read by git's parse-options rules, with the same reader as the TP-634 script
+options: `-c <v>`, a short cluster ending in `c` (`-qc <v>`, `-qc<v>`), and any prefix of
+`--config` (`--conf <v>`, `--conf=<v>`). The program-key check, the unreadable-config check and
+the `ext::` check below all read that list. A word after `clone` that may hide a config option but
+cannot be read exactly denies as unreadable config: one the shell may split, such as an unquoted
+`$OPTS`, or an option whose name the shell expands, such as `-q"$F"`.
 
 A literal value for one of these keys is checked like a top-level Bash line, so
 `git -c core.pager="git -c core.hooksPath=/dev/null push" log` is denied as a hooks path override
