@@ -10,7 +10,6 @@ const SEAT_DIR = path.resolve(import.meta.dirname, '../../scripts/seat')
 const HERMETIC_SUITES = [
   'test-ci-wait.sh',
   'test-log.sh',
-  'test-merge-check.sh',
   'test-merge.sh',
   'test-pace.sh',
   'test-premerge.sh',

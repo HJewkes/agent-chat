@@ -21,14 +21,34 @@ wait_tick() {
   sleep "${WAIT_INTERVAL:-30}"; waited=$((waited + ${WAIT_INTERVAL:-30}))
 }
 
+# superseded_names <sha> <check runs>: prints each cancelled check run whose workflow has a newer run on $base,
+# as a concurrency group leaves behind (CC-739). An actions API read failure prints nothing, so the run stays red.
+superseded_names() {
+  local wruns suite name id wf created newer
+  [ -n "${base:-}" ] && jq -e 'any(.[]; .conclusion == "cancelled")' <<<"$2" >/dev/null || return 0
+  wruns=$(gh api "repos/$R/actions/runs?head_sha=$1&per_page=100" 2>/dev/null) || return 0
+  jq -r '.[] | select(.conclusion=="cancelled") | "\(.check_suite.id)\t\(.name)"' <<<"$2" | while IFS=$'\t' read -r suite name; do
+    read -r id wf created < <(jq -r --arg s "$suite" \
+      '.workflow_runs[]? | select((.check_suite_id|tostring)==$s) | "\(.id) \(.workflow_id) \(.created_at)"' <<<"$wruns" 2>/dev/null | head -1)
+    [ -n "${wf:-}" ] || continue
+    newer=$(gh api "repos/$R/actions/workflows/$wf/runs?branch=$base&per_page=1" 2>/dev/null) || continue
+    jq -e --arg id "$id" --arg c "$created" '.workflow_runs[0] | (.id|tostring) != $id and .created_at > $c' <<<"$newer" >/dev/null 2>&1 \
+      && echo "$name"
+  done
+}
+
 # poll_checks <sha> <label>: waits for every check run on sha; prints `<label> green|red <names>|timeout`.
 poll_checks() {
-  local sha=$1 label=$2 waited=0 runs pending bad
+  local sha=$1 label=$2 waited=0 runs pending bad sup
   while :; do
     runs=$(gh api "repos/$R/commits/$sha/check-runs?per_page=100" --jq '.check_runs' 2>/dev/null || echo '[]')
     pending=$(jq 'length as $n | [.[] | select(.status!="completed")] | length + (if $n==0 then 1 else 0 end)' <<<"$runs")
     if [ "$pending" = 0 ]; then
-      bad=$(jq -r '[.[] | select(.conclusion|IN("success","skipped","neutral")|not) | .name] | join(",")' <<<"$runs")
+      sup=""; [ "$label" = MAIN ] && sup=$(superseded_names "$sha" "$runs" | paste -sd, -)
+      bad=$(jq -r --arg sup "$sup" '($sup | split(",")) as $s
+        | [.[] | select(.conclusion|IN("success","skipped","neutral")|not)
+          | select(.conclusion == "cancelled" and (.name | IN($s[])) | not) | .name] | join(",")' <<<"$runs")
+      [ -z "$bad" ] && [ -n "$sup" ] && { echo "$label green (superseded: $sup)"; return 0; }
       [ -z "$bad" ] && { echo "$label green"; return 0; }
       echo "$label red $bad"; return 3
     fi
@@ -84,6 +104,7 @@ if ! premerge_ok && [ $update = 1 ] && [[ $last =~ ^FAIL\ "$R#$N: strict and beh
 fi
 premerge_ok || { echo "$out"; echo "FAIL premerge$ctx: ${last#FAIL }"; exit 1; }
 echo "$out"
+base=$(sed -n 's/.* base=\([^ ]*\) .*/\1/p' <<<"$last")
 actor=$(sed -n 's/.* actor=\([^ ]*\) msg=.*/\1/p' <<<"$last"); msg=${last##* msg=}
 note=""; [ "$RV" != "$S" ] && note=" Merged head $S is the reviewed head plus a merge of the base branch."
 cite="Reviewer $actor Verdict: MERGE at head ${RV:0:8} (msg $msg).$note Required checks green; merge-tree clean. Merged by $SEAT."

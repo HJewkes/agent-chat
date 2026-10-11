@@ -47,10 +47,13 @@ This copy differs from the live one on purpose:
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.
 
+## Retired
+
+- `merge-check` (CC-1031): replaced by Shepherd's conflict check and carry-merge
+  (titan-platform `products/factory` shepherd `merge-up-carry.ts`).
+
 ## Retirement list
 
-- `merge-check`: first to retire. It has no caller, and Shepherd conflict-check and
-  carry-merge cover it.
 - `ci-wait`: retires when TP-1539 and TP-1587 land and the charter stops naming it. Factory
   `waitForCi` and Shepherd own CI waits.
 - `merge` + `premerge`: retire together when break-glass `seat-merge` retires (CC-599, Shepherd

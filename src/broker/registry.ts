@@ -420,6 +420,10 @@ export class Registry<C> {
    * in resume rather than the race it is. The evicted connection comes back so
    * the caller can record the detach and close the socket; identity checks are
    * the caller's job, since the registry does not know what an agent id means.
+   *
+   * CC-951: `succeeds` is the same takeover for a teleport successor, whose new
+   * agentId continues the holder's. It is an argument, never a frame field, so
+   * only the caller's own reading of the log can set it.
    */
   register(
     conn: C,
@@ -439,16 +443,22 @@ export class Registry<C> {
       declared?: DeclaredPresence
       sessionId?: string
     },
-  ): { ok: boolean; reason?: string; evicted?: C } {
+    succeeds?: string,
+  ): { ok: boolean; reason?: string; evicted?: C; evictedAgentId?: string } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
       return { ok: false, reason: `"${input.name}" is reserved and cannot be used as a session name` }
 
     const held = this.findByName(input.name)
     let evicted: C | undefined
+    let evictedAgentId: string | undefined
     if (held && held[0] !== conn) {
-      const sameAgent = input.agentId !== undefined && held[1].agentId === input.agentId
-      if (!sameAgent) return { ok: false, reason: `name "${input.name}" is held by another session` }
+      const holder = held[1].agentId
+      const sameAgent = input.agentId !== undefined && holder === input.agentId
+      const successor = succeeds !== undefined && holder === succeeds
+      if (!sameAgent && !successor)
+        return { ok: false, reason: `name "${input.name}" is held by another session` }
       evicted = held[0]
+      evictedAgentId = holder
       this.entries.delete(evicted)
     }
 
@@ -499,7 +509,11 @@ export class Registry<C> {
       registeredAt: existing?.registeredAt ?? this.now(),
       lastSeen: this.now(),
     })
-    return { ok: true, ...(evicted === undefined ? {} : { evicted }) }
+    return {
+      ok: true,
+      ...(evicted === undefined ? {} : { evicted }),
+      ...(evictedAgentId === undefined ? {} : { evictedAgentId }),
+    }
   }
 
   /**

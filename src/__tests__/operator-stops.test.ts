@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { watchdogStatePath } from '../agents/seats/io.js'
+import { defaultAutonomyRoot, watchdogStatePath } from '../agents/seats/io.js'
 import {
   BROADCAST_HOLD_MAX_MS,
   broadcastHolds,
@@ -22,6 +22,15 @@ import { configPath, home, logPath, operatorHoldPath } from '../paths.js'
  * seat-watchdog.json under the suite's AGENT_CHAT_HOME. A reader that drops a row the parser would
  * accept, or reads an error as a missing file, fails here.
  */
+
+/** An active-work root under the temp home, so seat files are this suite's and never the developer's. */
+process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(home(), 'active-work')
+const seatsDir = (): string => path.join(defaultAutonomyRoot(), 'seats')
+
+function writeSeatFiles(seats: string[]): void {
+  fs.mkdirSync(seatsDir(), { recursive: true })
+  for (const seat of seats) fs.writeFileSync(path.join(seatsDir(), `${seat}.md`), `# ${seat}\n`)
+}
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
@@ -120,7 +129,14 @@ function status(world: World): MachineStopStatus {
 const holdsBy = (world: World): string[] => status(world).holds.map(h => h.by)
 
 afterEach(() => {
-  for (const file of [eventsDb(), operatorHoldPath(), watchdogStatePath(), configPath(), logPath()])
+  for (const file of [
+    eventsDb(),
+    operatorHoldPath(),
+    watchdogStatePath(),
+    configPath(),
+    logPath(),
+    seatsDir(),
+  ])
     fs.rmSync(file, { recursive: true, force: true })
 })
 
@@ -610,6 +626,81 @@ describe('a fan-out HOLD whose one unlifted seat leaves the bus', () => {
   })
 })
 
+/**
+ * HOLD 98258863 (CC-971): tp-operator fanned a HOLD and a REBOOT NOTICE out to four seats on 10-07 and
+ * lifted three of them by DM on 10-08. seat-x, owner-stopped since 10-07 15:05, was never lifted,
+ * and seat-z has no seat file. Neither part counts, so the hold ends at the 04:00:36 lift.
+ */
+describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', () => {
+  const SEATS = ['seat-w', 'seat-x', 'seat-y', 'seat-z']
+  const ago = (iso: string): number => (NOW.getTime() - Date.parse(iso)) / MIN
+  const lift = (iso: string, seat: string): Send => [
+    'tp-operator',
+    ago(iso),
+    `tp-operator: LIFT for ${seat}, normal pace`,
+    `l-${seat}`,
+    [seat],
+  ]
+  const chat: Send[] = [
+    ['tp-operator', ago('2026-10-07T20:03:54Z'), 'HOLD (tp-operator, memory trip)', '98258863', SEATS],
+    [
+      'tp-operator',
+      ago('2026-10-07T21:05:14Z'),
+      'REBOOT NOTICE. The machine watch tripped',
+      '5339f5b4',
+      SEATS,
+    ],
+    lift('2026-10-08T02:10:40Z', 'seat-w'),
+    lift('2026-10-08T02:10:42Z', 'seat-z'),
+    lift('2026-10-08T04:00:36Z', 'seat-y'),
+  ]
+  const VOLTRAS_STOPPED = { stopped: { 'seat-x': 'owner stop 10-07 15:05' } }
+  const statusAt = (iso: string): MachineStopStatus => machineStopStatus(liveStopInputs(new Date(iso)))
+
+  it('ends the hold at the last lift when the unlifted seat is stopped', () => {
+    status({ chat, watchdog: VOLTRAS_STOPPED })
+    writeSeatFiles(['seat-w', 'seat-x', 'seat-y'])
+
+    const before = statusAt('2026-10-08T04:00:35Z')
+    const after = statusAt('2026-10-08T04:00:37Z')
+
+    expect(before.holds).toMatchObject([{ by: 'tp-operator', msgId: '98258863', seats: ['seat-y'] }])
+    expect(after).toMatchObject({ stopped: false, holds: [], errors: [] })
+  })
+
+  it('ends the hold at the last lift when the unlifted seat has no seat file', () => {
+    status({ chat })
+    writeSeatFiles(['seat-w', 'seat-y'])
+
+    expect(statusAt('2026-10-08T04:00:37Z')).toMatchObject({ stopped: false, holds: [] })
+  })
+
+  it('keeps the unlifted seat held when it has a seat file and no stop', () => {
+    status({ chat })
+    writeSeatFiles(SEATS)
+
+    expect(statusAt('2026-10-08T04:00:37Z').holds).toMatchObject([{ seats: ['seat-x'] }])
+  })
+
+  it('drops no part and reports no error when seat files cannot be listed', () => {
+    status({ chat })
+
+    const after = statusAt('2026-10-08T04:00:37Z')
+
+    expect(after.holds).toMatchObject([{ seats: ['seat-x'] }])
+    expect(after.errors).toEqual([])
+  })
+
+  it('keeps a broadcast HOLD while every seat is stopped', () => {
+    const held: Send = ['tp-operator', 5, 'tp-operator: HOLD now', 'b1', ['seat-a', 'seat-b'], 'broadcast']
+
+    const stopped = status({ chat: [held], watchdog: { stopped: { 'seat-a': 'x', 'seat-b': 'y' } } })
+
+    expect(stopped.holds).toMatchObject([{ by: 'tp-operator', kind: 'broadcast' }])
+    expect(stopped.stopped).toBe(true)
+  })
+})
+
 describe('machine stop readings and output', () => {
   const inputs = (over: Partial<StopInputs>): StopInputs => ({
     now: NOW,
@@ -617,6 +708,9 @@ describe('machine stop readings and output', () => {
     operators: OPERATORS,
     stopFile: () => undefined,
     ownerStops: () => ({}),
+    seatNames: () => {
+      throw new Error('no seats/')
+    },
     readings: { memoryFreePercent: 80, load5: 4, swapUsedPercent: 10, pressureLevel: 1 },
     machineStop: null,
     ...over,

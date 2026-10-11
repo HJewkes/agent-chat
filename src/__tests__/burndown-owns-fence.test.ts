@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { isProtectedPath } from '../agents/burndown/pr-adopt.js'
 import { outsideOwns } from '../agents/burndown/owns-fence.js'
 
 /** A slice's changed files against its declared owns (CC-669): pure, no git. */
@@ -34,5 +35,28 @@ describe('a slice PR against its owns', () => {
     const files = ['src/__tests__/burndown-owns-fence.test.ts', 'src/__tests__/seats-owns.test.ts']
 
     expect(outsideOwns(files, ['src/agents/burndown/*.ts'])).toEqual(['src/__tests__/seats-owns.test.ts'])
+  })
+
+  it('does not stall a slice for the changeset and capabilities boilerplate it never declared', () => {
+    const files = ['src/foo/a.ts', '.changeset/x.md', 'CAPABILITIES.md']
+
+    expect(outsideOwns(files, ['src/foo/**'])).toEqual([])
+  })
+
+  it('still names a real source file the slice does not own beside the boilerplate', () => {
+    const files = ['src/foo/a.ts', '.changeset/x.md', 'CAPABILITIES.md', 'src/bar/b.ts']
+
+    expect(outsideOwns(files, ['src/foo/**'])).toEqual(['src/bar/b.ts'])
+  })
+
+  it('allows nested readmes, reference docs and goldens without owns', () => {
+    const files = ['pkg/README.md', 'site/reference/cli.md', 'golden/cli-help.txt', 'audit/spawn-doors.json']
+
+    expect(outsideOwns(files, [])).toEqual([])
+  })
+
+  it('keeps a file the implicit allowlist covers protected for PR adoption', () => {
+    expect(outsideOwns(['audit/spawn-doors.json'], [])).toEqual([])
+    expect(isProtectedPath('audit/spawn-doors.json')).toBe(true)
   })
 })

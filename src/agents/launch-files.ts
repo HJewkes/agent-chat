@@ -90,6 +90,11 @@ export function markSuperseded(agentId: string): void {
   fs.writeFileSync(supersededMarkerPath(agentId), '', { mode: FILE_MODE })
 }
 
+/** CC-951: a successor that never attached leaves its predecessor live, so its prompts must reach the model again. */
+export function clearSuperseded(agentId: string): void {
+  fs.rmSync(supersededMarkerPath(agentId), { force: true })
+}
+
 /** The hook gives up this long before Claude Code would kill it, so it can withdraw its row itself. */
 const HOOK_DEADLINE_MARGIN_S = 10
 
