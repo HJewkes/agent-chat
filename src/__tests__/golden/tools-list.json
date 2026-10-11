@@ -517,6 +517,25 @@
             "type": "string",
             "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
           },
+          "experiment": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The experiment this spawn belongs to, e.g. \"E3\"."
+              },
+              "arm": {
+                "type": "string",
+                "description": "The arm of that experiment this spawn runs."
+              }
+            },
+            "required": [
+              "id",
+              "arm"
+            ],
+            "additionalProperties": false,
+            "description": "Optional experiment and arm, recorded on the spawn row so an arm table is one query over the log. Pass it only for a spawn that is part of a planned experiment."
+          },
           "return_contract": {
             "type": "string",
             "enum": [

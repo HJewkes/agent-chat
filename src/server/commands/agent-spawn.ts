@@ -103,6 +103,16 @@ const args = z.object({
         'this one registers.',
     )
     .optional(),
+  experiment: z
+    .object({
+      id: requiredString('experiment.id').describe('The experiment this spawn belongs to, e.g. "E3".'),
+      arm: requiredString('experiment.arm').describe('The arm of that experiment this spawn runs.'),
+    })
+    .describe(
+      'Optional experiment and arm, recorded on the spawn row so an arm table is one query over ' +
+        'the log. Pass it only for a spawn that is part of a planned experiment.',
+    )
+    .optional(),
   return_contract: z
     .enum(RETURN_CONTRACT_CHOICES, oneOf('return_contract', RETURN_CONTRACT_CHOICES))
     .describe(
@@ -193,6 +203,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(input.remote_control === undefined ? {} : { remoteControl: input.remote_control }),
     ...(resumeSession === undefined ? {} : { resumeSession }),
     ...(predecessor === undefined ? {} : { predecessor }),
+    ...(input.experiment === undefined ? {} : { experiment: input.experiment }),
     ...(input.return_contract === undefined ? {} : { returnContract: input.return_contract }),
     ...(task === undefined ? {} : { task }),
     ...(input.role === undefined ? {} : { workRole: input.role }),

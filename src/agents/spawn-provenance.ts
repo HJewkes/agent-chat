@@ -1,5 +1,5 @@
 import { runGit, type GitRunner } from '../git.js'
-import type { AgentIdentity } from '../protocol.js'
+import type { AgentIdentity, ExperimentArm } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 
 /**
@@ -89,7 +89,10 @@ export function assignmentRefusal(req: {
   task?: string
   workRole?: string
   spawnedAs?: string
+  experiment?: ExperimentArm
 }): string | undefined {
+  if (req.experiment !== undefined && !isExperimentArm(req.experiment))
+    return 'experiment needs a non-empty id and arm'
   if (req.workRole !== undefined && !isWorkRole(req.workRole))
     return `role must be one of: ${WORK_ROLE_CHOICES}; got "${req.workRole}"`
   if (req.spawnedAs === 'burndown' && (req.task ?? '').trim() === '')
@@ -97,13 +100,22 @@ export function assignmentRefusal(req: {
   return undefined
 }
 
+/** CC-168: the broker reads frames from the CLI too, so the shape is checked here and not only by the tool. */
+const isExperimentArm = (value: unknown): value is ExperimentArm => {
+  const { id, arm } = (value ?? {}) as Record<string, unknown>
+  return typeof id === 'string' && id.trim() !== '' && typeof arm === 'string' && arm.trim() !== ''
+}
+
 /** The task and role half, as row meta; `work_role_inferred` marks a role nobody stated. */
 export function assignmentMeta(
-  req: { task?: string; workRole?: string; name: string },
+  req: { task?: string; workRole?: string; name: string; experiment?: ExperimentArm },
   profile: string,
 ): Record<string, string> {
   return {
     ...(req.task === undefined ? {} : { task: req.task }),
+    ...(req.experiment === undefined
+      ? {}
+      : { experiment_id: req.experiment.id.trim(), experiment_arm: req.experiment.arm.trim() }),
     ...(req.workRole === undefined
       ? { work_role: inferWorkRole(profile, req.name), work_role_inferred: 'true' }
       : { work_role: req.workRole }),
@@ -113,7 +125,7 @@ export function assignmentMeta(
 /** Everything a spawn row carries: the worktree half from the allocation, the assignment half from the request. */
 export async function spawnProvenance(
   allocation: Allocation,
-  req: { task?: string; workRole?: string; name: string },
+  req: { task?: string; workRole?: string; name: string; experiment?: ExperimentArm },
   profile: string,
   git: GitRunner = runGit,
 ): Promise<Record<string, string>> {

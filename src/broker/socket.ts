@@ -302,6 +302,7 @@ export class SocketServer {
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
       ...(msg.resumeSession === undefined ? {} : { resumeSession: msg.resumeSession }),
       ...(msg.predecessor === undefined ? {} : { predecessor: msg.predecessor }),
+      ...(msg.experiment === undefined ? {} : { experiment: msg.experiment }),
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
       ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
