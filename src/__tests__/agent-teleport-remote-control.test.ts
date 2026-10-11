@@ -47,7 +47,7 @@ async function teleportFrame(args: Record<string, unknown>): Promise<ClientMessa
 }
 
 /** CC-951: every frame names this process's OS, so a broker on another host picks the right default surface. */
-const frame = { t: 'teleport', handoff: 'h', hostPlatform: process.platform }
+const frame = { t: 'teleport', handoff: 'h', hostPlatform: process.platform, endsSelf: true }
 
 describe('agent_teleport reports the Remote Control its own session was launched with', () => {
   beforeEach(() => {
