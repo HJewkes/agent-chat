@@ -924,6 +924,78 @@ describe('worktree release after the work landed', () => {
     expect(await worktreeStrategy.release(ctx, alloc, { force: true })).toBe(true)
     expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
   })
+
+  /**
+   * CC-792. Once main edits a file the branch touched, the file check refuses a
+   * squash-merged branch; gh's merged head is then the only proof it landed.
+   */
+  describe('when gh reports the PR', () => {
+    const PATH = process.env.PATH
+    afterEach(() => {
+      process.env.PATH = PATH
+    })
+
+    /** A stand-in gh that prints `output` and exits with `code`. */
+    const fakeGh = (output: string, code = 0): void => {
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-gh-'))
+      tmpdirs.push(bin)
+      fs.writeFileSync(path.join(bin, 'out.json'), output)
+      const script = `#!/bin/sh\ncat '${path.join(bin, 'out.json')}'\nexit ${code}\n`
+      fs.writeFileSync(path.join(bin, 'gh'), script, { mode: 0o755 })
+      process.env.PATH = `${bin}${path.delimiter}${PATH}`
+    }
+
+    /** Squash-merged, remote branch deleted, then main edits a file the branch touched. */
+    const squashedThenEdited = async () => {
+      const repo = makeRepo()
+      withRemote(repo)
+      const ctx = ctxFor(repo)
+      const alloc = await worktreeStrategy.allocate(ctx)
+      commitIn(alloc.cwd, 'feature.ts')
+      const tip = commitIn(alloc.cwd, 'more.ts')
+      git(['push', 'origin', 'agent-chat/alice'], alloc.cwd)
+      squashMerge(repo, 'agent-chat/alice')
+      fs.writeFileSync(path.join(repo, 'feature.ts'), 'later fix on main\n')
+      git(['commit', '-am', 'later fix'], repo)
+      git(['push', 'origin', 'main', ':agent-chat/alice'], repo)
+      git(['fetch', '--prune', 'origin'], repo)
+      return { repo, ctx, alloc, tip }
+    }
+
+    it('releases a squash-merged branch when gh reports the PR merged at its exact tip', async () => {
+      const { repo, ctx, alloc, tip } = await squashedThenEdited()
+      fakeGh(JSON.stringify({ state: 'MERGED', headRefOid: tip }))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+    })
+
+    it('refuses when a local commit follows the head gh reports merged', async () => {
+      const { repo, ctx, alloc, tip } = await squashedThenEdited()
+      commitIn(alloc.cwd, 'after.ts')
+      fakeGh(JSON.stringify({ state: 'MERGED', headRefOid: tip }))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/^3 commit\(s\) not on [0-9a-f]{40}; work not landed on main/)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('refuses when gh fails', async () => {
+      const { ctx, alloc } = await squashedThenEdited()
+      fakeGh('', 1)
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/work not landed on main/)
+    })
+
+    it('refuses when gh reports the PR still open at the same tip', async () => {
+      const { ctx, alloc, tip } = await squashedThenEdited()
+      fakeGh(JSON.stringify({ state: 'OPEN', headRefOid: tip }))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/gh reports the PR as OPEN$/)
+    })
+  })
 })
 
 describe('registry and composition', () => {

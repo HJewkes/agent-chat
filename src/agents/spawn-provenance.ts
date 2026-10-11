@@ -101,7 +101,7 @@ export function assignmentRefusal(req: {
 }
 
 /** CC-168: the broker reads frames from the CLI too, so the shape is checked here and not only by the tool. */
-const isExperimentArm = (value: unknown): value is ExperimentArm => {
+export const isExperimentArm = (value: unknown): value is ExperimentArm => {
   const { id, arm } = (value ?? {}) as Record<string, unknown>
   return typeof id === 'string' && id.trim() !== '' && typeof arm === 'string' && arm.trim() !== ''
 }
