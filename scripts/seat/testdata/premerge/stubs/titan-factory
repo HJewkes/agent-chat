@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stub titan-factory: `shepherd timeline <ref> --json` prints $FIXDIR/timeline.json, and exits 1 when it is absent (no Shepherd run).
+[ "${1:-} ${2:-}" = "shepherd timeline" ] || { echo "stub titan-factory: unsupported: $*" >&2; exit 2; }
+[ -f "$FIXDIR/timeline.json" ] || { echo "no shepherd run for ${3:-}" >&2; exit 1; }
+cat "$FIXDIR/timeline.json"

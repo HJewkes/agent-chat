@@ -259,6 +259,16 @@ export function parseSurface(value: string): SurfaceName {
   return surface
 }
 
+const SPAWNED_AS = ['shepherd', 'burndown'] as const
+type SpawnedAs = (typeof SPAWNED_AS)[number]
+
+/** The commander parser for `--spawned-as` (CC-973): only the two automations the broker records are accepted. */
+export function parseSpawnedAs(value: string): SpawnedAs {
+  const spawnedAs = SPAWNED_AS.find(name => name === value)
+  if (spawnedAs === undefined) throw new InvalidArgumentError(`one of: ${SPAWNED_AS.join(', ')}`)
+  return spawnedAs
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
@@ -270,6 +280,7 @@ export async function agentSpawn(
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+  // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   options: {
     briefing?: string
     briefStdin?: boolean
@@ -277,6 +288,7 @@ export async function agentSpawn(
     task?: string
     role?: string
     surface?: SurfaceName
+    spawnedAs?: SpawnedAs
   } = {},
 ): Promise<void> {
   let brief: string
@@ -300,6 +312,7 @@ export async function agentSpawn(
         ...(options.task === undefined ? {} : { task: options.task }),
         ...(options.role === undefined ? {} : { workRole: options.role }),
         ...(options.surface === undefined ? {} : { surface: options.surface }),
+        ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
