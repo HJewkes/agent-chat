@@ -47,7 +47,7 @@ describe('valid planning tags', () => {
     const result = parseTaskTags({ id: 'EX-1', estimate: 2, tags })
 
     expect(result.errors).toEqual([])
-    expect(result.task).toEqual({ id: 'EX-1', estimate: 2, ...expected })
+    expect(result.task).toEqual({ id: 'EX-1', estimate: 2, briefSource: 'unknown', ...expected })
   })
 
   it('omits a missing or null estimate', () => {
@@ -55,6 +55,7 @@ describe('valid planning tags', () => {
       id: 'EX-1',
       deps: [],
       cos: 'standard',
+      briefSource: 'unknown',
     })
   })
 })
@@ -201,6 +202,20 @@ describe('dep: edges across the task list', () => {
       milestone: 'M1',
       deps: ['EX-1'],
       cos: 'standard',
+      briefSource: 'unknown',
     })
   })
+})
+
+describe('brief:src', () => {
+  it.each(['seat', 'briefer', 'template'])('reads brief:src=%s as briefSource', source => {
+    expect(parseTaskTags({ id: 'EX-1', tags: [`brief:src=${source}`] }).task.briefSource).toBe(source)
+  })
+
+  it.each([[[]], [['brief:src=']], [['brief:src=robot']], [['brief:src']], [[7]]])(
+    'reads %j as unknown',
+    tags => {
+      expect(parseTaskTags({ id: 'EX-1', tags }).task.briefSource).toBe('unknown')
+    },
+  )
 })
