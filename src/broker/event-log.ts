@@ -468,14 +468,25 @@ export class EventLog implements EventStore {
   }
 
   /** CC-1056: every block and unblock row up to `until`, oldest first, for pairing into intervals. */
-  seatBlockRows(until: number): LoggedEventRow[] {
+  seatBlockRows(since: number, until: number): LoggedEventRow[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM events WHERE kind IN ('seat_blocked', 'seat_unblocked', 'seat_activity')
-         AND ts <= ? ORDER BY id ASC`,
+         AND ts >= ? AND ts <= ? ORDER BY id ASC`,
       )
-      .all(until) as unknown as Row[]
+      .all(since, until) as unknown as Row[]
     return rows.map(toLogged)
+  }
+
+  /** CC-1056: whether the session's latest block row opened a block or closed one. */
+  lastSeatBlockKind(ref: string): EventKind | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT kind FROM events WHERE ref = ? AND kind IN ('seat_blocked', 'seat_unblocked')
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(ref) as { kind: EventKind } | undefined
+    return row?.kind
   }
 
   darkSince(name: string): { id: number; at: number } | undefined {

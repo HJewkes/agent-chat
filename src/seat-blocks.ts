@@ -7,7 +7,11 @@ export const BLOCKING_TOOL = 'AskUserQuestion'
 /** One activity row per session per this long, so a busy seat does not flood the log. */
 export const ACTIVITY_INTERVAL_MS = 60_000
 
-export type HookPhase = 'pre' | 'post'
+/** `end` is a prompt, stop or session end: the seat is no longer waiting on a question. */
+export type HookPhase = 'pre' | 'post' | 'end'
+
+/** How far before a window a block may have started and still be counted into it. */
+export const LOOKBACK_MS = 7 * 24 * 60 * 60_000
 
 export interface HookInput {
   sessionId: string
@@ -18,8 +22,11 @@ export interface HookInput {
 export function parseToolHook(raw: string): HookInput | undefined {
   try {
     const value = JSON.parse(raw) as { session_id?: unknown; tool_name?: unknown }
-    if (typeof value.session_id !== 'string' || typeof value.tool_name !== 'string') return undefined
-    return { sessionId: value.session_id, toolName: value.tool_name }
+    if (typeof value.session_id !== 'string') return undefined
+    return {
+      sessionId: value.session_id,
+      toolName: typeof value.tool_name === 'string' ? value.tool_name : '',
+    }
   } catch {
     return undefined
   }
@@ -31,14 +38,23 @@ export function parseToolHook(raw: string): HookInput | undefined {
  * activity row per session per minute.
  */
 export function recordToolCall(
-  log: Pick<EventLog, 'append' | 'lastAgentEventAt'>,
+  log: Pick<EventLog, 'append' | 'lastAgentEventAt' | 'lastSeatBlockKind'>,
   seat: string | undefined,
   phase: HookPhase,
   input: HookInput,
-  now: number = Date.now(),
 ): void {
   if (seat === undefined || seat === '') return
   const { sessionId, toolName } = input
+  if (phase === 'end') {
+    if (log.lastSeatBlockKind(sessionId) === 'seat_blocked')
+      log.append({
+        kind: 'seat_unblocked',
+        actor: seat,
+        ref: sessionId,
+        meta: { reason: 'session-moved-on' },
+      })
+    return
+  }
   if (toolName === BLOCKING_TOOL) {
     log.append({
       kind: phase === 'pre' ? 'seat_blocked' : 'seat_unblocked',
@@ -49,7 +65,7 @@ export function recordToolCall(
   }
   if (phase === 'post') return
   const last = log.lastAgentEventAt(sessionId, 'seat_activity')
-  if (last !== undefined && now - last < ACTIVITY_INTERVAL_MS) return
+  if (last !== undefined && Date.now() - last < ACTIVITY_INTERVAL_MS) return
   log.append({ kind: 'seat_activity', actor: seat, ref: sessionId, meta: { tool: toolName } })
 }
 
@@ -107,7 +123,7 @@ export function seatBlockReport(
 ): SeatBlockReport {
   const minutesBySeat: Record<string, number> = {}
   const open: OpenBlock[] = []
-  for (const span of blockSpans(log.seatBlockRows(to))) {
+  for (const span of blockSpans(log.seatBlockRows(from - LOOKBACK_MS, to))) {
     const end = span.to ?? to
     if (span.to === undefined)
       open.push({
