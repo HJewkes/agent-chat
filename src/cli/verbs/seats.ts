@@ -695,8 +695,8 @@ function bootDeps(root: string): BootDeps {
     ready: async (seat, now) => {
       const opts = { seat, top: Infinity, today: localDate(now), autonomyRoot: root, readySet: true }
       const { plan, tasks, policy } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
-      const { scope } = readSeatScope(policy.seats, seat, root)
-      const { briefMaxAgeDays } = loadTickConfig(burndownConfigPath())
+      const { briefMaxAgeDays, scopeTagAliases } = loadTickConfig(burndownConfigPath())
+      const { scope } = readSeatScope(policy.seats, seat, root, scopeTagAliases)
       return { order: plan.order, tasks, scope, maxAgeDays: briefMaxAgeDays }
     },
   }

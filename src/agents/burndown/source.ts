@@ -142,6 +142,8 @@ const Config = z.object({
    * not named reserves 0, which leaves the tick the whole cap as before.
    */
   handReserve: z.record(z.string().min(1), count).default({}),
+  /** CC-945: tag families a seat's `scope_tags` treat as one, `{spine: 'milestone'}` for `spine:M3` = `milestone:M3`. */
+  scopeTagAliases: z.record(z.string().min(1), z.string().min(1)).default({ spine: 'milestone' }),
   /** Days a `brief:ready=<day>` tag stays fresh under an `on` gate. */
   briefMaxAgeDays: z
     .number()

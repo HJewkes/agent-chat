@@ -271,7 +271,7 @@ function inScope(inputs: SeatPlanInputs): { rows: ScoreRow[]; outOfScope: Refusa
     const tags = inputs.tasks.get(row.initiative)?.find(t => t.id === row.id)?.tags ?? []
     const reason = scopeRefusal(inputs.scope, row.initiative, { id: row.id, tags })
     if (reason === undefined) rows.push(row)
-    else outOfScope.push({ initiative: row.initiative, task: row.id, kind: 'out-of-scope', reason })
+    else outOfScope.push({ initiative: row.initiative, task: row.id, kind: 'out-of-scope', reason, tags })
   }
   return { rows, outOfScope }
 }

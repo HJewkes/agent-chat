@@ -178,6 +178,8 @@ export interface SeatPlanDeps {
   roster?: Roster
   /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
   brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
+  scopeTagAliases: TickConfig['scopeTagAliases']
 }
 
 /**
@@ -254,7 +256,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
-  const scope = scopeInputs(seat)
+  const scope = scopeInputs(seat, deps.scopeTagAliases)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -290,8 +292,11 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
  * CC-779: the seat's scope with its backlog's task IDs. A backlog that cannot be read names no task, so
  * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
  */
-function scopeInputs(seat: LoadedSeat): { scope: SeatScope; faults: string[] } {
-  return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot)
+function scopeInputs(
+  seat: LoadedSeat,
+  aliases?: Readonly<Record<string, string>>,
+): { scope: SeatScope; faults: string[] } {
+  return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot, aliases)
 }
 
 /** CC-935: `scopeInputs` for a caller holding the seats and the autonomy root, such as `seats boot`. */
@@ -299,15 +304,19 @@ export function readSeatScope(
   seats: Policy['seats'],
   name: string,
   autonomyRoot: string | undefined,
+  aliases?: Readonly<Record<string, string>>,
 ): { scope: SeatScope; faults: string[] } {
   const file = seats[name]?.backlog
   if (file === undefined || autonomyRoot === undefined)
-    return { scope: seatScopeOf(seats, name, new Set()), faults: [] }
+    return { scope: seatScopeOf(seats, name, new Set(), aliases), faults: [] }
   try {
     const ids = backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8'))
-    return { scope: seatScopeOf(seats, name, ids), faults: [] }
+    return { scope: seatScopeOf(seats, name, ids, aliases), faults: [] }
   } catch (err) {
-    return { scope: seatScopeOf(seats, name, new Set()), faults: [`backlog ${file}: ${message(err)}`] }
+    return {
+      scope: seatScopeOf(seats, name, new Set(), aliases),
+      faults: [`backlog ${file}: ${message(err)}`],
+    }
   }
 }
 

@@ -15,6 +15,16 @@ export interface SeatScope {
   backlog: ReadonlySet<string>
   /** The backlog file as the seat file names it, for the refusal. */
   backlogFile?: string
+  /** Tag-family aliases, `{spine: 'milestone'}`: `spine:M3` and `milestone:M3` are one tag. Absent means none. */
+  aliases?: Readonly<Record<string, string>>
+}
+
+/** The tag with its family prefix replaced by the family it aliases, so both spellings compare equal. */
+export function canonicalTag(tag: string, aliases: Readonly<Record<string, string>> | undefined): string {
+  const colon = tag.indexOf(':')
+  if (aliases === undefined || colon < 0) return tag
+  const family = aliases[tag.slice(0, colon)]
+  return family === undefined ? tag : `${family}${tag.slice(colon)}`
 }
 
 const TASK_ID = /\b[A-Z]{1,5}-\d+\b/g
@@ -26,6 +36,7 @@ export function seatScopeOf(
   seats: Readonly<Record<string, SeatPolicy>>,
   name: string,
   backlog: ReadonlySet<string>,
+  aliases?: Readonly<Record<string, string>>,
 ): SeatScope {
   const seat = seats[name]
   if (seat === undefined) throw new Error(`${name} is not a seat`)
@@ -35,6 +46,7 @@ export function seatScopeOf(
     tags: seat.scope_tags,
     shared,
     backlog,
+    ...(aliases === undefined ? {} : { aliases }),
     ...(seat.backlog === undefined ? {} : { backlogFile: seat.backlog }),
   }
 }
@@ -46,7 +58,9 @@ export function scopeRefusal(
   task: { id: string; tags: readonly string[] },
 ): string | undefined {
   if (scope === undefined || scope.tags.length === 0 || !scope.shared.includes(initiative)) return undefined
-  if (scope.backlog.has(task.id) || task.tags.some(tag => scope.tags.includes(tag))) return undefined
+  if (scope.backlog.has(task.id)) return undefined
+  const wanted = new Set(scope.tags.map(tag => canonicalTag(tag, scope.aliases)))
+  if (task.tags.some(tag => wanted.has(canonicalTag(tag, scope.aliases)))) return undefined
   const named = scope.backlogFile === undefined ? '' : ` and ${scope.backlogFile} does not name it`
   return `${initiative} is shared, the task carries none of scope_tags [${scope.tags.join(', ')}]${named}`
 }

@@ -543,6 +543,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
         maxAgents: config.maxAgents,
         handReserve: config.handReserve,
       },
+      scopeTagAliases: config.scopeTagAliases,
     },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
@@ -636,7 +637,7 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  flow: Pick<SeatPlanDeps, 'lineStop' | 'brief'>,
+  flow: Pick<SeatPlanDeps, 'lineStop' | 'brief' | 'scopeTagAliases'>,
 ): Planned {
   if (seats === undefined) {
     const planned = plan({ ...world, ...work })

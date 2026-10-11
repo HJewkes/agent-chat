@@ -6,6 +6,7 @@ import { Command } from 'commander'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
+import { SURFACE_NAMES } from '../protocol.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
@@ -190,6 +191,11 @@ function addAgentCommands(program: Command): void {
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
     .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
     .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
+    .option(
+      '--surface <surface>',
+      `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
+      agents.parseSurface,
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)

@@ -112,6 +112,7 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   const lineStop = lineStopFrom(readServiceCheck(opts.exec), ledger.serviceCheck, opts.now)
   const deps: SeatPlanDeps = {
     ledger,
+    scopeTagAliases: loadTickConfig(burndownConfigPath()).scopeTagAliases,
     initiatives: readInitiatives(opts.root),
     trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
     ...(check === undefined ? {} : { collision: check }),
