@@ -286,8 +286,7 @@ handoff row is written, so nothing is ended.
 **The host launcher site (CC-951).** A machine with no live predecessor on it
 (basement → Mac) is reached through a host launcher: a connection of its own
 that sends `host_hello` with its host, platform and the surfaces it can open.
-The client that sends it, `agent-chat host serve`, is a later slice (g2) and
-does not exist yet. The broker keeps launchers in `HostDirectory`
+The client that sends it is `agent-chat host serve` (below). The broker keeps launchers in `HostDirectory`
 (`broker/host-directory.ts`), one per machine and presence-only: an entry goes
 when its connection closes. The first live launcher holds its machine, and a
 second connection naming the same machine (in any case) is refused while the
@@ -315,12 +314,34 @@ slot is released when it stands down.
 A request is held as in flight from its preflight until it is pending or
 refused, so a second teleport for the same session sent during the probe's wait
 is refused as already teleporting. After the probe, a predecessor that no
-longer holds its name on a live connection gets no handoff. One case is left to
-the launcher client (g2): a launcher that does launch the successor but whose
-answer arrives after the 60s launch timeout. The broker has by then retired the
-successor's row and kept the predecessor, so a successor that starts anyway
-runs on a retired identity beside a live predecessor. g2 should close a launch
-whose answer it could not deliver in time.
+longer holds its name on a live connection, from the same Claude Code pid it
+had at preflight, gets no handoff.
+
+**`agent-chat host serve|list|install` (CC-951 g2).** `host serve`
+(`server/host-launcher.ts`) opens its own connection to the broker socket,
+announces `os.hostname()` (or `--host`), its platform, and the surfaces it can
+open (iTerm2 only on macOS, `tmux-window` only where `tmux` runs, `headless`
+always), and reconnects every 5s after a drop, so a broker restart does not
+strand it. It never autostarts a broker. The broker checked the paths only
+lexically, so the launcher resolves the cwd and config dir through realpath on
+its own disk and refuses one that is missing, resolves into a credential
+directory, or resolves outside its home. It then runs `checkLaunch` (the same
+allowlist as the caller path) and builds the plan with the spec's cwd and
+`CLAUDE_CONFIG_DIR` set to the spec's config dir, never its own, and always opens
+a new surface: a launcher never reuses a pane. `host list` asks the broker for
+the connected launchers. `host install` writes a kept-alive launchd job
+(`dev.hjewkes.agent-chat-host-launcher`) on macOS or a systemd --user unit on
+Linux running `host serve`; `--dry-run` prints it.
+
+A launch whose answer the broker never sees is retired there (the broker keeps
+the predecessor), so the launcher makes sure that successor never runs as a
+live identity. It answers within 45s, before the broker's 60s window; a surface
+that has not opened by then gets a refusal. A launch that did open but whose
+answer cannot be delivered (the connection closed) is treated the same way. In
+both cases the successor is marked superseded on the launcher's machine, so the
+stale-session guard blocks its prompts, and the broker refuses the retired
+identity's registration, so it never holds the name. Its window stays open for
+the human to close.
 
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and

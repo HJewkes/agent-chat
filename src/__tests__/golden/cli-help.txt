@@ -22,6 +22,7 @@ Commands:
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
   machine                    operator HOLDs, owner stops and the machine stop
+  host                       host launchers: machines a teleport can land a successor on
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
   lifecycle                  offline maintenance of the agent lifecycle ledger
@@ -867,6 +868,55 @@ Options:
   --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?, seats?}], ownerStops,
               machine, errors
   -h, --help  display help for command
+
+=== agent-chat host
+Usage: agent-chat host [options] [command]
+
+host launchers: machines a teleport can land a successor on
+
+Options:
+  -h, --help         display help for command
+
+Commands:
+  serve [options]    run this machine as a host launcher (CC-951): announce it to the broker, answer
+                     its probes, and launch teleport successors here with the cwd and account the
+                     spec names; reconnects after a drop
+  list               the host launchers connected to the broker, with their platform and surfaces
+  install [options]  install `host serve` as a kept-alive launchd job (systemd --user unit on
+                     Linux), so this machine stays a teleport destination across logins and broker
+                     restarts
+  help [command]     display help for command
+
+=== agent-chat host serve
+Usage: agent-chat host serve [options]
+
+run this machine as a host launcher (CC-951): announce it to the broker, answer its probes, and
+launch teleport successors here with the cwd and account the spec names; reconnects after a drop
+
+Options:
+  --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
+                 report it
+  -h, --help     display help for command
+
+=== agent-chat host list
+Usage: agent-chat host list [options]
+
+the host launchers connected to the broker, with their platform and surfaces
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat host install
+Usage: agent-chat host install [options]
+
+install `host serve` as a kept-alive launchd job (systemd --user unit on Linux), so this machine
+stays a teleport destination across logins and broker restarts
+
+Options:
+  --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
+                 report it
+  --dry-run      print the plist or unit and the calls; load nothing
+  -h, --help     display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]
