@@ -20,6 +20,7 @@ import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
 import { readSeatFile } from './teleport-state.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
+import type { WaitingPermission } from './waiting-permission.js'
 import {
   meterSpend,
   savedMeters,
@@ -149,6 +150,8 @@ export interface SeatStatus {
   stop: 'machine' | null
   /** The readings behind a machine stop; null without one. */
   machineStop: MachineStop | null
+  /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
+  waitingPermission: WaitingPermission[]
 }
 
 export interface StatusDeps {
@@ -175,6 +178,8 @@ export interface StatusDeps {
   machineStop: () => MachineStop | null
   /** CC-978: the seat's implementer claims in the burndown ledger. Absent, or a throw: not shown. */
   ledgerImplementers?: (seat: string) => number
+  /** CC-610: every agent parked on the permission hook, machine-wide. Absent, or a throw: not shown. */
+  waitingPermission?: (nowMs: number) => WaitingPermission[]
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -262,6 +267,15 @@ function withLedger(load: RoleLoad, deps: StatusDeps, seat: string): RoleLoad {
     return ledger === undefined ? load : { ...load, ledger }
   } catch {
     return load
+  }
+}
+
+function waitingPermission(deps: StatusDeps, agents: AgentIdentity[], nowMs: number): WaitingPermission[] {
+  const names = new Set(agents.filter(running).map(a => a.name))
+  try {
+    return (deps.waitingPermission?.(nowMs) ?? []).filter(w => names.has(w.agent))
+  } catch {
+    return []
   }
 }
 
@@ -511,6 +525,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     machine: deps.machine(roster),
     stop: machineStop === null ? null : 'machine',
     machineStop,
+    waitingPermission: waitingPermission(deps, mine, now.getTime()),
   }
 }
 
@@ -603,6 +618,17 @@ function poolPickLines(picks: PoolPickStatus): string[] {
   return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
 }
 
+function waitAge(since: string, at: string): string {
+  const seconds = Math.max(0, Math.round((Date.parse(at) - Date.parse(since)) / 1000))
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`
+}
+
+/** No line while nothing waits, so a seat with no parked prompt reads as before. */
+function waitingPermissionLines(status: SeatStatus): string[] {
+  const waits = status.waitingPermission.map(w => `${w.agent} (${w.tool}, ${waitAge(w.since, status.at)})`)
+  return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
+}
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox } = status
@@ -615,6 +641,7 @@ export function renderBrief(status: SeatStatus): string[] {
     line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
     line('parked', String(status.parked.count)),
+    ...waitingPermissionLines(status),
   ]
 }
 
@@ -628,6 +655,7 @@ export function renderStatus(status: SeatStatus): string[] {
     roleLine('planners', status.planners),
     agentLine('other', status.other, String(status.other.active)),
     line('parked', `${parked.count}${trees}`),
+    ...waitingPermissionLines(status),
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),

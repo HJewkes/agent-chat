@@ -111,7 +111,7 @@ import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-rep
 import type { ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
-import { isTrusted, trustGap } from './trust.js'
+import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -414,6 +414,8 @@ export interface SpawnRequest {
   worktree?: string
   /** CC-81: path globs inside the worktree this agent owns. */
   owns?: string[]
+  /** CC-952: globs the broker claims for the agent in its worktree at spawn; isolates nothing. */
+  claimPaths?: string[]
   /** CC-44: start from a copy of the REQUESTER's own conversation, not an empty one. */
   inherit?: 'context'
   /** H-12: explicit opt-in to `--remote-control`; a spawned agent never gets it otherwise. */
@@ -1883,6 +1885,7 @@ export class Supervisor implements TeleportHost {
     const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
+    this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
 
@@ -2211,6 +2214,8 @@ export class Supervisor implements TeleportHost {
    * runtime state for retire --force.
    */
   private async releaseFailedSpawn(req: SpawnRequest, agentId: string, when: FailedRelease): Promise<void> {
+    // A name that never registered never reaches `core.drop`, so its spawn-time claim would outlive it.
+    this.core.claims.releaseAll(req.name)
     const held = readRuntimeState(agentId)
     if (held === undefined || when === 'keep') return
     if (when === 'if-pane-closed' && (await this.paneStillOpen(held.handle))) return
@@ -2218,6 +2223,23 @@ export class Supervisor implements TeleportHost {
     if (!(await this.releaseHeld(ctx, held, {}))) return
     // Kept, not cleared, so retire still closes the pane; `none` so it never releases the tree twice.
     writeRuntimeState(agentId, { ...held, allocation: { cwd: held.allocation.cwd }, isolation: 'none' })
+  }
+
+  /**
+   * CC-952: hold the agent's declared paths before it registers, so the next
+   * burndown tick refuses an overlapping task. The repo is the spawn cwd's main
+   * checkout, the key the tick filters claims by; a refused claim spawns anyway.
+   */
+  private claimAtSpawn(req: SpawnRequest, worktreePath: string, cwd: string): void {
+    if (!req.claimPaths?.length) return
+    const root = gitRootOf(cwd)
+    const outcome = this.core.claims.claim({
+      owner: req.name,
+      worktreePath,
+      ...(root === undefined ? {} : { repoPath: canonicalRootOf(root) }),
+      patterns: req.claimPaths,
+    })
+    if (!outcome.ok) logEvent('agent_spawn_claim_refused', { name: req.name, reason: outcome.reason })
   }
 
   /**
@@ -3258,6 +3280,8 @@ export class Supervisor implements TeleportHost {
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
     }
   }
@@ -3304,6 +3328,8 @@ export class Supervisor implements TeleportHost {
       ...(input.configDir ? { configDir: input.configDir } : {}),
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
     })
     return { plan, sessionId }
   }

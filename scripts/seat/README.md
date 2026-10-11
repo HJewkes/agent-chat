@@ -7,27 +7,45 @@ history and CI-run tests, and then retires them one by one behind factory `land`
 `src/__tests__/seat-scripts.test.ts` runs each `test-*.sh` suite. `test-task-note.sh` drives
 the real `active-work` CLI, so it runs only where `active-work` is on PATH, never in CI.
 
-## The live copy is frozen
+## Cutover
 
-From this import until the `seat-merge` cutover, the live `bin/` copy is frozen. An emergency fix
-lands in both places in the same change, with `diff -r <live bin> scripts/seat` in the PR body.
+CC-1019, CC-1020 and CC-1021 move the seats from the live autonomy `bin/` copy to this one. Until
+then, an emergency fix lands in both places in the same change, with `diff -r <live bin>
+scripts/seat` in the PR body. After the cutover this copy is canonical, `log` and `task-note`
+included, and the autonomy `bin/` copies retire via CC-1021.
 
-This copy differs from the live one on purpose, because the repository is public. Test temp
-dirs and agent names are neutral (`seat-test-*`, `seat-9-*`). `premerge` has no built-in
-coordinator list and exits 2 when `COORDINATORS` is unset, so the cutover must export
-`COORDINATORS` in `seat-merge` before pointing it at this copy. `task-note` has no default data
-root and exits 2 when `ACTIVE_ROOT` is unset. `queue` tries GNU `stat -c` before BSD `stat -f`,
-because GNU `stat -f` prints a filesystem report instead of failing, which broke the stale-lock
-age on Linux.
+`seat-merge`, and anything else that runs these scripts, must export:
+
+- `SEAT`: the seat name `merge` writes into the squash message.
+- `COORDINATORS`: the space-separated coordinator seat names. `premerge` has no built-in list and
+  exits 2 without it.
+- `ACTIVE_ROOT` (the active-work data root) or `AUTONOMY_ROOT` (the autonomy directory, default
+  `$ACTIVE_ROOT/claude-channels/sources/autonomy`). `queue`, `log`, `pace` and `scorecard` find
+  their data there, `scorecard` and `task-note` read tasks under `ACTIVE_ROOT`, and each exits 2
+  without a root.
+- `AGENT_CHAT_HOME`, where it is not `~/.agent-chat`. `premerge` and `scorecard` read
+  `events.db` there, and `pace` reads `seat-watchdog.json` and `pace.json`.
+- `titan-squash-message` on `PATH` (or `SQUASH_MESSAGE_BIN`). `merge` fails rather than fall back
+  to GitHub's default message.
+
+These values come from `~/.config/titan/seat.env`, which chezmoi manages, so this public repo
+holds no site values.
+
+This copy differs from the live one on purpose:
+
+- Test temp dirs and agent names are neutral (`seat-test-*`, `seat-9-*`), because the repository
+  is public.
+- `premerge` requires `COORDINATORS`, and `task-note` requires `ACTIVE_ROOT`, instead of
+  built-in site defaults.
+- `queue`, `log`, `pace` and `scorecard` require a root instead of falling back to their own
+  parent directory.
+- `premerge` reads a verdict whose body opens with a code fence (CC-842).
+- `merge` builds its squash message with `titan-squash-message`.
+- `queue` tries GNU `stat -c` before BSD `stat -f`, because GNU `stat -f` prints a filesystem
+  report instead of failing, which broke the stale-lock age on Linux.
 
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.
-
-`queue`, `log`, `pace` and `scorecard` find their data in the autonomy directory named by
-`AUTONOMY_ROOT`, which defaults to `$ACTIVE_ROOT/claude-channels/sources/autonomy`. `scorecard`
-reads task files under `ACTIVE_ROOT`. With neither variable set, each exits 2. The live copies
-fell back to their own parent directory instead, so the cutover must export `ACTIVE_ROOT` (or
-`AUTONOMY_ROOT`) wherever these run.
 
 ## Retirement list
 

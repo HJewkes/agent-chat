@@ -1131,3 +1131,33 @@ describe('continueStarted (CC-488)', () => {
     expect(continueStarted(plan, () => true)).toEqual(plan)
   })
 })
+
+/** CC-951: flags a teleport successor carries from its predecessor. */
+describe('carried launch flags', () => {
+  const channelsOf = (args: string[]): string[] => {
+    const at = args.indexOf('--channels')
+    const end = args.findIndex((arg, i) => i > at && arg.startsWith('-'))
+    return args.slice(at + 1, end < 0 ? undefined : end)
+  }
+
+  it("lists a carried channel after agent-chat's own, without naming agent-chat twice", () => {
+    const plan = buildLaunchPlan(
+      input({ channels: ['plugin:agent-chat@agent-chat-local', 'plugin:voltras-channel@x'] }),
+    )
+
+    expect(channelsOf(plan.args)).toEqual(['plugin:agent-chat@agent-chat-local', 'plugin:voltras-channel@x'])
+  })
+
+  it('emits a carried permission mode on an interactive surface', () => {
+    const plan = buildLaunchPlan(input({ surface: 'tmux-window', permissionMode: 'auto' }))
+
+    expect(flag(plan.args, '--permission-mode')).toBe('auto')
+  })
+
+  it('keeps a headless run pinned to default whatever was carried', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless', permissionMode: 'auto' }))
+
+    expect(plan.args.filter(arg => arg === '--permission-mode')).toHaveLength(1)
+    expect(flag(plan.args, '--permission-mode')).toBe('default')
+  })
+})

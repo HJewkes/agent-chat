@@ -443,6 +443,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     initiative: d.initiative,
     taskId: d.task,
     ...(d.tier === undefined ? {} : { tier: d.tier }),
+    ...(d.owns === undefined ? {} : { claimPaths: d.owns }),
   })
   return [ledgerStep(write), { kind: 'spawn', key, frame }]
 }

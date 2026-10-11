@@ -680,8 +680,29 @@ describe('the load-test rule (CC-473)', () => {
     ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
   ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
     expect(text).not.toContain('pkill')
-    expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
-    expect(flat(text)).toContain('kill only those, never by name pattern; confirm with `pgrep` none survive')
+    expect(flat(text)).toContain(
+      'Load test only if the brief asks: kill only burner PIDs you recorded, not by name; `pgrep` shows none left.',
+    )
+  })
+})
+
+describe('the Concerns and Notes lines (CC-399)', () => {
+  // Mutation caught: dropping the Concerns/Notes sentence, which let a DONE_WITH_CONCERNS carry only notes.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block splits action-needed Concerns from Notes, within the cap', (_which, block) => {
+    const text = flat(block)
+
+    expect(text).toContain('Then `Concerns:` (what <spawner> must act on, or none;')
+    expect(text).toContain('DONE_WITH_CONCERNS needs one)')
+    expect(text).toContain('and `Notes:` (the rest).')
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  it('leaves the reviewer block without either line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Concerns:')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Notes:')
   })
 })
 

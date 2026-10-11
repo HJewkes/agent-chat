@@ -23,6 +23,10 @@ export interface RemoteLaunch {
   tags?: string[]
   subscriptions?: Subscription[]
   remoteControl?: boolean
+  /** CC-951: carried channel targets; the caller's host checks each one before it reaches an argv. */
+  channels?: string[]
+  /** CC-951: carried permission mode, checked against the same allowlist on the caller's host. */
+  permissionMode?: string
   anchor?: string
   /** CC-913: this landing's secret; the only proof a later `teleport_land_failed` came from the caller that armed it. */
   landToken?: string
@@ -902,6 +906,13 @@ export type ClientMessage =
        */
       owns?: string[]
       /**
+       * CC-952: path globs, relative to the agent's own worktree, the broker
+       * claims as a `files` claim held by the agent's name, so the burndown tick
+       * sees them before the agent registers. Unlike `owns` it isolates nothing
+       * and is accepted with a worktree profile.
+       */
+      claimPaths?: string[]
+      /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
        * is deliberately no field naming WHOSE conversation — the broker resolves
@@ -1028,6 +1039,8 @@ export type ClientMessage =
       surface?: SurfaceName
       /** CC-951: the caller's own OS, sent by its MCP process and never by the model. */
       hostPlatform?: string
+      /** CC-951: launch flags the caller read from its own argv, which a broker on another host cannot. */
+      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
