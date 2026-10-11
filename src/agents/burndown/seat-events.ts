@@ -55,10 +55,15 @@ const at = (ledger: Ledger, key: ClaimKey): Claim | undefined =>
 /** Phases compared as strings: a claim read from an older ledger may carry `shepherding`. */
 const MERGE_PHASES: readonly string[] = ['awaiting-merge', 'shepherding']
 
+/** A claim that finished with a PR from a phase only a merge finishes it with one (CC-978). */
+const LINKED_PHASES: readonly string[] = ['queued', 'implementing']
+
 /** Only a merge moves a claim from awaiting-merge to done, so a delivered ready-to-merge on a done claim means merged. */
 const merged = (before: Claim | undefined, after: Claim): boolean =>
   after.phase === 'done' &&
-  (MERGE_PHASES.includes(before?.phase ?? '') || after.notified?.includes('ready-to-merge') === true)
+  (MERGE_PHASES.includes(before?.phase ?? '') ||
+    (LINKED_PHASES.includes(before?.phase ?? '') && after.pr !== undefined) ||
+    after.notified?.includes('ready-to-merge') === true)
 
 /** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
 function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): SeatEvent[] {

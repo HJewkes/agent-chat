@@ -264,6 +264,11 @@ const Ledger = z.object({
     .optional(),
   /** Release counts by task id, which hold the task back from dispatch (CC-661). */
   releases: z.record(z.string(), ReleaseRecord).optional(),
+  /**
+   * Slices dropped one at a time by `burndown release --slice`, by task id (CC-978). The task stays seeded, and a
+   * dropped slice no longer gates the slices that depend on it. A whole-task release clears the entry.
+   */
+  slicesReleased: z.record(z.string(), z.array(z.string())).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
@@ -343,6 +348,14 @@ const LANE_PHASES: ReadonlySet<Phase> = new Set(['spawning', 'planning', 'implem
 /** Claims with an agent at work: parked, queued, awaiting-merge and shepherding claims hold their task but not a lane. */
 export const laneClaims = (ledger: Ledger): Claim[] => ledger.claims.filter(c => LANE_PHASES.has(c.phase))
 
+/** CC-978: the seat's claims the ledger shows holding an implementer: implementing, or spawning into it. */
+export const ledgerImplementers = (ledger: Ledger, seat: string): number =>
+  heldClaims(ledger).filter(
+    c =>
+      c.seat === seat &&
+      (c.phase === 'implementing' || (c.phase === 'spawning' && c.nextPhase === 'implementing')),
+  ).length
+
 export function isStalled(claim: Claim, now: Date): boolean {
   if (claim.stalledReason !== undefined) return true
   const timeout = PHASE_TIMEOUT_MS[claim.phase]
@@ -361,12 +374,20 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
-/** Queued slices whose dependencies are all done and whose task is not in `held`, in ledger order. */
+/**
+ * Queued slices whose dependencies are all done or released, whose task is not in `held`, and that no
+ * hand-dispatched PR is linked to (CC-978), in ledger order.
+ */
 export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
-  const done = (taskId: string, slice: string): boolean =>
+  const met = (taskId: string, slice: string): boolean =>
+    ledger.slicesReleased?.[taskId]?.includes(slice) === true ||
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
   return ledger.claims.filter(
-    c => c.phase === 'queued' && !held.has(c.taskId) && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
+    c =>
+      c.phase === 'queued' &&
+      c.pr === undefined &&
+      !held.has(c.taskId) &&
+      (c.dependsOn ?? []).every(dep => met(c.taskId, dep)),
   )
 }
 
