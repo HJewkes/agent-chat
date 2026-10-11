@@ -199,6 +199,11 @@ function addAgentCommands(program: Command): void {
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
       agents.parseSurface,
     )
+    .option(
+      '--spawned-as <who>',
+      'shepherd or burndown: the automation this spawn is on behalf of',
+      agents.parseSpawnedAs,
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
