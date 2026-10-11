@@ -578,7 +578,9 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const ownHold = holdFor(pass, seat, log.stop)
   const budget = seatBudget(pass, seat, reading, run)
   // CC-326: a closed pool or a seat at its spend stop holds the resume as it holds the wake.
-  const resumeHold = ownHold ?? (budget.open ? undefined : `budget closed: ${budget.reason}`)
+  // CC-466: a pool closed only for want of a reading does not; the resumed seat's boot reads it.
+  const resumeHold =
+    ownHold ?? (budget.open || budget.noReading ? undefined : `budget closed: ${budget.reason}`)
   const liveness = seatLiveness(pass, seat.name, resumeHold)
   const relaunch = seatRelaunch(pass, seat.name, liveness, resumeHold, log.activityAt)
   // CC-465: a dark seat is the relaunch's, so the idle wake never resumes one the relaunch held back.
