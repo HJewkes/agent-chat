@@ -252,6 +252,18 @@ escalation and calling it a handoff: an `explorer` could teleport into an
 `implementer`. There is deliberately no such argument, for the same reason
 `loadProfile` resolves by name only and refuses to take a profile body.
 
+**The surface is the one exception (CC-951).** A surface is a window, not a
+privilege, and a recorded one may not exist where the successor lands: an
+adopted session on the linux broker used to be handed `iterm-tab` and refused.
+`agent_teleport` takes an optional `surface`. With none, `chooseSurface` picks,
+for the destination's OS: the seat file's `surfaces:` entry for that machine
+(or its legacy `surface:`), then the predecessor's recorded surface, each only
+when that OS can run it, then the OS default (`tmux-window` on Linux,
+`iterm-tab` on macOS). The destination is the broker's host, or for a caller on
+another host its own OS, which its MCP process reports as `hostPlatform`. A
+named surface the destination cannot run is refused before the handoff row is
+written, and a named surface opens fresh rather than in the predecessor's pane.
+
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
 returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same

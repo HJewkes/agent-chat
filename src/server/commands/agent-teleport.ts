@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
-import { TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
+import { SURFACE_NAMES, TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
 import { hostIdentity } from '../host.js'
@@ -73,9 +73,18 @@ export const agentTeleport = defineTool({
           'from the handoff first, so restate that question in the handoff.',
       )
       .optional(),
+    surface: z
+      .enum(SURFACE_NAMES)
+      .describe(
+        'Optional. Omit to land where your seat file, or failing that your current surface, says, ' +
+          'when this machine can run it, else in its OS default: tmux-window on Linux, iterm-tab on ' +
+          'macOS. Set it to open your successor somewhere else; a surface this machine cannot run ' +
+          '(iTerm on Linux) is refused, and you are not ended.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested, remote_control: remoteControl, reason }, ctx) {
+  async run({ handoff, model: requested, remote_control: remoteControl, reason, surface }, ctx) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
@@ -92,6 +101,9 @@ export const agentTeleport = defineTool({
         ...(remoteControl === undefined ? {} : { remoteControl }),
         ...(seen ? { remoteControlSeen: true } : {}),
         ...(reason === undefined ? {} : { reason }),
+        ...(surface === undefined ? {} : { surface }),
+        // CC-951: a broker on another host picks this session's default surface by its OS, not its own.
+        hostPlatform: process.platform,
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>
