@@ -195,6 +195,21 @@ describe('an agent that does not produce the event', () => {
     expect(unreported()).toEqual([])
   })
 
+  it('is one burndown spawned whose reportTo is unread because the settings file is malformed', async () => {
+    const home = process.env.AGENT_CHAT_HOME as string
+    fs.writeFileSync(path.join(home, 'burndown.config.json'), JSON.stringify({ reportTo: 'surplus' }))
+    fs.writeFileSync(
+      path.join(home, 'burndown.settings.json'),
+      JSON.stringify({ seats: { 'seat-t': { on: 'maybe' } } }),
+    )
+    await spawnScout('human')
+    core.append({ kind: 'message', actor: 'scout', target: 'surplus', body: 'Status: DONE' })
+
+    await exitAndSettle()
+
+    expect(unreported()).toHaveLength(1)
+  })
+
   it('is not one whose Status report went only to reportTo when a coordinator spawned it', async () => {
     const config = path.join(process.env.AGENT_CHAT_HOME as string, 'burndown.config.json')
     fs.writeFileSync(config, JSON.stringify({ reportTo: 'surplus' }))

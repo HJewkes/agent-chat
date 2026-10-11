@@ -13,10 +13,9 @@ import { itermSessionPresent, tmuxWindowPresent } from '@titan-design/agent-surf
 import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { describeMirror, readMirrorFacts } from '../mirror/status.js'
 import { heldClaims, isStalled, readLedger } from '../agents/burndown/ledger.js'
-import { loadTickConfig } from '../agents/burndown/source.js'
+import { loadResolvedConfig } from '../agents/burndown/settings-store.js'
 import { eligibleCount } from '../agents/burndown/tick.js'
 import {
-  burndownConfigPath,
   burndownLedgerPath,
   burndownPausePath,
   cliEntry,
@@ -442,7 +441,7 @@ function checkBurndown(): Check {
     const ledger = readLedger(burndownLedgerPath())
     const held = heldClaims(ledger)
     const stalled = held.filter(c => isStalled(c, now)).length
-    const config = loadTickConfig(burndownConfigPath())
+    const config = loadResolvedConfig().tick
     const mode = config.enabled ? (fs.existsSync(burndownPausePath()) ? 'paused' : 'enabled') : 'disabled'
     const detail = `${mode}, ${held.length} held, ${stalled} stalled, ${eligibleCount()} eligible, last tick at ${ledger.lastTickAt ?? 'never'}`
     return { name: 'burndown', status: stalled > 0 ? 'warn' : 'ok', detail }
