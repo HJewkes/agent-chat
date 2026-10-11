@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { SpawnRequest } from '../agents/supervisor.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from '../agents/seats/spawn-gate-read.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
@@ -34,12 +35,21 @@ describe('the surface a seat spawn launches on', () => {
     return h
   }
 
+  /** Spawns as the harness does but leaves `surface` out unless `extra` names one. */
   const spawnedSurface = async (
     harness: RestartHarness,
     name: string,
-    extra: Parameters<RestartHarness['spawnAgent']>[1],
+    extra: Partial<SpawnRequest> = {},
   ): Promise<string | undefined> => {
-    const outcome = await harness.spawnAgent(name, extra)
+    const outcome = await harness.supervisor.spawn({
+      name,
+      profile: 'explorer',
+      brief: 'seat spawn surface',
+      requestedBy: 'human',
+      cwd: harness.home,
+      isolation: 'none',
+      ...extra,
+    })
     expect(outcome.ok).toBe(true)
     return harness.core.events
       .agentEvents()
@@ -49,7 +59,7 @@ describe('the surface a seat spawn launches on', () => {
   it('runs a seat worker headless when its profile says iterm-pane and no surface is passed', async () => {
     const sup = start()
 
-    const surface = await spawnedSurface(sup, 'ac-impl', { surface: undefined })
+    const surface = await spawnedSurface(sup, 'ac-impl')
 
     expect(surface).toBe('headless')
   })
@@ -65,7 +75,7 @@ describe('the surface a seat spawn launches on', () => {
   it("keeps the profile's surface for a spawn no seat owns", async () => {
     const sup = start()
 
-    const surface = await spawnedSurface(sup, 'loose-impl', { surface: undefined })
+    const surface = await spawnedSurface(sup, 'loose-impl')
 
     expect(surface).toBe('iterm-pane')
   })
@@ -75,7 +85,7 @@ describe('the surface a seat spawn launches on', () => {
     fs.mkdirSync(path.join(sup.home, 'profiles'), { recursive: true })
     fs.writeFileSync(path.join(sup.home, 'profiles', 'lead.json'), JSON.stringify(COORDINATOR_PROFILE))
 
-    const surface = await spawnedSurface(sup, 'ac-lead', { profile: 'lead', surface: undefined })
+    const surface = await spawnedSurface(sup, 'ac-lead', { profile: 'lead' })
 
     expect(surface).toBe('iterm-pane')
   })
