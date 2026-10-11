@@ -504,6 +504,17 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'packages/agent-dispatch/src/a.ts',
     'config/generated-paths.json',
     'packages/x/src/coordinator-allowances.ts',
+    'products/factory/src/owner-keys.ts',
+    'products/factory/src/required-checks.ts',
+    'packages/review-panel/src/accept-verdict.ts',
+    'packages/review-panel/src/depth-floor.ts',
+    'packages/review-panel/src/verdict-schemas.ts',
+    'packages/review-panel/src/verdict-target.ts',
+    'packages/review-panel/briefs/adversary.ts',
+    'packages/agent-surface/src/launch-args.ts',
+    'packages/agent-surface/src/run-agent.ts',
+    'src/config.ts',
+    'src/paths.ts',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',
@@ -556,17 +567,20 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.calls[1]).toContain('protected path')
   })
 
-  // Mutation: holding every non-test path, or protecting all of src/, would hold these.
-  it.each(['src/widgets/render.ts', 'src/service-check.ts', 'docs/guide.md', 'src/cli/verbs/list.ts'])(
-    'registers an ordinary path %s with no hold',
-    path => {
-      const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
+  // Mutation: holding every non-test path, protecting all of src/, or protecting all of products/factory/src, would hold these.
+  it.each([
+    'src/widgets/render.ts',
+    'src/service-check.ts',
+    'docs/guide.md',
+    'src/cli/verbs/list.ts',
+    'products/factory/src/render.ts',
+  ])('registers an ordinary path %s with no hold', path => {
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
 
-      tick(f)
+    tick(f)
 
-      expect(f.calls).toEqual(['register Acme/Widgets#7'])
-    },
-  )
+    expect(f.calls).toEqual(['register Acme/Widgets#7'])
+  })
 
   // Mutation: checking only `path` and not `previousPath` leaves a guard moved into tests unheld.
   it('holds a PR that renames a guard file into a test path', () => {

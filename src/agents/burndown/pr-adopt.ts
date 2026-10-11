@@ -169,7 +169,7 @@ const PROTECTED_NAME = new RegExp(`(${[...SENSITIVE_STEMS, ...PATH_ONLY_STEMS].j
 
 const PROTECTED_PATHS = [
   /^src\/(agents|server|broker|gh-shim|gh-write|leak-guard)\//,
-  /^src\/(cli\/gh-write|spawn-kernel|protocol)\.ts$/,
+  /^src\/(cli\/gh-write|spawn-kernel|protocol|config|paths)\.ts$/,
   /^(audit|profiles|scripts|plugins|\.claude-plugin|\.github)\//,
   /(^|\/)\.claude\//,
   /(^|\/)\.mcp\.json$/,
@@ -178,8 +178,8 @@ const PROTECTED_PATHS = [
   /(^|\/)tsconfig[^/]*\.json$/,
   /(^|\/)\.npmrc$/,
   /(^|\/)vitest\.config\.[^/]+$/,
-  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue|coordinator|agent|agent-dispatch|github)\//,
-  /^products\/factory\/src\/shepherd\//,
+  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue|coordinator|agent|agent-dispatch|github|review-panel|agent-surface)\//,
+  /^products\/factory\/src\/(shepherd\/|owner-keys\.ts$|required-checks\.ts$)/,
   /(^|\/)(generated-paths\.json|coordinator-allowances\.ts)$/,
 ]
 
