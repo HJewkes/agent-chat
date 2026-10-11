@@ -503,9 +503,10 @@ export async function startMcpServer(): Promise<void> {
   // A superseded session has nothing left to do: a newer process holds its
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
+  // CC-951: a tick later, so an `endSelf` read just ahead of the fatal frame ends Claude Code first.
   const broker = new BrokerClient(
     deliver,
-    () => process.exit(0),
+    () => void setImmediate(() => process.exit(0)),
     deliverSystemEvents,
     deliverPermissionVerdict,
   )

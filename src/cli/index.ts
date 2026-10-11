@@ -322,7 +322,8 @@ function addHiddenCommands(program: Command): void {
     .requiredOption('--pid <pid>', "the predecessor's Claude Code, whose exit frees its pane")
     .requiredOption('--surface <surface>', 'where the successor runs')
     .option('--anchor <anchor>', "the predecessor's pane")
-    .action(async (id: string, options: { pid: string; surface: string; anchor?: string }) => {
+    .option('--now', 'launch at once, beside the running predecessor (CC-951)')
+    .action(async (id: string, options: { pid: string; surface: string; anchor?: string; now?: boolean }) => {
       const { runLandVerb } = await import('../server/caller-land.js')
       await runLandVerb(id, options)
     })

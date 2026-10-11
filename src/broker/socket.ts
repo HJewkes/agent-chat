@@ -1479,11 +1479,14 @@ export class SocketServer {
         // open would let the predecessor keep writing under a name it no longer
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
         // — the predecessor has to learn why, or it just reconnects and takes the
-        // name back.
+        // name back. CC-951: a tick later, so a remote predecessor's `endSelf`,
+        // answered on this registration's attach, is written ahead of the close.
         const dark = core.darkSeat(msg.name)
         const returning = this.returning(msg)
         const result = core.register(conn, msg, stale =>
-          stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
+          setImmediate(() =>
+            stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
+          ),
         )
         if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
         reply(conn, { t: 'register_result', ...result })

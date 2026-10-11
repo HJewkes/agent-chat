@@ -432,8 +432,33 @@ The "dead bus" state above still exists. It lasts from the eviction to the
 SIGTERM, which is the same tick. Pane reuse stays end-first (§4.3, CC-402): a
 command typed into a pane whose Claude Code is still alive is swallowed. So a
 predecessor with an anchor and no requested surface is ended before its
-successor launches, as before. The remote and caller paths (CC-881/CC-913) are
-unchanged here.
+successor launches, as before.
+
+**A predecessor on another host (CC-951 f).** The broker cannot signal a process
+on another host, so a remote predecessor ends itself. Its MCP process waits on
+`teleport_plan`, and the broker answers `endSelf` when the successor attaches.
+The caller then ends its own Claude Code and writes no launch files. Two moves
+work this way:
+
+- **To the broker's host** (`to` names it). The broker checks that the
+  predecessor's cwd and config dir exist on its own host before it writes the
+  handoff, and refuses otherwise with nothing ended. It then launches the
+  successor itself, on its own platform's surface and without the remote
+  pane's anchor.
+- **A new surface on the caller's own host** (`surface` given, no `to`). The
+  spec carries `successorFirst`. The helper launches at once (`--now`) instead
+  of waiting for the predecessor's pid to exit. After the broker accepts the
+  report, the caller asks for a second plan, which is the `endSelf`. With no
+  surface given, the CC-913 order stays: the predecessor ends first, and the
+  helper launches the successor once its pid exits.
+
+The successor's registration evicts the predecessor's connection. The `endSelf`
+reply must reach the predecessor before that close: after the fatal frame its
+MCP process exits, and nothing on its host can end its Claude Code any more. So
+the socket ends an evicted connection one tick after the registration. The MCP
+server also exits one tick after a fatal frame, so an `endSelf` read in the same
+chunk still runs first. If the successor never attaches, the plan answers
+`ok: false`, and the predecessor is told it is still live.
 
 ---
 
