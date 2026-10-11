@@ -40,7 +40,10 @@ export function patternList(field: string, list: string[] | undefined): string[]
   const kept = (list ?? []).map(pattern => pattern.trim()).filter(pattern => pattern !== '')
   if (kept.length === 0) return undefined
   if (kept.length > CLAIM_MAX_PATTERNS)
-    throw new Error(`${field} may name at most ${CLAIM_MAX_PATTERNS} globs; got ${kept.length}`)
+    throw new Error(
+      `${field} may name at most ${CLAIM_MAX_PATTERNS} globs; got ${kept.length}; ` +
+        'claim a directory (dir/**) or a prefix glob (dir/name*) instead',
+    )
   return kept
 }
 
