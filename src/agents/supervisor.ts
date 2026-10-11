@@ -1188,7 +1188,9 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     reason: string,
     cause:
-      { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
+      | { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean }
+      | { code: 'surface_refused' }
+      | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
@@ -1784,7 +1786,8 @@ export class Supervisor implements TeleportHost {
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
-      return this.refuse(req, reason)
+      // CC-959: typed as resume's is, so a caller can fall back to headless without reading the text.
+      return this.refuse(req, reason, err instanceof SurfaceRefused ? { code: 'surface_refused' } : {})
     }
   }
 
@@ -2441,6 +2444,21 @@ export class Supervisor implements TeleportHost {
     if (identity?.origin !== 'spawned' || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
     return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
+  }
+
+  /** CC-959: a stale seat row by id; never whichever row holds the name now, and never a live one. */
+  async retireStale(
+    agentId: string,
+    name: string,
+    actor?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.get(agentId)
+    if (identity !== undefined && identity.name !== name)
+      return { ok: false, reason: `agent ${agentId} no longer holds the name "${name}"` }
+    const live = identity?.state === 'live' || identity?.state === 'spawning'
+    if (identity !== undefined && (live || this.namePresence(identity) === 'self'))
+      return { ok: false, reason: `agent ${agentId} (${name}) is still live; not retired` }
+    return this.retireById(agentId, actor)
   }
 
   private async retireIdentity(

@@ -1009,8 +1009,10 @@ export type ClientMessage =
    * and forcing it is a human deciding to throw work away.
    * CC-218: `caller` is the retiring session's AGENT_CHAT_NAME, which the one-shot CLI
    * connection cannot register; absent means a person at a terminal.
+   * CC-959: `agentId` retires that row only, and only while it still holds `name` and is not live.
+   * The reply then echoes it, so a caller can tell a broker that ignored it and retired by name.
    */
-  | { t: 'retire'; name: string; force?: boolean; caller?: string }
+  | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */

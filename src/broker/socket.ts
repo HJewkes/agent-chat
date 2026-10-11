@@ -1707,17 +1707,23 @@ export class SocketServer {
           )
         return
       }
-      case 'retire':
-        void this.supervisor
-          .retire(msg.name, msg.force === true, this.core.registry.nameOf(conn) ?? (msg.caller || undefined))
-          .then(result =>
-            reply(conn, {
-              t: 'spawn_result',
-              ok: result.ok,
-              ...(result.reason === undefined ? {} : { reason: result.reason }),
-            }),
-          )
+      case 'retire': {
+        const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
+        const agentId = msg.agentId
+        void (
+          agentId === undefined
+            ? this.supervisor.retire(msg.name, msg.force === true, actor)
+            : this.supervisor.retireStale(agentId, msg.name, actor)
+        ).then(result =>
+          reply(conn, {
+            t: 'spawn_result',
+            ok: result.ok,
+            ...(agentId === undefined ? {} : { agentId, name: msg.name }),
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+          }),
+        )
         return
+      }
     }
   }
 

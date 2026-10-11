@@ -27,8 +27,14 @@ import type { RunLock } from './lock.js'
 import { HANDOFF_GRACE_MS, RELAUNCH_QUIET_MS, judgeRelaunch, type RelaunchVerdict } from './relaunch.js'
 import { checkAttended } from './attended.js'
 import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
-import { seatAccount } from './seat-account.js'
-import { PANE_HOLD_CAP_MS, seatPane, seatTarget } from './seat-target.js'
+import { seatAccount, type SeatAccount } from './seat-account.js'
+import {
+  PANE_HOLD_CAP_MS,
+  seatPane,
+  seatTarget,
+  type RelaunchTarget,
+  type SeatRelaunchPlan,
+} from './seat-target.js'
 import { poolPace } from './pace.js'
 import { dayOpening, publishPace, type PaceStore } from './pace-pass.js'
 import {
@@ -75,6 +81,14 @@ export interface WakeResult {
   detail: string
 }
 
+export interface RelaunchSeatResult extends WakeResult {
+  /**
+   * CC-959: nothing launched and the human must hear why: the broker cannot retire by id, the seat has
+   * no granted profile, or the spawn was refused after its stale rows were already retired.
+   */
+  refused?: true
+}
+
 export interface WatchdogDeps {
   now: () => Date
   readCharter: () => string | undefined
@@ -116,6 +130,8 @@ export interface WatchdogDeps {
   transcriptFound?: (agentId: string) => boolean | undefined
   /** CC-465: raises one item on the human queue. */
   notifyHuman?: (text: string) => Promise<WakeResult>
+  /** CC-959: launches a dark seat on its own account when its latest session cannot be resumed by name; absent, that seat is refused and flagged. */
+  relaunchSeat?: (seat: string, plan: SeatRelaunchPlan) => Promise<RelaunchSeatResult>
   /** CC-391: records each delivered heartbeat as a `heartbeat_watchdog` row; absent, nothing is recorded. */
   logEvent?: (event: string, detail: Record<string, unknown>) => void
 }
@@ -510,6 +526,9 @@ interface Judgement {
 interface StaleSeat {
   session: string
   reason: string
+  target: RelaunchTarget
+  /** Undefined when the seat file names no account, which no launch may guess. */
+  account: SeatAccount | undefined
 }
 
 /** CC-959: undefined when a name-keyed resume wakes the seat's latest session on the seat file's account. */
@@ -524,7 +543,7 @@ function staleSeat(pass: Pass, seat: string): StaleSeat | undefined {
   const reason =
     `latest session ${session} is ${latest.origin ?? 'spawned'} on ${dir}; ` +
     `seat file names ${account?.configDir ?? 'no account'}${holders}`
-  return { session, reason }
+  return { session, reason, target, account }
 }
 
 /** What the idle wake is decided on; the scorer is asked only for a seat nothing else holds. */
@@ -628,9 +647,9 @@ function holdChange(pass: Pass): string | undefined {
   return held ? `Watchdog: hold on every seat: ${pass.restart}` : 'Watchdog: hold on every seat lifted'
 }
 
-async function act(pass: Pass, seat: string, decision: Decision): Promise<string> {
+async function act(pass: Pass, seat: string, decision: Decision, launch: Launch): Promise<string> {
   const connected = pass.roster.connected.includes(seat)
-  const woke = await pass.deps.wake(seat, WAKE_MESSAGE, connected)
+  const woke = connected ? await pass.deps.wake(seat, WAKE_MESSAGE, true) : await launch(seat, WAKE_MESSAGE)
   const line = `Watchdog: ${decision.reason}; ${woke.ok ? 'woke' : 'wake FAILED'} ${seat} (${woke.detail})`
   pass.deps.appendLog(seat, pass.deps.now(), line)
   return `${seat}: ${line}`
@@ -652,11 +671,17 @@ function save(pass: Pass): void {
  * CC-320, CC-326. The mark is saved before the resume and stays unconfirmed until the broker
  * accepts it, so a refusal or a run that dies mid-call is retried and an accepted resume never is.
  */
-async function resumeDark(pass: Pass, seat: string, liveness: LivenessVerdict): Promise<string> {
+async function resumeDark(
+  pass: Pass,
+  seat: string,
+  liveness: LivenessVerdict,
+  launch: Launch,
+): Promise<string> {
   save(pass)
-  const woke = await pass.deps
-    .wake(seat, RESUME_MESSAGE, false)
-    .catch((err: unknown) => ({ ok: false, detail: err instanceof Error ? err.message : String(err) }))
+  const woke = await launch(seat, RESUME_MESSAGE).catch((err: unknown) => ({
+    ok: false,
+    detail: err instanceof Error ? err.message : String(err),
+  }))
   if (woke.ok) delete pass.doc.seats[seat]?.resumeRetry
   const next = (liveness.tries ?? 1) < RESUME_TRY_CAP ? 'will retry next run' : 'giving up on this episode'
   const outcome = woke.ok
@@ -750,8 +775,8 @@ async function relaunchDark(
   pass: Pass,
   seat: string,
   verdict: RelaunchVerdict,
-  handoff: (seat: string, quietMinutes: number, now: Date) => string,
-  activityAt: number | undefined,
+  message: string,
+  launch: Launch,
 ): Promise<string> {
   const record = pass.doc.seats[seat]
   if (record !== undefined) {
@@ -759,10 +784,10 @@ async function relaunchDark(
     record.relaunchTries = verdict.tries ?? 1
   }
   save(pass)
-  const message = handoff(seat, quietMinutes(pass.now.getTime(), activityAt), pass.now)
-  const woke = await pass.deps
-    .wake(seat, message, false)
-    .catch((err: unknown) => ({ ok: false, detail: err instanceof Error ? err.message : String(err) }))
+  const woke = await launch(seat, message).catch((err: unknown) => ({
+    ok: false,
+    detail: err instanceof Error ? err.message : String(err),
+  }))
   const outcome = woke.ok ? `relaunched: ${woke.detail}` : `relaunch FAILED: ${woke.detail}`
   const line = `watchdog relaunch ${seat} (${verdict.reason}; ${outcome})`
   pass.deps.appendLog(seat, pass.deps.now(), line)
@@ -809,30 +834,74 @@ const paneOverCapLine = (seat: string, pane: SeatAgent): string =>
 const paneOverCap = (pass: Pass, seat: string, pane: SeatAgent): Promise<string[]> =>
   flagOnce(pass, seat, 'paneHeld', pane.agentId ?? pane.name, paneOverCapLine(seat, pane))
 
+/** Brings a dark seat back with this message. */
+type Launch = (seat: string, message: string) => Promise<WakeResult>
+
+/** CC-959: launches on the seat's own account; undefined when the seat file names none or nothing relaunches. */
+function relaunchLaunch(
+  pass: Pass,
+  stale: StaleSeat,
+  activityAt: number | undefined,
+  onRefused: (why: string) => void,
+): Launch | undefined {
+  const { account, target } = stale
+  const relaunchSeat = pass.deps.relaunchSeat
+  if (account === undefined || relaunchSeat === undefined) return undefined
+  const quiet = quietMinutes(pass.now.getTime(), activityAt)
+  return async (seat, message) => {
+    const fresh = pass.deps.relaunchHandoff?.(seat, quiet, pass.now) ?? message
+    const res = await relaunchSeat(seat, { target, account, message, fresh })
+    if (res.refused === true) onRefused(res.detail)
+    return res
+  }
+}
+
+/**
+ * CC-959: a name-keyed resume wakes the stale row, so a seat whose latest session it cannot reach
+ * is relaunched on its own account, or refused and flagged when that cannot be done.
+ */
+function launchGate(pass: Pass, name: string, judged: Judgement) {
+  const { stale } = judged
+  return async (verb: string, run: (launch: Launch) => Promise<string>): Promise<string[]> => {
+    if (stale === undefined) return [await run((seat, message) => pass.deps.wake(seat, message, false))]
+    let refusal: string | undefined
+    const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (refusal = why))
+    if (launch === undefined) return refuseStale(pass, name, verb, stale)
+    const line = await run(launch)
+    if (refusal === undefined) return [line]
+    const refused = { ...stale, reason: `${stale.reason}; ${refusal}` }
+    return [line, ...(await refuseStale(pass, name, verb, refused))]
+  }
+}
+
 /** Liveness first, then the relaunch, then the idle wake; the first that acts ends the seat's turn. */
 async function seatAction(pass: Pass, name: string, judged: Judgement): Promise<string[]> {
-  const { liveness, relaunch, decision, journalFault, stale } = judged
+  const { liveness, relaunch, decision, journalFault } = judged
   if (judged.paneOverCap !== undefined) return paneOverCap(pass, name, judged.paneOverCap)
-  // CC-959: every path below that launches a dark seat resumes it by name, which wakes the stale row.
-  const gated = async (verb: string, run: () => Promise<string>): Promise<string[]> =>
-    stale === undefined ? [await run()] : refuseStale(pass, name, verb, stale)
-  if (liveness.resume) return gated('resume', () => resumeDark(pass, name, liveness))
+  const gated = launchGate(pass, name, judged)
+  if (liveness.resume) return gated('resume', launch => resumeDark(pass, name, liveness, launch))
   if (liveness.refused) return [`${name}: Watchdog: ${liveness.reason}`]
   if (relaunch?.successor !== undefined) return failedTeleport(pass, name, relaunch.successor)
   const handoff = pass.deps.relaunchHandoff
-  if (relaunch?.verdict.relaunch && handoff !== undefined)
-    return gated('relaunch', () => relaunchDark(pass, name, relaunch.verdict, handoff, judged.log.activityAt))
+  if (relaunch?.verdict.relaunch && handoff !== undefined) {
+    const message = handoff(name, quietMinutes(pass.now.getTime(), judged.log.activityAt), pass.now)
+    return gated('relaunch', launch => relaunchDark(pass, name, relaunch.verdict, message, launch))
+  }
   if (relaunch?.verdict.refused) return [`${name}: Watchdog: ${relaunch.verdict.reason}`]
-  if (decision.fire) return gated('wake', () => act(pass, name, decision))
+  if (decision.fire) return gated('wake', launch => act(pass, name, decision, launch))
   if (journalFault !== undefined) return [`${name}: Watchdog: held: ${journalFault}`]
   return []
 }
 
-/** CC-959: a launch the stale gate would stop reads as refused, so a dry run shows what the pass does. */
-function dryRunLine(judged: Judgement): string {
+/** CC-959: a launch the stale gate would stop or reroute says so, so a dry run shows what the pass does. */
+function dryRunLine(pass: Pass, judged: Judgement): string {
   const line = plannedLine(judged)
-  const launches = /^WOULD (RESUME|RELAUNCH|FIRE)/.test(line)
-  return launches && judged.stale !== undefined ? `WOULD REFUSE: ${judged.stale.reason}` : line
+  const { stale } = judged
+  if (stale === undefined || !/^WOULD (RESUME|RELAUNCH|FIRE)/.test(line)) return line
+  if (pass.deps.relaunchSeat === undefined || stale.account === undefined)
+    return `WOULD REFUSE: ${stale.reason}`
+  const session = stale.target.kind === 'resume-session' ? `session ${stale.target.sessionId}` : 'fresh'
+  return `${line}; as ${session} on ${stale.account.configDir} (${stale.reason})`
 }
 
 function plannedLine({ decision, liveness, relaunch, paneOverCap }: Judgement): string {
@@ -936,7 +1005,7 @@ async function passSeat(pass: Pass, name: string): Promise<string[]> {
   const judged = judgeSeat(pass, seat)
   const lines = changeLines(pass, seat, judged)
   pass.doc.seats[name] = judged.record
-  if (pass.dryRun) return [...lines, `${name}: ${dryRunLine(judged)}`]
+  if (pass.dryRun) return [...lines, `${name}: ${dryRunLine(pass, judged)}`]
   lines.push(...(await seatAction(pass, name, judged)))
   if (!judged.liveness.resume) lines.push(...(await heartbeat(pass, seat, judged.log)))
   return lines

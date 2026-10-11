@@ -38,6 +38,13 @@ describe('seatTarget (CC-959)', () => {
     })
   })
 
+  // CC-959 review: the relaunch takes its profile and cwd from this row, so it must be the broker's own launch.
+  it('names the newest spawned row as the one the seat was granted, never an adopted one', () => {
+    const target = seatTarget(INCIDENT, 'lead-seat', { configDir: PERSONAL })
+
+    expect(target).toMatchObject({ spawned: { agentId: 'teleport-138', origin: 'spawned' } })
+  })
+
   // Catches: the configDir comparison dropped.
   it('relaunches fresh when the newest spawned row ran on an account the seat file no longer names', () => {
     const agents = [row('g2', { origin: 'spawned', configDir: SERVER, spawnedAt: HOUR })]
