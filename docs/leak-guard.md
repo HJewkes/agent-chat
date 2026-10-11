@@ -684,8 +684,11 @@ and `declare -x GIT_EDITOR='git push --no-verify'; git commit`. A false deny on 
 uses one of these names and may reach git is accepted: `grep GIT_PAGER f && git diff`,
 `export -n GIT_EDITOR; git commit`, and `LESS=-R git log` all deny. A safe literal value stays
 allowed: `GIT_PAGER=less`, `PAGER=cat`, `EDITOR=vim`, `GIT_SSH_COMMAND="ssh -i key"` and an empty
-value. The git scan blanks each program-env assignment's value, so `GIT_EDITOR='git push' ls`,
-which runs no git, stays allowed.
+value. The git scan blanks a program-env assignment's value only where the shell reads that word
+as an assignment once, so `GIT_EDITOR='git push' ls`, which runs no git, stays allowed. Both the
+name uses and the git scan also read the command the guard's own unwrap says runs: its
+assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
+`env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of

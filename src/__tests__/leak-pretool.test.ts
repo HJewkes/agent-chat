@@ -2605,6 +2605,36 @@ describe('a program env var on a line whose git word is built from a variable (T
   )
 })
 
+describe('a program env var that env -S splits out of one word (TP-636)', () => {
+  it.each([
+    `env -S "GIT_SSH_COMMAND='git push --no-verify origin' git fetch origin"`,
+    `env -S "GIT_EDITOR='git push --no-verify' git commit"`,
+    `env -vS "GIT_PAGER='git push --no-verify' git -p log"`,
+    `env --split-string "GIT_PAGER='git push --no-verify' git -p log"`,
+    `nice env -S "GIT_PAGER='git push --no-verify' git -p log"`,
+    `command env -S "GIT_PAGER='git push --no-verify' git -p log"`,
+    'env -S "LESSOPEN=x git -p log"',
+    'env -S "GIT_PAGER=less git log"',
+    'env -u FOO -S "GIT_EDITOR=x git commit"',
+    'timeout 5 env -S "GIT_EDITOR=x git commit"',
+    'xargs env -S "GIT_EDITOR=x git commit" < f',
+    'env env -S "GIT_EDITOR=x git commit"',
+    `env -S "GIT_EDITOR=x g'i't commit"`,
+    'env -S "GIT_EDITOR=x /usr/bin/git commit"',
+    'env -S "GIT_SSH_COMMAND[0]=x git fetch"',
+    'function f { env -S "GIT_EDITOR=x git commit"; }; f',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
+  })
+
+  it.each(['env -S "FOO=1 git log"', 'env -S "git status"', 'env GIT_PAGER=cat git log'])(
+    'allows %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+})
+
 describe('an environment variable git runs as a program (TP-636 fix round 2)', () => {
   it.each([
     "GIT_EDITOR='git push --no-verify' git commit",

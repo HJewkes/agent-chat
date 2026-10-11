@@ -1432,14 +1432,6 @@ function envEvent(word: string, role: WordRole): string | null | undefined {
   return namesProgramEnv(text) ? null : undefined
 }
 
-/** Every program-env event on one command. */
-function envEvents(cmd: SimpleCommand): (string | null)[] {
-  const roles = wordRoles(cmd)
-  return cmd.marked
-    .map((word, i) => envEvent(word, roles[i] as WordRole))
-    .filter((event): event is string | null => event !== undefined)
-}
-
 /** A word's text for the git scan, with a program-env assignment's value blanked so a `git` in it does not count. */
 function scanWord(word: string): string {
   const um = unmark(word)
@@ -1447,11 +1439,67 @@ function scanWord(word: string): string {
   return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
 }
 
+/** How many words at the end of `words` are the written words they end with, so not split out of one. */
+function sharedTail(words: readonly string[], written: readonly string[]): number {
+  let n = 0
+  while (n < words.length && n < written.length && words.at(-1 - n) === written.at(-1 - n)) n++
+  return n
+}
+
+/** One command's program-env events, and its text for the git scan. */
+interface EnvUse {
+  events: (string | null)[]
+  scan: string[]
+}
+
+/** Events from the command as written; only a word the shell reads as an assignment once has its value blanked for the scan. */
+function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
+  return {
+    events: cmd.marked
+      .map((word, i) => envEvent(word, roles[i] as WordRole))
+      .filter((event): event is string | null => event !== undefined),
+    scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
+  }
+}
+
+/**
+ * Events from the command `unwrap` says runs: its assignments and words, including those
+ * `env -S` splits out of one word. A word the written command lacks is never read once by the
+ * shell, so any program env name in it denies; its words and assignments join the git scan.
+ */
+function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
+  const unwrapped = unwrap(functionBody(cmd.marked))
+  if ('reason' in unwrapped) return { events: [], scan: [] }
+  const { words, assigns } = unwrapped
+  const written = new Set(cmd.marked.filter((_, i) => roles[i] !== 'removes'))
+  const runsGit = path.basename(unmark(words[0] ?? '')) === 'git'
+  const usesEnv = (word: string): boolean =>
+    runsGit ? expandsProgramEnv(unmark(word)) : namesProgramEnv(unmark(word))
+  const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
+  const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
+  return {
+    events: [...assigned, ...used].map(() => null),
+    scan: [...unwrapped.assigns.map(scanWord), ...unwrapped.words.map(unmark)],
+  }
+}
+
+/** Every program-env event on one command, read from the words as written and from the unwrapped command. */
+function envUse(cmd: SimpleCommand): EnvUse {
+  const roles = wordRoles(cmd)
+  const written = writtenEnvUse(cmd, roles)
+  const unwrapped = unwrappedEnvUse(cmd, roles)
+  return {
+    events: [...written.events, ...unwrapped.events],
+    scan: [...written.scan, ...unwrapped.scan],
+  }
+}
+
 /**
  * Program env vars git runs (TP-636), closed as one conservative line rule. If a program env name
  * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
  * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
- * as a nested script and any other use denies.
+ * as a nested script and any other use denies. Both the uses and the git test read the unwrapped
+ * command too, so a wrapper or an `env -S` split hides neither.
  */
 function checkProgramEnvLine(
   command: string,
@@ -1459,10 +1507,10 @@ function checkProgramEnvLine(
   scope: Scope,
   depth: number,
 ): string | undefined {
-  const cmds = parseShell(command)
-  const events = cmds.flatMap(envEvents)
+  const uses = parseShell(command).map(envUse)
+  const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
-  const scan = cmds.flatMap(cmd => cmd.marked.map(scanWord)).join(' ')
+  const scan = uses.flatMap(use => use.scan).join(' ')
   if (!mayReachGit(scan, ctx.env)) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
