@@ -29,7 +29,7 @@ interface Wire {
 let home: string
 let core: BrokerCore
 let server: SocketServer
-let kill: ReturnType<typeof vi.spyOn>
+let kill: { mock: { calls: unknown[][] } }
 
 beforeEach(() => {
   vi.useFakeTimers()
