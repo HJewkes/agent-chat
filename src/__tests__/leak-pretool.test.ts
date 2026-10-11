@@ -2543,7 +2543,7 @@ describe('an environment variable git runs as a program (TP-636 fix round 2)', (
     'GIT_EXTERNAL_DIFF=`cat d` git diff',
     'export -n GIT_EDITOR; git commit',
   ])('denies a value or form the guard cannot read: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
   })
 
   it.each([
@@ -2568,8 +2568,16 @@ describe('an environment variable git runs as a program (TP-636 fix round 2)', (
     "MANOPT='-P git' git help log",
     'grep GIT_PAGER f && git diff',
     'LESS=-R git log',
+    "eval export 'GIT_EDITOR=git\\ push\\ --no-verify'; git commit --allow-empty",
+    'eval export GIT_PAGER=git\\\\ push\\\\ --no-verify; git log',
+    `eval "EDITOR='git push --no-verify'"; git commit`,
+    'eval GIT_PAGER=cat; git log',
+    "command export GIT_PAGER='git push --no-verify'; git log",
+    'builtin export GIT_PAGER=less; git log',
+    "env -S 'GIT_PAGER=less' git log",
+    'xargs GIT_PAGER=less git log < f',
   ])('denies any use of a program env name but a plain literal assignment or a read: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
   })
 
   it.each([
@@ -2633,7 +2641,7 @@ describe('an environment variable git runs as a program (TP-636)', () => {
     'export GIT_SSH_COMMAND="$S"; git fetch',
     'GIT_EXTERNAL_DIFF=`cat d` git diff',
   ])('denies a value the guard cannot read: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
   })
 
   it.each([

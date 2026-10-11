@@ -639,13 +639,17 @@ less run one: `LESS` (`+!cmd`), `LESSOPEN` and `LESSCLOSE` (`|cmd %s`), and `MAN
 Both lists live in `git-programs.ts`.
 
 This is one conservative line rule, not a list of spellings. On a line that runs git anywhere,
-each word is read for these names. A plain literal `NAME=value` to a name in the first list, as a
-prefix, through `env`, or as an argument to `export`, `declare` and the like, has its value checked
-as a top-level Bash line. Any other use of any of these names denies: the shell has too many ways to
-assign one to list them all, among them `NAME+=…`, a zsh subscript such as `GIT_PAGER[1,-1]=…`, a
-brace-expanded name (`export {GIT_EDITOR,Y}=…`), `read NAME`, `printf -v NAME`, `for NAME in`, a
-nameref, a bare `export NAME`, an assignment to `LESS` or `MANOPT` of any value, and an expanded or
-unreadable value. A read stays allowed: `$NAME`, and `${NAME…}` with an operator that only reads,
+each word is read for these names. A plain literal `NAME=value` to a name in the first list has
+its value checked as a top-level Bash line, but only where the shell reads the word as an assignment
+exactly once: a prefix assignment, an assignment right after a literal `env`, or an argument of
+`export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. Any other
+use of any of these names denies with its own reason: the shell has too many ways to assign one to
+list them all, among them `NAME+=…`, a zsh subscript such as `GIT_PAGER[1,-1]=…`, a brace-expanded
+name (`export {GIT_EDITOR,Y}=…`), `read NAME`, `printf -v NAME`, `for NAME in`, a nameref, a bare
+`export NAME`, an assignment to `LESS` or `MANOPT` of any value, an expanded or unreadable value,
+and any word under `eval`, `command`, `builtin`, `xargs` or `env -S`, which may read it a second
+time: `eval export 'GIT_EDITOR=git\ push\ --no-verify'` is one word to a literal check and three to
+the shell. A read stays allowed: `$NAME`, and `${NAME…}` with an operator that only reads,
 such as `${PAGER-less}`. `${NAME=…}`, `${NAME:=…}` and zsh's `${NAME::=…}` assign, so they deny
 anywhere on the line, even inside git's own arguments. git's other arguments are not read for the
 names, so a commit message that mentions `GIT_PAGER` stays allowed, and `unset NAME` and
