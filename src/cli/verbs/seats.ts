@@ -29,7 +29,15 @@ import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents
 import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
 import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
-import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
+import {
+  charterSeats,
+  isSeatName,
+  parsePools,
+  parseSeat,
+  seatSurfaceFor,
+} from '../../agents/seats/charter.js'
+import { chooseSurface } from '../../agents/surface-resolution.js'
+import { brokerHost } from '../../broker/host-guard.js'
 import {
   appendSeatLog,
   defaultAutonomyRoot,
@@ -201,13 +209,43 @@ export async function wakeSeat(
     : { ok: false, detail: res.reason ?? 'resume refused' }
 }
 
-/** The seat file's `surface:` wins, since the agent record takes whatever surface the last resume used. */
-async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
-  const fromFile = seatSurface(readText(path.join(root, 'seats', `${seat}.md`)))
-  if (fromFile !== undefined) return { surface: fromFile, from: 'seat file' }
+/**
+ * CC-951: the watchdog resumes by teleport's rule, `chooseSurface`, so a mac-only seat surface
+ * lands a linux broker in tmux rather than in a refusal and a headless fallback. The seat file
+ * wins over the agent record, which takes whatever surface the last resume used, headless included.
+ */
+export function resumeSurface(
+  seatFile: string | undefined,
+  recorded: SurfaceName | undefined,
+  machine: string,
+  platform: NodeJS.Platform,
+): DeclaredSurface {
+  const fromFile = seatSurfaceFor(seatFile, machine)
+  const named = fromFile === undefined ? recorded : undefined
+  if (fromFile === undefined && named === undefined) return UNDECLARED
+  const choice = chooseSurface({ seatSurface: fromFile, recorded: named, platform })
+  // With nothing requested, chooseSurface always picks.
+  if (!choice.ok) return UNDECLARED
+  const source = fromFile === undefined ? 'agent record' : 'seat file'
+  if (choice.from !== 'platform') return { surface: choice.surface, from: source }
+  return {
+    surface: choice.surface,
+    from: `${platform} default; ${source} ${fromFile ?? named} cannot run here`,
+  }
+}
+
+async function recordedSurface(client: BrokerClient, seat: string): Promise<SurfaceName | undefined> {
   const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
-  const recorded = SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
-  return recorded === undefined ? UNDECLARED : { surface: recorded, from: 'agent record' }
+  return SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
+}
+
+/** The watchdog runs on the broker's host, so that host's seat entry and OS decide. */
+async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
+  const seatFile = readText(path.join(root, 'seats', `${seat}.md`))
+  const machine = brokerHost()
+  const recorded =
+    seatSurfaceFor(seatFile, machine) === undefined ? await recordedSurface(client, seat) : undefined
+  return resumeSurface(seatFile, recorded, machine, process.platform)
 }
 
 /** Undefined when events.db cannot be read, so the caller holds every seat rather than risk a restart window. */

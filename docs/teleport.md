@@ -263,6 +263,11 @@ when that OS can run it, then the OS default (`tmux-window` on Linux,
 another host its own OS, which its MCP process reports as `hostPlatform`. A
 named surface the destination cannot run is refused before the handoff row is
 written, and a named surface opens fresh rather than in the predecessor's pane.
+The seat watchdog's resume (CC-320) picks by the same rule for the broker's
+host, so a seat declared `surface: iterm-window` comes back in a tmux window on
+the linux broker instead of being refused and falling back to headless. There
+the seat file outranks the agent record, which may hold an earlier headless
+fallback, and a seat that names nothing anywhere still resumes headless.
 
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
