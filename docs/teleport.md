@@ -460,6 +460,16 @@ server also exits one tick after a fatal frame, so an `endSelf` read in the same
 chunk still runs first. If the successor never attaches, the plan answers
 `ok: false`, and the predecessor is told it is still live.
 
+`endSelf` goes only to a predecessor that is still waiting and can act on it.
+The caller's MCP process sends `endsSelf` on its `teleport` frame. Without it,
+which means an older build, a move to the broker's host is refused before the
+handoff, and a requested surface keeps the CC-913 order. Such a build would be
+evicted with its Claude Code still running. The caller's `teleport_plan` wait
+lasts 7 minutes, which outlasts the countdown plus the broker's 5-minute
+`LAND_WINDOW_MS` attach wait. The `endSelf` plan is re-armed before the launch
+report is acknowledged, so the caller's second wait cannot get the launch plan
+back.
+
 ---
 
 ## 6. Shutdown is self-directed, not peer-directed
