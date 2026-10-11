@@ -34,6 +34,9 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
+import { agentRows, selfContext, type AgentRole, type SeatAgentRow, type SelfContext } from './agent-rows.js'
+
+export type { SeatAgentRow, SelfContext } from './agent-rows.js'
 
 /**
  * CC-317: what a coordinator seat reads before it dispatches, in one call.
@@ -152,6 +155,10 @@ export interface SeatStatus {
   machineStop: MachineStop | null
   /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
   waitingPermission: WaitingPermission[]
+  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against `retire_k`. */
+  agents: SeatAgentRow[]
+  /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
+  self: SelfContext | null
 }
 
 export interface StatusDeps {
@@ -180,6 +187,10 @@ export interface StatusDeps {
   ledgerImplementers?: (seat: string) => number
   /** CC-610: every agent parked on the permission hook, machine-wide. Absent, or a throw: not shown. */
   waitingPermission?: (nowMs: number) => WaitingPermission[]
+  /** CC-317 b: one agent's context reading. Absent: rows carry no fill. */
+  contextOf?: (agent: AgentIdentity) => BudgetRead
+  /** CC-317 b: the calling session's context reading, null when it has no session id. Absent: `self` is null. */
+  selfContext?: () => BudgetRead | null
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -222,7 +233,7 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
 const ROLES = ['implementer', 'reviewer', 'planner'] as const
-type Role = (typeof ROLES)[number] | 'other'
+type Role = AgentRole
 
 /** The first role word in the profile, so a profile holding two counts once. */
 const roleOf = (agent: AgentIdentity): Role => ROLES.find(role => agent.profile.includes(role)) ?? 'other'
@@ -526,6 +537,8 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     stop: machineStop === null ? null : 'machine',
     machineStop,
     waitingPermission: waitingPermission(deps, mine, now.getTime()),
+    agents: agentRows(mine, roleOf, deps.contextOf, policy.charter.defaults.retire_k),
+    self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
   }
 }
 
@@ -629,6 +642,19 @@ function waitingPermissionLines(status: SeatStatus): string[] {
   return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
 }
 
+/** No line while no agent is past `retire_k`, so the page reads as before. */
+function retireDueLines(agents: SeatAgentRow[]): string[] {
+  const due = agents.filter(a => a.retireDue).map(a => `${a.name} (${a.contextK}k)`)
+  return due.length === 0 ? [] : [line('retire-due', due.join(', '))]
+}
+
+function selfLines(self: SelfContext | null): string[] {
+  if (self === null) return []
+  const fill =
+    self.contextK === null ? 'no reading' : `${self.contextK}k context${self.stale ? ', STALE' : ''}`
+  return [line('self', self.teleportDue ? `${fill}  TELEPORT` : fill)]
+}
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox } = status
@@ -656,6 +682,8 @@ export function renderStatus(status: SeatStatus): string[] {
     agentLine('other', status.other, String(status.other.active)),
     line('parked', `${parked.count}${trees}`),
     ...waitingPermissionLines(status),
+    ...retireDueLines(status.agents),
+    ...selfLines(status.self),
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
