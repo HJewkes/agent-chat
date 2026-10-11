@@ -165,9 +165,15 @@ describe('burndown lints planner slices (CC-631)', () => {
     expect(read.problems?.[0]).toContain('contracts.0.scope')
   })
 
-  it('fails a slice whose doneWhen names an op and carries no ops field (CC-974)', () => {
-    expect(readSlices(planOf({ ...good, doneWhen: 'live after a broker restart' })).problems).toEqual([
-      `slice a: doneWhen mentions restart ('broker restart'); add "ops" ([] when it is subject matter)`,
+  it('passes a slice whose doneWhen names an op and carries no ops field, as the planner brief does not ask yet (CC-974)', () => {
+    expect(readSlices(planOf({ ...good, doneWhen: 'live after a broker restart' })).problems).toBeUndefined()
+  })
+
+  it('fails a slice whose ops field leaves out an op its doneWhen names', () => {
+    const slice = { ...good, doneWhen: 'live after a broker restart', ops: ['publish'] }
+
+    expect(readSlices(planOf(slice)).problems).toEqual([
+      `slice a: doneWhen mentions restart ('broker restart'), which "ops" does not declare`,
     ])
   })
 
