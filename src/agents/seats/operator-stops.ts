@@ -204,8 +204,8 @@ function liftSeat({ open, seatHolds }: HoldState, seat: string): void {
  * The operator opens a hold with one fan-out and often lifts it with one DM per seat. A DM lift ends
  * that seat's part of the newest hold on it, and a hold ends when its last seat is lifted; a
  * machine-scoped lift (a broadcast, or a fan-out to two or more seats) ends every hold. A DM never
- * ends a broadcast hold. Only a lift or the cap ends a seat's part: a seat that leaves the bus stays
- * held, since its absence is what a hold is for.
+ * ends a broadcast hold. Leaving the bus never ends a seat's part, since its absence is what a hold
+ * is for; a lift, the cap, or the seat being stopped or having no seat file at read time does (CC-971).
  */
 function liftHolds(state: HoldState, line: ChatLine, operators: readonly string[]): void {
   if (!machineScoped(line, operators)) {
@@ -234,6 +234,7 @@ export function broadcastHolds(
   lines: readonly ChatLine[],
   nowMs: number,
   operators: readonly string[],
+  gone: (seat: string) => boolean = () => false,
 ): OperatorHold[] {
   const state: HoldState = { open: new Map(), seatHolds: new Map() }
   const sorted = lines
@@ -242,6 +243,7 @@ export function broadcastHolds(
   for (const line of sorted) applySend(state, line, operators)
   return [...state.open.values()]
     .filter(({ latestMs }) => nowMs - latestMs <= BROADCAST_HOLD_MAX_MS)
+    .flatMap(hold => withoutGoneSeats(hold, gone) ?? [])
     .map(({ first, seats }) => ({
       kind: 'broadcast' as const,
       by: first.actor,
@@ -250,6 +252,16 @@ export function broadcastHolds(
       ...(first.msgId === null ? {} : { msgId: first.msgId }),
       ...(seats === 'all' ? {} : { seats: [...seats].sort() }),
     }))
+}
+
+/**
+ * A fan-out hold without the seats that are gone at read time, or undefined when none is left.
+ * Only the end state is filtered: the stopped map and seat files are known at read time alone.
+ */
+function withoutGoneSeats(hold: OpenHold, gone: (seat: string) => boolean): OpenHold | undefined {
+  if (hold.seats === 'all') return hold
+  const seats = new Set([...hold.seats].filter(seat => !gone(seat)))
+  return seats.size === 0 ? undefined : { ...hold, seats }
 }
 
 /** The stop file's hold, or an error naming what is wrong with it; an absent file is undefined. */
@@ -278,6 +290,8 @@ export interface StopInputs {
   stopFile: () => string | undefined
   /** seat-watchdog.json's `stopped` map; throws when the file cannot be read. */
   ownerStops: () => Record<string, string>
+  /** The seat file names; throws when they cannot be listed. */
+  seatNames: () => string[]
   readings: MachineStopReadings
   machineStop: MachineStop | null
 }
@@ -291,16 +305,31 @@ function tryRead<T>(read: () => T, errors: string[], source: string): T | undefi
   }
 }
 
+/**
+ * A seat whose fan-out part no longer counts: owner-stopped, or with no seat file. Seat files that
+ * cannot be listed drop nothing and add no error, so a host without an autonomy root never clears a hold.
+ */
+function goneSeat(stopped: Record<string, string>, seatNames: () => string[]): (seat: string) => boolean {
+  let files: Set<string> | undefined
+  try {
+    files = new Set(seatNames())
+  } catch {
+    files = undefined
+  }
+  return seat => seat in stopped || (files !== undefined && !files.has(seat))
+}
+
 export function machineStopStatus(input: StopInputs): MachineStopStatus {
   const errors: string[] = []
   if (input.chat === undefined) errors.push('events.db cannot be read, so broadcast HOLDs are unknown')
   const file = fileHold(tryRead(input.stopFile, errors, 'stop file'))
   if (file !== undefined && 'error' in file) errors.push(file.error)
+  const stopped = tryRead(input.ownerStops, errors, 'seat-watchdog.json') ?? {}
+  const gone = goneSeat(stopped, input.seatNames)
   const holds = [
     ...(file === undefined || 'error' in file ? [] : [file]),
-    ...broadcastHolds(input.chat ?? [], input.now.getTime(), input.operators),
+    ...broadcastHolds(input.chat ?? [], input.now.getTime(), input.operators, gone),
   ]
-  const stopped = tryRead(input.ownerStops, errors, 'seat-watchdog.json') ?? {}
   const ownerStops = Object.entries(stopped).map(([seat, reason]) => ({ seat, reason }))
   const machine = { ...input.readings, stop: input.machineStop?.reason ?? null }
   const any = holds.length > 0 || machine.stop !== null || errors.length > 0
