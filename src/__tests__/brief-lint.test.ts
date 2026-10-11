@@ -31,9 +31,30 @@ describe('the brief lint refuses a tool the agent cannot use', () => {
     expect(result.refusal).toContain('AskUserQuestion')
   })
 
-  it('does not refuse a negated mention', () => {
-    expect(lint({ brief: 'Never use ScheduleWakeup; you are headless.' }).refusal).toBeUndefined()
-    expect(lint({ brief: "Don't run agent-chat agent spawn yourself." }).refusal).toBeUndefined()
+  it.each([
+    'Never use ScheduleWakeup; you are headless.',
+    "Don't run agent-chat agent spawn yourself.",
+    'Do not use AskUserQuestion.',
+    'You cannot use AskUserQuestion.',
+    "You can't use AskUserQuestion.",
+    "There is nobody to answer, so you mustn't call AskUserQuestion.",
+    "You won't need to use ScheduleWakeup.",
+    "You shouldn't invoke CronCreate.",
+    'Rather than use ScheduleWakeup, report and exit.',
+    'Instead of using ScheduleWakeup, report and exit.',
+    'Avoid calling AskUserQuestion.',
+    'It is forbidden to use AskUserQuestion here.',
+    'Your profile denies agent-chat agent, so ask your spawner to run it.',
+  ])('does not refuse a prohibition or description: %s', brief => {
+    expect(lint({ brief }).refusal).toBeUndefined()
+  })
+
+  it.each([
+    '- run agent-chat agent spawn for the reviewer.',
+    'When CI is red: then call AskUserQuestion.',
+    'Please invoke CronCreate every hour.',
+  ])('refuses an imperative clause in another position: %s', brief => {
+    expect(lint({ brief }).refusal).toBeDefined()
   })
 
   it('does not refuse ScheduleWakeup for an agent in a visible pane', () => {

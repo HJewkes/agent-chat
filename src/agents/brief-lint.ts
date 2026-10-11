@@ -30,7 +30,8 @@ export interface BriefLint {
 /** A headless agent exits at turn end, so a wakeup it schedules never fires. */
 const HEADLESS_UNUSABLE = ['ScheduleWakeup', 'CronCreate']
 
-const NEGATION = /\b(?:never|not|don't|dont|no|without)\b/i
+/** Only quiets a mention's warning; a refusal never depends on it. */
+const NEGATION = /\b(?:never|not|cannot|dont|no|without|avoid|instead|rather)\b|n't\b/i
 
 const SYNTHETIC_LINE = /synthetic/i
 
@@ -57,23 +58,31 @@ interface Unusable {
 }
 
 /**
- * How a brief names a term. `directive` is an instruction to use it ("use X",
- * "run X") with no negation before it; `mention` is any other un-negated
- * naming, such as a done-when line or a task description, which is only warned on.
+ * How a brief names a term. `directive` is a clause that opens with an
+ * imperative ("use X", "then run X"); `mention` is any other un-negated naming,
+ * which is only warned on. The directive shape is an allowlist on purpose:
+ * prohibitions and contrasts ("you cannot use X", "rather than use X", "you
+ * mustn't call X") have too many phrasings to list, and none of them opens a
+ * clause with the verb, so every phrasing not listed here falls to a warning
+ * and a false refusal cannot block a spawn.
  */
 type Ask = 'directive' | 'mention' | undefined
+
+const clausesOf = (brief: string): string[] => brief.split(/[.!?;:,\n]+/)
+
+/** Words that may precede the imperative without changing what it asks. */
+const LEAD_IN = String.raw`(?:(?:then|and|please|now|first|next|also|finally|so)\s+)*`
+
+/** A list marker or emphasis a clause may open with. */
+const MARKER = String.raw`(?:[-*+>]|\d+[.)])?\s*`
 
 function askOf(brief: string, term: string): Ask {
   const name = `${escape(term)}(?![\\w-])`
   const mention = new RegExp(`(?<![\\w-])${name}`)
-  const directive = new RegExp(`\\b(?:[Uu]se|[Rr]un|[Cc]all|[Ii]nvoke)\\s+[\`'"]?${name}`)
-  let ask: Ask
-  for (const sentence of sentencesOf(brief)) {
-    const order = directive.exec(sentence)
-    if (order && !NEGATION.test(sentence.slice(0, order.index))) return 'directive'
-    if (mention.test(sentence) && !NEGATION.test(sentence)) ask = 'mention'
-  }
-  return ask
+  const directive = new RegExp(`^\\s*${MARKER}${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
+  if (clausesOf(brief).some(clause => directive.test(clause))) return 'directive'
+  const named = sentencesOf(brief).some(sentence => mention.test(sentence) && !NEGATION.test(sentence))
+  return named ? 'mention' : undefined
 }
 
 /** The literal a deny entry blocks: a CamelCase tool name, or the verb inside `Bash(agent-chat <verb>:*)`. */
