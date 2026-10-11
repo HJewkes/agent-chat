@@ -13,7 +13,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { contractOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
+import { contractOverlap, liveOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
 import { stopLineRefusal, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
@@ -209,7 +209,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const walk = startWalk({
     ...inputs,
     collision: (repo, work, landedRepos) =>
-      inputs.collision?.(repo, work, landedRepos) ?? contractOverlap(work, acceptedContracts(plan)),
+      inputs.collision?.(repo, work, landedRepos) ??
+      liveOverlap(work, repo, acceptedOwns(plan)) ??
+      contractOverlap(work, acceptedContracts(plan)),
   })
   const take = (initiative: string, task: string, outcome: Taken | Refused | Seeded): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
@@ -289,6 +291,9 @@ function inScope(inputs: SeatPlanInputs): { rows: ScoreRow[]; outOfScope: Refusa
 /** The dispatches this pass already accepted: a queued claim holds nothing in the ledger until it goes out. */
 const acceptedContracts = (plan: Pick<SeatPlan, 'claims'>) =>
   plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
+
+const acceptedOwns = (plan: Pick<SeatPlan, 'claims'>) =>
+  plan.claims.map(c => ({ holder: c.agentName, repo: c.repo, owns: c.work.owns }))
 
 interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
