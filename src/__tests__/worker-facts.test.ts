@@ -95,6 +95,39 @@ describe('the on_complete payload of a reporting worker', () => {
     expect(facts?.report).toEqual({ messageId: 'msg-v', kind: 'verdict', text: '**Verdict:** approve' })
     expect(facts?.pr).toBeNull()
   })
+
+  it('drops a last action, because the report already says what the worker did', () => {
+    const payload = completionPayload({
+      agentId: 'a1',
+      agent: WORKER,
+      profile: 'implementer',
+      spawner: SPAWNER,
+      exit: EXIT,
+      report: { msgId: 'msg-done', text: 'Status: DONE' },
+      lastAction: 'Bash(git push)',
+    })
+
+    expect(payload.facts?.report?.kind).toBe('status')
+    expect(payload).not.toHaveProperty('lastAction')
+  })
+})
+
+describe('a report whose PR number is not a positive safe integer', () => {
+  it.each(['0', '99999999999999999999'])('keeps the facts block with pr null for #%s', number => {
+    const text = `Status: DONE\nPR: o/r#${number}`
+
+    const payload = completionPayload({
+      agentId: 'a1',
+      agent: WORKER,
+      profile: 'implementer',
+      spawner: SPAWNER,
+      exit: EXIT,
+      report: { msgId: 'msg-done', text },
+    })
+
+    expect(payload.facts?.pr).toBeNull()
+    expect(payload.facts?.report).toEqual({ messageId: 'msg-done', kind: 'status', text })
+  })
 })
 
 describe('the on_complete payload of a worker that sent no report', () => {
@@ -154,6 +187,11 @@ describe('the task id in an agent name', () => {
     ['ab-cc-625-a', 'CC-625'],
     ['scout', null],
     ['tc-review-fix', null],
+    ['tc-cc-763-fix', 'CC-763'],
+    ['tc-cc-763x', null],
+    ['rv-pr-436', null],
+    ['rv-PR-436', null],
+    ['rv-hjewkes-titan-platform-625', null],
   ])('%s gives %s', (name, id) => {
     expect(taskIdOf(name)).toBe(id)
   })
