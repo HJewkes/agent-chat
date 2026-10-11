@@ -8,7 +8,7 @@ usage="usage: premerge <owner/repo> <pr> <head sha> <local clone> [reviewed head
 R=$1 N=$2 S=$3 L=$4 RV=${5:-$3}
 [[ $R =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ $N =~ ^[0-9]+$ ]] && [[ $S =~ ^[0-9a-f]{40}$ ]] && [[ $RV =~ ^[0-9a-f]{40}$ ]] \
   || { echo "bad argument: $usage" >&2; exit 2; }
-DB=${EVENTS_DB:-$HOME/.agent-chat/events.db}
+DB=${EVENTS_DB:-${AGENT_CHAT_HOME:-$HOME/.agent-chat}/events.db}
 COORDS=${COORDINATORS:-}
 [ -n "$COORDS" ] || { echo "COORDINATORS unset: export the space-separated coordinator seat names" >&2; exit 2; }
 REVIEWER_PATTERN=${REVIEWER_PATTERN:-'(^rv-|-review(-r[0-9]+)?$)'}
@@ -192,8 +192,22 @@ pick_verdict() {
   done <<<"$rows"
 }
 
+# Fallback when no chat verdict counts (CC-817): a held Shepherd run's newest MERGE or FIX_FIRST timeline verdict.
+# A missing titan-factory, a failed call or an unheld run leaves id empty, so the result stays "no verdict".
+shepherd_verdict() {
+  local tl entry
+  tl=$(titan-factory shepherd timeline "$R#$N" --json 2>/dev/null) || return 0
+  jq -e '.row.held | type=="object"' <<<"$tl" >/dev/null 2>&1 || return 0
+  entry=$(jq -r '[.entries[] | select(.kind=="verdict" and (.verdict|IN("MERGE","FIX_FIRST")))] | last
+    | select(. != null) | "\(.stepId) \(.reviewer // "unknown") \(.verdict) \(.headSha)"' <<<"$tl" 2>/dev/null)
+  [ -n "$entry" ] || return 0
+  read -r msg actor first vh <<<"$entry"
+  id=shepherd actor="shepherd:$actor" first="Verdict: $first"
+}
+
 check_verdict() {
   pick_verdict
+  [ -n "$id" ] || shepherd_verdict
   echo "  verdict: ${actor:-none} ${msg:-none} $first head=$vh"
   if [ -z "$id" ]; then fail+=("no verdict from a reviewer matching $REVIEWER_PATTERN"); return; fi
   if [[ $first =~ ^Verdict:\ MERGE([[:space:]]|$) ]]; then
