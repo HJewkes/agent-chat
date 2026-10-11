@@ -66,6 +66,24 @@ ok_case; STUB_PUT_FAIL=1 run;                       check "FAIL when the PUT is 
 ok_case; WAIT_INTERVAL=0 run --wait-main;           check "--wait-main green" 0 "^MAIN green"
 ok_case; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].conclusion="failure"'; WAIT_INTERVAL=0 run --wait-main
 check "--wait-main red names the failing check, exit 3" 3 "^MAIN red post-merge"
+# cancelled_case <newer run id> <newer created_at>: post-merge passes, deploy on the merge sha was cancelled; the
+# deploy workflow's latest run on main is the given one.
+cancelled_case() {
+  ok_case; mut commits_mergesha_check_runs_per_page_100.json \
+    '.check_runs += [{name: "deploy", status: "completed", conclusion: "cancelled", check_suite: {id: 900}}]'
+  echo '{"workflow_runs":[{"id":51,"workflow_id":77,"check_suite_id":901,"created_at":"2026-10-04T10:00:00Z"},
+    {"id":52,"workflow_id":78,"check_suite_id":900,"created_at":"2026-10-04T10:00:00Z"}]}' > "$W/case/actions_runs_head_sha_mergesha_per_page_100.json"
+  echo "{\"workflow_runs\":[{\"id\":$1,\"created_at\":\"$2\"}]}" > "$W/case/actions_workflows_78_runs_branch_main_per_page_1.json"
+}
+cancelled_case 60 2026-10-04T10:02:00Z; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled and superseded by a newer main run, exit 0" 0 "^MAIN green (superseded: deploy)$"
+cancelled_case 52 2026-10-04T10:00:00Z; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled with no newer main run, exit 3" 3 "^MAIN red deploy$"
+cancelled_case 60 2026-10-04T10:02:00Z; rm "$W/case/actions_runs_head_sha_mergesha_per_page_100.json"; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled when the actions API read fails, exit 3" 3 "^MAIN red deploy$"
+cancelled_case 60 2026-10-04T10:02:00Z; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].conclusion="failure"'
+WAIT_INTERVAL=0 run --wait-main
+check "--wait-main failure beside a superseded cancel stays red, exit 3" 3 "^MAIN red post-merge$"
 ok_case; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].status="in_progress"'; WAIT_INTERVAL=1 WAIT_MAX=1 run --wait-main
 check "--wait-main timeout, exit 4" 4 "^MAIN timeout"
 new_case "$MERGED"; add_verdict seat-9-review msg0020 MERGE "$CLEAN"; out=$("$BIN/merge" "$R" "$N" "$MERGED" "$W/clone" "$CLEAN" 2>&1); rc=$?

@@ -43,6 +43,7 @@ import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import { sliceRepo, type PathExists } from './slice-repo.js'
 import { seedSlices, type PlanReader } from './seed-slices.js'
+import { planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -103,6 +104,8 @@ export interface SeatBriefGate {
   maxAgeDays: number
   /** `maxAgents` (CC-928): one pick in every this many goes to the longest-ready row; absent, none does. */
   agingEvery?: number
+  /** CC-986: under an `on` gate, a ready depth below this sends briefers to the no-brief rows; absent, none go. */
+  readyFloor?: number
 }
 
 export interface SeatPlan {
@@ -228,8 +231,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  for (const claim of readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat))
-    take(claim.initiative, claim.taskId, considerSlice(claim, walk))
+  const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
+  const depth = supplyDepth(order, slices.length, walk)
+  for (const claim of slices) take(claim.initiative, claim.taskId, considerSlice(claim, walk))
   const picked = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
   const aging = { aged: agedRows(inputs, order), every: inputs.brief?.agingEvery ?? 1 }
   walkOrder(
@@ -242,6 +246,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       return outcome
     },
   )
+  planBelowFloor(plan, depth, walk, take)
   for (const { initiative, task, reason } of planRefusals)
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
@@ -254,6 +259,56 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
 }
 
 type Outcome = Taken | Refused | Seeded
+
+/** The seat's ready depth before this tick dispatches anything, as the walk starts out claimed. */
+function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk): number {
+  const check = briefCheck(walk.inputs)
+  if (check === undefined) return 0
+  return readyDepth(order, taskOfRow(walk.inputs), check, walk.claimed, slices)
+}
+
+/** A planner cap or a closed pool stops the pass; any other refusal leaves that row refused no-brief. */
+const STOPS_PLANNING: ReadonlySet<Refusal['kind']> = new Set(['role-cap', 'budget'])
+
+/**
+ * CC-986: under an `on` gate with a ready depth below the floor, briefers take the no-brief rows in walk
+ * order until the planner cap or the pool stops them. Each dispatch replaces its row's no-brief refusal.
+ */
+function planBelowFloor(
+  plan: Pick<SeatPlan, 'refusals'>,
+  depth: number,
+  walk: Walk,
+  take: (initiative: string, task: string, outcome: Taken) => void,
+): void {
+  const { brief, seat, tasks } = walk.inputs
+  if (brief?.gate !== 'on' || brief.readyFloor === undefined || depth >= brief.readyFloor) return
+  const reason = `ready ${depth} below floor ${brief.readyFloor}`
+  let planned = 0
+  for (const refusal of planningCandidates(plan.refusals, tasks)) {
+    const outcome = briefFor(refusal, reason, walk)
+    if (outcome === undefined) continue
+    if ('kind' in outcome) {
+      if (STOPS_PLANNING.has(outcome.kind)) break
+      continue
+    }
+    plan.refusals.splice(plan.refusals.indexOf(refusal), 1)
+    take(refusal.initiative, outcome.work.taskId, outcome)
+    planned += 1
+  }
+  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks`)
+}
+
+/** A briefer for a no-brief row, as `consider` sends one for a `brief:wanted` task; undefined with no repo. */
+function briefFor(refusal: Refusal, reason: string, walk: Walk): Taken | Refused | undefined {
+  const { seat, tasks } = walk.inputs
+  const task = tasks.get(refusal.initiative)?.find(t => t.id === refusal.task)
+  const repo = task === undefined ? undefined : repoForTask(seat, refusal.initiative, task.tags)
+  if (task === undefined || repo === undefined) return undefined
+  const work = { initiative: refusal.initiative, task: task.id, profile: PLANNER_PROFILE }
+  const dispatch = { ...dispatchFor(work, repo, reason, walk), briefer: true }
+  const checked = { taskId: task.id, tags: task.tags, owns: [] }
+  return blocker(dispatch, checked, 'planners', walk) ?? { dispatch, role: 'planners', work: checked }
+}
 
 /**
  * Considers each row in order. Before a row, when the seat's next pick is its aging slot, the aged rows get
