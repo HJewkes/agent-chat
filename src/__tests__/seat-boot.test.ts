@@ -88,6 +88,8 @@ const STATUS: SeatStatus = {
   stop: null,
   machineStop: null,
   waitingPermission: [],
+  agents: [],
+  self: null,
 }
 
 let tmp: string

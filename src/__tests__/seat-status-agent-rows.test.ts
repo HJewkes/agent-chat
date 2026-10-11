@@ -50,6 +50,7 @@ function agent(name: string, profile: string, state: AgentLifecycle = 'live'): A
     surface: 'headless',
     sessionId: `session-${name}`,
     lastEventAt: 0,
+    generation: 1,
   }
 }
 
