@@ -18,8 +18,8 @@ export interface ChatLine {
   body: string
   /** Sent with chat_broadcast. */
   broadcast: boolean
-  /** How many seats the send went to. */
-  recipients: number
+  /** The seats the send went to. */
+  targets: readonly string[]
 }
 
 export interface OperatorHold {
@@ -30,6 +30,8 @@ export interface OperatorHold {
   reason: string
   /** The message that opened a broadcast hold. */
   msgId?: string
+  /** A fan-out hold's seats not yet lifted by DM; absent for a broadcast hold, which no DM lifts. */
+  seats?: string[]
 }
 
 export interface OwnerStop {
@@ -67,10 +69,10 @@ function asks(body: string): boolean {
 /**
  * Who may hold the machine from chat (CC-957 review): one of the configured operators, sending to
  * the machine (a broadcast, or a fan-out to two or more seats). A coordinator's relay, ack or question
- * and any DM, the operator's own included, never reach the classifier.
+ * never reaches the classifier, and an operator's DM HOLD stops only its one seat.
  */
 export function machineScoped(line: ChatLine, operators: readonly string[]): boolean {
-  return operators.includes(line.actor) && (line.broadcast || line.recipients >= 2)
+  return operators.includes(line.actor) && (line.broadcast || line.targets.length >= 2)
 }
 
 /**
@@ -150,36 +152,68 @@ function holdReason(body: string): string {
   return firstLine(after) || firstLine(body)
 }
 
+interface OpenHold {
+  first: ChatLine
+  latestMs: number
+  /** The fan-out's seats not yet lifted, or 'all' for a broadcast hold. */
+  seats: Set<string> | 'all'
+}
+
+function addHold(open: Map<string, OpenHold>, line: ChatLine): void {
+  const held = open.get(line.actor)
+  const seats =
+    line.broadcast || held?.seats === 'all' ? 'all' : new Set([...(held?.seats ?? []), ...line.targets])
+  open.set(line.actor, { first: held?.first ?? line, latestMs: line.ts, seats })
+}
+
+/**
+ * The operator opens a hold with one fan-out and often lifts it with one DM per seat. A DM lift ends
+ * that seat's part of every open fan-out hold, and a hold ends when its last seat is lifted; a
+ * machine-scoped lift (a broadcast, or a fan-out to two or more seats) ends every hold. A DM never
+ * ends a broadcast hold.
+ */
+function liftHolds(open: Map<string, OpenHold>, line: ChatLine, operators: readonly string[]): void {
+  if (machineScoped(line, operators)) {
+    open.clear()
+    return
+  }
+  for (const [actor, { seats }] of open) {
+    if (seats === 'all') continue
+    for (const seat of line.targets) seats.delete(seat)
+    if (seats.size === 0) open.delete(actor)
+  }
+}
+
 /**
  * Active broadcast HOLDs, one per operator, each dated from that operator's first stop since the last
- * lift. Only machine-scoped operator sends count, and a lift from any operator ends every open hold:
- * the hold is the machine's. The cap runs from the operator's latest stop, so a HOLD sent again
- * stands a full cap past the repeat; the reader reads one cap back, so `since` is then the oldest
- * stop within it.
+ * lift. A machine-scoped operator send opens a hold; any operator send, DM included, may lift, and
+ * a lift from any operator counts: the hold is the machine's. The cap runs from the operator's latest
+ * stop, so a HOLD sent again stands a full cap past the repeat; the reader reads one cap back, so
+ * `since` is then the oldest stop within it.
  */
 export function broadcastHolds(
   lines: readonly ChatLine[],
   nowMs: number,
   operators: readonly string[],
 ): OperatorHold[] {
-  const open = new Map<string, { first: ChatLine; latestMs: number }>()
+  const open = new Map<string, OpenHold>()
   const sorted = lines
-    .filter(line => line.ts <= nowMs && machineScoped(line, operators))
+    .filter(line => line.ts <= nowMs && operators.includes(line.actor))
     .sort((a, b) => a.ts - b.ts)
   for (const line of sorted) {
     const kind = classify(line.body, line.actor)
-    if (kind === 'lift') open.clear()
-    else if (kind === 'open')
-      open.set(line.actor, { first: open.get(line.actor)?.first ?? line, latestMs: line.ts })
+    if (kind === 'lift') liftHolds(open, line, operators)
+    else if (kind === 'open' && machineScoped(line, operators)) addHold(open, line)
   }
   return [...open.values()]
     .filter(({ latestMs }) => nowMs - latestMs <= BROADCAST_HOLD_MAX_MS)
-    .map(({ first }) => ({
+    .map(({ first, seats }) => ({
       kind: 'broadcast' as const,
       by: first.actor,
       since: new Date(first.ts).toISOString(),
       reason: holdReason(first.body.trimStart()),
       ...(first.msgId === null ? {} : { msgId: first.msgId }),
+      ...(seats === 'all' ? {} : { seats: [...seats].sort() }),
     }))
 }
 

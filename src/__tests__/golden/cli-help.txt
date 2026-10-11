@@ -623,10 +623,11 @@ Commands:
                     file and from chat (a broadcast or fan-out to two or more seats by one of
                     config.json's machineHoldOperators, default tp-operator, whose first sentence
                     carries HOLD, STOP ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET, standing
-                    until such a send starts with LIFT, CLEAR or "hold LIFTED", at most 24 h), the
-                    owner's stopped seats in seat-watchdog.json, and the memory, load, swap and
-                    pressure readings against the machine stop. `stopped` is a hold, the machine
-                    stop or a source that cannot be read; an owner stop holds only its own seat
+                    until an operator send starting with LIFT, CLEAR or "hold LIFTED" has reached
+                    every seat it went to, or a broadcast lift, at most 24 h), the owner's stopped
+                    seats in seat-watchdog.json, and the memory, load, swap and pressure readings
+                    against the machine stop. `stopped` is a hold, the machine stop or a source that
+                    cannot be read; an owner stop holds only its own seat
   help [command]    display help for command
 
 === agent-chat machine status
@@ -635,13 +636,14 @@ Usage: agent-chat machine status [options]
 every stop on this machine, read-only (CC-957): operator HOLDs from the stop file and from chat (a
 broadcast or fan-out to two or more seats by one of config.json's machineHoldOperators, default
 tp-operator, whose first sentence carries HOLD, STOP ALL, MACHINE STOP, STEP-BACK or REBOOT
-NOTICE/QUIET, standing until such a send starts with LIFT, CLEAR or "hold LIFTED", at most 24 h),
-the owner's stopped seats in seat-watchdog.json, and the memory, load, swap and pressure readings
-against the machine stop. `stopped` is a hold, the machine stop or a source that cannot be read; an
-owner stop holds only its own seat
+NOTICE/QUIET, standing until an operator send starting with LIFT, CLEAR or "hold LIFTED" has reached
+every seat it went to, or a broadcast lift, at most 24 h), the owner's stopped seats in
+seat-watchdog.json, and the memory, load, swap and pressure readings against the machine stop.
+`stopped` is a hold, the machine stop or a source that cannot be read; an owner stop holds only its
+own seat
 
 Options:
-  --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?}], ownerStops,
+  --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?, seats?}], ownerStops,
               machine, errors
   -h, --help  display help for command
 

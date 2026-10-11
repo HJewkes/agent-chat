@@ -303,8 +303,8 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
 }
 
 /**
- * CC-957: every message and broadcast since `sinceMs`, one row per message with how many seats it went
- * to (a send logs a row per recipient). No keyword filter: `broadcastHolds` alone decides which sends
+ * CC-957: every message and broadcast since `sinceMs`, one row per message with the seats it went to
+ * (a send logs a row per recipient; no seat name holds a comma). No keyword filter: `broadcastHolds` alone decides which sends
  * may hold the machine and what they say. A day is about 2k rows. Throws when events.db cannot be read.
  * `actor` and `body` are bare columns beside the aggregates, so SQLite takes them from any row of the
  * group; every row of one msg_id carries the same sender and body.
@@ -315,7 +315,7 @@ export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
     const rows = db
       .prepare(
         "SELECT MIN(ts) AS ts, actor, msg_id, body, MAX(kind = 'broadcast') AS broadcast, " +
-          "COUNT(DISTINCT target) AS recipients FROM events WHERE kind IN ('message', 'broadcast') " +
+          "GROUP_CONCAT(DISTINCT target) AS targets FROM events WHERE kind IN ('message', 'broadcast') " +
           'AND ts >= ? GROUP BY COALESCE(msg_id, id) ORDER BY MIN(id)',
       )
       .all(sinceMs) as unknown as ChatRow[]
@@ -325,7 +325,7 @@ export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
       msgId: row.msg_id,
       body: row.body ?? '',
       broadcast: row.broadcast === 1,
-      recipients: row.recipients,
+      targets: row.targets?.split(',') ?? [],
     }))
   } finally {
     db.close()
@@ -338,7 +338,7 @@ interface ChatRow {
   msg_id: string | null
   body: string | null
   broadcast: number
-  recipients: number
+  targets: string | null
 }
 
 /** The owner seat's messages since `sinceMs` that mention a restart. Throws when events.db cannot be read. */

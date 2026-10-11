@@ -117,6 +117,7 @@ describe('machine status from the live readers', () => {
         since: new Date(at(55)).toISOString(),
         reason: '(forecast trip). kalloc rising',
         msgId: '41c4a804',
+        seats: ['a', 'b', 'c'],
       },
     ])
   })
@@ -215,13 +216,53 @@ describe('which sends may hold the machine', () => {
       'a coordinator CLEAR on its own side',
       ['coord', 5, 'coord: CLEAR on my side, still waiting for the op'],
     ],
-    [
-      'an operator DM lift to one seat',
-      ['tp-operator', 5, 'tp-operator: LIFT for coord-a', 'l1', ['coord-a']],
-    ],
     ['an operator question', ['tp-operator', 5, 'tp-operator: LIFT now?']],
   ])("does not lift the operator's HOLD on %s", (_name, send) => {
     expect(holdsBy({ chat: [HELD, send] })).toEqual(['tp-operator'])
+  })
+
+  it("lifts only the DM'd seat's part of an operator fan-out HOLD", () => {
+    const lift: Send = ['tp-operator', 5, 'tp-operator: LIFT for seat-a', 'l1', ['seat-a']]
+
+    expect(status({ chat: [HELD, lift] }).holds).toMatchObject([{ by: 'tp-operator', seats: ['seat-b'] }])
+  })
+
+  it('ends a fan-out HOLD when every seat it went to has been lifted', () => {
+    const chat: Send[] = [
+      HELD,
+      ['tp-operator', 9, 'tp-operator: LIFT', 'l1', ['seat-a']],
+      ['tp-operator', 5, 'tp-operator: LIFT', 'l2', ['seat-b']],
+    ]
+
+    expect(holdsBy({ chat })).toEqual([])
+  })
+
+  it('never ends a broadcast HOLD on DM lifts, and ends it on a broadcast lift', () => {
+    const held: Send = ['tp-operator', 30, 'tp-operator: HOLD now', 'b1', ['seat-a', 'seat-b'], 'broadcast']
+    const dms: Send[] = [
+      ['tp-operator', 9, 'tp-operator: LIFT', 'l1', ['seat-a']],
+      ['tp-operator', 8, 'tp-operator: LIFT', 'l2', ['seat-b']],
+    ]
+    const afterDms = holdsBy({ chat: [held, ...dms] })
+    fs.rmSync(eventsDb())
+
+    const broadcastLift: Send = ['tp-operator', 5, 'tp-operator: LIFT', 'l3', ['seat-a'], 'broadcast']
+
+    expect(afterDms).toEqual(['tp-operator'])
+    expect(holdsBy({ chat: [held, ...dms, broadcastLift] })).toEqual([])
+  })
+
+  it('ends a fan-out HOLD on a fan-out lift that skips one of its seats', () => {
+    const held: Send = ['tp-operator', 30, 'tp-operator: HOLD now', 'h1', ['seat-a', 'seat-b', 'seat-c']]
+    const lift: Send = ['tp-operator', 5, 'tp-operator: LIFT at NORMAL pace', 'l1', ['seat-a', 'seat-b']]
+
+    expect(holdsBy({ chat: [held, lift] })).toEqual([])
+  })
+
+  it('does not lift a seat on a DM lift from someone who is not an operator', () => {
+    const lift: Send = ['coord-a', 5, 'coord-a: LIFT for seat-a', 'l1', ['seat-a']]
+
+    expect(status({ chat: [HELD, lift] }).holds).toMatchObject([{ seats: ['seat-a', 'seat-b'] }])
   })
 
   it('lifts on an operator fan-out lift', () => {
@@ -274,7 +315,7 @@ describe('which sends may hold the machine', () => {
       msgId: null,
       body,
       broadcast: false,
-      recipients: 2,
+      targets: ['seat-a', 'seat-b'],
     })
     const lines = [line(capMinutes + 60, 'op: HOLD (memory trip)'), line(60, 'op: HOLD on NEW dispatch')]
 
@@ -445,6 +486,41 @@ describe('the classifier against live operator phrasings', () => {
       return [...held, kind === 'open' ? true : kind === 'lift' ? false : before]
     }, [])
     expect(holdsAfter).toEqual(expected)
+  })
+})
+
+/**
+ * The shape of 2026-10-07 20:03 to 10-08 21:07 (CC-957 round 8): the operator fans a HOLD and then a
+ * REBOOT NOTICE out to four seats, then lifts each seat by DM at different times. Seat names are
+ * synthetic. Before round 8 the DM lifts were dropped and the machine stayed stopped to the 24 h cap.
+ */
+describe('a fan-out HOLD lifted one seat at a time by DM', () => {
+  const SEATS = ['seat-1', 'seat-2', 'seat-3', 'seat-4']
+  const lift = (minutesAgo: number, seat: string, i: number): Send => [
+    'tp-operator',
+    minutesAgo,
+    `tp-operator: LIFT at NORMAL pace for ${seat}`,
+    `dm${i}`,
+    [seat],
+  ]
+  const chat: Send[] = [
+    ['tp-operator', 600, 'tp-operator: HOLD. Watch output: "TRIP 20:03"', 'h0', SEATS],
+    ['tp-operator', 590, 'tp-operator: REBOOT NOTICE. The machine watch tripped', 'h1', SEATS],
+    lift(420, 'seat-1', 0),
+    lift(420, 'seat-2', 1),
+    lift(300, 'seat-3', 2),
+    lift(300, 'seat-4', 3),
+  ]
+  const seatsHeldAt = (minutesAgo: number): string[] | undefined =>
+    machineStopStatus(liveStopInputs(new Date(at(minutesAgo) + 1))).holds[0]?.seats
+
+  it("ends each seat's part at its own lift and the machine stop at the last lift", () => {
+    writeChat(chat)
+    fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: OPERATORS }))
+
+    const held = [590, 421, 420, 301, 300, 0].map(seatsHeldAt)
+
+    expect(held).toEqual([SEATS, SEATS, ['seat-3', 'seat-4'], ['seat-3', 'seat-4'], undefined, undefined])
   })
 })
 
