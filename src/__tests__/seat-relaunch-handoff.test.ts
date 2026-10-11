@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { latestTeleportSection } from '../agents/seats/boot-read.js'
 import {
+  BOOT_WITHOUT_CONFIRMATION,
   HANDOFF_CAP,
   NO_TELEPORT_STATE,
   buildRelaunchHandoff,
@@ -100,5 +101,15 @@ describe('buildRelaunchHandoff', () => {
   it('carries the section found in an earlier day', () => {
     writeLog('alpha', '2026-09-30', '## State at teleport 4\nfrom the night\n')
     expect(buildRelaunchHandoff(root, 'alpha', 30, NOW)).toContain('from the night')
+  })
+})
+
+describe('boot without confirmation', () => {
+  it('tells the relaunched seat to register and boot with no owner question', () => {
+    const text = renderRelaunchHandoff({ root, seat: 'alpha', quietMinutes: 20, found: undefined })
+    expect(text).toContain(BOOT_WITHOUT_CONFIRMATION('alpha'))
+    expect(text).toContain('Register as alpha with chat_register')
+    expect(text).toMatch(/Do not ask the owner for confirmation/)
+    expect(text).not.toMatch(/\b(confirm with|ask the owner (first|before)|wait for (the owner|approval))\b/i)
   })
 })
