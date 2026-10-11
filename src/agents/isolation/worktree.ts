@@ -166,12 +166,21 @@ const GH_TIMEOUT_MS = 3_000
 interface GhPr {
   state: string
   headRefOid: string
+  commits: readonly string[]
+}
+
+/** The commit oids from gh's `commits` field, or null when it is not a list of `{oid}` objects. */
+function commitOids(commits: unknown): string[] | null {
+  if (!Array.isArray(commits)) return null
+  const oids = commits.map(c => (typeof c === 'object' && c !== null ? (c as { oid?: unknown }).oid : null))
+  return oids.every((oid): oid is string => typeof oid === 'string') ? oids : null
 }
 
 /** The branch's PR as gh reports it, or null when gh is missing, fails or says something unexpected. */
 async function ghPrView(gitRoot: string, branch: string): Promise<GhPr | null> {
   try {
-    const { stdout } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'state,headRefOid'], {
+    const args = ['pr', 'view', branch, '--json', 'state,headRefOid,commits']
+    const { stdout } = await execFileAsync('gh', args, {
       cwd: gitRoot,
       encoding: 'utf8',
       timeout: GH_TIMEOUT_MS,
@@ -179,15 +188,18 @@ async function ghPrView(gitRoot: string, branch: string): Promise<GhPr | null> {
     const pr: unknown = JSON.parse(stdout)
     if (typeof pr !== 'object' || pr === null) return null
     const { state, headRefOid } = pr as Record<string, unknown>
-    return typeof state === 'string' && typeof headRefOid === 'string' ? { state, headRefOid } : null
+    const commits = commitOids((pr as Record<string, unknown>).commits)
+    if (typeof state !== 'string' || typeof headRefOid !== 'string' || commits === null) return null
+    return { state, headRefOid, commits }
   } catch {
     return null
   }
 }
 
 /**
- * gh decides only when it proves the local tip is exactly what merged. Any other
- * answer (open, closed, a later local commit, no gh) stays advisory.
+ * gh decides only when it proves the local tip merged: the PR's merged head, or
+ * one of its commits when update-branch or another push moved the head past it
+ * (CC-624). Any other answer (open, closed, a later local commit, no gh) stays advisory.
  */
 async function ghCheck(
   gitRoot: string,
@@ -196,9 +208,14 @@ async function ghCheck(
   const pr = await ghPrView(gitRoot, branch)
   if (pr === null) return null
   const tip = await gitOrNull(['rev-parse', branch], gitRoot)
-  if (pr.state === 'MERGED' && pr.headRefOid === tip) {
-    const check: ReleaseCheck = { name: 'gh', ok: true, detail: `gh reports PR merged at ${tip.slice(0, 7)}` }
-    return { merged: true, check }
+  if (pr.state === 'MERGED' && tip !== null) {
+    const sha7 = tip.slice(0, 7)
+    if (pr.headRefOid === tip)
+      return { merged: true, check: { name: 'gh', ok: true, detail: `gh reports PR merged at ${sha7}` } }
+    if (pr.commits.includes(tip)) {
+      const detail = `gh reports PR merged; local tip ${sha7} is in it`
+      return { merged: true, check: { name: 'gh', ok: true, detail } }
+    }
   }
   return { merged: false, check: { name: 'gh', ok: true, detail: `gh reports the PR as ${pr.state}` } }
 }
@@ -240,6 +257,7 @@ function landedCheck(target: string | null, targets: readonly string[]): Release
  *
  * CC-792: the file check refuses once main edits a file the branch touched, so
  * when it fails, gh decides if it reports the PR merged at exactly the local tip.
+ * CC-624: or merged with the local tip among its commits, after the PR head moved on.
  */
 export async function inspectForRelease(
   gitRoot: string,
