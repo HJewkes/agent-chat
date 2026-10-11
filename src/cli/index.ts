@@ -31,6 +31,7 @@ import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
+import { addMachineCommands } from './verbs/machine.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
@@ -367,6 +368,7 @@ export function buildProgram(): Command {
   addMirrorCommands(program)
   addBurndownCommands(program)
   addSeatsCommands(program)
+  addMachineCommands(program)
   addDebugCommands(program)
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
