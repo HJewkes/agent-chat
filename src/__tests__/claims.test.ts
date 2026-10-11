@@ -148,6 +148,11 @@ describe('patternsOverlap decides glob pairs exactly (CC-826)', () => {
     ['.changeset/tp-1204-*', '.changeset/tp-1419-*.md'],
     ['.changeset/tp-1204-*', '.changeset/tp-995-*.md'],
     ['packages/agent*/**', 'packages/tool-guard/src/**'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/volume.ts'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/fatigue*.ts'],
+    ['src/dashboard/read-models/goal-*.ts', 'src/dashboard/read-models/streak.ts'],
+    ['packages/agent*/**', 'products/factory/src/cli.ts'],
+    ['packages/agent*/**', 'packages/session-read/*.*'],
   ])('accepts %s beside %s, which no path matches both', (a, b) => {
     expect(patternsOverlap(a, b)).toBe(false)
     expect(patternsOverlap(b, a)).toBe(false)
@@ -162,6 +167,10 @@ describe('patternsOverlap decides glob pairs exactly (CC-826)', () => {
     ['packages/*/src/**', 'packages/ui/**'],
     ['docs/', 'docs/*.md'],
     ['src/**/x.ts', 'src/a/**'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/set-risk-constants.ts'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/*.ts'],
+    ['packages/agent*/**', 'packages/agent-protocol/src/index.ts'],
+    ['site/reference/session-*.md', 'site/reference/*.md'],
   ])('still refuses %s beside %s, which share a path', (a, b) => {
     expect(patternsOverlap(a, b)).toBe(true)
     expect(patternsOverlap(b, a)).toBe(true)
