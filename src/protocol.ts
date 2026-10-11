@@ -298,6 +298,10 @@ export const EVENT_KINDS = [
   // only by the broker for the one configured decider identity. It leaves the
   // question open so the human can still overrule it with `answer`.
   'decided',
+  // CC-1056: the M0 criterion-3 instrument. Written by the seat's tool hooks, never by the broker.
+  'seat_blocked',
+  'seat_unblocked',
+  'seat_activity',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
