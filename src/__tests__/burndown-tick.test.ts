@@ -220,6 +220,14 @@ const stubGh =
           ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
           : run(bin, args, cwd)
 
+/** A `titan-factory` stub whose `service check --json` reads ok, or fails with `cause`. */
+const serviceCheck =
+  (cause: string | null = null, message = 'synthetic check'): ((args: string[]) => Answer) =>
+  args =>
+    args[0] === 'service'
+      ? { status: cause === null ? 0 : 1, stdout: JSON.stringify({ ok: cause === null, cause, message }) }
+      : { status: 0, stdout: '[]' }
+
 const isOriginLookup = (bin: string, args: string[]): boolean =>
   bin === 'git' && args.includes('remote') && args.includes('get-url')
 
@@ -1110,20 +1118,46 @@ describe('burndown tick in seats mode', () => {
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
 
     const lines = renderPlan(
-      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec: stubGh() }),
+      seatPlanFromDisk({
+        seat: 'seat-t',
+        now: NOON,
+        root,
+        autonomyRoot,
+        exec: stubGh(undefined, serviceCheck()),
+      }),
       NOON,
     )
 
     expect(lines.map(l => l.replace(/: score .*$/, ''))).toEqual([
       `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
+      'service check: ok',
       `would dispatch demo DM-1 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-1`,
       `would dispatch demo DM-2 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-2`,
       'refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers',
       'scorer skipped: 0',
     ])
-    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot, exec: stubGh() })).toThrow(
       'seat-e has no dispatch scope',
     )
+  })
+
+  it('burndown plan --seat prints the stopped line under its header after a second stopping read', () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      serviceCheck: { at: NOON.toISOString(), cause: 'stale pid' },
+    })
+    const exec = stubGh(undefined, serviceCheck('crash loop', 'serve restarted 3 times'))
+
+    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec }), NOON)
+
+    expect(lines[1]).toBe(
+      'service check: line stopped (stale pid, then crash loop): serve restarted 3 times; only cos:expedite and planners dispatch',
+    )
+    expect(lines).toContainEqual(expect.stringMatching(/^refused demo DM-1 \[stop-line\]/))
   })
 
   it("burndown plan --seat plans the charter's hub seat from its seat file when its role is not hub", () => {
@@ -1150,7 +1184,7 @@ describe('burndown tick in seats mode', () => {
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
     write(path.join(autonomyRoot, 'seats', 'seat-e.md'), '---\nrole: hub\nprefix: se\npool: pool-t\n---\n')
 
-    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot, exec: stubGh() })).toThrow(
       'seat-e is the hub seat and dispatches nothing',
     )
   })
