@@ -217,7 +217,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
       'ok checks',
       'ok changeset: not configured',
       'ok scan: skipped (no body file)',
-      `PR-READY OK ${git(work, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+      `PR-READY OK exit=0 ${git(work, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
     ])
     expect(result.toolCalls).toEqual(kind.checks)
   })
@@ -227,7 +227,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
 
     expect(result.code).toBe(1)
     expect(result.out).toContain(`FAIL checks: failed: ${kind.failingCheck}`)
-    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
     expect(result.toolCalls).toEqual(kind.checks)
     expect(result.errLines).toEqual([`synthetic failure: ${kind.failingCheck}`])
   })
@@ -245,7 +245,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
 
     expect(result.code).toBe(1)
     expect(result.out).toContain(`FAIL changeset: synthetic failure: ${kind.changeset}`)
-    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
   it('fails a dirty tree before any fetch, rebase or check', async () => {
@@ -258,7 +258,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.code).toBe(1)
     expect(result.out).toEqual([
       'FAIL clean-tree: uncommitted changes in shared.txt, untracked.txt',
-      'PR-READY FAIL',
+      'PR-READY FAIL exit=1',
     ])
     expect(result.calls).toEqual(['git status --porcelain'])
   })
@@ -284,7 +284,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
 
     expect(result.code).toBe(1)
     expect(result.out).toContain('FAIL rebase: conflict in shared.txt; rebase aborted')
-    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
     expect(result.calls).toContain('git rebase --abort')
     expect(result.toolCalls).toEqual([])
     expect(rebaseInProgress(work)).toBe(false)
@@ -410,13 +410,13 @@ describe('pr-ready rebase recovery', () => {
 
   it('aborts an in-progress rebase when a signal arrives mid-rebase', async () => {
     const work = conflictingRepo()
-    let onSignal: (() => void) | undefined
+    let onSignal: ((exitCode: number) => void) | undefined
     const trap: Trap = handler => ((onSignal = handler), () => (onSignal = undefined))
     let stateAfterSignal: boolean | undefined
     const signalMidRebase: Override = (line, args, cwd) => {
       if (line !== `git rebase ${BASE}`) return undefined
       return spawnRun('git', args, cwd).then(result => {
-        onSignal?.()
+        onSignal?.(130)
         stateAfterSignal = rebaseInProgress(work)
         return result
       })
@@ -426,6 +426,7 @@ describe('pr-ready rebase recovery', () => {
 
     expect(stateAfterSignal).toBe(false)
     expect(result.out).toContain('FAIL rebase: interrupted; rebase aborted')
+    expect(result.out).toContain('PR-READY FAIL exit=130')
     expect(onSignal).toBeUndefined()
   })
 
@@ -439,11 +440,11 @@ describe('pr-ready rebase recovery', () => {
       exit: code => void exits.push(code),
     })
 
-    const release = trap(() => cleanups.push('abort'))
+    const release = trap(code => cleanups.push(`abort ${code}`))
     emitter.emit('SIGTERM')
     release()
 
-    expect(cleanups).toEqual(['abort'])
+    expect(cleanups).toEqual(['abort 143'])
     expect(exits).toEqual([143])
     expect(emitter.listenerCount('SIGINT') + emitter.listenerCount('SIGTERM')).toBe(0)
   })
@@ -562,7 +563,7 @@ describe('pr-ready options and discovery', () => {
 
     expect(result.code).toBe(1)
     expect(result.out).toContain('FAIL checks: synthetic spawn crash')
-    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
   it('skips the fetch and rebase with --no-rebase', async () => {
@@ -597,7 +598,7 @@ describe('pr-ready options and discovery', () => {
     expect(result.out).toEqual([
       'ok clean-tree',
       'FAIL base: no origin/HEAD; run git remote set-head origin --auto',
-      'PR-READY FAIL',
+      'PR-READY FAIL exit=1',
     ])
   })
 })
@@ -646,7 +647,7 @@ describe('pr-ready scan', () => {
     expect(result.out).toContain(`FAIL scan: ${expected}`)
     expect(expected).toContain('leak-guard: this text would publish private data')
     expect(result.out.join('\n')).not.toContain(TERM)
-    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
   it('fails on a finding in the title', async () => {
@@ -678,7 +679,7 @@ describe('pr-ready scan', () => {
 
     expect(result.code).toBe(0)
     expect(result.out).toContain('ok scan')
-    expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')}`)
+    expect(result.out.at(-1)).toBe(`PR-READY OK exit=0 ${git(dir, 'rev-parse', 'HEAD')}`)
   })
 
   it('passes the clean-tree check when the only untracked path is the body file', async () => {
@@ -709,7 +710,7 @@ describe('pr-ready scan', () => {
 
     expect(result.out).toContain('ok clean-tree')
     expect(result.out.at(-1)).toBe(
-      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+      `PR-READY OK exit=0 ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
     )
   })
 
@@ -754,7 +755,7 @@ describe('pr-ready scan', () => {
     expect(result.code).toBe(0)
     expect(result.out).toContain('ok scan: skipped (no body file)')
     expect(result.out.at(-1)).toBe(
-      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+      `PR-READY OK exit=0 ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
     )
   })
 
@@ -827,6 +828,37 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
     )
     expect(sshCalls(result.calls)).toEqual([])
     expect(result.toolCalls.filter(c => !c.startsWith('ssh -o'))).toEqual([])
+  })
+
+  it('prints one line per deferred script and ends on the exit line (CC-837)', async () => {
+    const work = lintKind()
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(result.out.filter(line => line.startsWith('deferred '))).toEqual([
+      `deferred lint: ${suite('lint')}; run id: none (not started)`,
+      `deferred typecheck: ${suite('typecheck')}; run id: none (not started)`,
+    ])
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK exit=0 ${git(work, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
+  })
+
+  it('names each basement run by the log path basement-suite reports (CC-837)', async () => {
+    const summary = 'repo=agent-chat script=lint slot=1 log=basement:/runs/agent-x/agent-chat-1.log\nexit=0'
+    const result = await pushedAnswering('lint', { code: 0, output: summary })
+
+    expect(result.out.filter(line => line.startsWith('basement '))).toEqual([
+      'basement lint exit 0 run basement:/runs/agent-x/agent-chat-1.log',
+      'basement typecheck exit 0 run run id: unknown',
+    ])
+  })
+
+  it('ends a failed basement check on the exit line (CC-837)', async () => {
+    const result = await pushedAnswering('typecheck', { code: 1, output: 'tsc errors' })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('basement typecheck exit 1 run run id: unknown')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
   it('names the branch origin holds when the upstream differs from the local branch', async () => {
