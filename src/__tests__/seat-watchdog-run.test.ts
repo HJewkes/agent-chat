@@ -1303,11 +1303,13 @@ describe('watchdog relaunch (CC-465)', () => {
   })
 
   // Catches: the relaunch mark not carried into the next record, or the idle wake resuming a seat the relaunch held back.
-  it('does not relaunch, nor resume by the idle path, on a pass 10 minutes later', async () => {
+  it('does not relaunch, nor resume by the idle path, on passes 5 and 10 minutes later', async () => {
     const h = relaunching(DARK, 70)
 
     await runWatchdog(h.deps, ONE)
-    h.tick(10)
+    h.tick(5)
+    await runWatchdog(h.deps, ONE)
+    h.tick(5)
     await runWatchdog(h.deps, ONE)
 
     expect(h.wakes).toHaveLength(1)
