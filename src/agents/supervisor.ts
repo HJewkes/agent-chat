@@ -152,7 +152,13 @@ import { finalAssistantText } from './turns.js'
 import { completionPayload, type CompletionPayload, type ExitFacts } from './worker-facts.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
-import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
+import { readExitTail, unreportedExitText, UNREPORTED_EXIT, type ExitTail } from './exit-report.js'
+import {
+  BACKGROUND_RESUME,
+  BACKGROUND_RESUME_MESSAGE,
+  backgroundResumeDecision,
+  resumedForBackground,
+} from './background-resume.js'
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
@@ -541,6 +547,8 @@ export interface ResumeRequest {
   anchor?: string
   /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
   remoteControl?: boolean
+  /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
+  cause?: typeof BACKGROUND_RESUME
 }
 
 interface Live {
@@ -1093,8 +1101,10 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
-    if (failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless')
-      this.reportIfUnreported(agentId, entry.name)
+    const resumeOn =
+      failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
+        ? this.reportIfUnreported(agentId, entry.name)
+        : undefined
     this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelReason))
     // CC-95: the surface goes with the agent, including on an INFERRED exit —
     // which is the only exit an iTerm agent ever gets, and therefore the only
@@ -1120,6 +1130,7 @@ export class Supervisor implements TeleportHost {
       await this.retireIfReported(agentId)
       await this.parkReviewerIfReported(agentId)
     }
+    if (resumeOn !== undefined) await this.resumeForBackground(agentId, entry.name, resumeOn)
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -1152,14 +1163,37 @@ export class Supervisor implements TeleportHost {
   /**
    * CC-266: a headless agent that ended its run without a report to its spawner
    * or to burndown's `reportTo` gets one written for it, naming its last action.
+   * CC-336: when it ended on a background task, the tail is returned instead, for
+   * one resume once the exit is fully recorded; a second such exit is noticed.
    */
-  private reportIfUnreported(agentId: string, name: string): void {
+  private reportIfUnreported(agentId: string, name: string): ExitTail | undefined {
     const identity = this.core.agents.get(agentId)
-    if (identity === undefined) return
-    const spawner = identity.spawnedBy
-    const recipients = reportRecipients(spawner)
-    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return
+    if (identity === undefined) return undefined
+    const recipients = reportRecipients(identity.spawnedBy)
+    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return undefined
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
+    const decision = backgroundResumeDecision({
+      pendingBackground: tail.pendingBackground,
+      resumedForBackgroundThisChain: resumedForBackground(this.core.events.agentEventsFor(agentId)),
+    })
+    if (decision === 'resume') return tail
+    this.notifyUnreported(agentId, name, identity.spawnedBy, tail)
+    return undefined
+  }
+
+  /** CC-336: a refused resume (budget, machine stop, no transcript) falls back to the notice. */
+  private async resumeForBackground(agentId: string, name: string, tail: ExitTail): Promise<void> {
+    const spawner = this.core.agents.get(agentId)?.spawnedBy ?? HUMAN
+    const outcome = await this.resume(name, {
+      message: BACKGROUND_RESUME_MESSAGE,
+      requestedBy: spawner,
+      cause: BACKGROUND_RESUME,
+    })
+    logEvent(BACKGROUND_RESUME, { agentId, name, spawner, ok: outcome.ok })
+    if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
+  }
+
+  private notifyUnreported(agentId: string, name: string, spawner: string, tail: ExitTail): void {
     const body = unreportedExitText(name, tail)
     const { msgId } = this.core.append({
       kind: 'message',
@@ -3058,6 +3092,7 @@ export class Supervisor implements TeleportHost {
         from_surface: agent.surface,
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
+        ...(req.cause === undefined ? {} : { cause: req.cause }),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },
