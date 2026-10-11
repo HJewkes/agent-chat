@@ -212,6 +212,26 @@ describe('the watchdog resume', () => {
     )
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })
+
+  // Review of #566: a human session opened in the agent's worktree derives the agent's name and must not block its resume.
+  it('still resumes an agent after a session that only derived its name came and went', async () => {
+    const cwd = tmp('by-id-cwd-')
+    const meta = { cwd, profile: 'explorer', isolation: 'none', surface: 'headless', session_id: 'sess-own' }
+    spawnRow('agent', 'seat-x', 'seat-x', meta)
+    await exitRow('agent', 'seat-x')
+    const file = transcriptPath(cwd, 'sess-own')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    tick()
+    const conn = {} as unknown as net.Socket as Conn
+    const registration = { name: 'seat-x', workingOn: '', cwd, pid: 1, sessionId: 'sess-human' }
+    expect(core.register(conn, { t: 'register', ...registration, provisional: true }).ok).toBe(true)
+    core.drop(conn)
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res).toMatchObject({ ok: true, agentId: 'agent' })
+  })
 })
 
 describe('who a retire is recorded as (CC-218)', () => {

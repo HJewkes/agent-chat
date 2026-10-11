@@ -410,6 +410,34 @@ describe('AgentLog over a real event log', () => {
 
       expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
     })
+
+    const attach = (log: EventLog, id: string, name: string, meta: Record<string, string> = {}) =>
+      log.append({ kind: 'agent_attached', actor: name, ref: id, meta })
+
+    it('does not count a session whose name was only derived from the agent worktree', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'opened-here', 'seat', 'sess-1'),
+        () => attach(log, 'opened-here', 'seat', { provisional: 'true' }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('counts that session once it chooses the name for itself', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'opened-here', 'scratch', 'sess-1'),
+        () => attach(log, 'opened-here', 'scratch', { provisional: 'true' }),
+        () => attach(log, 'opened-here', 'seat'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('opened-here')
+    })
   })
 
   it('does not let a human session lease a name a later agent may need', () => {

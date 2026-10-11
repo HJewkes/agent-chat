@@ -94,6 +94,17 @@ describe('adopting a human-started session', () => {
     expect(core.agents.roster()[0]?.configDir).toBeUndefined()
   })
 
+  it('marks a derived name, and clears the mark when the session names itself', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration({ name: 'agent-x', provisional: true }))
+    expect(core.agents.roster()[0]?.provisionalName).toBe(true)
+
+    core.register(fakeConn(), registration({ name: 'chosen' }))
+
+    expect(core.agents.roster()[0]).toMatchObject({ name: 'chosen' })
+    expect(core.agents.roster()[0]?.provisionalName).toBeUndefined()
+  })
+
   it('attributes the session to the human, since a human started it', () => {
     const core = makeCore()
     core.register(fakeConn(), registration())

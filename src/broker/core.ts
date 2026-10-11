@@ -23,6 +23,10 @@ import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
+/** CC-959: marks a derived name, so a session opened in a stopped agent's worktree does not supersede it. */
+const provisionalMeta = (msg: RegisterMessage): { meta?: Record<string, string> } =>
+  msg.provisional === true ? { meta: { provisional: 'true' } } : {}
+
 export type Conn = net.Socket
 
 /**
@@ -172,7 +176,13 @@ export class BrokerCore<C = Conn> {
     const agentId = known ?? this.adopt(msg)
     if (agentId !== undefined) {
       this.registry.bindIdentity(conn, agentId)
-      this.append({ kind: 'agent_attached', actor: msg.name, ref: agentId, body: msg.workingOn })
+      this.append({
+        kind: 'agent_attached',
+        actor: msg.name,
+        ref: agentId,
+        body: msg.workingOn,
+        ...provisionalMeta(msg),
+      })
     }
     return { ok: true }
   }
@@ -273,6 +283,7 @@ export class BrokerCore<C = Conn> {
         session_id: msg.sessionId,
         // CC-959: observed by the MCP subprocess, so the roster can show which account a hand-started seat bills.
         ...(msg.observed?.configDir ? { config_dir: msg.observed.configDir } : {}),
+        ...provisionalMeta(msg).meta,
         // Spawns this session requests are now its children, and depthOf() reads
         // the parent's recorded depth and adds one. Zero leaves them at exactly
         // the depth they had while a human session had no identity to be a

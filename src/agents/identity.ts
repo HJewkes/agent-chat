@@ -71,6 +71,7 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
+  ...(row.meta.provisional === 'true' ? { provisionalName: true as const } : {}),
   ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
@@ -100,6 +101,13 @@ function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
   if (base !== undefined) agent.base = base
   if (row.meta.repo) agent.repo = row.meta.repo
   if (row.meta.branch) agent.branch = row.meta.branch
+}
+
+/** An adopted name follows its latest attach, and so does whether that name was derived or chosen. */
+function attachAdopted(agent: AgentIdentity, row: AgentEventRow): void {
+  agent.name = row.actor
+  if (row.meta.provisional === 'true') agent.provisionalName = true
+  else delete agent.provisionalName
 }
 
 /** Lifecycle transitions, keyed by kind. Kinds absent here only bump `lastEventAt`. */
@@ -144,7 +152,7 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // chat_register twice under a different one, and the attach row carries what
     // it last called itself. A spawned name never moves — it came from the launch
     // plan and peers were told it before the agent had a turn.
-    if (agent.origin === 'adopted' && row.kind === 'agent_attached') agent.name = row.actor
+    if (agent.origin === 'adopted' && row.kind === 'agent_attached') attachAdopted(agent, row)
     // Presentation is not fixed at spawn: a mode switch resumes the SAME identity
     // into a different surface, and a roster reading `surface` off the spawn row
     // would keep reporting the pane an agent no longer has. Only `agent_resumed`
@@ -330,9 +338,13 @@ export class AgentLog {
    * falls back to an older generation; resuming that would wake a stale session.
    * CC-959: an adopted successor counts too. A seat restarted by hand is adopted,
    * and `byName` cannot see it, so it would otherwise resume the older spawned row.
+   * Not one whose name was derived from its directory: a session merely opened in
+   * an agent's worktree takes the agent's name without meaning to replace it.
    */
   supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
-    return this.all().find(a => a.name === agent.name && a.spawnedAt > agent.spawnedAt)
+    return this.all().find(
+      a => a.name === agent.name && a.spawnedAt > agent.spawnedAt && a.provisionalName !== true,
+    )
   }
 
   /**
