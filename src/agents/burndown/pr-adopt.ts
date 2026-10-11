@@ -99,7 +99,7 @@ const SHEPHERD_KINDS: Readonly<Record<string, ShepherdKind>> = {
  * Stems in a title or tag that may mean authority, merge policy, a guard or provenance;
  * matched from a word start, so `auth` also catches authentication and authorization.
  */
-const SENSITIVE_STEMS = [
+export const SENSITIVE_STEMS = [
   'secur',
   'auth',
   'permi',
@@ -141,19 +141,39 @@ const FLAG_ONLY_WORD = /secur/i
  * Paths whose change alters authority, a guard or merge policy, in agent-chat and in titan-platform
  * (a seat may work in either). A PR touching one is held, not refused: Shepherd's own protected-path
  * rule covers only CODEOWNERS and .gitmodules. Derived from patterns, not names, so a new guard
- * file is held without an edit here: a file name with a protected word, whole trees, build and
+ * file is held without an edit here: a file name with a sensitive stem, whole trees, build and
  * test setup.
  */
-const PROTECTED_NAME =
-  /(guard|trust|permission|endorse|approve|policy|identity|leak|egress|custody|decider|hold|hook|setup)/i
+const PATH_ONLY_STEMS = [
+  'custody',
+  'decider',
+  'leak',
+  'hold',
+  'setup',
+  'hook',
+  'guard',
+  'trust',
+  'permission',
+  'endorse',
+  'approve',
+  'policy',
+  'identity',
+  'egress',
+  'release',
+  'burndown',
+]
+
+/** One source for the words: SENSITIVE_STEMS plus the path-only extras, matched anywhere in a file name. */
+const PROTECTED_NAME = new RegExp(`(${[...SENSITIVE_STEMS, ...PATH_ONLY_STEMS].join('|')})`, 'i')
 
 const PROTECTED_PATHS = [
-  /^src\/agents\/burndown\//,
-  /^src\/agents\/isolation\//,
-  /^src\/(gh-shim|gh-write|leak-guard)\//,
-  /^src\/broker\/core\.ts$/,
-  /^(profiles|scripts|plugins)\//,
+  /^src\/(broker|agents\/(seats|burndown|isolation)|gh-shim|gh-write|leak-guard)\//,
+  /^src\/agents\/profiles/,
+  /^src\/protocol\.ts$/,
+  /^(profiles|scripts|plugins|\.claude-plugin)\//,
   /(^|\/)package(-lock)?\.json$/,
+  /(^|\/)tsconfig[^/]*\.json$/,
+  /(^|\/)\.npmrc$/,
   /(^|\/)vitest\.config\.[^/]+$/,
   /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue)\//,
   /^products\/factory\/src\/shepherd\/[^/]*(merge|hold|release|g10|registration|seats|override|freeze)[^/]*\.ts$/,

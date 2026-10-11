@@ -6,6 +6,7 @@ import type { OwedHold } from '../agents/burndown/owed-holds.js'
 import { changedFiles, openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
 import {
   adoptSeatPrs,
+  SENSITIVE_STEMS,
   type AdoptPorts,
   type AdoptSeat,
   type ChangedFile,
@@ -459,6 +460,18 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'src/agents/burndown/exception.ts',
     'src/agents/burndown/eligibility.ts',
     'src/agents/burndown/anything-new.ts',
+    'src/agents/profiles.ts',
+    'src/broker/token.ts',
+    'src/broker/decisions.ts',
+    'src/protocol.ts',
+    'src/agents/spawn-provenance.ts',
+    'src/agents/seats/spawn-gate.ts',
+    'src/agents/seats/spawn-gate-check.ts',
+    'src/cli/verbs/burndown-release.ts',
+    '.npmrc',
+    'tsconfig.json',
+    'tsconfig.build.json',
+    '.claude-plugin/marketplace.json',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',
@@ -498,6 +511,17 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       'register Acme/Widgets#7',
       `hold Acme/Widgets#7: g10-adversary: protected path ${path}; T-1`,
     ])
+  })
+
+  // Mutation: a second hand-written name list in place of SENSITIVE_STEMS leaves a new stem unheld.
+  it.each(SENSITIVE_STEMS)('holds a file whose name contains the sensitive stem %s', stem => {
+    const sample = stem.replace('[- ]?', '').replace('(y|ie)', 'y')
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [file(`src/widgets/${sample}-x.ts`)] })
+
+    tick(f)
+
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls[1]).toContain('protected path')
   })
 
   // Mutation: holding every non-test path would hold these.
