@@ -71,6 +71,7 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
+  ...(originOf(row) === 'adopted' && derivedName(row, true) ? { provisionalName: true as const } : {}),
   ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
@@ -102,6 +103,35 @@ function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
   if (row.meta.branch) agent.branch = row.meta.branch
 }
 
+/** The working-on text a provisional registration sends (`src/server/index.ts`). */
+const DERIVED_WORKING_ON = 'unregistered session in '
+
+/**
+ * CC-959: the broker states on each adopt and attach row whether the name was
+ * derived. An adopt row without the field predates it, and only its first
+ * name can be recognised, by the text a provisional registration sends. A
+ * readopt carries that text on as the brief under whatever name the session
+ * later chose, so the text alone says nothing about a later name.
+ */
+const derivedName = (row: AgentEventRow, firstName: boolean): boolean =>
+  row.meta.provisional === undefined
+    ? firstName && (row.body ?? '').startsWith(DERIVED_WORKING_ON)
+    : row.meta.provisional === 'true'
+
+/** The first name of an adopted identity minted before the broker recorded `provisional`, if it is one. */
+function legacyAdoptedName(rows: readonly AgentEventRow[]): string | undefined {
+  const row = rows.find(r => r.kind === 'agent_spawned')
+  if (row === undefined || originOf(row) !== 'adopted' || row.meta.provisional !== undefined) return undefined
+  return row.target ?? row.meta.name
+}
+
+/** An adopted name follows its latest attach, and so does whether that name was derived or chosen. */
+function attachAdopted(agent: AgentIdentity, row: AgentEventRow, legacyName: string | undefined): void {
+  agent.name = row.actor
+  if (derivedName(row, legacyName !== undefined && row.actor === legacyName)) agent.provisionalName = true
+  else delete agent.provisionalName
+}
+
 /** Lifecycle transitions, keyed by kind. Kinds absent here only bump `lastEventAt`. */
 const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
   agent_attached: 'live',
@@ -126,6 +156,7 @@ const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
 export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undefined {
   let agent: AgentIdentity | undefined
   let exitInferred = false
+  const legacyName = legacyAdoptedName(rows)
 
   for (const row of rows) {
     const id = agentIdOf(row)
@@ -144,7 +175,7 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // chat_register twice under a different one, and the attach row carries what
     // it last called itself. A spawned name never moves — it came from the launch
     // plan and peers were told it before the agent had a turn.
-    if (agent.origin === 'adopted' && row.kind === 'agent_attached') agent.name = row.actor
+    if (agent.origin === 'adopted' && row.kind === 'agent_attached') attachAdopted(agent, row, legacyName)
     // Presentation is not fixed at spawn: a mode switch resumes the SAME identity
     // into a different surface, and a roster reading `surface` off the spawn row
     // would keep reporting the pane an agent no longer has. Only `agent_resumed`
@@ -324,14 +355,18 @@ export class AgentLog {
   }
 
   /**
-   * CC-408: a newer spawned identity under the same name, retired or not.
+   * CC-408: a newer identity under the same name, retired or not.
    *
    * Teleport successors keep the name, so once the newest is retired `byName`
    * falls back to an older generation; resuming that would wake a stale session.
+   * CC-959: an adopted successor counts too. A seat restarted by hand is adopted,
+   * and `byName` cannot see it, so it would otherwise resume the older spawned row.
+   * Not one whose name was derived from its directory: a session merely opened in
+   * an agent's worktree takes the agent's name without meaning to replace it.
    */
   supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
     return this.all().find(
-      a => a.name === agent.name && a.origin === 'spawned' && a.spawnedAt > agent.spawnedAt,
+      a => a.name === agent.name && a.spawnedAt > agent.spawnedAt && a.provisionalName !== true,
     )
   }
 

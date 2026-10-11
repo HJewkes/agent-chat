@@ -27,6 +27,8 @@ export interface DispatchStatsPorts {
   journal: (seat: string, day: Date) => string | undefined
   /** The tick status file's last good tick, the fallback when no tick row is in the window. */
   lastOkAt: () => string | undefined
+  /** The tick config's `maxAgents`; the ready floor is twice it. */
+  maxAgents: () => number
   /** CC-938: the review verdicts on the PRs of `runs`' tasks since `sinceMs`; throws when the event log cannot be read. */
   verdicts: (runs: readonly DispatchRecord[], sinceMs: number) => VerdictObservation[]
 }
@@ -37,12 +39,23 @@ export interface RefusalMix {
   counts: Record<string, number>
 }
 
+/** CC-967: ready depth over the window against the floor; `below` counts ticks strictly under it. */
+export interface ReadyFloor {
+  floor: number
+  ticks: number
+  below: number
+  min: number | null
+  p50: number | null
+  longestBelowMinutes: number
+}
+
 export interface SeatDispatchStats {
   seat: string
   since: string
   spawns: { tick: number; hand: number; tickPerHour: number; handPerHour: number; lastTickAt: string | null }
   queue: { depth: number; p50Minutes: number | null; maxMinutes: number | null }
   ready: Pick<SeatSummary, 'ready' | 'unbriefed' | 'stale'> | null
+  readyFloor: ReadyFloor
   caps: SeatSummary['roles'] | null
   refusals: RefusalMix | null
   registrations: RegisterCounts
@@ -188,6 +201,34 @@ function tickHealth(
   }
 }
 
+/** The seat's ready depth over `rows` against `floor`; a row without the seat is not a tick of it. */
+export function readyFloor(rows: readonly TickSummaryRow[], seat: string, floor: number): ReadyFloor {
+  const ticks = rows.flatMap(r =>
+    r.seats[seat] === undefined ? [] : [{ at: Date.parse(r.ts), ready: r.seats[seat].ready }],
+  )
+  const depths = ticks.map(t => t.ready).sort((a, b) => a - b)
+  let below = 0
+  let longestMs = 0
+  let runStart: number | undefined
+  for (const t of ticks) {
+    if (t.ready >= floor) {
+      runStart = undefined
+      continue
+    }
+    below += 1
+    runStart ??= t.at
+    longestMs = Math.max(longestMs, t.at - runStart)
+  }
+  return {
+    floor,
+    ticks: ticks.length,
+    below,
+    min: depths[0] ?? null,
+    p50: depths[Math.floor((depths.length - 1) / 2)] ?? null,
+    longestBelowMinutes: Math.round(longestMs / MINUTE_MS),
+  }
+}
+
 const perHour = (n: number, windowMs: number): number => Math.round((n / (windowMs / HOUR_MS)) * 100) / 100
 
 interface Window {
@@ -195,6 +236,7 @@ interface Window {
   windowMs: number
   rows: readonly TickSummaryRow[]
   ledger: Ledger
+  floor: number
 }
 
 function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDispatchStats {
@@ -218,6 +260,7 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
       summary === undefined
         ? null
         : { ready: summary.ready, unbriefed: summary.unbriefed, stale: summary.stale },
+    readyFloor: readyFloor(w.rows, seat, w.floor),
     caps: summary?.roles ?? null,
     refusals: fromRow ?? latestJournalRefusals(ports, seat, w.sinceMs),
     registrations: sumRegistrations(w.rows, seat),
@@ -225,14 +268,19 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
   }
 }
 
-/** One record per seat, in seat-name order. */
-export function dispatchStats(ports: DispatchStatsPorts, windowMs: number): SeatDispatchStats[] {
+/** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
+export function dispatchStats(
+  ports: DispatchStatsPorts,
+  windowMs: number,
+  floor?: number,
+): SeatDispatchStats[] {
   const sinceMs = ports.now.getTime() - windowMs
   const w: Window = {
     sinceMs,
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
+    floor: floor ?? 2 * ports.maxAgents(),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
 }
@@ -253,6 +301,10 @@ function refusalsLine(mix: RefusalMix | null): string {
   return `${listed} (${mix.source} ${mix.at})`
 }
 
+function floorLine(f: ReadyFloor): string {
+  return `${f.below} of ${f.ticks} ticks below ${f.floor}, min ${dash(f.min)}, p50 ${dash(f.p50)}, longest ${f.longestBelowMinutes}m`
+}
+
 function tickLine({ tick, spawns }: SeatDispatchStats): string {
   const dispatched = tick.dispatched === null ? 'unknown' : tick.dispatched ? 'yes' : 'no'
   const skipped = tick.skipped === undefined ? '' : `, skipped: ${tick.skipped}`
@@ -269,6 +321,7 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
       `  spawns/h       tick ${spawns.tickPerHour} (${spawns.tick}), hand ${spawns.handPerHour} (${spawns.hand})`,
       `  queue          ${queue.depth} queued, age p50 ${dash(queue.p50Minutes)}m, max ${dash(queue.maxMinutes)}m`,
       `  ready depth    ${ready === null ? '-' : `ready ${ready.ready}, unbriefed ${ready.unbriefed}, stale ${ready.stale}`}`,
+      `  ready floor    ${floorLine(s.readyFloor)}`,
       `  cap use        ${capsLine(s.caps)}`,
       `  refusals       ${refusalsLine(s.refusals)}`,
       `  registrations  ok ${reg.ok}, refused ${reg.refused}, failed ${reg.failed}`,

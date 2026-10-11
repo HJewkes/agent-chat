@@ -35,6 +35,7 @@ const budget: BudgetRead = {
 interface Rig {
   deps: WatchdogDeps
   sent: { at: string; message: string }[]
+  events: { event: string; detail: Record<string, unknown> }[]
   /** Fail every wake until set back to false. */
   failWakes: (fail: boolean) => void
   /** Set the seat's own log for 2026-10-08. */
@@ -43,17 +44,22 @@ interface Rig {
   at: (hh: number, mm: number) => Promise<void>
 }
 
-function rig(cron = '"17,47 * * * *"'): Rig {
+function rig(cron = '"17,47 * * * *"', source?: string): Rig {
   let now = new Date(2026, 9, 8, 8, 0)
   let seatLog = ''
   let doc: WatchdogDoc = { seats: {}, pools: {}, stopped: {} }
   const sent: Rig['sent'] = []
+  const events: Rig['events'] = []
+  const seatFile = SEAT.replace(
+    '"17,47 * * * *"',
+    cron + (source === undefined ? '' : `\nheartbeat_source: ${source}`),
+  )
   let failing = false
   const hhmm = (d: Date): string => `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
   const deps: WatchdogDeps = {
     now: () => now,
     readCharter: () => CHARTER,
-    readSeatFile: () => SEAT.replace('"17,47 * * * *"', cron),
+    readSeatFile: () => seatFile,
     seatLogDays: () => [new Date(2026, 9, 8, 12)],
     readSeatLog: () => seatLog,
     readBudget: () => budget,
@@ -71,10 +77,12 @@ function rig(cron = '"17,47 * * * *"'): Rig {
     },
     appendLog: () => undefined,
     lock: () => ({ held: true, release: () => undefined }),
+    logEvent: (event, detail) => void events.push({ event, detail }),
   }
   return {
     deps,
     sent,
+    events,
     failWakes: fail => void (failing = fail),
     log: text => void (seatLog = text),
     at: async (hh, mm) => {
@@ -161,5 +169,66 @@ describe('watchdog heartbeat', () => {
     const r = rig('""')
     await everyMinute(r, [9, 0], [9, 59])
     expect(r.sent).toEqual([])
+  })
+})
+
+describe('watchdog heartbeat for a heartbeat_source: watchdog seat (CC-391)', () => {
+  const slotMs = (hh: number, mm: number): number => new Date(2026, 9, 8, hh, mm).getTime()
+
+  /** First sight at 9:00 marks 8:47; the seat then logs work just after the 9:17 slot. */
+  async function loggedAfterSlot(r: Rig): Promise<void> {
+    await r.at(9, 0)
+    r.log('09:18 tick: merged a PR')
+    await everyMinute(r, [9, 18], [9, 46])
+  }
+
+  it('ticks once in the slot even though the seat logged after it', async () => {
+    const r = rig(undefined, 'watchdog')
+    await loggedAfterSlot(r)
+    expect(r.sent).toEqual([{ at: '9:18', message: TICK }])
+  })
+
+  it('still reads that line as its own tick for a seat without the field', async () => {
+    const r = rig()
+    await loggedAfterSlot(r)
+    expect(r.sent).toEqual([])
+  })
+
+  it('reads an unknown heartbeat_source as cron', async () => {
+    const r = rig(undefined, 'bogus')
+    await loggedAfterSlot(r)
+    expect(r.sent).toEqual([])
+  })
+
+  it('sends one tick per slot across a morning', async () => {
+    const r = rig(undefined, 'watchdog')
+    r.log('08:00 tick: started')
+    await everyMinute(r, [9, 0], [10, 30])
+    expect(r.sent.map(s => s.at)).toEqual(['9:17', '9:47', '10:17'])
+  })
+
+  it('wakes once at a BUDGET-PAUSE reset and then stays quiet', async () => {
+    const r = rig(undefined, 'watchdog')
+    r.log('08:50 BUDGET-PAUSE five_hour 71% until 13:00')
+    await everyMinute(r, [12, 55], [13, 20])
+    expect(r.sent).toHaveLength(1)
+    expect(r.sent[0]?.at).toBe('13:02')
+    expect(r.sent[0]?.message).toMatch(/BUDGET-PAUSE/)
+  })
+
+  it('records a delivered tick as one heartbeat_watchdog event', async () => {
+    const r = rig(undefined, 'watchdog')
+    await everyMinute(r, [9, 0], [9, 30])
+    expect(r.events).toEqual([
+      { event: 'heartbeat_watchdog', detail: { seat: 'seat-a', source: 'watchdog', slot: slotMs(9, 17) } },
+    ])
+  })
+
+  it('records nothing for a tick that failed to send', async () => {
+    const r = rig(undefined, 'watchdog')
+    await r.at(9, 0)
+    r.failWakes(true)
+    await r.at(9, 17)
+    expect(r.events).toEqual([])
   })
 })
