@@ -603,11 +603,11 @@ describe('a slice PR against its owns at PR open (CC-669)', () => {
     const unowned = claim({ slice: 'a' })
 
     const free = await observed(unowned, ['README.md'], calls)
-    const fenced = await observed(sliced(), ['README.md'], calls)
+    const fenced = await observed(sliced(), ['src/other/x.ts'], calls)
 
     expect(free.owned).toBeUndefined()
     expect(registers(step(unowned, free).actions)).toHaveLength(1)
-    expect(fenced.owned).toEqual({ outside: ['README.md'] })
+    expect(fenced.owned).toEqual({ outside: ['src/other/x.ts'] })
     expect(calls).toEqual([WORKTREE])
   })
 })
