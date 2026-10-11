@@ -766,6 +766,8 @@ Options:
   --config-dir <path>     the Claude config dir, and therefore the account, to run it on
   --task <id>             the task id the agent works on, recorded on its agent record
   --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review, planner or other
+  --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
+                          iterm-tab, iterm-window, tmux-window
   -h, --help              display help for command
 
 === agent-chat agent retire

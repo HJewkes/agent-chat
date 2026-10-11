@@ -11,7 +11,8 @@ import {
   transcriptLine,
   type ProfileIndex,
 } from '../agents/transcript.js'
-import { type AgentIdentity, type ServerMessage } from '../protocol.js'
+import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName } from '../protocol.js'
+import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
 
@@ -251,6 +252,13 @@ export async function agentWorktrees(options: { prune?: boolean; force?: boolean
   return { ok: true, lines }
 }
 
+/** The commander parser for `--surface`: a name outside SURFACE_NAMES is refused before any frame is sent. */
+export function parseSurface(value: string): SurfaceName {
+  const surface = SURFACE_NAMES.find(name => name === value)
+  if (surface === undefined) throw new InvalidArgumentError(`one of: ${SURFACE_NAMES.join(', ')}`)
+  return surface
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
@@ -262,7 +270,14 @@ export async function agentSpawn(
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
-  options: { briefing?: string; briefStdin?: boolean; configDir?: string; task?: string; role?: string } = {},
+  options: {
+    briefing?: string
+    briefStdin?: boolean
+    configDir?: string
+    task?: string
+    role?: string
+    surface?: SurfaceName
+  } = {},
 ): Promise<void> {
   let brief: string
   try {
@@ -284,6 +299,7 @@ export async function agentSpawn(
         ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
         ...(options.task === undefined ? {} : { task: options.task }),
         ...(options.role === undefined ? {} : { workRole: options.role }),
+        ...(options.surface === undefined ? {} : { surface: options.surface }),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
