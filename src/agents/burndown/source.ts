@@ -92,7 +92,7 @@ export function readTaskText(root: string, slug: string, id: string): string | u
 }
 
 const count = z.number().int().nonnegative()
-const Config = z.object({
+export const TickConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Burndown agents alive at once, across every initiative. */
   maxAgents: z.number().int().positive({ error: 'maxAgents must be a positive integer' }).default(3),
@@ -151,18 +151,18 @@ const Config = z.object({
     .positive({ error: 'briefMaxAgeDays must be a positive integer' })
     .default(14),
 })
-export type TickConfig = z.infer<typeof Config>
+export type TickConfig = z.infer<typeof TickConfigSchema>
 
-function parseConfig(file: string): z.infer<typeof Config> | undefined {
+function parseConfig(file: string): z.infer<typeof TickConfigSchema> | undefined {
   const raw = readText(file)
   if (raw === undefined) return undefined
-  const parsed = Config.safeParse(JSON.parse(raw))
+  const parsed = TickConfigSchema.safeParse(JSON.parse(raw))
   if (!parsed.success) throw new Error(`burndown config ${file} is malformed: ${parsed.error.message}`)
   return parsed.data
 }
 
 /** The tick's switches and ceilings; absent means disabled. CC-801: an old `accounts` key is dropped unread; the charter's pools replaced it. */
-export const loadTickConfig = (file: string): TickConfig => parseConfig(file) ?? Config.parse({})
+export const loadTickConfig = (file: string): TickConfig => parseConfig(file) ?? TickConfigSchema.parse({})
 
 /** The Claude config dir an account name resolves to, the way a spawn's `profile` would. */
 export const accountDir = (account: string, env = process.env, home = os.homedir()): string =>
