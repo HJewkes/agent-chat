@@ -12,7 +12,14 @@ import { plan, type Plan, type PlanInputs } from './plan.js'
 import { lineStopFrom, readServiceCheck } from './service-check.js'
 import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
 import { expandHome } from './seat-dispatch.js'
-import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
+import {
+  briefDepsOf,
+  diskSeatDeps,
+  loadSeats,
+  planSeats,
+  type LoadedSeats,
+  type SeatPlanDeps,
+} from './seat-tick.js'
 import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
 import { currentTriage, exceptionOf } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
@@ -110,9 +117,11 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   const cliVersion = installedClaudeVersion()
   // A dry run judges this read against the persisted one and writes neither.
   const lineStop = lineStopFrom(readServiceCheck(opts.exec), ledger.serviceCheck, opts.now)
+  const config = loadTickConfig(burndownConfigPath())
   const deps: SeatPlanDeps = {
     ledger,
-    scopeTagAliases: loadTickConfig(burndownConfigPath()).scopeTagAliases,
+    scopeTagAliases: config.scopeTagAliases,
+    brief: briefDepsOf(config),
     initiatives: readInitiatives(opts.root),
     trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
     ...(check === undefined ? {} : { collision: check }),

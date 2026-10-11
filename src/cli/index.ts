@@ -326,6 +326,12 @@ function addHiddenCommands(program: Command): void {
       await permissionHook(options)
     })
 
+  // Run by Claude Code as every spawned agent's UserPromptSubmit hook (CC-762), never by a person.
+  program.command('stale-session-guard <agentId>', { hidden: true }).action(async (agentId: string) => {
+    const { staleSessionGuard } = await import('./verbs/stale-session-guard.js')
+    staleSessionGuard(agentId)
+  })
+
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
   program
     .command('leak-guard', { hidden: true })

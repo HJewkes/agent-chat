@@ -59,6 +59,8 @@ const Claim = z.object({
   spawned: z.array(z.string()).optional(),
   /** Where a `spawning` claim goes once its agent row appears. */
   nextPhase: z.enum(AGENT_PHASES).optional(),
+  /** CC-939: the planner-profile agent writes a brief, not slices; its exit leaves the task for approval. */
+  briefer: z.boolean().optional(),
   worktree: z.string().optional(),
   questionId: z.string().optional(),
   inboxCursor: z.string().optional(),

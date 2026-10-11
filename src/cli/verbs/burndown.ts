@@ -16,8 +16,10 @@ import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agent
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
 import {
   DEFAULT_WINDOW,
+  briefSourceQuality,
   dispatchStats,
   parseWindow,
+  renderBriefSourceQuality,
   renderDispatchStats,
   type DispatchStatsPorts,
 } from '../../agents/burndown/dispatch-stats.js'
@@ -34,6 +36,7 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { releaseTask, type RetireCall } from './burndown-release.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 
@@ -222,11 +225,23 @@ export const burndownMilestoneVerb = defineVerb({
 })
 
 /** The dispatch-stats verb's body, taking its ports explicitly so a test can point it at fixtures. */
-export function dispatchStatsLines(ports: DispatchStatsPorts, since: string, json: boolean): Report {
+export function dispatchStatsLines(
+  ports: DispatchStatsPorts,
+  since: string,
+  json: boolean,
+  byBriefSource = false,
+): Report {
   const windowMs = parseWindow(since)
   if (windowMs === undefined)
     return refused(new Error(`--since ${since} is not a window; use e.g. 90m, 24h or 7d`))
   try {
+    if (byBriefSource) {
+      const quality = briefSourceQuality(ports, windowMs)
+      return {
+        ok: true,
+        lines: json ? quality.map(q => JSON.stringify(q)) : renderBriefSourceQuality(quality),
+      }
+    }
     const stats = dispatchStats(ports, windowMs)
     return { ok: true, lines: json ? stats.map(s => JSON.stringify(s)) : renderDispatchStats(stats) }
   } catch (err) {
@@ -241,12 +256,21 @@ export const burndownDispatchStatsVerb = defineVerb({
   args: z.object({
     json: z.boolean().optional(),
     since: z.string().optional(),
+    byBriefSource: z.boolean().optional(),
     autonomyRoot: z.string().optional(),
   }),
   result: Report,
   cli: {
     options: {
-      json: { long: '--json', description: 'one JSON record per seat, one per line' },
+      json: {
+        long: '--json',
+        description: 'one JSON record per seat (per brief source with --by-brief-source), one per line',
+      },
+      byBriefSource: {
+        long: '--by-brief-source',
+        description:
+          'instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat, briefer, template, unknown)',
+      },
       since: {
         long: '--since',
         description: `window to read, e.g. 90m, 24h or 7d (default ${DEFAULT_WINDOW})`,
@@ -254,9 +278,9 @@ export const burndownDispatchStatsVerb = defineVerb({
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding seats/ and logs/' },
     },
   },
-  async run({ json, since, autonomyRoot }) {
+  async run({ json, since, byBriefSource, autonomyRoot }) {
     const ports = dispatchStatsPorts(autonomyRoot ?? defaultAutonomyRoot(), new Date())
-    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true)
+    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true, byBriefSource === true)
   },
 })
 
@@ -355,6 +379,17 @@ export const burndownReleaseVerb = defineVerb({
   },
 })
 
+export const burndownBriefApproveVerb = defineVerb({
+  name: 'burndown.brief.approve',
+  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
+  args: z.object({ task: requiredString('task') }),
+  result: Report,
+  cli: { positional: ['task'] },
+  async run({ task }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  },
+})
+
 export { burndownInstall, burndownJobStatus, burndownUninstall } from './burndown-job.js'
 
 export const burndownInstallVerb = defineVerb({
@@ -405,6 +440,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPlanVerb)
   addVerb(burndown, burndownMilestoneVerb)
   const seats = burndown.command('seats').description('seats mode checks (CC-205)')
+  const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
@@ -412,6 +448,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
+  addVerb(brief, burndownBriefApproveVerb)
   addVerb(burndown, burndownInstallVerb)
   addVerb(burndown, burndownUninstallVerb)
   addVerb(burndown, burndownJobStatusVerb)

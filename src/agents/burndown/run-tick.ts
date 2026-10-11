@@ -59,6 +59,7 @@ import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
 import {
+  briefDepsOf,
   diskSeatDeps,
   loadSeats,
   planSeats,
@@ -478,7 +479,13 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
+  const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])
   const { observations, unread } = await observe(held, roster, {
+    proposed: (initiative, taskId) =>
+      tasks
+        .get(initiative)
+        ?.find(t => t.id === taskId)
+        ?.tags.some(tag => tag === 'brief:proposed' || tag.startsWith('brief:proposed=')) ?? false,
     inboxSince: opts.broker.inboxSince,
     root,
     shepherdRows: shepherd,
@@ -490,7 +497,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
     running: (name: string) => isRunning(roster, name),
     priorBranch: (key: ClaimKey) => ledger.ladder?.[claimKey(key)]?.branch,
-    tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
+    tasks,
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
@@ -537,12 +544,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
-      brief: {
-        briefGate: config.briefGate,
-        briefMaxAgeDays: config.briefMaxAgeDays,
-        maxAgents: config.maxAgents,
-        handReserve: config.handReserve,
-      },
+      brief: briefDepsOf(config),
       scopeTagAliases: config.scopeTagAliases,
     },
   )

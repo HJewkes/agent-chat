@@ -236,6 +236,7 @@ Commands:
   milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
                             throughput, forecast, status
   seats                     seats mode checks (CC-205)
+  brief                     task brief lifecycle (item 179)
   status                    claim ledger, stalled claims and each account budget gate
   dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
                             refusal mix, registrations, tick health
@@ -300,6 +301,27 @@ Options:
   --autonomy-root <value>  directory holding score.py, charter.md and seats/
   -h, --help               display help for command
 
+=== agent-chat burndown brief
+Usage: agent-chat burndown brief [options] [command]
+
+task brief lifecycle (item 179)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
+                  plan file
+  help [command]  display help for command
+
+=== agent-chat burndown brief approve
+Usage: agent-chat burndown brief approve [options] <task>
+
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+
+Options:
+  -h, --help  display help for command
+
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
 
@@ -315,7 +337,10 @@ per seat: spawns/h tick vs hand, queue age, ready depth, cap use, refusal mix, r
 health
 
 Options:
-  --json                   one JSON record per seat, one per line
+  --json                   one JSON record per seat (per brief source with --by-brief-source), one
+                           per line
+  --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
+                           briefer, template, unknown)
   --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
   --autonomy-root <value>  directory holding seats/ and logs/
   -h, --help               display help for command
@@ -980,6 +1005,12 @@ Usage: agent-chat permission-hook [options]
 Options:
   --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
   -h, --help            display help for command
+
+=== agent-chat stale-session-guard
+Usage: agent-chat stale-session-guard [options] <agentId>
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]

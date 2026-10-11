@@ -341,7 +341,7 @@ describe('the settings file of a launch without user settings', () => {
     const settings = writtenSettings(planFor(worker(), { configDir: accountWithHooks() }))
     const hooks = settings.hooks as { PreToolUse: { matcher: string; hooks: { command: string }[] }[] }
 
-    expect(Object.keys(settings.hooks as object)).toEqual(['PreToolUse'])
+    expect(Object.keys(settings.hooks as object)).toEqual(['PreToolUse', 'UserPromptSubmit'])
     expect(hooks.PreToolUse).toHaveLength(2)
     expect(hooks.PreToolUse[0]?.hooks[0]?.command).toContain('leak-guard pretool')
     expect(hooks.PreToolUse[1]).toEqual({ matcher: 'Bash', hooks: [gitSafety] })

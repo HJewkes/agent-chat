@@ -33,6 +33,9 @@ export interface SeatAgent {
   spawnedBy: string
   /** Epoch ms of the agent's launch; a replay's roster has none. */
   spawnedAt?: number
+  /** CC-465: the durable id and teleport depth, which a live roster carries. */
+  agentId?: string
+  generation?: number
 }
 
 /** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */
