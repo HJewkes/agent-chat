@@ -476,6 +476,8 @@ export class SocketServer {
         ok: false,
         reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
       })
+    if (msg.to !== undefined && typeof msg.to !== 'string')
+      return reply(conn, { t: 'teleport_result', ok: false, reason: 'teleport "to" must be a machine name' })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -515,6 +517,7 @@ export class SocketServer {
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...optionalPlatform(asPlatform(msg.hostPlatform)),
       ...optionalCarried(sanitizeCarried(msg.launchSeen)),
+      ...(msg.to === undefined ? {} : { to: msg.to }),
     })
     reply(conn, {
       t: 'teleport_result',

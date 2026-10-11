@@ -741,6 +741,20 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
     args: { handoff: 'h', surface: 'bogus' },
     reply: teleported(),
   },
+  {
+    label: 'onto another machine',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', to: 'basement' },
+    reply: teleported(),
+  },
+  {
+    label: 'blank machine',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', to: ' ' },
+    reply: teleported(),
+  },
 ]
 
 const registered = (

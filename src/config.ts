@@ -56,6 +56,7 @@ export interface AgentChatConfig {
   coordinatorGrantableTools?: unknown
   poolProbe?: unknown
   tmuxSurfaceOnLinux?: unknown
+  machines?: unknown
   processKillBytes?: unknown
   processGuardMode?: unknown
   gitShellAliases?: unknown
@@ -174,6 +175,25 @@ export function resolveTmuxOnLinux(): boolean {
   if (value === undefined || typeof value === 'boolean') return value === true
   logInvalidOnce({ key: 'tmuxSurfaceOnLinux', value, fallback: false })
   return false
+}
+
+/**
+ * CC-951: teleport destination aliases, alias → hostname, so `to: "mac"` names a machine. Empty unless
+ * `machines` is an object of non-empty strings; any bad entry drops the whole map rather than half of it.
+ */
+export function resolveMachines(): Record<string, string> {
+  const value = readConfig().machines
+  if (value === undefined) return {}
+  const isHost = (host: unknown): host is string => typeof host === 'string' && host.trim() !== ''
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isHost)
+  )
+    return value as Record<string, string>
+  logInvalidOnce({ key: 'machines', value, fallback: {} })
+  return {}
 }
 
 /**
