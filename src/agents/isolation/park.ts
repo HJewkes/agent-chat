@@ -6,7 +6,7 @@ import { gitChildEnv } from '../../git.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { occupantOf } from './sweep.js'
-import type { WorktreeRecord } from './worktree.js'
+import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
 
 /**
  * CC-282: park a finished agent's worktree. The tree is removed and the branch
@@ -135,12 +135,21 @@ async function gitOrNull(args: readonly string[], cwd: string): Promise<string |
   return git(args, cwd).catch(() => null)
 }
 
+const DEFAULT_FETCH_MS = 30_000
+
+/** A never-pushed branch whose HEAD is already in origin's default branch (a reviewer tree) holds nothing to lose. */
+async function headOnDefaultBranch(worktree: string): Promise<boolean> {
+  const tip = await fetchDefaultTip(worktree, DEFAULT_FETCH_MS)
+  if (typeof tip === 'string') return false
+  return (await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', tip.sha], worktree)) !== null
+}
+
 /** With an origin, the branch must be on it with nothing ahead; without one, the kept local branch is the copy. */
 async function unpushed(target: ParkTarget, branch: string): Promise<string | undefined> {
   const { worktree } = target
   if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return undefined
   if ((await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${branch}`], worktree)) === null)
-    return `${branch} is not on origin; push it first`
+    return (await headOnDefaultBranch(worktree)) ? undefined : `${branch} is not on origin; push it first`
   const ahead = await gitOrNull(['rev-list', `origin/${branch}..HEAD`], worktree)
   if (ahead === null) return `could not compare ${worktree} with origin/${branch}`
   const count = ahead.split('\n').filter(Boolean).length
