@@ -448,8 +448,9 @@ export class BrokerCore<C = Conn> {
   }
 
   /**
-   * CC-320: keep a message for a dark seat. Undefined when `to` is not one, so the
-   * send fails as before; `ok: false` when the hold is full or the seat is dark too long.
+   * CC-320: keep a message for a dark seat, or (CC-301) for any name mid-teleport. Undefined
+   * when `to` is neither, so the send fails as before; `ok: false` when the hold is full or
+   * the name is dark too long.
    */
   holdForSeat(
     from: string,
@@ -459,7 +460,7 @@ export class BrokerCore<C = Conn> {
     source?: WakeSource,
     sendMeta?: Record<string, string>,
   ): SeatHoldResult | undefined {
-    if (!this.isSeat(to)) return undefined
+    if (!this.holdable(to)) return undefined
     const verdict = holdVerdict(this.events, to, Date.now())
     if (verdict === undefined) return undefined
     if (!verdict.hold) return { ok: false, reason: verdict.reason }
@@ -543,7 +544,12 @@ export class BrokerCore<C = Conn> {
 
   /** The log id of the dark episode seat `name` is in, read before it registers. */
   darkSeat(name: string): number | undefined {
-    return this.isSeat(name) ? this.events.darkSince(name)?.id : undefined
+    return this.holdable(name) ? this.events.darkSince(name)?.id : undefined
+  }
+
+  /** CC-301: a teleport's successor keeps the name, so a send in the gap waits for it like a seat's. */
+  private holdable(name: string): boolean {
+    return this.isSeat(name) || midTeleport(this.events, name, Date.now())
   }
 
   /** Push what landed in a seat's inbox during the dark episode it just registered out of, oldest first. */
