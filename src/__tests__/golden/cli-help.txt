@@ -1006,6 +1006,12 @@ Options:
   --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
   -h, --help            display help for command
 
+=== agent-chat stale-session-guard
+Usage: agent-chat stale-session-guard [options] <agentId>
+
+Options:
+  -h, --help  display help for command
+
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]
 
