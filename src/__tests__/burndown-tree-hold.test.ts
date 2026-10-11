@@ -12,7 +12,7 @@ let tree: string
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-hold-'))
   ledgerFile = path.join(dir, 'ledger.json')
-  tree = path.join(dir, 'trees', 'tc-cc-1-a')
+  tree = path.join(dir, 'trees', 'worker-a')
   fs.mkdirSync(tree, { recursive: true })
 })
 
@@ -39,7 +39,7 @@ describe('whether a burndown claim still reads a worktree (CC-1039)', () => {
   it('holds a tree an implementing claim names through a symlinked path', () => {
     const link = path.join(dir, 'link')
     fs.symlinkSync(path.join(dir, 'trees'), link)
-    writeClaim('implementing', path.join(link, 'tc-cc-1-a'))
+    writeClaim('implementing', path.join(link, 'worker-a'))
 
     expect(burndownTreeHold(ledgerFile, tree)).toMatch(/CC-1 slice a .*implementing/)
   })
@@ -66,7 +66,7 @@ describe('whether a burndown claim still reads a worktree (CC-1039)', () => {
   })
 
   it('ignores a held claim on a different tree', () => {
-    writeClaim('implementing', path.join(dir, 'trees', 'tc-cc-1-b'))
+    writeClaim('implementing', path.join(dir, 'trees', 'worker-b'))
 
     expect(burndownTreeHold(ledgerFile, tree)).toBeUndefined()
   })
