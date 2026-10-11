@@ -70,6 +70,8 @@ const PlannedSlice = z.object({
   title: z.string(),
   dependsOn: z.array(z.string()).default([]),
   owns: z.array(z.string()).default([]),
+  /** The checkout's basename or path when the work is not in the task's own repo (CC-946). */
+  repo: z.string().optional(),
   points: z.number().optional(),
   doneWhen: z.string().optional(),
   contracts: z.array(Contract).default([]),

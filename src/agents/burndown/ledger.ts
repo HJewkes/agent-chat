@@ -49,6 +49,8 @@ const Claim = z.object({
   dependsOn: z.array(z.string()).optional(),
   /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
   owns: z.array(z.string()).optional(),
+  /** The repo the slice's plan names; it outranks the task's tags (CC-946). */
+  repo: z.string().optional(),
   /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
   contracts: z.array(Contract).optional(),
   /** The agent the claim is waiting on now. */
