@@ -552,23 +552,11 @@ describe('a fan-out HOLD lifted one seat at a time by DM', () => {
   })
 })
 
-describe('round 8 review: what chat rows cannot show', () => {
+describe('round 8 and 10 reviews: what chat rows cannot show', () => {
   it('opens on an operator fan-out HOLD that reached only one of the seats it named', () => {
     const held: Send = ['tp-operator', 5, 'tp-operator: HOLD now', 'h1', ['seat-a']]
 
     expect(holdsBy({ chat: [held], routes: { h1: ['seat-a', 'seat-b'] } })).toEqual(['tp-operator'])
-  })
-
-  it('ends a fan-out HOLD lifted by DM at every seat still on the bus once the rest have left', () => {
-    const seats = ['seat-1', 'seat-2', 'seat-3', 'seat-4']
-    const chat: Send[] = [
-      ['tp-operator', 600, 'tp-operator: HOLD (memory trip)', 'h0', seats],
-      ['tp-operator', 420, 'tp-operator: LIFT', 'l1', ['seat-1']],
-      ['tp-operator', 420, 'tp-operator: LIFT', 'l2', ['seat-2']],
-      ['tp-operator', 300, 'tp-operator: LIFT', 'l3', ['seat-3']],
-    ]
-
-    expect(holdsBy({ chat, presence: [['seat-4', 500, false]] })).toEqual([])
   })
 
   it('keeps a fan-out HOLD nobody has lifted though every seat it reached has left', () => {
@@ -589,6 +577,36 @@ describe('round 8 review: what chat rows cannot show', () => {
     ]
 
     expect(status({ chat }).holds).toMatchObject([{ by: 'tp-operator', seats: ['seat-a', 'seat-b'] }])
+  })
+})
+
+describe('a fan-out HOLD whose one unlifted seat leaves the bus', () => {
+  const SEATS = ['seat-1', 'seat-2', 'seat-3', 'seat-4']
+  const chat: Send[] = [
+    ['tp-operator', 600, 'tp-operator: HOLD (memory trip)', 'h0', SEATS],
+    ['tp-operator', 420, 'tp-operator: LIFT', 'l1', ['seat-1']],
+    ['tp-operator', 420, 'tp-operator: LIFT', 'l2', ['seat-2']],
+    ['tp-operator', 300, 'tp-operator: LIFT', 'l3', ['seat-3']],
+  ]
+  /** Every 5 minutes from the HOLD to now, all within the cap: whether the machine reads stopped. */
+  const stoppedThroughout = (): boolean[] => {
+    const minutesAgo = Array.from({ length: 121 }, (_, i) => 600 - i * 5)
+    return minutesAgo.map(m => machineStopStatus(liveStopInputs(new Date(at(m) + 1))).stopped)
+  }
+
+  it.each<[string, NonNullable<World['presence']>]>([
+    [
+      'deregisters and registers again',
+      [
+        ['seat-4', 250, false],
+        ['seat-4', 200, true],
+      ],
+    ],
+    ['deregisters and is absent at read time', [['seat-4', 250, false]]],
+  ])('keeps the machine stopped while it %s, until it is lifted or the cap passes', (_name, presence) => {
+    status({ chat, presence })
+
+    expect(stoppedThroughout().every(Boolean)).toBe(true)
   })
 })
 

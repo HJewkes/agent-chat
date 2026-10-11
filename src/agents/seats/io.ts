@@ -12,7 +12,7 @@ import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
-import type { ChatLine, PresenceLine } from './operator-stops.js'
+import type { ChatLine } from './operator-stops.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
 
@@ -329,21 +329,6 @@ export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
       broadcast: row.broadcast === 1,
       targets: row.targets?.split(',') ?? [],
     }))
-  } finally {
-    db.close()
-  }
-}
-
-/** CC-957: every registered and deregistered row since `sinceMs`. Throws when events.db cannot be read. */
-export function readPresenceRows(dbPath: string, sinceMs: number): PresenceLine[] {
-  const db = openEvents(dbPath)
-  try {
-    const rows = db
-      .prepare(
-        "SELECT ts, kind, actor FROM events WHERE kind IN ('registered', 'deregistered') AND ts >= ? ORDER BY id",
-      )
-      .all(sinceMs) as unknown as { ts: number; kind: string; actor: string }[]
-    return rows.map(row => ({ ts: row.ts, seat: row.actor, registered: row.kind === 'registered' }))
   } finally {
     db.close()
   }

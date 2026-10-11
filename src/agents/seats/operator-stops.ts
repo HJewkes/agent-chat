@@ -27,13 +27,6 @@ export interface ChatLine {
   addressed?: readonly string[]
 }
 
-/** A seat's registered or deregistered row in events.db. */
-export interface PresenceLine {
-  ts: number
-  seat: string
-  registered: boolean
-}
-
 export interface OperatorHold {
   kind: 'broadcast' | 'file'
   by: string
@@ -170,8 +163,6 @@ interface OpenHold {
   latestMs: number
   /** The fan-out's seats not yet lifted, or 'all' for a broadcast hold. */
   seats: Set<string> | 'all'
-  /** An operator DM has lifted one of its seats, so the operator is lifting it seat by seat. */
-  dmLifted: boolean
 }
 
 interface HoldState {
@@ -184,12 +175,7 @@ function addHold({ open }: HoldState, line: ChatLine): void {
   const held = open.get(line.actor)
   const seats =
     line.broadcast || held?.seats === 'all' ? 'all' : new Set([...(held?.seats ?? []), ...line.targets])
-  open.set(line.actor, {
-    first: held?.first ?? line,
-    latestMs: line.ts,
-    seats,
-    dmLifted: held?.dmLifted ?? false,
-  })
+  open.set(line.actor, { first: held?.first ?? line, latestMs: line.ts, seats })
 }
 
 /** The newest open fan-out hold time covering `seat`, or -1. */
@@ -208,10 +194,9 @@ function liftSeat({ open, seatHolds }: HoldState, seat: string): void {
   const seatHold = seatHolds.get(seat)
   seatHolds.delete(seat)
   if (seatHold !== undefined && seatHold > newestFanOut(open, seat)) return
-  for (const [actor, hold] of open) {
-    if (hold.seats === 'all' || !hold.seats.delete(seat)) continue
-    hold.dmLifted = true
-    if (hold.seats.size === 0) open.delete(actor)
+  for (const [actor, { seats }] of open) {
+    if (seats === 'all' || !seats.delete(seat)) continue
+    if (seats.size === 0) open.delete(actor)
   }
 }
 
@@ -219,7 +204,8 @@ function liftSeat({ open, seatHolds }: HoldState, seat: string): void {
  * The operator opens a hold with one fan-out and often lifts it with one DM per seat. A DM lift ends
  * that seat's part of the newest hold on it, and a hold ends when its last seat is lifted; a
  * machine-scoped lift (a broadcast, or a fan-out to two or more seats) ends every hold. A DM never
- * ends a broadcast hold.
+ * ends a broadcast hold. Only a lift or the cap ends a seat's part: a seat that leaves the bus stays
+ * held, since its absence is what a hold is for.
  */
 function liftHolds(state: HoldState, line: ChatLine, operators: readonly string[]): void {
   if (!machineScoped(line, operators)) {
@@ -228,26 +214,6 @@ function liftHolds(state: HoldState, line: ChatLine, operators: readonly string[
   }
   state.open.clear()
   state.seatHolds.clear()
-}
-
-/** Seats whose latest presence row by `nowMs` deregisters them. */
-function departedSeats(presence: readonly PresenceLine[], nowMs: number): Map<string, number> {
-  const latest = new Map<string, PresenceLine>()
-  for (const row of [...presence].sort((a, b) => a.ts - b.ts)) if (row.ts <= nowMs) latest.set(row.seat, row)
-  return new Map([...latest.values()].filter(row => !row.registered).map(row => [row.seat, row.ts]))
-}
-
-/**
- * Once the operator is lifting a fan-out hold seat by seat, a seat that has left the bus since the
- * hold opened cannot be lifted and holds nothing, so it no longer keeps the hold standing. A hold
- * nobody has lifted keeps its departed seats: seats dying is what a hold is for.
- */
-function dropDepartedSeats(open: Map<string, OpenHold>, departed: Map<string, number>): void {
-  for (const [actor, { seats, dmLifted, first }] of open) {
-    if (seats === 'all' || !dmLifted) continue
-    for (const seat of seats) if ((departed.get(seat) ?? -1) > first.ts) seats.delete(seat)
-    if (seats.size === 0) open.delete(actor)
-  }
 }
 
 function applySend(state: HoldState, line: ChatLine, operators: readonly string[]): void {
@@ -268,14 +234,12 @@ export function broadcastHolds(
   lines: readonly ChatLine[],
   nowMs: number,
   operators: readonly string[],
-  presence: readonly PresenceLine[] = [],
 ): OperatorHold[] {
   const state: HoldState = { open: new Map(), seatHolds: new Map() }
   const sorted = lines
     .filter(line => line.ts <= nowMs && operators.includes(line.actor))
     .sort((a, b) => a.ts - b.ts)
   for (const line of sorted) applySend(state, line, operators)
-  dropDepartedSeats(state.open, departedSeats(presence, nowMs))
   return [...state.open.values()]
     .filter(({ latestMs }) => nowMs - latestMs <= BROADCAST_HOLD_MAX_MS)
     .map(({ first, seats }) => ({
@@ -308,8 +272,6 @@ export interface StopInputs {
   now: Date
   /** Undefined when events.db could not be read. */
   chat: readonly ChatLine[] | undefined
-  /** Registered and deregistered rows from the same events.db. */
-  presence?: readonly PresenceLine[]
   /** The agents whose machine-wide sends open and lift a chat HOLD. */
   operators: readonly string[]
   /** The stop file's text; undefined when it does not exist. */
@@ -336,7 +298,7 @@ export function machineStopStatus(input: StopInputs): MachineStopStatus {
   if (file !== undefined && 'error' in file) errors.push(file.error)
   const holds = [
     ...(file === undefined || 'error' in file ? [] : [file]),
-    ...broadcastHolds(input.chat ?? [], input.now.getTime(), input.operators, input.presence),
+    ...broadcastHolds(input.chat ?? [], input.now.getTime(), input.operators),
   ]
   const stopped = tryRead(input.ownerStops, errors, 'seat-watchdog.json') ?? {}
   const ownerStops = Object.entries(stopped).map(([seat, reason]) => ({ seat, reason }))

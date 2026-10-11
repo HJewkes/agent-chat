@@ -3,19 +3,12 @@ import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { resolveMachineHoldOperators } from '../../config.js'
 import { home, logPath, operatorHoldPath } from '../../paths.js'
-import {
-  readDoc,
-  readChatMessages,
-  readPresenceRows,
-  readRouteAddressees,
-  readTextIfPresent,
-} from '../../agents/seats/io.js'
+import { readDoc, readChatMessages, readRouteAddressees, readTextIfPresent } from '../../agents/seats/io.js'
 import {
   BROADCAST_HOLD_MAX_MS,
   machineStopStatus,
   renderMachineStopStatus,
   type ChatLine,
-  type PresenceLine,
   type StopInputs,
 } from '../../agents/seats/operator-stops.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -25,16 +18,15 @@ import { readMachineStop, readMachineStopReadings } from './seats.js'
  * Undefined when events.db or a broker.log cannot be read, which the status reports as a stop. Each
  * send carries the seats it named, from broker.log, so a fan-out that reached one seat is still one.
  */
-function holdMessages(nowMs: number): { chat: ChatLine[]; presence: PresenceLine[] } | undefined {
+function holdMessages(nowMs: number): ChatLine[] | undefined {
   const sinceMs = nowMs - BROADCAST_HOLD_MAX_MS
   try {
     const db = path.join(home(), 'events.db')
     const named = readRouteAddressees([readTextIfPresent(`${logPath()}.1`), readTextIfPresent(logPath())])
-    const chat = readChatMessages(db, sinceMs).map(line => {
+    return readChatMessages(db, sinceMs).map(line => {
       const addressed = line.msgId === null ? undefined : named.get(line.msgId)
       return addressed === undefined ? line : { ...line, addressed }
     })
-    return { chat, presence: readPresenceRows(db, sinceMs) }
   } catch {
     return undefined
   }
@@ -42,11 +34,9 @@ function holdMessages(nowMs: number): { chat: ChatLine[]; presence: PresenceLine
 
 export function liveStopInputs(now: Date): StopInputs {
   const readings = readMachineStopReadings()
-  const messages = holdMessages(now.getTime())
   return {
     now,
-    chat: messages?.chat,
-    presence: messages?.presence ?? [],
+    chat: holdMessages(now.getTime()),
     operators: resolveMachineHoldOperators(),
     stopFile: () => readTextIfPresent(operatorHoldPath()),
     ownerStops: () => readDoc().stopped,
@@ -68,8 +58,7 @@ export const machineStatusVerb = defineVerb({
     "(a broadcast or fan-out to two or more seats by one of config.json's machineHoldOperators, default " +
     'tp-operator, counted by the seats it named in broker.log, whose first sentence carries HOLD, STOP ' +
     'ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with ' +
-    'LIFT, CLEAR or "hold LIFTED" has reached every seat it went to that is still on the bus once ' +
-    'lifting has begun, or a broadcast lift, at most ' +
+    'LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast lift, at most ' +
     `${BROADCAST_HOLD_MAX_MS / 3_600_000} h), the owner's stopped seats in seat-watchdog.json, and the ` +
     'memory, load, swap and pressure readings against the machine stop. `stopped` is a hold, the ' +
     'machine stop or a source that cannot be read; an owner stop holds only its own seat',
