@@ -110,6 +110,8 @@ const one = (
   patch: Partial<SeatPlanInputs> = {},
 ) => planSeat(inputs([row(id, 50, r)], [task(id, t)], patch))
 
+const withoutEstimate = ({ estimate: _drop, ...rest }: Task): Task => rest
+
 const refusalOf = (plan: ReturnType<typeof planSeat>) => plan.refusals.map(x => [x.task, x.kind])
 
 describe('planSeat dispatch', () => {
@@ -145,7 +147,7 @@ describe('planSeat dispatch', () => {
     const plan = planSeat(
       inputs(
         [row('A-1', 50, { route: 'briefer' })],
-        [task('A-1', { estimate: undefined, tags: ['brief:wanted'] })],
+        [withoutEstimate(task('A-1', { tags: ['brief:wanted'] }))],
       ),
     )
 

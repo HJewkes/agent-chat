@@ -95,7 +95,8 @@ describe('profileFor (owner decision 186)', () => {
   )
 
   it('(CC-939) sends a brief:wanted task without an estimate to the planner profile', () => {
-    const wanted = { ...task('P-1', 1), estimate: undefined, tags: ['brief:wanted'], doneWhen: 'x' }
+    const { estimate: _drop, ...bare } = task('P-1', 1)
+    const wanted: Task = { ...bare, tags: ['brief:wanted'], doneWhen: 'x' }
 
     expect(profileFor(wanted)).toBe('bd-planner')
     expect(isBriefer(wanted)).toBe(true)

@@ -6,7 +6,7 @@ import { advance, applyActions, claimKey, type Action, type Observation } from '
 import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
-import { parseReport } from '../agents/burndown/report.js'
+import { parseReport, type Report } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import type { StallCode } from '../agents/burndown/stall-code.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -222,8 +222,11 @@ describe('burndown phase machine', () => {
 
   it('(CC-939) a briefer that tagged brief:proposed is done; one that did not stalls rather than respawns', () => {
     const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
-    const report = (status: string) =>
-      ({ status, firstLine: `Status: ${status}`, text: '' }) as Observation['report']
+    const report = (status: 'DONE' | 'BLOCKED'): Report => ({
+      status,
+      firstLine: `Status: ${status}`,
+      text: '',
+    })
 
     const proposed = step(briefer, { agent: exited, proposed: true, report: report('DONE') })
     const untagged = step(briefer, { agent: exited, proposed: false, report: report('DONE') })
