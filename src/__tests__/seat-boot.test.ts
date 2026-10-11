@@ -46,6 +46,7 @@ const QUEUE = `# Queue: ${SEAT}\n\n${IN_FLIGHT}\n\n${NEXT}\n\n## Morning queue (
 const STATUS: SeatStatus = {
   seat: SEAT,
   at: NOW.toISOString(),
+  heartbeat: { source: 'cron', cron: null, lastSlot: null },
   implementers: { active: 2, cap: 5, atCap: false, names: ['sc-a', 'sc-b'], detached: [], waitingOwner: [] },
   reviewers: { active: 1, cap: 2, atCap: false, names: ['sc-r'], detached: [], waitingOwner: [] },
   planners: { active: 0, cap: 1, atCap: false, names: [], detached: [], waitingOwner: [] },
@@ -138,6 +139,20 @@ async function boot(after?: string, over: Partial<BootDeps> = {}): Promise<strin
   expect(report.ok).toBe(true)
   return report.lines
 }
+
+describe('heartbeat line', () => {
+  const withFields = (extra: string): string => SEAT_FILE.replace('pool: pool-a\n', `pool: pool-a\n${extra}`)
+
+  it('names the watchdog as the heartbeat for a watchdog seat', async () => {
+    write(`seats/${SEAT}.md`, withFields('heartbeat_cron: 17,47 * * * *\nheartbeat_source: watchdog\n'))
+    expect(await boot()).toContain('Heartbeat: watchdog (slots 17,47; do not CronCreate)')
+  })
+
+  it('names the CronCreate heartbeat for a cron seat', async () => {
+    write(`seats/${SEAT}.md`, withFields('heartbeat_cron: 17,47 * * * *\n'))
+    expect(await boot()).toContain('Heartbeat: cron 17,47 (CronCreate per charter §1.3)')
+  })
+})
 
 const inboxLines = (lines: string[]): string[] => {
   const start = lines.findIndex(line => line.startsWith('== inbox'))
