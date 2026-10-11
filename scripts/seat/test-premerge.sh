@@ -133,6 +133,10 @@ out=$("$BIN/premerge" "$R" 7x "$SHA" "$W/clone" 2>&1); rc=$?;             check 
 out=$("$BIN/premerge" "$R" 7 abc123 "$W/clone" 2>&1); rc=$?;              check "8 short head sha" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 "$CLEAN" "$W/clone" "zz$CLEAN" 2>&1); rc=$?; check "8 bad reviewed head" 2 "^bad argument"
 ok_case; out=$(env -u COORDINATORS "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "8 unset COORDINATORS" 2 "^COORDINATORS unset"
+# 8b: with EVENTS_DB unset, the events db is read from AGENT_CHAT_HOME (CC-835 portability)
+ok_case; mkdir -p "$W/agent-chat-home"; cp "$EVENTS_DB" "$W/agent-chat-home/events.db"
+out=$(env -u EVENTS_DB AGENT_CHAT_HOME="$W/agent-chat-home" HOME="$W/no-home" "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "8b AGENT_CHAT_HOME holds the events db" 0 "^OK .*actor=seat-9-review msg=msg0001"
 
 # 9: required contexts with spaces print intact
 ok_case; mut rules_branches_main.json '.[0].parameters.required_status_checks=[{"context":"build (20)"},{"context":"lint"}]'
