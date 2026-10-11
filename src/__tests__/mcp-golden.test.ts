@@ -727,6 +727,20 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
     args: { handoff: 'h', reason: 'refresh' },
     reply: teleported(),
   },
+  {
+    label: 'onto a named surface',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', surface: 'tmux-window' },
+    reply: teleported(),
+  },
+  {
+    label: 'unknown surface',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', surface: 'bogus' },
+    reply: teleported(),
+  },
 ]
 
 const registered = (
@@ -869,12 +883,16 @@ const CHAT_STATUS_CASES: CallCase[] = [
   },
 ]
 
-/** Fields `register` reads from this process and its checkout; they vary by machine, so the golden omits them. */
-const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build']
+/** Fields a frame reads from this process and its checkout; they vary by machine, so the golden omits them. */
+const PROCESS_FIELDS: Partial<Record<ClientMessage['t'], string[]>> = {
+  register: ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build'],
+  teleport: ['hostPlatform'],
+}
 
 function frameLine(frame: ClientMessage): string {
-  if (frame.t !== 'register') return JSON.stringify(frame)
-  const kept = Object.entries(frame).filter(([key]) => !PROCESS_FIELDS.includes(key))
+  const omitted = PROCESS_FIELDS[frame.t]
+  if (omitted === undefined) return JSON.stringify(frame)
+  const kept = Object.entries(frame).filter(([key]) => !omitted.includes(key))
   return `${JSON.stringify(Object.fromEntries(kept))} (process fields omitted)`
 }
 

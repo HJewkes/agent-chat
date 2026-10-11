@@ -611,23 +611,23 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
     expect(IMPLEMENTER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 
+  const BARE = [SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t']
+  const LIST_ITEMS = ['- Shepherd: none', '* Shepherd: none', '2. Shepherd: none']
+
   // Mutation caught: ignoring the marker hands the agent the register sentence again.
-  it.each([SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t'])(
-    'drops the register and no-wait text for the line %j',
-    async marker => {
-      const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
+  it.each([...BARE, ...LIST_ITEMS])('drops the register and no-wait text for the line %j', async marker => {
+    const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
 
-      const { text } = await delivered({ brief })
+    const { text } = await delivered({ brief })
 
-      const appended = flat(text.slice(brief.length))
-      expect(appended).not.toContain(REGISTER)
-      expect(appended).not.toContain('never wait on CI')
-      expect(appended).not.toContain('you do not wait for CI')
-      expect(appended).toContain('Do not run `titan-factory shepherd register`.')
-      expect(appended).toContain(CI_WAIT)
-      expect(appended).toContain('chat_send to coord')
-    },
-  )
+    const appended = flat(text.slice(brief.length))
+    expect(appended).not.toContain(REGISTER)
+    expect(appended).not.toContain('never wait on CI')
+    expect(appended).not.toContain('you do not wait for CI')
+    expect(appended).toContain('Do not run `titan-factory shepherd register`.')
+    expect(appended).toContain(CI_WAIT)
+    expect(appended).toContain('chat_send to coord')
+  })
 
   // Mutation caught: a substring test opts out a brief that only talks about the marker.
   it('keeps Shepherd for a brief that mentions the marker mid-sentence', async () => {
@@ -637,6 +637,18 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
 
     expect(text).toBe(`${brief}\n\n${block('implementer')}`)
   })
+
+  // Mutation caught: stripping any leading text, not just one list marker, opts these out.
+  it.each(['- note: Shepherd: none is for seats', '-Shepherd: none'])(
+    'keeps Shepherd for the line %j',
+    async line => {
+      const brief = `add the parser\n${line}`
+
+      const { text } = await delivered({ brief })
+
+      expect(text).toBe(`${brief}\n\n${block('implementer')}`)
+    },
+  )
 
   it('hands a brief without the marker the default block unchanged', async () => {
     const { text } = await delivered()
