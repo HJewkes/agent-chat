@@ -10,6 +10,7 @@ const T = (id: string, estimate: number | undefined, deps: string[] = [], milest
   milestone,
   deps,
   cos: 'standard',
+  briefSource: 'unknown',
 })
 
 const floatsOf = (tasks: TaggedTask[], milestone?: string) =>
