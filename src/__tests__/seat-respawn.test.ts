@@ -20,7 +20,7 @@ function broker(replies: Record<string, unknown>[]): {
 }
 
 const handStarted: SeatAgent = {
-  name: 'titan-coord',
+  name: 'seat-x',
   profile: '',
   state: 'exited',
   spawnedBy: 'human',
@@ -56,7 +56,7 @@ const incident: SeatRelaunchPlan = {
   fresh: 'HANDOFF',
 }
 
-const retired = (agentId: string) => ({ t: 'spawn_result', ok: true, agentId, name: 'titan-coord' })
+const retired = (agentId: string) => ({ t: 'spawn_result', ok: true, agentId, name: 'seat-x' })
 const spawned = { t: 'spawn_result', ok: true, agentId: 'new' }
 
 describe('respawnSeat', () => {
@@ -64,13 +64,13 @@ describe('respawnSeat', () => {
   it('retires the stale row by id, then resumes the latest session on the seat file account', async () => {
     const b = broker([retired('7b1a88f1'), spawned])
 
-    const out = await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames).toEqual([
-      { t: 'retire', name: 'titan-coord', agentId: '7b1a88f1' },
+      { t: 'retire', name: 'seat-x', agentId: '7b1a88f1' },
       {
         t: 'spawn',
-        name: 'titan-coord',
+        name: 'seat-x',
         profile: 'lead',
         brief: 'Watchdog: resume',
         isolation: 'none',
@@ -96,7 +96,7 @@ describe('respawnSeat', () => {
     }
     const b = broker([retired('7b1a88f1'), refused, spawned])
 
-    const out = await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames[2]).toMatchObject({ t: 'spawn', brief: 'HANDOFF', configDir: PERSONAL })
     expect(b.frames[2]).not.toHaveProperty('resumeSession')
@@ -108,7 +108,7 @@ describe('respawnSeat', () => {
   it('launches nothing when the broker retired by name and echoed no id', async () => {
     const b = broker([{ t: 'spawn_result', ok: true }])
 
-    const out = await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames).toHaveLength(1)
     expect(out).toMatchObject({ ok: false, unsupported: true })
@@ -119,16 +119,16 @@ describe('respawnSeat', () => {
       {
         ...retired('7b1a88f1'),
         ok: false,
-        reason: 'agent 7b1a88f1 (titan-coord) is still live; not retired',
+        reason: 'agent 7b1a88f1 (seat-x) is still live; not retired',
       },
     ])
 
-    const out = await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames).toHaveLength(1)
     expect(out).toEqual({
       ok: false,
-      detail: 'retire 7b1a88f1 refused: agent 7b1a88f1 (titan-coord) is still live; not retired',
+      detail: 'retire 7b1a88f1 refused: agent 7b1a88f1 (seat-x) is still live; not retired',
     })
   })
 
@@ -141,7 +141,7 @@ describe('respawnSeat', () => {
     }
     const b = broker([retired('g9'), retired('g10'), spawned])
 
-    await respawnSeat(b.client, 'titan-coord', plan, { surface: 'tmux-window', from: 'seat file' })
+    await respawnSeat(b.client, 'seat-x', plan, { surface: 'tmux-window', from: 'seat file' })
 
     expect(b.frames.map(f => f.agentId ?? f.t)).toEqual(['g9', 'g10', 'spawn'])
     expect(b.frames[2]).toMatchObject({
@@ -159,7 +159,7 @@ describe('respawnSeat', () => {
     const refused = { t: 'spawn_result', ok: false, reason: 'no transcript for resume_session 7016a7ee' }
     const b = broker([retired('7b1a88f1'), refused, spawned])
 
-    await respawnSeat(b.client, 'titan-coord', incident, HEADLESS)
+    await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames.slice(1).map(f => [f.profile, f.cwd])).toEqual([
       ['lead', SEAT_CWD],
@@ -175,7 +175,7 @@ describe('respawnSeat', () => {
     >
     const b = broker([])
 
-    const out = await respawnSeat(b.client, 'titan-coord', { ...incident, target: noGrant }, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', { ...incident, target: noGrant }, HEADLESS)
 
     expect(b.frames).toEqual([])
     expect(out).toEqual({
@@ -192,7 +192,7 @@ describe('respawnSeat', () => {
     }
     const b = broker([])
 
-    const out = await respawnSeat(b.client, 'titan-coord', plan, HEADLESS)
+    const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
 
     expect(b.frames).toEqual([])
     expect(out).toEqual({ ok: false, detail: 'not relaunched: row 7b1a88f1 recorded no cwd' })
@@ -205,7 +205,7 @@ describe('respawnSeat', () => {
       spawned,
     ])
 
-    const out = await respawnSeat(b.client, 'titan-coord', incident, {
+    const out = await respawnSeat(b.client, 'seat-x', incident, {
       surface: 'iterm-window',
       from: 'seat file',
     })
