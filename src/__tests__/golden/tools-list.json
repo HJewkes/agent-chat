@@ -149,6 +149,35 @@
           "in_reply_to": {
             "type": "string",
             "description": "msg_id of the message being answered, if any"
+          },
+          "experiment": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The experiment this message belongs to, e.g. \"E3\"."
+              },
+              "arm": {
+                "type": "string",
+                "description": "The arm of that experiment the recipient runs."
+              }
+            },
+            "required": [
+              "id",
+              "arm"
+            ],
+            "additionalProperties": false,
+            "description": "Optional experiment and arm, recorded on the message rows. Pass it only for a message that is part of a planned experiment."
+          },
+          "followup_kind": {
+            "type": "string",
+            "enum": [
+              "fix",
+              "rebase",
+              "extension",
+              "review"
+            ],
+            "description": "Optional reason this message hands a recipient more work, recorded on the message rows: fix (repair its own output), rebase, extension (more scope) or review."
           }
         },
         "required": [

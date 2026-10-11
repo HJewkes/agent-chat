@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "branches": {
+    "main": {
+      "contexts": ["check", "egress-scan", "std / audit", "std / secrets", "std / verify"]
+    }
+  }
+}
