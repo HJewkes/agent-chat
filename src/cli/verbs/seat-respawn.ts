@@ -1,4 +1,5 @@
 import type { RelaunchSeatResult } from '../../agents/seats/run.js'
+import { accountRefusal } from '../../agents/seats/seat-account.js'
 import type { SeatRelaunchPlan } from '../../agents/seats/seat-target.js'
 import type { SeatAgent } from '../../agents/seats/watchdog.js'
 import type { BrokerClient } from '../../client/broker-client.js'
@@ -172,6 +173,8 @@ export async function respawnSeat(
   const plan = await withGrant(client, seat, given)
   const as = launchedAs(plan, true)
   if ('refusal' in as) return { ok: false, refused: true, detail: `not relaunched: ${as.refusal}` }
+  const foreign = plan.target.spawned && accountRefusal(plan.account, plan.target.spawned)
+  if (foreign) return { ok: false, refused: true, detail: `not relaunched: ${foreign}` }
   const { retired, failed } = await retireStale(client, seat, leaseHolders(plan))
   if (failed !== undefined) return refusedAfter(retired, as, failed)
   const launched = await spawnSeat(client, seat, plan, declared)

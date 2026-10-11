@@ -41,7 +41,7 @@ export interface SeatRelaunchPlan {
 const newestFirst = (a: SeatAgent, b: SeatAgent): number =>
   (b.spawnedAt ?? 0) - (a.spawnedAt ?? 0) || (b.generation ?? 1) - (a.generation ?? 1)
 
-const sameDir = (a: string, b: string): boolean => path.resolve(a) === path.resolve(b)
+export const sameDir = (a: string, b: string): boolean => path.resolve(a) === path.resolve(b)
 
 /** Unknown when the row recorded no config dir, which an adopted row and a pre-CC-100 spawn both lack. */
 function onAccount(agent: SeatAgent, account: SeatAccount | undefined): boolean | undefined {

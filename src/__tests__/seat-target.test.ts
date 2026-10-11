@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Pool } from '../agents/seats/charter.js'
-import { seatAccount } from '../agents/seats/seat-account.js'
+import { accountRefusal, seatAccount } from '../agents/seats/seat-account.js'
 import { seatTarget } from '../agents/seats/seat-target.js'
 import type { SeatAgent } from '../agents/seats/watchdog.js'
 
@@ -97,13 +97,46 @@ describe('seatAccount (CC-959)', () => {
 
     expect(seatAccount(file, pools, '/home/example')).toEqual({
       configDir: PERSONAL,
+      poolDir: SERVER,
       profile: 'lead',
       cwd: '/home/example/projects',
     })
   })
 
   it("falls back to the pool's dir, and to none when the pool is unknown", () => {
-    expect(seatAccount('---\npool: server\n---\n', pools, '/home/example')).toEqual({ configDir: SERVER })
+    expect(seatAccount('---\npool: server\n---\n', pools, '/home/example')).toEqual({
+      configDir: SERVER,
+      poolDir: SERVER,
+    })
     expect(seatAccount('---\npool: other\n---\n', pools, '/home/example')).toBeUndefined()
+  })
+})
+
+describe('accountRefusal (CC-1053)', () => {
+  const row: SeatAgent = {
+    name: 'lead-seat',
+    profile: 'lead',
+    state: 'exited',
+    spawnedBy: 'human',
+    agentId: 'g1',
+  }
+
+  // Catches: a raw string compare without home expansion or trailing-slash normalisation.
+  it('allows a dir equal to the pool dir or the spawned row dir after normalising', () => {
+    const home = '/home/example'
+    expect(
+      accountRefusal({ configDir: '~/.profiles/personal', poolDir: PERSONAL }, row, home),
+    ).toBeUndefined()
+    expect(
+      accountRefusal({ configDir: `${PERSONAL}/` }, { ...row, configDir: PERSONAL }, home),
+    ).toBeUndefined()
+  })
+
+  it('names both allowed dirs when the config_dir matches neither', () => {
+    const refusal = accountRefusal({ configDir: PERSONAL, poolDir: SERVER }, { ...row, configDir: '' })
+
+    expect(refusal).toBe(
+      `seat config_dir ${PERSONAL} is neither its pool's (${SERVER}) nor spawned row g1's (unrecorded)`,
+    )
   })
 })
