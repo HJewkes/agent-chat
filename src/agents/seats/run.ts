@@ -30,7 +30,7 @@ import { judgeService, runServiceCheck, type ServiceCheckRunner } from './servic
 import { seatAccount } from './seat-account.js'
 import { seatTarget } from './seat-target.js'
 import { poolPace } from './pace.js'
-import { publishPace, type PaceStore } from './pace-pass.js'
+import { dayOpening, publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -46,6 +46,7 @@ import {
 import {
   FIRE_CAP,
   WAKE_MESSAGE,
+  WATCHDOG_MAX_READING_AGE_SECONDS,
   accountReading,
   decide,
   keepReading,
@@ -177,6 +178,20 @@ function freshRead(pass: Pass, pool: Pool, nowMs: number): BudgetRead {
   return pass.deps.readBudget(pool.configDir, nowMs)
 }
 
+/** CC-346: a pool with no saved day meter starts from the reading history, so a deleted doc keeps the day's spend. */
+function dayMeter(pass: Pass, pool: string, sevenDay: number | undefined): SpendMeter | undefined {
+  const saved = pass.doc.pools[pool]
+  if (saved !== undefined || sevenDay === undefined) return saved
+  const dayStartMs = dayStart(pass.now)
+  const resetsAt = pass.resets.get(pool)
+  const opening = dayOpening(pass.deps.pace?.rows?.() ?? [], { pool, dayStartMs, sevenDay, resetsAt })
+  if (opening === undefined) return undefined
+  const at = opening.ts * 1000
+  if (at > dayStartMs) pass.gaps.push(pool)
+  // A first sample after 07:00 dates the meter, as one the pass started then would be, so status names the gap.
+  return { since: Math.max(at, dayStartMs), last: opening.seven_day, spent: 0 }
+}
+
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
   if (!pass.readings.has(pool.name)) {
     const nowMs = pass.now.getTime()
@@ -187,10 +202,10 @@ function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
     pass.resets.set(pool.name, resetsAt === undefined ? undefined : resetsAt * 1000)
     const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
     if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
-    const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
+    const seeded = dayMeter(pass, pool.name, reading?.sevenDay)
+    const meter = advanceMeter(seeded, reading?.sevenDay, nowMs, sameSpendDay)
     if (meter !== undefined) {
-      const started = pass.doc.pools[pool.name] !== meter && meter.since === nowMs
-      if (started && meter.before === undefined) pass.gaps.push(pool.name)
+      if (seeded === undefined && meter.since === nowMs) pass.gaps.push(pool.name)
       pass.doc.pools[pool.name] = meter
     }
   }
@@ -287,6 +302,7 @@ function seatBudget(
     now: pass.now,
     pacing: seat.pacing,
     resetsAt: pool === undefined ? undefined : pass.resets.get(pool.name),
+    ...(pass.deps.probe === undefined ? {} : { maxReadingAgeSeconds: WATCHDOG_MAX_READING_AGE_SECONDS }),
   })
 }
 

@@ -36,6 +36,8 @@ export interface PaceStore {
   write: (doc: PaceDoc) => void
   /** The watchdog pass is the one writer of the history. */
   append: (rows: ReadingRow[]) => void
+  /** CC-346: the reading history so far, which outlives a deleted seat-watchdog.json. */
+  rows?: () => ReadingRow[]
 }
 
 export function nextPaceDoc(
@@ -86,6 +88,39 @@ export function publishPace(store: PaceStore, rows: readonly PoolPace[], nowMs: 
   store.write(nextPaceDoc(previous, rows, nowMs))
 }
 
+export interface DayOpeningQuery {
+  pool: string
+  dayStartMs: number
+  /** The pool's current seven_day and the epoch ms its window resets. */
+  sevenDay: number
+  resetsAt: number | undefined
+}
+
+/** A row from before this is no reading of the day's opening: the pass was not running to record a change. */
+export const DAY_OPENING_MAX_LOOKBACK_MS = 24 * 3_600_000
+
+const RESET_TOLERANCE_MS = 3_600_000
+
+/** A rolled row, one above the current reading, or one with another reset time read another window. */
+const sameWindow = (row: ReadingRow, query: DayOpeningQuery): boolean =>
+  row.rolled !== true &&
+  row.seven_day <= query.sevenDay &&
+  (query.resetsAt === undefined || Math.abs(row.resets_at * 1000 - query.resetsAt) <= RESET_TOLERANCE_MS)
+
+/**
+ * CC-346: the pool's reading as the spend day opened: the latest row at or before the day start and
+ * within a day of it, else the day's earliest. None when that row read another seven_day window.
+ */
+export function dayOpening(rows: readonly ReadingRow[], query: DayOpeningQuery): ReadingRow | undefined {
+  const { pool, dayStartMs } = query
+  const own = rows.filter(
+    row => row.pool === pool && row.ts * 1000 > dayStartMs - DAY_OPENING_MAX_LOOKBACK_MS,
+  )
+  const before = own.filter(row => row.ts * 1000 <= dayStartMs).sort((a, b) => b.ts - a.ts)[0]
+  const opening = before ?? own.filter(row => row.ts * 1000 > dayStartMs).sort((a, b) => a.ts - b.ts)[0]
+  return opening !== undefined && sameWindow(opening, query) ? opening : undefined
+}
+
 export const pacePath = (): string => path.join(home(), 'pace.json')
 
 export const readingHistoryPath = (root: string): string => path.join(root, 'pool-readings.jsonl')
@@ -112,8 +147,30 @@ export function appendReadingRows(root: string, rows: readonly ReadingRow[]): vo
   fs.appendFileSync(readingHistoryPath(root), rows.map(row => `${JSON.stringify(row)}\n`).join(''))
 }
 
+const isReadingRow = (row: Partial<ReadingRow> | null): row is ReadingRow =>
+  typeof row?.ts === 'number' && typeof row.pool === 'string' && typeof row.seven_day === 'number'
+
+/** A missing history is none, and a line that does not parse as a row is skipped. */
+export function readReadingRows(root: string): ReadingRow[] {
+  let text: string
+  try {
+    text = fs.readFileSync(readingHistoryPath(root), 'utf8')
+  } catch {
+    return []
+  }
+  return text.split('\n').flatMap(line => {
+    try {
+      const row = JSON.parse(line) as Partial<ReadingRow> | null
+      return isReadingRow(row) ? [row] : []
+    } catch {
+      return []
+    }
+  })
+}
+
 export const diskPaceStore = (root: string): PaceStore => ({
   read: () => readPaceDoc(),
   write: doc => writePaceDoc(doc),
   append: rows => appendReadingRows(root, rows),
+  rows: () => readReadingRows(root),
 })
