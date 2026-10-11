@@ -83,9 +83,16 @@ function contractFor(input: ContractInput): ReturnContract | undefined {
   return contractOf(input.profile)
 }
 
-/** Only a line of its own counts, so a brief that mentions the marker in a sentence keeps Shepherd. */
+const LIST_MARKER = /^(?:[-*+]|\d+[.)])\s+/
+
+/**
+ * Only a line of its own counts, so a brief that mentions the marker in a sentence keeps Shepherd.
+ * A list item counts too: briefs carry the marker in their checks lists (CC-737).
+ */
 export const optsOutOfShepherd = (brief: string): boolean =>
-  brief.split(/\r?\n/).some(line => line.trim().toLowerCase() === SHEPHERD_NONE_MARKER.toLowerCase())
+  brief
+    .split(/\r?\n/)
+    .some(line => line.trim().replace(LIST_MARKER, '').toLowerCase() === SHEPHERD_NONE_MARKER.toLowerCase())
 
 const blockFor = (contract: ReturnContract, brief: string): string =>
   contract === 'implementer' && optsOutOfShepherd(brief)

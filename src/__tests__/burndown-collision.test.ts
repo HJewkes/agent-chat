@@ -29,6 +29,7 @@ const facts = (over: Partial<CollisionFacts> = {}): CollisionFacts => ({
   claims: [],
   ours: new Set(),
   held: [],
+  heldOwns: [],
   ...over,
 })
 
@@ -447,5 +448,60 @@ describe('collision: an agent that exited less than one tick ago (CC-946)', () =
 
   it('lets a task through when the exited agent carries another id', () => {
     expect(collision(work('CC-9'), facts({ recentlyExited: ['sa-cc-90'] }))).toBeUndefined()
+  })
+})
+
+describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
+  const claim = (over: Partial<Claim> = {}): Claim => ({
+    taskId: 'CC-1',
+    initiative: 'alpha',
+    spawnedAt: '2026-10-10T09:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-10-10T09:00:00.000Z',
+    slice: 'a',
+    owns: ['src/a/**'],
+    worktree: '/repo/.worktrees/sa-cc-1-a',
+    ...over,
+  })
+  const check = (claims: Claim[], owns: string[], repo = '/repo') => {
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims }, { names: [], claims: [] }, exec)
+    return run(repo, work('CC-2', { owns }))
+  }
+
+  it("refuses a task whose owns overlap a dispatched claim's owns in the same repo", () => {
+    const result = check([claim()], ['src/a/x.ts'])
+
+    expect(result).toEqual({ kind: 'file-overlap', reason: "src/a/x.ts is under CC-1 slice a's owns" })
+  })
+
+  it('passes a task whose owns are disjoint, so two tasks run in one repo', () => {
+    expect(check([claim()], ['src/b.ts'])).toBeUndefined()
+  })
+
+  it('never refuses against a queued claim, so two queued claims cannot block each other', () => {
+    expect(check([claim({ phase: 'queued' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it("ignores a done claim's owns", () => {
+    expect(check([claim({ phase: 'done' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it('ignores a claim whose worktree is in another repo', () => {
+    expect(check([claim({ worktree: '/other/.worktrees/sa-cc-1-a' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it("takes a worktree-less claim's repo from its plan", () => {
+    const planned = claim({ worktree: undefined, repo: '/repo' })
+
+    expect(check([planned], ['src/a/x.ts'])?.kind).toBe('file-overlap')
+    expect(check([planned], ['src/a/x.ts'], '/other')).toBeUndefined()
+  })
+
+  it("never refuses a work on its own held claim's owns", () => {
+    expect(check([claim({ taskId: 'CC-2', slice: undefined })], ['src/a/x.ts'])).toBeUndefined()
   })
 })
