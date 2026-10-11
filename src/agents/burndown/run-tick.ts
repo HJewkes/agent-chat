@@ -5,6 +5,7 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import {
   burndownConfigPath,
   burndownLedgerPath,
+  burndownOverridePath,
   burndownOwedHoldsPath,
   burndownPausePath,
   burndownTickStatusPath,
@@ -71,14 +72,9 @@ import {
   type SkippedSeat,
 } from './seat-tick.js'
 import { seedSteps } from './seed-slices.js'
-import {
-  accountDir,
-  loadTickConfig,
-  readInitiatives,
-  readTaskText,
-  readTasks,
-  type TickConfig,
-} from './source.js'
+import type { Resolved } from './settings-resolve.js'
+import { loadResolvedConfig } from './settings-store.js'
+import { accountDir, readInitiatives, readTaskText, readTasks, type TickConfig } from './source.js'
 import {
   prHeadOf,
   registerWithShepherd,
@@ -166,11 +162,19 @@ const UNSET_REPORT_TO = '<reportTo unset>'
 /** One writer per process, so a summary file that cannot be written is logged once, not once per tick. */
 const appendTickSummary = tickSummaryWriter(burndownTicksPath)
 
-/** Why the tick may not act at all, or undefined when it may. */
-export function stopReason(config: TickConfig, paused: boolean): string | undefined {
+/** CC-955: what pauses the tick, naming the layer, or undefined when nothing does. The pause file wins. */
+function pauseOf(resolved: Resolved): string | undefined {
+  if (fs.existsSync(burndownPausePath()))
+    return `${burndownPausePath()} exists; \`agent-chat burndown resume\` clears it`
+  if (!resolved.paused) return undefined
+  if (resolved.sources.paused === 'override') return `the override in ${burndownOverridePath()} sets paused`
+  return `preset ${resolved.preset} sets paused`
+}
+
+/** Why the tick may not act at all, or undefined when it may. `paused` names what pauses it. */
+export function stopReason(config: TickConfig, paused: string | undefined): string | undefined {
   if (!config.enabled) return `burndown is disabled (enabled is not true in ${burndownConfigPath()})`
-  if (paused)
-    return `burndown is paused (${burndownPausePath()} exists; \`agent-chat burndown resume\` clears it)`
+  if (paused !== undefined) return `burndown is paused (${paused})`
   if (config.reportTo === undefined)
     return `no reportTo in ${burndownConfigPath()}: name the registered session that receives agents' reports`
   return undefined
@@ -181,7 +185,7 @@ export function modeConflict(config: TickConfig, initiatives: readonly Initiativ
   if (config.seats.length === 0) return undefined
   const optedIn = initiatives.filter(i => i.autonomy !== undefined).map(i => i.slug)
   if (optedIn.length === 0) return undefined
-  return `config error: ${burndownConfigPath()} lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
+  return `config error: the resolved burndown config (\`agent-chat burndown config show\`) lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
 }
 
 /** Never rejects for a real tick: a throw is recorded in the status file (CC-756). A dry run records nothing and throws as before. */
@@ -191,12 +195,13 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
   return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now }), now, opts.log)
 }
 
-const stopCode = (config: TickConfig, paused: boolean): StopCode =>
-  !config.enabled ? 'disabled' : paused ? 'paused' : 'no-report-to'
+const stopCode = (config: TickConfig, paused: string | undefined): StopCode =>
+  !config.enabled ? 'disabled' : paused !== undefined ? 'paused' : 'no-report-to'
 
 async function tickOnce(opts: TickOptions): Promise<TickResult> {
-  const config = loadTickConfig(burndownConfigPath())
-  const paused = fs.existsSync(burndownPausePath())
+  const resolved = loadResolvedConfig()
+  const config = resolved.tick
+  const paused = pauseOf(resolved)
   const stop = stopReason(config, paused)
   if (stop !== undefined && !opts.dryRun)
     return { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } }

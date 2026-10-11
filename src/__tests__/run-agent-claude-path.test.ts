@@ -232,6 +232,35 @@ describe('run-agent continuing a conversation that already exists (CC-488)', () 
     expect(result.stderr).toContain(SID)
   })
 
+  it('keeps the permission flags and env on the resumed launch (CC-761)', () => {
+    const configDir = path.join(stateDir, 'account')
+    writeTranscript(configDir)
+    fs.writeFileSync(
+      fakeClaude,
+      `require('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify([process.argv.slice(2), process.env.CC761_MARK]))\n`,
+    )
+    const permissionArgs = [
+      '--setting-sources',
+      'project',
+      '--strict-mcp-config',
+      '--settings',
+      '{"permissions":{}}',
+      '--allowed-tools',
+      'Read,Edit',
+      '--disallowed-tools',
+      'WebFetch',
+    ]
+    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir, CC761_MARK: 'kept' }, 'the brief', {
+      args: [fakeClaude, '--session-id', SID, ...permissionArgs],
+    })
+
+    runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    const [argv, mark] = JSON.parse(fs.readFileSync(seen, 'utf8')) as [string[], string]
+    expect(argv).toEqual(['--resume', SID, ...permissionArgs])
+    expect(mark).toBe('kept')
+  })
+
   it('keeps --session-id when no transcript exists', () => {
     writePlan('agt-test', { CLAUDE_CONFIG_DIR: path.join(stateDir, 'account') }, 'the brief', {
       args: [fakeClaude, '--session-id', SID],

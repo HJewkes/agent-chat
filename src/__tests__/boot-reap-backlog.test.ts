@@ -99,7 +99,9 @@ describe('a broker restart over a backlog of detached rows with no launcher pid'
     vi.advanceTimersByTime(SETTLE_MS * 20)
 
     expect(stillDetached()).toBe(0)
-    expect(recordReads).toBeLessThanOrEqual(Math.ceil(BACKLOG / 25) + 1)
+    // CC-657: an exact batch count flaked on slow CI (14 > 13), where a stray short batch
+    // costs a read. Per-row reads would be BACKLOG; the slack keeps timing out of the bound.
+    expect(recordReads).toBeLessThanOrEqual(Math.ceil(BACKLOG / 25) * 2)
   })
 
   it('reaps nothing when no session records can be read', async () => {

@@ -260,6 +260,19 @@ describe('reading the hand reserve', () => {
     expect(loadTickConfig(paths.tickConfigFile).handReserve).toEqual({ 'alpha-coord': 2 })
   })
 
+  it('reads the reserve the settings beside the tick config give, over the flat value', () => {
+    const paths = fixture({ handReserve: { 'alpha-coord': 2 } })
+    const settings = { seats: { 'alpha-coord': { handReserve: 1 } } }
+    fs.writeFileSync(
+      path.join(path.dirname(paths.tickConfigFile), 'burndown.settings.json'),
+      JSON.stringify(settings),
+    )
+
+    const facts = readHandReserve(paths, { name: 'ac-hand', spawner: 'alpha-coord' })
+
+    expect(facts?.reserve).toBe(1)
+  })
+
   it('reads nothing for a seat the config does not name', () => {
     const paths = fixture({ handReserve: { other: 2 } })
 

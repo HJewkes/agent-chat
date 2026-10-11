@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { BrokerCore, readoptRegistration, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
@@ -179,8 +179,96 @@ describe('the watchdog resume', () => {
 
     expect(res.ok).toBe(false)
     expect(res.reason).toMatch(
-      /sess-old is stale: a newer seat-x \(agent succ, session sess-new\) is retired/,
+      /sess-old is stale: a newer seat-x \(agent succ, session sess-new on \S+\) is retired/,
     )
+    expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
+  })
+
+  // CC-959 incident: spawned on server, then restarted twice by hand on personal; the watchdog woke the server row.
+  it('refuses a spawned session superseded by newer hand-started sessions on another account', async () => {
+    const cwd = tmp('by-id-cwd-')
+    const server = tmp('by-id-server-')
+    const personal = tmp('by-id-personal-')
+    const meta = { cwd, profile: 'explorer', isolation: 'none', surface: 'headless', config_dir: server }
+    spawnRow('7b1a88f1', 'seat-x', 'seat-x', { ...meta, session_id: 'f94d8441', generation: '9' })
+    await exitRow('7b1a88f1', 'seat-x')
+    const file = transcriptPath(cwd, 'f94d8441', server)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    for (const [id, session] of [
+      ['511dee1b', 'c34e5975'],
+      ['51174805', '7016a7ee'],
+    ] as const) {
+      spawnRow(id, 'seat-x', 'human', { origin: 'adopted', cwd, session_id: session, config_dir: personal })
+      core.append({ kind: 'agent_attached', actor: 'seat-x', ref: id })
+      core.append({ kind: 'agent_detached', actor: 'seat-x', ref: id })
+    }
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res.ok).toBe(false)
+    expect(res.reason).toContain(
+      `f94d8441 is stale: a newer adopted seat-x (agent 51174805, session 7016a7ee on ${personal}) is detached`,
+    )
+    expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
+  })
+
+  /** An exited spawned seat-x on its own account, with its transcript on disk so a resume can proceed. */
+  async function exitedSeat(cwd: string): Promise<void> {
+    spawnRow('agent', 'seat-x', 'seat-x', {
+      cwd,
+      profile: 'explorer',
+      isolation: 'none',
+      surface: 'headless',
+      session_id: 'sess-own',
+    })
+    await exitRow('agent', 'seat-x')
+    const file = transcriptPath(cwd, 'sess-own')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    tick()
+  }
+
+  /** A hand-started session as the MCP server runs it: a derived name, optionally a chosen one, then a restart. */
+  function handStarted(cwd: string, derived: string, chosen?: string): void {
+    const conn = {} as unknown as net.Socket as Conn
+    const base = { cwd, pid: 1, sessionId: 'sess-human' }
+    const workingOn = `unregistered session in ${cwd}`
+    expect(
+      core.register(conn, { t: 'register', name: derived, workingOn, provisional: true, ...base }).ok,
+    ).toBe(true)
+    if (chosen !== undefined)
+      expect(
+        core.register(conn, { t: 'register', name: chosen, workingOn: 'coordinating', ...base }).ok,
+      ).toBe(true)
+    core.drop(conn)
+    const known = core.agents.bySession('sess-human')!
+    const readopted = {} as unknown as net.Socket as Conn
+    expect(core.register(readopted, readoptRegistration(known, { t: 'readopt', ...base })).ok).toBe(true)
+    core.drop(readopted)
+  }
+
+  // Review of #566: a human session opened in the agent's worktree derives the agent's name and must not block its resume.
+  it('still resumes an agent after a session that only derived its name came and went', async () => {
+    const cwd = tmp('by-id-cwd-')
+    await exitedSeat(cwd)
+    handStarted(cwd, 'seat-x')
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res).toMatchObject({ ok: true, agentId: 'agent' })
+  })
+
+  // The incident as it happened: derived `projects`, chat_register('seat-x'), an MCP restart, then the watchdog.
+  it('refuses the agent once a hand-started session chose its name and was readopted', async () => {
+    const cwd = tmp('by-id-cwd-')
+    await exitedSeat(cwd)
+    handStarted(cwd, 'projects', 'seat-x')
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res.ok).toBe(false)
+    expect(res.reason).toMatch(/sess-own is stale: a newer adopted seat-x/)
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })
 })

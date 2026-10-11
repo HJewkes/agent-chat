@@ -14,7 +14,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
-import { heartbeatStep } from './heartbeat.js'
+import { heartbeatStep, PAUSE_WAKE_MESSAGE, type HeartbeatStep } from './heartbeat.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
@@ -115,6 +115,8 @@ export interface WatchdogDeps {
   transcriptFound?: (agentId: string) => boolean | undefined
   /** CC-465: raises one item on the human queue. */
   notifyHuman?: (text: string) => Promise<WakeResult>
+  /** CC-391: records each delivered heartbeat as a `heartbeat_watchdog` row; absent, nothing is recorded. */
+  logEvent?: (event: string, detail: Record<string, unknown>) => void
 }
 
 export interface WatchdogOptions {
@@ -629,6 +631,7 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
     pauseUntil: log.pauseUntil,
     activityAt: log.activityAt,
     mark: record.heartbeat,
+    source: seat.heartbeatSource,
   })
   if (step.mark === undefined) return []
   if (step.message === undefined) {
@@ -639,7 +642,17 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
   // The mark advances only on delivery, so a failed tick or pause wake is retried next run.
   if (!woke.ok) return [`${name}: Watchdog: heartbeat FAILED (${woke.detail})`]
   record.heartbeat = step.mark
+  pass.deps.logEvent?.('heartbeat_watchdog', heartbeatRow(seat, step))
   return []
+}
+
+function heartbeatRow(seat: Seat, step: HeartbeatStep): Record<string, unknown> {
+  const pauseWake = step.message === PAUSE_WAKE_MESSAGE
+  return {
+    seat: seat.name,
+    source: seat.heartbeatSource ?? 'cron',
+    ...(pauseWake ? { pauseWake: true, until: step.mark?.wokeFor } : { slot: step.mark?.slot }),
+  }
 }
 
 /** CC-465: a seat with no log line at all has been quiet at least the relaunch threshold. */

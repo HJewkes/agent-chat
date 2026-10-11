@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
-import { loadTickConfig } from '../../agents/burndown/source.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { TICK_INTERVAL_SECONDS } from '../../agents/burndown/tick-status.js'
 import {
   describeLaunchd,
@@ -15,7 +15,6 @@ import { installUnits, uninstallUnits, unitStatus } from '../../mirror/systemd.j
 import { renderUnits, unitName, type RenderedUnits } from '../../mirror/systemd-unit.js'
 import {
   BURNDOWN_LABEL,
-  burndownConfigPath,
   burndownLogDir,
   burndownPausePath,
   burndownPlistPath,
@@ -63,7 +62,7 @@ type Preflight = { refused: Report } | { lines: string[]; spec: (logDir: string)
 /** The checklist, then the config and job-path refusals both platforms share. */
 function preflight(): Preflight {
   const lines = [...SIGN_OFF_CHECKLIST]
-  if (!loadTickConfig(burndownConfigPath()).enabled) {
+  if (!loadResolvedConfig().tick.enabled) {
     return { refused: { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] } }
   }
   const job = { nodePath: process.execPath, cliEntry: cliEntry(), env: jobEnv(process.env) }
@@ -108,8 +107,10 @@ export function burndownUninstallOn(host: JobHost): Report {
   return uninstallUnits(unitControl(host), installedUnits())
 }
 
-const configLine = (): string =>
-  `config enabled=${loadTickConfig(burndownConfigPath()).enabled} paused=${fs.existsSync(burndownPausePath())}`
+function configLine(): string {
+  const resolved = loadResolvedConfig()
+  return `config enabled=${resolved.tick.enabled} paused=${resolved.paused || fs.existsSync(burndownPausePath())}`
+}
 
 /** The darwin job-status body, taking its `JobControl` explicitly so a test can inject a stub. */
 export function burndownJobStatus(control: JobControl): Report {

@@ -1303,6 +1303,8 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
+  provisionalName?: true
   /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
   repo?: string
   /** CC-915: the worktree's branch. */
