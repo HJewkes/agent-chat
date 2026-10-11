@@ -955,6 +955,48 @@ describe('planSeat brief gate (CC-925)', () => {
   })
 })
 
+describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
+  const PLAN = '/tmp/alpha/sources/A-1-plan.md'
+  const SLICE = { n: 'a', title: 'x', points: 2, doneWhen: 'x renders.', dependsOn: [], owns: ['src/x.ts'] }
+  const planText = '```burndown-slices\n' + JSON.stringify([SLICE]) + '\n```\n'
+  const readPlan = (text: string | undefined) => () => ({ path: PLAN, text })
+  const brief = (gate: 'shadow' | 'on', text: string | undefined, tags = ['brief:ready=2026-09-28']) =>
+    one('A-1', { tags }, {}, { brief: { gate, maxAgeDays: 14 }, readPlan: readPlan(text) })
+
+  it('seeds an implementer-routed task from its plan with the owns it declares, and dispatches nothing', () => {
+    const plan = brief('on', planText)
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([])
+    expect(plan.seeds.map(c => [c.taskId, c.slice, c.phase, c.owns])).toEqual([
+      ['A-1', 'a', 'queued', ['src/x.ts']],
+    ])
+  })
+
+  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+    const plan = brief('on', undefined)
+
+    expect(plan.dispatch).toEqual([])
+    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
+    expect(plan.refusals[0]?.reason).toContain(PLAN)
+  })
+
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+    const plan = brief('shadow', undefined)
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+  })
+
+  it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
+    expect(brief('shadow', planText).notes).toEqual([])
+    expect(brief('shadow', undefined, []).notes).toEqual([
+      expect.stringMatching(/^would-refuse no-brief alpha A-1 /),
+    ])
+  })
+})
+
 describe('planSeat ready order (CC-926)', () => {
   const FRESH = 'brief:ready=2026-09-28'
   const WIDE = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }

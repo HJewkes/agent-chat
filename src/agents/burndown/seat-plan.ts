@@ -506,7 +506,7 @@ function consider(
   const repo = repoForTask(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
-  const seeded = row.route === 'planner' ? seedFromPlan(row, walk) : undefined
+  const seeded = seedFromPlan(row, task, route.role, walk)
   if (seeded !== undefined) return seeded
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
@@ -521,12 +521,21 @@ function consider(
 /**
  * CC-927: under an `on` gate, a brief-ready task's seat-written plan stands in for the planner. Its slices
  * hold the task from here and dispatch as ready slices from the next tick; a plan failing the lint blocks it.
+ * CC-952: an implementer-routed task seeds the same way, and with no plan it refuses `no-owns`, since only
+ * the plan's slices declare the files it will touch. A planner with no plan runs as before.
  */
-function seedFromPlan(row: DispatchRow, walk: Walk): Seeded | Refused | undefined {
+function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): Seeded | Refused | undefined {
   const { seat, brief, readPlan, ledger, budget } = walk.inputs
-  if (brief?.gate !== 'on' || readPlan === undefined) return undefined
+  if (readPlan === undefined || (row.route !== 'planner' && role !== 'implementers')) return undefined
+  if (brief?.gate === 'shadow' && role === 'implementers')
+    return briefRefusal(task, { ...brief, now: budget.ctx.now }) === undefined
+      ? noteShadowOwns(row, readPlan, walk)
+      : undefined
+  if (brief?.gate !== 'on') return undefined
+  const plan = readPlan(row.initiative, row.id)
+  if (plan.text === undefined && role === 'implementers') return noOwns(plan.path)
   const parent = { taskId: row.id, initiative: row.initiative, seat: seat.seat, namePrefix: seat.prefix }
-  const seeding = seedSlices(parent, readPlan(row.initiative, row.id), ledger, budget.ctx.now)
+  const seeding = seedSlices(parent, plan, ledger, budget.ctx.now)
   if (seeding === undefined) return undefined
   if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
   walk.claimed.add(row.id)
@@ -535,6 +544,22 @@ function seedFromPlan(row: DispatchRow, walk: Walk): Seeded | Refused | undefine
     `seeded ${row.initiative} ${row.id} slices ${slices} from ${seeding.plan} (seat ${seat.seat})`,
   )
   return { seeds: seeding.claims }
+}
+
+const noOwns = (plan: string): Refused => ({
+  kind: 'no-owns',
+  reason: `no plan at ${plan}; a brief:ready task declares the files it touches as slice owns there`,
+})
+
+/** A shadow gate dispatches the implementer as today and notes that `on` would refuse it for want of a plan. */
+function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): undefined {
+  const plan = readPlan(row.initiative, row.id)
+  if (plan.text !== undefined) return undefined
+  const seat = walk.inputs.seat.seat
+  walk.notes.push(
+    `would-refuse no-owns ${row.initiative} ${row.id} (seat ${seat}): ${noOwns(plan.path).reason}`,
+  )
+  return undefined
 }
 
 /** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */

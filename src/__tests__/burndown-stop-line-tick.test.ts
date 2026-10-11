@@ -336,13 +336,16 @@ describe('plan --seat under the brief config', () => {
 
   beforeEach(() => addTask('T-2', ['agent-chat', `brief:ready=${TODAY}`]))
 
-  it('an on gate refuses the untagged task and keeps the tagged one', () => {
+  it('an on gate refuses the untagged task, and the tagged one for want of a plan declaring its owns', () => {
     config({ briefGate: { 'seat-t': 'on' } })
 
     const planned = plan()
 
-    expect(planned.dispatch.map(d => d.task)).toEqual(['T-2'])
-    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'T-1', kind: 'no-brief' })])
+    expect(planned.dispatch).toEqual([])
+    expect(planned.refusals.map(r => [r.task, r.kind]).sort()).toEqual([
+      ['T-1', 'no-brief'],
+      ['T-2', 'no-owns'],
+    ])
   })
 
   it('an on gate refuses a stale brief', () => {
