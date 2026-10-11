@@ -268,15 +268,19 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
   }
 }
 
-/** One record per seat, in seat-name order. */
-export function dispatchStats(ports: DispatchStatsPorts, windowMs: number): SeatDispatchStats[] {
+/** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
+export function dispatchStats(
+  ports: DispatchStatsPorts,
+  windowMs: number,
+  floor?: number,
+): SeatDispatchStats[] {
   const sinceMs = ports.now.getTime() - windowMs
   const w: Window = {
     sinceMs,
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
-    floor: 2 * ports.maxAgents(),
+    floor: floor ?? 2 * ports.maxAgents(),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
 }

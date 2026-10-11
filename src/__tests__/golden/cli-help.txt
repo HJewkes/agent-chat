@@ -343,6 +343,8 @@ Options:
   --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
                            briefer, template, unknown)
   --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
+  --floor <value>          ready depth floor to count breaches against (default 2 x the tick config
+                           maxAgents)
   --autonomy-root <value>  directory holding seats/ and logs/
   -h, --help               display help for command
 

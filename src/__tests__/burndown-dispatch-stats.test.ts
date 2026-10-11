@@ -346,4 +346,16 @@ describe('ready floor', () => {
 
     expect(stats?.readyFloor.floor).toBe(6)
   })
+
+  it('lets an explicit floor win over maxAgents without reading the config', () => {
+    const unread = ports({
+      maxAgents: () => {
+        throw new Error('config read')
+      },
+    })
+
+    const stats = dispatchStats(unread, DAY_MS, 1).find(s => s.seat === 'sa')
+
+    expect(stats?.readyFloor).toMatchObject({ floor: 1, below: 0 })
+  })
 })
