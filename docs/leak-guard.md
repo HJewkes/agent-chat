@@ -584,24 +584,25 @@ line, are not read.
 ### A config value git runs as a program (TP-636)
 
 Some config keys hold a program or shell command that git runs. The list is drawn from
-`git help config` on git 2.50 and matched case-insensitively on section and key, as git matches
+`git help config` on git 2.53 and matched case-insensitively on section and key, as git matches
 them: `core.pager`, every `pager.<cmd>`, `core.editor`, `sequence.editor`, `core.sshCommand`,
 `core.fsmonitor`, `core.askPass`, `core.gitProxy`, `core.alternateRefsCommand`, `diff.external`,
 `diff.<driver>.command` and `.textconv`, `merge.<driver>.driver`, `filter.<driver>.clean`,
 `.smudge` and `.process`, `credential.helper` and `credential.<url>.helper`, `gpg.program`,
 `gpg.<format>.program` and `gpg.ssh.defaultKeyCommand`, `interactive.diffFilter`, `web.browser`,
-`browser.<tool>.cmd`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `man.<tool>.cmd`,
-`guitool.<name>.cmd`, `instaweb.browser`, `instaweb.httpd`, `remote.<name>.receivepack` and
-`.uploadpack`, the `sendemail` `toCmd`, `ccCmd`, `headerCmd`, `sendmailCmd` and `smtpServer`,
-`trailer.<keyAlias>.cmd` and `.command`, `hook.<name>.command` (git's config-defined hooks),
-`gc.recentObjectsHook`, `uploadpack.packObjectsHook` and `imap.tunnel`.
+`browser.<tool>.cmd`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `man.<tool>.cmd` and the
+`.path` of each of those four, `guitool.<name>.cmd`, `instaweb.browser`, `instaweb.httpd`,
+`remote.<name>.receivepack` and `.uploadpack`, `submodule.<name>.update`, the `sendemail`
+`toCmd`, `ccCmd`, `headerCmd`, `sendmailCmd` and `smtpServer`, bare or under a
+`sendemail.<identity>`, `trailer.<keyAlias>.cmd` and `.command`, `hook.<name>.command` (git's
+config-defined hooks), `gc.recentObjectsHook`, `uploadpack.packObjectsHook` and `imap.tunnel`.
 
 A literal `-c` value for one of these keys is checked like a top-level Bash line, so
 `git -c core.pager="git -c core.hooksPath=/dev/null push" log` is denied as a hooks path override
-and `git -c core.pager="git push --no-verify" log` as a skipped hook. A `credential.helper` value
-that starts with `!` is checked without the `!`. git passes its `-c` options on to the git the
-program runs, through `GIT_CONFIG_PARAMETERS`, so an `include.path` on the same git is a deny, as
-it is for a command git runs for its subcommand. A safe value stays allowed: `less`, `cat`,
+and `git -c core.pager="git push --no-verify" log` as a skipped hook. A `credential.helper` or
+`submodule.<name>.update` value that starts with `!` is checked without the `!`. git passes its
+`-c` options on to the git the program runs, through `GIT_CONFIG_PARAMETERS`, so an
+`include.path` on the same git is a deny, as it is for a command git runs for its subcommand. A safe value stays allowed: `less`, `cat`,
 `"less -R"`, `vim`, `store`, `"ssh -i key"`, `true` and an empty value.
 
 A value the guard cannot read for one of these keys is a deny on every git subcommand, since any

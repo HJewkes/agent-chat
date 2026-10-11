@@ -6,7 +6,7 @@ import { LIVE, unmark } from './shell-words.js'
  * Config keys and environment variables whose value git runs as a program or shell command
  * (TP-636). A `-c` value or an env value for one is a nested script: git runs it, and passes its
  * own `-c` options on to any git it starts. The keys and names are from `git help config` and the
- * ENVIRONMENT section of `git help git` on git 2.50.
+ * ENVIRONMENT section of `git help git` on git 2.53.
  */
 
 // `section.name`, or `section.*.name` for a key under a subsection; `pager.*` is matched apart.
@@ -15,9 +15,11 @@ const PROGRAM_KEYS = new Set(
   core.alternaterefscommand sequence.editor diff.external diff.*.command diff.*.textconv
   merge.*.driver filter.*.clean filter.*.smudge filter.*.process credential.helper
   credential.*.helper gpg.program gpg.*.program gpg.*.defaultkeycommand interactive.difffilter
-  web.browser browser.*.cmd difftool.*.cmd mergetool.*.cmd man.*.cmd guitool.*.cmd
-  instaweb.browser instaweb.httpd remote.*.receivepack remote.*.uploadpack sendemail.tocmd
-  sendemail.cccmd sendemail.headercmd sendemail.sendmailcmd sendemail.smtpserver
+  web.browser browser.*.cmd browser.*.path difftool.*.cmd difftool.*.path mergetool.*.cmd
+  mergetool.*.path man.*.cmd man.*.path guitool.*.cmd instaweb.browser instaweb.httpd
+  remote.*.receivepack remote.*.uploadpack submodule.*.update sendemail.tocmd sendemail.*.tocmd
+  sendemail.cccmd sendemail.*.cccmd sendemail.headercmd sendemail.*.headercmd
+  sendemail.sendmailcmd sendemail.*.sendmailcmd sendemail.smtpserver sendemail.*.smtpserver
   trailer.*.cmd trailer.*.command hook.*.command gc.recentobjectshook
   uploadpack.packobjectshook imap.tunnel`.split(/\s+/),
 )
@@ -62,7 +64,7 @@ function scriptOf(word: ConfigWord): string | null | undefined {
   const eq = kv.indexOf('=')
   if (eq < 0) return null
   const value = kv.slice(eq + 1)
-  // A leading `!` marks a credential helper's shell snippet, and is shell negation elsewhere.
+  // A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
   return value.startsWith('!') ? value.slice(1) : value
 }
 

@@ -2446,6 +2446,7 @@ describe('a git config value that runs a program (TP-636)', () => {
     'git -c sequence.editor=true rebase -i HEAD~2',
     'git -c pager.log=false log',
     'git -c core.pager= log',
+    'git -c submodule.x.update=rebase submodule update',
     'git -c core.fsmonitor=true status',
     'git -c credential.helper=store fetch',
     'git -c core.sshCommand="ssh -i key" fetch',
@@ -2468,6 +2469,15 @@ describe('a git config value that runs a program (TP-636)', () => {
     'git -c hook.pre-commit.command="git push --no-verify" commit',
     'git -c guitool.x.cmd="git push --no-verify" gui',
     'git -c instaweb.httpd="git push --no-verify" instaweb',
+    'git -c "submodule.x.update=!git push --no-verify" submodule update',
+    'git -c "submodule.x.update=!git push --no-verify" submodule update --init',
+    'git -c "sendemail.work.toCmd=git push --no-verify" send-email --identity=work HEAD~1',
+    'git -c "sendemail.work.ccCmd=git push --no-verify" send-email HEAD~1',
+    'git -c "sendemail.work.headerCmd=git push --no-verify" send-email HEAD~1',
+    'git -c "sendemail.work.sendmailCmd=git push --no-verify" send-email HEAD~1',
+    'git -c "sendemail.work.smtpServer=git push --no-verify" send-email HEAD~1',
+    'git -c difftool.x.path="git push --no-verify" difftool',
+    'git -c mergetool.x.path="git push --no-verify" mergetool',
   ])('denies a skipped hook in a newly covered key: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
   })
