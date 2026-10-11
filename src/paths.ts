@@ -120,6 +120,9 @@ export const burndownConfigPath = (): string => path.join(home(), 'burndown.conf
 /** Present means `burndown tick` spawns nothing; written by `burndown pause`, removed by `burndown resume`. */
 export const burndownPausePath = (): string => path.join(home(), 'burndown.paused')
 
+/** CC-957: an operator HOLD as JSON `{by, since, reason}`; written by `machine hold`, removed by `machine lift`. */
+export const operatorHoldPath = (): string => path.join(home(), 'operator.hold')
+
 /** The launchd label for `agent-chat burndown tick --once`; the plist and every `launchctl` call use it. */
 export const BURNDOWN_LABEL = 'dev.hjewkes.agent-chat-burndown'
 

@@ -424,6 +424,14 @@ and any spawn while free memory (`kern.memorystatus_level`) is below
 refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
+**Every stop in one read.** `agent-chat machine status --json` reports operator
+HOLDs (the stop file `machine hold` writes, and chat lines such as
+`tp-operator: HOLD (memory trip)` until that sender's `HOLD LIFTED` or `LIFT`,
+at most 24 h), the owner's stopped seats, and the machine-stop readings. Its
+`stopped` field is true for a hold, the machine stop or an unreadable source; an
+owner stop holds only its seat. A consumer off the bus, such as Shepherd, reads
+this instead of parsing chat.
+
 ## Not built yet
 
 - Path claims — reusing the lease primitive for files instead of nicknames.

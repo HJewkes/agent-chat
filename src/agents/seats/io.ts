@@ -12,6 +12,7 @@ import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
+import type { ChatLine } from './operator-stops.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
 
@@ -292,6 +293,25 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
       .prepare(`SELECT * FROM events WHERE kind IN (${marks}) AND ts < ? ORDER BY id`)
       .all(...AGENT_KINDS, untilMs) as unknown as Row[]
     return rows.map(toAgentRow)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * CC-957: every sender's messages since `sinceMs` that mention a hold or a lift, one row per message
+ * (a send to several recipients logs a row each). Throws when events.db cannot be read.
+ */
+export function readHoldMessages(dbPath: string, sinceMs: number): ChatLine[] {
+  const db = openEvents(dbPath)
+  try {
+    const rows = db
+      .prepare(
+        "SELECT MIN(ts) AS ts, actor, msg_id, body FROM events WHERE kind IN ('message', 'broadcast') AND ts >= ? " +
+          "AND (body LIKE '%HOLD%' OR body LIKE '%LIFT%') GROUP BY COALESCE(msg_id, id) ORDER BY MIN(id)",
+      )
+      .all(sinceMs) as unknown as { ts: number; actor: string; msg_id: string | null; body: string | null }[]
+    return rows.map(row => ({ ts: row.ts, actor: row.actor, msgId: row.msg_id, body: row.body ?? '' }))
   } finally {
     db.close()
   }
