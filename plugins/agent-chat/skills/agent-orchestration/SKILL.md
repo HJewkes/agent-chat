@@ -177,6 +177,19 @@ Monitor(command: "agent-chat watch <your-name>",
 It starts at the log head, so it will not replay a backlog at you. Use
 `agent-chat watch <name> --once --since all` to read what you already missed.
 
+### Relaying an owner decision (`chat_endorse`)
+
+`chat_endorse(to, text)` queues a message for your human to approve; nothing is sent until
+they do. Its result prints an `agent-chat endorse <id> --to <peer> --text ...` command.
+
+- **In a terminal session your human is attending:** show them the exact text with
+  `AskUserQuestion`, then run the printed command yourself through Bash. That command asks
+  for permission, and approving the prompt is their approval. Do not ask them to type it.
+- **Spawned agents** cannot run it: the command is denied in their profiles. Leave the
+  endorsement queued and say so in your report.
+- **Remote Control:** approving from a remote session is not supported yet. Leave it queued
+  for your human to run at the terminal.
+
 ## Follow-ups: send them to a fresh worker
 
 A worker that has sent its first Status report is usually carrying its whole assignment in
