@@ -441,7 +441,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
-  // Mutation: dropping the deploy[^/]*.ts pattern leaves the deploy rows unheld; widening it to service* holds the read-only service-check and service-ports rows.
+  // Mutation: dropping the deploy[^/]*.ts pattern leaves the deploy rows unheld.
   // Mutation: dropping a persistent-job pattern or file (systemd/, .service/.timer/.plist, deploy/hub, a named installer) leaves its row unheld.
   // Mutation: dropping the protected-path hold, or reverting a whole tree to named files, registers one of these unheld.
   it.each([
@@ -632,13 +632,15 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.calls[1]).toContain('protected path')
   })
 
-  // Mutation: holding every non-test path, protecting all of src/, or protecting all of products/factory/src, would hold these.
+  // Mutation: holding every non-test path, protecting all of src/, protecting all of products/factory/src, or widening the service row to service[^/]*\.ts, would hold these.
   it.each([
     'src/widgets/render.ts',
     'src/service-check.ts',
     'docs/guide.md',
     'src/cli/verbs/list.ts',
     'products/factory/src/render.ts',
+    'products/factory/src/service-check.ts',
+    'products/factory/src/service-ports.ts',
   ])('registers an ordinary path %s with no hold', path => {
     const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
 
