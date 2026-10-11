@@ -17,7 +17,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { configPrograms, extPrograms, PROGRAM_ENV } from './git-programs.js'
+import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
@@ -1355,61 +1355,68 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
-const LEADING_ASSIGN = /^(?:[A-Za-z_]\w*\+?=|\{[^}]*\}\+?=)/
-const NAME_PLUS_EQ = /^([A-Za-z_]\w*)(\+?)=/
-const BRACE_ASSIGN = /^\{([^}]*)\}\+?=/
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV]
+// A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
+const nameUse = (name: string): RegExp =>
+  new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
+// `${NAME=x}`, `${NAME:=x}` and zsh's `${NAME::=x}` assign; `${NAME-x}` and the other operators only read.
+const nameAssign = (name: string): RegExp => new RegExp(`\\$\\{${name}(?:\\[[^\\]]*\\])?:{0,2}=`)
+const ENV_REFS = ENV_NAMES.map(name => ({ use: nameUse(name), assign: nameAssign(name) }))
 
-/** A program-running env assignment: its literal value to check, null when the guard cannot read it, undefined for none. */
-function envEvent(word: string, allowBare: boolean): string | null | undefined {
-  const um = unmark(word)
-  const brace = BRACE_ASSIGN.exec(um)
-  if (brace) return (brace[1] as string).split(',').some(n => PROGRAM_ENV.has(n.trim())) ? null : undefined
-  const m = NAME_PLUS_EQ.exec(um)
-  if (m) {
-    if (!PROGRAM_ENV.has(m[1] as string)) return undefined
-    if (m[2] === '+') return null
-    const value = word.slice(um.indexOf('=') + 1)
-    return value.includes(LIVE) ? null : unmark(value)
-  }
-  return allowBare && PROGRAM_ENV.has(um) ? null : undefined
+/** Whether a word uses a program env var other than by reading it. */
+const namesProgramEnv = (text: string): boolean =>
+  ENV_REFS.some(({ use, assign }) => use.test(text) || assign.test(text))
+
+/** Whether a word holds a `${NAME...}` expansion of a program env var that assigns it. */
+const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) => assign.test(text))
+
+/** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
+function plainProgramValue(word: string): string | null | undefined {
+  const name = ASSIGNMENT.exec(word)?.[1]
+  if (name === undefined || !PROGRAM_ENV.has(name) || !word.startsWith(`${name}=`)) return undefined
+  const value = word.slice(name.length + 1)
+  return value.includes(LIVE) ? null : value
 }
 
-/** Every program-env assignment on one command: a prefix assign, a `+=`, a brace name, or an arg to export/declare. */
+/**
+ * A program-env event for one word: a plain literal `NAME=value` gives its value to check, and
+ * any other use of a program env name gives null, since the shell has many ways to assign one
+ * (`+=`, a subscript, a brace, read, printf -v, a for loop, `${NAME:=x}`); a read is no event. In git's own arguments
+ * only an assigning expansion counts.
+ */
+function envEvent(word: string, gitArg: boolean): string | null | undefined {
+  const text = unmark(word)
+  if (gitArg) return expandsProgramEnv(text) ? null : undefined
+  const plain = plainProgramValue(word)
+  if (plain !== undefined) return plain
+  return namesProgramEnv(text) ? null : undefined
+}
+
+/** Every program-env event on one command; `unset` and `env -u` only remove a name. */
 function envEvents(cmd: SimpleCommand): (string | null)[] {
   const unwrapped = unwrap(cmd.marked)
   if ('reason' in unwrapped) return []
-  const events: (string | null)[] = []
-  const take = (word: string, allowBare: boolean): void => {
-    const event = envEvent(word, allowBare)
-    if (event !== undefined) events.push(event)
-  }
-  for (const word of unwrapped.assigns) take(word, false)
-  for (const word of unwrapped.words) {
-    if (!LEADING_ASSIGN.test(unmark(word))) break
-    take(word, false)
-  }
-  if (ENV_DECL.has(path.basename(unmark(unwrapped.words[0] ?? ''))))
-    for (const word of unwrapped.words.slice(1)) {
-      const um = unmark(word)
-      if (um !== '--' && !um.startsWith('-')) take(word, true)
-    }
-  return events
+  const head = path.basename(unmark(unwrapped.words[0] ?? ''))
+  if (head === 'unset') return []
+  const assigns = unwrapped.assigns.filter(word => word.includes('='))
+  const events = [
+    ...assigns.map(word => envEvent(word, false)),
+    ...unwrapped.words.map(word => envEvent(word, head === 'git')),
+  ]
+  return events.filter((event): event is string | null => event !== undefined)
 }
 
 /** A word's text for the git scan, with a program-env assignment's value blanked so a `git` in it does not count. */
 function scanWord(word: string): string {
   const um = unmark(word)
-  const name = BRACE_ASSIGN.test(um)
-    ? (BRACE_ASSIGN.exec(um)?.[1] ?? '').split(',').some(n => PROGRAM_ENV.has(n.trim()))
-    : PROGRAM_ENV.has(NAME_PLUS_EQ.exec(um)?.[1] ?? '')
-  return name ? um.slice(0, um.indexOf('=') + 1) : um
+  const name = ASSIGNMENT.exec(word)?.[1]
+  return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
 }
 
 /**
- * Program env vars git runs (TP-636), closed as one conservative line rule. If a PROGRAM_ENV name
- * is an assignment target anywhere on the line, in any form, and the line runs git anywhere, a
- * literal value is checked as a nested script and anything else denies.
+ * Program env vars git runs (TP-636), closed as one conservative line rule. If a program env name
+ * is used anywhere on a line that runs git, a plain literal assignment's value is checked as a
+ * nested script and any other use denies.
  */
 function checkProgramEnvLine(
   command: string,

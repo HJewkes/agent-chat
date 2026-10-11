@@ -2547,6 +2547,40 @@ describe('an environment variable git runs as a program (TP-636 fix round 2)', (
   })
 
   it.each([
+    "export GIT_PAGER=less; GIT_PAGER[1,-1]='git push --no-verify'; git log",
+    "EDITOR[1,-1]='git push --no-verify'; git commit",
+    "PAGER[1,-1]='git push --no-verify'; git log",
+    "GIT_EDITOR[1,-1]='git push --no-verify'; git commit",
+    "GIT_SSH_COMMAND[1,-1]='git push --no-verify'; git fetch",
+    "GIT_SSH_COMMAND[1]+='git push --no-verify'; git fetch",
+    "GIT_PAGER[1,-1]='git push --no-verify' git log",
+    "read GIT_PAGER <<< 'git push --no-verify'; git log",
+    "printf -v GIT_PAGER '%s' 'git push --no-verify'; git log",
+    "printf -vGIT_PAGER '%s' 'git push --no-verify'; git log",
+    "for GIT_EDITOR in 'git push --no-verify'; do git commit; done",
+    ": ${GIT_PAGER:='git push --no-verify'}; git log",
+    "git log ${GIT_PAGER:='git push --no-verify'}",
+    "git log ${GIT_PAGER::='git push --no-verify'}",
+    "X=GIT_PAGER; typeset -n R=$X; R='git push --no-verify'; git log",
+    'export MANPAGER; git help log',
+    'LESSOPEN="|git push --no-verify %s" git log',
+    "LESS='+!git push --no-verify' git log",
+    "MANOPT='-P git' git help log",
+    'grep GIT_PAGER f && git diff',
+    'LESS=-R git log',
+  ])('denies any use of a program env name but a plain literal assignment or a read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+  })
+
+  it.each([
+    "MANPAGER='git push --no-verify' git help log",
+    "export MANPAGER='git push --no-verify'; git help log",
+    "BROWSER='git push --no-verify' git web--browse https://example.com",
+  ])('denies a skipped hook in a man or browser program value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
     'GIT_PAGER=cat git log',
     'EDITOR=true git commit --amend --no-edit',
     'GIT_EDITOR=vim npm test && git status',
@@ -2556,6 +2590,12 @@ describe('an environment variable git runs as a program (TP-636 fix round 2)', (
     'git clone https://example.com/r.git',
     'env -u GIT_EDITOR git commit',
     "GIT_EDITOR='git push --no-verify' ls",
+    'unset GIT_EDITOR; git commit',
+    'git commit -m "Respect GIT_PAGER and EDITOR"',
+    'git log ${PAGER-less}',
+    'echo "$PAGER" "${EDITOR:-vi}" && git status',
+    'MANPAGER=cat git help log',
+    "GIT_PAGER[1,-1]='git push --no-verify'; ls",
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })

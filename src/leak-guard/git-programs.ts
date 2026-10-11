@@ -35,12 +35,14 @@ export function runsProgram(key: string): boolean {
 }
 
 /**
- * Environment variables whose value git runs as a program or shell command, including the
- * `PAGER`, `EDITOR` and `VISUAL` fallbacks git honours and the askpass and proxy hooks.
+ * Environment variables whose value git, or the man and less it starts, runs as a program or
+ * shell command, including the `PAGER`, `EDITOR` and `VISUAL` fallbacks git honours, the
+ * askpass and proxy hooks, man's `MANPAGER` and the `BROWSER` git web--browse may read.
  */
 export const PROGRAM_ENV = new Set([
   'GIT_PAGER',
   'PAGER',
+  'MANPAGER',
   'GIT_EDITOR',
   'EDITOR',
   'VISUAL',
@@ -51,7 +53,15 @@ export const PROGRAM_ENV = new Set([
   'SSH_ASKPASS',
   'GIT_EXTERNAL_DIFF',
   'GIT_PROXY_COMMAND',
+  'BROWSER',
 ])
+
+/**
+ * Environment variables whose value is not a command line but may still make man or less run
+ * one: less options (`+!cmd`), a less input preprocessor (`|cmd %s`) and man options (`-P cmd`).
+ * The guard cannot check such a value as a script, so any assignment to one denies.
+ */
+export const OPAQUE_PROGRAM_ENV = new Set(['LESS', 'LESSOPEN', 'LESSCLOSE', 'MANOPT'])
 
 /** The script one config word runs: null for none, undefined when the guard cannot read it. */
 function scriptOf(word: ConfigWord): string | null | undefined {
