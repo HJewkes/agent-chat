@@ -90,6 +90,7 @@ function makeSupervisor(
   semaphore?: Semaphore,
   argvReader: ArgvReader = () => 'claude',
   seatTeleport: SeatTeleportDeps = isolatedSeatTeleport(),
+  platform: NodeJS.Platform = 'darwin',
 ): Supervisor {
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
@@ -98,7 +99,7 @@ function makeSupervisor(
     launcherRunning: async () => false,
     ...(semaphore ? { semaphore } : {}),
     surface: {
-      platform: 'darwin',
+      platform,
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
       runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
     },
@@ -1677,5 +1678,114 @@ describe('a seat teleport (CC-863)', () => {
 
     expect(handoffPart(result.agentId as string)).toBe('the handoff')
     expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
+  })
+})
+
+/**
+ * CC-951: the successor's surface follows its destination's OS. The incident was an adopted
+ * session on the linux broker, whose successor was handed iTerm and refused; tmux is never run
+ * here, because `relaunch` is where the launch would happen and it is captured instead.
+ */
+describe('the surface a successor opens in', () => {
+  function onPlatform(platform: NodeJS.Platform, seatTeleport = isolatedSeatTeleport()) {
+    supervisor.close()
+    makeSupervisor(undefined, undefined, seatTeleport, platform)
+    return vi.spyOn(supervisor, 'relaunch').mockResolvedValue(undefined)
+  }
+
+  async function teleportAdopted(
+    over: Record<string, unknown> = {},
+    subjectOver: Record<string, unknown> = {},
+  ) {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, ...subjectOver }),
+      handoff: 'h',
+      ...over,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return { agentId, result }
+  }
+
+  it('lands an adopted session on a linux broker in a tmux window when none is named', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { result } = await teleportAdopted()
+
+    expect(result.ok).toBe(true)
+    expect(relaunch).toHaveBeenCalledOnce()
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('tmux-window')
+  })
+
+  it('refuses a named surface the broker cannot run, before recording or ending anything', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { agentId, result } = await teleportAdopted({ surface: 'iterm-window' })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/iterm-window.*macOS/)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+    expect(killed).toEqual([])
+    expect(relaunch).not.toHaveBeenCalled()
+  })
+
+  it('opens a named surface the broker can run', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { result } = await teleportAdopted({ surface: 'headless' })
+
+    expect(result.ok).toBe(true)
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('headless')
+  })
+
+  it("opens a named surface fresh, never typed into the predecessor's pane", async () => {
+    const relaunch = onPlatform('darwin')
+
+    await teleportAdopted({ surface: 'iterm-window' }, { anchor: 'pane-1' })
+
+    expect(relaunch.mock.calls[0]?.[0]).toMatchObject({ surface: 'iterm-window', anchor: 'pane-1' })
+    expect(relaunch.mock.calls[0]?.[0].reuseAnchor).toBeUndefined()
+  })
+
+  it("takes the seat file's surface for this machine", async () => {
+    const seatTeleport = isolatedSeatTeleport()
+    fs.mkdirSync(path.join(seatTeleport.autonomyRoot, 'seats'))
+    fs.writeFileSync(
+      path.join(seatTeleport.autonomyRoot, 'seats', 'cc27.md'),
+      `---\nname: cc27\nsurface: iterm-window\nsurfaces:\n  ${os.hostname()}: headless\n---\n`,
+    )
+    const relaunch = onPlatform('linux', seatTeleport)
+
+    await teleportAdopted()
+
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('headless')
+  })
+
+  it("gives a remote caller the default for its own OS, not the broker's", async () => {
+    onPlatform('darwin')
+
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      hostPlatform: 'linux',
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect((await plan).launch?.surface).toBe('tmux-window')
+  })
+
+  it('refuses a remote caller a surface its own OS cannot run', async () => {
+    onPlatform('darwin')
+
+    const { result } = await teleportAdopted(
+      { surface: 'iterm-tab', hostPlatform: 'linux' },
+      { host: 'caller-host' },
+    )
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/macOS \(this host is linux\)/) })
   })
 })

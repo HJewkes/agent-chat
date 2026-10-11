@@ -1010,6 +1010,10 @@ export type ClientMessage =
       /** CC-883: the caller's own read of its Claude Code argv, which a broker on another host cannot make. */
       remoteControlSeen?: boolean
       reason?: TeleportReason
+      /** CC-951: the successor's surface; refused when its destination cannot run it. */
+      surface?: SurfaceName
+      /** CC-951: the caller's own OS, sent by its MCP process and never by the model. */
+      hostPlatform?: string
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
