@@ -50,5 +50,23 @@ export const Override = z
   .strict()
 export type Override = z.infer<typeof Override>
 
-/** Presets defined in code; a preset of the same name in the settings file shadows one here. */
-export const BUILTIN_PRESETS: Readonly<Record<string, Preset>> = {}
+/** What a built-in preset is built from: the flat file and every seat name the layers know. */
+export interface PresetContext {
+  reportTo?: string
+  seats: string[]
+}
+
+/** Only the seat the tick reports to dispatches, behind the brief gate; every other seat is off. */
+function factoryOnly({ reportTo, seats }: PresetContext): Preset {
+  if (reportTo === undefined) throw new Error('preset factory-only needs reportTo in burndown.config.json')
+  const off = Object.fromEntries(seats.filter(s => s !== reportTo).map(s => [s, { on: false }]))
+  return { seats: { ...off, [reportTo]: { on: true, briefGate: { mode: 'on' } } } }
+}
+
+/**
+ * Presets defined in code, built from the flat file so no seat name is written here; a preset
+ * of the same name in the settings file shadows one here.
+ */
+export const BUILTIN_PRESETS: Readonly<Record<string, (ctx: PresetContext) => Preset>> = {
+  'factory-only': factoryOnly,
+}
