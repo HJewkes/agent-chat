@@ -261,12 +261,15 @@ interface SeatLine {
 const isWatchdogText = (text: string): boolean =>
   text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ') || text.startsWith(NO_DISPATCH_PREFIX)
 
+// CC-969: seats sometimes write the last minute digit as `x`; it reads as 0, as TICK_LINE in heartbeat-external.ts does.
 function seatLines(log: string, day: Date): SeatLine[] {
   return log.split('\n').flatMap(line => {
-    const m = /^(\d\d):(\d\d) (.*)$/.exec(line)
-    if (m === null || isWatchdogText(m[3] ?? '') || isJournalText(m[3] ?? '')) return []
-    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), Number(m[2]))
-    return [{ at: at.getTime(), text: m[3] ?? '' }]
+    const m = /^(\d\d):(\d)([\dx]) (.*)$/.exec(line)
+    const text = m?.[4] ?? ''
+    if (m === null || isWatchdogText(text) || isJournalText(text)) return []
+    const minute = Number(m[2]) * 10 + (m[3] === 'x' ? 0 : Number(m[3]))
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), minute)
+    return [{ at: at.getTime(), text }]
   })
 }
 
