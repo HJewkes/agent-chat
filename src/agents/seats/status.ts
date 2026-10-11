@@ -56,6 +56,8 @@ export interface RoleLoad extends AgentLoad {
   waitingOwner: string[]
   /** CC-494: set on implementers only: the worktrees counted in `active` and why. `active` may exceed `names.length`. */
   trees?: SeatTree[]
+  /** CC-978: set on implementers only: the claims the burndown ledger holds for them; absent when it cannot be read. */
+  ledger?: number
 }
 
 /** The session tag that marks an agent as blocked on the owner; set with `chat_tag`. */
@@ -171,6 +173,8 @@ export interface StatusDeps {
   machine: (agents: AgentIdentity[]) => MachineStatus
   /** CC-431: null when no limit is breached or a reading could not be taken. */
   machineStop: () => MachineStop | null
+  /** CC-978: the seat's implementer claims in the burndown ledger. Absent, or a throw: not shown. */
+  ledgerImplementers?: (seat: string) => number
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -250,6 +254,15 @@ function implementerLoad(
   )
   const active = loose.length + trees.length
   return { ...load, active, atCap: active >= cap, trees }
+}
+
+function withLedger(load: RoleLoad, deps: StatusDeps, seat: string): RoleLoad {
+  try {
+    const ledger = deps.ledgerImplementers?.(seat)
+    return ledger === undefined ? load : { ...load, ledger }
+  } catch {
+    return load
+  }
 }
 
 async function countedTrees(
@@ -485,7 +498,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     seat,
     at: now.toISOString(),
     heartbeat: heartbeatStatus(deps, seat),
-    implementers: implementerLoad(mine, concurrency.implementers, waiting, trees),
+    implementers: withLedger(implementerLoad(mine, concurrency.implementers, waiting, trees), deps, seat),
     reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
     planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
@@ -514,7 +527,8 @@ function agentLine(label: string, load: AgentLoad, count: string, flag = ''): st
 function roleLine(label: string, load: RoleLoad): string {
   const trees = load.trees ?? []
   const shown = trees.map(t => `${path.basename(t.path)}(${t.cause})`).join(', ')
-  const text = agentLine(label, load, `${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '')
+  const ledger = load.ledger === undefined || load.ledger === load.active ? '' : ` (ledger ${load.ledger})`
+  const text = agentLine(label, load, `${load.active}/${load.cap}${ledger}`, load.atCap ? 'AT CAP' : '')
   return trees.length === 0 ? text : `${text}  trees: ${shown}`
 }
 

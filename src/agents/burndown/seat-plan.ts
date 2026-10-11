@@ -86,6 +86,8 @@ export interface SeatPlanInputs {
   scope?: SeatScope
   /** The broker's roster (CC-779): the seat's running agents count against its caps; absent, only claims do. */
   agents?: readonly AgentIdentity[]
+  /** CC-978: whether the named agent may still run; absent, every implementing claim holds a slot. */
+  liveAgent?: (name: string | undefined) => boolean
   /** The seat's brief gate (CC-925); absent, it is off. */
   brief?: SeatBriefGate
   /** CC-936: implementer slots the seat's hand spawns keep; the tick fills the cap minus this. Absent, none. */
@@ -177,6 +179,8 @@ interface Walk {
   roles: Record<Role, number>
   /** The hand-spawned implementers in `roles`; the tick's own are the rest. */
   handImplementers: number
+  /** CC-978: implementing claims left out of `roles` because no agent runs for them and no PR is open. */
+  idleImplementers: number
   /** The seat's active worktrees per repo: held claims with an active tree plus this plan's dispatches. */
   seatWorktrees: Map<string, number>
   /** The broker-wide ceilings, with the config's worktreeOwnerReserve added to the reserve. */
@@ -235,6 +239,10 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
+  if (walk.idleImplementers > 0)
+    plan.notes.push(
+      `seat ${inputs.seat.seat} ${implementersUsed(walk.roles.implementers, walk.idleImplementers)}`,
+    )
   return { ...plan, roles: { ...walk.roles } }
 }
 
@@ -414,9 +422,11 @@ function startWalk(inputs: SeatPlanInputs): Walk {
   const roles: Record<Role, number> = { implementers: 0, reviewers: 0, planners: 0 }
   const seatWorktrees = new Map<string, number>()
   const active = inputs.activeTree ?? (() => true)
+  let idleImplementers = 0
   for (const claim of ours) {
     const role = roleOf(claim)
-    if (role !== undefined) roles[role] += 1
+    if (role === 'implementers' && !holdsSlot(claim, inputs.liveAgent)) idleImplementers += 1
+    else if (role !== undefined) roles[role] += 1
     if (claim.worktree !== undefined && active(claim))
       bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
   }
@@ -429,12 +439,29 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     held: backoffHeld(inputs.ledger, inputs.budget.ctx.now),
     roles,
     handImplementers: hand.filter(role => role === 'implementers').length,
+    idleImplementers,
     seatWorktrees,
     capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
     tally: { agents: 0, worktrees: new Map() },
     notes: [],
   }
 }
+
+/**
+ * CC-978: an implementing claim holds an implementer slot while its agent may run, its PR is recorded, or a
+ * ladder respawn is about to spawn its successor; one whose agent is gone with neither is ledger state, not
+ * live work. A spawning claim always holds one.
+ */
+const holdsSlot = (claim: Claim, live: SeatPlanInputs['liveAgent']): boolean =>
+  claim.phase !== 'implementing' ||
+  live === undefined ||
+  claim.pr !== undefined ||
+  claim.respawn !== undefined ||
+  live(claim.agentName)
+
+/** CC-978: what the seat's implementers count against their cap, beside the ledger's own count when the two differ. */
+export const implementersUsed = (used: number, idle: number): string =>
+  idle === 0 ? `implementers used ${used}` : `implementers used ${used} (ledger ${used + idle})`
 
 const HAND_ROLES: readonly [string, Role][] = [
   ['implementer', 'implementers'],
@@ -675,7 +702,10 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
   const { seat } = walk.inputs
   const used = walk.roles[role]
   const cap = seat.caps[role]
-  if (used >= cap) return { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}` }
+  const ledger =
+    role === 'implementers' && walk.idleImplementers > 0 ? ` (ledger ${used + walk.idleImplementers})` : ''
+  if (used >= cap)
+    return { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}${ledger}` }
   const reserve = role === 'implementers' ? (walk.inputs.handReserve ?? 0) : 0
   const tickUsed = used - walk.handImplementers
   return reserve === 0 || tickUsed < cap - reserve
