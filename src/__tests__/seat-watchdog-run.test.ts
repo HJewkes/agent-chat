@@ -26,6 +26,7 @@ import { seatSurface } from '../agents/seats/charter.js'
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { watchdogInstall, wakeSeat } from '../cli/verbs/seats.js'
+import { respawnSeat } from '../cli/verbs/seat-respawn.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { startSupervisor, type RestartHarness, type SurfaceSpawn } from './helpers/restart-harness.js'
 import type { Launchctl } from '../mirror/launchd.js'
@@ -661,7 +662,7 @@ describe('seat liveness (CC-320)', () => {
     h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
     h.deps.relaunchSeat = async () => ({
       ok: false,
-      unsupported: true,
+      refused: true,
       detail: 'broker cannot retire g9 by id',
     })
 
@@ -670,6 +671,29 @@ describe('seat liveness (CC-320)', () => {
     expect(raised).toEqual([
       expect.stringMatching(
         /^watchdog resume seat-a REFUSED: latest session s-h2 .*; broker cannot retire g9 by id$/,
+      ),
+    ])
+  })
+
+  // CC-959 review, fails on b1b3297c: the retire ran, then the broker refused the spawn; that went
+  // unraised, and the next run found no granted row, so the seat stayed dark with nobody told.
+  it('raises one item when the broker refuses the spawn after the stale row was retired', async () => {
+    const h = incident()
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    const replies = [
+      { t: 'spawn_result', ok: true, agentId: 'g9', name: 'seat-a' },
+      { t: 'spawn_result', ok: false, code: 'machine_headless_limit', reason: 'headless limit reached' },
+    ]
+    const client = { request: async () => replies.shift() } as unknown as BrokerClient
+    h.deps.relaunchSeat = (seat, plan) =>
+      respawnSeat(client, seat, plan, { surface: 'headless', from: 'seat file' })
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(raised).toEqual([
+      expect.stringMatching(
+        /^watchdog resume seat-a REFUSED: .*; spawn refused: headless limit reached; already retired g9 \(profile lead, cwd \/home\/example\/projects\)$/,
       ),
     ])
   })

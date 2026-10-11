@@ -82,8 +82,11 @@ export interface WakeResult {
 }
 
 export interface RelaunchSeatResult extends WakeResult {
-  /** CC-959: the broker cannot retire a stale row by id, so nothing launched and the seat stays refused. */
-  unsupported?: true
+  /**
+   * CC-959: nothing launched and the human must hear why: the broker cannot retire by id, the seat has
+   * no granted profile, or the spawn was refused after its stale rows were already retired.
+   */
+  refused?: true
 }
 
 export interface WatchdogDeps {
@@ -839,7 +842,7 @@ function relaunchLaunch(
   pass: Pass,
   stale: StaleSeat,
   activityAt: number | undefined,
-  onUnsupported: (why: string) => void,
+  onRefused: (why: string) => void,
 ): Launch | undefined {
   const { account, target } = stale
   const relaunchSeat = pass.deps.relaunchSeat
@@ -848,7 +851,7 @@ function relaunchLaunch(
   return async (seat, message) => {
     const fresh = pass.deps.relaunchHandoff?.(seat, quiet, pass.now) ?? message
     const res = await relaunchSeat(seat, { target, account, message, fresh })
-    if (res.unsupported === true) onUnsupported(res.detail)
+    if (res.refused === true) onRefused(res.detail)
     return res
   }
 }
@@ -861,12 +864,12 @@ function launchGate(pass: Pass, name: string, judged: Judgement) {
   const { stale } = judged
   return async (verb: string, run: (launch: Launch) => Promise<string>): Promise<string[]> => {
     if (stale === undefined) return [await run((seat, message) => pass.deps.wake(seat, message, false))]
-    let unsupported: string | undefined
-    const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (unsupported = why))
+    let refusal: string | undefined
+    const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (refusal = why))
     if (launch === undefined) return refuseStale(pass, name, verb, stale)
     const line = await run(launch)
-    if (unsupported === undefined) return [line]
-    const refused = { ...stale, reason: `${stale.reason}; ${unsupported}` }
+    if (refusal === undefined) return [line]
+    const refused = { ...stale, reason: `${stale.reason}; ${refusal}` }
     return [line, ...(await refuseStale(pass, name, verb, refused))]
   }
 }

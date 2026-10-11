@@ -111,7 +111,7 @@ describe('respawnSeat', () => {
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames).toHaveLength(1)
-    expect(out).toMatchObject({ ok: false, unsupported: true })
+    expect(out).toMatchObject({ ok: false, refused: true })
   })
 
   it('launches nothing when the broker refuses the retire', async () => {
@@ -128,8 +128,56 @@ describe('respawnSeat', () => {
     expect(b.frames).toHaveLength(1)
     expect(out).toEqual({
       ok: false,
+      refused: true,
       detail: 'retire 7b1a88f1 refused: agent 7b1a88f1 (seat-x) is still live; not retired',
     })
+  })
+
+  // CC-959 review, fails on b1b3297c: the retire cannot be undone, so a spawn the broker then refuses
+  // (machine guard, slots, budget) must reach the human, naming what was retired and how to relaunch it.
+  it('raises a spawn refused after the retire, naming the retired row and its profile and cwd', async () => {
+    const machine = {
+      t: 'spawn_result',
+      ok: false,
+      code: 'machine_memory_floor',
+      reason: 'memory below floor',
+    }
+    const b = broker([retired('7b1a88f1'), machine])
+
+    const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
+
+    expect(out).toEqual({
+      ok: false,
+      refused: true,
+      detail: `spawn refused: memory below floor; already retired 7b1a88f1 (profile lead, cwd ${SEAT_CWD})`,
+    })
+  })
+
+  // CC-959 review: the next run's roster has no unretired spawned row, so the grant comes from the retired one.
+  it('takes the granted profile from a retired spawned row when the roster has none left', async () => {
+    const { spawned: _gone, ...afterRetire } = incident.target as Extract<
+      SeatRelaunchPlan['target'],
+      { kind: 'resume-session' }
+    >
+    const plan: SeatRelaunchPlan = { ...incident, target: { ...afterRetire, stale: [] } }
+    const rows = [
+      { ...onServer, agentId: 'g8', profile: 'older', spawnedAt: 1, state: 'retired' },
+      { ...onServer, spawnedAt: 2, state: 'retired' },
+      { ...handStarted, profile: 'adopted', spawnedAt: 3 },
+      { ...onServer, name: 'seat-w', agentId: 'w1', profile: 'other', spawnedAt: 4 },
+    ]
+    const b = broker([{ t: 'agents_result', agents: rows }, spawned])
+
+    const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
+
+    expect(b.frames[0]).toEqual({ t: 'agents', includeRetired: true })
+    expect(b.frames[1]).toMatchObject({
+      t: 'spawn',
+      profile: 'lead',
+      cwd: SEAT_CWD,
+      resumeSession: '7016a7ee',
+    })
+    expect(out.ok).toBe(true)
   })
 
   // Catches: a fresh launch that leaves the latest wrong-account row leasing the name, which the broker refuses.
@@ -173,13 +221,14 @@ describe('respawnSeat', () => {
       SeatRelaunchPlan['target'],
       { kind: 'resume-session' }
     >
-    const b = broker([])
+    const b = broker([{ t: 'agents_result', agents: [handStarted] }])
 
     const out = await respawnSeat(b.client, 'seat-x', { ...incident, target: noGrant }, HEADLESS)
 
-    expect(b.frames).toEqual([])
+    expect(b.frames).toEqual([{ t: 'agents', includeRetired: true }])
     expect(out).toEqual({
       ok: false,
+      refused: true,
       detail: 'not relaunched: no spawned row under the seat name to take its granted profile from',
     })
   })
@@ -195,7 +244,23 @@ describe('respawnSeat', () => {
     const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
 
     expect(b.frames).toEqual([])
-    expect(out).toEqual({ ok: false, detail: 'not relaunched: row 7b1a88f1 recorded no cwd' })
+    expect(out).toEqual({ ok: false, refused: true, detail: 'not relaunched: row 7b1a88f1 recorded no cwd' })
+  })
+
+  // A visible resume launches with no prompt; catches the resume message dropped there.
+  it('sends the resume message as a held send after a visible session relaunch', async () => {
+    const sent = { t: 'send_result', ok: true, msgId: 'm7', recipients: ['seat-x'] }
+    const b = broker([retired('7b1a88f1'), spawned, sent])
+
+    const out = await respawnSeat(b.client, 'seat-x', incident, { surface: 'tmux-window', from: 'seat file' })
+
+    expect(b.frames[2]).toEqual({
+      t: 'human_send',
+      to: 'seat-x',
+      text: 'Watchdog: resume',
+      source: 'watchdog',
+    })
+    expect(out.detail).toBe(`relaunched session 7016a7ee on ${PERSONAL}, tmux-window (seat file); message m7`)
   })
 
   it('falls back to headless when the visible launch fails', async () => {
