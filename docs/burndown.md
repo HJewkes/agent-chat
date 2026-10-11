@@ -54,6 +54,16 @@ Add `--scored` for the seat's scored order with every component (`--top` and `--
 apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
 malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
 
+### Workflow table (shadow, CC-637)
+
+With `<autonomy-root>/workflow/shape-v1.yml` installed (the canonical copy is
+`docs/workflow/shape-v1.yml`), each `--scored` row also prints `prior=<prior> profile=<profile>` after
+`route=`. The prior is the task-time class of the PR shape plan (1.5), from the task's tags, estimate and
+`done_when` and the `owns` of its plan's slices. The profile is the implementer that the prior's class row
+dispatches. It is shadow only: `route` and the tick's dispatch do not change. A table that fails its lint
+(an unknown class, prior, profile or ladder value, a misspelt key, or no fallback prior) is not used, and a
+`workflow table: <problems>` line says why. With no table file the output is unchanged.
+
 `agent-chat seats tick <seat> --dry-run` prints the same plan under a `seat <seat> tick at <time>
 (dry run)` header (CC-889). It runs only with `--dry-run`. The timer's tick advances every held
 claim, and the respawn ladder's first rung spans two ticks, so a live tick between timer ticks

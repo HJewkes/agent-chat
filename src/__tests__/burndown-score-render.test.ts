@@ -223,6 +223,78 @@ describe('burndown plan --seat --scored from disk', () => {
     expect(report.lines.at(-2)).toBe(`task tags errors: unknown-dep ${first.id} dep:ZZ-404`)
   })
 
+  describe('with a workflow table in the autonomy root (CC-637)', () => {
+    const TABLE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'workflow')
+    const ROW = /^ *\d+ .* route=\S+ prior=(\S+) profile=(\S+) tier=/
+    const installTable = (text: string) => {
+      const root = path.join(world, 'autonomy')
+      fs.cpSync(FIXTURE, root, { recursive: true })
+      fs.mkdirSync(path.join(root, 'workflow'))
+      fs.writeFileSync(path.join(root, 'workflow', 'shape-v1.yml'), text)
+      return { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: root, today: snapshot.today }
+    }
+    const repoTable = () => fs.readFileSync(path.join(TABLE, 'shape-v1.yml'), 'utf8')
+
+    it("prints prior and profile on every row, from the plan's owns, and leaves route as it was", async () => {
+      const top = snapshot.tasks.find(t => t.id === expected.order[0]!.id)!
+      const slices = [
+        {
+          n: '1',
+          title: 'Fix the broker',
+          points: 1,
+          owns: ['src/broker/core.ts'],
+          doneWhen: 'core.test.ts covers the fix',
+        },
+      ]
+      fs.mkdirSync(path.join(world, top.slug, 'sources'))
+      fs.writeFileSync(
+        path.join(world, top.slug, 'sources', `${top.id}-plan.md`),
+        `# plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`,
+      )
+
+      const report = await burndownPlanVerb.run(installTable(repoTable()), ctx)
+
+      const today = renderScored(fixturePlan())
+      const rows = report.lines.slice(0, 10)
+      expect(rows.every(line => ROW.test(line))).toBe(true)
+      expect(ROW.exec(rows[0]!)?.slice(1)).toEqual(['safety-path', 'bd-implementer'])
+      expect(rows.map(line => line.replace(/ prior=\S+ profile=\S+/, ''))).toEqual(today.slice(0, 10))
+      expect(report.lines.slice(10)).toEqual(today.slice(10))
+    })
+
+    it('prints a workflow table line and no prior when the table fails its lint', async () => {
+      const report = await burndownPlanVerb.run(
+        installTable(repoTable().replace('merge: owner', 'merge: boss')),
+        ctx,
+      )
+
+      expect(report.lines.filter(line => line.startsWith('workflow table'))).toEqual([
+        'workflow table: at workflow.ui-round.merge: unknown merge ladder value "boss"',
+      ])
+      expect(report.lines.filter(line => !line.startsWith('workflow table'))).toEqual(
+        renderScored(fixturePlan()),
+      )
+    })
+
+    it('prints exactly what it printed before CC-637 when no table is installed', async () => {
+      const args = {
+        seat: 'sample-seat',
+        scored: true,
+        top: 10,
+        autonomyRoot: FIXTURE,
+        today: snapshot.today,
+      }
+
+      const report = await burndownPlanVerb.run(args, ctx)
+
+      expect(report.lines.some(line => line.includes('prior=') || line.startsWith('workflow table'))).toBe(
+        false,
+      )
+      expect(report.lines[0]).toBe(renderScored(fixturePlan())[0])
+      expect(report.lines[0]).toContain(' est=5 route=planner tier=3 ')
+    })
+  })
+
   it('refuses a seat the charter does not list', async () => {
     const args = { seat: 'no-such-seat', scored: true, autonomyRoot: FIXTURE }
 
