@@ -7,7 +7,7 @@ import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
-import type { Initiative, Task } from './eligibility.js'
+import { BRIEF_GATES, type Initiative, type Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
 
@@ -92,10 +92,10 @@ export function readTaskText(root: string, slug: string, id: string): string | u
 }
 
 const count = z.number().int().nonnegative()
-const Config = z.object({
+export const TickConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Burndown agents alive at once, across every initiative. */
-  maxAgents: count.default(3),
+  maxAgents: z.number().int().positive({ error: 'maxAgents must be a positive integer' }).default(3),
   /** Broker agent slots the tick leaves free for the human's own spawns. */
   reserveSlots: count.default(2),
   maxWorktreesPerRepo: count.default(3),
@@ -134,19 +134,35 @@ const Config = z.object({
     .default({ enabled: false }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
+  /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */
+  briefGate: z.record(z.string().min(1), z.enum(BRIEF_GATES)).default({}),
+  /**
+   * CC-936: implementer slots per seat that hand spawns keep. The tick fills the seat's implementer cap minus
+   * this, and the broker's spawn gate refuses a hand implementer spawn once the seat holds this many. A seat
+   * not named reserves 0, which leaves the tick the whole cap as before.
+   */
+  handReserve: z.record(z.string().min(1), count).default({}),
+  /** CC-945: tag families a seat's `scope_tags` treat as one, `{spine: 'milestone'}` for `spine:M3` = `milestone:M3`. */
+  scopeTagAliases: z.record(z.string().min(1), z.string().min(1)).default({ spine: 'milestone' }),
+  /** Days a `brief:ready=<day>` tag stays fresh under an `on` gate. */
+  briefMaxAgeDays: z
+    .number()
+    .int()
+    .positive({ error: 'briefMaxAgeDays must be a positive integer' })
+    .default(14),
 })
-export type TickConfig = z.infer<typeof Config>
+export type TickConfig = z.infer<typeof TickConfigSchema>
 
-function parseConfig(file: string): z.infer<typeof Config> | undefined {
+function parseConfig(file: string): z.infer<typeof TickConfigSchema> | undefined {
   const raw = readText(file)
   if (raw === undefined) return undefined
-  const parsed = Config.safeParse(JSON.parse(raw))
+  const parsed = TickConfigSchema.safeParse(JSON.parse(raw))
   if (!parsed.success) throw new Error(`burndown config ${file} is malformed: ${parsed.error.message}`)
   return parsed.data
 }
 
 /** The tick's switches and ceilings; absent means disabled. CC-801: an old `accounts` key is dropped unread; the charter's pools replaced it. */
-export const loadTickConfig = (file: string): TickConfig => parseConfig(file) ?? Config.parse({})
+export const loadTickConfig = (file: string): TickConfig => parseConfig(file) ?? TickConfigSchema.parse({})
 
 /** The Claude config dir an account name resolves to, the way a spawn's `profile` would. */
 export const accountDir = (account: string, env = process.env, home = os.homedir()): string =>

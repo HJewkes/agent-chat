@@ -4,6 +4,7 @@ import type { TickBroker } from '../agents/burndown/run-tick.js'
 import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE, type Roster } from '../agents/burndown/observe.js'
+import { TICK_INTERVAL_SECONDS } from '../agents/burndown/tick-status.js'
 import type { SpawnReply } from '../agents/burndown/execute.js'
 
 /** The tick's broker calls over one unregistered connection, which the broker treats as the human; seat events are the exception. */
@@ -18,6 +19,7 @@ export const BURNDOWN_SENDER = 'burndown'
 export function tickBroker(
   client: BrokerClient,
   seatSender: OpenSender = burndownSender(connectBroker),
+  now: () => number = Date.now,
 ): TickBroker {
   return {
     roster: () => tickRoster(client),
@@ -48,7 +50,7 @@ export function tickBroker(
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
     },
-    collisionView: () => collisionView(client),
+    collisionView: () => collisionView(client, now()),
     seatSender,
   }
 }
@@ -108,8 +110,16 @@ export function burndownSender(connect: () => Promise<BrokerClient>): OpenSender
 
 const registeredSender = (client: BrokerClient): SeatSender => ({
   async send(to, text) {
-    const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
-    return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+    try {
+      const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
+      return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+    } catch (err) {
+      // The frame was written; a silent broker may have routed it (CC-640).
+      if (err instanceof Error && err.message.startsWith('broker did not answer')) {
+        return { ok: false, unknown: true, reason: err.message }
+      }
+      throw err
+    }
   },
   async notify(text, task) {
     const frame = { t: 'notify' as const, text, ...(task === undefined ? {} : { task }) }
@@ -128,12 +138,17 @@ const spawnReply = (res: Reply<'spawn_result'>): SpawnReply => ({
 })
 
 /** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
-export async function collisionView(client: BrokerClient): Promise<BrokerView> {
+export async function collisionView(client: BrokerClient, now: number = Date.now()): Promise<BrokerView> {
   const roster = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
   const list = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
   const agents = roster.agents.filter(a => LIVE.has(a.state)).map(a => a.name)
+  const since = now - TICK_INTERVAL_SECONDS * 1000
+  const recentlyExited = roster.agents
+    .filter(a => a.state === 'exited' && a.exitedAt !== undefined && a.exitedAt > since)
+    .map(a => a.name)
   return {
     names: [...new Set([...agents, ...list.sessions.map(s => s.name)])],
+    recentlyExited,
     claims: (list.claims ?? [])
       .filter(c => c.kind === 'files')
       .map(c => ({ owner: c.owner, repo: c.repoPath ?? c.worktreePath, patterns: c.patterns })),

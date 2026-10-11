@@ -1,7 +1,7 @@
 #!/bin/bash
 # Block until CI on a commit is green, red or out of time. REST only, never GraphQL.
 # usage: ci-wait <owner/repo> <sha> [--timeout <seconds>] [--interval <seconds>]
-# exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 64 bad arguments
+# exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 64 bad arguments or a commit GitHub does not have
 set -u
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin:$PATH
 GH=${GH:-gh}
@@ -21,6 +21,21 @@ done
 repo=${pos[0]} sha=${pos[1]}
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || usage
 [[ $sha =~ ^[0-9a-fA-F]{7,40}$ ]] || usage
+sha=$(tr 'A-F' 'a-f' <<<"$sha")
+
+# For a commit GitHub does not have, /status reports "pending", so polling ran to TIMEOUT (CC-849).
+# Ask commits/<sha> until it answers: a sha expands it to the full one, "No commit found" exits 64
+# (a 2 would tell the caller to run again), and any other failure is transient like a failed poll.
+resolved=0
+resolve() {
+  local out
+  if out=$("$GH" api "repos/$repo/commits/$sha" --jq .sha 2>&1); then
+    [[ $out =~ ^[0-9a-f]{40}$ && $out == "$sha"* ]] && sha=$out
+    resolved=1
+  elif grep -q 'No commit found' <<<"$out"; then
+    echo "need a full 40-hex sha of a pushed commit: no commit $sha in $repo" >&2; exit 64
+  fi
+}
 
 # Prints "GREEN", "RED <list>" or "PENDING <names>" for the two --paginate --slurp payloads (arrays of pages).
 # Exits non-zero when the pages hold fewer items than total_count, so the caller retries.
@@ -67,6 +82,7 @@ poll() {
 
 start=$SECONDS pending="(no successful poll)"
 while :; do
+  [ "$resolved" = 1 ] || resolve
   if poll; then
     case $state in
       GREEN) echo "GREEN $repo $sha"; exit 0 ;;

@@ -8,6 +8,7 @@ import {
   type SevenDaySample,
   type SpendCaps,
 } from '../burndown/budget-gate.js'
+import { NO_DISPATCH_PREFIX } from '../burndown/no-dispatch.js'
 import type { WatchdogDoc } from './io.js'
 import { isJournalText } from './journal-line.js'
 
@@ -256,15 +257,19 @@ interface SeatLine {
 }
 
 // CC-463: a relaunch line counted as activity would mask the relaunch failing.
+// CC-859: nor is the tick's own line activity, and written after a PARKED line it would hide the marker.
 const isWatchdogText = (text: string): boolean =>
-  text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ')
+  text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ') || text.startsWith(NO_DISPATCH_PREFIX)
 
+// CC-969: seats sometimes write the last minute digit as `x`; it reads as 0, as TICK_LINE in heartbeat-external.ts does.
 function seatLines(log: string, day: Date): SeatLine[] {
   return log.split('\n').flatMap(line => {
-    const m = /^(\d\d):(\d\d) (.*)$/.exec(line)
-    if (m === null || isWatchdogText(m[3] ?? '') || isJournalText(m[3] ?? '')) return []
-    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), Number(m[2]))
-    return [{ at: at.getTime(), text: m[3] ?? '' }]
+    const m = /^(\d\d):(\d)([\dx]) (.*)$/.exec(line)
+    const text = m?.[4] ?? ''
+    if (m === null || isWatchdogText(text) || isJournalText(text)) return []
+    const minute = Number(m[2]) * 10 + (m[3] === 'x' ? 0 : Number(m[3]))
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), minute)
+    return [{ at: at.getTime(), text }]
   })
 }
 
@@ -273,6 +278,20 @@ export interface LogVerdict {
   stop?: string
   /** Epoch ms of the seat's latest line. */
   activityAt?: number
+  /** CC-862: epoch ms of the reset in a latest `BUDGET-PAUSE ... until HH:MM` line, the next such time after the line. */
+  pauseUntil?: number
+  /** CC-862: the latest line is a `BUDGET-PAUSE`. */
+  paused?: boolean
+}
+
+/** The first `HH:MM` after `line` on the clock, which is the next day when the clock already passed it. */
+function resetAfter(line: SeatLine): number | undefined {
+  const m = /^BUDGET-PAUSE\b.*\buntil (\d{1,2}):(\d\d)\b/.exec(line.text)
+  if (m === null) return undefined
+  const from = new Date(line.at)
+  const reset = new Date(from.getFullYear(), from.getMonth(), from.getDate(), Number(m[1]), Number(m[2]))
+  if (reset.getTime() <= line.at) reset.setDate(reset.getDate() + 1)
+  return reset.getTime()
 }
 
 /** Reads the seat's log for local day `day`: its latest line decides whether it parked itself. */
@@ -283,7 +302,13 @@ export function readSeatLog(log: string, day: Date): LogVerdict {
   )
   if (latest === undefined) return {}
   const marker = /^(BUDGET-PAUSE|PARKED|WRAP)\b/.test(latest.text)
-  return { activityAt: latest.at, ...(marker ? { stop: `seat logged "${latest.text.slice(0, 80)}"` } : {}) }
+  const pauseUntil = resetAfter(latest)
+  return {
+    activityAt: latest.at,
+    ...(marker ? { stop: `seat logged "${latest.text.slice(0, 80)}"` } : {}),
+    ...(latest.text.startsWith('BUDGET-PAUSE') ? { paused: true } : {}),
+    ...(pauseUntil === undefined ? {} : { pauseUntil }),
+  }
 }
 
 export interface OwnerMessage {

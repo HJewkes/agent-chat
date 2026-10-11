@@ -9,12 +9,16 @@ import {
   type SevenDaySample,
   type AccountReading,
 } from '../burndown/budget-gate.js'
+import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
+import { seatTrees, type SeatTree } from './trees.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
+import { parseSeat, type HeartbeatSource } from './charter.js'
+import { readSeatFile } from './teleport-state.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
   meterSpend,
@@ -50,6 +54,10 @@ export interface RoleLoad extends AgentLoad {
   atCap: boolean
   /** CC-405: running agents tagged `waiting-owner`, left out of every other field; always empty without `cap_excludes_waiting_owner`. */
   waitingOwner: string[]
+  /** CC-494: set on implementers only: the worktrees counted in `active` and why. `active` may exceed `names.length`. */
+  trees?: SeatTree[]
+  /** CC-978: set on implementers only: the claims the burndown ledger holds for them; absent when it cannot be read. */
+  ledger?: number
 }
 
 /** The session tag that marks an agent as blocked on the owner; set with `chat_tag`. */
@@ -110,9 +118,18 @@ export interface EligibleStatus {
   error?: string
 }
 
+/** CC-391: who ticks the seat, from its seat file, and the last cron slot the watchdog handled. */
+export interface HeartbeatStatus {
+  source: HeartbeatSource
+  cron: string | null
+  /** ISO time of the watchdog's last handled slot; null when it has handled none or the doc is unreadable. */
+  lastSlot: string | null
+}
+
 export interface SeatStatus {
   seat: string
   at: string
+  heartbeat: HeartbeatStatus
   implementers: RoleLoad
   reviewers: RoleLoad
   planners: RoleLoad
@@ -140,6 +157,8 @@ export interface StatusDeps {
   homeDir: string
   /** The broker's roster without retired agents. */
   agents: () => Promise<AgentIdentity[]>
+  /** CC-494: `git worktree list --porcelain` text for one repo path. Absent: no repo trees. Throws when git fails; the repo then adds no trees. */
+  repoTrees?: (repo: string) => Promise<string>
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
@@ -154,6 +173,8 @@ export interface StatusDeps {
   machine: (agents: AgentIdentity[]) => MachineStatus
   /** CC-431: null when no limit is breached or a reading could not be taken. */
   machineStop: () => MachineStop | null
+  /** CC-978: the seat's implementer claims in the burndown ledger. Absent, or a throw: not shown. */
+  ledgerImplementers?: (seat: string) => number
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -214,6 +235,53 @@ function roleLoad(agents: AgentIdentity[], role: Role, cap: number, waiting: Rea
     role,
   )
   return { active, cap, atCap: active >= cap, names, detached, waitingOwner: namesOf(parked) }
+}
+
+/**
+ * CC-494: running implementers whose checkout is not a counted tree, plus every counted tree.
+ * An implementer and its own tree count once.
+ */
+function implementerLoad(
+  agents: AgentIdentity[],
+  cap: number,
+  waiting: ReadonlySet<string>,
+  trees: SeatTree[],
+): RoleLoad {
+  const load = roleLoad(agents, 'implementer', cap, waiting)
+  const inTree = (a: AgentIdentity): boolean => trees.some(t => isAtOrUnder(canonicalPath(a.cwd), t.path))
+  const loose = agents.filter(
+    a => roleOf(a) === 'implementer' && running(a) && !waiting.has(a.name) && !inTree(a),
+  )
+  const active = loose.length + trees.length
+  return { ...load, active, atCap: active >= cap, trees }
+}
+
+function withLedger(load: RoleLoad, deps: StatusDeps, seat: string): RoleLoad {
+  try {
+    const ledger = deps.ledgerImplementers?.(seat)
+    return ledger === undefined ? load : { ...load, ledger }
+  } catch {
+    return load
+  }
+}
+
+async function countedTrees(
+  deps: StatusDeps,
+  policy: Policy,
+  agents: AgentIdentity[],
+  waiting: ReadonlySet<string>,
+): Promise<SeatTree[]> {
+  const repos = policy.seat.repos.filter(r => r.git !== false)
+  const repoTrees = await Promise.all(
+    repos.map(r =>
+      (deps.repoTrees?.(expandHome(r.path, deps.homeDir)) ?? Promise.resolve('')).catch(() => ''),
+    ),
+  )
+  return seatTrees({
+    agents: agents.filter(a => !waiting.has(a.name)),
+    repoTrees,
+    patterns: policy.seat.concurrency.counted_trees,
+  })
 }
 
 function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
@@ -399,6 +467,22 @@ function eligibleStatus(deps: StatusDeps, seat: string, today: string, plain: Pl
   }
 }
 
+function heartbeatStatus(deps: StatusDeps, seat: string): HeartbeatStatus {
+  const file = readSeatFile(deps.autonomyRoot, seat)
+  const parsed = file === undefined ? undefined : parseSeat(seat, file)
+  let slot: number | undefined
+  try {
+    slot = deps.loadDoc().seats[seat]?.heartbeat?.slot
+  } catch {
+    slot = undefined
+  }
+  return {
+    source: parsed?.heartbeatSource ?? 'cron',
+    cron: parsed?.heartbeatCron ?? null,
+    lastSlot: slot === undefined ? null : new Date(slot).toISOString(),
+  }
+}
+
 /** Throws for a name the charter does not list as a seat, an unreadable charter or seat file, and a broker that does not answer. */
 export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatStatus> {
   const policy = loadPolicy(deps.autonomyRoot, seat)
@@ -409,10 +493,12 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const mine = ownedBy(roster, seat, prefix)
   const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
+  const trees = await countedTrees(deps, policy, mine, waiting)
   return {
     seat,
     at: now.toISOString(),
-    implementers: roleLoad(mine, 'implementer', concurrency.implementers, waiting),
+    heartbeat: heartbeatStatus(deps, seat),
+    implementers: withLedger(implementerLoad(mine, concurrency.implementers, waiting, trees), deps, seat),
     reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
     planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
@@ -438,8 +524,13 @@ function agentLine(label: string, load: AgentLoad, count: string, flag = ''): st
   return line(label, [count, flag, load.names.join(', '), detached].filter(Boolean).join('  '))
 }
 
-const roleLine = (label: string, load: RoleLoad): string =>
-  agentLine(label, load, `${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '')
+function roleLine(label: string, load: RoleLoad): string {
+  const trees = load.trees ?? []
+  const shown = trees.map(t => `${path.basename(t.path)}(${t.cause})`).join(', ')
+  const ledger = load.ledger === undefined || load.ledger === load.active ? '' : ` (ledger ${load.ledger})`
+  const text = agentLine(label, load, `${load.active}/${load.cap}${ledger}`, load.atCap ? 'AT CAP' : '')
+  return trees.length === 0 ? text : `${text}  trees: ${shown}`
+}
 
 /** The pool's reading in words, shared with the boot page. */
 export function poolReadingText(budget: BudgetStatus): string {
@@ -510,6 +601,21 @@ function paceLines(status: SeatStatus): string[] {
 function poolPickLines(picks: PoolPickStatus): string[] {
   if (picks.error !== undefined) return [line('pool pick', `unavailable: ${picks.error}`)]
   return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
+}
+
+/** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
+export function renderBrief(status: SeatStatus): string[] {
+  const { budget, inbox } = status
+  return [
+    `seat ${status.seat} at ${status.at}`,
+    roleLine('implementers', status.implementers),
+    roleLine('reviewers', status.reviewers),
+    roleLine('planners', status.planners),
+    line('pool', poolReadingText(budget)),
+    line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
+    line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
+    line('parked', String(status.parked.count)),
+  ]
 }
 
 export function renderStatus(status: SeatStatus): string[] {

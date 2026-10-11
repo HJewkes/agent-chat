@@ -7,8 +7,10 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { home } from '../../paths.js'
 import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { currentAutonomyRoot } from '../autonomy-root.js'
 import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
+import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
@@ -23,8 +25,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 export const openEvents = (dbPath: string): DatabaseSyncType =>
   new DatabaseSync(dbPath, { readOnly: true, timeout: BUSY_TIMEOUT_MS })
 
-export const defaultAutonomyRoot = (): string =>
-  path.join(activeWorkRoot(), 'claude-channels', 'sources', 'autonomy')
+export const defaultAutonomyRoot = (): string => currentAutonomyRoot()
 
 export const watchdogStatePath = (): string => path.join(home(), 'seat-watchdog.json')
 
@@ -90,8 +91,14 @@ export type SeatRecord = SeatState & {
   relaunchedAt?: number
   /** CC-463: relaunches since the seat last registered, counting the one at `relaunchedAt`. */
   relaunchTries?: number
+  /** CC-465: the stuck teleport successor the human was told of, so each is raised once. */
+  teleportFailed?: string
+  /** CC-959: the latest session a wake was refused on, so each is raised once. */
+  staleRefused?: string
   /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
   spawningFlagged?: string[]
+  /** CC-862: the last heartbeat slot and pause reset the watchdog acted on. */
+  heartbeat?: HeartbeatMark
 }
 
 /**
@@ -110,9 +117,15 @@ export interface WatchdogDoc {
   probeFailed?: Record<string, number>
   /** The attended seats seen so far, so a pass can say when one's file stops gating its spawns. */
   attended?: string[]
-  /** CC-598: the cause the last `service check` gave; absent while the service was healthy. */
-  serviceCause?: string
+  /** CC-598, CC-693: the service cause each attended seat was last told; a seat absent was told of none. */
+  serviceHeard?: Record<string, string>
 }
+
+const isCauseMap = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every(cause => typeof cause === 'string')
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
@@ -148,7 +161,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
-    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
+    ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
   }
 }
 
@@ -186,7 +199,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
-    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
+    ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
   }
 }
 

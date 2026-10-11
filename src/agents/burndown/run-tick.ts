@@ -5,13 +5,20 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import {
   burndownConfigPath,
   burndownLedgerPath,
+  burndownOverridePath,
+  burndownOwedHoldsPath,
   burndownPausePath,
   burndownTickStatusPath,
+  burndownTicksPath,
 } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { appendSeatLog } from '../seats/io.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
+import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
+import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
+import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
@@ -21,7 +28,9 @@ import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
+import type { EgressRunner } from './egress-runner.js'
 import { leakCheck } from './leak-check.js'
+import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import {
@@ -44,38 +53,55 @@ import {
   worktreeUse,
   type Roster,
 } from './observe.js'
+import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
 import {
+  briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  watchdogUnusable,
   planSeats,
+  scopeExhausted,
   type LoadedSeats,
   type SeatPlanDeps,
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { seedSteps } from './seed-slices.js'
+import type { Resolved } from './settings-resolve.js'
+import { loadResolvedConfig } from './settings-store.js'
+import { accountDir, readInitiatives, readTaskText, readTasks, type TickConfig } from './source.js'
 import {
-  accountDir,
-  loadTickConfig,
-  readInitiatives,
-  readTaskText,
-  readTasks,
-  type TickConfig,
-} from './source.js'
-import {
-  downstreamReader,
   prHeadOf,
   registerWithShepherd,
   shepherdLanded,
   shepherdRows,
+  shepherdTarget,
   targetRef,
+  type Registration,
 } from './shepherd.js'
+import {
+  lineStopFrom,
+  persisted,
+  readServiceCheck,
+  serviceCheckNote,
+  type PersistedRead,
+} from './service-check.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
+import {
+  adoptSeatOfRegistration,
+  claimSeatOf,
+  recordingRegister,
+  tickSummary,
+  tickSummaryWriter,
+  type RegisterRecord,
+  type SummaryPlan,
+} from './tick-summary.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 import {
@@ -114,10 +140,16 @@ export interface TickOptions {
   dryRun: boolean
   broker: TickBroker
   now?: Date
+  /** CC-220: read at each seat-log append; defaults to the wall clock, or to `now` when a test pins it. */
+  clock?: () => Date
   root?: string
   log?: (event: string, detail: Record<string, unknown>) => void
   /** Runs the collision check's `git` and `gh` readers and the `titan-factory` calls; a test injects one that reaches neither. */
   exec?: Runner
+  /** The leak check's scanner; a test injects one so no run reads the owner's term list. */
+  egress?: EgressRunner
+  /** The owner-queue spool the scope-exhausted item is filed into; defaults to the console's inbox spool. */
+  ownerQueueDir?: string
 }
 
 interface ReaderFailure {
@@ -129,11 +161,22 @@ interface ReaderFailure {
 /** Shown in dry-run briefs when no `reportTo` is configured; a real tick refuses instead. */
 const UNSET_REPORT_TO = '<reportTo unset>'
 
-/** Why the tick may not act at all, or undefined when it may. */
-export function stopReason(config: TickConfig, paused: boolean): string | undefined {
+/** One writer per process, so a summary file that cannot be written is logged once, not once per tick. */
+const appendTickSummary = tickSummaryWriter(burndownTicksPath)
+
+/** CC-955: what pauses the tick, naming the layer, or undefined when nothing does. The pause file wins. */
+function pauseOf(resolved: Resolved): string | undefined {
+  if (fs.existsSync(burndownPausePath()))
+    return `${burndownPausePath()} exists; \`agent-chat burndown resume\` clears it`
+  if (!resolved.paused) return undefined
+  if (resolved.sources.paused === 'override') return `the override in ${burndownOverridePath()} sets paused`
+  return `preset ${resolved.preset} sets paused`
+}
+
+/** Why the tick may not act at all, or undefined when it may. `paused` names what pauses it. */
+export function stopReason(config: TickConfig, paused: string | undefined): string | undefined {
   if (!config.enabled) return `burndown is disabled (enabled is not true in ${burndownConfigPath()})`
-  if (paused)
-    return `burndown is paused (${burndownPausePath()} exists; \`agent-chat burndown resume\` clears it)`
+  if (paused !== undefined) return `burndown is paused (${paused})`
   if (config.reportTo === undefined)
     return `no reportTo in ${burndownConfigPath()}: name the registered session that receives agents' reports`
   return undefined
@@ -144,22 +187,30 @@ export function modeConflict(config: TickConfig, initiatives: readonly Initiativ
   if (config.seats.length === 0) return undefined
   const optedIn = initiatives.filter(i => i.autonomy !== undefined).map(i => i.slug)
   if (optedIn.length === 0) return undefined
-  return `config error: ${burndownConfigPath()} lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
+  return `config error: the resolved burndown config (\`agent-chat burndown config show\`) lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
 }
 
 /** Never rejects for a real tick: a throw is recorded in the status file (CC-756). A dry run records nothing and throws as before. */
 export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
   if (opts.dryRun) return (await tickOnce(opts)).lines
   const now = opts.now ?? new Date()
-  return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now }), now, opts.log)
+  const clock = clockOf(opts)
+  return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now, clock }), now, opts.log)
 }
 
-const stopCode = (config: TickConfig, paused: boolean): StopCode =>
-  !config.enabled ? 'disabled' : paused ? 'paused' : 'no-report-to'
+/** A tick runs for minutes, so seat-log lines stamp the time they are appended, not the tick's `now`. */
+function clockOf({ clock, now }: TickOptions): () => Date {
+  if (clock !== undefined) return clock
+  return now === undefined ? () => new Date() : () => now
+}
+
+const stopCode = (config: TickConfig, paused: string | undefined): StopCode =>
+  !config.enabled ? 'disabled' : paused !== undefined ? 'paused' : 'no-report-to'
 
 async function tickOnce(opts: TickOptions): Promise<TickResult> {
-  const config = loadTickConfig(burndownConfigPath())
-  const paused = fs.existsSync(burndownPausePath())
+  const resolved = loadResolvedConfig()
+  const config = resolved.tick
+  const paused = pauseOf(resolved)
   const stop = stopReason(config, paused)
   if (stop !== undefined && !opts.dryRun)
     return { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } }
@@ -194,6 +245,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
       ...describeDecider(config, decider),
       ...describeTriage(decided.triage),
       ...describeSeatEvents(diff, now),
+      ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
       ...notes,
     ]
   }
@@ -206,38 +258,137 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats }: Decided,
+  {
+    steps,
+    decider,
+    triage,
+    failures,
+    unchecked,
+    seatStates,
+    outcomes,
+    skippedSeats,
+    serviceCheck,
+    reasons,
+    adopt,
+    summary,
+  }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
+  const clock = clockOf(opts)
+  logReasons(defaultAutonomyRoot(opts.root), reasons, clock, log)
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
-  const sampled = seatStates === undefined ? ledger : { ...ledger, seats: seatStates }
+  const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
+  const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const spawns: SpawnResult[] = []
+  const registrations: RegisterRecord[] = []
+  const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
   const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
-    register: registration => registerWithShepherd(registration, opts.exec ?? run),
+    register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
     prHead: target => prHeadOf(target, opts.exec ?? run),
     log,
     now,
   })
   logLadder(ledger, executed.ledger, log)
+  const adopted = adoptPrs(adopt, executed.ledger, opts, now, registrations)
   const woken = await actOnTriage(
     config,
     triage,
     await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
     triageDeps(opts, log, now),
   )
-  const leaks = await leakCheck(woken.ledger, { exec: opts.exec ?? run, log, seats: config.seats })
+  const leaks = await leakCheck(woken.ledger, {
+    exec: opts.exec ?? run,
+    log,
+    seats: config.seats,
+    ...(opts.egress === undefined ? {} : { egress: opts.egress }),
+  })
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
-  const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
-  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
+  const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
+  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
-  return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
+  writeLedger(burndownLedgerPath(), {
+    ...told.ledger,
+    lastTickAt: now.toISOString(),
+    ...(serviceCheck === undefined ? {} : { serviceCheck }),
+  })
+  appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
+  return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/**
+ * CC-864: after the dispatch decision, once per seat, files the scope-exhausted owner item and carries the streak in
+ * the seat states. A spool that cannot be written is an event, never a failed tick; the streak then stays as it was.
+ */
+async function fileScopeExhausted(
+  outcomes: readonly SeatOutcome[],
+  states: Record<string, SeatState> | undefined,
+  opts: TickOptions,
+  now: Date,
+): Promise<Record<string, SeatState> | undefined> {
+  if (states === undefined) return undefined
+  try {
+    const port = spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir())
+    return await scopeExhausted(outcomes, states, now, port)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    ;(opts.log ?? logEvent)('burndown_scope_exhausted_failed', { detail })
+    return states
+  }
+}
+
+/** CC-861: after the claims' own registrations, so a claimed PR is never adopted; a throw is an event, and the tick carries on. */
+function adoptPrs(
+  seats: readonly AdoptSeat[],
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+  registrations: RegisterRecord[],
+): string[] {
+  const log = opts.log ?? logEvent
+  const claimed = new Set(
+    heldClaims(ledger).flatMap(c => {
+      const target = shepherdTarget(c.pr)
+      return target === undefined ? [] : [targetRef(target).toLowerCase()]
+    }),
+  )
+  const root = opts.root ?? activeWorkRoot()
+  const ports = diskAdoptPorts({
+    exec: opts.exec ?? run,
+    root,
+    autonomyRoot: defaultAutonomyRoot(root),
+    clock: clockOf(opts),
+    log,
+    owedHoldsFile: burndownOwedHoldsPath(),
+  })
+  const register = recordingRegister(ports.register, adoptSeatOfRegistration(seats), registrations)
+  try {
+    return adoptSeatPrs(seats, claimed, { ...ports, register }, now)
+  } catch (err) {
+    log('burndown_pr_adopt_failed', { reason: err instanceof Error ? err.message : String(err) })
+    return []
+  }
+}
+
+/** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
+function logReasons(
+  autonomyRoot: string,
+  reasons: readonly NoDispatchReason[],
+  clock: () => Date,
+  log: NonNullable<TickOptions['log']>,
+): void {
+  for (const { seat, text } of reasons) {
+    try {
+      appendSeatLog(autonomyRoot, seat, clock(), text)
+    } catch (err) {
+      log('burndown_seat_log_failed', { seat, reason: err instanceof Error ? err.message : String(err) })
+    }
+  }
 }
 
 /** The tick's releases and its brake notice, each logged once. */
@@ -308,7 +459,17 @@ interface Decided {
   unchecked: string[]
   /** Seats mode only: every seat's pool samples, this tick's included. */
   seatStates?: Record<string, SeatState>
+  /** Seats mode only: each seat's dispatch outcome this tick, for the scope-exhausted streak (CC-864). */
+  outcomes: SeatOutcome[]
   skippedSeats: SkippedSeat[]
+  /** Seats mode only: this tick's service-check read, persisted for the next tick's two-read rule. */
+  serviceCheck?: PersistedRead
+  /** Seats mode only: the "dispatched nothing" lines due this tick (CC-859). */
+  reasons: NoDispatchReason[]
+  /** Seats mode only: the seats whose unregistered PRs the tick registers or flags (CC-861). */
+  adopt: AdoptSeat[]
+  /** What this tick's summary row reads from the plan (CC-929). */
+  summary: SummaryPlan
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -328,24 +489,35 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
+  const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
+  if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
     config.seats.length === 0
       ? undefined
-      : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
+      : unusable !== undefined
+        ? { loaded: [], skipped: config.seats.map(seat => ({ seat, reason: unusable })) }
+        : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
+  const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])
   const { observations, unread } = await observe(held, roster, {
+    proposed: (initiative, taskId) =>
+      tasks
+        .get(initiative)
+        ?.find(t => t.id === taskId)
+        ?.tags.some(tag => tag === 'brief:proposed' || tag.startsWith('brief:proposed=')) ?? false,
     inboxSince: opts.broker.inboxSince,
     root,
     shepherdRows: shepherd,
     landed: target => shepherdLanded(target, opts.exec ?? run),
+    exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
   })
   const ctx = {
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
     running: (name: string) => isRunning(roster, name),
     priorBranch: (key: ClaimKey) => ledger.ladder?.[claimKey(key)]?.branch,
-    tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
+    tasks,
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
@@ -377,6 +549,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   )
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
+  const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
   const planned = planNew(
     world,
     seats,
@@ -389,7 +562,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       collision: check,
       charged: advanced.charged,
     },
-    downstreamReader(shepherd, opts.exec ?? run),
+    {
+      ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
+      brief: briefDepsOf(config),
+      scopeTagAliases: config.scopeTagAliases,
+    },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
@@ -397,9 +574,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...laddered.notes,
+    ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
+    ...planned.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -409,21 +588,50 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...seedSteps(planned.seeds),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
     .filter(i => i.state === 'focused' && i.autonomy !== undefined && i.autonomy.repo === undefined)
     .map(i => i.slug)
-  const seatStates = seats === undefined ? undefined : samplesAfter(ledger, seats)
+  const marked =
+    seats === undefined ? undefined : dueReasons(planned.outcomes, samplesAfter(ledger, seats), now)
   return {
     steps,
+    reasons: marked?.due ?? [],
+    outcomes: planned.outcomes,
+    adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    summary: {
+      maxAgeDays: config.briefMaxAgeDays,
+      caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
+      outcomes: planned.outcomes,
+      dispatch: planned.dispatch,
+      tasks: dispatchCtx.tasks,
+    },
     notes,
     failures,
     unchecked,
     skippedSeats: planned.skipped,
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
-    ...(seatStates === undefined ? {} : { seatStates }),
+    ...(marked === undefined ? {} : { seatStates: marked.states }),
+    ...(service === undefined ? {} : { serviceCheck: service.read }),
+  }
+}
+
+/** Seats mode's one service-check read per tick, judged against the read the last tick persisted. */
+function serviceGate(
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+): { read: PersistedRead; lineStop?: SeatPlanDeps['lineStop']; note?: string } {
+  const current = readServiceCheck(opts.exec ?? run)
+  const lineStop = lineStopFrom(current, ledger.serviceCheck, now)
+  const note = serviceCheckNote(current)
+  return {
+    read: persisted(current, now),
+    ...(lineStop === undefined ? {} : { lineStop }),
+    ...(note === undefined ? {} : { note }),
   }
 }
 
@@ -438,6 +646,10 @@ interface Planned {
   /** Task files seats mode read beyond the world's, for the dispatch briefs. */
   tasks: Map<string, Task[]>
   skippedTasks: SeatsPlan['skippedTasks']
+  outcomes: SeatOutcome[]
+  notes: string[]
+  /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
+  seeds?: Claim[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
@@ -447,10 +659,12 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  downstream: NonNullable<SeatPlanDeps['downstream']>,
+  flow: Pick<SeatPlanDeps, 'lineStop' | 'brief' | 'scopeTagAliases'>,
 ): Planned {
-  if (seats === undefined)
-    return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
+  if (seats === undefined) {
+    const planned = plan({ ...world, ...work })
+    return { ...planned, skipped: [], tasks: new Map(), skippedTasks: [], outcomes: [], notes: [] }
+  }
   const cliVersion = installedClaudeVersion()
   const planned = planSeats(
     seats.loaded,
@@ -458,12 +672,17 @@ function planNew(
       ...work,
       initiatives: world.initiatives,
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-      downstream,
+      ...flow,
       roster,
     },
     root,
   )
-  return { ...planned, skipped: [...seats.skipped, ...planned.skipped] }
+  const unloaded = seats.skipped.map(s => ({ seat: s.seat, dispatched: 0, refusals: [], skipped: s.reason }))
+  return {
+    ...planned,
+    skipped: [...seats.skipped, ...planned.skipped],
+    outcomes: [...unloaded, ...planned.outcomes],
+  }
 }
 
 const samplesAfter = (ledger: Ledger, seats: LoadedSeats): Record<string, SeatState> => ({

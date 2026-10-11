@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { ALIAS_NAME } from './git-alias.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
@@ -37,6 +38,19 @@ quote() {
 const REFUSE_FN = `refuse() {
   printf '%s\\n' "git-shim: push refused ($1): $2 ${DOCS}" >&2
   exit 2
+}`
+
+// A refused shell alias need not be a push, so this reason does not say "push refused".
+const REFUSE_ALIAS_FN = `refuse_alias() {
+  printf '%s\\n' "git-shim: refused (shell-alias): $1 ${DOCS}" >&2
+  exit 2
+}
+
+listed() {
+  for listed_name in $shell_aliases; do
+    [ "$listed_name" = "$1" ] && return 0
+  done
+  return 1
 }`
 
 // git's split_cmdline: quotes group, a backslash escapes outside single quotes, an open quote fails.
@@ -136,15 +150,37 @@ const ARGS_PUSH_FN = `args_push() {
   return 1
 }`
 
+// git config reads only $GIT_CONFIG while git ignores it for aliases and hooks, so every read the shim makes runs without it.
+const HIDE_GIT_CONFIG = `unset caller_git_config
+case \${GIT_CONFIG+set} in set) caller_git_config=$GIT_CONFIG; unset GIT_CONFIG ;; esac`
+const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CONFIG="$caller_git_config"`
+
+// A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
+// GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
+const SHADOWED_FN = `shadowed() {
+  origins=$(eval "\\"\\$real\\"$globals config --show-origin --get-all \\"alias.\\$1\\"" 2>/dev/null) || return 0
+  case $nl$origins in *"$nl"'command line:'*) return 0 ;; esac
+  body=$(unset GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM HOME XDG_CONFIG_HOME
+    [ -z "$spawn_home" ] || export HOME="$spawn_home"
+    [ -z "$spawn_xdg" ] || export XDG_CONFIG_HOME="$spawn_xdg"
+    eval "\\"\\$real\\"$fileglobals config --get \\"alias.\\$1\\"" 2>/dev/null) || return 0
+  [ "$body" != "$alias" ]
+}`
+
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
-  globals= depth=0
+  globals= fileglobals= depth=0
   while [ $# -gt 0 ]; do
     case $1 in
     ${VALUED_GLOBALS})
       [ $# -ge 2 ] || return 1
-      quote "$1"; globals="$globals $q"; quote "$2"; globals="$globals $q"; shift 2; continue ;;
-    -*) quote "$1"; globals="$globals $q"; shift; continue ;;
+      quote "$1"; globals="$globals $q"; option=$q; quote "$2"; globals="$globals $q"
+      case $1 in -c | --config-env) ;; *) fileglobals="$fileglobals $option $q" ;; esac
+      shift 2; continue ;;
+    -*)
+      quote "$1"; globals="$globals $q"
+      case $1 in -c?* | --config-env=*) ;; *) fileglobals="$fileglobals $q" ;; esac
+      shift; continue ;;
     push) break ;;
     esac
     case " $builtins " in *" $1 "*) return 1 ;; esac
@@ -159,11 +195,15 @@ const RESOLVE_FN = `resolve() {
     case $alias in
     !*)
       name=$1
+      listed "$name" ||
+        refuse_alias "alias.$name runs a shell command and is not on the shell alias allowlist; run the command directly."
+      shadowed "$name" &&
+        refuse_alias "alias.$name is on the shell alias allowlist but is set by -c, --config-env, GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT or an include they add; only its config file text runs."
       shift
       args_push "$@" &&
-        refuse shell-alias "alias.$name runs a shell command and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
+        refuse shell-alias "alias.$name is an allowlisted shell alias and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
       mentions_push "$alias $*" &&
-        refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
+        refuse shell-alias "alias.$name is an allowlisted shell alias and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
@@ -363,10 +403,24 @@ const HOOKS_CHECK = `hooks=$(eval "\\"\\$real\\"$globals config --get core.hooks
 [ "$hooks" = "$guard" ] || local_only ||
   refuse hooks-path "core.hooksPath is not the leak guard's hooks dir and a destination is not a local repository, so the pre-push leak scan would not run."`
 
+/** Only names an alias can have, lowercased, so a listed name can never inject shell into the shim. */
+const bakedShellAliases = (names: readonly string[]): string =>
+  names
+    .filter(name => ALIAS_NAME.test(name))
+    .map(name => name.toLowerCase())
+    .join(' ')
+
+/** The config-file locations the agent starts with, baked so one call cannot swap them. */
+export interface SpawnConfigHome {
+  HOME?: string
+  XDG_CONFIG_HOME?: string
+}
+
 /**
  * The agent's `git`: a push, found after global options or through `alias.<word>`, is refused when
- * it skips verification or when the hooks path git resolves is not the guard's. Everything else
- * execs the real git, baked as an absolute path so the shim never finds itself.
+ * it skips verification or when the hooks path git resolves is not the guard's. A shell (`!`)
+ * alias runs only when its name is in `shellAliases` (CC-613). Everything else execs the real
+ * git, baked as an absolute path so the shim never finds itself.
  */
 export const gitShimScript = (
   real: string,
@@ -374,22 +428,30 @@ export const gitShimScript = (
   builtins: readonly string[],
   execPath = '',
   shell = posixShell(),
+  shellAliases: readonly string[] = [],
+  spawnHome: SpawnConfigHome = {},
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
-${ENVIRONMENT_SCRUB}real=${shQuote(real)}
+${ENVIRONMENT_SCRUB}${HIDE_GIT_CONFIG}
+real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
 [ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | LC_ALL=C tr '\\n' ' ')
+shell_aliases=${shQuote(bakedShellAliases(shellAliases))}
+spawn_home=${shQuote(spawnHome.HOME ?? '')}
+spawn_xdg=${shQuote(spawnHome.XDG_CONFIG_HOME ?? '')}
 ${QUOTE_FN}
 ${REFUSE_FN}
+${REFUSE_ALIAS_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
 ${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
 ${ARGS_PUSH_FN}
+${SHADOWED_FN}
 ${RESOLVE_FN}
 ${CFG_FN}
 ${VALUES_FN}
@@ -404,6 +466,7 @@ ${LOCAL_ONLY_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
 fi
+${RESTORE_GIT_CONFIG}
 exec "$real" "$@"
 `
 
@@ -460,13 +523,19 @@ export function writeGitShim(
   dir: string,
   guard: string,
   pathValue: string = process.env.PATH ?? '',
+  shellAliases: readonly string[] = [],
+  spawnHome: SpawnConfigHome = process.env,
 ): boolean {
   const real = findRealGit(pathValue, dir)
   if (real === undefined) return false
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const target = path.join(dir, 'git')
   const temp = `${target}.${process.pid}.tmp`
-  fs.writeFileSync(temp, gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real)), { mode: 0o755 })
+  fs.writeFileSync(
+    temp,
+    gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real), posixShell(), shellAliases, spawnHome),
+    { mode: 0o755 },
+  )
   fs.chmodSync(temp, 0o755)
   fs.renameSync(temp, target)
   return true

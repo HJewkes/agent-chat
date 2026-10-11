@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 
 /**
  * CC-598: each watchdog pass asks `titan-factory service check --json` whether the factory
@@ -25,10 +25,27 @@ export async function runServiceCheck(runner: ServiceCheckRunner): Promise<Servi
   }
 }
 
+/** CC-693: an exit 0 is healthy only when it printed a JSON object that does not say `ok: false`. */
+function exitZeroCause(stdout: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return 'unparsed: service check exited 0 but printed no JSON'
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+    return 'unparsed: service check exited 0 but printed no JSON object'
+  const { ok, cause } = parsed as { ok?: unknown; cause?: unknown }
+  if (ok !== false) return undefined
+  return typeof cause === 'string' && cause !== ''
+    ? `not-ok: ${cause}`
+    : 'not-ok: service check said ok: false'
+}
+
 /** The one cause line for a failing check; undefined when the service is healthy. */
 export function serviceCause(run: ServiceCheckRun): string | undefined {
   if (run.error !== undefined) return `service check could not run: ${run.error}`
-  if (run.exitCode === 0) return undefined
+  if (run.exitCode === 0) return exitZeroCause(run.stdout)
   try {
     const parsed: unknown = JSON.parse(run.stdout)
     const cause = (parsed as { cause?: unknown } | null)?.cause
@@ -53,23 +70,39 @@ export function judgeService(previous: string | undefined, run: ServiceCheckRun)
   return { cause, message: `Watchdog: titan-factory service check failing: ${cause}` }
 }
 
-/** The live runner: a missing binary or a timeout is reported in `error`, never thrown. */
-export const execServiceCheck: ServiceCheckRunner = () =>
-  new Promise(resolve => {
-    execFile(
-      'titan-factory',
-      ['service', 'check', '--json'],
-      { timeout: SERVICE_CHECK_TIMEOUT_MS, encoding: 'utf8' },
-      (err, stdout) => {
-        if (err === null) return resolve({ exitCode: 0, stdout })
-        const code = (err as NodeJS.ErrnoException & { code?: unknown }).code
-        if (typeof code === 'number') return resolve({ exitCode: code, stdout })
-        const timedOut = (err as { killed?: boolean }).killed === true
-        resolve({
-          exitCode: undefined,
-          stdout,
-          error: timedOut ? `timed out after ${SERVICE_CHECK_TIMEOUT_MS} ms` : err.message,
-        })
-      },
-    )
-  })
+/** The slice of `execFile` the runner uses, so a test can stand in for the process. */
+export type ExecFile = (
+  file: string,
+  args: string[],
+  options: { timeout: number; encoding: 'utf8' },
+  callback: (err: ExecFileException | null, stdout: string) => void,
+) => void
+
+/** CC-693: a timeout, a missing binary and an output overflow each read as their own error. */
+function execError(err: ExecFileException): string {
+  if (err.code === 'ENOENT') return 'titan-factory not found (ENOENT)'
+  if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'output overflowed the buffer'
+  if (err.killed === true) return `timed out after ${SERVICE_CHECK_TIMEOUT_MS} ms`
+  return err.message
+}
+
+/** A runner over `exec`: a missing binary or a timeout is reported in `error`, never thrown. */
+export function serviceCheckRunner(exec: ExecFile): ServiceCheckRunner {
+  return () =>
+    new Promise(resolve => {
+      exec(
+        'titan-factory',
+        ['service', 'check', '--json'],
+        { timeout: SERVICE_CHECK_TIMEOUT_MS, encoding: 'utf8' },
+        (err, stdout) => {
+          if (err === null) return resolve({ exitCode: 0, stdout })
+          if (typeof err.code === 'number') return resolve({ exitCode: err.code, stdout })
+          resolve({ exitCode: undefined, stdout, error: execError(err) })
+        },
+      )
+    })
+}
+
+export const execServiceCheck: ServiceCheckRunner = serviceCheckRunner((file, args, options, callback) => {
+  execFile(file, args, options, callback)
+})

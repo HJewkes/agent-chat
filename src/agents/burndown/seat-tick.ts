@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
@@ -9,17 +10,28 @@ import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
-import type { Downstream } from './flow-gate.js'
-import { rowNamed, type Roster } from './observe.js'
+import type { LineStop } from './flow-gate.js'
+import { noDispatchReason, stopOf, type SeatOutcome } from './no-dispatch.js'
+import { LIVE, rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
-import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type SeatPolicy } from './policy.js'
+import {
+  dormantInitiatives,
+  loadPolicy,
+  mergeDefaults,
+  seatBudget,
+  seatScope,
+  type Policy,
+  type SeatPolicy,
+} from './policy.js'
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
-import { planSeat, type OrderInputs } from './seat-plan.js'
+import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
+import { diskPathExists } from './slice-repo.js'
+import { diskPlanReader } from './seed-slices.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
-import { readTasks } from './source.js'
+import { readTasks, type TickConfig } from './source.js'
 
 /**
  * CC-205 slice 4: seats mode for one tick. Loads the policy once, samples each
@@ -83,7 +95,11 @@ function sampled(
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
   const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample] } }
+  const marks = {
+    ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
+    ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
+  }
+  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
 }
 
 /**
@@ -156,10 +172,14 @@ export interface SeatPlanDeps {
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
   /** Pools already charged this tick by claims' reviewer and successor spawns, one entry per spawn. */
   charged?: readonly string[]
-  /** Each seat's downstream WIP answer for a checkout (CC-784); absent, no WIP limit applies. */
-  downstream?: (dispatch: SeatDispatch) => (repo: string) => Downstream
+  /** Two stopping service-check reads in a row (CC-785); absent, the line runs. */
+  lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
+  /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
+  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
+  scopeTagAliases: TickConfig['scopeTagAliases']
 }
 
 /**
@@ -176,6 +196,14 @@ export function activeTreeOf(roster: Roster): (claim: Claim) => boolean {
   }
 }
 
+/** CC-978: a named agent whose row is running may still run, and so may a name missing from a partial roster. */
+export function liveAgentOf(roster: Roster): (name: string | undefined) => boolean {
+  return name => {
+    const row = rowNamed(roster, name)
+    return row === undefined ? name !== undefined && roster.partial !== undefined : LIVE.has(row.state)
+  }
+}
+
 export interface SeatsPlan {
   dispatch: Dispatch[]
   refusals: Refusal[]
@@ -184,6 +212,12 @@ export interface SeatsPlan {
   tasks: Map<string, Task[]>
   /** Malformed open tasks the scorer left out of each seat's scope, `<slug>/<file>`. */
   skippedTasks: { seat: string; files: string[] }[]
+  /** What each seat's planning came to, for its "dispatched nothing" line (CC-859). */
+  outcomes: SeatOutcome[]
+  /** Every seat's plan notes, such as a shadow brief gate's `would-refuse` lines (CC-925). */
+  notes: string[]
+  /** Slice claims seeded from seat-written plans (CC-927), for the tick to add to the ledger. */
+  seeds: Claim[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -218,11 +252,19 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   }
   const today = localDate(seat.budget.ctx.now)
   const read = readScoredTasks(root, slugs)
-  const { rows } = scoreAll(read.tasks, weights, defaults, exclusions, charter.hard_stops, today)
+  const { rows } = scoreAll(
+    read.tasks,
+    weights,
+    defaults,
+    exclusions,
+    charter.hard_stops,
+    today,
+    dormantInitiatives(seat.policy.seat),
+  )
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
-  const scope = scopeInputs(seat)
+  const scope = scopeInputs(seat, deps.scopeTagAliases)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -237,8 +279,12 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     },
     collision: (repo, work, landedRepos) =>
       sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
-    ...(deps.downstream === undefined ? {} : { downstream: deps.downstream(seat.dispatch) }),
+    ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
+    ...briefGateOf(deps, name),
+    ...handReserveOf(deps, name),
+    readPlan: diskPlanReader(root),
+    pathExists: diskPathExists,
   })
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
@@ -254,17 +300,31 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
  * CC-779: the seat's scope with its backlog's task IDs. A backlog that cannot be read names no task, so
  * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
  */
-function scopeInputs(seat: LoadedSeat): { scope: SeatScope; faults: string[] } {
-  const { seats } = seat.policy
-  const name = seat.dispatch.seat
+function scopeInputs(
+  seat: LoadedSeat,
+  aliases?: Readonly<Record<string, string>>,
+): { scope: SeatScope; faults: string[] } {
+  return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot, aliases)
+}
+
+/** CC-935: `scopeInputs` for a caller holding the seats and the autonomy root, such as `seats boot`. */
+export function readSeatScope(
+  seats: Policy['seats'],
+  name: string,
+  autonomyRoot: string | undefined,
+  aliases?: Readonly<Record<string, string>>,
+): { scope: SeatScope; faults: string[] } {
   const file = seats[name]?.backlog
-  if (file === undefined || seat.autonomyRoot === undefined)
-    return { scope: seatScopeOf(seats, name, new Set()), faults: [] }
+  if (file === undefined || autonomyRoot === undefined)
+    return { scope: seatScopeOf(seats, name, new Set(), aliases), faults: [] }
   try {
-    const ids = backlogIds(fs.readFileSync(path.join(seat.autonomyRoot, file), 'utf8'))
-    return { scope: seatScopeOf(seats, name, ids), faults: [] }
+    const ids = backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8'))
+    return { scope: seatScopeOf(seats, name, ids, aliases), faults: [] }
   } catch (err) {
-    return { scope: seatScopeOf(seats, name, new Set()), faults: [`backlog ${file}: ${message(err)}`] }
+    return {
+      scope: seatScopeOf(seats, name, new Set(), aliases),
+      faults: [`backlog ${file}: ${message(err)}`],
+    }
   }
 }
 
@@ -299,6 +359,28 @@ function orderInputs(
   }
 }
 
+/** The config fields the brief gate and hand reserve read; the tick and `plan --seat` both pass these. */
+export function briefDepsOf(
+  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>,
+): NonNullable<SeatPlanDeps['brief']> {
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve }
+}
+
+/** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
+export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
+  const gate = brief?.briefGate[seat] ?? 'off'
+  return brief === undefined || gate === 'off'
+    ? {}
+    : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
+}
+
+/** CC-936: the implementer slots the seat's hand spawns keep; none is passed as none. */
+export function handReserveOf({ brief }: SeatPlanDeps, seat: string): { handReserve?: number } {
+  const reserve = brief?.handReserve[seat] ?? 0
+  return reserve > 0 ? { handReserve: reserve } : {}
+}
+
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
   return {
     ...(capacity === undefined ? {} : { capacity }),
@@ -306,7 +388,11 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
     ...(deps.trust === undefined ? {} : { trust: deps.trust }),
     ...(deps.roster === undefined
       ? {}
-      : { activeTree: activeTreeOf(deps.roster), agents: deps.roster.agents }),
+      : {
+          activeTree: activeTreeOf(deps.roster),
+          agents: deps.roster.agents,
+          liveAgent: liveAgentOf(deps.roster),
+        }),
   }
 }
 
@@ -316,22 +402,48 @@ export const localDate = (now: Date): string =>
 
 /** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
-  const result: SeatsPlan = { dispatch: [], refusals: [], skipped: [], tasks: new Map(), skippedTasks: [] }
+  const result: SeatsPlan = {
+    dispatch: [],
+    refusals: [],
+    skipped: [],
+    tasks: new Map(),
+    skippedTasks: [],
+    outcomes: [],
+    notes: [],
+    seeds: [],
+  }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
-      const { planned, tasks, skipped } = planLoaded(seat, deps, root, taken)
+      // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
+      const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
+      const { planned, tasks, skipped } = planLoaded(seat, { ...deps, ledger }, root, taken)
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
+      result.notes.push(...planned.notes)
+      result.seeds.push(...planned.seeds)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
+      const { dispatch, refusals, roles } = planned
+      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
+      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: 0, refusals: [], skipped: message(err) })
     }
   }
   return result
+}
+
+/** The reason the watchdog's state file cannot be read, or undefined when it can; the seat paths stay closed while it is set. */
+export function watchdogUnusable(): string | undefined {
+  try {
+    loadDoc()
+    return undefined
+  } catch (err) {
+    return message(err)
+  }
 }
 
 /** The live readers: the pool's status file and the watchdog's saved run meter. */
@@ -352,4 +464,74 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
     },
     meters: (seat, pool) => savedMeters(doc, seat, pool),
   }
+}
+
+/** Ticks in a row a seat must find nothing eligible in scope before it asks the owner. */
+export const SCOPE_EXHAUSTED_TICKS = 2
+
+const SCOPE_EXHAUSTED_REC =
+  "Rec: let the seat run Discovery overflow from another seat's Overflow list, or wind down; nothing is eligible in scope"
+
+/** The owner queue as the tick sees it: its open items, and a deposit into it. */
+export interface OwnerQueuePort {
+  open(): Promise<OwnerItem[]>
+  deposit(deposit: OwnerItemDeposit): Promise<void>
+}
+
+const exhaustedKey = (seat: string): string => `scope-exhausted:${seat}`
+
+function exhaustedDeposit(outcome: SeatOutcome, ticks: number, now: Date): OwnerItemDeposit {
+  const counts = noDispatchReason(outcome)?.text.split('; ').pop() ?? ''
+  return {
+    depositId: `scope-exhausted-${outcome.seat}-${now.getTime()}`,
+    asker: 'burndown-tick',
+    kind: 'decide',
+    door: 'two-way',
+    summary: `Seat ${outcome.seat} found nothing eligible in scope on ${ticks} ticks in a row`,
+    context: `Seat ${outcome.seat} dispatched nothing on ${ticks} consecutive ticks; ${counts}. ${SCOPE_EXHAUSTED_REC}`,
+    options: [
+      { id: 'overflow', label: 'Run Discovery overflow from another seat’s Overflow list' },
+      { id: 'wind-down', label: 'Wind the seat down' },
+    ],
+    recommended: { optionId: 'overflow', by: 'burndown-tick', rationale: SCOPE_EXHAUSTED_REC },
+    keys: [exhaustedKey(outcome.seat)],
+    seat: outcome.seat,
+  }
+}
+
+/**
+ * Nothing in scope was eligible: no open task at all, or every candidate refused for its own sake. A stop or a
+ * full cap (charter 4.2) is not exhaustion: the seat has work and is waiting.
+ */
+const nothingEligible = (o: SeatOutcome): boolean => o.dispatched === 0 && stopOf(o.refusals) === undefined
+
+/**
+ * CC-864 (charter S17, 7.8): a seat with nothing eligible in scope on two ticks in a row files one "scope
+ * exhausted" owner item, unless the queue already holds an open one for the seat. The streak lives in the seat's
+ * ledger state as `exhaustedTicks`; a tick that dispatched or met a stop drops it, and a tick that could not plan
+ * the seat leaves it.
+ */
+export async function scopeExhausted(
+  outcomes: readonly SeatOutcome[],
+  states: Record<string, SeatState>,
+  now: Date,
+  port: OwnerQueuePort,
+): Promise<Record<string, SeatState>> {
+  const next = { ...states }
+  let open: OwnerItem[] | undefined
+  for (const outcome of outcomes) {
+    const { exhaustedTicks: streak = 0, ...state } = next[outcome.seat] ?? { samples: [] }
+    if (outcome.skipped !== undefined) continue
+    if (!nothingEligible(outcome)) {
+      next[outcome.seat] = state
+      continue
+    }
+    const ticks = streak + 1
+    next[outcome.seat] = { ...state, exhaustedTicks: ticks }
+    if (ticks < SCOPE_EXHAUSTED_TICKS) continue
+    open ??= await port.open()
+    if (open.some(i => i.keys.includes(exhaustedKey(outcome.seat)))) continue
+    await port.deposit(exhaustedDeposit(outcome, ticks, now))
+  }
+  return next
 }

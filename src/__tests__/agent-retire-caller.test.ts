@@ -19,7 +19,7 @@ describe('agent retire caller', () => {
     process.env.AGENT_CHAT_NAME = 'coord-x'
     const { request, ctx } = sentFrame()
 
-    await agentRetire.run({ name: 'worker-1' }, ctx)
+    await agentRetire.run({ name: ['worker-1'] }, ctx)
 
     expect(request.mock.calls[0]?.[0]).toEqual({ t: 'retire', name: 'worker-1', caller: 'coord-x' })
   })
@@ -27,7 +27,7 @@ describe('agent retire caller', () => {
   it('sends no caller from a shell with no agent identity', async () => {
     const { request, ctx } = sentFrame()
 
-    await agentRetire.run({ name: 'worker-1' }, ctx)
+    await agentRetire.run({ name: ['worker-1'] }, ctx)
 
     expect(request.mock.calls[0]?.[0]).toEqual({ t: 'retire', name: 'worker-1' })
   })

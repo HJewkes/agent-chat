@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
@@ -43,6 +44,8 @@ export interface PrReadyDeps {
   termsFile: string
   /** Read for AGENT_CHAT_BASEMENT_HOST and AGENT_CHAT_NAME; injected so tests never see the real one. */
   env?: NodeJS.ProcessEnv
+  /** Compared with the basement host to call basement-suite directly there; injected for tests. */
+  hostname?: string
 }
 
 interface StepOutcome {
@@ -78,13 +81,33 @@ const commandText = (c: Command): string => [c.cmd, ...c.args].join(' ')
 /** `-z` output, so a non-ASCII path arrives as itself rather than quoted and escaped. */
 const nulSeparated = (output: string): string[] => output.split('\0').filter(Boolean)
 
-export async function cleanTreeStep(run: Run, cwd: string): Promise<StepOutcome> {
+const realpathOrResolved = (file: string): string => {
+  try {
+    return fs.realpathSync(file)
+  } catch {
+    return path.resolve(file)
+  }
+}
+
+/** `exempt` is the PR body file: the brief has agents write it at the worktree root before pr-ready. */
+const exemptBodyFile = (cwd: string, bodyFile: string | undefined): string | undefined =>
+  bodyFile === undefined ? undefined : realpathOrResolved(path.resolve(cwd, bodyFile))
+
+/**
+ * Worktrees often link `node_modules` into the main checkout, and the `node_modules/` ignore
+ * rule matches directories only, so git lists the symlink as untracked.
+ */
+const isUntrackedNodeModules = (line: string): boolean =>
+  line.startsWith('?? ') && line.slice(3).replace(/\/$/, '').split('/').includes('node_modules')
+
+export async function cleanTreeStep(run: Run, cwd: string, exempt?: string): Promise<StepOutcome> {
   const status = await run('git', ['status', '--porcelain'], cwd)
   if (status.code !== 0) return { ok: false, reason: `git status failed: ${lastLine(status.output)}` }
   const files = status.output
     .split('\n')
-    .filter(line => line.trim() !== '')
+    .filter(line => line.trim() !== '' && !isUntrackedNodeModules(line))
     .map(line => line.slice(3))
+    .filter(file => exempt === undefined || realpathOrResolved(path.resolve(cwd, file)) !== exempt)
   if (files.length === 0) return { ok: true }
   return { ok: false, reason: `uncommitted changes in ${files.join(', ')}` }
 }
@@ -296,12 +319,15 @@ export async function checksStep(
   base: string,
   err: (line: string) => void,
   env: NodeJS.ProcessEnv = process.env,
+  hostname: string = os.hostname(),
 ): Promise<StepOutcome> {
   const { commands, problems } = await planChecks(run, cwd, base)
   if (commands.length === 0 && problems.length === 0) return { ok: true, reason: 'no scripts' }
   const scripts = distinctScripts(commands)
   const route =
-    scripts.length === 0 ? { kind: 'local' as const } : await routeChecks(run, cwd, base, scripts, env)
+    scripts.length === 0
+      ? { kind: 'local' as const }
+      : await routeChecks(run, cwd, base, scripts, env, hostname)
   if (route.kind === 'deferred')
     return {
       ok: problems.length === 0,
@@ -383,10 +409,11 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }
     return (await pushedBranchStep(run, cwd, base, opts.strict === true)) ?? trappedRebaseStep(deps, base)
   }
-  if (!(await step('clean-tree', () => cleanTreeStep(run, cwd)))) return fail()
+  if (!(await step('clean-tree', () => cleanTreeStep(run, cwd, exemptBodyFile(cwd, opts.bodyFile)))))
+    return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
-  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env))
+  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()

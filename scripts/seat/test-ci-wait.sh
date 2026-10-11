@@ -12,6 +12,17 @@ cat > "$W/gh" <<'FAKE'
 # Without --paginate it returns only page one, as the real gh does.
 kind=runs; case "$*" in */status*) kind=status ;; esac
 echo "$*" >> "$FIX/calls"
+# commits/<sha> --jq .sha: $FIX/commit.<n> by call count holds a bare sha, FAIL, or NOTFOUND (GitHub's 422).
+if [[ $2 =~ /commits/[0-9a-fA-F]+$ ]]; then
+  n=$(( $(cat "$FIX/commit.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/commit.count"
+  f=$FIX/commit.$n; [ -f "$f" ] || f=$(ls "$FIX"/commit.[0-9]* 2>/dev/null | sort -t. -k2 -n | tail -1)
+  [ -n "$f" ] || exit 1
+  case $(cat "$f") in
+    FAIL) echo "gh: HTTP 502" >&2; exit 1 ;;
+    NOTFOUND) echo "gh: No commit found for SHA: ${2##*/} (HTTP 422)" >&2; exit 1 ;;
+  esac
+  cat "$f"; exit 0
+fi
 n=$(( $(cat "$FIX/$kind.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/$kind.count"
 f=$FIX/$kind.$n; [ -f "$f" ] || f=$(ls "$FIX"/$kind.[0-9]* | sort -t. -k2 -n | tail -1)
 [ "$(cat "$f")" = FAIL ] && exit 1
@@ -47,29 +58,29 @@ check() { # name, want rc, want output regex; reads $out $rc
   if [ "$rc" = "$2" ] && grep -Eq "$3" <<<"$out"; then echo "PASS $1"; pass=$((pass+1))
   else echo "FAIL $1: want rc=$2 /$3/ got rc=$rc: $out"; failn=$((failn+1)); fi
 }
-go() { out=$("$BIN/ci-wait" o/r abc1234 "$@" 2>&1); rc=$?; }
+go() { out=$("$BIN/ci-wait" o/r abc1234567890abcdef1234567890abcdef12345 "$@" 2>&1); rc=$?; }
 
 fresh; run 1 "$(cj "$(cr build completed success)" "$(cr lint completed success)")"; stat_at 1 ""
-go --interval 0; check "green with check-runs only" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "green with check-runs only" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; run 1 "$(cj "$(cr a completed success)" "$(cr b completed skipped)" "$(cr c completed neutral)")"; stat_at 1 ""
-go --interval 0; check "green with skipped and neutral" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "green with skipped and neutral" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; run 1 "$(cj "$(cr ok completed success)" "$(cr unit completed failure)" "$(cr e2e completed timed_out)")"; stat_at 1 ""
-go --interval 0; check "red naming two failing jobs" 1 '^RED o/r abc1234: unit=failure; e2e=timed_out$'
+go --interval 0; check "red naming two failing jobs" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: unit=failure; e2e=timed_out$'
 
 fresh; run 1 "$(cr ok completed success)"; stat_at 1 "$(cj "$(st ci/legacy failure)" "$(st ci/fine success)")"
-go --interval 0; check "red from a commit status" 1 '^RED o/r abc1234: ci/legacy=failure$'
+go --interval 0; check "red from a commit status" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: ci/legacy=failure$'
 
 fresh; run 1 "$(cr a completed cancelled)" ; stat_at 1 ""
 go --interval 0; check "cancelled counts as red" 1 'a=cancelled'
 
 fresh; run 1 "$(cj "$(cr slow in_progress)" "$(cr bad completed failure)")" "$(cj "$(cr slow completed success)" "$(cr bad completed failure)")"; stat_at 1 ""
-go --interval 0; check "red waits for unfinished jobs, then reports all" 1 '^RED o/r abc1234: bad=failure$'
+go --interval 0; check "red waits for unfinished jobs, then reports all" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: bad=failure$'
 [ "$(cat "$FIX/runs.count")" = 2 ] && { echo "PASS red did not stop at first poll"; pass=$((pass+1)); } || { echo "FAIL red stopped early"; failn=$((failn+1)); }
 
 fresh; run 1 "$(cr build queued)" "$(cr build in_progress)" "$(cr build completed success)"; stat_at 1 ""
-go --interval 0; check "pending then green across polls" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "pending then green across polls" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; run 1 "$(cr build completed success)"; stat_at 1 "$(st ci/legacy pending)"; stat_at 2 "$(st ci/legacy success)"
 go --interval 0; check "pending status then green" 0 '^GREEN '
@@ -78,7 +89,7 @@ fresh; run 1 "" "$(cr build completed success)"; stat_at 1 ""
 go --interval 0; check "empty list then green" 0 '^GREEN '
 
 fresh; run 1 "$(cj "$(cr build in_progress)" "$(cr deploy queued)")"; stat_at 1 ""
-go --timeout 1 --interval 1; check "timeout names pending jobs" 2 '^TIMEOUT o/r abc1234 after [0-9]+s: pending build, deploy$'
+go --timeout 1 --interval 1; check "timeout names pending jobs" 2 '^TIMEOUT o/r abc1234567890abcdef1234567890abcdef12345 after [0-9]+s: pending build, deploy$'
 
 fresh; run 1 ""; stat_at 1 ""
 go --timeout 1 --interval 1; check "empty list until timeout" 2 '^TIMEOUT .*nothing reported'
@@ -94,28 +105,56 @@ go --timeout 1 --interval 1; check "persistent gh failure times out, never red" 
 
 fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; go --interval 0
 grep -q 'graphql' "$FIX/calls" && { echo "FAIL called graphql"; failn=$((failn+1)); } || { echo "PASS only REST endpoints called"; pass=$((pass+1)); }
-grep -q 'repos/o/r/commits/abc1234/check-runs?per_page=100' "$FIX/calls" && grep -q 'repos/o/r/commits/abc1234/status?per_page=100' "$FIX/calls" \
+grep -q 'repos/o/r/commits/abc1234567890abcdef1234567890abcdef12345/check-runs?per_page=100' "$FIX/calls" && grep -q 'repos/o/r/commits/abc1234567890abcdef1234567890abcdef12345/status?per_page=100' "$FIX/calls" \
   && { echo "PASS both endpoints polled"; pass=$((pass+1)); } || { echo "FAIL endpoints"; failn=$((failn+1)); }
 
 fresh
 out=$("$BIN/ci-wait" 2>&1); rc=$?;                       check "no args exits 64" 64 '^usage:'
 out=$("$BIN/ci-wait" o/r 2>&1); rc=$?;                    check "missing sha exits 64" 64 '^usage:'
-out=$("$BIN/ci-wait" norepo abc1234 2>&1); rc=$?;             check "repo without slash exits 64" 64 '^usage:'
-out=$("$BIN/ci-wait" o/r abc1234 --timeout x 2>&1); rc=$?;    check "non-numeric timeout exits 64" 64 '^usage:'
-out=$("$BIN/ci-wait" o/r abc1234 --bogus 2>&1); rc=$?;        check "unknown flag exits 64" 64 '^usage:'
-out=$("$BIN/ci-wait" o/r abc1234 --interval 2>&1); rc=$?;     check "flag without value exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" norepo abc1234567890abcdef1234567890abcdef12345 2>&1); rc=$?;             check "repo without slash exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" o/r abc1234567890abcdef1234567890abcdef12345 --timeout x 2>&1); rc=$?;    check "non-numeric timeout exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" o/r abc1234567890abcdef1234567890abcdef12345 --bogus 2>&1); rc=$?;        check "unknown flag exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" o/r abc1234567890abcdef1234567890abcdef12345 --interval 2>&1); rc=$?;     check "flag without value exits 64" 64 '^usage:'
 
-out=$("$BIN/ci-wait" 'o/r;x' abc1234 2>&1); rc=$?;        check "repo with shell characters exits 64" 64 '^usage:'
-out=$("$BIN/ci-wait" a/b/c abc1234 2>&1); rc=$?;          check "repo with extra slash exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" 'o/r;x' abc1234567890abcdef1234567890abcdef12345 2>&1); rc=$?;        check "repo with shell characters exits 64" 64 '^usage:'
+out=$("$BIN/ci-wait" a/b/c abc1234567890abcdef1234567890abcdef12345 2>&1); rc=$?;          check "repo with extra slash exits 64" 64 '^usage:'
 out=$("$BIN/ci-wait" o/r abc12 2>&1); rc=$?;              check "sha shorter than 7 exits 64" 64 '^usage:'
 out=$("$BIN/ci-wait" o/r xyz1234 2>&1); rc=$?;            check "non-hex sha exits 64" 64 '^usage:'
 out=$("$BIN/ci-wait" o/r "$(printf 'a%.0s' {1..41})" 2>&1); rc=$?; check "sha longer than 40 exits 64" 64 '^usage:'
 
+FULL=abc1234567890abcdef1234567890abcdef12345
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo "$FULL" > "$FIX/commit.1"
+out=$("$BIN/ci-wait" o/r ABC1234 --interval 0 2>&1); rc=$?
+check "abbreviated sha whose CI completed is expanded and green" 0 "^GREEN o/r $FULL\$"
+grep -q "repos/o/r/commits/$FULL/check-runs" "$FIX/calls" && ! grep -q 'commits/ABC1234/check-runs' "$FIX/calls" \
+  && { echo "PASS check-runs polled with the full sha"; pass=$((pass+1)); } || { echo "FAIL check-runs sha"; failn=$((failn+1)); }
+
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo NOTFOUND > "$FIX/commit.1"
+out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
+check "abbreviated sha GitHub does not have exits 64 at once" 64 '^need a full 40-hex sha of a pushed commit: no commit abc1234 in o/r$'
+grep -q check-runs "$FIX/calls" && { echo "FAIL polled an unknown sha"; failn=$((failn+1)); } || { echo "PASS no poll for an unknown sha"; pass=$((pass+1)); }
+
+# The CC-849 incident: GitHub reports "pending" status for a commit it does not have.
+fresh; run 1 ""; stat_at 1 "$(st ci/legacy pending)"; echo NOTFOUND > "$FIX/commit.1"
+go --timeout 60 --interval 1; check "full sha GitHub does not have exits 64, not TIMEOUT" 64 '^need a full 40-hex sha of a pushed commit: no commit abc1234567890abcdef1234567890abcdef12345 in o/r$'
+
+fresh; run 1 "$(cr build queued)" "$(cr build completed success)"; stat_at 1 ""; echo FAIL > "$FIX/commit.1"
+out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
+check "failed lookup is transient and keeps polling" 0 '^GREEN o/r abc1234$'
+
+fresh; run 1 "$(cr build queued)"; stat_at 1 ""; echo FAIL > "$FIX/commit.1"; echo NOTFOUND > "$FIX/commit.2"
+out=$("$BIN/ci-wait" o/r abc1234 --timeout 5 --interval 1 2>&1); rc=$?
+check "lookup retried after a transient failure until GitHub answers" 64 '^need a full 40-hex sha'
+
+fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; echo 0000000000000000000000000000000000000000 > "$FIX/commit.1"
+out=$("$BIN/ci-wait" o/r abc1234 --interval 0 2>&1); rc=$?
+check "lookup answering another sha keeps the input sha" 0 '^GREEN o/r abc1234$'
+
 fresh; run 1 "$(cj "$(many_runs 149 ok completed success)" "$(cr late completed failure)")"; stat_at 1 ""
-go --interval 0; check "150 check-runs with a failure on page 2 is red" 1 '^RED o/r abc1234: late=failure$'
+go --interval 0; check "150 check-runs with a failure on page 2 is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: late=failure$'
 
 fresh; runs_at 1 "$(many_runs 150 ok completed success)"; stat_at 1 ""
-go --interval 0; check "150 green check-runs is green" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "150 green check-runs is green" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; runs_at 1 "$(cj "$(many_runs 149 ok completed success)" "$(cr late in_progress)")"; stat_at 1 ""
 go --timeout 1 --interval 1; check "pending check-run on page 2 keeps waiting" 2 '^TIMEOUT .*pending late$'
@@ -128,21 +167,21 @@ fresh; run 1 ""; pages_at status 1 statuses 30 - "$(cj "$(many_st 39 ok success)
 go --timeout 1 --interval 1; check "40 statuses with a pending one past page 1 keeps waiting" 2 '^TIMEOUT .*pending slow$'
 
 fresh; run 1 ""; pages_at status 1 statuses 30 - "$(cj "$(many_st 39 ok success)" "$(st late error)")"
-go --interval 0; check "error status on page 2 is red" 1 '^RED o/r abc1234: late=error$'
+go --interval 0; check "error status on page 2 is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: late=error$'
 
 fresh; run 1 ""; pages_at status 1 statuses 30 - "$(many_st 40 ok success)"
-go --interval 0; check "40 green statuses with no check-runs is green" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "40 green statuses with no check-runs is green" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; run 1 ""; pages_at status 1 statuses 30 40 "$(many_st 30 ok success)"
 go --timeout 1 --interval 1; check "status count below total_count is transient, not green" 2 '^TIMEOUT '
 
 fresh; run 1 ""; stat_at 1 "$(st ci/legacy success)"
-go --interval 0; check "status-only commit is green" 0 '^GREEN o/r abc1234$'
+go --interval 0; check "status-only commit is green" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345$'
 
 fresh; run 1 "$(cj "$(cr gate completed action_required)" "$(cr old completed stale)")"; stat_at 1 ""
-go --interval 0; check "action_required and stale are red" 1 '^RED o/r abc1234: gate=action_required; old=stale$'
+go --interval 0; check "action_required and stale are red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: gate=action_required; old=stale$'
 
 fresh; run 1 "$(cr ok completed success)"; stat_at 1 "$(st ci/legacy error)"
-go --interval 0; check "status error is red" 1 '^RED o/r abc1234: ci/legacy=error$'
+go --interval 0; check "status error is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: ci/legacy=error$'
 
 echo "$pass passed, $failn failed"; rm -rf "$W"; [ "$failn" = 0 ]

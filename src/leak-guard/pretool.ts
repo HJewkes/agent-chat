@@ -104,6 +104,10 @@ type Setting = string | undefined | typeof UNSURE
 
 const DOCS = 'See docs/leak-guard.md.'
 
+// The one-call form the guard reads as it stands, and gh-write scans again when it runs (CC-887).
+const HEREDOC_POST =
+  "Post the text in the same call as a quoted heredoc: agent-chat gh-write -- <gh args> --body-file - <<'EOF', then the text, then EOF on its own line."
+
 const MAX_DEPTH = 6
 const MAX_ALIASES = 4
 const MAX_HIDDEN_STARTS = 64
@@ -117,11 +121,11 @@ export const REASONS = {
   envClear: `leak-guard: env -i clears the variables that run the pre-push leak scan. ${DOCS}`,
   protectedPath: `leak-guard: the leak guard's hook directory and private term list are off limits to agents. ${DOCS}`,
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
-  stdinBody: `leak-guard: a PR or issue body read from a pipe cannot be checked. Write it to a .md file in your worktree and post it with agent-chat gh-write -- <gh args> --body-file <path>. ${DOCS}`,
-  unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments and post the text with agent-chat gh-write -- <gh args> --body-file <path>, the file at a literal path in your worktree written by a quoted heredoc. ${DOCS}`,
+  stdinBody: `leak-guard: a PR or issue body read from a pipe cannot be checked. ${HEREDOC_POST} ${DOCS}`,
+  unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments. ${HEREDOC_POST} ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
-  hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${DOCS}`,
+  hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
@@ -138,7 +142,7 @@ export const REASONS = {
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
-  writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Post it with agent-chat gh-write -- <gh args> --body-file <path>, which scans the file when it runs, from a literal path in your worktree; or write the file in one Bash call and post it in the next. ${DOCS}`,
+  writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const

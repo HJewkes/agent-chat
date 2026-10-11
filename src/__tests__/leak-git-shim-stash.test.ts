@@ -41,6 +41,9 @@ interface Fixture {
 
 let count = 0
 
+// Listed, so these tests exercise args_push and mentions_push, not the CC-613 allowlist gate.
+const LISTED_SHELL_ALIASES = ['g', 'st']
+
 /** A repo with one tracked file, a bare remote, a guard dir holding a pre-push hook, and the shim. */
 function fixture(): Fixture {
   const root = path.join(SCRATCH, `case-${++count}`)
@@ -57,7 +60,7 @@ function fixture(): Fixture {
   git(work, 'add', 'file.txt')
   git(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'one')
   git(work, 'remote', 'add', 'origin', remote)
-  expect(writeGitShim(shimDir, guard, HOST_PATH)).toBe(true)
+  expect(writeGitShim(shimDir, guard, HOST_PATH, LISTED_SHELL_ALIASES)).toBe(true)
   const env = {
     PATH: `${shimDir}:/usr/bin:/bin`,
     HOME: home,

@@ -9,16 +9,23 @@ import {
   resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
+  resolveGitShellAliases,
   resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolvePoolProbe,
   resolvePoolPickMode,
+  resolveProcessGuardMode,
+  resolveProcessKillBytes,
   resolveReportBatchMs,
   resolveWorktreeBudget,
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
+import { writeLaunchFiles } from '../agents/launch-files.js'
+import type { LaunchPlan } from '../agents/types.js'
+import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
+import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 
 /**
  * `resolveAgentSlots` is exercised against a real tmp `AGENT_CHAT_HOME`, the
@@ -358,3 +365,97 @@ describe('resolvePoolPickMode', () => {
     expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"poolPick"')
   })
 })
+
+describe('process guard config (CC-495)', () => {
+  it('defaults processGuardMode to log and falls back to log on an unknown value', () => {
+    expect(resolveProcessGuardMode()).toBe('log')
+
+    writeConfigJson({ processGuardMode: 'kill' })
+    expect(resolveProcessGuardMode()).toBe('kill')
+
+    writeConfigJson({ processGuardMode: 'murder' })
+    expect(resolveProcessGuardMode()).toBe('log')
+    expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"processGuardMode"')
+  })
+
+  it('falls back to 8 GiB when processKillBytes is below 1 GiB', () => {
+    expect(resolveProcessKillBytes()).toBe(8 * 1024 ** 3)
+
+    writeConfigJson({ processKillBytes: 16 * 1024 ** 3 })
+    expect(resolveProcessKillBytes()).toBe(16 * 1024 ** 3)
+
+    writeConfigJson({ processKillBytes: 8 })
+    expect(resolveProcessKillBytes()).toBe(8 * 1024 ** 3)
+  })
+
+  it('a bad value read on every guard tick is logged once, and a different bad value again', () => {
+    writeConfigJson({ processGuardMode: 'murder', processKillBytes: 8 })
+    for (let tick = 0; tick < 5; tick++) {
+      resolveProcessGuardMode()
+      resolveProcessKillBytes()
+    }
+    writeConfigJson({ processGuardMode: 'kil', processKillBytes: 8 })
+    resolveProcessGuardMode()
+
+    expect(invalidLines()).toEqual([
+      expect.stringContaining('"value":"murder"'),
+      expect.stringContaining('"value":8'),
+      expect.stringContaining('"value":"kil"'),
+    ])
+  })
+
+  it('malformed config.json read on every guard tick is logged once', () => {
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"processGuardMode": ')
+    for (let tick = 0; tick < 5; tick++) resolveProcessGuardMode()
+
+    expect(invalidLines()).toHaveLength(1)
+  })
+})
+
+describe('gitShellAliases (CC-613)', () => {
+  it('lists no shell alias when the key is missing', () => {
+    writeConfigJson({ worktreeBudget: 8 })
+
+    expect(resolveGitShellAliases()).toEqual([])
+  })
+
+  it('keeps alias names lowercased and drops the rest, logged', () => {
+    writeConfigJson({ gitShellAliases: ['p', 'Up', 'bad name', 3] })
+
+    expect(resolveGitShellAliases()).toEqual(['p', 'up'])
+    expect(invalidLines()).toEqual([expect.stringContaining('"key":"gitShellAliases"')])
+  })
+
+  it('lists nothing for a string value rather than reading it as names', () => {
+    writeConfigJson({ gitShellAliases: 'p up' })
+
+    expect(resolveGitShellAliases()).toEqual([])
+    expect(invalidLines()).toEqual([expect.stringContaining('"value":"p up"')])
+  })
+
+  it('bakes the configured names into the git shim written at spawn', () => {
+    writeConfigJson({ gitShellAliases: ['p'] })
+    const hooksDir = path.join(dir, 'git-hooks')
+    const plan: LaunchPlan = {
+      agentId: 'agt-config',
+      bin: 'claude',
+      args: [],
+      cwd: dir,
+      env: { ...gitHooksEnv(hooksDir), [GIT_SHIM_DIR_ENV]: gitShimDirFor(hooksDir) },
+      title: 'agt-config',
+      surface: 'headless',
+    }
+
+    writeLaunchFiles(plan, {})
+
+    const shim = fs.readFileSync(path.join(gitShimDirFor(hooksDir), 'git'), 'utf8')
+    expect(shim).toContain("shell_aliases='p'")
+  })
+})
+
+function invalidLines(): string[] {
+  return fs
+    .readFileSync(path.join(dir, 'broker.log'), 'utf8')
+    .split('\n')
+    .filter(line => line.includes('"config_invalid"'))
+}

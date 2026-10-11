@@ -10,7 +10,7 @@ import {
 import { agentDir, cliEntry, home } from '../paths.js'
 
 /** Set to run-agent's own pid, so the process it launched can tell itself apart from that process's descendants. */
-export const LAUNCHER_PID_ENV = 'AGENT_CHAT_LAUNCHER_PID'
+export { LAUNCHER_PID_ENV } from '../launch-identity.js'
 
 /**
  * The one command every surface launches: `agent-chat run-agent <id>`.

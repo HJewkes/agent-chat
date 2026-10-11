@@ -11,6 +11,9 @@ the human's behalf, citing a precedent. It escalates everything else by leaving 
   the unregistered CLI, gets `not_decider`, and the refusal is logged as `verdict_refused`.
 - Only an open `question` that nobody has decided yet can be decided. Approval and
   endorsement requests stay human-only.
+- A service ask (`meta.source = "service"`, CC-169) is never decided. The broker returns
+  `not_decidable` for it, and the burndown tick does not count it as waiting, so it never
+  wakes the decider. Its asker is a process waiting on the human, not a session.
 - The class must be one of `session_control`, `agent_ops`, `tech_design` or
   `scope_priority`, in the vocabulary of active-work's `precedent search`.
 - The stored question text and the answer are both checked against the unlock table in

@@ -8,6 +8,7 @@ import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
+import { readExitedWork, type ExitedWork } from './exited-adopt.js'
 import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { readProgress, type Progress } from './progress.js'
@@ -18,6 +19,7 @@ import { sumSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
+  FINISHED_PHASES,
   rowFor,
   shepherdLanded,
   shepherdRows,
@@ -43,6 +45,8 @@ export interface Roster {
 
 export interface ObserveDeps {
   inboxSince: (name: string, afterId: number) => Promise<InboxMessage[]>
+  /** Whether a task's tags now hold `brief:proposed`; absent reads as not proposed. */
+  proposed?: (initiative: string, taskId: string) => boolean
   /** The active-work root, where a planner's plan file lives. */
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
@@ -61,6 +65,8 @@ export interface ObserveDeps {
   spend?: (agent: AgentIdentity) => Promise<TranscriptSpendRead>
   /** A seat's `spend.per_claim_usd`; observe reads it once per seat per tick, and a throw means no cap. */
   spendCap?: (seat: string) => number | undefined
+  /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
+  exitedWork?: (worktree: string) => ExitedWork | undefined
 }
 
 export interface Observed {
@@ -130,12 +136,48 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
     shepherdRows: memo(deps.shepherdRows ?? (() => shepherdRows())),
     spendCap: capsBySeat(deps.spendCap ?? defaultSpendCap(deps.root)),
   }
+  // Only a caller that passes its own reader, as the tick does, has implementing claims looked up in Shepherd.
+  const prRuns = deps.shepherdRows === undefined ? undefined : once
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else observations.set(claimKey(claim), result)
+    else observations.set(claimKey(claim), prRuns === undefined ? result : withPrRun(result, claim, prRuns))
   }
   return { observations, unread }
+}
+
+/**
+ * CC-978: the Shepherd run of an implementing claim's PR, or of a queued slice linked to a hand-dispatched
+ * one, so a merge finishes the claim whether or not its agent exited. A read that fails leaves the claim as observed.
+ */
+function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
+  if (claim.phase !== 'implementing' && !(claim.phase === 'queued' && claim.pr !== undefined)) return obs
+  const row = claimRun(claim, deps.shepherdRows?.() ?? [])
+  if (row === undefined || row.pr === null) return obs
+  if (row.phase !== 'done' || row.outcome?.kind === 'merged') return { ...obs, shepherd: { row } }
+  const landed = (deps.landed ?? (t => shepherdLanded(t)))({ repo: row.repo, pr: row.pr })
+  return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
+}
+
+/**
+ * The claim's recorded PR, else an open run its agents registered or whose branch is one of theirs. Agent
+ * names repeat across dispatches of a task, so a name match only links an open PR and never finishes the
+ * claim: a finished run under the same name may be an earlier dispatch's.
+ */
+export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRow | undefined {
+  if (claim.pr !== undefined) {
+    const target = shepherdTarget(claim.pr)
+    return target === undefined ? undefined : rowFor(rows, target)
+  }
+  const names = new Set([
+    ...(claim.spawned ?? []),
+    ...(claim.agentName === undefined ? [] : [claim.agentName]),
+  ])
+  const ours = (r: ShepherdRow): boolean =>
+    (r.implementer != null && names.has(r.implementer)) ||
+    (r.branch?.startsWith(BRANCH_PREFIX) === true && names.has(r.branch.slice(BRANCH_PREFIX.length)))
+  const open = (r: ShepherdRow): boolean => r.phase !== 'post-merge' && !FINISHED_PHASES.includes(r.phase)
+  return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
 async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
@@ -162,10 +204,16 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
+  if (claim.phase === 'planning' && claim.briefer === true) {
+    obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
+    return obs
+  }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && claim.worktree !== undefined)
-    obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
   if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0) obs.owned = ownedRead(claim, deps)
+  if (claim.phase === 'implementing' && claim.worktree !== undefined) {
+    obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
+    return withExitedWork(obs, claim.worktree, deps)
+  }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
 }
@@ -181,6 +229,14 @@ export function changedFiles(cwd: string, exec: Runner = run): string[] | undefi
   if (base === undefined) return undefined
   const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
+}
+
+/** Read only for an exit with no status line: a report already says what the agent left. */
+function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
+  const silent =
+    obs.report === undefined || (obs.report.status === 'unknown' && obs.report.parked === undefined)
+  if (!silent || !fs.existsSync(worktree)) return obs
+  return { ...obs, exitedWork: (deps.exitedWork ?? readExitedWork)(worktree) ?? 'unreadable' }
 }
 
 const SPEND_PHASES: ReadonlySet<Phase> = new Set([

@@ -1,9 +1,16 @@
 import { parseIsoDay } from './score.js'
 
-/** CC-626: the planning tags `milestone:`, `epic:`, `dep:`, `cos:`, `due:` and `ms-role:` on a task, parsed purely. Other tags pass through untouched. */
+/**
+ * CC-626: the planning tags `milestone:`, `epic:`, `dep:`, `cos:`, `due:` and `ms-role:` on a task, parsed purely,
+ * and CC-925's `brief:ready=<YYYY-MM-DD>`. `brief:src=` reads as `briefSource`. Other tags, other `brief:` ones included, pass through untouched.
+ */
 
 export const CLASSES_OF_SERVICE = ['expedite', 'fixed', 'standard', 'intangible'] as const
 export type ClassOfService = (typeof CLASSES_OF_SERVICE)[number]
+
+export const BRIEF_SOURCES = ['seat', 'briefer', 'template'] as const
+/** CC-953: who wrote the task's brief; `unknown` when the `brief:src=` tag is missing or not one of the three. */
+export type BriefSource = (typeof BRIEF_SOURCES)[number] | 'unknown'
 
 /** The fields the parser reads; `ScoredTask` satisfies it. */
 export interface PlanTask {
@@ -28,6 +35,18 @@ export interface TaggedTask {
   due?: string
   /** CC-720: `criterion` tasks must be named by a milestone check; `output` ones are work the milestone ships. */
   msRole?: MsRole
+  /** CC-925: ISO day the seat finished the task's brief. */
+  briefReady?: string
+  /** CC-953: from `brief:src=`; the first such tag wins. */
+  briefSource: BriefSource
+}
+
+const BRIEF_SRC_PREFIX = 'brief:src='
+
+function briefSourceOf(tags: readonly unknown[] | null | undefined): BriefSource {
+  const tag = (tags ?? []).find((t): t is string => typeof t === 'string' && t.startsWith(BRIEF_SRC_PREFIX))
+  const value = tag?.slice(BRIEF_SRC_PREFIX.length).trim()
+  return BRIEF_SOURCES.find(source => source === value) ?? 'unknown'
 }
 
 export type TagErrorCode =
@@ -48,12 +67,17 @@ export interface TagError {
   tag: string
 }
 
-type SingleKey = 'milestone' | 'epic' | 'cos' | 'due' | 'ms-role'
+type SingleKey = 'milestone' | 'epic' | 'cos' | 'due' | 'ms-role' | 'brief-ready'
 type TagKey = SingleKey | 'dep'
 
 const TAG_KEYS: ReadonlySet<string> = new Set<TagKey>(['milestone', 'epic', 'dep', 'cos', 'due', 'ms-role'])
 
+/** `brief:ready` with no `=<day>` is malformed, not some other `brief:` tag. */
+const BRIEF_READY = /^brief:ready(?:=(.*))?$/
+
 function splitTag(tag: string): { key: TagKey; value: string } | undefined {
+  const brief = BRIEF_READY.exec(tag)
+  if (brief) return { key: 'brief-ready', value: (brief[1] ?? '').trim() }
   const at = tag.indexOf(':')
   const key = tag.slice(0, at)
   if (at < 0 || !TAG_KEYS.has(key)) return undefined
@@ -66,6 +90,7 @@ const isClassOfService = (value: string): value is ClassOfService =>
 const isMsRole = (value: string): value is MsRole => (MS_ROLES as readonly string[]).includes(value)
 
 function valueError(key: TagKey, value: string): TagErrorCode | undefined {
+  if (key === 'brief-ready') return parseIsoDay(value) === undefined ? 'bad-tag' : undefined
   if (value === '') return 'empty-value'
   if (key === 'cos' && !isClassOfService(value)) return 'unknown-cos'
   if (key === 'ms-role' && !isMsRole(value)) return 'unknown-ms-role'
@@ -122,14 +147,19 @@ export function parseTaskTags(task: PlanTask): { task: TaggedTask; errors: TagEr
   }
   const { milestone, epic, due } = single
   const msRole = single['ms-role'] as MsRole | undefined
+  const briefReady = single['brief-ready']
   const optional = {
     ...estimateOf(task, errors),
     ...(milestone !== undefined && { milestone }),
     ...(epic !== undefined && { epic }),
     ...(due !== undefined && { due }),
     ...(msRole !== undefined && { msRole }),
+    ...(briefReady !== undefined && { briefReady }),
   }
-  return { task: { id: task.id, ...optional, deps: [...deps], cos }, errors }
+  return {
+    task: { id: task.id, ...optional, deps: [...deps], cos, briefSource: briefSourceOf(task.tags) },
+    errors,
+  }
 }
 
 /**

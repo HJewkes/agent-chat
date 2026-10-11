@@ -2,10 +2,12 @@ import path from 'node:path'
 import type { ExceptionClass } from './exception.js'
 import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
+  briefWriterBrief,
   planPathFor,
   plannerBrief,
   reviewerBrief,
   successorAfterAnswer,
+  successorAfterExit,
   successorAfterReview,
   successorAfterStall,
   workerBrief,
@@ -17,7 +19,7 @@ import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
-import { chargesOn, type PoolGateResult } from './budget-gate.js'
+import { chargesOn, sonnetBand, type PoolGateResult } from './budget-gate.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
@@ -222,7 +224,7 @@ function seatSetup(
   const closed = !gate.open
     ? gate.reason
     : gate.sonnetOnly
-      ? `${gate.pool} is within 10 points of a stop, sonnet only`
+      ? `${gate.pool} is within ${sonnetBand(dispatch.pool)} points of a stop, sonnet only`
       : undefined
   return {
     initiative,
@@ -307,6 +309,7 @@ function successorFrame(
 
 function successorBrief(t: TaskBrief, context: SpawnAction['context']): string {
   if (context?.kind === 'stall') return successorAfterStall(t, context)
+  if (context?.kind === 'resume') return successorAfterExit(t, context.ahead)
   if (context?.kind === 'answer')
     return successorAfterAnswer(t, {
       question: `message ${context.questionId}; your predecessor's handoff restates it`,
@@ -399,6 +402,11 @@ export function retrySteps(ledger: Ledger, roster: Roster): Step[] {
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
+function briefFor(d: Dispatch, t: TaskBrief): string {
+  if (d.profile !== PLANNER_PROFILE) return workerBrief(t)
+  return d.briefer === true ? briefWriterBrief(t) : plannerBrief(t)
+}
+
 /** A new claim (or a queued slice moved to `spawning`), then its spawn; or why it cannot go. */
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {
   const initiative = ctx.initiatives.get(d.initiative)
@@ -417,6 +425,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     nextPhase: planner ? ('planning' as const) : ('implementing' as const),
     agentName: d.agentName,
     spawned: [d.agentName],
+    ...(d.briefer === true ? { briefer: true } : {}),
     ...(d.worktree === undefined ? {} : { worktree: d.worktree }),
     ...(d.seat === undefined ? {} : { seat: d.seat }),
     ...(d.namePrefix === undefined ? {} : { namePrefix: d.namePrefix }),
@@ -428,7 +437,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   const frame = spawnFrame({
     name: d.agentName,
     profile: d.profile,
-    brief: planner ? plannerBrief(t) : workerBrief(t),
+    brief: briefFor(d, t),
     cwd: d.repo,
     configDir: t.configDir,
     initiative: d.initiative,

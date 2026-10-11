@@ -93,7 +93,7 @@ describe('hookScripts', () => {
 
     expect(shim).not.toContain(process.execPath)
     expect(shim).not.toContain('cli.js')
-    expect(shim).toContain('titan-egress-scan pre-push "$1"')
+    expect(shim).toContain('titan-egress-scan pre-push "$1" "$push_url"')
   })
 
   it('bakes in the passwd home and only the absolute entries of the broker PATH', () => {
@@ -259,7 +259,7 @@ describe('git push under the agent env', () => {
     expect(remoteHas(f, 'clean')).toBe(true)
     expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
     expect(stubSaw(f)).toEqual([
-      'args=pre-push origin CI=unset REQUIRE=1',
+      expect.stringMatching(LISTING_ARGS),
       `refs/heads/clean ${sha} refs/heads/clean ${main}`,
     ])
   })
@@ -305,6 +305,110 @@ describe('git push under the agent env', () => {
   })
 })
 
+// The scanner's second argument is the hook's local listing of the remote's tips, not the push URL itself.
+const LISTING_ARGS = /^args=pre-push origin \S+\/listing CI=unset REQUIRE=1$/
+
+const REAL_SCANNER = fs.realpathSync(path.resolve('node_modules/.bin/titan-egress-scan'))
+
+/**
+ * The real scanner on a baked PATH. `needs-credentials` fails an `ls-remote` of the remote made with no
+ * HOME, the way a private remote fails the scanner's PATH-only environment; `unreachable` fails the hook's
+ * own listing of the push URL.
+ */
+type Remote = 'open' | 'needs-credentials' | 'unreachable'
+
+const REMOTE_GUARDS: Record<Exclude<Remote, 'open'>, string> = {
+  'needs-credentials': `[ -e "$0.armed" ] && [ "$1" = ls-remote ] && [ -z "$HOME" ] && case "$*" in *remote.git*) echo 'fatal: could not read Username' >&2; exit 128 ;; esac`,
+  unreachable: `[ -e "$0.armed" ] && [ "$1" = ls-remote ] && case "$*" in *--upload-pack=*) echo 'fatal: unable to access the remote' >&2; exit 128 ;; esac`,
+}
+
+/** The guards act only once armed, so a test's own setup pushes see an open remote. */
+const arm = (scanPath: string): void =>
+  fs.writeFileSync(path.join(scanPath.split(':')[0] as string, 'git.armed'), '')
+
+function realScannerPath(remote: Remote = 'open'): string {
+  const guard = remote === 'open' ? undefined : REMOTE_GUARDS[remote]
+  const dir = binWith({
+    node: true,
+    git: guard === undefined,
+    ...(guard === undefined ? {} : { scripts: { git: `${guard}\nexec '${REAL_GIT}' "$@"` } }),
+  })
+  fs.symlinkSync(REAL_SCANNER, path.join(dir, 'titan-egress-scan'))
+  return `${dir}:${SYSTEM_PATH}`
+}
+
+const AGENT_BRANCH = 'agent'
+const LANDED_FILE = 'landed.md'
+const NEW_FILE = 'fresh.md'
+
+/**
+ * An agent branch already on the remote, then a flagged commit landing on the remote's main, then
+ * the agent bringing main in. A fast-forward, so no merge commit of its own: egress-scan shows a
+ * merge commit's diff against each parent, so a true merge would be a new commit holding the landed text.
+ */
+function mergeMainHoldingLandedFlag(f: Fixture, newFlagged: boolean): void {
+  git(f.work, baseEnv(), 'branch', '-f', AGENT_BRANCH, 'main')
+  expect(push(f, AGENT_BRANCH).code).toBe(0)
+  landOnMain(f, LANDED_FILE, `the ${LEAK} seat`)
+  git(f.work, baseEnv(), 'checkout', '-q', AGENT_BRANCH)
+  git(f.work, baseEnv(), 'merge', '-q', '--ff-only', 'main')
+  if (!newFlagged) return
+  fs.writeFileSync(path.join(f.work, NEW_FILE), `the ${LEAK} seat again\n`)
+  git(f.work, baseEnv(), 'add', NEW_FILE)
+  git(f.work, baseEnv(), 'commit', '-q', '-m', `add ${NEW_FILE}`)
+}
+
+describe('git push after bringing in a main that holds a commit the remote already has', () => {
+  it('passes, because the scanner is given the push URL and excludes what the remote advertises', () => {
+    const f = fixture({ scanPath: realScannerPath() })
+    mergeMainHoldingLandedFlag(f, false)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(git(f.work, baseEnv(), 'rev-parse', AGENT_BRANCH))
+  })
+
+  it('still refuses a new flagged commit on top of main, and names only the new one', () => {
+    const f = fixture({ scanPath: realScannerPath() })
+    mergeMainHoldingLandedFlag(f, true)
+    const before = remoteAt(f, AGENT_BRANCH)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain(NEW_FILE)
+    expect(run.stdout + run.stderr).not.toContain(LANDED_FILE)
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(before)
+  })
+
+  it('passes when the remote lists only for a caller holding HOME, since the hook does the listing', () => {
+    const scanPath = realScannerPath('needs-credentials')
+    const f = fixture({ scanPath })
+    mergeMainHoldingLandedFlag(f, false)
+    arm(scanPath)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(git(f.work, baseEnv(), 'rev-parse', AGENT_BRANCH))
+  })
+
+  it('falls back to the full range when the push URL cannot be listed, refusing the landed commit', () => {
+    const scanPath = realScannerPath('unreachable')
+    const f = fixture({ scanPath })
+    mergeMainHoldingLandedFlag(f, false)
+    arm(scanPath)
+    const before = remoteAt(f, AGENT_BRANCH)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain(LANDED_FILE)
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(before)
+  })
+})
+
 describe('git push with no private term list', () => {
   const pointer = (f: Fixture): string =>
     `leak-scan: push refused: no private term list at ${f.termsFile}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
@@ -331,7 +435,7 @@ describe('git push with no private term list', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain(pointer(f))
-    expect(stubSaw(f)[0]).toBe('args=pre-push origin CI=unset REQUIRE=1')
+    expect(stubSaw(f)[0]).toMatch(LISTING_ARGS)
   })
 
   // CC-302: an inherited TITAN_EGRESS_TERMS must not swap the scanner's term list.
@@ -953,7 +1057,7 @@ describe('the remote the scan base is read from', () => {
 *' ls-remote '*) env > '${log}.env' ;;
 *' fetch '*) echo "fetch $*" >> '${log}' ;;
 esac
-${tipLine === undefined ? '' : `case " $* " in *' ls-remote '*' HEAD '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
+${tipLine === undefined ? '' : `case " $* " in *' ls-remote --upload-pack=git-upload-pack '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
 exec '${REAL_GIT}' "$@"`
 
   const stubbedGitFixture = (tipLine?: string): { f: Fixture; log: string } => {
@@ -965,7 +1069,7 @@ exec '${REAL_GIT}' "$@"`
 
   it('says the lookup failed, not that no default branch exists, when ls-remote fails', () => {
     const log = path.join(fs.mkdtempSync(path.join(SCRATCH, 'git-log-')), 'git.log')
-    const failing = `case " $* " in *' ls-remote '*' HEAD '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
+    const failing = `case " $* " in *' ls-remote --upload-pack=git-upload-pack '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
     const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts: { git: failing } })
     const f = fixture({ scanPath: `${bin}:${SYSTEM_PATH}` })
     commitFile(f, 'clean', 'notes.md', 'fine')
@@ -1272,7 +1376,7 @@ describe('the shim dirs on the broker PATH the pre-push hook bakes in', () => {
 
     expect(run).toMatchObject({ status: 0, stderr: '' })
     expect(remoteHas(f, 'clean')).toBe(true)
-    expect(stubSaw(f)[0]).toBe('args=pre-push origin CI=unset REQUIRE=1')
+    expect(stubSaw(f)[0]).toMatch(LISTING_ARGS)
     expect(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : []).toEqual([])
   })
 })

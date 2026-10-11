@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import os from 'node:os'
 import { LAUNCHER_PID_ENV } from '../agents/launcher.js'
 
 /**
@@ -34,6 +35,11 @@ export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = proces
     // and the handle would point at something that is not the session.
     ...(Number.isInteger(ppid) && ppid > 1 ? { hostPid: ppid } : {}),
   }
+}
+
+/** The machine this process runs on, sent at registration so the broker never signals a pid from another one (CC-880). */
+export function hostMarker(): { host: string } {
+  return { host: os.hostname() }
 }
 
 export type ParentOf = (pid: number) => number | undefined

@@ -1,5 +1,7 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
+import { parseIsoDay, wantsBrief } from './score.js'
+import { parseTaskTags } from './task-tags.js'
 
 /**
  * Which task an opted-in initiative would hand to an unattended agent next.
@@ -54,15 +56,21 @@ export type RefusalKind =
   | 'role-cap'
   | 'backoff'
   | 'plan-blocked'
-  | 'wip'
   | 'stop-line'
   | 'out-of-scope'
+  | 'no-brief'
+  | 'brief-stale'
+  | 'blocked'
+  | 'repo-ambiguous'
+  | 'no-owns'
 
 export interface Refusal {
   initiative: string
   task?: string
   kind: RefusalKind
   reason: string
+  /** CC-945: the task's own tags, set on an `out-of-scope` refusal so the log can name the tag that failed. */
+  tags?: readonly string[]
 }
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']
@@ -94,17 +102,47 @@ export function grantGap(doneWhen: string, grants: string[]): string | undefined
   return `done_when needs grant ${missing.map(g => g.grant).join(', ')}, which the brief does not hold`
 }
 
+/** CC-925: a seat's brief gate. `shadow` refuses nothing; the caller notes what `on` would refuse. */
+export const BRIEF_GATES = ['off', 'shadow', 'on'] as const
+export type BriefGateMode = (typeof BRIEF_GATES)[number]
+
+export interface BriefCheck {
+  maxAgeDays: number
+  now: Date
+}
+
+/** The local calendar day of `now`, on `parseIsoDay`'s scale, as the tick's `today` is local. */
+export const localDay = (now: Date): number =>
+  Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000
+
+/** Why `task`'s brief is missing or stale, whatever the gate; undefined when it carries a fresh `brief:ready`. */
+export function briefRefusal(
+  task: { id: string; tags: readonly string[] },
+  check: BriefCheck,
+): { kind: RefusalKind; reason: string } | undefined {
+  const { briefReady } = parseTaskTags({ id: task.id, tags: task.tags }).task
+  if (briefReady === undefined) return { kind: 'no-brief', reason: 'no valid brief:ready=<YYYY-MM-DD> tag' }
+  const age = localDay(check.now) - (parseIsoDay(briefReady) ?? Number.NaN)
+  if (age <= check.maxAgeDays) return undefined
+  return {
+    kind: 'brief-stale',
+    reason: `brief:ready=${briefReady} is ${age} days old; briefMaxAgeDays is ${check.maxAgeDays}`,
+  }
+}
+
 /** The first reason `task` is ineligible, or undefined when it may be dispatched. */
 export function taskRefusal(
   task: Task,
   grants: string[],
   claimed: ReadonlySet<string>,
   held: ReadonlyMap<string, Hold> = new Map(),
+  brief?: BriefCheck & { gate: BriefGateMode },
 ): { kind: RefusalKind; reason: string } | undefined {
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
     return { kind: 'no-done-when', reason: 'no done_when, so no return contract' }
-  if (task.estimate === undefined) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
+  const wanted = isBriefer(task)
+  if (task.estimate === undefined && !wanted) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
   const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
   if (claimed.has(task.id)) return { kind: 'claimed', reason: 'held in the burndown claim ledger' }
@@ -112,7 +150,8 @@ export function taskRefusal(
   if (hold !== undefined)
     return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
   const gap = grantGap(task.doneWhen, grants)
-  return gap === undefined ? undefined : { kind: 'needs-grant', reason: gap }
+  if (gap !== undefined) return { kind: 'needs-grant', reason: gap }
+  return brief?.gate === 'on' && !wanted ? briefRefusal(task, brief) : undefined
 }
 
 const byPriorityThenSize = (a: Task, b: Task): number =>
@@ -139,12 +178,16 @@ export function pickTask(
 export const PLANNER_PROFILE = 'bd-planner'
 export const IMPLEMENTER_PROFILE = 'bd-implementer'
 
-/** The CC-136 split onto the lean burndown profiles: big work plans first, small work that names its tests goes to sonnet. */
+/** CC-939: the one place a task's role is decided: a `brief:wanted` task with a done_when gets a briefer, not a planner. */
+export const isBriefer = (task: Pick<Task, 'doneWhen' | 'tags'>): boolean =>
+  task.doneWhen !== undefined && wantsBrief(task.tags)
+
+/** Owner decision 186: big work plans first, small work goes to sonnet unless it is a feature, which gets opus. */
 export function profileFor(task: Task): string {
+  if (isBriefer(task)) return PLANNER_PROFILE
   const estimate = task.estimate ?? Infinity
   if (estimate >= 3) return PLANNER_PROFILE
-  if (estimate <= 1 && /\btests?\b/i.test(task.doneWhen ?? '')) return 'bd-implementer-lite'
-  return IMPLEMENTER_PROFILE
+  return task.tags.includes('kind:feature') ? IMPLEMENTER_PROFILE : 'bd-implementer-lite'
 }
 
 /** Profiles that run on sonnet, which is all the tick may use above 85% `seven_day`. */

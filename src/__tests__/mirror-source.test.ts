@@ -303,7 +303,7 @@ describe('tail()', () => {
 })
 
 describe('BrokerClient({ autoStart: false })', () => {
-  const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+  const shortTmp = (): string => os.tmpdir()
 
   it('rejects reaching an absent broker and never spawns one', async () => {
     const dir = fs.mkdtempSync(path.join(shortTmp(), 'ac145-'))
@@ -332,7 +332,7 @@ describe('BrokerClient({ autoStart: false })', () => {
  * a bound port so the adapter's own `fetch` can reach `/api/queue` and `/events`).
  */
 describe('agentChatQueueSource, against a real in-process broker', () => {
-  const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+  const shortTmp = (): string => os.tmpdir()
   const settle = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
   let dir: string

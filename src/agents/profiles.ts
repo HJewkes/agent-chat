@@ -62,6 +62,8 @@ import {
  * different literal string and will not match; a raw socket write bypasses the
  * CLI, and therefore this list, entirely. Real defense in depth, not a fix —
  * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
+ * `ask` (CC-169) is here too: it puts a question to the human under a service
+ * label, which an agent has its own `chat_ask` for and must not borrow.
  */
 const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat endorse:*)',
@@ -70,6 +72,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat answer:*)',
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
+  'Bash(agent-chat ask:*)',
 ]
 
 /**
@@ -246,6 +249,7 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   surface: true,
   surfaceLifetime: true,
   role: true,
+  remoteControl: true,
   returnContract: true,
   effort: true,
   promptPrelude: true,
@@ -264,30 +268,44 @@ const unknownKeyWarnings = (file: string, body: Record<string, unknown>): string
     .filter(key => key !== DENY_ALIAS && !Object.hasOwn(PROFILE_KEYS, key))
     .map(key => `${file}: unknown key "${key}" is ignored; no AgentProfile field has that name`)
 
-const INBOX_DENY = 'Bash(agent-chat inbox:*)'
+const APPROVE_DENY = 'Bash(agent-chat approve:*)'
 
-/** The verbs `inbox --batch --answers` reaches through one door (CC-425). */
-const INBOX_REACHES = ['Bash(agent-chat approve:*)', 'Bash(agent-chat endorse:*)']
+/** A deny a file implies by denying `when`, unless it allows that pattern by name. */
+interface DerivedDeny {
+  deny: string
+  when: string[]
+  why: string
+}
 
-/**
- * CC-558: a file that denies approve or endorse but not inbox leaves that door
- * open. A profile that allows an inbox pattern by name, as the decider does, keeps it.
- */
-const needsInboxDeny = (denied: string[], allowed: string[]): boolean =>
-  INBOX_REACHES.some(verb => denied.includes(verb)) &&
-  !denied.includes(INBOX_DENY) &&
-  !allowed.some(tool => tool.startsWith('Bash(agent-chat inbox'))
+const DERIVED_DENIES: DerivedDeny[] = [
+  {
+    // CC-558: `inbox --batch --answers` reaches approve and endorse through one door (CC-425).
+    deny: 'Bash(agent-chat inbox:*)',
+    when: [APPROVE_DENY, 'Bash(agent-chat endorse:*)'],
+    why: 'the file denies approve or endorse, and inbox reaches both',
+  },
+  {
+    // CC-169: a file that keeps the human's verbs from an agent keeps it from asking under a service label too.
+    deny: 'Bash(agent-chat ask:*)',
+    when: [APPROVE_DENY],
+    why: 'the file denies approve, and ask puts a question to the human under a service label',
+  },
+]
 
-/** `disallowedTools` and its alias as one list, plus the inbox deny when the file needs it. */
+const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
+  when.some(verb => denied.includes(verb)) &&
+  !denied.includes(deny) &&
+  !allowed.some(tool => tool.startsWith(deny.slice(0, deny.indexOf(':'))))
+
+/** `disallowedTools` and its alias as one list, plus each derived deny the file needs. */
 function fileDenies(file: string, body: Record<string, unknown>): { denied?: string[]; warnings: string[] } {
   const listed = [...((body.disallowedTools as string[]) ?? []), ...((body[DENY_ALIAS] as string[]) ?? [])]
   const denied = [...new Set(listed)]
-  if (needsInboxDeny(denied, body.allowedTools as string[])) {
-    const why = 'the file denies approve or endorse, and inbox reaches both'
-    return { denied: [...denied, INBOX_DENY], warnings: [`${file}: "${INBOX_DENY}" is denied too; ${why}`] }
-  }
+  const added = DERIVED_DENIES.filter(rule => needs(rule, denied, body.allowedTools as string[]))
+  const warnings = added.map(({ deny, why }) => `${file}: "${deny}" is denied too; ${why}`)
   const named = body.disallowedTools !== undefined || body[DENY_ALIAS] !== undefined
-  return { ...(named ? { denied } : {}), warnings: [] }
+  if (!named && added.length === 0) return { warnings }
+  return { denied: [...denied, ...added.map(rule => rule.deny)], warnings }
 }
 
 /**
@@ -321,6 +339,12 @@ export function parseProfile(
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
   if (body.role !== undefined && !isRole(body.role))
     return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
+  if (body.remoteControl !== undefined && typeof body.remoteControl !== 'boolean')
+    return { error: `${name}: "remoteControl" must be true or false` }
+  if (body.remoteControl === true && body.role !== 'coordinator')
+    return {
+      error: `${name}: "remoteControl" needs "role": "coordinator"; a worker profile cannot run with Remote Control`,
+    }
   if (body.returnContract !== undefined && !isContractChoice(body.returnContract))
     return { error: `${name}: "returnContract" must be one of ${CONTRACT_CHOICES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
@@ -347,6 +371,7 @@ export function parseProfile(
       ? {}
       : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
     ...(isRole(body.role) ? { role: body.role } : {}),
+    ...(body.remoteControl === true ? { remoteControl: true } : {}),
     ...(isContractChoice(body.returnContract) ? { returnContract: body.returnContract } : {}),
     ...(body.effort === undefined ? {} : { effort: body.effort as EffortLevel }),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
@@ -410,4 +435,25 @@ export function recordedRole(
   if (meta.profile === undefined || meta.profile === '') return 'worker'
   const profile = loadProfile(meta.profile, dir)
   return 'error' in profile ? 'worker' : roleOf(profile)
+}
+
+const editDistance = (a: string, b: string): number => {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = row
+  }
+  return prev[b.length]!
+}
+
+/** Every profile name when `name` is omitted, else just that one; an unknown name throws naming close matches. */
+export function selectProfileNames(name?: string): string[] {
+  const all = listProfileNames()
+  if (name === undefined || all.includes(name)) return name === undefined ? all : [name]
+  const close = all.filter(n => n.includes(name) || name.includes(n) || editDistance(n, name) <= 2)
+  const hint = close.length > 0 ? `Close matches: ${close.join(', ')}.` : `Available: ${all.join(', ')}.`
+  throw new Error(`No profile "${name}". ${hint}`)
 }

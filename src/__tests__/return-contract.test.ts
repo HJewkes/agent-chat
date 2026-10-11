@@ -167,7 +167,7 @@ describe('the GitHub write path (CC-456)', () => {
   it('names gh-write as the only write path, with no fallback to plain gh', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
-    expect(text).toContain('`agent-chat gh-write -- <gh args> --body-file <f>`')
+    expect(text).toContain("`agent-chat gh-write -- <gh args> --body-file - <<'EOF'`")
     expect(text).toContain('gh-write is the only write path')
     expect(text).not.toContain('otherwise use plain `gh`')
   })
@@ -681,8 +681,7 @@ describe('PR body path (CC-444, CC-725)', () => {
   ])('tells the %s block to post a body file from its own worktree within the size cap', (_name, block) => {
     expect(block).toContain(BODY_FILE_RULE)
     expect(BODY_FILE_RULE).toContain('in your own worktree')
-    expect(BODY_FILE_RULE).toContain('not a shared $TMPDIR name')
-    expect(BODY_FILE_RULE).toContain('deleted once posted')
+    expect(BODY_FILE_RULE).toContain('deleted after')
     expect(block).not.toContain('cat it before')
     expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
@@ -691,6 +690,31 @@ describe('PR body path (CC-444, CC-725)', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
+describe('CC-897: bodies and comments go to gh-write on stdin in one call', () => {
+  // Mutation caught: restoring "write the file in one Bash call, post it in the next", the habit
+  // that walked agents into the guard's writtenBody denial.
+  it('pins the implementer and reviewer sentences', () => {
+    expect(BODY_FILE_RULE).toBe(
+      "Post a body or comment in one call: `agent-chat gh-write -- <gh args> --body-file - <<'EOF'`, text, " +
+        "EOF, no file. pr-ready's <f>: a .md Write put in your own worktree, deleted after.",
+    )
+    expect(REVIEWER_BODY_FILE_RULE).toBe(
+      "If you post text, use one call: `agent-chat gh-write -- <gh args> --body-file - <<'EOF'`, text, " +
+        'EOF; write no file, the tree is not yours.',
+    )
+  })
+
+  it.each([
+    ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
+    ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
+    ['reviewer', RETURN_CONTRACT_BLOCKS.reviewer],
+  ])('no longer teaches the %s block a write-then-post body file', (_name, block) => {
+    expect(block).not.toContain('posted in the next')
+    expect(block).not.toContain("made by Write or `<<'EOF'`")
+    expect(block).not.toContain('--body-file <f>`,')
   })
 })
 

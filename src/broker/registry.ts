@@ -133,6 +133,8 @@ interface Entry {
    * that has to be re-checked, and pid reuse to be wrong about.
    */
   hostPid?: number
+  /** The machine `hostPid` lives on; absent for a client that predates CC-880, which counts as remote. */
+  host?: string
   /**
    * Whether that host can actually receive a channel push, resolved once at
    * register time from `hostPid` (CC-73).
@@ -212,6 +214,7 @@ export interface EntryView {
   agentId?: string
   /** Claude Code's pid. Never persisted; see `Entry.hostPid`. */
   hostPid?: number
+  host?: string
   /** When this connection registered. Lets a caller judge how fresh a name is. */
   registeredAt: number
 }
@@ -427,6 +430,7 @@ export class Registry<C> {
       pid: number
       agentId?: string
       hostPid?: number
+      host?: string
       provisional?: boolean
       termSessionId?: string
       tags?: string[]
@@ -456,6 +460,7 @@ export class Registry<C> {
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.hostPid === undefined ? {} : { hostPid: input.hostPid }),
+      ...(input.host === undefined ? {} : { host: input.host }),
       // Absent rather than false on a chosen name, so a re-register that names
       // itself CLEARS the mark instead of carrying it forward (CC-82).
       ...(input.provisional === true ? { provisional: true } : {}),
@@ -568,6 +573,11 @@ export class Registry<C> {
    */
   hostPidFor(name: string): number | undefined {
     return this.findByName(name)?.[1].hostPid
+  }
+
+  /** The machine that pid is on (CC-880). Undefined means unreported, never "local". */
+  hostFor(name: string): string | undefined {
+    return this.findByName(name)?.[1].host
   }
 
   /**
@@ -837,6 +847,7 @@ export class Registry<C> {
       status: entry.status,
       ...(entry.agentId === undefined ? {} : { agentId: entry.agentId }),
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+      ...(entry.host === undefined ? {} : { host: entry.host }),
       registeredAt: entry.registeredAt,
     }
   }

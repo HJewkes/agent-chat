@@ -18,7 +18,14 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
-import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
+import {
+  BrokerCore,
+  readoptRegistration,
+  type Conn,
+  type EndorseApproval,
+  type SeatForwardResult,
+  forwardedText,
+} from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
@@ -33,6 +40,9 @@ import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
+import { fileServiceAsk } from './service-ask.js'
+import { brokerHost } from './host-guard.js'
+import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -54,6 +64,19 @@ const MAX_OPEN_QUESTIONS = 3
  */
 const MAX_OPEN_ENDORSEMENTS = 2
 
+/** Shepherd names a fix-round successor with `-s<N>`; a caller that sends no marker is still read by it. */
+const FIX_ROUND = /-s\d+$/
+
+/** CC-802: the marker the CLI caller sent, else `shepherd` for a fix-round name, else none. */
+const spawnedAsOf = (msg: {
+  name: string
+  spawnedAs?: 'burndown' | 'shepherd'
+}): { spawnedAs?: 'burndown' | 'shepherd' } => {
+  const claimed = msg.spawnedAs === 'burndown' || msg.spawnedAs === 'shepherd' ? msg.spawnedAs : undefined
+  const spawnedAs = claimed ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
+  return spawnedAs === undefined ? {} : { spawnedAs }
+}
+
 const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
 }
@@ -70,6 +93,21 @@ const replyHeld = (conn: Conn, to: string, msgId: string): void => {
     msgId,
     recipients: [to],
     results: [{ name: to, status: 'held', reason }],
+    reason,
+  })
+}
+
+/** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
+const replyForwarded = (conn: Conn, to: string, forwarded: SeatForwardResult): void => {
+  const { steward, msgId } = forwarded
+  if (forwarded.held) return replyHeld(conn, steward, msgId)
+  const reason = `"${to}" has no resident session; the message went to its steward "${steward}".`
+  reply(conn, {
+    t: 'send_result',
+    ok: true,
+    msgId,
+    recipients: [steward],
+    results: [{ name: steward, status: 'delivered', reason }],
     reason,
   })
 }
@@ -138,6 +176,8 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
   })
 }
 
+const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+
 /**
  * The socket transport. Everything here is about turning bytes into `core`
  * calls and results back into bytes; all state and every write to the log lives
@@ -150,12 +190,15 @@ export class SocketServer {
   private readonly verifier: LifecycleVerifier | undefined
   /** Open hook rows by msg_id. Memory only: a restart drops every hook connection, so none can outlive it. */
   private readonly hooks = new Map<string, HookWait>()
+  /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
+  private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
     private readonly core: BrokerCore,
     supervisorOptions: SupervisorOptions = {},
     ledgerDb?: DatabaseSync,
+    private readonly peer: PeerPorts = linuxPeerPorts,
   ) {
     this.feed = new SystemEventFeed<Conn>(
       core.registry,
@@ -259,8 +302,14 @@ export class SocketServer {
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
       ...(msg.resumeSession === undefined ? {} : { resumeSession: msg.resumeSession }),
       ...(msg.predecessor === undefined ? {} : { predecessor: msg.predecessor }),
+      ...(msg.experiment === undefined ? {} : { experiment: msg.experiment }),
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
+      ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
+      // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
+      ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
+      ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
+      ...(msg.override === 'fix-round' ? { override: msg.override } : {}),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own
@@ -373,6 +422,16 @@ export class SocketServer {
   }
 
   /**
+   * CC-896: the host a signal on `conn`'s session is judged against. A reported host
+   * (CC-880) is taken as given; for a session that reported none, locality is proven
+   * from the kernel's view of its socket, and anything short of proof stays unreported.
+   */
+  private hostOf(conn: Conn, entry: { host?: string; hostPid?: number }): string | undefined {
+    if (entry.host !== undefined) return entry.host
+    return provePeerLocal(conn, entry.hostPid, this.peer) ? brokerHost() : undefined
+  }
+
+  /**
    * Teleport on behalf of `conn`, resolving WHO from its own registry entry.
    *
    * Every field the supervisor acts on — the identity to retire, the pid to
@@ -409,6 +468,7 @@ export class SocketServer {
         tags: registry.selfTagsOf(conn),
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+        ...optionalHost(this.hostOf(conn, entry)),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
         // CC-100: read from the registration, not from the message, exactly like
         // every other field here. A successor continues its predecessor's work and
@@ -420,6 +480,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.remoteControlSeen === undefined ? {} : { remoteControlSeen: msg.remoteControlSeen }),
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
@@ -430,6 +491,7 @@ export class SocketServer {
       ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
       ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+      ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
     })
   }
 
@@ -496,6 +558,41 @@ export class SocketServer {
     })
   }
 
+  /** CC-881: like `teleport`, resolved from this connection's own registration and never from the frame. */
+  private async handleTeleportPlanWait(conn: Conn): Promise<void> {
+    const agentId = this.core.registry.entryFor(conn)?.agentId
+    const plan =
+      agentId === undefined
+        ? { ok: false, reason: 'this connection has no durable identity to teleport' }
+        : await this.supervisor.teleportPlan(agentId)
+    reply(conn, { t: 'teleport_plan', ...plan })
+  }
+
+  private handleTeleportLaunched(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport_launched' }>): void {
+    const agentId = this.core.registry.entryFor(conn)?.agentId
+    const result =
+      agentId === undefined
+        ? { ok: false, reason: 'this connection has no durable identity to teleport' }
+        : this.supervisor.teleportLaunched(agentId, {
+            successor: msg.agentId,
+            ok: msg.ok,
+            ...(msg.reason === undefined ? {} : { reason: msg.reason }),
+          })
+    reply(conn, { t: 'teleport_launched_result', ...result })
+  }
+
+  /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
+  private handleTeleportLandFailed(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'teleport_land_failed' }>,
+  ): void {
+    const from = this.core.registry.entryFor(conn)?.agentId
+    reply(conn, {
+      t: 'teleport_land_failed_result',
+      ...this.supervisor.teleportLandFailed(msg.agentId, msg.token, msg.reason, from),
+    })
+  }
+
   /**
    * Say out loud when a client is running a different build from the broker.
    *
@@ -548,18 +645,7 @@ export class SocketServer {
     if (this.core.registry.connFor(known.name) !== undefined)
       return reply(conn, { t: 'register_result', ok: false, reason: `${known.name} is already connected` })
 
-    const result = this.core.register(conn, {
-      t: 'register',
-      name: known.name,
-      workingOn: known.brief === '' ? 'reconnected after its MCP server was replaced' : known.brief,
-      cwd: msg.cwd,
-      pid: msg.pid,
-      sessionId: msg.sessionId,
-      ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
-      ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
-      ...(msg.observed === undefined ? {} : { observed: msg.observed }),
-      ...(msg.build === undefined ? {} : { build: msg.build }),
-    })
+    const result = this.core.register(conn, readoptRegistration(known, msg))
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
     reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
     if (result.ok) this.core.deliverStranded(known.name)
@@ -585,6 +671,7 @@ export class SocketServer {
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
+      ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -618,6 +705,7 @@ export class SocketServer {
       to: 'headless',
       requestedBy: entry.name,
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+      ...optionalHost(this.hostOf(conn, entry)),
     })
     replySwitch(conn, outcome)
   }
@@ -628,10 +716,31 @@ export class SocketServer {
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
+    if (unrouted && this.forwardSend(conn, from, to, text, inReplyTo)) return
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to)
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
     replyHeld(conn, to, held.msgId)
+  }
+
+  /**
+   * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
+   * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
+   */
+  private forwardSend(conn: Conn, from: string, to: string, text: string, inReplyTo?: string): boolean {
+    const { core } = this
+    const steward = core.stewardFor(to, from)
+    if (steward === undefined) return false
+    const forwarded = forwardedText(to, text)
+    if (core.registry.connFor(steward) !== undefined) {
+      const result = core.registry.send(conn, steward, forwarded, inReplyTo)
+      this.handleRoute(conn, result, 'message', steward, undefined, to)
+      return true
+    }
+    const held = core.holdForSteward(from, steward, forwarded, inReplyTo)
+    if (held === undefined) return false
+    replyHeld(conn, steward, held.msgId)
+    return true
   }
 
   private handleRoute(
@@ -640,6 +749,7 @@ export class SocketServer {
     kind: 'message' | 'broadcast',
     to: string,
     tag?: string,
+    forwardedFor?: string,
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -660,6 +770,7 @@ export class SocketServer {
       const meta = {
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
+        ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
       }
       // One row per recipient so a session's inbox is a plain query on `target`.
       core.append({
@@ -1075,6 +1186,38 @@ export class SocketServer {
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
   }
 
+  /**
+   * A process that is not a session asks the human under a label (CC-169).
+   *
+   * Only from an UNREGISTERED connection, as `permission_hook`: a session asks
+   * with `ask`, under its own name and budget. The label is not vouched for.
+   */
+  private handleServiceAsk(conn: Conn, msg: Extract<ClientMessage, { t: 'service_ask' }>): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'ask the human through the service_ask frame')
+      return reply(conn, {
+        t: 'service_ask_result',
+        ok: false,
+        reason: 'service_ask is for processes that never register; a session asks with ask',
+      })
+    }
+    const held = this.serviceAsks.get(conn) ?? new Set<string>()
+    this.serviceAsks.set(conn, held)
+    reply(conn, { t: 'service_ask_result', ...fileServiceAsk(this.core, msg, held) })
+  }
+
+  /** CC-169: a pure read like `activity`; an unknown `after` is an error, never a replay from row 0. */
+  private answersSince(msg: Extract<ClientMessage, { t: 'answers_since' }>): ServerMessage {
+    const events = this.core.events
+    const afterId = msg.after === undefined ? 0 : events.rowIdOf(msg.after)
+    if (afterId === undefined)
+      return { t: 'answers_since_result', answers: [], error: `no message ${msg.after}` }
+    const limit = Math.max(1, Math.min(msg.limit, WATCH_MAX_BATCH))
+    const answers = events.answersFor(msg.name, afterId, limit)
+    const next = answers.at(-1)?.msgId
+    return { t: 'answers_since_result', answers, ...(next ? { next } : {}) }
+  }
+
   /** Only the connection that raised a row may withdraw it; anyone else learns nothing about it. */
   private handlePermissionHookWithdrawn(conn: Conn, msgId: string): void {
     if (this.hooks.get(msgId)?.conn !== conn) {
@@ -1134,6 +1277,8 @@ export class SocketServer {
     const msgId = newMsgId()
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
+      const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
+      if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
@@ -1216,6 +1361,22 @@ export class SocketServer {
         `the broker has no registration for this connection, so "${msg.t}" was refused. ` +
         'If you hold an identity, register again — nothing about your session has to restart.',
     })
+  }
+
+  /** CC-886: oldest-first read of what followed `after`; one extra row detects truncation. */
+  private inboxAfter(
+    name: string | undefined,
+    after: string,
+    limit: number,
+  ): Extract<ServerMessage, { t: 'inbox_result' }> {
+    const events = this.core.events
+    const afterId = name ? events.inboxRowId(name, after) : undefined
+    if (!name || afterId === undefined) {
+      return { t: 'inbox_result', messages: [], error: `no message ${after} in your inbox` }
+    }
+    const rows = events.inboxSince(name, afterId, limit + 1)
+    const messages = rows.slice(0, limit).map(({ id: _id, ...message }) => message)
+    return { t: 'inbox_result', messages, ...(rows.length > limit ? { truncated: true } : {}) }
   }
 
   /** CC-524: read before `core.register`, which mints an identity for a session that has none. */
@@ -1347,6 +1508,7 @@ export class SocketServer {
         return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
       case 'inbox': {
         const name = core.registry.nameOf(conn)
+        if (msg.after !== undefined) return reply(conn, this.inboxAfter(name, msg.after, msg.limit))
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
       }
       case 'queue':
@@ -1409,6 +1571,10 @@ export class SocketServer {
         return this.handlePermissionHook(conn, msg)
       case 'permission_hook_withdrawn':
         return this.handlePermissionHookWithdrawn(conn, msg.msgId)
+      case 'service_ask':
+        return this.handleServiceAsk(conn, msg)
+      case 'answers_since':
+        return reply(conn, this.answersSince(msg))
       case 'spawn':
         void this.handleSpawn(conn, msg)
         return
@@ -1423,6 +1589,13 @@ export class SocketServer {
         return
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
+      case 'teleport_plan_wait':
+        void this.handleTeleportPlanWait(conn)
+        return
+      case 'teleport_launched':
+        return this.handleTeleportLaunched(conn, msg)
+      case 'teleport_land_failed':
+        return this.handleTeleportLandFailed(conn, msg)
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return

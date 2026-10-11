@@ -16,6 +16,7 @@ import {
   accountReading,
   decide,
   poolBudget,
+  poolRule,
   runningImplementers,
   type Observation,
   type SeatAgent,
@@ -348,6 +349,15 @@ describe('charter and seat parsing', () => {
     })
   })
 
+  it("reads a pool's sonnet_band_points, including 0, and carries it to the pool rule", () => {
+    const charter = CHARTER.replace('ceiling_five_hour: 85}', 'ceiling_five_hour: 85, sonnet_band_points: 0}')
+    const agents = parsePools(charter, '/Users/o').get('agents') as Pool
+
+    expect(agents.sonnetBandPoints).toBe(0)
+    expect(poolRule(agents).sonnet_band_points).toBe(0)
+    expect(parsePools(CHARTER, '/Users/o').get('agents')?.sonnetBandPoints).toBeUndefined()
+  })
+
   it('drops a pool missing its config dir or a stop, so its gate stays closed', () => {
     expect(parsePools(CHARTER, '/Users/o').has('broken')).toBe(false)
   })
@@ -360,6 +370,15 @@ describe('charter and seat parsing', () => {
       pool: 'claude',
       spend: { perRunPoints: 6, perDayPoints: 10 },
     })
+  })
+
+  it.each([
+    ['heartbeat_source: watchdog\n', 'watchdog'],
+    ['heartbeat_source: cron\n', 'cron'],
+    ['heartbeat_source: bogus\n', undefined],
+    ['', undefined],
+  ])('reads the seat line %j as heartbeat source %s, unset meaning cron', (line, source) => {
+    expect(parseSeat('x', `---\nprefix: x\npool: claude\n${line}---\n`)?.heartbeatSource).toBe(source)
   })
 
   it('reads a seat without a spend block as having no seat spend stops', () => {

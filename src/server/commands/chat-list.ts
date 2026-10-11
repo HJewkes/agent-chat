@@ -69,17 +69,44 @@ function observedLine(s: SessionInfo): string {
   return `\n    ${parts.join('  ·  ')}`
 }
 
+interface RosterFilter {
+  name?: string | undefined
+  tag?: string | undefined
+  active?: boolean | undefined
+}
+
+const matchesFilter = (s: SessionInfo, { name, tag, active }: RosterFilter): boolean =>
+  (name === undefined || s.name === name) &&
+  (tag === undefined || (s.tags ?? []).some(t => t.tag === tag)) &&
+  (active !== true || s.status === 'working')
+
+function filterLabel({ name, tag, active }: RosterFilter): string {
+  const parts = [
+    name === undefined ? undefined : `name=${name}`,
+    tag === undefined ? undefined : `tag=${tag}`,
+    active === true ? 'active' : undefined,
+  ].filter((part): part is string => part !== undefined)
+  return parts.join(', ')
+}
+
+/**
+ * The filter narrows only the rows drawn. Whether anyone is registered, the
+ * claims warning (which needs this session's own row) and the account usage
+ * line are facts about the whole roster, so they read `sessions`, not `shown`.
+ */
 function formatSessions(
   sessions: SessionInfo[],
   self: string | null,
   claims: SessionClaim[] = [],
   budgets: NamedBudgetRead[] = [],
   slots?: { held: number; cap: number },
+  filter: RosterFilter = {},
 ): string {
   if (sessions.length === 0) return 'No sessions are registered.'
+  const shown = sessions.filter(s => matchesFilter(s, filter))
   const now = Date.now()
   const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
-  const rows = sessions.map(s => {
+  const rows = shown.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
     // CC-82: a derived name is not a chosen one, and addressing it means "whoever
@@ -93,7 +120,11 @@ function formatSessions(
     const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}${budgetPart}] — ${s.workingOn || 'no description'}`
     return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
   })
-  return `Active sessions:\n${accountUsageLine(budgets, slots)}\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
+  const body =
+    shown.length === 0
+      ? `No sessions match ${filterLabel(filter)} (${sessions.length} registered).`
+      : rows.join('\n')
+  return `Active sessions:\n${accountUsageLine(budgets, slots)}\n${body}${claimsFooter(claims, sessions, self)}`
 }
 
 /** What this session holds, on its own row, so the roster answers "who has what". */
@@ -144,10 +175,16 @@ export const chatList = defineTool({
     'spawn an agent to do something a peer might already be doing. This is free and answers "is anyone ' +
     'already on this?" in one call. Call it proactively, at the start of a session and again before ' +
     "diverging into independent work — don't wait to be asked, and don't assume you're the only session " +
-    'in this checkout.',
-  args: z.object({}),
+    'in this checkout. ' +
+    'Optional filters narrow the roster: name (one session), tag (sessions carrying it), active ' +
+    '(only sessions whose status is working). A filter that matches nothing says so and counts the registered sessions, not an error.',
+  args: z.object({
+    name: z.string().optional().describe('Only the session with this name.'),
+    tag: z.string().optional().describe('Only sessions carrying this tag.'),
+    active: z.boolean().optional().describe('Only sessions whose status is working.'),
+  }),
   result: z.string(),
-  async run(_args, ctx) {
+  async run({ name, tag, active }, ctx) {
     const res = (await ctx.broker.request({ t: 'list' }, 'list_result')) as Extract<
       ServerMessage,
       { t: 'list_result' }
@@ -159,6 +196,10 @@ export const chatList = defineTool({
       // look (CC-100).
       read: readBudgetSafe(s.observed?.claudeSessionId, s.observed?.configDir),
     }))
-    return formatSessions(res.sessions, ctx.registeredName, res.claims ?? [], budgets, res.slots)
+    return formatSessions(res.sessions, ctx.registeredName, res.claims ?? [], budgets, res.slots, {
+      name,
+      tag,
+      active,
+    })
   },
 })

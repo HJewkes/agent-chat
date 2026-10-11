@@ -9,6 +9,7 @@ Options:
 
 Human commands:
   inbox [options]            what your agents need from you
+  queue [options]            read the human queue; read-only, it cannot answer, approve or endorse
   answer <id> <text...>      answer a question; routes back to the asker
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
@@ -30,7 +31,7 @@ Agent commands:
   agent                      durable agents
   teleport                   teleport control
   handoff                    stored teleport handoffs
-  profiles                   agent profiles available to spawn with
+  profiles [name]            agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -39,6 +40,10 @@ Agent commands:
                              pass
   pr-ready [options]         before gh pr create: clean tree, rebase, checks, changeset, leak scan;
                              exit 0 only when all pass
+
+Service commands:
+  ask [options] [text...]    put a question to the human under a service label and print its msg_id
+  answers [options] <name>   read answers and dismissals to a service label's asks
 
 === agent-chat inbox
 Usage: agent-chat inbox [options]
@@ -49,6 +54,16 @@ Options:
   --batch            every open item numbered, to answer in one go
   --answers <value>  with --batch, a file of "N: answer" lines, or - for stdin
   -h, --help         display help for command
+
+=== agent-chat queue
+Usage: agent-chat queue [options]
+
+read the human queue; read-only, it cannot answer, approve or endorse
+
+Options:
+  --questions  only open questions
+  --json       print one JSON object: { items }
+  -h, --help   display help for command
 
 === agent-chat answer
 Usage: agent-chat answer [options] <id> <text...>
@@ -224,27 +239,37 @@ Usage: agent-chat burndown [options] [command]
 pick and run unattended work for opted-in initiatives
 
 Options:
-  -h, --help           display help for command
+  -h, --help                display help for command
 
 Commands:
-  plan [options]       dry run: what the tick would dispatch now, and why every other task was
-                       refused
-  milestone [options]  this week's burn-down per milestone: points, critical path, WIP, throughput,
-                       forecast, status
-  seats                seats mode checks (CC-205)
-  status               claim ledger, stalled claims and each account budget gate
-  tick [options]       one pass: advance every claim a phase, then spawn new work inside the
-                       ceilings
-  pause                stop new spawns from the next tick on; running agents finish
-  resume               let the tick spawn again
-  release <task>       drop every claim on a task, stalled or not, so the tick may pick it again
-  install [options]    print the sign-off checklist, then install and start the launchd tick job (a
-                       systemd --user timer on Linux)
-  uninstall            stop the launchd tick job and keep it from starting at login; on Linux, also
-                       remove its units
-  job-status           launchd state for the tick job (its systemd units on Linux): loaded, pid, and
-                       whether it may spawn
-  help [command]       display help for command
+  plan [options]            dry run: what the tick would dispatch now, and why every other task was
+                            refused
+  milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
+                            throughput, forecast, status
+  seats                     seats mode checks (CC-205)
+  brief                     task brief lifecycle (item 179)
+  status                    claim ledger, stalled claims and each account budget gate
+  dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
+                            refusal mix, registrations, tick health
+  tick [options]            one pass: advance every claim a phase, then spawn new work inside the
+                            ceilings
+  pause [options]           stop new spawns from the next tick on; running agents finish
+  resume [options]          let the tick spawn again
+  release [options] <task>  drop every claim on a task, stalled or not, so the tick may pick it
+                            again; --slice drops only that slice
+  link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
+                            dispatches it and finishes it on merge
+  config                    resolved burndown settings (CC-955)
+  preset                    named burndown settings presets (CC-955)
+  override                  a time-boxed patch over the settings (CC-955)
+  seat                      turn a seat on or off in the settings (CC-955)
+  install [options]         print the sign-off checklist, then install and start the launchd tick
+                            job (a systemd --user timer on Linux)
+  uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
+                            also remove its units
+  job-status                launchd state for the tick job (its systemd units on Linux): loaded,
+                            pid, and whether it may spawn
+  help [command]            display help for command
 
 === agent-chat burndown plan
 Usage: agent-chat burndown plan [options]
@@ -293,6 +318,27 @@ Options:
   --autonomy-root <value>  directory holding score.py, charter.md and seats/
   -h, --help               display help for command
 
+=== agent-chat burndown brief
+Usage: agent-chat burndown brief [options] [command]
+
+task brief lifecycle (item 179)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
+                  plan file
+  help [command]  display help for command
+
+=== agent-chat burndown brief approve
+Usage: agent-chat burndown brief approve [options] <task>
+
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+
+Options:
+  -h, --help  display help for command
+
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
 
@@ -300,6 +346,23 @@ claim ledger, stalled claims and each account budget gate
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat burndown dispatch-stats
+Usage: agent-chat burndown dispatch-stats [options]
+
+per seat: spawns/h tick vs hand, queue age, ready depth, cap use, refusal mix, registrations, tick
+health
+
+Options:
+  --json                   one JSON record per seat (per brief source with --by-brief-source), one
+                           per line
+  --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
+                           briefer, template, unknown)
+  --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
+  --floor <value>          ready depth floor to count breaches against (default 2 x the tick config
+                           maxAgents)
+  --autonomy-root <value>  directory holding seats/ and logs/
+  -h, --help               display help for command
 
 === agent-chat burndown tick
 Usage: agent-chat burndown tick [options]
@@ -317,6 +380,7 @@ Usage: agent-chat burndown pause [options]
 stop new spawns from the next tick on; running agents finish
 
 Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown resume
@@ -325,14 +389,156 @@ Usage: agent-chat burndown resume [options]
 let the tick spawn again
 
 Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown release
 Usage: agent-chat burndown release [options] <task>
 
-drop every claim on a task, stalled or not, so the tick may pick it again
+drop every claim on a task, stalled or not, so the tick may pick it again; --slice drops only that
+slice
 
 Options:
+  --slice <value>  drop only this slice's claim; the task stays seeded and the slice no longer gates
+                   its dependents
+  -h, --help       display help for command
+
+=== agent-chat burndown link
+Usage: agent-chat burndown link [options] <task>
+
+record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on
+merge
+
+Options:
+  --slice <value>  the queued slice the PR implements
+  --pr <value>     the PR, as owner/repo#n or its URL
+  -h, --help       display help for command
+
+=== agent-chat burndown config
+Usage: agent-chat burndown config [options] [command]
+
+resolved burndown settings (CC-955)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  show [options]  print the resolved burndown config, each value with the layer it came from
+                  (CC-955)
+  help [command]  display help for command
+
+=== agent-chat burndown config show
+Usage: agent-chat burndown config show [options]
+
+print the resolved burndown config, each value with the layer it came from (CC-955)
+
+Options:
+  --json      print the resolved config as one JSON object
+  -h, --help  display help for command
+
+=== agent-chat burndown preset
+Usage: agent-chat burndown preset [options] [command]
+
+named burndown settings presets (CC-955)
+
+Options:
+  -h, --help              display help for command
+
+Commands:
+  apply [options] <name>  make a preset the active one over the burndown settings (CC-955)
+  clear [options]         leave no preset active (CC-955)
+  list                    list the built-in and settings-file presets, marking the active one
+                          (CC-955)
+  help [command]          display help for command
+
+=== agent-chat burndown preset apply
+Usage: agent-chat burndown preset apply [options] <name>
+
+make a preset the active one over the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown preset clear
+Usage: agent-chat burndown preset clear [options]
+
+leave no preset active (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown preset list
+Usage: agent-chat burndown preset list [options]
+
+list the built-in and settings-file presets, marking the active one (CC-955)
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat burndown override
+Usage: agent-chat burndown override [options] [command]
+
+a time-boxed patch over the settings (CC-955)
+
+Options:
+  -h, --help             display help for command
+
+Commands:
+  set [options] <patch>  lay a time-boxed JSON patch over the burndown settings (CC-955)
+  clear [options]        remove the override before it expires (CC-955)
+  help [command]         display help for command
+
+=== agent-chat burndown override set
+Usage: agent-chat burndown override set [options] <patch>
+
+lay a time-boxed JSON patch over the burndown settings (CC-955)
+
+Options:
+  --for <duration>  how long the patch holds: 30m, 2h or 1d
+  --by <who>        who is making the change; recorded in the settings log
+  --reason <text>   why, kept with the override
+  -h, --help        display help for command
+
+=== agent-chat burndown override clear
+Usage: agent-chat burndown override clear [options]
+
+remove the override before it expires (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown seat
+Usage: agent-chat burndown seat [options] [command]
+
+turn a seat on or off in the settings (CC-955)
+
+Options:
+  -h, --help            display help for command
+
+Commands:
+  on [options] <seat>   turn a seat on in the burndown settings (CC-955)
+  off [options] <seat>  turn a seat off in the burndown settings (CC-955)
+  help [command]        display help for command
+
+=== agent-chat burndown seat on
+Usage: agent-chat burndown seat on [options] <seat>
+
+turn a seat on in the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown seat off
+Usage: agent-chat burndown seat off [options] <seat>
+
+turn a seat off in the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown install
@@ -388,17 +594,24 @@ Commands:
                                 the machine-wide headless agents, free memory and full-suite slots
                                 against their limits, swap used, and the top eligible tasks. A spend
                                 cap with no saved meter to count it is a stop
+  tick [options] <seat>         one seat's burndown decision on demand (CC-889): the dispatches the
+                                tick would make for it under its service-check stop line, trust
+                                gate, role and worktree caps and pool gate, and why every other task
+                                was refused. Dry run only: it spawns nothing and writes no ledger
   dispatches [options] <seat>   one folded record per agent run from a seat's dispatch log (CC-332),
                                 read-only: the broker's spawn and retire rows and the seat's own
                                 rows merged, with the spend. Lines that are not a JSON object with
                                 an agent and seat outcomes outside the end states are counted, not
                                 fatal
   boot [options] <seat>         one boot digest for a coordinator seat (CC-318), read-only: the seat
-                                file's frontmatter, the queue's In flight and Next sections, the
-                                newest State at teleport section of today's log, inbox messages
-                                after a cutoff and the seat status, in 6,000 characters. Over that
-                                the oldest inbox lines go first, then the log section; the queue and
-                                status are never cut
+                                file's frontmatter, the In flight derived from burndown claims,
+                                Shepherd rows, the roster and verdicts, the top in-scope, fresh
+                                brief:ready tasks in the gate's ready order with their age, the
+                                queue's Next section, the newest State at teleport section of
+                                today's log, inbox messages after a cutoff and the seat status, in
+                                6,000 characters. Over that the oldest inbox lines go first, then
+                                the log section, then the queue, In flight, Next, seat and status
+                                sections
   run-start [options] <seat>    start a new run for a seat when the owner messages it (CC-472): sets
                                 the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json to
                                 {since: now, last: <pool seven_day now>, spent: 0, before: <old
@@ -412,6 +625,21 @@ Commands:
   watchdog-uninstall [options]  stop the watchdog job and keep it from starting at login; on Linux,
                                 also remove its units
   watchdog-status [options]     launchd state of the watchdog job, or its systemd units on Linux
+  heartbeat-install [options]   render one systemd --user service and timer per seat (CC-947) that
+                                fires on the seat file's heartbeat_cron minutes and sends the
+                                charter heartbeat when the seat logged no tick line for its cron's
+                                widest gap plus 5 min. Writes the unit files only: it never runs
+                                systemctl, so enabling the timers stays the owner's call
+  heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the watchdog would
+                                neither hold the seat nor resume it (connected, no owner stop,
+                                restart window, machine stop or stop line) and its logs have no tick
+                                line for its cron's widest gap plus 5 min, send the charter
+                                heartbeat through the broker and log heartbeat_external
+  heartbeat-gaps [options]      report where a seat's heartbeat deliveries (heartbeat_watchdog and
+                                heartbeat_external rows in broker.log) stopped for longer than its
+                                heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
+                                stretches, and each slot that got two deliveries (CC-391). Exits
+                                non-zero when it finds either
   help [command]                display help for command
 
 === agent-chat seats watchdog
@@ -447,6 +675,19 @@ count it is a stop
 
 Options:
   --json          the same facts as one JSON object; a failure is {"seat", "error"} with exit 1
+  --brief         only caps per role with names, the pool reading and stop, unread and parked counts
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
+
+=== agent-chat seats tick
+Usage: agent-chat seats tick [options] <seat>
+
+one seat's burndown decision on demand (CC-889): the dispatches the tick would make for it under its
+service-check stop line, trust gate, role and worktree caps and pool gate, and why every other task
+was refused. Dry run only: it spawns nothing and writes no ledger
+
+Options:
+  --dry-run       print the decision without spawning (required)
   --root <value>  autonomy directory holding charter.md and seats/
   -h, --help      display help for command
 
@@ -467,13 +708,16 @@ Options:
 === agent-chat seats boot
 Usage: agent-chat seats boot [options] <seat>
 
-one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the queue's
-In flight and Next sections, the newest State at teleport section of today's log, inbox messages
-after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox lines go first,
-then the log section; the queue and status are never cut
+one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the In
+flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top in-scope, fresh
+brief:ready tasks in the gate's ready order with their age, the queue's Next section, the newest
+State at teleport section of today's log, inbox messages after a cutoff and the seat status, in
+6,000 characters. Over that the oldest inbox lines go first, then the log section, then the queue,
+In flight, Next, seat and status sections
 
 Options:
-  --after <value>  show inbox messages after this msg_id; default the last 5
+  --after <value>  show inbox messages after this msg_id; default the State block's own cursor, else
+                   the last 5
   --json           the sections without the 6,000-character cut, as one JSON object; a failure is
                    {"seat", "error"} with exit 1
   --root <value>   autonomy directory holding charter.md, seats/, queues/ and logs/
@@ -524,6 +768,49 @@ Options:
   --agent-chat-home <value>  the home the job runs against, over $AGENT_CHAT_HOME; on Linux a
                              non-default home suffixes the unit names
   -h, --help                 display help for command
+
+=== agent-chat seats heartbeat-install
+Usage: agent-chat seats heartbeat-install [options]
+
+render one systemd --user service and timer per seat (CC-947) that fires on the seat file's
+heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for its
+cron's widest gap plus 5 min. Writes the unit files only: it never runs systemctl, so enabling the
+timers stays the owner's call
+
+Options:
+  --root <value>        autonomy directory holding seats/ and logs/
+  --target-dir <value>  directory to write the units into (default the systemd --user unit dir)
+  --dry-run             print every unit file; write nothing
+  --seat <value>        only this seat (repeatable); default every file under seats/
+  -h, --help            display help for command
+
+=== agent-chat seats heartbeat-check
+Usage: agent-chat seats heartbeat-check [options]
+
+what a seat's heartbeat timer runs (CC-947): when the watchdog would neither hold the seat nor
+resume it (connected, no owner stop, restart window, machine stop or stop line) and its logs have no
+tick line for its cron's widest gap plus 5 min, send the charter heartbeat through the broker and
+log heartbeat_external
+
+Options:
+  --seat <value>  the seat to check (required)
+  --root <value>  autonomy directory holding charter.md, seats/ and logs/
+  --dry-run       print the decision; send nothing
+  -h, --help      display help for command
+
+=== agent-chat seats heartbeat-gaps
+Usage: agent-chat seats heartbeat-gaps [options]
+
+report where a seat's heartbeat deliveries (heartbeat_watchdog and heartbeat_external rows in
+broker.log) stopped for longer than its heartbeat_cron's widest gap plus 5 min, outside its
+BUDGET-PAUSE stretches, and each slot that got two deliveries (CC-391). Exits non-zero when it finds
+either
+
+Options:
+  --seat <value>   the seat to report on (required)
+  --hours <value>  how far back to look (default 24)
+  --root <value>   autonomy directory holding seats/ and logs/
+  -h, --help       display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]
@@ -648,7 +935,7 @@ Options:
 Commands:
   ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
-  retire [options] [name]                      release isolation, end the process, and free the name
+  retire [options] [name...]                   release isolation, end the process, and free the name
   park <name>                                  remove an exited agent's clean, pushed worktree and
                                                keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
@@ -665,11 +952,14 @@ Usage: agent-chat agent ls [options]
 agents, with lifecycle and presence
 
 Options:
-  --json            print one JSON array, one object per agent
-  --mine            only agents you spawned (needs a registered session name)
-  --spawner <name>  only agents spawned by <name>
-  --prefix <p>      only agents whose name starts with <p>
-  -h, --help        display help for command
+  --json             print one JSON array, one object per agent
+  --mine             only agents you spawned (needs a registered session name)
+  --spawner <name>   only agents spawned by <name>
+  --prefix <p>       only agents whose name starts with <p>
+  --state <state>    only agents showing this status, e.g. running, finished, retired (repeatable)
+  --name <name>      only the agent with exactly this name
+  --format <format>  line: one line per agent (name state profile id cwd)
+  -h, --help         display help for command
 
 === agent-chat agent spawn
 Usage: agent-chat agent spawn [options] <name> <profile> [brief...]
@@ -680,10 +970,14 @@ Options:
   --briefing <slug|auto>  prepend an active-work initiative's orientation to the brief
   --brief-stdin           read the brief from stdin, keeping it out of world-readable argv
   --config-dir <path>     the Claude config dir, and therefore the account, to run it on
+  --task <id>             the task id the agent works on, recorded on its agent record
+  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review, planner or other
+  --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
+                          iterm-tab, iterm-window, tmux-window
   -h, --help              display help for command
 
 === agent-chat agent retire
-Usage: agent-chat agent retire [options] [name]
+Usage: agent-chat agent retire [options] [name...]
 
 release isolation, end the process, and free the name
 
@@ -741,6 +1035,8 @@ Options:
   --mine            only agents you spawned (needs a registered session name)
   --spawner <name>  only agents spawned by <name>
   --prefix <p>      only agents whose name starts with <p>
+  --accounts        one line per account config dir: both rate-limit windows, resets and reading age
+  --json            with --accounts, the same rows as one JSON array
   -h, --help        display help for command
 
 === agent-chat teleport
@@ -784,7 +1080,7 @@ Options:
   -h, --help  display help for command
 
 === agent-chat profiles
-Usage: agent-chat profiles [options]
+Usage: agent-chat profiles [options] [name]
 
 agent profiles available to spawn with
 
@@ -830,6 +1126,33 @@ Options:
   --strict            fail, not just note, a pushed branch that is behind the default branch
   -h, --help          display help for command
 
+=== agent-chat ask
+Usage: agent-chat ask [options] [text...]
+
+put a question to the human under a service label and print its msg_id
+
+Options:
+  --as <label>            the label answers are read back under
+  --text-stdin            read the question from stdin, not argv
+  --kind <kind>           one of decision, needs-grant, stalled, ready-to-merge
+  --task <id>             the task or gate the question is about
+  --option <value>        an answer to offer (repeatable)
+  --recommended <option>  the option you recommend
+  --on-no-answer <text>   what happens if nobody answers
+  --json                  print {"msgId": ...} instead of the bare id
+  -h, --help              display help for command
+
+=== agent-chat answers
+Usage: agent-chat answers [options] <name>
+
+read answers and dismissals to a service label's asks
+
+Options:
+  --since <msgId>  only rows after this msg_id: an ask, or a last next
+  --limit <n>      at most this many rows (default 50)
+  --json           print the reply as one JSON object: { answers, next? }
+  -h, --help       display help for command
+
 === agent-chat broker
 Usage: agent-chat broker [options]
 
@@ -848,12 +1171,27 @@ Usage: agent-chat run-agent [options] <id>
 Options:
   -h, --help  display help for command
 
+=== agent-chat teleport-land
+Usage: agent-chat teleport-land [options] <id>
+
+Options:
+  --pid <pid>          the predecessor's Claude Code, whose exit frees its pane
+  --surface <surface>  where the successor runs
+  --anchor <anchor>    the predecessor's pane
+  -h, --help           display help for command
+
 === agent-chat permission-hook
 Usage: agent-chat permission-hook [options]
 
 Options:
   --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
   -h, --help            display help for command
+
+=== agent-chat stale-session-guard
+Usage: agent-chat stale-session-guard [options] <agentId>
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]

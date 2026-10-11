@@ -24,7 +24,7 @@ const BROKERS = 4
 /** Under the event log's 5s busy timeout, so the winner waits the lock out rather than failing. */
 const LOCK_HOLD_MS = 3_000
 
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 const entry = (): string => path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 
 let dir: string

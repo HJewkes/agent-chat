@@ -1,7 +1,9 @@
 import { claimKey, type ClaimKey } from './advance.js'
+import { checkpointHolds, undeliverable } from './checkpoint.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
 import { BRAKE_WINDOW_MS, brakeSince, releasesDue, releasesSince } from './ladder.js'
+import { factFingerprint } from './liveness.js'
 import { ownerDue, stallDetail } from './triage.js'
 
 /**
@@ -53,10 +55,15 @@ const at = (ledger: Ledger, key: ClaimKey): Claim | undefined =>
 /** Phases compared as strings: a claim read from an older ledger may carry `shepherding`. */
 const MERGE_PHASES: readonly string[] = ['awaiting-merge', 'shepherding']
 
+/** A claim that finished with a PR from a phase only a merge finishes it with one (CC-978). */
+const LINKED_PHASES: readonly string[] = ['queued', 'implementing']
+
 /** Only a merge moves a claim from awaiting-merge to done, so a delivered ready-to-merge on a done claim means merged. */
 const merged = (before: Claim | undefined, after: Claim): boolean =>
   after.phase === 'done' &&
-  (MERGE_PHASES.includes(before?.phase ?? '') || after.notified?.includes('ready-to-merge') === true)
+  (MERGE_PHASES.includes(before?.phase ?? '') ||
+    (LINKED_PHASES.includes(before?.phase ?? '') && after.pr !== undefined) ||
+    after.notified?.includes('ready-to-merge') === true)
 
 /** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
 function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): SeatEvent[] {
@@ -76,13 +83,17 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
     events.push(
       event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
     )
-  if (after.finding !== undefined)
-    events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
+  // CC-663: a dirty, uncommitted claim's notice waits one tick behind its checkpoint request.
+  if (after.finding !== undefined && ownerDue(after) && !checkpointHolds(before, after))
+    events.push(event('stalled-after-claim', findingDetail(after, after.finding.detail), after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
     events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
   return events
 }
+
+const findingDetail = (claim: Claim, detail: string): string =>
+  undeliverable(claim) ? `${detail}; checkpoint undeliverable` : detail
 
 const withCode = (code: StallCode | undefined, reason: string): string =>
   code === undefined ? reason : `${code}: ${reason}`
@@ -110,6 +121,26 @@ function stillHolds(claim: Claim, entry: string): boolean {
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
 }
+
+/** Stall kinds told once per material state: a reopen with the facts last delivered wakes no one (CC-641). */
+const GATED: readonly EventKind[] = ['stalled', 'stalled-after-claim']
+
+/**
+ * The facts behind a stall notice. The tick's own notes (finding body, lease timers, transcript times, triage,
+ * ladder) are left out, so a transcript row the wake itself caused never re-arms it.
+ */
+const noticeFingerprint = (claim: Claim, e: SeatEvent): string =>
+  factFingerprint({
+    kind: e.kind,
+    code: e.code,
+    phase: claim.phase,
+    agentName: claim.agentName,
+    head: claim.lease?.head ?? claim.prHead,
+    content: claim.lease?.content,
+  })
+
+const unchanged = (claim: Claim, e: SeatEvent): boolean =>
+  GATED.includes(e.kind) && claim.noticeFacts?.[noticeKey(e)] === noticeFingerprint(claim, e)
 
 const heldNotified = (claim: Claim): string[] => (claim.notified ?? []).filter(k => stillHolds(claim, k))
 
@@ -164,14 +195,16 @@ export function foldBraked(events: SeatEvents, before: Ledger, after: Ledger): S
   return Object.fromEntries(Object.entries(events).map(([seat, list]) => [seat, fold(list)]))
 }
 
-/** Events for claims with a seat whose held `notified` lacks that kind; a claim without a seat yields none. */
+/** Events for claims with a seat whose held `notified` lacks that kind, less a stall told with these facts; a claim without a seat yields none. */
 export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
     const held = heldNotified(claim)
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told(held, e))
+    const fresh = kindsOf(at(before, claim), claim, spawned).filter(
+      e => !told(held, e) && !unchanged(claim, e),
+    )
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   for (const [seat, event] of brakeEvents(before, after)) (out[seat] ??= []).push(event)
@@ -198,9 +231,12 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
 export function markNotified(ledger: Ledger, seat: string, delivered: readonly SeatEvent[]): Ledger {
   const claims = ledger.claims.map(c => {
     if (c.seat !== seat) return c
-    const kinds = delivered.filter(e => claimKey(e) === claimKey(c)).map(noticeKey)
-    if (kinds.length === 0) return c
-    return { ...c, notified: [...new Set([...(c.notified ?? []), ...kinds])] }
+    const mine = delivered.filter(e => claimKey(e) === claimKey(c))
+    if (mine.length === 0) return c
+    const notified = [...new Set([...(c.notified ?? []), ...mine.map(noticeKey)])]
+    const facts = mine.filter(e => GATED.includes(e.kind)).map(e => [noticeKey(e), noticeFingerprint(c, e)])
+    if (facts.length === 0) return { ...c, notified }
+    return { ...c, notified, noticeFacts: { ...c.noticeFacts, ...Object.fromEntries(facts) } }
   })
   return { ...ledger, claims }
 }

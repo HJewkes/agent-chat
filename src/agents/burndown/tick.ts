@@ -1,20 +1,28 @@
 import os from 'node:os'
-import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
+import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount, type AccountReading } from './budget-gate.js'
-import { classOf, routeOf, type RouteConfig } from './exception.js'
+import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Runner } from './exec.js'
-import { memo, type Roster } from './observe.js'
-import { downstreamReader, shepherdRows } from './shepherd.js'
+import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
+import { lineStopFrom, readServiceCheck, serviceCheckLine } from './service-check.js'
 import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
 import { expandHome } from './seat-dispatch.js'
-import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
-import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
-import { currentTriage } from './triage.js'
+import {
+  briefDepsOf,
+  diskSeatDeps,
+  loadSeats,
+  planSeats,
+  type LoadedSeats,
+  type SeatPlanDeps,
+} from './seat-tick.js'
+import { loadResolvedConfig } from './settings-store.js'
+import { accountDir, readInitiatives, readReadings, readTasks } from './source.js'
+import { currentTriage, exceptionOf } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /** The dry-run tick over the live files, and its two renderings: `burndown plan` and `burndown status`. */
@@ -94,7 +102,7 @@ export interface SeatPlanOptions {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
-  /** Runs `titan-factory` and `git` for the downstream WIP read; defaults to the real runner. */
+  /** Runs `titan-factory` and `git` for the service-check read; defaults to the real runner. */
   exec?: Runner
 }
 
@@ -103,28 +111,32 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   ledger: Ledger
   seats: LoadedSeats
   deps: SeatPlanDeps
+  serviceCheck: string
 } {
   const ledger = readLedger(burndownLedgerPath())
   const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
   const check = opts.collision?.(ledger)
   const cliVersion = installedClaudeVersion()
+  // A dry run judges this read against the persisted one and writes neither.
+  const read = readServiceCheck(opts.exec)
+  const lineStop = lineStopFrom(read, ledger.serviceCheck, opts.now)
+  const config = loadResolvedConfig().tick
   const deps: SeatPlanDeps = {
     ledger,
+    scopeTagAliases: config.scopeTagAliases,
+    brief: briefDepsOf(config),
     initiatives: readInitiatives(opts.root),
     trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-    downstream: downstreamReader(
-      memo(() => shepherdRows(opts.exec)),
-      opts.exec,
-    ),
     ...(check === undefined ? {} : { collision: check }),
+    ...(lineStop === undefined ? {} : { lineStop }),
     ...(opts.roster === undefined ? {} : { roster: opts.roster }),
   }
-  return { ledger, seats, deps }
+  return { ledger, seats, deps, serviceCheck: serviceCheckLine(read, ledger.serviceCheck, opts.now) }
 }
 
 /** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
 export function seatPlanFromDisk(opts: SeatPlanOptions): Plan {
-  const { seats, deps } = seatPlanSetup(opts)
+  const { seats, deps, serviceCheck } = seatPlanSetup(opts)
   const planned = planSeats(seats.loaded, deps, opts.root)
   const [skipped] = [...seats.skipped, ...planned.skipped]
   if (skipped !== undefined) throw new Error(skipped.reason)
@@ -133,11 +145,13 @@ export function seatPlanFromDisk(opts: SeatPlanOptions): Plan {
     refusals: planned.refusals,
     notOptedIn: [],
     skippedTasks: planned.skippedTasks.flatMap(s => s.files),
+    serviceCheck,
   }
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {
   const lines = [`burndown plan at ${now.toISOString()} (dry run: nothing spawned, nothing claimed)`]
+  if (result.serviceCheck !== undefined) lines.push(result.serviceCheck)
   if (result.dispatch.length === 0) lines.push('would dispatch: nothing')
   for (const d of result.dispatch)
     lines.push(
@@ -159,10 +173,11 @@ export function renderPlan(result: Plan, now: Date): string[] {
 const findingSuffix = (c: Claim): string =>
   c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
 
-/** A stall's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
+/** A stall's or open finding's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
 function stallSuffix(c: Claim, route: RouteConfig): string {
-  if (c.stalledReason === undefined) return ''
-  const cls = classOf(c)
+  const exception = exceptionOf(c)
+  if (exception === undefined) return ''
+  const { cls } = exception
   const triage = currentTriage(c)
   const job = triage === undefined ? '' : `, triage ${triage.name ?? '-'} ${triage.outcome}`
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
@@ -186,7 +201,7 @@ export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAu
   const pools = charterRules(autonomyRoot)
   const readings = readReadings(Object.keys(pools.rules), now.getTime(), poolDir(pools.rules))
   const held = heldClaims(ledger)
-  const { route } = loadTickConfig(burndownConfigPath()).exceptions
+  const { route } = loadResolvedConfig().tick.exceptions
   const lines = [
     `ledger ${burndownLedgerPath()}: ${held.length} held, last tick ${ledger.lastTickAt ?? 'never'}`,
   ]

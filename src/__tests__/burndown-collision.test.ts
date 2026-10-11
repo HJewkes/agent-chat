@@ -430,3 +430,22 @@ describe('sameTickCollision on contracts (CC-710)', () => {
     expect(result).toBeUndefined()
   })
 })
+
+describe('collision: an agent that exited less than one tick ago (CC-946)', () => {
+  it('refuses a task a foreign agent carrying its id just exited from', () => {
+    const found = collision(work('CC-9'), facts({ recentlyExited: ['pc-cc-9-swap-back'] }))
+
+    expect(found?.kind).toBe('claimed')
+    expect(found?.reason).toMatch(/pc-cc-9-swap-back.*exited less than one tick ago/)
+  })
+
+  it("lets a task's own previous agent through, so a sibling slice is not held a tick", () => {
+    const own = facts({ recentlyExited: ['sa-cc-9-a'], ours: new Set(['sa-cc-9-a']) })
+
+    expect(collision(work('CC-9'), own)).toBeUndefined()
+  })
+
+  it('lets a task through when the exited agent carries another id', () => {
+    expect(collision(work('CC-9'), facts({ recentlyExited: ['sa-cc-90'] }))).toBeUndefined()
+  })
+})

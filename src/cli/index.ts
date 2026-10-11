@@ -6,6 +6,7 @@ import { Command } from 'commander'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
+import { SURFACE_NAMES } from '../protocol.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
@@ -14,7 +15,9 @@ import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
 import { agentSurfaceVerb } from './verbs/agent-surface.js'
 import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
+import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
+import { askVerb, USAGE_EXIT } from './verbs/ask.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
@@ -29,6 +32,7 @@ import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { profilesVerb } from './verbs/profiles.js'
+import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
@@ -39,6 +43,7 @@ import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
 const AGENTS = 'Agent commands:'
+const SERVICES = 'Service commands:'
 
 /**
  * `inbox`/`answer`/`dismiss` are top-level rather than under a `human` noun on
@@ -48,6 +53,7 @@ const AGENTS = 'Agent commands:'
  */
 function addHumanCommands(program: Command): void {
   addVerb(program, inboxVerb, { helpGroup: HUMAN })
+  addVerb(program, queueReadVerb, { helpGroup: HUMAN })
 
   program
     .command('answer <id> <text...>')
@@ -143,6 +149,12 @@ function addDebugCommands(program: Command): void {
     .action(debug.send)
 }
 
+/** For processes that are not Claude sessions, such as a factory gate notifier (CC-169). */
+function addServiceAskCommands(program: Command): void {
+  addVerb(program, askVerb, { helpGroup: SERVICES, usageExit: USAGE_EXIT })
+  addVerb(program, answersVerb, { helpGroup: SERVICES, usageExit: USAGE_EXIT })
+}
+
 function addAgentCommands(program: Command): void {
   program
     .command('watch <name>')
@@ -162,6 +174,13 @@ function addAgentCommands(program: Command): void {
     .option('--mine', 'only agents you spawned (needs a registered session name)')
     .option('--spawner <name>', 'only agents spawned by <name>')
     .option('--prefix <p>', 'only agents whose name starts with <p>')
+    .option(
+      '--state <state>',
+      'only agents showing this status, e.g. running, finished, retired (repeatable)',
+      (value: string, previous: string[] | undefined) => [...(previous ?? []), value],
+    )
+    .option('--name <name>', 'only the agent with exactly this name')
+    .option('--format <format>', 'line: one line per agent (name state profile id cwd)')
     .action(agents.agentLs)
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
@@ -172,6 +191,13 @@ function addAgentCommands(program: Command): void {
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
+    .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
+    .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
+    .option(
+      '--surface <surface>',
+      `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
+      agents.parseSurface,
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
@@ -192,6 +218,17 @@ function addAgentCommands(program: Command): void {
     .command('gh-write <gh-args...>')
     .description('one gh write after --, spaced machine-wide and retried on the secondary rate limit')
     .helpGroup(AGENTS)
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Every title and body is leak-scanned before gh starts. Post a body in one call from a quoted heredoc:',
+        "  agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
+        '  ...',
+        '  EOF',
+        '--body-file <path> works too, for pr and issue create, edit and comment.',
+      ].join('\n'),
+    )
     .action(async (args: string[]) => {
       const { ghWriteCommand } = await import('./gh-write.js')
       await ghWriteCommand(args)
@@ -236,6 +273,7 @@ function addAgentCommands(program: Command): void {
         '',
         'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
+        'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
         'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
       ].join('\n'),
     )
@@ -270,6 +308,17 @@ function addHiddenCommands(program: Command): void {
     runAgentVerb(id)
   })
 
+  // Spawned detached by a teleporting session's MCP process on another host than the broker (CC-913).
+  program
+    .command('teleport-land <id>', { hidden: true })
+    .requiredOption('--pid <pid>', "the predecessor's Claude Code, whose exit frees its pane")
+    .requiredOption('--surface <surface>', 'where the successor runs')
+    .option('--anchor <anchor>', "the predecessor's pane")
+    .action(async (id: string, options: { pid: string; surface: string; anchor?: string }) => {
+      const { runLandVerb } = await import('../server/caller-land.js')
+      await runLandVerb(id, options)
+    })
+
   // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.
   program
     .command('permission-hook', { hidden: true })
@@ -278,6 +327,12 @@ function addHiddenCommands(program: Command): void {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
+
+  // Run by Claude Code as every spawned agent's UserPromptSubmit hook (CC-762), never by a person.
+  program.command('stale-session-guard <agentId>', { hidden: true }).action(async (agentId: string) => {
+    const { staleSessionGuard } = await import('./verbs/stale-session-guard.js')
+    staleSessionGuard(agentId)
+  })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
   program
@@ -316,6 +371,7 @@ export function buildProgram(): Command {
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
+  addServiceAskCommands(program)
   addHiddenCommands(program)
   return program
 }

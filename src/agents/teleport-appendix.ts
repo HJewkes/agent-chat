@@ -87,6 +87,14 @@ export function reportsSinceWrap(
   return reports === 0 ? undefined : { wrapAt, reports }
 }
 
+/** The agents spawned under `name` that still have a process, or are about to. */
+export const runningSpawnedBy = (agents: AgentLog, name: string): AgentIdentity[] =>
+  spawnedBy(agents, name).filter(a => RUNNING.has(a.state))
+
+/** One roster line, shared by the appendix and a seat's teleport State (CC-863). */
+export const agentLine = (a: Pick<AgentIdentity, 'name' | 'profile' | 'state'>): string =>
+  `- ${a.name} (profile ${a.profile}, ${a.state})`
+
 export function appendixFacts(agents: AgentLog, events: EventStore, query: AppendixQuery): AppendixFacts {
   const { name } = query
   const spawned = spawnedBy(agents, name)
@@ -94,7 +102,7 @@ export function appendixFacts(agents: AgentLog, events: EventStore, query: Appen
   const wrapGap = reportsSinceWrap(agents, events, query)
   return {
     name,
-    running: spawned.filter(a => RUNNING.has(a.state)),
+    running: runningSpawnedBy(agents, name),
     exitedUnretired: spawned.filter(a => a.state === 'exited').length,
     arrived: events.inboxCountSince(name, query.since),
     questions: events.openQuestions(name),
@@ -109,7 +117,7 @@ function agentLines({ name, running, exitedUnretired }: AppendixFacts): string[]
       ? []
       : [`${exitedUnretired} more exited and are not retired; agent_list shows them.`]
   if (running.length === 0) return [`Agents spawned by ${name} that are still running: none.`, ...exited]
-  const listed = running.slice(0, MAX_LISTED).map(a => `- ${a.name} (profile ${a.profile}, ${a.state})`)
+  const listed = running.slice(0, MAX_LISTED).map(agentLine)
   const cut = running.length > MAX_LISTED ? [`- and ${running.length - MAX_LISTED} more`] : []
   return [
     `Agents spawned by ${name} that are still running (${running.length}):`,

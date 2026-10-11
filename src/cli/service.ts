@@ -8,6 +8,7 @@ import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } 
 import { recordLoginPath, resolveBasePath } from '../agents/base-path.js'
 import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
+import { withoutLaunchIdentity } from '../launch-identity.js'
 import { fail, withBroker } from './client.js'
 import { brokerSource, guardRestart } from './restart-guard.js'
 
@@ -95,7 +96,9 @@ export async function start(options: { port?: number; foreground?: boolean }): P
 
   // Detached, matching `spawnBroker` (`broker-client.ts:90`) — the broker must
   // outlive whichever process happened to want it first.
-  const env = port === undefined ? process.env : { ...process.env, AGENT_CHAT_PORT: String(port) }
+  const env = withoutLaunchIdentity(
+    port === undefined ? process.env : { ...process.env, AGENT_CHAT_PORT: String(port) },
+  )
   spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore', env }).unref()
 
   const up = await waitFor(() => probeSocket(), TERM_GRACE_MS)

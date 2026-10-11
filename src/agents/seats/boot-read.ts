@@ -1,6 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { localDay } from '../burndown/eligibility.js'
+import type { PlannedRow } from '../burndown/plan-order.js'
 import { frontmatter } from '../burndown/policy.js'
+import { readySet } from '../burndown/ready-order.js'
+import { parseIsoDay, type ScoredTask } from '../burndown/score.js'
+import type { SeatScope } from '../burndown/seat-scope.js'
+import { parseTaskTags } from '../burndown/task-tags.js'
 import { openEvents, readSeatJournal, readText, seatJournalDays, seatLogPath } from './io.js'
 
 /** CC-318: the readers behind `seats boot`, each read-only. */
@@ -21,6 +27,8 @@ export interface SeatDigest {
   path: string
   chars: number
   mtime: string
+  /** The seat's name prefix, which the In flight section matches agents and branches on. */
+  prefix?: string
   fields: Partial<Record<(typeof SEAT_KEYS)[number], unknown>>
 }
 
@@ -30,7 +38,14 @@ export function readSeatDigest(root: string, seat: string): SeatDigest {
   const text = fs.readFileSync(file, 'utf8')
   const all = frontmatter(text)
   const fields = Object.fromEntries(SEAT_KEYS.filter(k => all[k] !== undefined).map(k => [k, all[k]]))
-  return { path: file, chars: text.length, mtime: fs.statSync(file).mtime.toISOString(), fields }
+  const prefix = typeof all.prefix === 'string' ? all.prefix : undefined
+  return {
+    path: file,
+    chars: text.length,
+    mtime: fs.statSync(file).mtime.toISOString(),
+    ...(prefix === undefined ? {} : { prefix }),
+    fields,
+  }
 }
 
 /** From the line matching `start` to the next line matching `stop`, or the end; trailing blank lines dropped. */
@@ -48,36 +63,90 @@ const QUEUE_STOP = /^#{1,2}\s/
 export interface QueueSections {
   file: string
   found: boolean
-  inFlight: string | null
   next: string | null
 }
 
 export function readQueueSections(root: string, seat: string): QueueSections {
   const file = path.join(root, 'queues', `${seat}.md`)
   const text = readText(file)
-  if (text === undefined) return { file, found: false, inFlight: null, next: null }
+  if (text === undefined) return { file, found: false, next: null }
   const lines = text.split('\n')
   const pick = (heading: RegExp): string | null => {
     const at = lines.findIndex(line => heading.test(line))
     return at === -1 ? null : sectionFrom(lines, at, QUEUE_STOP)
   }
-  return { file, found: true, inFlight: pick(/^## In flight\b/), next: pick(/^## Next\b/) }
+  // CC-934: the In flight section is derived (in-flight-read.ts), so it is not read from the file.
+  return { file, found: true, next: pick(/^## Next\b/) }
 }
 
 export const LOG_CAP = 1_500
 
 const TELEPORT_HEADING = /^## State at teleport (\d+)\b/
 
-/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
-export function latestTeleportState(log: string): string | undefined {
-  const lines = log.split('\n')
+/** The line index and number of the highest-numbered `## State at teleport N` heading; the later one wins a tie. */
+export function latestTeleportHeading(lines: string[]): { at: number; n: number } | undefined {
   let best: { at: number; n: number } | undefined
   lines.forEach((line, at) => {
     const n = Number(TELEPORT_HEADING.exec(line)?.[1] ?? NaN)
     if (Number.isFinite(n) && (best === undefined || n >= best.n)) best = { at, n }
   })
-  return best === undefined ? undefined : sectionFrom(lines, best.at, QUEUE_STOP)
+  return best
 }
+
+/** CC-863: the N of the log's highest `## State at teleport N`, or undefined when it has none. */
+export const latestTeleportNumber = (log: string): number | undefined =>
+  latestTeleportHeading(log.split('\n'))?.n
+
+/** CC-863: ends the heading of a block agent-chat wrote, so it is never taken for the seat's own. */
+export const GENERATED_MARK = '(agent-chat)'
+
+/**
+ * CC-863: seats write the cursor bare, after a clock, as a bullet, inside a `tick:` line, and with a
+ * note after it (`(supersedes <id> above)`). A broker msg_id is 8 hex characters (`newMsgId`).
+ */
+const CURSOR = /\binbox handled through ([0-9a-f]{8})\b/gi
+const CLOCK_LINE = /^(\d\d):(\d\d)\s/
+
+export interface TeleportBlock {
+  n: number
+  /** The heading ends with `GENERATED_MARK`. */
+  generated: boolean
+  section: string
+  /** The last msg_id the section names as handled, since a later line supersedes an earlier one. */
+  cursor: string | undefined
+  /** `HH:MM` of the nearest clock line above the heading, as minutes after midnight. */
+  clockAbove: number | undefined
+}
+
+/** The last `inbox handled through <msg_id>` in `text`, in any of the forms seats write it. */
+export const handledThrough = (text: string): string | undefined =>
+  [...text.matchAll(CURSOR)].at(-1)?.[1]?.toLowerCase()
+
+function clockAbove(lines: string[], at: number): number | undefined {
+  for (let i = at - 1; i >= 0; i--) {
+    const m = CLOCK_LINE.exec(lines[i] as string)
+    if (m) return Number(m[1]) * 60 + Number(m[2])
+  }
+  return undefined
+}
+
+/** CC-863: the log's latest `State at teleport` block, read the one way teleport and `seats boot` both use. */
+export function readTeleportBlock(log: string): TeleportBlock | undefined {
+  const lines = log.split('\n')
+  const best = latestTeleportHeading(lines)
+  if (best === undefined) return undefined
+  const section = sectionFrom(lines, best.at, QUEUE_STOP)
+  return {
+    n: best.n,
+    generated: (lines[best.at] as string).trimEnd().endsWith(GENERATED_MARK),
+    section,
+    cursor: handledThrough(section),
+    clockAbove: clockAbove(lines, best.at),
+  }
+}
+
+/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
+export const latestTeleportState = (log: string): string | undefined => readTeleportBlock(log)?.section
 
 /** `text` cut to at most `cap` characters at a line end where one exists, with a note on what was cut. */
 export function capText(text: string, cap: number): string {
@@ -94,16 +163,19 @@ export interface LogSection {
   file: string
   found: boolean
   section: string | null
+  /** CC-863: the msg_id the section names as handled, which `seats boot` reads the inbox after by default. */
+  cursor: string | null
 }
 
 export function readLogSection(root: string, seat: string, now: Date): LogSection {
   const file = seatLogPath(root, seat, now)
   const text = readText(file)
-  const section = text === undefined ? undefined : latestTeleportState(text)
+  const block = text === undefined ? undefined : readTeleportBlock(text)
   return {
     file,
     found: text !== undefined,
-    section: section === undefined ? null : capText(section, LOG_CAP),
+    section: block === undefined ? null : capText(block.section, LOG_CAP),
+    cursor: block?.cursor ?? null,
   }
 }
 
@@ -191,4 +263,46 @@ export function readBootInbox(dbPath: string, seat: string, after: string | unde
   } finally {
     db.close()
   }
+}
+
+/** CC-935: the scorer's rows for a seat, the open tasks they came from, and what its brief gate tests. */
+export interface ReadySource {
+  order: readonly PlannedRow[]
+  tasks: readonly ScoredTask[]
+  scope: SeatScope
+  /** The tick config's `briefMaxAgeDays`. */
+  maxAgeDays: number
+}
+
+export interface NextTask {
+  id: string
+  initiative: string
+  priority: number
+  /** Whole days since the task's `brief:ready` day. */
+  ageDays: number
+  title: string
+}
+
+export interface BootNext {
+  tasks: NextTask[]
+  error?: string
+}
+
+/** CC-935: the rows the seat's `on` brief gate would take as ready, in the order it would take them. */
+export function readyNext(source: ReadySource, now: Date): NextTask[] {
+  const tasks = new Map(source.tasks.map(t => [`${t.slug}/${t.id}`, { ...t, tags: t.tags ?? [] }]))
+  const taskOf = (row: PlannedRow) => tasks.get(`${row.initiative}/${row.id}`)
+  const readyDay = (row: PlannedRow): number | undefined => {
+    const task = taskOf(row)
+    const day = task && parseTaskTags(task).task.briefReady
+    return day === undefined ? undefined : parseIsoDay(day)
+  }
+  const check = { maxAgeDays: source.maxAgeDays, now }
+  return readySet(source.order, taskOf, check, source.scope).map(row => ({
+    id: row.id,
+    initiative: row.initiative,
+    priority: taskOf(row)?.priority ?? Number.NaN,
+    ageDays: localDay(now) - (readyDay(row) ?? Number.NaN),
+    title: row.title,
+  }))
 }

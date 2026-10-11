@@ -175,6 +175,9 @@ function fakeBroker(spawns: SpawnReply[], retires: SpawnReply[] = []): Fake {
 
 const registers: string[][] = []
 
+/** A passing `service check --json`, so the CC-785 two-read rule never stops the line here. */
+const SERVICE_OK = JSON.stringify({ ok: true, cause: null, message: 'ok', health: null, detail: {} })
+
 /** `gh` and `titan-factory` answer from stubs, with every Shepherd register recorded; `git` runs for real. */
 const exec: Runner = (bin, args, cwd) => {
   if (bin === 'git' && /\b(branch -D|worktree remove|push --delete)\b/.test(args.join(' ')))
@@ -183,7 +186,7 @@ const exec: Runner = (bin, args, cwd) => {
   return bin === 'gh'
     ? { status: 0, stdout: '' }
     : bin === SHEPHERD_BIN
-      ? { status: 0, stdout: '[]' }
+      ? { status: 0, stdout: args[0] === 'service' ? SERVICE_OK : '[]' }
       : bin === 'git' && args.includes('remote') && args.includes('get-url')
         ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
         : run(bin, args, cwd)

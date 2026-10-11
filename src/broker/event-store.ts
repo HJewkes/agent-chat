@@ -1,4 +1,11 @@
-import type { CursoredMessage, DecidedItem, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type {
+  CursoredMessage,
+  DecidedItem,
+  DeliveredMessage,
+  EventKind,
+  QueueItem,
+  ServiceAnswer,
+} from '../protocol.js'
 import type { StoredHandoff } from './handoffs.js'
 
 /**
@@ -85,7 +92,14 @@ export interface EventStore {
    * newest-N window answers a different question — it re-reports what was
    * already seen and silently drops anything that arrived faster than N.
    */
+  inboxRowId(name: string, msgId: string): number | undefined
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
+
+  /** Position of any row by msg_id, for a cursor a caller holds as a msg_id. */
+  rowIdOf(msgId: string): number | undefined
+
+  /** Answers and dismissals of label `name`'s service questions after row `afterId`, oldest first (CC-169). */
+  answersFor(name: string, afterId: number, limit: number): ServiceAnswer[]
 
   /** Everything one session did or had done to it, newest last. */
   activityFor(name: string, limit: number): QueueItem[]

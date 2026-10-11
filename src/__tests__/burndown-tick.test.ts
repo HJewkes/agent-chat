@@ -1,3 +1,4 @@
+import { planPathFor } from '../agents/burndown/brief.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -5,15 +6,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrokerView } from '../agents/burndown/collision.js'
+import { egressRunner, type EgressRunner } from '../agents/burndown/egress-runner.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
+import { probeScanner } from '../leak-guard/hooks-dir.js'
 import { tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
@@ -216,16 +220,30 @@ const stubGh =
           ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
           : run(bin, args, cwd)
 
-/** The downstream WIP read asks the fixture checkout for its origin, which is a local bare repo; the stub names a GitHub one. */
+/** A `titan-factory` stub whose `service check --json` reads ok, or fails with `cause`. */
+const serviceCheck =
+  (cause: string | null = null, message = 'synthetic check'): ((args: string[]) => Answer) =>
+  args =>
+    args[0] === 'service'
+      ? { status: cause === null ? 0 : 1, stdout: JSON.stringify({ ok: cause === null, cause, message }) }
+      : { status: 0, stdout: '[]' }
+
 const isOriginLookup = (bin: string, args: string[]): boolean =>
   bin === 'git' && args.includes('remote') && args.includes('get-url')
+
+/** No tick reads the owner's term list; the leak check's own tests run the real scanner on a synthetic one. */
+const CLEAN_SCAN: EgressRunner = {
+  text: () => ({ state: 'ok', findings: [] }),
+  range: () => ({ state: 'ok', findings: [] }),
+}
 
 const tick = (
   fake: Fake,
   dryRun = false,
   log: (e: string, d: Record<string, unknown>) => void = () => {},
   exec: Runner = stubGh(),
-) => tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log, exec })
+  egress: EgressRunner = CLEAN_SCAN,
+) => tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log, exec, egress })
 
 beforeEach(() => {
   world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tick-')))
@@ -305,6 +323,20 @@ describe('burndown tick spawns', () => {
       worktree: path.join(repo(), '.worktrees', 'bd-dm-1'),
     })
     expect(after.lastTickAt).toBe(NOON.toISOString())
+  })
+
+  it("marks its spawn frame as burndown's, so the dispatch row does not record the human (CC-802)", () => {
+    const frame = spawnFrame({
+      name: 'bd-x',
+      profile: 'bd-implementer',
+      brief: 'b',
+      cwd: repo(),
+      configDir: accountPath(),
+      initiative: 'demo',
+      taskId: 'X',
+    })
+
+    expect(frame.spawnedAs).toBe('burndown')
   })
 
   it('refuses to send a spawn whose claim was never recorded', async () => {
@@ -802,6 +834,8 @@ describe('burndown tick advances claims', () => {
       agentName: 'bd-dm-1',
       spawned: ['bd-dm-1'],
       worktree,
+      // Already resumed once, so this silent exit goes to review (CC-673).
+      resumed: true,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
     const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited', worktree)] })
@@ -820,6 +854,37 @@ describe('burndown tick advances claims', () => {
       phase: 'spawning',
       nextPhase: 'reviewing',
     })
+  })
+  it('resumes an implementer that exited silently with commits and no PR, once (CC-673)', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const worktree = path.join(repo(), '.worktrees', 'bd-dm-1')
+    git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/bd-dm-1', worktree)
+    git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+      worktree,
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+
+    expect(fake.frames).toEqual([
+      expect.objectContaining({
+        name: 'bd-dm-1-s1',
+        brief: expect.stringContaining('Resume task DM-1'),
+        worktree,
+      }),
+    ])
+    expect(readLedger(burndownLedgerPath()).claims).toEqual([
+      expect.objectContaining({ phase: 'spawning', nextPhase: 'implementing', resumed: true }),
+    ])
   })
 })
 
@@ -858,7 +923,10 @@ function seatPolicy({
     path.join(root, 'seats', 'seat-t.md'),
     `---\n${role}prefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}${more}\n${concurrency}${granted}\n---\n`,
   )
-  write(path.join(root, 'seats', 'seat-e.md'), '---\nprefix: se\npool: pool-t\n---\n')
+  write(
+    path.join(root, 'seats', 'seat-e.md'),
+    '---\nprefix: se\npool: pool-t\nconcurrency: {implementers: 1}\n---\n',
+  )
 }
 
 /** A focused initiative with no autonomy block, which only seats mode dispatches from. */
@@ -904,8 +972,8 @@ describe('burndown tick in seats mode', () => {
     const lines = await tick(fake)
 
     expect(fake.frames.map(f => [f.name, f.profile, f.configDir])).toEqual([
-      ['st-dm-1', 'bd-implementer', accountPath()],
-      ['st-dm-2', 'bd-implementer', accountPath()],
+      ['st-dm-1', 'bd-implementer-lite', accountPath()],
+      ['st-dm-2', 'bd-implementer-lite', accountPath()],
     ])
     expect(lines.join('\n')).toContain('refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers')
     const ledger = readLedger(burndownLedgerPath())
@@ -943,36 +1011,18 @@ describe('burndown tick in seats mode', () => {
     expect(statusReads).toHaveLength(1)
   })
 
-  it('refuses the implementer when Shepherd holds the repo at its downstream WIP limit', async () => {
+  it('spawns an implementer with three PRs downstream and one reviewer when the seat cap allows it', async () => {
+    seatPolicy({ implementers: 4 })
     seatInitiative({ 'DM-1': seatTask('DM-1') })
-    const exec = stubGh(undefined, () => ({ status: 0, stdout: shepherdStatus(['review', 'merging', 'ci']) }))
-    const root = path.join(world, 'aw')
-    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    const exec = stubGh(undefined, () => ({
+      status: 0,
+      stdout: shepherdStatus(['review', 'merging', 'awaiting-approval']),
+    }))
 
     const lines = await tick(fakeBroker(), true, () => {}, exec)
-    const planned = seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec })
 
-    const reason =
-      'acme/widgets has 2 PRs in review or waiting, at its WIP limit of 2 (2x concurrency.reviewers, at least 2)'
-    expect(lines).toContainEqual(expect.stringContaining(`refused demo DM-1 [wip]: ${reason}`))
-    expect(lines.join('\n')).not.toContain('would spawn st-dm-1')
-    expect(planned.dispatch).toEqual([])
-    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'wip', reason })])
-  })
-
-  it('refuses the implementer as unknown downstream WIP when Shepherd status fails', async () => {
-    seatInitiative({ 'DM-1': seatTask('DM-1') })
-    const exec = stubGh(undefined, () => ({ status: 1, stdout: '', stderr: 'shepherd down' }))
-    const root = path.join(world, 'aw')
-    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
-
-    const lines = await tick(fakeBroker(), true, () => {}, exec)
-    const planned = seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec })
-
-    const reason = `could not read Shepherd status, so downstream WIP for ${repo()} is unknown`
-    expect(lines).toContainEqual(expect.stringContaining(`refused demo DM-1 [wip]: ${reason}`))
-    expect(planned.dispatch).toEqual([])
-    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'wip', reason })])
+    expect(lines.join('\n')).toContain('would spawn st-dm-1')
+    expect(lines.join('\n')).not.toContain('[wip]')
   })
 
   it('stops at the pool gate with the BUDGET-PAUSE reason', async () => {
@@ -1068,20 +1118,46 @@ describe('burndown tick in seats mode', () => {
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
 
     const lines = renderPlan(
-      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec: stubGh() }),
+      seatPlanFromDisk({
+        seat: 'seat-t',
+        now: NOON,
+        root,
+        autonomyRoot,
+        exec: stubGh(undefined, serviceCheck()),
+      }),
       NOON,
     )
 
     expect(lines.map(l => l.replace(/: score .*$/, ''))).toEqual([
       `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
-      `would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
-      `would dispatch demo DM-2 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-2`,
+      'service check: ok',
+      `would dispatch demo DM-1 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-1`,
+      `would dispatch demo DM-2 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-2`,
       'refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers',
       'scorer skipped: 0',
     ])
-    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot, exec: stubGh() })).toThrow(
       'seat-e has no dispatch scope',
     )
+  })
+
+  it('burndown plan --seat prints the stopped line under its header after a second stopping read', () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      serviceCheck: { at: NOON.toISOString(), cause: 'stale pid' },
+    })
+    const exec = stubGh(undefined, serviceCheck('crash loop', 'serve restarted 3 times'))
+
+    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec }), NOON)
+
+    expect(lines[1]).toBe(
+      'service check: line stopped (stale pid, then crash loop): serve restarted 3 times; only cos:expedite and planners dispatch',
+    )
+    expect(lines).toContainEqual(expect.stringMatching(/^refused demo DM-1 \[stop-line\]/))
   })
 
   it("burndown plan --seat plans the charter's hub seat from its seat file when its role is not hub", () => {
@@ -1097,7 +1173,7 @@ describe('burndown tick in seats mode', () => {
 
     expect(lines).toContainEqual(
       expect.stringMatching(
-        `^would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
+        `^would dispatch demo DM-1 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-1`,
       ),
     )
   })
@@ -1108,7 +1184,7 @@ describe('burndown tick in seats mode', () => {
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
     write(path.join(autonomyRoot, 'seats', 'seat-e.md'), '---\nrole: hub\nprefix: se\npool: pool-t\n---\n')
 
-    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot, exec: stubGh() })).toThrow(
       'seat-e is the hub seat and dispatches nothing',
     )
   })
@@ -1175,7 +1251,7 @@ describe('burndown tick in seats mode', () => {
     const lines = await tick(fakeBroker(), true)
 
     expect(lines.join('\n')).toContain(
-      `would spawn st-dm-1 as bd-implementer (headless) on ${accountPath()} in ${repo()}`,
+      `would spawn st-dm-1 as bd-implementer-lite (headless) on ${accountPath()} in ${repo()}`,
     )
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })
@@ -1359,6 +1435,7 @@ describe('burndown tick advances a seat claim', () => {
       agentName: 'st-dm-1',
       spawned: ['st-dm-1'],
       worktree,
+      resumed: true,
       ...over,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
@@ -1537,15 +1614,26 @@ describe('burndown tick advances a seat claim', () => {
   })
 })
 
-describe('burndown tick leak check', () => {
+// The scanner runs git by name; CI's node lives in a toolcache dir without one.
+const SCAN_PATH = [
+  path.resolve('node_modules/.bin'),
+  path.dirname(process.execPath),
+  path.dirname(GIT_BIN),
+].join(':')
+const scanner = probeScanner(SCAN_PATH)
+
+describe.skipIf(scanner === undefined)('burndown tick leak check', () => {
   const PR = 'https://github.com/example/demo/pull/7'
-  const PRIVATE = 'quokkaproject'
+  const PRIVATE = 'zz-private-fixture'
+  let egress: EgressRunner
 
   beforeEach(() => {
     seatPolicy()
     config({ seats: ['seat-t'] })
     seatInitiative({ 'DM-1': seatTask('DM-1') })
-    write(path.join(world, 'home', 'private-denylist.json'), JSON.stringify({ 'private-name': [PRIVATE] }))
+    const termsFile = path.join(world, 'private-terms')
+    fs.writeFileSync(termsFile, `${PRIVATE}\n`, { mode: 0o600 })
+    egress = egressRunner({ path: SCAN_PATH, home: world, termsFile, probe: () => scanner })
   })
 
   function claimWithPr(): string {
@@ -1595,12 +1683,12 @@ describe('burndown tick leak check', () => {
     const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
     const exec = pulls(openPr({ body: `Imports the ${PRIVATE} tables` }))
 
-    await tick(fake, false, () => {}, exec)
-    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec, egress)
+    await tick(fake, false, () => {}, exec, egress)
 
     expect(fake.sends).toHaveLength(1)
     expect(fake.sends[0]?.to).toBe('seat-t')
-    expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body:1 private-name`)
+    expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body 1:13 private-term`)
     expect(fake.sends[0]?.text).not.toContain(PRIVATE)
     expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toEqual(['dispatched', 'leak'])
   })
@@ -1615,10 +1703,10 @@ describe('burndown tick leak check', () => {
     const refsBefore = git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')
     const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
 
-    await tick(fake, false, () => {}, pulls(openPr()))
+    await tick(fake, false, () => {}, pulls(openPr()), egress)
 
     expect(fake.sends).toHaveLength(1)
-    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{12} notes\.md:1 private-name/)
+    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{7,} notes\.md:1 private-term/)
     expect(fake.sends[0]?.text).not.toContain(PRIVATE)
     expect(git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore)
   })
@@ -1634,11 +1722,11 @@ describe('burndown tick leak check', () => {
     })
     const exec = pulls(openPr(), stray)
 
-    await tick(fake, false, () => {}, exec)
-    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec, egress)
+    await tick(fake, false, () => {}, exec, egress)
 
     expect(fake.notices).toHaveLength(1)
-    expect(fake.notices[0]).toContain('title private-name')
+    expect(fake.notices[0]).toContain('title 1:1 private-term')
     expect(fake.notices[0]).not.toContain(PRIVATE)
     expect(fake.sends).toEqual([])
   })
@@ -1663,6 +1751,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
       agentName: name,
       spawned: [name],
       worktree,
+      resumed: true,
     }
     return { claim, name, worktree }
   }
@@ -1793,7 +1882,7 @@ describe('burndown tick wakes the decider', () => {
     const lines = await tick(fake)
 
     expect(fake.resumes.map(r => r.name)).toEqual(['decider'])
-    expect(fake.resumes[0]?.message).toContain('`agent-chat inbox`')
+    expect(fake.resumes[0]?.message).toContain('`agent-chat queue --questions --json`')
     expect(fake.resumes[0]?.message).toContain('end your turn')
     expect(fake.resumes[0]?.message).not.toContain('which branch?')
     expect(fake.frames).toEqual([])
@@ -2686,5 +2775,193 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = renderStatus(readLedger(burndownLedgerPath()), at(1))
 
     expect(lines.join('\n')).toContain('STALLED (class failed, route triage, triage triage-dm-1-1 started)')
+  })
+
+  /** CC-651: a live, silent worker whose transcript last moved one minute past noon, so a finding opens at +7. */
+  function silentWorker(exceptions: Record<string, unknown>) {
+    const claim = stalledClaim('DM-1', { stalledReason: undefined, stalledClass: undefined })
+    setup({ exceptions }, [claim])
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const lastWork = at(1)
+    write(file, turn(lastWork))
+    return { agents: [worker], file, lastWork }
+  }
+  const turn = (when: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: when.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+  const findingLines = (fake: Fake) =>
+    fake.sends.flatMap(s => s.text.split('\n').filter(l => l.startsWith('stalled-after-claim ')))
+
+  it('triages a finding once under its id, through refreshes, and tells no one when it closes mid-job', async () => {
+    const { agents, file } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    const openedAt = claimOf()?.finding?.openedAt
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 17)
+    const status = renderStatus(readLedger(burndownLedgerPath()), at(17))
+    fs.appendFileSync(file, turn(at(18)))
+    await tickAt(fake, 19)
+    agents[1] = row('triage-dm-1-1', 'exited', path.join(world, 'aw'))
+    await tickAt(fake, 21)
+
+    expect(openedAt).toBe(at(7).toISOString())
+    expect(triageFrames(fake)).toEqual([
+      expect.objectContaining({
+        name: 'triage-dm-1-1',
+        brief: expect.stringMatching(/class: stalled\nfinding: no-progress: idle/),
+      }),
+    ])
+    expect(status.join('\n')).toContain(
+      '(class stalled, route triage, triage triage-dm-1-1 started) FINDING stalled-after-claim',
+    )
+    expect(findingLines(fake)).toEqual([])
+    expect(claimOf()?.finding).toBeUndefined()
+    expect(claimOf()?.triage).toBeUndefined()
+  })
+
+  it('tells the owner of a finding whose triager exits with it still open, once', async () => {
+    const { agents, lastWork } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 9)
+    await tickAt(fake, 10)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(findingLines(fake)).toEqual([
+      `stalled-after-claim DM-1: no-progress: idle: no agent event for 8 min since ${lastWork.toISOString()}`,
+    ])
+  })
+
+  it('with the dial at owner delivers a finding exactly as before, even with triage configured', async () => {
+    const { agents, lastWork } = silentWorker({ triage: { account: 'agents' } })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+
+    expect(fake.frames).toEqual([])
+    expect(fake.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${at(7).toISOString()}\nstalled-after-claim DM-1: no-progress: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+      },
+    ])
+  })
+})
+
+describe('burndown tick reads the real broker view and checkouts (CC-946)', () => {
+  const exitedAgent = (name: string, exitedAt: number): AgentIdentity => ({
+    ...row(name, 'exited'),
+    exitedAt,
+  })
+  const clientWith = (agents: AgentIdentity[]): BrokerClient =>
+    ({
+      request: async (frame: { t: string }) =>
+        frame.t === 'list'
+          ? { t: 'list_result', sessions: [], claims: [] }
+          : { t: 'agents_result', agents, slots: { held: 4, cap: 36 } },
+    }) as unknown as BrokerClient
+  const over = (client: BrokerClient): Fake => {
+    const fake = fakeBroker()
+    const real = tickBroker(client, fake.broker.seatSender, () => NOON.getTime())
+    return { ...fake, broker: { ...fake.broker, roster: real.roster, collisionView: real.collisionView } }
+  }
+
+  it('refuses a task whose foreign agent exited within the last tick, through the real collisionView', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const fake = over(clientWith([exitedAgent('pc-dm-1-swap', NOON.getTime() - 60_000)]))
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toMatch(
+      /refused demo DM-1 \[claimed\].*pc-dm-1-swap.*exited less than one tick ago/,
+    )
+  })
+
+  it('does not refuse once the exit is older than a tick', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const fake = over(clientWith([exitedAgent('pc-dm-1-swap', NOON.getTime() - 3_600_000)]))
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+  })
+
+  it("dispatches a planner's first slice in the tick its exited planner is seeded, not a tick later", async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const slices = '[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["src/x.ts"]}]'
+    write(
+      planPathFor(path.join(world, 'aw', 'demo'), 'DM-1'),
+      `# plan\n\n\`\`\`burndown-slices\n${slices}\n\`\`\`\n`,
+    )
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentName: 'st-dm-1',
+          spawned: ['st-dm-1'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'planning',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const fake = over(clientWith([exitedAgent('st-dm-1', NOON.getTime() - 60_000)]))
+
+    const lines = await tick(fake)
+
+    expect(lines.join('\n')).not.toContain('exited less than one tick ago')
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-a'])
+  })
+
+  it('aims a ready slice at the seat checkout that holds what it owns, so the trust check names it', async () => {
+    const other = path.join(world, 'other-repo')
+    fs.mkdirSync(other, { recursive: true })
+    git(other, 'init', '-q', '-b', 'main')
+    git(other, 'commit', '-q', '--allow-empty', '-m', 'init')
+    write(path.join(other, 'packages', 'cli', 'x.ts'), 'export {}\n')
+    seatPolicy({ extraRepo: other })
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          slice: 'a',
+          owns: ['packages/cli/x.ts'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'queued',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain(
+      `refused demo DM-1 [trust]: no accepted trust entry for ${other} or ${other}/.worktrees/st-dm-1-a`,
+    )
   })
 })

@@ -1,6 +1,13 @@
 import { burndownLedgerPath } from '../../paths.js'
 import { heldUntil } from '../../agents/burndown/backoff.js'
-import { readLedger, withLedgerLock, writeLedger, type Claim } from '../../agents/burndown/ledger.js'
+import { shepherdTarget } from '../../agents/burndown/shepherd.js'
+import {
+  readLedger,
+  withLedgerLock,
+  writeLedger,
+  type Claim,
+  type Ledger,
+} from '../../agents/burndown/ledger.js'
 import type { Report } from '../command.js'
 
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -25,23 +32,80 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
 /**
  * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
  * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
+ * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`.
  */
-export async function releaseTask(task: string, retire: RetireCall, now = new Date()): Promise<Report> {
+export async function releaseTask(
+  task: string,
+  retire: RetireCall,
+  now = new Date(),
+  slice?: string,
+): Promise<Report> {
   const file = burndownLedgerPath()
   const locked = await withLedgerLock(file, () => {
     const ledger = readLedger(file)
-    const dropped = ledger.claims.filter(c => c.taskId === task && c.phase !== 'done')
+    const dropped = ledger.claims.filter(
+      c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
+    )
     if (dropped.length === 0) return { dropped, hold: undefined }
-    const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
     const claims = ledger.claims.filter(c => !dropped.includes(c))
-    writeLedger(file, { ...ledger, claims, releases: { ...ledger.releases, [task]: record } })
+    if (slice !== undefined) {
+      writeLedger(file, releaseSlice(ledger, claims, task, slice))
+      return { dropped, hold: undefined }
+    }
+    const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
+    writeLedger(file, {
+      ...withoutSliceReleases(ledger, task),
+      claims,
+      releases: { ...ledger.releases, [task]: record },
+    })
     return { dropped, hold: record }
   })
   if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
   const { dropped, hold } = locked.value
-  if (hold === undefined) return refusedReport(`no held claim on ${task}`)
+  const what = slice === undefined ? task : `${task} slice ${slice}`
+  if (dropped.length === 0) return refusedReport(`no held claim on ${what}`)
   const lines: string[] = []
   for (const claim of dropped) lines.push(describeClaim(claim), ...(await retireNames(claim, retire)))
-  lines.push(`released ${hold.n} times; held until ${new Date(heldUntil(hold)).toISOString()}`)
+  if (hold !== undefined)
+    lines.push(`released ${hold.n} times; held until ${new Date(heldUntil(hold)).toISOString()}`)
   return { ok: true, lines }
+}
+
+/**
+ * One slice's release: the task's other slices keep their claims, the task stays seeded, and the dropped
+ * slice no longer gates its dependents. No backoff is counted, since that would hold the other slices back.
+ */
+function releaseSlice(ledger: Ledger, claims: Claim[], task: string, slice: string): Ledger {
+  const released = [...new Set([...(ledger.slicesReleased?.[task] ?? []), slice])]
+  return { ...ledger, claims, slicesReleased: { ...ledger.slicesReleased, [task]: released } }
+}
+
+/** A whole-task release lets the task be seeded again. */
+function withoutSliceReleases(ledger: Ledger, task: string): Ledger {
+  const { slicesReleased: all, ...rest } = ledger
+  const { [task]: _cleared, ...kept } = all ?? {}
+  return Object.keys(kept).length === 0 ? rest : { ...rest, slicesReleased: kept }
+}
+
+/**
+ * CC-978: records a hand-dispatched PR on a queued slice, so the tick never dispatches the slice and
+ * finishes it when the PR merges. Refused for a claim that is not queued or a PR Shepherd cannot name.
+ */
+export async function linkSlicePr(task: string, slice: string, pr: string): Promise<Report> {
+  if (shepherdTarget(pr) === undefined)
+    return refusedReport(`${pr} is not a GitHub PR (owner/repo#n or its URL)`)
+  const file = burndownLedgerPath()
+  const locked = await withLedgerLock(file, () => {
+    const ledger = readLedger(file)
+    const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
+    if (claim?.phase !== 'queued') return claim?.phase ?? 'no held claim'
+    writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
+    return undefined
+  })
+  if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
+  if (locked.value !== undefined)
+    return refusedReport(
+      `${task} slice ${slice} is not queued (${locked.value}); only a queued slice takes a link`,
+    )
+  return { ok: true, lines: [`linked ${task} slice ${slice} to ${pr}; the tick will not dispatch it`] }
 }

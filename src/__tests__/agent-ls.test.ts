@@ -150,3 +150,61 @@ describe('agent ls default output', () => {
     ])
   })
 })
+
+describe('agent ls filters (CC-888)', () => {
+  const agent = (name: string, state: AgentIdentity['state'], connected: boolean): AgentIdentity => {
+    roster.sessions = [...(roster.sessions as { name: string }[]), ...(connected ? [{ name }] : [])]
+    return { ...liveAgent(), name, agentId: `id-${name}`, state }
+  }
+
+  beforeEach(() => {
+    roster.sessions = []
+    roster.agents = [
+      agent('alpha', 'live', true),
+      agent('beta', 'exited', false),
+      agent('gamma', 'retired', false),
+    ]
+  })
+
+  const names = async (...flags: string[]): Promise<string[]> =>
+    JSON.parse(await lsOutput('--json', ...flags)).map((row: { name: string }) => row.name)
+
+  it('keeps only agents in the given state', async () => {
+    expect(await names('--state', 'running')).toEqual(['alpha'])
+  })
+
+  it('accepts --state repeatedly and keeps agents in any of the states', async () => {
+    expect(await names('--state', 'finished', '--state', 'retired')).toEqual(['beta', 'gamma'])
+  })
+
+  it('refuses a state the roster never reports', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit')
+    }) as never)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(lsOutput('--state', 'sleeping')).rejects.toThrow('exit')
+    expect(exit).toHaveBeenCalled()
+  })
+
+  it('keeps only the agent with exactly that name', async () => {
+    expect(await names('--name', 'beta')).toEqual(['beta'])
+    expect(await names('--name', 'bet')).toEqual([])
+  })
+
+  it('prints one line per agent with --format line', async () => {
+    const text = await lsOutput('--format', 'line')
+
+    expect(text.split('\n')).toEqual([
+      'alpha running implementer id-alpha /tmp/cc176-nowhere',
+      'beta finished implementer id-beta /tmp/cc176-nowhere',
+      'gamma retired implementer id-gamma /tmp/cc176-nowhere',
+    ])
+  })
+
+  it('combines --format line with the filters', async () => {
+    expect(await lsOutput('--format', 'line', '--state', 'retired')).toBe(
+      'gamma retired implementer id-gamma /tmp/cc176-nowhere',
+    )
+  })
+})

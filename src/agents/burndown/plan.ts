@@ -7,6 +7,7 @@ import {
   IMPLEMENTER_PROFILE,
   pickTask,
   PLANNER_PROFILE,
+  isBriefer,
   profileFor,
   SONNET_PROFILES,
   type Initiative,
@@ -29,6 +30,8 @@ export interface Dispatch {
   /** A planner's slice, dispatched from a `queued` claim rather than a task file. */
   slice?: string
   profile: string
+  /** CC-939: a planner-profile spawn that writes the task's brief. */
+  briefer?: boolean
   account: string
   /** Where trust was checked: the repo for a planner, the worktree the spawn will cut otherwise. */
   cwd: string
@@ -90,6 +93,8 @@ export interface Plan {
   notOptedIn: string[]
   /** A seat plan's malformed open tasks the scorer left out; absent for the unseated plan. */
   skippedTasks?: string[]
+  /** A seat plan's service-check state, printed under the header; absent for the unseated plan. */
+  serviceCheck?: string
 }
 
 /** A claim with no `namePrefix` names its agents `bd-...`, as every claim did before seats (CC-205). */
@@ -172,6 +177,7 @@ interface Work {
   taskId: string
   slice?: string
   profile: string
+  briefer?: boolean
   /** A queued slice's claim prefix and seat, so its implementer shares the planner's. */
   namePrefix?: string
   seat?: string
@@ -235,7 +241,10 @@ function nextWork(
         inputs.ledger,
       )
     if (refusal === undefined)
-      return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
+      return {
+        work: { taskId: task.id, profile, ...(isBriefer(task) ? { briefer: true } : {}) },
+        refusals: [...blocked, ...refusals],
+      }
     blocked.push(refusal)
   }
 }
@@ -306,6 +315,7 @@ function place(
     task: work.taskId,
     ...(work.slice === undefined ? {} : { slice: work.slice }),
     profile,
+    ...(work.briefer === true ? { briefer: true } : {}),
     account: chosen.account,
     cwd,
     repo,

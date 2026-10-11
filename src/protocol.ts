@@ -2,9 +2,34 @@ import {
   SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
   type SurfaceName as PackageSurfaceName,
 } from '@titan-design/agent-surface'
+import type { AgentProfile } from './agents/types.js'
 
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
+
+/**
+ * CC-881: a teleport successor for a session on another host, in host-neutral terms only. The
+ * broker records the successor; the caller's MCP process builds the plan, every path, the env and
+ * the MCP config from its OWN host, so nothing here names a binary, a directory or a variable.
+ */
+export interface RemoteLaunch {
+  agentId: string
+  sessionId: string
+  name: string
+  profile: RemoteProfile
+  brief: string
+  preamble: string
+  surface: PackageSurfaceName
+  tags?: string[]
+  subscriptions?: Subscription[]
+  remoteControl?: boolean
+  anchor?: string
+  /** CC-913: this landing's secret; the only proof a later `teleport_land_failed` came from the caller that armed it. */
+  landToken?: string
+}
+
+/** A profile without the fields that run something or set the environment on the caller's host. */
+export type RemoteProfile = Omit<AgentProfile, 'env' | 'mcpServers' | 'warnings'>
 
 export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
 
@@ -317,6 +342,12 @@ export type SubscribableKind = (typeof SUBSCRIBABLE_KINDS)[number]
  */
 export type SubscriptionSelector = { all: true } | { name: string } | { tag: string } | { spawnedBy: 'self' }
 
+/** CC-168: which experiment a spawn belongs to and which arm it runs, recorded on its spawn row. */
+export interface ExperimentArm {
+  id: string
+  arm: string
+}
+
 export interface Subscription {
   selector: SubscriptionSelector
   kinds: SubscribableKind[]
@@ -497,6 +528,20 @@ export interface CursoredMessage extends DeliveredMessage {
 }
 
 /**
+ * What the human did with one service question (CC-169). `text` is the human's
+ * words for an answer and the resolution body for a dismissal.
+ */
+export interface ServiceAnswer {
+  msgId: string
+  questionId: string
+  outcome: 'answered' | 'dismissed'
+  text: string
+  by: 'human'
+  channel?: string
+  at: number
+}
+
+/**
  * Per addressee rather than per route, because a multicast can succeed for some
  * names and fail for others, and collapsing that into one ok/reason pair makes
  * the sender guess which. Additive: `recipients` still lists who took it.
@@ -585,6 +630,8 @@ export type ClientMessage =
        * asks `process.kill(pid, 0)` to decide whether a session is up.
        */
       hostPid?: number
+      /** The machine `hostPid` lives on (CC-880); absent from an older client, which the broker treats as remote. */
+      host?: string
       termSessionId?: string
       /**
        * Many, not one: a session is usually in more than one conversation. Still
@@ -648,6 +695,7 @@ export type ClientMessage =
       cwd: string
       pid: number
       hostPid?: number
+      host?: string
       termSessionId?: string
       /** Re-derived on the way back in; a reclaimed registration is still a registration. */
       observed?: ObservedPresence
@@ -711,7 +759,11 @@ export type ClientMessage =
    */
   | { t: 'tag'; target?: string; add?: string[]; remove?: string[] }
   | { t: 'broadcast'; text: string }
-  | { t: 'inbox'; limit: number }
+  /**
+   * `after` (CC-886) switches to "what arrived after this msg_id", oldest first;
+   * absent, the frame is the newest-N replay it always was.
+   */
+  | { t: 'inbox'; limit: number; after?: string }
   | ({ t: 'ask'; text: string } & ItemShape)
   | ({ t: 'notify'; text: string } & Pick<ItemShape, 'kind' | 'task'>)
   | { t: 'queue' }
@@ -763,6 +815,12 @@ export type ClientMessage =
    * session being read, so a watcher costs its own peer nothing.
    */
   | { t: 'inbox_since'; name: string; afterId: number; limit: number }
+  /**
+   * Answers and dismissals of the service questions filed under label `name`
+   * (CC-169), oldest first, after the row whose msg_id is `after`, or from the
+   * start when it is absent. A pure read, open to an unregistered connection.
+   */
+  | { t: 'answers_since'; name: string; after?: string; limit: number }
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }
   /** Whether `from` sent `to` a `Status:` or `Verdict:` report at or after `since` (CC-135), with no row window. */
@@ -785,6 +843,15 @@ export type ClientMessage =
   | { t: 'permission_hook'; session: string; toolName: string; toolInput: unknown; description?: string }
   /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
   | { t: 'permission_hook_withdrawn'; msgId: string }
+  /**
+   * A process that is not a session asks the human a question under a label (CC-169).
+   *
+   * Same caller rule as `permission_hook`: an UNREGISTERED connection only, and
+   * `as` is a label the caller supplies, not an identity the broker vouches for.
+   * The row carries `meta.source = 'service'`, which the decider path refuses,
+   * so only an answer from the human queue can close it.
+   */
+  | ({ t: 'service_ask'; as: string; text: string } & ItemShape)
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -877,17 +944,38 @@ export type ClientMessage =
        * from the log, and refuses unless the requester spawned it.
        */
       predecessor?: string
+      /** CC-168: the experiment and arm this spawn runs; both must be non-empty or the spawn is refused. */
+      experiment?: ExperimentArm
       /** CC-286: `none` stops the broker appending its return contract to `brief`. */
       returnContract?: 'none'
       /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */
       tier?: number
+      /**
+       * CC-802: who a CLI spawn is on behalf of. Only an unregistered connection's claim is read, since a
+       * session is already named by its registration; the row then records it in place of the human.
+       */
+      spawnedAs?: 'burndown' | 'shepherd'
+      /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
+      task?: string
+      /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
+      workRole?: string
+      /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
+      override?: 'fix-round'
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
    */
-  | { t: 'resume'; name: string; surface?: SurfaceName; message?: string; source?: WakeSource }
+  | {
+      t: 'resume'
+      name: string
+      surface?: SurfaceName
+      message?: string
+      source?: WakeSource
+      /** CC-883: run with `--remote-control` if the agent is a coordinator; a worker resumes without it. */
+      remoteControl?: boolean
+    }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
    * commits it was protecting. Optional so an older client still type-checks,
@@ -914,7 +1002,15 @@ export type ClientMessage =
    * deliberately succeed itself onto a cheaper or stronger model. Absent means
    * "whatever this session is running on now", which is the point of teleport.
    */
-  | { t: 'teleport'; handoff: string; model?: string; remoteControl?: boolean; reason?: TeleportReason }
+  | {
+      t: 'teleport'
+      handoff: string
+      model?: string
+      remoteControl?: boolean
+      /** CC-883: the caller's own read of its Claude Code argv, which a broker on another host cannot make. */
+      remoteControlSeen?: boolean
+      reason?: TeleportReason
+    }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
    * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a
@@ -922,6 +1018,22 @@ export type ClientMessage =
    * could already retire or kill anything on a 0600 socket.
    */
   | { t: 'teleport_abort'; name: string }
+  /**
+   * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
+   * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
+   */
+  | { t: 'teleport_plan_wait' }
+  /**
+   * CC-881: that host's report on the plan, sent before it ends its own Claude Code. Since CC-913
+   * `ok` means armed, not launched: the successor is typed into the predecessor's pane once it exits.
+   */
+  | { t: 'teleport_launched'; agentId: string; ok: boolean; reason?: string }
+  /**
+   * CC-913: the armed successor could not be placed, in its predecessor's pane or beside it. Names
+   * the successor and carries its landing's `landToken`, which only the caller that armed it holds;
+   * refused once the successor registered. The broker retires it and tells whoever is left.
+   */
+  | { t: 'teleport_land_failed'; agentId: string; token: string; reason: string }
   /**
    * Pull a headless agent into a terminal window. This one DOES name an agent,
    * and that is the deliberate divergence from `teleport` above: the case it
@@ -991,7 +1103,7 @@ export type ServerMessage =
     }
   /** `tags` is the subject's full set after the change, so a caller sees the result. */
   | { t: 'tag_result'; ok: boolean; reason?: string; subject?: string; tags: SessionTag[] }
-  | { t: 'inbox_result'; messages: DeliveredMessage[] }
+  | { t: 'inbox_result'; messages: DeliveredMessage[]; truncated?: boolean; error?: string }
   /** `decided` lists questions the decider answered in the last 24 hours, for the human to audit. */
   | { t: 'queue_result'; items: QueueItem[]; decided?: DecidedItem[] }
   | { t: 'decided_result'; ok: boolean; reason?: string; code?: DecidedRefusal }
@@ -1009,6 +1121,11 @@ export type ServerMessage =
    * quiet inbox would re-scan the same rows on every poll forever.
    */
   | { t: 'inbox_since_result'; messages: CursoredMessage[]; nextCursor: number }
+  /**
+   * `next` is the msgId of the last answer returned, absent when none was. An
+   * `after` the log does not hold gives `error` and no rows, never a replay.
+   */
+  | { t: 'answers_since_result'; answers: ServiceAnswer[]; next?: string; error?: string }
   /** `session` is absent when the name has no live registration; `events` outlives it. */
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'reported_result'; reported: boolean }
@@ -1026,6 +1143,8 @@ export type ServerMessage =
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
+  /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
+  | { t: 'service_ask_result'; ok: boolean; msgId?: string; reason?: string }
   /**
    * `fatal` means stop, do not reconnect. It exists for exactly one case and the
    * case is not optional: a connection displaced by a resume takeover would
@@ -1059,6 +1178,8 @@ export type ServerMessage =
         | 'machine_headless_limit'
         | 'machine_memory_floor'
         | 'seat_budget_stop'
+        | 'seat_spawn_overlap'
+        | 'seat_hand_reserve'
       /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
       retryable?: boolean
       warnings?: string[]
@@ -1103,7 +1224,12 @@ export type ServerMessage =
       /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
       countdownMs?: number
       warnings?: string[]
+      /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
+      remote?: boolean
     }
+  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
+  | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
+  | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the
@@ -1185,6 +1311,20 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
+  provisionalName?: true
+  /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
+  repo?: string
+  /** CC-915: the worktree's branch. */
+  branch?: string
+  /** CC-915: the commit a new worktree branch was cut from; a resume onto a fresh branch replaces it. */
+  base?: { sha: string; ref: string }
+  /** CC-915: the task id the spawner assigned. */
+  task?: string
+  /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other. Set on every folded identity. */
+  workRole?: string
+  /** CC-915: the role was read from the profile and name, not stated by the spawner. */
+  workRoleInferred?: true
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
   /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */

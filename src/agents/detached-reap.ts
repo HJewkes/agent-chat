@@ -86,9 +86,17 @@ export const agentLiveness = (agent: AgentIdentity, probe: ProcessProbe): Livene
 export const awaitsExit = (agent: AgentIdentity | undefined): agent is AgentIdentity =>
   agent?.state === 'detached' && agent.exitedAt === undefined
 
-/** Rows a previous broker left detached, at the moment this one starts. */
-export const detachedAtStart = (roster: readonly AgentIdentity[]): AgentIdentity[] =>
-  roster.filter(awaitsExit)
+/** CC-489: a live or spawning row with no exit, which a broker that died wrote no detach for. */
+const liveWithoutExit = (agent: AgentIdentity): boolean =>
+  (agent.state === 'live' || agent.state === 'spawning') && agent.exitedAt === undefined
+
+/** Rows a previous broker left without an exit, detached or not, to their `lastEventAt` as this one starts. */
+export const staleAtStart = (roster: readonly AgentIdentity[]): Map<string, number> =>
+  new Map(roster.filter(a => awaitsExit(a) || liveWithoutExit(a)).map(a => [a.agentId, a.lastEventAt]))
+
+/** A boot-stale live row that has written nothing since `since`: no reattach, resume or exit. */
+export const isStaleLive = (agent: AgentIdentity, since: number | undefined): boolean =>
+  since !== undefined && liveWithoutExit(agent) && agent.lastEventAt === since
 
 /** CC-476: rows probed per event-loop turn, so a boot backlog cannot starve the socket. */
 export const REAP_BATCH = 25

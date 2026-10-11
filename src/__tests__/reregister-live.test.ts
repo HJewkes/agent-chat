@@ -20,11 +20,10 @@ import { BrokerClient } from '../client/broker-client.js'
  *
  * A short socket directory, deliberately: a unix socket path is bounded (~104
  * bytes on darwin) and a long temp path fails as an opaque EINVAL at bind time.
- * `/tmp` rather than `os.tmpdir()`, which on darwin is a long `/var/folders/...`
- * path that blows that budget — and rather than `/private/tmp`, which is the
- * darwin spelling and does not exist on the Linux CI runner.
+ * `os.tmpdir()` is the run dir global-setup.ts creates under `/tmp`, so it
+ * stays short on darwin too (CC-900).
  */
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 
 let dir: string
 let server: net.Server | undefined

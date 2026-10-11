@@ -2,16 +2,34 @@ import fs from 'node:fs'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
-import { defaultPort, home, socketPath } from '../paths.js'
-import { resolveAgentSlots, resolveMachineLimits, resolvePoolPickMode } from '../config.js'
+import { burndownConfigPath, burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
+import { activeWorkRoot } from '../agents/active-work.js'
+import {
+  resolveOrphanReapKill,
+  resolveAgentSlots,
+  resolveMachineLimits,
+  resolvePoolPickMode,
+  resolveSeatSpawnMode,
+  resolveProcessGuardMode,
+  resolveProcessKillBytes,
+  resolveAutoRetireOnReport,
+} from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
+import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
-import { readSeatSpawn, type SeatSpawnRequest } from '../agents/seats/spawn-gate-read.js'
+import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
+import {
+  readHandReserve,
+  readOverlap,
+  readSeatSpawn,
+  type OverlapRequest,
+  type SeatSpawnRequest,
+} from '../agents/seats/spawn-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
@@ -30,7 +48,10 @@ import {
 import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
+import { clearLaunchIdentity } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
+import { startOrphanSweep } from '../agents/orphan-sweep.js'
+import { startProcessGuard } from '../agents/process-guard-monitor.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -70,6 +91,8 @@ export function newAgentSlots(): Semaphore {
  * not shift under a caller that only wants to know whether it won the race.
  */
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
+  // A broker started by hand from inside an agent still must not hand that launch's identity or temp dir to its children.
+  clearLaunchIdentity(process.env)
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
   if (isHeld() || isOffLease() || !(await claimSocketPath(sock))) return null
@@ -81,6 +104,12 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
+  const stopOrphanSweep = startOrphanSweep(
+    () => core.agents.roster({ includeRetired: true }),
+    logEvent,
+    resolveOrphanReapKill,
+  )
+  const stopProcessGuard = isEphemeralHome(home()) ? () => undefined : startBrokerProcessGuard()
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -112,6 +141,8 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopIdleWatch?.()
       stopReaper()
       stopAgeOut()
+      stopOrphanSweep()
+      stopProcessGuard()
     },
   })
 
@@ -160,6 +191,23 @@ function startBrokerReaper(): () => void {
       selfPid: process.pid,
       excludePaths,
     }),
+  })
+}
+
+/** A ps slower than this fails the tick rather than stacking behind the 2 s interval. */
+const PROCESS_GUARD_PS_TIMEOUT_MS = 1000
+
+/** CC-495: never under an ephemeral home, so a test broker cannot signal the machine's processes. */
+function startBrokerProcessGuard(): () => void {
+  return startProcessGuard({
+    readTable: () => readPsTable(Date.now(), PROCESS_GUARD_PS_TIMEOUT_MS),
+    kill: pid => process.kill(pid, 'SIGKILL'),
+    log: logEvent,
+    mode: resolveProcessGuardMode,
+    limitBytes: resolveProcessKillBytes,
+    now: Date.now,
+    brokerPid: process.pid,
+    uid: process.getuid?.() ?? -1,
   })
 }
 
@@ -215,8 +263,28 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     ? {}
     : {
         seatJournal: seatJournal(defaultAutonomyRoot()),
-        seatDispatch: seatDispatchLog(defaultAutonomyRoot()),
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), { shepherd: () => shepherdRowsAsync() }),
+        shepherdSkip: cliShepherdSkipPort,
+        autoRetireOnReport: resolveAutoRetireOnReport,
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
+        seatOverlap: {
+          mode: resolveSeatSpawnMode,
+          read: (spawn: OverlapRequest) =>
+            readOverlap(
+              { root: defaultAutonomyRoot(), ledgerFile: burndownLedgerPath(), activeRoot: activeWorkRoot() },
+              spawn,
+            ),
+          handReserve: (spawn: OverlapRequest) =>
+            readHandReserve(
+              {
+                root: defaultAutonomyRoot(),
+                ledgerFile: burndownLedgerPath(),
+                activeRoot: activeWorkRoot(),
+                tickConfigFile: burndownConfigPath(),
+              },
+              spawn,
+            ),
+        },
         poolPick: {
           read: (spawn: PoolPickRequest) => readPoolPick(defaultAutonomyRoot(), spawn),
           mode: resolvePoolPickMode,

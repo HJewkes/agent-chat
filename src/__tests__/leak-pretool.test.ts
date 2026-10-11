@@ -2343,3 +2343,39 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 })
+
+describe('agent-chat gh-write with a quoted heredoc as --body-file - (CC-887)', () => {
+  const VERBS = ['pr create -t x', 'pr edit 3', 'pr comment 3', 'issue create -t x', 'issue comment 4']
+  const post = (verb: string, body: string): string =>
+    `agent-chat gh-write -- ${verb} -R o/r --body-file - <<'EOF'\n${body}\nEOF`
+  const BODY = "## Summary\nIt doesn't matter: `code`, a | b, $HOME stays literal.\n"
+
+  it.each(VERBS)('allows a clean body for %s', verb => {
+    expect(checkCommand(post(verb, BODY), ctx())).toBeUndefined()
+  })
+
+  it.each(VERBS)('denies a body that names a private term or a home path for %s', verb => {
+    expect(checkCommand(post(verb, `ok\n${TERM}`), ctx())).toContain('body line 2 private-term #1')
+    expect(checkCommand(post(verb, `see ${HOME_PATH}`), ctx())).toContain('body line 1 home-path')
+  })
+
+  it('still denies a heredoc inside gh pr create --body "$(cat <<EOF ...)"', () => {
+    const reason = checkCommand(`gh pr create -t x --body "$(cat <<EOF\nclean\n${TERM}\nEOF\n)"`, ctx())
+
+    expectRedacted(reason)
+    expect(reason).toContain('private-term #1')
+  })
+
+  it('still denies a heredoc that writes a body file posted on the same line', () => {
+    const line = `cat > b.md <<'EOF'\nclean\nEOF\nagent-chat gh-write -- pr create -t x --body-file b.md`
+
+    expect(checkCommand(line, ctx())).toBe(REASONS.writtenBody)
+  })
+
+  it.each(['writtenBody', 'stdinBody', 'unreadableBody', 'hiddenBody'] as const)(
+    'names the heredoc form in the %s deny',
+    name => {
+      expect(REASONS[name]).toContain("agent-chat gh-write -- <gh args> --body-file - <<'EOF'")
+    },
+  )
+})

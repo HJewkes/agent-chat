@@ -3,8 +3,14 @@ import path from 'node:path'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
+import { readLedger, heldClaims, type Claim } from '../burndown/ledger.js'
+import { burndownOverridePath, burndownSettingsPath } from '../../paths.js'
+import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-store.js'
+import { readInitiatives, readTasks } from '../burndown/source.js'
+import { parseTaskTags } from '../burndown/task-tags.js'
+import { taskOf } from './journal-line.js'
 import { ownsSpawns, seatOf } from './seat-of.js'
-import type { SeatSpawnInput } from './spawn-gate.js'
+import type { OverlapClaim, SeatSpawnInput } from './spawn-gate.js'
 import { savedMeters } from './stops.js'
 import { accountReading } from './watchdog.js'
 
@@ -77,4 +83,86 @@ export function readSeatSpawn(
     now: spawn.now,
   }
   return { kind: 'gate', input }
+}
+
+export interface OverlapRequest {
+  name: string
+  spawner: string
+  /** The brief's task id, when the spawn request carries one. */
+  task?: string | undefined
+}
+
+export interface OverlapFacts {
+  task: string
+  claims: OverlapClaim[]
+  briefReady?: string | undefined
+}
+
+export interface OverlapPaths {
+  /** The autonomy root, whose seat files give the name prefixes. */
+  root: string
+  ledgerFile: string
+  activeRoot: string
+}
+
+/** The task a hand spawn runs: the request's own id wins, else the seat-prefixed name's. Throws when `seats/` is unreadable. */
+function spawnTask(paths: OverlapPaths, req: OverlapRequest): string | undefined {
+  if (req.task !== undefined) return req.task.toUpperCase()
+  const match = seatOf(paths.root, req.name, req.spawner)
+  return match.kind === 'seat' ? taskOf(req.name, match.seat.seat.prefix) : undefined
+}
+
+function briefReadyOf(activeRoot: string, task: string): string | undefined {
+  for (const { slug } of readInitiatives(activeRoot)) {
+    const found = readTasks(activeRoot, slug).find(t => t.id.toUpperCase() === task)
+    if (found !== undefined) return parseTaskTags({ id: found.id, tags: found.tags }).task.briefReady
+  }
+  return undefined
+}
+
+/**
+ * CC-932: the claims and brief tag a hand spawn's task holds. Undefined when the spawn names no task.
+ * Throws when the seats directory or the ledger cannot be read; the broker logs that and lets the spawn through.
+ */
+export function readOverlap(paths: OverlapPaths, req: OverlapRequest): OverlapFacts | undefined {
+  const task = spawnTask(paths, req)
+  if (task === undefined) return undefined
+  const claims = heldClaims(readLedger(paths.ledgerFile))
+    .filter(claim => claim.taskId.toUpperCase() === task)
+    .map(claim => ({ holder: claim.agentName ?? claim.seat }))
+  return { task, claims, briefReady: briefReadyOf(paths.activeRoot, task) }
+}
+
+export interface HandReserveFacts {
+  /** The seat's `handReserve`; always positive. */
+  reserve: number
+  /** The seat's agent-name prefix. */
+  prefix: string
+  /** The non-done claims, which tell the tick's agents from hand spawns. */
+  held: Claim[]
+}
+
+/**
+ * CC-936: the seat's hand reserve and the claims that tell its hand spawns from the tick's. Undefined when the
+ * spawn names no seat or the seat reserves nothing. CC-955: resolved as the tick resolves it, with the settings
+ * and override files read beside `tickConfigFile`.
+ * Throws when the seats directory, config or ledger cannot be read; the broker logs that and lets the spawn through.
+ */
+const settingsBeside = (flat: string): SettingsPaths => ({
+  flat,
+  settings: path.join(path.dirname(flat), path.basename(burndownSettingsPath())),
+  override: path.join(path.dirname(flat), path.basename(burndownOverridePath())),
+})
+
+export function readHandReserve(
+  paths: OverlapPaths & { tickConfigFile: string },
+  req: OverlapRequest,
+): HandReserveFacts | undefined {
+  const match = seatOf(paths.root, req.name, req.spawner)
+  if (match.kind !== 'seat') return undefined
+  const { seat } = match.seat
+  const reserve =
+    loadResolvedConfig({ paths: settingsBeside(paths.tickConfigFile) }).tick.handReserve[seat.name] ?? 0
+  if (reserve <= 0 || seat.prefix === undefined) return undefined
+  return { reserve, prefix: seat.prefix, held: heldClaims(readLedger(paths.ledgerFile)) }
 }

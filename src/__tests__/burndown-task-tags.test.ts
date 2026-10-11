@@ -34,6 +34,11 @@ describe('valid planning tags', () => {
       expected: { deps: [], cos: 'standard', due: '2030-01-09' },
     },
     {
+      name: 'a brief:ready day, other brief: tags left alone',
+      tags: ['brief:ready=2026-10-01', 'brief:wanted'],
+      expected: { deps: [], cos: 'standard', briefReady: '2026-10-01' },
+    },
+    {
       name: 'the same single tag twice',
       tags: ['milestone:M1', 'milestone:M1'],
       expected: { milestone: 'M1', deps: [], cos: 'standard' },
@@ -42,7 +47,7 @@ describe('valid planning tags', () => {
     const result = parseTaskTags({ id: 'EX-1', estimate: 2, tags })
 
     expect(result.errors).toEqual([])
-    expect(result.task).toEqual({ id: 'EX-1', estimate: 2, ...expected })
+    expect(result.task).toEqual({ id: 'EX-1', estimate: 2, briefSource: 'unknown', ...expected })
   })
 
   it('omits a missing or null estimate', () => {
@@ -50,6 +55,7 @@ describe('valid planning tags', () => {
       id: 'EX-1',
       deps: [],
       cos: 'standard',
+      briefSource: 'unknown',
     })
   })
 })
@@ -94,6 +100,26 @@ describe('malformed planning tags', () => {
       errors: [{ code: 'bad-due', tag: 'due:soon' }],
     },
     {
+      name: 'a brief:ready day that is not ISO',
+      tags: ['brief:ready=10/01/2026'],
+      errors: [{ code: 'bad-tag', tag: 'brief:ready=10/01/2026' }],
+    },
+    {
+      name: 'an impossible brief:ready day',
+      tags: ['brief:ready=2026-02-30'],
+      errors: [{ code: 'bad-tag', tag: 'brief:ready=2026-02-30' }],
+    },
+    {
+      name: 'brief:ready with no day',
+      tags: ['brief:ready'],
+      errors: [{ code: 'bad-tag', tag: 'brief:ready' }],
+    },
+    {
+      name: 'two different brief:ready days',
+      tags: ['brief:ready=2026-10-01', 'brief:ready=2026-10-02'],
+      errors: [{ code: 'conflicting-tag', tag: 'brief:ready=2026-10-02' }],
+    },
+    {
       name: 'two different milestones',
       tags: ['milestone:M1', 'milestone:M2'],
       errors: [{ code: 'conflicting-tag', tag: 'milestone:M2' }],
@@ -102,6 +128,10 @@ describe('malformed planning tags', () => {
     const result = parseTaskTags({ id: 'EX-1', tags })
 
     expect(result.errors).toEqual(errors.map(e => ({ ...e, task: 'EX-1' })))
+  })
+
+  it('reads no briefReady from a malformed brief:ready tag', () => {
+    expect(parseTaskTags({ id: 'EX-1', tags: ['brief:ready=soon'] }).task).not.toHaveProperty('briefReady')
   })
 
   it('keeps the first value of a conflicting tag', () => {
@@ -172,6 +202,20 @@ describe('dep: edges across the task list', () => {
       milestone: 'M1',
       deps: ['EX-1'],
       cos: 'standard',
+      briefSource: 'unknown',
     })
   })
+})
+
+describe('brief:src', () => {
+  it.each(['seat', 'briefer', 'template'])('reads brief:src=%s as briefSource', source => {
+    expect(parseTaskTags({ id: 'EX-1', tags: [`brief:src=${source}`] }).task.briefSource).toBe(source)
+  })
+
+  it.each([[[]], [['brief:src=']], [['brief:src=robot']], [['brief:src']], [[7]]])(
+    'reads %j as unknown',
+    tags => {
+      expect(parseTaskTags({ id: 'EX-1', tags }).task.briefSource).toBe('unknown')
+    },
+  )
 })

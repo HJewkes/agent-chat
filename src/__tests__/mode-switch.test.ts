@@ -410,6 +410,7 @@ describe('an agent sending itself headless', () => {
       to: 'headless',
       requestedBy: 'scout',
       hostPid: 7777,
+      host: os.hostname(),
     })
 
     expect(result.ok).toBe(true)
@@ -435,6 +436,7 @@ describe('an agent sending itself headless', () => {
       to: 'headless',
       requestedBy: 'scout',
       hostPid: 7777,
+      host: os.hostname(),
     })
 
     expect(result.ok).toBe(true)
@@ -449,7 +451,13 @@ describe('an agent sending itself headless', () => {
    */
   it('ends Claude Code itself, on the pid the caller reported about its own process', async () => {
     await spawnAgent({ surface: 'iterm-pane' })
-    await supervisor.switchSurface({ name: 'scout', to: 'headless', requestedBy: 'scout', hostPid: 7777 })
+    await supervisor.switchSurface({
+      name: 'scout',
+      to: 'headless',
+      requestedBy: 'scout',
+      hostPid: 7777,
+      host: os.hostname(),
+    })
     expect(killed.map(k => k.pid)).toContain(7777)
   })
 

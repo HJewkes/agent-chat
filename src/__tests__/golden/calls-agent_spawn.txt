@@ -106,8 +106,18 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
   }
 ]
 
+=== agent_spawn: blank task
+args: {"name":"scout","profile":"explorer","brief":"read the log","task":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
 === agent_spawn: every optional string blank
-args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":""}
+args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":"","task":""}
 frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
 [
   {
@@ -235,6 +245,35 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","return_contra
   {
     "type": "text",
     "text": "Error: Invalid arguments: return_contract: return_contract must be one of: none"
+  }
+]
+
+=== agent_spawn: task and role
+args: {"name":"scout","profile":"explorer","brief":"read the log","task":"CC-1","role":"reviewer"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","task":"CC-1","workRole":"reviewer"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: role a numbered fix round
+args: {"name":"scout","profile":"explorer","brief":"read the log","role":"fix-round-2"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","workRole":"fix-round-2"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: role outside the vocabulary
+args: {"name":"scout","profile":"explorer","brief":"read the log","role":"boss"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: role: role must be one of: implementer, reviewer, shepherd-review, planner, other, fix-round-<n>"
   }
 ]
 

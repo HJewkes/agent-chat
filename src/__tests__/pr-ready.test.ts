@@ -112,6 +112,7 @@ interface Extra {
   trap?: Trap
   termsFile?: string
   env?: NodeJS.ProcessEnv
+  hostname?: string
 }
 
 async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}, extra: Extra = {}) {
@@ -126,8 +127,15 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     trap: extra.trap ?? (() => () => {}),
     termsFile: extra.termsFile ?? syntheticTerms(),
     env: extra.env ?? { AGENT_CHAT_BASEMENT_HOST: 'off' },
+    hostname: extra.hostname ?? 'workstation',
   })
-  return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
+  return {
+    code,
+    out,
+    calls,
+    errLines,
+    toolCalls: calls.filter(call => !call.startsWith('git ') && !call.startsWith('gh pr list')),
+  }
 }
 
 const pkg = (body: object): string => JSON.stringify(body, null, 2)
@@ -485,6 +493,22 @@ describe('pr-ready on a branch that is already pushed', () => {
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 
+  it('does not rebase an unpushed-looking branch that has an open PR, and suggests a merge', async () => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    advanceOrigin(work, { 'b.txt': '2\n' })
+    const head = git(work, 'rev-parse', 'HEAD')
+    const openPr: Override = line =>
+      line.startsWith('gh pr list --head feature') ? { code: 0, output: '[{"number":7}]' } : undefined
+
+    const result = await runPrReady(work, [], {}, { override: openPr })
+
+    expect(result.out).toContain(
+      'ok rebase: behind origin/main, branch already pushed; not rebasing; open PR: merge origin/main instead',
+    )
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
   it('still rebases a branch that tracks only the default branch', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     git(work, 'branch', '--set-upstream-to=origin/main')
@@ -655,6 +679,59 @@ describe('pr-ready scan', () => {
     expect(result.code).toBe(0)
     expect(result.out).toContain('ok scan')
     expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')}`)
+  })
+
+  it('passes the clean-tree check when the only untracked path is the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: path.join(fs.realpathSync(dir), 'pr-body.md') })
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+    fs.writeFileSync(path.join(dir, 'stray.txt'), 'x\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: 'pr-body.md' })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in stray.txt')
+  })
+
+  it('passes the clean-tree check with an untracked node_modules symlink into another checkout', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
+  })
+
+  it('passes the clean-tree check with an untracked nested node_modules directory', async () => {
+    const dir = work()
+    commit(dir, { 'packages/x/index.ts': '1\n' }, 'package')
+    writeFiles(dir, { 'packages/x/node_modules/dep/index.js': '1\n' })
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside a node_modules symlink', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+    fs.writeFileSync(path.join(dir, 'other.txt'), 'x\n')
+
+    const result = await runPrReady(dir)
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in other.txt')
   })
 
   it('reads a relative body file from the repo it checks', async () => {
@@ -829,6 +906,50 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
 
     expect(result.calls.filter(c => c.startsWith('ssh'))).toEqual([])
     expect(result.toolCalls).toEqual(['npm run lint', 'npm run typecheck'])
+  })
+
+  describe('on basement itself (CC-909)', () => {
+    const direct = (script: string) => `basement-suite agent-chat feature --agent agent-x --run ${script}`
+    const onHost = (hostname: string) => ({ override: probeOk, env: REACHABLE, hostname })
+
+    it('calls basement-suite directly and never ssh when the hostname is the basement host', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('basement'))
+
+      expect(result.code).toBe(0)
+      expect(result.toolCalls).toEqual([direct('lint'), direct('typecheck')])
+      expect(result.out).toContain('ok checks: basement lint exit 0, typecheck exit 0')
+    })
+
+    it('matches a fully qualified hostname by its first label', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('Basement.lan'))
+
+      expect(result.toolCalls).toEqual([direct('lint'), direct('typecheck')])
+    })
+
+    it('defers with direct commands when the head is not pushed', async () => {
+      const result = await runPrReady(lintKind(), [], {}, onHost('basement'))
+
+      expect(result.out).toContain(
+        `ok checks: deferred to basement after push: ${direct('lint')}; ${direct('typecheck')}`,
+      )
+      expect(result.toolCalls).toEqual([])
+    })
+
+    it('keeps the ssh probe and call on any other host', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('workstation'))
+
+      expect(result.toolCalls).toEqual([
+        'ssh -o BatchMode=yes -o ConnectTimeout=3 basement true',
+        suite('lint'),
+        suite('typecheck'),
+      ])
+    })
   })
 
   it('collapses per-member workspace commands into one run per script', async () => {

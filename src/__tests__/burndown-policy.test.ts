@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  dormantInitiatives,
   frontmatter,
   loadPolicy,
   mergeDefaults,
@@ -134,6 +135,14 @@ describe('mergeDefaults', () => {
 
     expect(charter.defaults.worktrees_per_repo_per_seat).toBeUndefined()
     expect(charter.defaults.worktrees_left_free_per_repo).toBe(2)
+  })
+
+  it("reads a pool's sonnet_band_points and refuses a negative one", () => {
+    const withBand = (band: number) =>
+      charterText().replace('---\n', `---\npools:\n  p: {config_dir: /x, sonnet_band_points: ${band}}\n`)
+
+    expect(parseCharter(withBand(0)).pools.p?.sonnet_band_points).toBe(0)
+    expect(() => parseCharter(withBand(-1))).toThrow(/sonnet_band_points/)
   })
 
   it('throws with the zod message on a charter missing a default the scorer reads', () => {
@@ -338,5 +347,22 @@ describe('policy and task reader feeding scoreAll', () => {
       '2026-09-29',
     )
     expect(rows.map(r => [r.id, r.kind, r.kindSource, r.score])).toEqual([['CC-1', 'security', 'tag', 61]])
+  })
+})
+
+describe('dormantInitiatives', () => {
+  it('names the initiatives of repos that go live only after a broker restart or v1 move', () => {
+    const seat = parseSeat(
+      [
+        '---',
+        'repos:',
+        '  - {path: /a, initiatives: [x], live_after: broker-restart}',
+        '  - {path: /b, initiatives: [y]}',
+        '  - {path: /c, initiatives: [z], live_after: v1-move}',
+        '---',
+      ].join('\n'),
+      't',
+    )
+    expect([...dormantInitiatives(seat)].sort()).toEqual(['x', 'z'])
   })
 })

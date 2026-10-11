@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { OPS } from './ops.js'
 import { lintSlices } from './slice-lint.js'
 
 /**
@@ -70,9 +71,13 @@ const PlannedSlice = z.object({
   title: z.string(),
   dependsOn: z.array(z.string()).default([]),
   owns: z.array(z.string()).default([]),
+  /** The checkout's basename or path when the work is not in the task's own repo (CC-946). */
+  repo: z.string().optional(),
   points: z.number().optional(),
   doneWhen: z.string().optional(),
   contracts: z.array(Contract).default([]),
+  /** CC-974: the ops the slice's doneWhen names; `[]` says its hits are subject matter. */
+  ops: z.array(z.enum(OPS)).optional(),
 })
 /** `contracts` is optional on the type so fixtures built by hand stay valid; `readSlices` always fills it. */
 export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { contracts?: Contract[] }

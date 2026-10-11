@@ -11,7 +11,7 @@ import { EXIT_WITH_PID_VAR, exitWithWatchedPid, watchedPid } from '../broker/par
  * any other way must behave exactly as before.
  */
 
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 const entry = (): string => path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 const DEATH_BUDGET_MS = 10_000
 

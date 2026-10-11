@@ -437,6 +437,7 @@ describe('spawning', () => {
       'Bash(agent-chat answer:*)',
       'Bash(agent-chat approve:*)',
       'Bash(agent-chat inbox:*)',
+      'Bash(agent-chat ask:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
@@ -820,7 +821,14 @@ describe('retiring reaps the process', () => {
 
   /** `pid` is the MCP subprocess; `hostPid` is Claude Code, and is the optional one. */
   const registerSession = (over: { hostPid?: number } = { hostPid: 4242 }): void => {
-    core.registry.register(fakeConn(), { name: 'scout', workingOn: 'work', cwd: '/tmp', pid: 1, ...over })
+    core.registry.register(fakeConn(), {
+      name: 'scout',
+      workingOn: 'work',
+      cwd: '/tmp',
+      pid: 1,
+      host: os.hostname(),
+      ...over,
+    })
   }
 
   const liveOn = (

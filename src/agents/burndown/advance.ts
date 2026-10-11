@@ -1,5 +1,6 @@
 import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import type { ExceptionClass } from './exception.js'
+import type { ExitedWork } from './exited-adopt.js'
 import {
   addClaim,
   isStalled,
@@ -13,6 +14,7 @@ import {
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
+import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
@@ -35,6 +37,8 @@ export interface Observation {
   report?: Report
   /** Messages to the parked worker since the claim's inbox cursor. */
   inbox?: InboxMessage[]
+  /** CC-939: whether a finished briefer's task now carries `brief:proposed`. */
+  proposed?: boolean
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
   /** CC-631: why a finished planner's slices were refused, one line per slice and rule. */
@@ -50,6 +54,8 @@ export interface Observation {
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
   spend?: { claim: ClaimSpend; cap: number }
+  /** CC-673: an implementer that exited with no status line: its branch's open PR and commits ahead. */
+  exitedWork?: ExitedWork | 'unreadable'
 }
 
 export type SpawnContext =
@@ -57,6 +63,8 @@ export type SpawnContext =
   | { kind: 'review'; review: string }
   /** A ladder respawn (CC-660): the stall's code and what the predecessor left in the worktree. */
   | { kind: 'stall'; code: StallCode; diffSummary: string }
+  /** CC-673: the predecessor exited with no status line and left commits ahead; at most once per claim. */
+  | { kind: 'resume'; ahead: number }
 
 type ClaimPatch = Partial<Omit<Claim, 'taskId' | 'slice' | 'initiative'>>
 
@@ -118,8 +126,9 @@ type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
 const STEPS: Partial<Record<Claim['phase'], Step>> = {
   spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
-  planning: (claim, obs, now) => (finished(obs) ? afterPlanner(claim, obs, now) : []),
-  implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : []),
+  planning: (claim, obs, now) =>
+    !finished(obs) ? [] : claim.briefer === true ? afterBriefer(claim, obs) : afterPlanner(claim, obs, now),
+  implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : linkPr(claim, obs)),
   parked: afterAnswer,
   reviewing: (claim, obs) => (finished(obs) ? afterReviewer(claim, obs) : []),
   'awaiting-merge': afterMerge,
@@ -128,8 +137,10 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done') return []
+  const merged = MERGES.has(claim.phase) ? landedRun(obs.shepherd) : undefined
+  if (merged !== undefined) return mergedPr(claim, merged)
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
-  if (claim.stalledReason !== undefined) return []
+  if (claim.stalledReason !== undefined) return linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
   if (claim.respawn !== undefined) return []
@@ -180,32 +191,24 @@ const landed = (claim: Claim, agentId: string): Action =>
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.slices === undefined)
     return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed', 'planner-refused')]
-  const at = now.toISOString()
-  const slices: Claim[] = obs.slices.map(s => ({
-    taskId: claim.taskId,
-    initiative: claim.initiative,
-    spawnedAt: at,
-    phase: 'queued',
-    phaseAt: at,
-    slice: s.n,
-    dependsOn: s.dependsOn,
-    ...(s.owns.length === 0 ? {} : { owns: s.owns }),
-    ...((s.contracts ?? []).length === 0 ? {} : { contracts: s.contracts }),
-    ...seatOf(claim),
-  }))
+  const slices = sliceClaims(claim, obs.slices, now)
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
+}
+
+/** CC-939: a briefer is done only once the task carries `brief:proposed`; anything else stalls, as a planner with no slices does. */
+function afterBriefer(claim: Claim, obs: Observation): Action[] {
+  const status = obs.report?.status
+  if (status === 'BLOCKED' || status === 'NEEDS_CONTEXT')
+    return [stall(claim, obs.report?.firstLine ?? status, 'failed')]
+  if (obs.proposed !== true)
+    return [stall(claim, 'briefer exited without tagging brief:proposed', 'failed', 'planner-refused')]
+  return [update(claim, { phase: 'done' }), retireAll(claim)]
 }
 
 const sliceStallReason = (problems: string[] | undefined): string =>
   problems === undefined || problems.length === 0
     ? 'planner left no machine-readable slices'
     : problems.join('\n')
-
-/** A slice keeps its planner's seat and name prefix, so its agents are named and counted as the seat's. */
-const seatOf = (claim: Claim): Pick<Claim, 'seat' | 'namePrefix'> => ({
-  ...(claim.seat === undefined ? {} : { seat: claim.seat }),
-  ...(claim.namePrefix === undefined ? {} : { namePrefix: claim.namePrefix }),
-})
 
 function afterWorker(claim: Claim, obs: Observation): Action[] {
   const report = obs.report
@@ -220,6 +223,9 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (held !== undefined) return held
   if (report?.status === 'DONE' && pr !== undefined)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
+  const silent = report === undefined || report.status === 'unknown'
+  const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
+  if (adopted !== undefined) return adopted
   if (obs.diff?.reviewable === true) {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
     return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr })
@@ -238,6 +244,25 @@ function fenced(claim: Claim, owned: Observation['owned']): Action[] | undefined
   if (first === undefined) return undefined
   const more = rest.length === 0 ? '' : ` (+${rest.length} more)`
   return [parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns`)]
+}
+
+/**
+ * CC-673: adopt what a silent exit left. An open PR goes to Shepherd; commits ahead get one
+ * resume successor per claim. An unreadable read waits a tick, under the phase timeout, rather
+ * than move on a guess. Nothing here releases the claim; undefined falls through to review or a stall.
+ */
+function adoptExited(
+  claim: Claim,
+  work: Observation['exitedWork'],
+  lastReport: string | undefined,
+): Action[] | undefined {
+  if (work === undefined) return undefined
+  if (work === 'unreadable') return []
+  if (work.openPr !== null)
+    return handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+  if (work.ahead > 0 && claim.resumed !== true)
+    return successor(claim, { kind: 'resume', ahead: work.ahead }, { resumed: true, lastReport })
+  return undefined
 }
 
 function afterAnswer(claim: Claim, obs: Observation): Action[] {
@@ -263,15 +288,57 @@ function afterReviewer(claim: Claim, obs: Observation): Action[] {
 
 const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'cancelled'])
 
-/** Shepherd merges; the claim finishes once its run has landed the PR, and stalls on a run that ended any other way. */
+/** CC-978: phases a merged PR finishes, whatever the claim's agent or a stall says; a queued one is a slice linked to a hand-dispatched PR. */
+const MERGES: ReadonlySet<Claim['phase']> = new Set([
+  'queued',
+  'implementing',
+  'awaiting-merge',
+  'shepherding',
+])
+
+function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
+  const row = run?.row
+  if (row === undefined) return undefined
+  const merged =
+    row.phase === 'post-merge' ||
+    row.outcome?.kind === 'merged' ||
+    (row.phase === 'done' && run?.landed === true)
+  return merged ? row : undefined
+}
+
+const prRef = (row: ShepherdRow): string | undefined =>
+  row.pr === null ? undefined : `${row.repo}#${row.pr}`
+
+/** A queued claim ran no agent, so it has none to retire. */
+function mergedPr(claim: Claim, row: ShepherdRow): Action[] {
+  const pr = claim.pr ?? prRef(row)
+  const finish = update(claim, {
+    phase: 'done',
+    ...(pr === undefined ? {} : { pr }),
+    ...(row.headSha === null ? {} : { prHead: row.headSha }),
+    stalledReason: undefined,
+    stalledClass: undefined,
+    stallCode: undefined,
+  })
+  return claim.phase === 'queued' ? [finish] : [finish, retireAll(claim)]
+}
+
+/** CC-978: an implementer's PR Shepherd watches is recorded on its claim, so the claim counts as waiting on it. */
+function linkPr(claim: Claim, obs: Observation): Action[] {
+  const row = obs.shepherd?.row
+  if (claim.phase !== 'implementing' || claim.pr !== undefined || row === undefined || ENDED.has(row.phase))
+    return []
+  const pr = prRef(row)
+  return pr === undefined ? [] : [update(claim, { pr })]
+}
+
+/** Shepherd merges; `advanceClaim` finishes the claim once its run has landed the PR, and this stalls a run that ended any other way. */
 function afterMerge(claim: Claim, obs: Observation): Action[] {
   if (claim.pr === undefined) return [stall(claim, 'no PR recorded for Shepherd to merge', 'failed')]
   if (obs.shepherd === undefined) return []
-  const { row, landed } = obs.shepherd
+  const { row } = obs.shepherd
   if (row === undefined) return handOff(claim, claim.pr, workerOf(claim), {})
   const head = row.headSha === null ? {} : { prHead: row.headSha }
-  if (row.phase === 'post-merge' || (row.phase === 'done' && landed === true))
-    return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
   if (ENDED.has(row.phase)) {
     const why = row.stalled === null ? '' : `: ${row.stalled.reason}`
     return [
@@ -371,7 +438,7 @@ function withLadder(ledger: Ledger, key: string, record: LadderRecord | undefine
 
 /** What a requeued slice keeps: the planner's slice and who dispatched it, none of the last attempt. */
 function requeued(claim: Claim, at: string): Claim {
-  const { taskId, initiative, slice, dependsOn, owns, contracts, seat, namePrefix, spawnedAt } = claim
+  const { taskId, initiative, slice, dependsOn, owns, repo, contracts, seat, namePrefix, spawnedAt } = claim
   return {
     taskId,
     initiative,
@@ -381,6 +448,7 @@ function requeued(claim: Claim, at: string): Claim {
     ...(slice === undefined ? {} : { slice }),
     ...(dependsOn === undefined ? {} : { dependsOn }),
     ...(owns === undefined ? {} : { owns }),
+    ...(repo === undefined ? {} : { repo }),
     ...(contracts === undefined ? {} : { contracts }),
     ...(seat === undefined ? {} : { seat }),
     ...(namePrefix === undefined ? {} : { namePrefix }),

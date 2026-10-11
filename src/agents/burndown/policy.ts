@@ -3,6 +3,7 @@ import path from 'node:path'
 import { parse } from 'yaml'
 import { z } from 'zod'
 import { activeWorkRoot } from '../active-work.js'
+import { currentAutonomyRoot } from '../autonomy-root.js'
 import type { PoolRule, SpendCaps } from './budget-gate.js'
 import type { Initiative } from './eligibility.js'
 import type { ScoringDefaults } from './score.js'
@@ -38,8 +39,11 @@ const Defaults = z.looseObject({
   readiness: z.object({ ready: z.number(), untriaged: z.number(), blocked: z.number() }),
   size: z.object({ le3: z.number(), le8: z.number(), gt8: z.number() }),
   stop_short_factor: z.number(),
+  gate_free_bonus: z.number().positive().optional(),
   worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
+  /** CC-861: idle days before the tick flags a seat's unregistered PR. */
+  stale_pr_days: z.number().int().nonnegative().optional(),
 })
 
 // An unset human_uses reads as true, which keeps the stricter five_hour ceiling.
@@ -52,6 +56,7 @@ const Pool = z.looseObject({
   per_day_points: z.number().optional(),
   dispatch_seven_day_points: z.number().nonnegative().optional(),
   dispatch_five_hour_points: z.number().nonnegative().optional(),
+  sonnet_band_points: z.number().nonnegative().optional(),
 })
 
 const Pools = orEmpty(z.record(z.string(), Pool), {})
@@ -72,21 +77,25 @@ const Concurrency = z.object({
   implementers: count.default(0),
   reviewers: count.default(0),
   planners: count.default(0),
+  /** CC-494: globs over a linked tree's branch or basename; `*` crosses `/`. Matching trees in the seat's repos count as implementers. */
+  counted_trees: z.array(z.string().min(1)).default([]),
 })
 
 const Repo = z.looseObject({
   path: z.string().min(1),
   default: z.string().optional(),
   initiatives: orEmpty(z.array(z.string()), []),
-  /** CC-784: overrides the seat's default downstream WIP limit for this checkout. */
-  wip_limit: z.number().int().nonnegative().optional(),
+  /** CC-834: `false` marks a path that is not a git checkout, so the landed check never reads it. */
+  git: z.boolean().optional(),
+  /** The repo's merged work stays dormant until this happens, e.g. `broker-restart` or `v1-move`. */
+  live_after: z.string().min(1).optional(),
 })
 
 const Seat = z.looseObject({
   prefix: z.string().min(1).optional(),
   config_dir: z.string().optional(),
   role: z.string().optional(),
-  concurrency: orEmpty(Concurrency, { implementers: 0, reviewers: 0, planners: 0 }),
+  concurrency: orEmpty(Concurrency, { implementers: 0, reviewers: 0, planners: 0, counted_trees: [] }),
   repos: orEmpty(z.array(Repo), []),
   grants_extra: orEmpty(z.array(z.string()), []),
   initiatives: orEmpty(Weights, {}),
@@ -100,6 +109,7 @@ const Seat = z.looseObject({
   backlog: z.string().min(1).optional(),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
+  stale_pr_days: z.number().int().nonnegative().optional(),
   pool: z.string().optional(),
   /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
   cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
@@ -138,6 +148,14 @@ export const parseCharter = (text: string): CharterPolicy =>
 export const parseSeat = (text: string, name: string): SeatPolicy =>
   validate(Seat, frontmatter(text), `seat file ${name}`)
 
+/**
+ * Initiatives with a repo that has `live_after`. A task names no repo, so an initiative that spans a dormant
+ * repo and a live one counts as dormant: the scorer never pays the bonus for work that may wait on a gate.
+ */
+export function dormantInitiatives(seat: SeatPolicy): Set<string> {
+  return new Set(seat.repos.filter(r => r.live_after !== undefined).flatMap(r => r.initiatives))
+}
+
 /** score.py merges only these two keys; every other default is charter-only. */
 export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): ScoringDefaults {
   return {
@@ -147,8 +165,7 @@ export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): Scoring
   }
 }
 
-export const defaultAutonomyRoot = (root = activeWorkRoot()): string =>
-  path.join(root, 'claude-channels', 'sources', 'autonomy')
+export const defaultAutonomyRoot = (root = activeWorkRoot()): string => currentAutonomyRoot(root)
 
 /** Reads `charter.md` and every seat it lists under `seats/`; throws on a seat the charter does not list. */
 export function loadPolicy(root: string, seatName: string): Policy {

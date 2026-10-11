@@ -194,7 +194,7 @@ describe('burndown plan', () => {
   })
 
   it.each([
-    ['a different release', '2.1.285', 'differs from'],
+    ['a different release', '2.1.285', 'is not one of'],
     ['no readable version', 'claude', 'cannot determine'],
   ])('refuses on trust when the installed CLI has %s, even under a trusted repo', (_, installed, reason) => {
     installClaude(installed)
@@ -251,7 +251,7 @@ describe('burndown plan', () => {
     expect(result.dispatch.map(d => [d.task, d.profile, d.cwd])).toEqual(
       expect.arrayContaining([
         ['DM-1', 'bd-planner', repo()],
-        ['OT-1', 'bd-implementer', path.join(repo(), '.worktrees', 'bd-ot-1')],
+        ['OT-1', 'bd-implementer-lite', path.join(repo(), '.worktrees', 'bd-ot-1')],
       ]),
     )
   })

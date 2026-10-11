@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ANSWER_TEXT_MAX_BYTES,
+  briefWriterBrief,
   dataFence,
   PLANNER_BRIEF_MAX_BYTES,
   plannerBrief,
@@ -102,6 +103,21 @@ describe('planner brief', () => {
     for (const op of ['replace', 'remove', 'rename', 'migrate', 'add', 'extend', 'modify']) {
       expect(brief).toContain(op)
     }
+  })
+})
+
+describe('brief writer brief (CC-939)', () => {
+  it('names the plan path and ends by tagging brief:proposed', () => {
+    const brief = briefWriterBrief(task())
+
+    expect(brief).toContain('/aw/claude-channels/sources/CC-900-plan.md')
+    expect(brief).toContain('brief:proposed=<today>')
+    expect(brief).toContain('`burndown-slices`')
+    expect(brief).toContain('Tagged: brief:proposed=<date>')
+  })
+
+  it('fits PLANNER_BRIEF_MAX_BYTES for an oversized task', () => {
+    expect(bytes(briefWriterBrief(largest()))).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)
   })
 })
 

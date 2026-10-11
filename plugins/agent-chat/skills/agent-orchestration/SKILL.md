@@ -232,9 +232,11 @@ keeping your name so peers can still reach you. Your transcript does not travel,
 handoff you write is all the successor gets. That is why 95% says stop now: past it there
 is not enough room left to write a good one.
 
-**The account rate limit is machine-wide and shared.** It is not billed to you, and nothing
-pushes it. `agent_list`/`chat_list` print it once, in the header, from whichever row's
-reading is freshest — never per row, since it is one fact, not N. Call `session_budget`
+**The account rate limit is per account and shared.** It is not billed to you, and nothing
+pushes it. `agent_list` prints one header line per account, each from the freshest reading
+on that account; `chat_list` prints one, from whichever row's reading is freshest — never
+per row. A reading over 15 minutes old shows as STALE with its age, never as a figure; do
+not pace on it. Call `session_budget`
 when you are about to make a decision that spends it and want a guaranteed-current read.
 `five_hour` recovers within a working session; `seven_day` does not, so it is the one that
 constrains a day's plan. Use it to shape the work rather than to stop:

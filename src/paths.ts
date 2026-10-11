@@ -105,11 +105,26 @@ export const ghShimDir = (): string => path.join(home(), 'gh-shim')
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 
+/** CC-931: holds the tick owes on runs it registered, retried each tick until Shepherd takes them. */
+export const burndownOwedHoldsPath = (): string => path.join(home(), 'burndown-owed-holds.json')
+
 /** The burndown tick's heartbeat and consecutive-failure count; agent-chat writes it, titan-factory reads it. */
 export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-status.json')
 
+/** One JSON summary row per burndown tick, appended; `burndown dispatch-stats` reads it (schema in tick-summary.ts). */
+export const burndownTicksPath = (): string => path.join(home(), 'burndown-ticks.jsonl')
+
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
+
+/** CC-955: per-seat settings and presets layered over `burndownConfigPath`, which is never rewritten. */
+export const burndownSettingsPath = (): string => path.join(home(), 'burndown.settings.json')
+
+/** CC-955: one time-boxed patch over the settings; ignored once its `expiresAt` has passed. */
+export const burndownOverridePath = (): string => path.join(home(), 'burndown.override.json')
+
+/** CC-955: one `{at, by, verb, before, after}` row per settings change, appended. */
+export const burndownSettingsLogPath = (): string => path.join(home(), 'burndown.settings.log.jsonl')
 
 /** Present means `burndown tick` spawns nothing; written by `burndown pause`, removed by `burndown resume`. */
 export const burndownPausePath = (): string => path.join(home(), 'burndown.paused')

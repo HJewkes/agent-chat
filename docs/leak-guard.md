@@ -166,10 +166,18 @@ A replace ref over the pushed commit did the same.
 The commits scanned for each pushed ref are `<base>..<pushed sha>`. The base is the sha git
 reports for that ref on the remote, on the hook's stdin, when the ref exists there and the
 commit is in the local object store. For a new ref, or a remote sha that is not local, the base
-is the tip of the remote's default branch. The hook asks the push URL for it with
-`git ls-remote <url> HEAD`, and fetches it into the scratch repository when it is not local.
+is the tip of the remote's default branch. The hook lists the push URL with
+`git ls-remote <url>`, reads `HEAD` from that listing, and fetches the tip into the scratch repository
+when it is not local.
 Local remote-tracking refs are never used, because `git update-ref refs/remotes/origin/x <sha>`
-writes one. This costs one more connection per push. A new ref pushed to a remote that names no
+writes one. This costs one more connection per push. The scanner also excludes every commit that listing
+advertises, so commits already on the remote (a main merged into the branch) are not rescanned.
+The scanner runs with `PATH` alone, so it cannot log in to a private remote; the hook therefore
+hands it a local bare repository under the scratch directory, whose `packed-refs` holds the listed
+tips and whose objects come from the same alternates, as its push URL. The scanner's own
+`ls-remote` of that path touches no network. If the hook's listing fails, the list is empty and
+only the remote sha of each ref is excluded: the full `<remote sha>..<pushed sha>` range. A merge
+commit is still a new commit, and the scanner reads its diff against each parent. A new ref pushed to a remote that names no
 default branch is refused.
 
 Both calls run scrubbed: `env -i` with the baked `PATH`, `HOME` set to the passwd home,
@@ -713,9 +721,18 @@ scan a body that does not exist yet when it checks the line. The body file is th
   `python3 -c "open('b.md', 'w')"` do.
 
 `cat > b.md <<'EOF' ... EOF; gh pr create --body-file b.md` is an example. A redirect target the
-guard cannot resolve counts as a possible match. A write inside `$(...)` is seen. Write the file
-in one Bash call and post it in the next. A body file that exists before the line and is not
-named by it, or one written on another line, is read and scanned as before.
+guard cannot resolve counts as a possible match. A write inside `$(...)` is seen. Pass the text
+as a quoted heredoc instead, which the guard reads as it stands and gh-write scans again when it
+runs (CC-887), or write the file in one Bash call and post it in the next:
+
+```sh
+agent-chat gh-write -- pr create -R o/r -t 'Title' --body-file - <<'EOF'
+...
+EOF
+```
+
+A body file that exists before the line and is not named by it, or one written on another line,
+is read and scanned as before.
 
 With `gh-write` in the mode above, this line is allowed instead: the post goes through
 `gh-write`, which reads the body file after the line has written it and refuses on a finding
@@ -928,12 +945,46 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `no-verify`   | an argument after `push`, including one an alias supplies, starts with `--no-veri`                                                       |
 | `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard, and a destination is not local (below)            |
-| `shell-alias` | the word is a `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside                  |
+| `shell-alias` | the word is a listed `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside           |
 | `unresolved`  | the alias read fails for a reason other than "no such key", or the alias has an open quote                                               |
 | `alias-depth` | aliases chain more than 10 deep                                                                                                          |
 | `autocorrect` | the word is no builtin, alias or `git-<word>` command, and `help.autocorrect` is not unset, `0`, `false`, `off`, `no`, `show` or `never` |
 
-git appends the arguments to a `!` alias's shell command, which can read them in more ways than
+A `!` alias whose name is not on the shell alias allowlist is refused before it runs, push or
+not, with exit 2 and a line `git-shim: refused (shell-alias)` (CC-613). Inside a `!` alias git
+puts its exec-path first on PATH, so the body's own `git` skips the shim, and a body can build
+`push` in more ways than any check can see (`echo hsup | rev | xargs -I% git %`, a `tr` or
+`base64 | sh` pipeline, a variable from the environment). So only named aliases run. The allowlist is `gitShellAliases` in `~/.agent-chat/config.json`,
+an array of alias names, and the edit is the owner's. Without it the list is empty and every
+`!` alias is refused for agents. A value that is not an array lists nothing, and an entry that
+is not an alias name is dropped; both log `config_invalid`. The list is baked into the shim at
+spawn, so a change applies to an agent's next spawn or resume, not to one already running. Names
+match exactly and in lowercase: `git HI` finds `alias.hi`, but the shim refuses it. In a chain
+the name checked is the `!` alias the chain reaches, not the word typed. A listed alias keeps
+the rule in the table and the argument checks below. The list holds names, not alias text, so
+a listed alias whose text is changed runs the new text.
+
+A listed name runs only the text that the agent's own config files give it: the system
+config, the global config under the `HOME` and `XDG_CONFIG_HOME` the shim was written with,
+and the repository's config. The shim refuses it with `git-shim: refused (shell-alias)` when
+git reports any value of `alias.<name>` from the command line. That covers `-c`,
+`--config-env`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, in any case of the key. The
+shim also refuses it when the text differs from a second read that drops `-c` and
+`--config-env`, unsets `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`,
+`GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`, and puts back the `HOME` and
+`XDG_CONFIG_HOME` baked at spawn. That covers a `-c include.path` that pulls in another file
+and a per-call swap of the global or system config file. A `-c` of an unrelated key, such as
+`-c user.name=x`, does not stop a listed alias (CC-613 d). Every config read the shim makes
+runs with `GIT_CONFIG` unset, because `git config` then reads only that file while git ignores
+it when it runs an alias or a push. The shim puts `GIT_CONFIG` back for the git it finally
+runs, so the agent's own `GIT_CONFIG=<file> git config` still reads that file.
+
+The repository is not pinned. `-C`, `--git-dir`, `GIT_DIR` and `GIT_COMMON_DIR` choose a
+repository the way `cd` does, and its config counts as a config file. Like an edit to
+`.git/config`, a repository the agent writes can still give a listed name new text; only
+baking each listed alias's text at spawn would close that.
+
+git appends the arguments to a listed `!` alias's shell command, which can read them in more ways than
 any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
 `shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash
 push` included, after removing quotes and blanks, so `pu sh` split across two arguments counts
@@ -942,7 +993,11 @@ push` included, after removing quotes and blanks, so `pu sh` split across two ar
 into `push` (`p?sh` beside a file named `push`). The accepted cost is a false refusal such as `git st push` for `st = !git
 stash`; run the command the alias stands for instead.
 
-Every text filter in the shim (`tr`, `sed`) runs under `LC_ALL=C`, so a byte that is not valid UTF-8, such as `0xff`, is read as a byte and cannot make a filter fail and blank a check (CC-612). A filter that still fails refuses with `unresolved`.
+Every text filter in the shim (`tr`, `sed`) runs under `LC_ALL=C`, so a byte that is not valid
+UTF-8, such as `0xff`, is read as a byte and cannot make a filter fail and blank a check
+(CC-612). A filter that still fails never lets a check pass. In the alias checks it refuses
+with `unresolved`. In the destination check it leaves the push not known to be local, so the
+push keeps the hooks-path rule and a refusal says `hooks-path`, not `unresolved`.
 
 The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
 on each call instead, and `push` is still matched by name.
@@ -985,15 +1040,14 @@ Not covered:
 - a `git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
   command line);
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
-  `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
-  `$(echo pu)sh`, is in this class, and so is one that builds push by transforming arguments
-  that do not mention it, such as `tr a-z b-za` over `otrg` or printf over an octal number the
-  body puts the backslash before, or reads push from a variable rather than its arguments, such
-  as `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments mention push,
-  such as `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
-- a `!` alias whose body builds and runs a git command without `$`, a backtick or a brace in
-  its arguments, such as `echo hsup | rev | xargs -I% git % --no-verify ...`, or `tr` or `base64`
-  piped to `sh` (CC-613, open; found in review d16c219d);
+  `!` aliases and `rebase --exec`. An unlisted `!` alias never runs (above), so only a listed
+  one is in this class: its body can build push at run time without any argument, such as
+  `echo hsup | rev | xargs -I% git %`, a `tr` or `base64 | sh` pipeline, or
+  `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments or text
+  mention push is refused (above);
+- a listed `!` alias whose text an agent replaces, since the allowlist holds names and not alias
+  text. Editing `.git/config` directly is one source; `git -c alias.<name>=...` and the
+  `GIT_CONFIG_*` variables, set inside a script the PreToolUse guard does not read, are others;
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
   git's exec-path first on PATH as for a `!` alias;
 - pushing without git.

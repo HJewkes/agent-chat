@@ -56,7 +56,7 @@ interface Trigger {
   fresh: boolean
 }
 
-/** Lease verdicts the ladder acts on; `dirty-uncommitted` waits for its checkpoint request (CC-659 slice D). */
+/** Lease verdicts the ladder acts on; `dirty-uncommitted` gets a checkpoint request and then a notice (checkpoint.ts), not a rung. */
 const LEASE_LADDER_CODES: readonly StallCode[] = ['lease-expired', 'no-progress']
 
 /** A terminal stall with a ladder code, or a lease finding (never CC-653's 5-min idle read). */

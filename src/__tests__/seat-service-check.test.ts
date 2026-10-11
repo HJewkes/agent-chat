@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { WatchdogDoc } from '../agents/seats/io.js'
 import { runWatchdog, type WatchdogDeps } from '../agents/seats/run.js'
-import { judgeService, serviceCause, type ServiceCheckRun } from '../agents/seats/service-check.js'
+import {
+  judgeService,
+  serviceCause,
+  serviceCheckRunner,
+  type ExecFile,
+  type ServiceCheckRun,
+} from '../agents/seats/service-check.js'
 
 const NOW = new Date(2026, 9, 6, 12, 8).getTime()
 const CHARTER = `---
@@ -88,7 +94,7 @@ describe('the service check in a watchdog pass', () => {
       'Watchdog: titan-factory service check failing: crash loop',
       'Watchdog: titan-factory service recovered',
     ])
-    expect(h.doc.serviceCause).toBeUndefined()
+    expect(h.doc.serviceHeard).toBeUndefined()
   })
 
   it('tells the attended seat again when the cause changes', async () => {
@@ -104,7 +110,7 @@ describe('the service check in a watchdog pass', () => {
       'Watchdog: titan-factory service check failing: stale pid',
       'Watchdog: titan-factory service check failing: GitHub down',
     ])
-    expect(h.doc.serviceCause).toBe('GitHub down')
+    expect(h.doc.serviceHeard).toEqual({ desk: 'GitHub down' })
   })
 
   it('counts a missing binary as its own cause and does not end the pass', async () => {
@@ -134,13 +140,42 @@ describe('the service check in a watchdog pass', () => {
     expect(notices(h)).toHaveLength(1)
   })
 
+  it('re-sends next pass only to the attended seat a send missed', async () => {
+    const h = harness()
+    h.deps.seatNames = () => ['seat-a', 'desk', 'desk-b']
+    h.deps.readSeatFile = name => (name.startsWith('desk') ? DESK : SEAT)
+    h.deps.roster = async () => ({ agents: [], connected: ['seat-a', 'desk', 'desk-b'] })
+    let deskBDown = true
+    h.deps.wake = async (seat, message) => {
+      if (seat === 'desk-b' && deskBDown) return { ok: false, detail: 'socket closed' }
+      h.woken.push({ seat, message })
+      return { ok: true, detail: 'm1' }
+    }
+    h.check = failing('stale build')
+    await tick(h)
+    deskBDown = false
+
+    await tick(h)
+    await tick(h)
+
+    expect(h.woken).toEqual([
+      { seat: 'desk', message: 'Watchdog: titan-factory service check failing: stale build' },
+      { seat: 'desk-b', message: 'Watchdog: titan-factory service check failing: stale build' },
+    ])
+  })
+
   it('does not check or notify under --dry-run', async () => {
     const h = harness()
-    h.check = failing('not loaded')
+    let checks = 0
+    h.deps.serviceCheck = async () => {
+      checks++
+      return failing('not loaded')
+    }
 
     await runWatchdog(h.deps, { dryRun: true })
 
     expect(notices(h)).toEqual([])
+    expect(checks).toBe(0)
   })
 })
 
@@ -151,7 +186,51 @@ describe('the cause of a service check', () => {
     )
   })
 
+  it('reads an exit 0 with non-JSON output as unparsed, not healthy', () => {
+    expect(serviceCause({ exitCode: 0, stdout: 'service ok' })).toBe(
+      'unparsed: service check exited 0 but printed no JSON',
+    )
+  })
+
+  it('reads an exit 0 that says ok: false as not-ok, not healthy', () => {
+    expect(serviceCause({ exitCode: 0, stdout: '{"ok":false,"cause":"queue stalled"}' })).toBe(
+      'not-ok: queue stalled',
+    )
+    expect(serviceCause({ exitCode: 0, stdout: '{"ok":false}' })).toBe('not-ok: service check said ok: false')
+  })
+
   it('has no cause and no notice for a healthy service that was healthy', () => {
     expect(judgeService(undefined, healthy)).toEqual({ cause: undefined, message: undefined })
+  })
+})
+
+const failedExec =
+  (fields: { code?: string | number; killed?: boolean }): ExecFile =>
+  (_file, _args, _options, callback) =>
+    callback(Object.assign(new Error('exec failed'), fields), '')
+
+describe('the live service check runner', () => {
+  it('reads a timeout as its own cause', async () => {
+    const run = serviceCheckRunner(failedExec({ killed: true }))
+
+    const result = await run()
+
+    expect(serviceCause(result)).toBe('service check could not run: timed out after 5000 ms')
+  })
+
+  it('reads a missing binary as its own cause', async () => {
+    const run = serviceCheckRunner(failedExec({ code: 'ENOENT' }))
+
+    const result = await run()
+
+    expect(serviceCause(result)).toBe('service check could not run: titan-factory not found (ENOENT)')
+  })
+
+  it('reads an output overflow as its own cause, not a timeout', async () => {
+    const run = serviceCheckRunner(failedExec({ code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true }))
+
+    const result = await run()
+
+    expect(serviceCause(result)).toBe('service check could not run: output overflowed the buffer')
   })
 })

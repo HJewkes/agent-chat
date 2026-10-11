@@ -27,7 +27,7 @@ const MIRROR = '@ac-edge1:example.org'
 const ROOM = '!queue:example.org'
 const FAST: MirrorTuning = { sweepIntervalMs: 20, backoff: { initialMs: 10, maxMs: 50 } }
 
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 const settle = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 async function eventually<T>(probe: () => T | undefined, what: string, timeoutMs = 3_000): Promise<T> {

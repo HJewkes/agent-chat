@@ -31,14 +31,21 @@ agent-chat burndown plan               dry run: what the tick would dispatch now
 agent-chat burndown status             claim ledger, stalled claims and each account budget gate
 agent-chat burndown tick --once [--dry-run]
                                         one pass: advance every claim, then spawn inside the ceilings
-agent-chat burndown pause|resume       stop or resume new spawns from the next tick on
+agent-chat burndown pause|resume [--by <who>]
+                                        stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
 agent-chat burndown job-status         launchd state: loaded, pid, and whether the tick may spawn
 agent-chat burndown seats compare --seat <name> [--autonomy-root <dir>]
                                         check a seat's dry-run plan against score.py's order
+agent-chat burndown config show [--json]   every resolved setting with the layer it came from
+agent-chat burndown preset apply <name> --by <who> | clear --by <who> | list
+agent-chat burndown override set --for <dur> --by <who> [--reason <text>] <json-patch>
+agent-chat burndown override clear --by <who>
+agent-chat burndown seat on|off <seat> --by <who>
 ```
 
 `agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
@@ -46,6 +53,23 @@ refusals, as seats mode would plan it without the tick's live slot and worktree 
 Add `--scored` for the seat's scored order with every component (`--top` and `--today`
 apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
 malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
+
+### Workflow table (shadow, CC-637)
+
+With `<autonomy-root>/workflow/shape-v1.yml` installed (the canonical copy is
+`docs/workflow/shape-v1.yml`), each `--scored` row also prints `prior=<prior> profile=<profile>` after
+`route=`. The prior is the task-time class of the PR shape plan (1.5), from the task's tags, estimate and
+`done_when` and the `owns` of its plan's slices. The profile is the implementer that the prior's class row
+dispatches. It is shadow only: `route` and the tick's dispatch do not change. A table that fails its lint
+(an unknown class, prior, profile or ladder value, a misspelt key, or no fallback prior) is not used, and a
+`workflow table: <problems>` line says why. With no table file the output is unchanged.
+
+`agent-chat seats tick <seat> --dry-run` prints the same plan under a `seat <seat> tick at <time>
+(dry run)` header (CC-889). It runs only with `--dry-run`. The timer's tick advances every held
+claim, and the respawn ladder's first rung spans two ticks, so a live tick between timer ticks
+would retire or respawn a stalled agent early. `agent-chat seats status <seat> --brief` prints
+eight lines: the caps per role with names, the pool reading, the stop, the unread count and the
+parked count. `--json` is unchanged, and it cannot be combined with `--brief`.
 
 The tick walks that same order (CC-768): `planSeat` orders rows with `planOrder` over this week's
 `milestones/<week>.yml` in the autonomy root, and each dispatch carries its `tier`. With no file and no planning
@@ -57,6 +81,50 @@ not parse is left out, so the tick orders by the tags alone.
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
 `agent-chat burndown uninstall` also removes the scheduled job itself.
+
+## Settings, presets and overrides (CC-955)
+
+**Not live yet.** Until CC-955 S2 lands, the tick and the broker's hand-reserve gate still
+read `burndown.config.json` alone. The verbs below write the settings and the log, and
+`config show` resolves them, but nothing the tick spawns changes. Each verb except `pause`
+and `resume` says so in its reply. To stop spawning today, use `burndown pause`.
+
+`burndown.config.json` is the base layer. No verb rewrites it. Each value resolves from
+these layers, lowest first:
+
+```
+schema default < burndown.config.json < seat file (caps, scope)
+  < burndown.settings.json seats.<name> < active preset < unexpired override
+```
+
+`burndown config show` prints every resolved value tagged with the layer it came from.
+
+- **`burndown.settings.json`.** It holds `seats.<name>` (`on`, `scope`, `briefGate {mode,
+maxAgeDays}`, `caps`, `handReserve`), named `presets`, and the `active` preset.
+  `burndown seat on|off` writes `seats.<name>.on`. If a preset or an override sets that seat
+  too, the verb says which layer shadows it.
+- **Presets.** `burndown preset apply <name>` makes a preset active, and `preset clear`
+  deactivates it. The built-in `factory-only` turns on only the flat file's `reportTo` seat,
+  with its brief gate `on`, and turns every other known seat off. A preset of the same name
+  in the settings file shadows the built-in.
+- **`burndown.override.json`.** `burndown override set --for 2h '<patch>'` lays a patch of
+  the preset shape over everything else until `expiresAt`. After that the patch is ignored,
+  and `config show` names it as lapsed. `override clear` removes it early.
+
+Every verb here, plus `pause` and `resume`, takes the settings lock and appends one
+`{at, by, verb, before, after}` row to `burndown.settings.log.jsonl`. The row holds only the
+parts that changed. A replaced settings or override file is kept as `<file>.bak-<time>`.
+`--by` is required, except on `pause` and `resume`, where it is optional so existing callers
+keep working; without it the row records `(unrecorded)`. A pause still writes
+`burndown.paused`, and a resume still removes it, when the settings file cannot be read or is
+locked; either says the change went unlogged. A current state that no longer resolves (say an
+active `factory-only` after `reportTo` was removed) does not block a change: only the result
+must resolve, so `preset clear` repairs it. `seat on` warns when the flat file names no such
+seat, since a misspelt seat turned on would become a seat of its own.
+
+Once S2 has landed: the broker reads `handReserve` in-process. When a change moves a seat's
+hand reserve while a live broker is older than `dist/` (or carries no build stamp), the verb prints
+`broker predates settings; handReserve applies to the tick only until restart`.
 
 ## Seats mode (CC-205)
 
@@ -86,6 +154,12 @@ For each listed seat, in order, the tick:
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
   gate;
+- under an `on` brief gate, queues a brief:ready task's slices from its seat-written
+  `sources/<ID>-plan.md` instead of spawning a planner or an implementer (CC-927). The
+  plan's slice `owns` is where a brief:ready task declares the files it will touch, and
+  the lint requires it. An implementer-routed task with no plan is refused `no-owns`; a
+  planner-routed one spawns its planner as before. Under `shadow` the implementer still
+  dispatches, with a `would-refuse no-owns` note (CC-952);
 - spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
   new claims carry `seat` and `namePrefix`.
 
@@ -103,6 +177,38 @@ with the spawns before it on its pool, and new dispatches then gate on all of th
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
 
+### Stop the line (CC-629)
+
+Each tick runs `titan-factory service check --json` once, before it plans any seat, and
+keeps the read (its time and cause) in the ledger's `serviceCheck`. The check names the first
+failing cause.
+
+- **Stopping causes.** Every cause stops except the note-only ones below, including a cause
+  this build does not know, since nobody has judged it harmless: `stale pid`, `crash loop`,
+  `not loaded`, `GitHub down` and the like.
+- **Note-only causes.** `stale build` (serve still merges on an old build; it is a restart
+  hint), `tick failing` and `tick stale` (they describe the tick itself, which would otherwise
+  block itself). The tick reports them and the line runs.
+- **Fail closed.** A check that exits other than 0 or 1, times out, or prints anything but
+  its JSON is read as cause `unreadable`, which stops.
+- **Two reads.** One stopping read never stops the line, because one failed `/health` probe
+  can read as `stale pid` while serve is healthy (TP-1726). The line stops only when this
+  read and the previous persisted read both stop and the previous one is at most two tick
+  intervals (20 minutes) old; a tick that skipped runs starts the count again. One ok or
+  note read clears the stop at once.
+- **Exemptions.** While the line is stopped every new implementer is refused `stop-line`,
+  except a `cos:expedite` task (tier 0 takes the next free slot) and planners, since a plan
+  opens no PR. Claims already in flight carry on.
+
+`burndown plan --seat`, `seats tick --dry-run` and `seats compare` read the check too and
+judge it against the persisted read, but write nothing. `plan --seat` prints the state on the
+line under its header: `service check: ok`, `service check: <cause> (one stopping read, the
+line runs; ...)`, `service check: line stopped (<previous>, then <current>): ...`, or the
+note, `service check: <cause> (a note, the line runs): ...`.
+
+The downstream WIP gate that once sat beside this one was removed by CC-866 (decisions
+item 86(4)): seat concurrency caps govern implementer counts, and no `wip` refusal exists.
+
 ### Checking the seat plan against score.py: `seats compare` (CC-251)
 
 `agent-chat burndown seats compare --seat <name>` makes the seat's dry-run plan, as
@@ -116,7 +222,8 @@ is applied.
 It walks score.py's order and prints each ID with its raw and decayed score and one verdict:
 
 - `dispatched as pick <n>`;
-- `refused [<kind>]: <reason>`, the plan's refusal;
+- `refused [<kind>]: <reason>`, the plan's refusal, including `stop-line` while the line is
+  stopped. An expedite dispatch above a stopped row passes the reorder rule by its tier;
 - `held`, when the claim ledger holds the task;
 - `held [intangible]`, when `planOrder` holds the intangible task back for a ready row of a
   higher tier (CC-778);

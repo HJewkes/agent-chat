@@ -555,7 +555,7 @@ function unregistered(c: CallCase): CallCase {
   return rest
 }
 
-const SPAWN_STRINGS = ['cwd', 'briefing', 'worktree', 'config_dir', 'resume_session', 'predecessor']
+const SPAWN_STRINGS = ['cwd', 'briefing', 'worktree', 'config_dir', 'resume_session', 'predecessor', 'task']
 
 /** CC-106 S6: every optional string goes through `present()`, so a blank one leaves the frame as `optionalString` did. */
 const AGENT_SPAWN_CASES: CallCase[] = [
@@ -610,6 +610,9 @@ const AGENT_SPAWN_CASES: CallCase[] = [
   spawnCase('remote_control not a boolean', { ...SPAWN_ARGS, remote_control: 'yes' }),
   spawnCase('return_contract none', { ...SPAWN_ARGS, return_contract: 'none' }, { reply: spawned() }),
   spawnCase('return_contract misspelled', { ...SPAWN_ARGS, return_contract: 'off' }),
+  spawnCase('task and role', { ...SPAWN_ARGS, task: 'CC-1', role: 'reviewer' }, { reply: spawned() }),
+  spawnCase('role a numbered fix round', { ...SPAWN_ARGS, role: 'fix-round-2' }, { reply: spawned() }),
+  spawnCase('role outside the vocabulary', { ...SPAWN_ARGS, role: 'boss' }),
   spawnCase('surface blank', { ...SPAWN_ARGS, surface: '  ' }),
   spawnCase('surface null', { ...SPAWN_ARGS, surface: null }, { reply: spawned() }),
   spawnCase('cwd not a string', { ...SPAWN_ARGS, cwd: 42 }, { reply: spawned() }),
@@ -867,7 +870,7 @@ const CHAT_STATUS_CASES: CallCase[] = [
 ]
 
 /** Fields `register` reads from this process and its checkout; they vary by machine, so the golden omits them. */
-const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'sessionId', 'termSessionId', 'observed', 'build']
+const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build']
 
 function frameLine(frame: ClientMessage): string {
   if (frame.t !== 'register') return JSON.stringify(frame)

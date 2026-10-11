@@ -262,6 +262,32 @@ export function plannerBrief(t: TaskBrief): string {
   ].join('\n\n')
 }
 
+/** CC-939: the brief for a `brief:wanted` task; the briefer writes the plan and proposes, and the seat approves. */
+export function briefWriterBrief(t: TaskBrief): string {
+  const planPath = planPathFor(t.initiativeDir, t.taskId)
+  return [
+    '## Scope',
+    `Write the brief for task ${t.taskId} of initiative ${t.initiative}: the plan at \`${planPath}\`. Do not implement. ` +
+      "Then tighten the task's `done_when` and `estimate` with `aw task edit`, and tag it `brief:proposed=<today>` " +
+      '(`aw task edit` with the tag added; keep the tags it has). A seat or the decider promotes it to ready and records the source; never set `brief:ready` or `brief:src` yourself.',
+    `You share the repo checkout. Read code at origin: \`git fetch\`, then \`git show origin/${t.defaultBranch}:<path>\`. ` +
+      'Edit and state-changing git are denied to you except the plan file and `aw task edit`.',
+    '## Context',
+    taskContext(t),
+    '## The plan file contains',
+    PLAN_PARTS,
+    slicesRequirement(),
+    '## Constraints',
+    UNATTENDED,
+    accountLine(t.configDir),
+    '## Report',
+    reportContract(
+      t.reportTo,
+      '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `Plan: <path>` and `Tagged: brief:proposed=<date>`',
+    ),
+  ].join('\n\n')
+}
+
 /**
  * UTF-8 bytes of the text a successor brief embeds. Broker replies measured 5.2 kB at p99 (12.9 kB at most)
  * and reviewer verdicts 3.3 kB at p99 (7.2 kB at most); the question is a one-line pointer the tick writes.
@@ -320,6 +346,19 @@ export function successorAfterReview(t: TaskBrief, review: string): string {
       REVIEW_TEXT_MAX_BYTES,
       `the full text is the reviewer's report to ${t.reportTo}; ask them for it if the cut part matters.`,
     ),
+    ...workerTail(t),
+  ].join('\n\n')
+}
+
+/** CC-673: the predecessor exited without a status line and left commits but no open PR. */
+export function successorAfterExit(t: TaskBrief, ahead: number): string {
+  const handoff = handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)
+  return [
+    '## Scope',
+    `Resume task ${t.taskId}. Your predecessor exited without a report and left ${ahead} commit(s) on this branch ` +
+      `and no open PR. Read its commits, any uncommitted changes and \`${handoff}\` if it exists, keep what serves ` +
+      `the task, finish it and open the PR. You are its only resume: no further successor follows a silent exit. ` +
+      `Done when: ${t.doneWhen}`,
     ...workerTail(t),
   ].join('\n\n')
 }

@@ -1,8 +1,11 @@
+import { execFile } from 'node:child_process'
 import os from 'node:os'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
+import { gitChildEnv } from '../../git.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
 import {
@@ -21,7 +24,10 @@ import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
-import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
+import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents/burndown/tick.js'
+import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
@@ -64,6 +70,7 @@ import {
   STATUS_TOP,
   plainError,
   readInbox,
+  renderBrief,
   renderStatus,
   seatStatus,
   WAITING_OWNER_TAG,
@@ -75,12 +82,19 @@ import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
-import { home } from '../../paths.js'
+import { burndownLedgerPath, home } from '../../paths.js'
+import { ledgerImplementers, readLedger } from '../../agents/burndown/ledger.js'
+import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats/in-flight-read.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
+import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-
-type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
+import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
+import { identityTranscript } from '../../agents/resume-session.js'
+import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
+import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
+import { logEvent } from '../../broker/log.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -88,10 +102,12 @@ const refused = (err: unknown): Report => ({
   errors: [err instanceof Error ? err.message : String(err)],
 })
 
-async function roster(client: BrokerClient): Promise<Roster> {
+/** `seen` keeps each identity by id, so the pass can look up a stuck successor's transcript. */
+async function roster(client: BrokerClient, seen: Map<string, AgentIdentity>): Promise<Roster> {
   try {
     const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
     const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+    for (const agent of agents.agents) seen.set(agent.agentId, agent)
     return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
   } catch (err) {
     // Only a missed reply is unknown; any other failure is a real fault and ends the run.
@@ -108,21 +124,12 @@ export interface DeclaredSurface {
 
 const UNDECLARED: DeclaredSurface = { surface: 'headless', from: 'none declared' }
 
-/** A broker built before `code` existed says it only in `agent-surface`'s refusal text. */
-const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
-
-const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
-  res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
-
-async function sendAsOwner(client: BrokerClient, seat: string, message: string): Promise<WakeResult> {
-  const res = (await client.request(
-    { t: 'human_send', to: seat, text: message, source: 'watchdog' },
-    'send_result',
-  )) as Reply<'send_result'>
-  return res.ok
-    ? { ok: true, detail: `message ${res.msgId}` }
-    : { ok: false, detail: res.reason ?? 'send refused' }
-}
+/**
+ * CC-465: owner answer to the CC-437 plan's question 1, any visible launch failure falls back to headless.
+ * A refusal before the launch (slots, ownership, a live agent) would refuse headless too, so it stands.
+ */
+const launchFailed = (res: Reply<'spawn_result'>): boolean =>
+  res.code === 'surface_refused' || (res.reason ?? '').startsWith('resume failed:')
 
 async function resumeOn(
   client: BrokerClient,
@@ -136,6 +143,8 @@ async function resumeOn(
     surface,
     ...(message === undefined ? {} : { message }),
     source: 'watchdog' as const,
+    // CC-883: a seat runs with Remote Control (10-06 plan D6); the broker drops it for a worker.
+    ...(surface === 'headless' ? {} : { remoteControl: true }),
   }
   return (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
 }
@@ -154,7 +163,24 @@ async function resumeVisible(
   return { ok: true, detail: `resumed on ${declared.surface} (${declared.from}); ${delivery}` }
 }
 
-/** CC-441: a stopped seat resumes on its declared surface, and headless only when iTerm refuses it. */
+/** The visible resume's result, or the launch failure that sends it headless; a thrown request is one too. */
+async function tryVisible(
+  client: BrokerClient,
+  seat: string,
+  message: string,
+  declared: DeclaredSurface,
+): Promise<WakeResult | { failed: string }> {
+  try {
+    const visible = await resumeVisible(client, seat, message, declared)
+    if (!('t' in visible)) return visible
+    const reason = visible.reason ?? 'resume refused'
+    return launchFailed(visible) ? { failed: reason } : { ok: false, detail: reason }
+  } catch (err) {
+    return { failed: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** CC-441, CC-465: a stopped seat resumes on its declared surface, and headless when that launch fails. */
 export async function wakeSeat(
   client: BrokerClient,
   seat: string,
@@ -165,11 +191,9 @@ export async function wakeSeat(
   if (connected) return sendAsOwner(client, seat, message)
   let why = declared.from
   if (declared.surface !== 'headless') {
-    const visible = await resumeVisible(client, seat, message, declared)
-    if (!('t' in visible)) return visible
-    const reason = visible.reason ?? 'resume refused'
-    if (!surfaceRefused(visible)) return { ok: false, detail: reason }
-    why = `${declared.surface} refused: ${reason}`
+    const visible = await tryVisible(client, seat, message, declared)
+    if (!('failed' in visible)) return visible
+    why = `${declared.surface} refused: ${visible.failed}`
   }
   const res = await resumeOn(client, seat, 'headless', message)
   return res.ok
@@ -205,6 +229,7 @@ function presence(seat: string): Presence | undefined {
 }
 
 function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
+  const identities = new Map<string, AgentIdentity>()
   return {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),
@@ -214,7 +239,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
     machineStop: () => readMachineStop()?.reason,
-    roster: () => roster(client),
+    roster: () => roster(client, identities),
     presence,
     eligible: seat => scorerEligible(root, seat),
     loadDoc: () => loadDoc(),
@@ -233,19 +258,14 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
         connected ? UNDECLARED : await declaredSurface(client, root, seat),
       ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
-  }
-}
-
-/** Never autostarts: a seat verb that brought up a broker would own it, and the broker serves every session. */
-async function withRunningBroker<T>(fn: (client: BrokerClient) => Promise<T>): Promise<T> {
-  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-    autoStart: false,
-  })
-  try {
-    await client.connect()
-    return await fn(client)
-  } finally {
-    client.close()
+    refreshHeartbeat: seat => refreshSeatHeartbeat(root, seat),
+    logEvent,
+    relaunchHandoff: (seat, quietMinutes, now) => buildRelaunchHandoff(root, seat, quietMinutes, now),
+    transcriptFound: agentId => {
+      const identity = identities.get(agentId)
+      return identity === undefined ? undefined : identityTranscript(identity).found
+    },
+    notifyHuman: notifyAsWatchdog,
   }
 }
 
@@ -347,6 +367,50 @@ export const seatsWatchdogVerb = defineVerb({
   },
 })
 
+export const seatsHeartbeatCheckVerb = defineVerb({
+  name: 'seats.heartbeat-check',
+  description:
+    "what a seat's heartbeat timer runs (CC-947): when the watchdog would neither hold the seat nor " +
+    'resume it (connected, no owner stop, restart window, machine stop or stop line) and its logs have ' +
+    "no tick line for its cron's widest gap plus 5 min, send the charter heartbeat through the broker " +
+    'and log heartbeat_external',
+  args: z.object({
+    seat: requiredString('seat'),
+    root: z.string().optional(),
+    dryRun: z.boolean().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: 'the seat to check (required)' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
+      dryRun: { long: '--dry-run', description: 'print the decision; send nothing' },
+    },
+  },
+  async run({ seat, root, dryRun }) {
+    const offLease = hostLeaseRefusal()
+    if (offLease !== undefined) return refused(new Error(offLease))
+    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
+    const dir = root ?? defaultAutonomyRoot()
+    try {
+      const result = await withRunningBroker(client =>
+        checkHeartbeat(
+          {
+            watchdog: liveDeps(dir, client),
+            send: (name, message) => sendAsOwner(client, name, message),
+            logEvent,
+          },
+          seat,
+          dryRun === true,
+        ),
+      )
+      return { ok: result.ok, lines: [result.line] }
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
 export { watchdogInstall } from './watchdog-job.js'
 
 const AGENT_CHAT_HOME_FLAG =
@@ -395,6 +459,8 @@ export const seatsWatchdogStatusVerb = defineVerb({
   },
 })
 
+const execFileAsync = promisify(execFile)
+
 function statusDeps(root: string, client: BrokerClient): StatusDeps {
   return {
     now: () => new Date(),
@@ -406,6 +472,14 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
       const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
       return live.sessions.filter(s => s.tags?.some(t => t.tag === WAITING_OWNER_TAG)).map(s => s.name)
     },
+    repoTrees: async repo =>
+      (
+        await execFileAsync('git', ['-C', repo, 'worktree', 'list', '--porcelain'], {
+          timeout: 5000,
+          encoding: 'utf8',
+          env: gitChildEnv(),
+        })
+      ).stdout,
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
@@ -420,6 +494,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
       }),
     machine: readMachineStatus,
     machineStop: readMachineStop,
+    ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
   }
 }
 
@@ -454,10 +529,20 @@ function statusFailure(seat: string, json: boolean, error: string): Report {
 }
 
 /** The status verb's body, taking its readers explicitly so a test can point them at a fixture broker. */
-export async function statusReport(deps: StatusDeps, seat: string, json: boolean): Promise<Report> {
+export async function statusReport(
+  deps: StatusDeps,
+  seat: string,
+  json: boolean,
+  brief = false,
+): Promise<Report> {
   try {
     const status = await seatStatus(deps, seat)
-    return { ok: true, lines: json ? [JSON.stringify(status, null, 2)] : renderStatus(status) }
+    const lines = json
+      ? [JSON.stringify(status, null, 2)]
+      : brief
+        ? renderBrief(status)
+        : renderStatus(status)
+    return { ok: true, lines }
   } catch (err) {
     return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
   }
@@ -472,7 +557,12 @@ export const seatsStatusVerb = defineVerb({
     'messages since the seat last sent one, the ' +
     'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
-  args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
+  args: z.object({
+    seat: requiredString('seat'),
+    json: z.boolean().optional(),
+    brief: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
   result: Report,
   cli: {
     positional: ['seat'],
@@ -481,16 +571,70 @@ export const seatsStatusVerb = defineVerb({
         long: '--json',
         description: 'the same facts as one JSON object; a failure is {"seat", "error"} with exit 1',
       },
+      brief: {
+        long: '--brief',
+        description: 'only caps per role with names, the pool reading and stop, unread and parked counts',
+      },
       root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
     },
   },
-  async run({ seat, json, root }) {
+  async run({ seat, json, brief, root }) {
+    if (json === true && brief === true)
+      return statusFailure(seat, true, 'seats status takes --brief or --json, not both')
     const dir = root ?? defaultAutonomyRoot()
     try {
-      return await withRunningBroker(client => statusReport(statusDeps(dir, client), seat, json === true))
+      return await withRunningBroker(client =>
+        statusReport(statusDeps(dir, client), seat, json === true, brief === true),
+      )
     } catch (err) {
       return statusFailure(seat, json === true, plainError(err, [dir, os.homedir()]))
     }
+  },
+})
+
+/**
+ * CC-889: a live tick for one seat is refused. The timer's tick advances every held claim under the
+ * ledger lock, and the respawn ladder's first rung spans two ticks, so an extra tick between timer
+ * ticks would retire or respawn a stalled agent early, for this seat's claims and every other seat's.
+ */
+const LIVE_TICK_REFUSAL =
+  'seats tick runs only with --dry-run: a live tick off the timer would advance every claim a phase early; ' +
+  '`agent-chat burndown tick --once` is the one live tick'
+
+/** The tick verb's body, taking the plan inputs as a loader so a test can point it at a fixture world. */
+export async function seatTickReport(dryRun: boolean, load: () => Promise<SeatPlanOptions>): Promise<Report> {
+  if (!dryRun) return { ok: false, lines: [], errors: [LIVE_TICK_REFUSAL] }
+  try {
+    const opts = await load()
+    const [, ...decision] = renderPlan(seatPlanFromDisk(opts), opts.now)
+    return { ok: true, lines: [`seat ${opts.seat} tick at ${opts.now.toISOString()} (dry run)`, ...decision] }
+  } catch (err) {
+    return { ok: false, lines: [], errors: [err instanceof Error ? err.message : String(err)] }
+  }
+}
+
+export const seatsTickVerb = defineVerb({
+  name: 'seats.tick',
+  description:
+    "one seat's burndown decision on demand (CC-889): the dispatches the tick would make for it under " +
+    'its service-check stop line, trust gate, role and worktree caps and pool gate, and why every other ' +
+    'task was refused. ' +
+    'Dry run only: it spawns nothing and writes no ledger',
+  args: z.object({
+    seat: requiredString('seat'),
+    dryRun: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      dryRun: { long: '--dry-run', description: 'print the decision without spawning (required)' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
+    },
+  },
+  async run({ seat, dryRun, root }) {
+    return seatTickReport(dryRun === true, () => seatPlanOptions(seat, root))
   },
 })
 
@@ -585,13 +729,30 @@ export const seatsRunStartVerb = defineVerb({
 })
 
 /** The status opens its own broker connection, so a broker that is down costs the boot only its status. */
-function bootDeps(root: string): BootDeps {
+export function bootDeps(root: string): BootDeps {
   return {
     now: () => new Date(),
     autonomyRoot: root,
     homeDir: os.homedir(),
     eventsDb: path.join(home(), 'events.db'),
     status: seat => withRunningBroker(client => seatStatus(statusDeps(root, client), seat)),
+    inFlight: {
+      roster: () =>
+        withRunningBroker(
+          async client =>
+            ((await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>).agents,
+        ),
+      shepherd: shepherdPort(),
+      verdicts: eventsVerdictsPort(path.join(home(), 'events.db')),
+      claims: claimsPort(burndownLedgerPath()),
+    },
+    ready: async (seat, now) => {
+      const opts = { seat, top: Infinity, today: localDate(now), autonomyRoot: root, readySet: true }
+      const { plan, tasks, policy } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
+      const { briefMaxAgeDays, scopeTagAliases } = loadResolvedConfig().tick
+      const { scope } = readSeatScope(policy.seats, seat, root, scopeTagAliases)
+      return { order: plan.order, tasks, scope, maxAgeDays: briefMaxAgeDays }
+    },
   }
 }
 
@@ -604,7 +765,10 @@ export async function bootReport(
 ): Promise<Report> {
   try {
     const boot = await seatBoot(deps, seat, after)
-    return { ok: true, lines: json ? [JSON.stringify(boot, null, 2)] : renderBoot(boot) }
+    return {
+      ok: true,
+      lines: json ? [JSON.stringify(boot, null, 2)] : renderBoot(boot, undefined, deps.homeDir),
+    }
   } catch (err) {
     return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
   }
@@ -614,9 +778,9 @@ export const seatsBootVerb = defineVerb({
   name: 'seats.boot',
   description:
     "one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the " +
-    "queue's In flight and Next sections, the newest State at teleport section of today's log, inbox " +
+    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top in-scope, fresh brief:ready tasks in the gate's ready order with their age, the queue's Next section, the newest State at teleport section of today's log, inbox " +
     'messages after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox ' +
-    'lines go first, then the log section; the queue and status are never cut',
+    'lines go first, then the log section, then the queue, In flight, Next, seat and status sections',
   args: z.object({
     seat: requiredString('seat'),
     after: z.string().optional(),
@@ -629,7 +793,8 @@ export const seatsBootVerb = defineVerb({
     options: {
       after: {
         long: '--after',
-        description: 'show inbox messages after this msg_id; default the last 5',
+        description:
+          "show inbox messages after this msg_id; default the State block's own cursor, else the last 5",
       },
       json: {
         long: '--json',
@@ -651,10 +816,14 @@ export function addSeatsCommands(program: Commander): void {
   const seats = program.command('seats').description('autonomy seats: the idle watchdog')
   addVerb(seats, seatsWatchdogVerb)
   addVerb(seats, seatsStatusVerb)
+  addVerb(seats, seatsTickVerb)
   addVerb(seats, seatsDispatchesVerb)
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
   addVerb(seats, seatsWatchdogUninstallVerb)
   addVerb(seats, seatsWatchdogStatusVerb)
+  addVerb(seats, seatsHeartbeatInstallVerb)
+  addVerb(seats, seatsHeartbeatCheckVerb)
+  addVerb(seats, seatsHeartbeatGapsVerb)
 }

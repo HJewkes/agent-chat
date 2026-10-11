@@ -25,6 +25,7 @@
     "Bash(agent-chat send:*)",
     "Bash(agent-chat answer:*)",
     "Bash(agent-chat approve:*)",
+    "Bash(agent-chat ask:*)",
     "Bash(agent-chat agent spawn:*)",
     "Bash(agent-chat agent resume:*)",
     "Bash(agent-chat agent retire:*)",

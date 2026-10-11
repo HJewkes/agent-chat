@@ -10,6 +10,8 @@ const EXIT_BUSY = 75
 
 export interface BasementTarget {
   host: string
+  /** True on the basement host itself, which has no ssh credentials for itself. */
+  direct: boolean
   repo: string
   branch: string
   agent: string
@@ -38,19 +40,19 @@ export const repoNameOf = (url: string): string =>
     .split(/[/:]/)
     .at(-1) ?? ''
 
-const commandFor = (t: BasementTarget, script: string): string[] => [
-  t.host,
-  'basement-suite',
-  t.repo,
-  t.branch,
-  '--agent',
-  t.agent,
-  '--run',
-  script,
-]
+/** Compares first labels, so `basement.lan` is the host `basement`. */
+export const isBasementHost = (hostname: string, host: string): boolean => {
+  const label = (name: string): string => name.trim().toLowerCase().split('.')[0] ?? ''
+  return label(hostname) !== '' && label(hostname) === label(host)
+}
+
+const commandFor = (t: BasementTarget, script: string): string[] => {
+  const suite = ['basement-suite', t.repo, t.branch, '--agent', t.agent, '--run', script]
+  return t.direct ? suite : ['ssh', t.host, ...suite]
+}
 
 export const basementCommandText = (t: BasementTarget, script: string): string =>
-  ['ssh', ...commandFor(t, script)].join(' ')
+  commandFor(t, script).join(' ')
 
 // Mirrors basement-suite's parse_args and prepare_python: anything it would refuse with exit 64 runs locally.
 const SUITE_REPOS = [
@@ -82,30 +84,34 @@ async function target(
   host: string,
   env: NodeJS.ProcessEnv,
   pushed: string | undefined,
+  hostname: string,
 ): Promise<BasementTarget> {
   const symbolic = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd)
   const local = symbolic.code === 0 ? trimmed(symbolic.output) : ''
   const origin = await run('git', ['remote', 'get-url', 'origin'], cwd)
   const repo = origin.code === 0 ? repoNameOf(origin.output) : ''
   const agent = env.AGENT_CHAT_NAME || local.split('/').at(-1) || local
-  return { host, repo, branch: pushed ?? local, agent }
+  return { host, direct: isBasementHost(hostname, host), repo, branch: pushed ?? local, agent }
 }
 
-/** One short ssh probe per run decides where the repo-wide checks go. */
+/** One short ssh probe per run decides where the repo-wide checks go; on basement itself none is needed. */
 export async function routeChecks(
   run: Run,
   cwd: string,
   base: string,
   scripts: string[],
   env: NodeJS.ProcessEnv,
+  hostname: string,
 ): Promise<BasementRoute> {
   const host = basementHost(env)
   if (host === OFF) return { kind: 'local' }
   const pushed = await pushedHeadBranch(run, cwd, base)
-  const t = await target(run, cwd, host, env, pushed)
+  const t = await target(run, cwd, host, env, pushed, hostname)
   const refused = refusal(t, scripts)
   if (refused) return { kind: 'local', warning: `${refused}; running checks locally` }
-  const probe = await run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', host, 'true'], cwd)
+  const probe = t.direct
+    ? { code: 0 }
+    : await run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', host, 'true'], cwd)
   if (probe.code !== 0)
     return {
       kind: 'local',
@@ -133,7 +139,8 @@ export async function runOnBasement(
 ): Promise<BasementResult[]> {
   const results: BasementResult[] = []
   for (const script of scripts) {
-    const { code, output } = await run('ssh', commandFor(t, script), cwd)
+    const [cmd, ...args] = commandFor(t, script)
+    const { code, output } = await run(cmd!, args, cwd)
     results.push({ script, code, output })
     if (infraFailure(results.at(-1)!) !== undefined) break
   }

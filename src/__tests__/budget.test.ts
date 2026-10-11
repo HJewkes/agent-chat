@@ -14,6 +14,7 @@ import {
   contextTokens,
   formatBudget,
   parseBudget,
+  readAccount,
   readBudget,
   STALE_AFTER_SECONDS,
 } from '../agents/budget.js'
@@ -167,7 +168,7 @@ describe('matching a reading to a session', () => {
     expect(read.found).toBe(true)
     if (!read.found) return
     expect(read.stale).toBe(true)
-    expect(formatBudget('planner', read)).toContain('STALE')
+    expect(formatBudget('planner', read, readAccount(cacheDir, later))).toContain('STALE')
   })
 
   it('refuses a session id that would escape the cache directory', () => {
@@ -190,7 +191,7 @@ describe('rendering a reading for a caller', () => {
     const read = readBudget('abc-123', 1_700_000_001_000)
     expect(read.found).toBe(true)
     if (!read.found) return
-    const out = formatBudget('You', read)
+    const out = formatBudget('You', read, readAccount(cacheDir, 1_700_000_001_000))
     expect(out).toContain('43.2% of 200k context')
     expect(out).toContain('85k cached')
     expect(out).toContain('five_hour 21.4%')
@@ -204,7 +205,9 @@ describe('rendering a reading for a caller', () => {
     const read = readBudget('abc-123')
     expect(read.found).toBe(true)
     if (!read.found) return
-    expect(formatBudget('You', read)).toContain('no account rate-limit windows')
+    expect(formatBudget('You', read, readAccount(cacheDir, 1_700_000_000_000))).toContain(
+      'no account rate-limit windows',
+    )
   })
 })
 

@@ -190,8 +190,16 @@ let pressure: {
   pressureLevel: number | null
 }
 
+/** A checkout of its own per agent, so two agents never share one tree. */
+function treeDir(name: string): string {
+  const dir = path.join(tmp, 'trees', name)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 function seedAgent(seed: AgentSeed): void {
-  const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree', surface = 'headless' } = seed
+  const { name, profile, spawnedBy = SEAT, isolation = 'none', surface = 'headless' } = seed
+  const cwd = seed.cwd ?? treeDir(name)
   const id = `agent-${++agentIds}`
   core.append({
     kind: 'agent_spawned',
@@ -218,6 +226,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       return reply?.t === 'agents_result' ? reply.agents : []
     },
     waitingOwner: async () => waiting,
+    repoTrees: async () => '',
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => structuredClone(doc),
     inbox: seat => readInbox(path.join(tmp, 'events.db'), seat),
@@ -277,6 +286,117 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
+/** `git worktree list --porcelain` for a repo whose first block is the main checkout. */
+const porcelain = (main: string, ...linked: { dir: string; branch?: string }[]): string =>
+  [
+    `worktree ${main}\nHEAD aaaa\nbranch refs/heads/main`,
+    ...linked.map(
+      t =>
+        `worktree ${t.dir}\nHEAD bbbb\n${t.branch === undefined ? 'detached' : `branch refs/heads/${t.branch}`}`,
+    ),
+  ].join('\n\n') + '\n'
+
+const REPO_A = '/fake/repo-a'
+const REPO_B = '/fake/repo-b'
+
+const countingSeat = (
+  concurrency = '{implementers: 2, reviewers: 1, planners: 3, counted_trees: ["eval/*"]}',
+) => writeAutonomy({ concurrency, seatLines: `repos: [{path: ${REPO_A}}]` })
+
+describe('every worktree a seat causes counts against the implementer cap', () => {
+  it('a reviewer with a worktree counts against the implementer cap', async () => {
+    seedAgent({ name: 'ss-al-1-review', profile: 'reviewer', isolation: 'worktree' })
+
+    const { implementers, reviewers } = await status()
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.trees).toEqual([
+      { path: treeDir('ss-al-1-review'), cause: 'agent', agent: 'ss-al-1-review' },
+    ])
+    expect(reviewers.active).toBe(1)
+  })
+
+  it('an eval tree matching counted_trees counts, and one in another seat repo does not', async () => {
+    countingSeat()
+    const own = treeDir('ev-own')
+    const other = treeDir('ev-other')
+    const repoTrees = async (repo: string): Promise<string> =>
+      repo === REPO_A
+        ? porcelain(REPO_A, { dir: own, branch: 'eval/r1/c1/tok' })
+        : porcelain(REPO_B, { dir: other, branch: 'eval/r1/c2/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.trees).toEqual([{ path: own, cause: 'pattern', branch: 'eval/r1/c1/tok' }])
+  })
+
+  it('an implementer agent and its own tree count once', async () => {
+    countingSeat()
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const repoTrees = async (): Promise<string> =>
+      porcelain(REPO_A, { dir: treeDir('ss-al-1'), branch: 'eval/r1/c1/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.names).toEqual(['ss-al-1'])
+    expect(implementers.trees).toEqual([{ path: treeDir('ss-al-1'), cause: 'agent', agent: 'ss-al-1' }])
+  })
+
+  it('an exited implementer whose tree is still on disk counts, and a parked one does not', async () => {
+    seedAgent({
+      name: 'ss-al-3',
+      profile: 'implementer',
+      exited: true,
+      isolation: 'worktree',
+      cwd: path.join(tmp, 'removed'),
+    })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree' })
+
+    const { implementers } = await status()
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.names).toEqual([])
+    expect(implementers.trees?.map(t => t.agent)).toEqual(['ss-al-4'])
+  })
+
+  it('a repo whose worktree list fails adds nothing and does not throw', async () => {
+    countingSeat()
+    const repoTrees = async (): Promise<string> => {
+      throw new Error('git failed')
+    }
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(0)
+    expect(implementers.trees).toEqual([])
+  })
+
+  it('with implementers 2, one live implementer and one eval tree, atCap is true', async () => {
+    countingSeat()
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const repoTrees = async (): Promise<string> =>
+      porcelain(REPO_A, { dir: treeDir('ev-1'), branch: 'eval/r1/c1/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(2)
+    expect(implementers.names).toEqual(['ss-al-1'])
+    expect(implementers.atCap).toBe(true)
+  })
+
+  it('names trees in the text line only when there are some', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const withTree = await statusReport(deps(), SEAT, false)
+    fs.rmSync(treeDir('ss-al-1'), { recursive: true })
+    const without = await statusReport(deps(), SEAT, false)
+
+    expect(withTree.lines[1]).toContain(`trees: ss-al-1(agent)`)
+    expect(without.lines[1]).not.toContain('trees:')
+  })
+})
+
 describe('a seat against its concurrency caps', () => {
   it('reports a seat with as many running implementers as its cap as at cap', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer', spawnedBy: 'an-earlier-generation' })
@@ -292,6 +412,7 @@ describe('a seat against its concurrency caps', () => {
       names: ['helper', 'ss-al-1'],
       detached: [],
       waitingOwner: [],
+      trees: [],
     })
   })
 
@@ -309,6 +430,16 @@ describe('a seat against its concurrency caps', () => {
     const { implementers } = await status()
 
     expect(implementers.names).toEqual([])
+  })
+
+  it("shows the burndown ledger's implementer count beside the live one when they differ (CC-978)", async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+
+    const differs = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+    const same = await statusReport(deps({ ledgerImplementers: () => 1 }), SEAT, false)
+
+    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 5)  ss-al-1')
+    expect(same.lines[1]).toBe('implementers  1/2  ss-al-1')
   })
 
   it('counts a detached implementer as active and names it as detached', async () => {
@@ -401,13 +532,19 @@ describe('a seat against its concurrency caps', () => {
   })
 
   it('counts exited implementers as parked and names the ones whose tree is still on disk', async () => {
-    seedAgent({ name: 'ss-al-3', profile: 'implementer', exited: true, cwd: path.join(tmp, 'removed-tree') })
-    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, cwd: autonomy })
+    seedAgent({
+      name: 'ss-al-3',
+      profile: 'implementer',
+      exited: true,
+      isolation: 'worktree',
+      cwd: path.join(tmp, 'removed-tree'),
+    })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree', cwd: autonomy })
 
     const { parked, implementers } = await status()
 
     expect(parked).toEqual({ count: 2, names: ['ss-al-3', 'ss-al-4'], treeOnDisk: ['ss-al-4'] })
-    expect(implementers.active).toBe(0)
+    expect(implementers.active).toBe(1)
   })
 
   it('counts no exited reviewer or roleless agent as parked', async () => {
@@ -596,6 +733,20 @@ describe("the seat's spend caps", () => {
   const RUN_UNKNOWN = stopOf('no seven_day reading at run start, so run spend is unknown')
   const DAY_UNKNOWN = stopOf('no seven_day reading at or before 07:00, so day spend unknown')
   const dayMeter = { since: at(7), last: 40, spent: 8 }
+  const runStart = () =>
+    startRun(
+      {
+        now: () => NOW,
+        readCharter: () => fs.readFileSync(path.join(autonomy, 'charter.md'), 'utf8'),
+        readSeatFile: seat => fs.readFileSync(path.join(autonomy, 'seats', `${seat}.md`), 'utf8'),
+        readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+        loadDoc: () => loadDoc(statePath()),
+        saveDoc: next => saveDoc(next, statePath()),
+        lock: () => acquireRunLock(path.join(tmp, 'seat-watchdog.lock')),
+        sleep: async () => undefined,
+      },
+      SEAT,
+    )
 
   it('stops a per_day cap as unknown when the watchdog has saved no state file', async () => {
     const { budget } = await fromDisk()
@@ -648,6 +799,25 @@ describe("the seat's spend caps", () => {
     const { budget } = await fromDisk()
 
     expect(budget.stop).toBeNull()
+  })
+
+  it('reports a watchdog heartbeat source with the cron and the last slot from the watchdog mark', async () => {
+    writeAutonomy({ seatLines: 'heartbeat_cron: 17,47 * * * *\nheartbeat_source: watchdog' })
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), heartbeat: { slot: at(9, 17) } }
+
+    const { heartbeat } = await status()
+
+    expect(heartbeat).toEqual({
+      source: 'watchdog',
+      cron: '17,47 * * * *',
+      lastSlot: new Date(at(9, 17)).toISOString(),
+    })
+  })
+
+  it('reports a seat with no heartbeat_source as cron and no last slot before the watchdog has ticked', async () => {
+    writeAutonomy({ seatLines: 'heartbeat_cron: 17,47 * * * *' })
+
+    expect((await status()).heartbeat).toEqual({ source: 'cron', cron: '17,47 * * * *', lastSlot: null })
   })
 
   it('stops a per_run cap as unknown for a seat record that holds no run meter', async () => {
@@ -704,23 +874,27 @@ describe("the seat's spend caps", () => {
     fs.writeFileSync(statePath(), JSON.stringify(saved))
     const before = await fromDisk()
 
-    await startRun(
-      {
-        now: () => NOW,
-        readCharter: () => fs.readFileSync(path.join(autonomy, 'charter.md'), 'utf8'),
-        readSeatFile: seat => fs.readFileSync(path.join(autonomy, 'seats', `${seat}.md`), 'utf8'),
-        readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
-        loadDoc: () => loadDoc(statePath()),
-        saveDoc: next => saveDoc(next, statePath()),
-        lock: () => acquireRunLock(path.join(tmp, 'seat-watchdog.lock')),
-        sleep: async () => undefined,
-      },
-      SEAT,
-    )
+    await runStart()
     const after = await fromDisk()
 
     expect(before.budget.stop).toBe(stopOf("run spend 20 points at or above the seat's per_run_points 5"))
     expect(after.budget.stop).toBeNull()
+  })
+
+  it('counts run spend from the run-start reading, not from the saved run it replaced', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 }, configDir: poolDir })
+    const run = { since: at(1), last: 30, spent: 9 }
+    const saved = { seats: { [SEAT]: { idleRuns: 0, at: at(9, 45), run } }, pools: { [POOL]: dayMeter } }
+    fs.writeFileSync(statePath(), JSON.stringify(saved))
+
+    await runStart()
+    writeReading(12, 45)
+    const belowCap = await fromDisk()
+    writeReading(12, 46)
+    const atCap = await fromDisk()
+
+    expect(belowCap.budget.stop).toBeNull()
+    expect(atCap.budget.stop).toBe(stopOf("run spend 5 points at or above the seat's per_run_points 5"))
   })
 
   it('counts a run meter older than 12 hours from its last reading, not from zero', async () => {
@@ -1235,14 +1409,14 @@ describe('the status verb', () => {
   it('prints the same facts as a short table without --json', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
     seedAgent({ name: 'ss-al-2', profile: 'implementer' })
-    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, cwd: autonomy })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree', cwd: autonomy })
     writeReading(12, 70)
 
     const { lines } = await statusReport(deps(), SEAT, false)
 
     expect(lines).toEqual([
       `seat ${SEAT} at ${NOW.toISOString()}`,
-      'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
+      'implementers  3/2  AT CAP  ss-al-1, ss-al-2  trees: autonomy(agent)',
       'reviewers     0/1',
       'planners      0/3',
       'other         0',
@@ -1415,6 +1589,39 @@ describe('a status that cannot be read', () => {
   })
 })
 
+describe('the brief page (CC-889)', () => {
+  it('prints caps per role with names, the pool reading and stop, unread and parked', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    seedAgent({ name: 'ss-al-2', profile: 'implementer' })
+    seedAgent({ name: 'ss-al-3', profile: 'implementer', exited: true })
+    seedAgent({ name: 'ss-rv-1', profile: 'reviewer' })
+    join(SEAT)
+    const peer = join('peer-b')
+    send(peer, SEAT, 'first')
+    writeReading(12, 70)
+
+    const report = await statusReport(deps(), SEAT, false, true)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines).toEqual([
+      `seat ${SEAT} at ${NOW.toISOString()}`,
+      'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
+      'reviewers     1/1  AT CAP  ss-rv-1',
+      'planners      0/3',
+      `pool          pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
+      `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+      'unread        1',
+      'parked        1',
+    ])
+  })
+
+  it('reads "none" on the stop line while the gate is open', async () => {
+    const report = await statusReport(deps(), SEAT, false, true)
+
+    expect(report.lines.slice(5)).toEqual(['stop          none', 'unread        0', 'parked        0'])
+  })
+})
+
 describe('the verb wired to a running broker', () => {
   const ctx = { warnings: [], format: 'human' as const, withBroker }
   const saved = { ...process.env }
@@ -1473,6 +1680,24 @@ describe('the verb wired to a running broker', () => {
     expect(report.ok).toBe(true)
     expect(report.lines[0]).toMatch(new RegExp(`^seat ${SEAT} at `))
     expect(report.lines[1]).toBe('implementers  0/2')
+  })
+
+  it('prints the brief page with --brief', async () => {
+    const report = await seatsStatusVerb.run({ seat: SEAT, brief: true, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines[0]).toMatch(new RegExp(`^seat ${SEAT} at `))
+    expect(report.lines).toHaveLength(8)
+  })
+
+  it('refuses --brief with --json, so the JSON document never changes shape', async () => {
+    const report = await seatsStatusVerb.run({ seat: SEAT, brief: true, json: true, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(JSON.parse(report.lines.join('\n'))).toEqual({
+      seat: SEAT,
+      error: 'seats status takes --brief or --json, not both',
+    })
   })
 
   it('prints one error document and starts no broker when none is running', async () => {

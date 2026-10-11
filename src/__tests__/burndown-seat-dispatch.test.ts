@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadPolicy, parseSeat, type Policy } from '../agents/burndown/policy.js'
 import { repoForTask, resolveSeatDispatch, type SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { loadTickConfig } from '../agents/burndown/source.js'
+import { configPath } from '../paths.js'
 
 /** CC-245: the seat dispatch policy that CC-205 seats mode resolves from the charter and a seat file. */
 
@@ -17,10 +18,35 @@ const withSeat = (policy: Policy, name: string, patch: Record<string, unknown>):
   seats: { ...policy.seats, [name]: { ...policy.seats[name], ...patch } as Policy['seat'] },
 })
 
+describe('spawn config maxAgents', () => {
+  const load = (maxAgents: number) => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc668-')), 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true, maxAgents }))
+    return loadTickConfig(file)
+  }
+
+  it.each([0, -1])('refuses maxAgents %i', maxAgents => {
+    expect(() => load(maxAgents)).toThrow(/maxAgents/)
+  })
+})
+
 describe('resolveSeatDispatch', () => {
   let policy: Policy
+  let agentChatHome: string
+  const writeConfig = (config: Record<string, unknown>) =>
+    fs.writeFileSync(configPath(), JSON.stringify(config))
+  const withoutCharterReserve = (): Policy => {
+    const { worktrees_left_free_per_repo: _free, ...defaults } = policy.charter.defaults
+    return { ...policy, charter: { ...policy.charter, defaults } }
+  }
   beforeEach(() => {
     policy = loadPolicy(FIXTURE, 'seat-a')
+    agentChatHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc872-'))
+    process.env.AGENT_CHAT_HOME = agentChatHome
+  })
+  afterEach(() => {
+    delete process.env.AGENT_CHAT_HOME
+    fs.rmSync(agentChatHome, { recursive: true, force: true })
   })
 
   it('resolves prefix, pool, repos, caps, worktree caps, excluded tags and grants for seat-a', () => {
@@ -32,16 +58,17 @@ describe('resolveSeatDispatch', () => {
       pool: expect.objectContaining({ name: 'pool-x', config_dir: '/tmp/pool-x', human_uses: true }),
       configDir: '/tmp/pool-x',
       repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
+      nonGitRepos: [],
       caps: { implementers: 4, reviewers: 2, planners: 1 },
       worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
-      wipLimits: {},
       excludedTags: ['human-only', 'blocked'],
       grants: ['grant-merge-alpha'],
     })
   })
 
   it('takes the pool config_dir when the seat names none and expands a home-relative repo path', () => {
-    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+    const capped = withSeat(policy, 'seat-b', { concurrency: { implementers: 1 } })
+    const dispatch = resolveSeatDispatch(capped, 'seat-b', HOME)
 
     expect(dispatch.configDir).toBe('/tmp/pool-y')
     expect(dispatch.repos).toEqual({
@@ -50,11 +77,26 @@ describe('resolveSeatDispatch', () => {
     })
   })
 
-  it('gives zero caps and no grants to a seat without concurrency or grants_extra', () => {
-    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+  it('gives no grants to a seat without grants_extra', () => {
+    const dispatch = resolveSeatDispatch(
+      withSeat(policy, 'seat-b', { concurrency: { implementers: 1 } }),
+      'seat-b',
+      HOME,
+    )
 
-    expect(dispatch.caps).toEqual({ implementers: 0, reviewers: 0, planners: 0 })
     expect(dispatch.grants).toEqual([])
+  })
+
+  it('refuses a seat with no concurrency block', () => {
+    expect(() => resolveSeatDispatch(policy, 'seat-b', HOME)).toThrow(
+      /seat-b concurrency\.implementers is unset/,
+    )
+  })
+
+  it.each([0, -1])('refuses a seat whose implementers cap is %i', implementers => {
+    const bad = withSeat(policy, 'seat-a', { concurrency: { implementers, reviewers: 1, planners: 1 } })
+
+    expect(() => resolveSeatDispatch(bad, 'seat-a', HOME)).toThrow(/not positive/)
   })
 
   it('refuses the hub seat', () => {
@@ -108,13 +150,35 @@ describe('resolveSeatDispatch', () => {
     expect(() => resolveSeatDispatch(policy, 'nobody', HOME)).toThrow('nobody is not a seat')
   })
 
-  it('refuses a charter without worktrees_left_free_per_repo', () => {
-    const { worktrees_left_free_per_repo: _free, ...defaults } = policy.charter.defaults
-    const capless = { ...policy, charter: { ...policy.charter, defaults } }
+  it('gives leftFreePerRepo 2 with no charter key and no config key', () => {
+    const dispatch = resolveSeatDispatch(withoutCharterReserve(), 'seat-a', HOME)
 
-    expect(() => resolveSeatDispatch(capless, 'seat-a', HOME)).toThrow(
-      'charter defaults lack worktrees_left_free_per_repo',
-    )
+    expect(dispatch.worktrees.leftFreePerRepo).toBe(2)
+  })
+
+  it('reads leftFreePerRepo from config worktreeOwnerReserve', () => {
+    writeConfig({ worktreeOwnerReserve: 3 })
+
+    expect(resolveSeatDispatch(withoutCharterReserve(), 'seat-a', HOME).worktrees.leftFreePerRepo).toBe(3)
+  })
+
+  it('prefers the config value over a charter worktrees_left_free_per_repo', () => {
+    writeConfig({ worktreeOwnerReserve: 3 })
+
+    expect(resolveSeatDispatch(policy, 'seat-a', HOME).worktrees.leftFreePerRepo).toBe(3)
+  })
+
+  it('ignores a charter worktrees_left_free_per_repo when config sets none', () => {
+    const defaults = { ...policy.charter.defaults, worktrees_left_free_per_repo: 5 }
+    const charterOnly = { ...policy, charter: { ...policy.charter, defaults } }
+
+    expect(resolveSeatDispatch(charterOnly, 'seat-a', HOME).worktrees.leftFreePerRepo).toBe(2)
+  })
+
+  it.each([-1, 1.5, '2', null])('refuses config worktreeOwnerReserve %j', value => {
+    writeConfig({ worktreeOwnerReserve: value })
+
+    expect(() => resolveSeatDispatch(policy, 'seat-a', HOME)).toThrow(/worktreeOwnerReserve/)
   })
 
   it("caps active trees at the seat's implementers when worktrees_per_repo_per_seat is absent", () => {
@@ -235,6 +299,39 @@ describe('burndown.config.json seats', () => {
 
     expect(loadTickConfig(file).exceptions.route).toEqual({ stalled: 'owner', failed: 'owner' })
   })
+
+  it('leaves every brief gate off with a 14-day brief age when the config names none (CC-925)', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true }))
+
+    const config = loadTickConfig(file)
+
+    expect(config.briefGate).toEqual({})
+    expect(config.briefMaxAgeDays).toBe(14)
+  })
+
+  it('reads a per-seat brief gate and a brief age', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ briefGate: { 'seat-a': 'shadow', 'seat-b': 'on' }, briefMaxAgeDays: 7 }),
+    )
+
+    const config = loadTickConfig(file)
+
+    expect(config.briefGate).toEqual({ 'seat-a': 'shadow', 'seat-b': 'on' })
+    expect(config.briefMaxAgeDays).toBe(7)
+  })
+
+  it.each([{ briefGate: { 'seat-a': 'enforce' } }, { briefMaxAgeDays: 0 }, { briefMaxAgeDays: 1.5 }])(
+    'rejects the brief gate config %j',
+    config => {
+      const file = path.join(dir, 'burndown.config.json')
+      fs.writeFileSync(file, JSON.stringify(config))
+
+      expect(() => loadTickConfig(file)).toThrow('is malformed')
+    },
+  )
 
   it.each(['gate-trip', 'unknown'])('rejects a %s key under exceptions.route', key => {
     const file = path.join(dir, 'burndown.config.json')

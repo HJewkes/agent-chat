@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { logEvent } from '../../broker/log.js'
+import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
 import { Contract } from './report.js'
 import { STALL_CODES } from './stall-code.js'
@@ -47,6 +49,8 @@ const Claim = z.object({
   dependsOn: z.array(z.string()).optional(),
   /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
   owns: z.array(z.string()).optional(),
+  /** The repo the slice's plan names; it outranks the task's tags (CC-946). */
+  repo: z.string().optional(),
   /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
   contracts: z.array(Contract).optional(),
   /** The agent the claim is waiting on now. */
@@ -55,10 +59,14 @@ const Claim = z.object({
   spawned: z.array(z.string()).optional(),
   /** Where a `spawning` claim goes once its agent row appears. */
   nextPhase: z.enum(AGENT_PHASES).optional(),
+  /** CC-939: the planner-profile agent writes a brief, not slices; its exit leaves the task for approval. */
+  briefer: z.boolean().optional(),
   worktree: z.string().optional(),
   questionId: z.string().optional(),
   inboxCursor: z.string().optional(),
   attempt: z.number().int().nonnegative().optional(),
+  /** Set once a silent exit with commits ahead got its one resume successor (CC-673). */
+  resumed: z.literal(true).optional(),
   reviewRound: z.number().int().nonnegative().optional(),
   pr: z.string().optional(),
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
@@ -91,6 +99,8 @@ const Claim = z.object({
   namePrefix: z.string().optional(),
   /** Event kinds (`kind:code` for a coded stall) already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** The fact fingerprint of each delivered stall notice by its `notified` key; outlives that entry so an unchanged reopen stays quiet (CC-641). */
+  noticeFacts: z.record(z.string(), z.string()).optional(),
   /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
   finding: z
     .object({
@@ -105,6 +115,13 @@ const Claim = z.object({
       checkedAt: z.string(),
       detail: z.string(),
     })
+    .optional(),
+  /**
+   * The checkpoint request for the open `dirty-uncommitted` finding (CC-663): `sentAt` once one went out, `failed`
+   * counting refused sends before that. Cleared once the finding closes or changes code, so a later one asks again.
+   */
+  checkpoint: z
+    .object({ sentAt: z.string().optional(), failed: z.number().int().positive().optional() })
     .optional(),
   /** An implementing claim's progress lease (CC-659), with the evidence it last saw; `lease.ts` steps it each tick. */
   lease: z
@@ -155,7 +172,15 @@ const SeatSample = z.object({
   resetsAt: z.number().optional(),
 })
 
-const SeatState = z.object({ samples: z.array(SeatSample) })
+/** The reason set of the seat's last "dispatched nothing" log line and when it was written (CC-859). */
+const NoDispatchMark = z.object({ key: z.string(), at: z.string() })
+
+const SeatState = z.object({
+  samples: z.array(SeatSample),
+  noDispatch: NoDispatchMark.optional(),
+  /** Ticks in a row on which nothing in the seat's scope was eligible (CC-864); absent after a dispatch or a stop. */
+  exhaustedTicks: z.number().int().positive().optional(),
+})
 export type SeatState = z.infer<typeof SeatState>
 
 /** How often a task was released and when last; `backoff.ts` turns it into a hold (CC-661). */
@@ -208,6 +233,14 @@ const BrakeState = z.object({
 })
 export type BrakeState = z.infer<typeof BrakeState>
 
+/** A seat's run of refused deliveries (CC-640); `skipped` counts the ticks a stopped seat was held back since its last probe. */
+const WakeRecord = z.object({
+  failed: z.number().int().positive(),
+  reason: z.string().optional(),
+  skipped: z.number().int().nonnegative().optional(),
+})
+export type WakeRecord = z.infer<typeof WakeRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -217,10 +250,25 @@ const Ledger = z.object({
   seats: z.record(z.string(), SeatState).optional(),
   /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
   humanFiled: z.array(z.string()).optional(),
-  /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
-  leakDenylist: z.string().optional(),
+  /** The scanner state the leak check last recorded, so a missing scanner is logged once rather than every tick. */
+  leakScanner: z.string().optional(),
+  /**
+   * The last finding rows of each part of a PR's leak scan, by PR URL, so a part a tick cannot
+   * scan keeps its last result while the other part's fresh one replaces its own. A clean part is absent.
+   */
+  leakScans: z
+    .record(
+      z.string(),
+      z.object({ text: z.array(z.string()).optional(), branch: z.array(z.string()).optional() }),
+    )
+    .optional(),
   /** Release counts by task id, which hold the task back from dispatch (CC-661). */
   releases: z.record(z.string(), ReleaseRecord).optional(),
+  /**
+   * Slices dropped one at a time by `burndown release --slice`, by task id (CC-978). The task stays seeded, and a
+   * dropped slice no longer gates the slices that depend on it. A whole-task release clears the entry.
+   */
+  slicesReleased: z.record(z.string(), z.array(z.string())).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
@@ -229,6 +277,10 @@ const Ledger = z.object({
   ladder: z.record(z.string(), LadderRecord).optional(),
   /** Persisted, so a restart inside the window stays braked. */
   brake: BrakeState.optional(),
+  /** The last `titan-factory service check` read; the line stops on two stopping reads in a row (CC-785). */
+  serviceCheck: z.object({ at: z.string().datetime(), cause: z.string().nullable() }).optional(),
+  /** Consecutive refused deliveries by seat name; a delivered message drops the seat's entry (CC-640). */
+  wake: z.record(z.string(), WakeRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
@@ -266,8 +318,23 @@ export function readLedger(file: string): Ledger {
   return parsed.data
 }
 
+/** A ledger that cannot be read is not a baseline, so the first write after it is unchecked (CC-674). */
+function refuseIllegalEdges(file: string, next: Ledger): void {
+  let before: Ledger
+  try {
+    before = readLedger(file)
+  } catch {
+    return
+  }
+  const [edge] = illegalEdges(before.claims, next.claims)
+  if (edge === undefined) return
+  logEvent('burndown_illegal_phase_edge', { ...edge })
+  throw new IllegalPhaseEdgeError(`claim ${edge.claim} may not move from ${edge.from} to ${edge.to}`)
+}
+
 /** Write-then-rename in the same directory, so a reader never sees half a ledger. */
 export function writeLedger(file: string, ledger: Ledger): void {
+  refuseIllegalEdges(file, ledger)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })
@@ -280,6 +347,14 @@ const LANE_PHASES: ReadonlySet<Phase> = new Set(['spawning', 'planning', 'implem
 
 /** Claims with an agent at work: parked, queued, awaiting-merge and shepherding claims hold their task but not a lane. */
 export const laneClaims = (ledger: Ledger): Claim[] => ledger.claims.filter(c => LANE_PHASES.has(c.phase))
+
+/** CC-978: the seat's claims the ledger shows holding an implementer: implementing, or spawning into it. */
+export const ledgerImplementers = (ledger: Ledger, seat: string): number =>
+  heldClaims(ledger).filter(
+    c =>
+      c.seat === seat &&
+      (c.phase === 'implementing' || (c.phase === 'spawning' && c.nextPhase === 'implementing')),
+  ).length
 
 export function isStalled(claim: Claim, now: Date): boolean {
   if (claim.stalledReason !== undefined) return true
@@ -299,12 +374,20 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
-/** Queued slices whose dependencies are all done and whose task is not in `held`, in ledger order. */
+/**
+ * Queued slices whose dependencies are all done or released, whose task is not in `held`, and that no
+ * hand-dispatched PR is linked to (CC-978), in ledger order.
+ */
 export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
-  const done = (taskId: string, slice: string): boolean =>
+  const met = (taskId: string, slice: string): boolean =>
+    ledger.slicesReleased?.[taskId]?.includes(slice) === true ||
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
   return ledger.claims.filter(
-    c => c.phase === 'queued' && !held.has(c.taskId) && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
+    c =>
+      c.phase === 'queued' &&
+      c.pr === undefined &&
+      !held.has(c.taskId) &&
+      (c.dependsOn ?? []).every(dep => met(c.taskId, dep)),
   )
 }
 
