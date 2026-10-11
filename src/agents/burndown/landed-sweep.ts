@@ -1,4 +1,4 @@
-import { namesId } from './collision.js'
+import { LANDING_LOG_FORMAT, landingLines, namesId } from './collision.js'
 import { run, type Runner } from './exec.js'
 import { defaultBranch } from './observe.js'
 import { loadPolicy, seatScope } from './policy.js'
@@ -8,7 +8,7 @@ import { resolveSeatDispatch } from './seat-dispatch.js'
 import { readInitiatives } from './source.js'
 
 /**
- * CC-611: every open task in a seat's scope checked against recent default-branch subjects, not just the
+ * CC-611: every open task in a seat's scope checked against recent default-branch subjects or Covers clauses, not just the
  * rows a plan walk reaches. A landed task ranked below every cap is never dispatched, so the collision
  * check never refuses it either, and it stays open unless something reports it. Read-only.
  */
@@ -54,7 +54,7 @@ function landedRow(task: SweepTask, reads: readonly SubjectRead[]): LandedRow[] 
   return []
 }
 
-/** Subjects on `origin/<branch>` from the last `days` days, fetched first so a landing since the last fetch counts. */
+/** Subjects and Covers clauses on `origin/<branch>` from the last `days` days, fetched first so a landing since the last fetch counts. */
 export function readRecentSubjects(
   repo: string,
   branch: string,
@@ -62,8 +62,8 @@ export function readRecentSubjects(
   exec: Runner = run,
 ): string[] | undefined {
   if (exec(GIT_BIN, ['fetch', '--quiet', '--no-tags', 'origin', branch], repo).status !== 0) return undefined
-  const result = exec(GIT_BIN, ['log', `origin/${branch}`, `--since=${days}.days`, '--format=%s'], repo)
-  return result.status === 0 ? result.stdout.split('\n').filter(line => line.length > 0) : undefined
+  const result = exec(GIT_BIN, ['log', `origin/${branch}`, `--since=${days}.days`, LANDING_LOG_FORMAT], repo)
+  return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
 export interface LandedSweep {

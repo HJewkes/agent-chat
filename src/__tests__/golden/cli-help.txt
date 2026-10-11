@@ -261,7 +261,7 @@ Commands:
   link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
                             dispatches it and finishes it on merge
   landed [options]          every open, unreconciled task in a seat's scope that a recent
-                            default-branch subject names (CC-611); writes nothing
+                            default-branch subject or Covers clause names (CC-611); writes nothing
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -420,8 +420,8 @@ Options:
 === agent-chat burndown landed
 Usage: agent-chat burndown landed [options]
 
-every open, unreconciled task in a seat's scope that a recent default-branch subject names (CC-611);
-writes nothing
+every open, unreconciled task in a seat's scope that a recent default-branch subject or Covers
+clause names (CC-611); writes nothing
 
 Options:
   --seat <value>           autonomy seat whose scope and repos to sweep

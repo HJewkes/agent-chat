@@ -144,6 +144,17 @@ describe('readRecentSubjects over a fixture repository', () => {
     expect(ids).toEqual(['CC-41'])
   })
 
+  it('reports a task named only in a recent Covers clause beside the subject it rides on', () => {
+    const seed = path.join(root, 'seed')
+    git(seed, ['commit', '--allow-empty', '-q', '-m', 'Sweep (CC-39) (#701)\n\nAlso covers CC-40.'])
+    git(seed, ['push', '-q', 'origin', 'main'])
+    const reads = [{ repo: clone, subjects: readRecentSubjects(clone, 'main', 7) }]
+
+    const ids = landedSweep(fortyOne(), reads).map(row => ('id' in row ? row.id : row.kind))
+
+    expect(ids).toEqual(['CC-39', 'CC-40', 'CC-41'])
+  })
+
   it('reads a failed fetch as undefined', () => {
     git(clone, ['remote', 'set-url', 'origin', path.join(root, 'gone.git')])
 

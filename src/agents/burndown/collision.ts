@@ -62,7 +62,7 @@ export interface FileClaim {
 /** Everything the check reads about one repo; `undefined` means the read failed. */
 export interface CollisionFacts {
   repo: string
-  /** Commit subjects on `origin/<default>`, never bodies: a body mention is not a landing. */
+  /** Commit subjects on `origin/<default>`, plus one line per body Covers clause; any other body mention is not a landing. */
   subjects: string[] | undefined
   /** The seat's other repos' subjects: a task lands wherever its PR merged, so each counts, and a failed read names its repo. */
   landedElsewhere?: { repo: string; subjects: string[] | undefined }[]
@@ -239,11 +239,41 @@ export function sameTickCollision(
 const overlapping = (owns: string[], others: string[]): string | undefined =>
   owns.find(own => others.some(other => patternsOverlap(own, other)))
 
-/** Subjects only (`%s`) on `origin/<branch>`, fetched first so a landing since the last fetch counts. */
+const TASK_ID = '[A-Za-z][A-Za-z0-9]*-\\d+'
+const ID_SEPARATOR = '[ \\t]*(?:,[ \\t]*(?:and[ \\t]+)?|and[ \\t]+|&[ \\t]*)'
+// A clause opens a line, a list bullet or a sentence, so "Partly covers" and "This covers" stay prose.
+const COVERS_CLAUSE = new RegExp(
+  `(?:^[ \\t]*(?:[-*][ \\t]+)?|\\.[ \\t]+)(?:Also covers|Covers):?[ \\t]+(${TASK_ID}(?:${ID_SEPARATOR}${TASK_ID})*)`,
+  'gm',
+)
+
+/** Ids a body lists in a `Covers` or `Also covers` clause (CC-1068): a PR that says so delivers them too. */
+export function coveredIds(body: string): string[] {
+  const ids = [...body.matchAll(COVERS_CLAUSE)].flatMap(
+    clause => (clause[1] ?? '').match(new RegExp(TASK_ID, 'g')) ?? [],
+  )
+  return [...new Set(ids)]
+}
+
+/** The format `landingLines` parses: subject, unit separator, body, record separator. */
+export const LANDING_LOG_FORMAT = '--format=%s%x1f%b%x1e'
+
+/** Each commit's subject, then `<subject> [covers <ids>]` when its body has a Covers clause. */
+export function landingLines(log: string): string[] {
+  return log.split('\x1e').flatMap(record => {
+    const [head = '', body = ''] = record.split('\x1f')
+    const subject = head.trim()
+    if (subject.length === 0) return []
+    const covered = coveredIds(body)
+    return covered.length === 0 ? [subject] : [subject, `${subject} [covers ${covered.join(', ')}]`]
+  })
+}
+
+/** Subjects and Covers clauses on `origin/<branch>`, fetched first so a landing since the last fetch counts. */
 export function readSubjects(repo: string, branch: string, exec: Runner = run): string[] | undefined {
   if (exec(GIT_BIN, ['fetch', '--quiet', '--no-tags', 'origin', branch], repo).status !== 0) return undefined
-  const result = exec(GIT_BIN, ['log', `origin/${branch}`, '--format=%s'], repo)
-  return result.status === 0 ? result.stdout.split('\n').filter(line => line.length > 0) : undefined
+  const result = exec(GIT_BIN, ['log', `origin/${branch}`, LANDING_LOG_FORMAT], repo)
+  return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits. `{owner}/{repo}` resolves from `cwd`.

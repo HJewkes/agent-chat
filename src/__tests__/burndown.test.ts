@@ -321,7 +321,8 @@ describe('burndown plan collision check (CC-202)', () => {
         return { status: 0, stdout: (seen.files ?? []).join('\n') }
       if (bin === 'gh') return { status: 0, stdout: (seen.prs ?? []).map(p => JSON.stringify(p)).join('\n') }
       if (args[0] === 'fetch') return { status: 0, stdout: '' }
-      if (args[0] === 'log') return { status: 0, stdout: (seen.subjects ?? []).join('\n') }
+      if (args[0] === 'log')
+        return { status: 0, stdout: (seen.subjects ?? []).map(s => `${s}\x1f\x1e`).join('\n') }
       return { status: 1, stdout: '' }
     }
   const noBroker: BrokerView = { names: [], claims: [] }
