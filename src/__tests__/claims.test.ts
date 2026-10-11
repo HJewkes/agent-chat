@@ -243,12 +243,12 @@ describe('ClaimLedger', () => {
   it('accepts disjoint globs in one directory beside a peer (CC-826)', () => {
     const l = ledger()
     l.claim({
-      owner: 'titan-coord',
+      owner: 'alice',
       worktreePath: WT,
       patterns: ['products/factory/src/gate-resolve-round*', 'products/factory/src/cli.ts'],
     })
 
-    const out = l.claim({ owner: 'voltras', worktreePath: WT, patterns: ['products/factory/src/config*.ts'] })
+    const out = l.claim({ owner: 'bob', worktreePath: WT, patterns: ['products/factory/src/config*.ts'] })
 
     expect(out.ok).toBe(true)
   })
