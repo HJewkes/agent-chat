@@ -82,7 +82,7 @@ afterEach(() => {
 
 /** The worker writes its handoff and stands down, as `teleport` does, then its connection drops at `T0`. */
 function teleports(predecessor: Wire): string {
-  const agentId = core.registry.entryFor(predecessor.conn)?.agentId
+  const agentId = core.registry.entryFor(predecessor.conn)?.agentId as string
   at(T0)
   const { msgId: successor } = core.append({
     kind: 'agent_spawned',
