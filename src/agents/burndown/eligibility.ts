@@ -62,6 +62,7 @@ export type RefusalKind =
   | 'brief-stale'
   | 'blocked'
   | 'repo-ambiguous'
+  | 'no-owns'
 
 export interface Refusal {
   initiative: string

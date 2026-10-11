@@ -195,13 +195,16 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
     }
   })
 
-  it('reads no plan for a task routed to an implementer', () => {
-    const readPlan = reader(planText(SLICES))
+  it('seeds a task routed to an implementer from its plan rather than dispatching it (CC-952)', () => {
+    const result = plan({
+      ...ON,
+      readPlan: reader(planText(SLICES)),
+      route: 'implementer',
+      t: { estimate: 2 },
+    })
 
-    const result = plan({ ...ON, readPlan, route: 'implementer', t: { estimate: 2 } })
-
-    expect(readPlan).not.toHaveBeenCalled()
-    expect(result.dispatch.map(d => d.profile)).toEqual(['bd-implementer'])
+    expect(result.dispatch).toEqual([])
+    expect(result.seeds.map(c => c.slice)).toEqual(['a', 'b'])
   })
 
   it('refuses an unbriefed task under on before reading its plan', () => {
