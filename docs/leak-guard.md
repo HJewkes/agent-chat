@@ -673,11 +673,15 @@ anywhere on the line, even inside git's own arguments. git's other arguments are
 names, so a commit message that mentions `GIT_PAGER` stays allowed, and `unset NAME` and
 `env -u NAME`, which only remove a name, are allowed too.
 
-"Runs git anywhere" includes a nested `sh -c`/`bash -c`/`eval` that runs git, and a prefix env on
-such a shell (`GIT_EDITOR=… sh -c 'git commit'`) counts as reaching git. So
+"Runs git anywhere" is the guard's own may-reach-git test (CC-478), the one the hidden-command
+budget uses, not a search for the word `git`: a command word that may expand to git counts, such as
+`${G}t` after `G=gi`, `g{i,}t` or `$'g\x69t'`, and so does any `$(…)` substitution or a variable
+the line or the hook ties to git or gh. It includes a nested `sh -c`/`bash -c`/`eval` that runs
+git, and a prefix env on such a shell (`GIT_EDITOR=… sh -c 'git commit'`) counts as reaching git. So
+`G=gi; GIT_PAGER='git push --no-verify' ${G}t log` is denied, as are
 `GIT_SSH_COMMAND='git push --no-verify' git fetch`, `MANPAGER='git push --no-verify' git help log`
-and `declare -x GIT_EDITOR='git push --no-verify'; git commit` are denied. A false deny on a line
-that both uses one of these names and runs git is accepted: `grep GIT_PAGER f && git diff`,
+and `declare -x GIT_EDITOR='git push --no-verify'; git commit`. A false deny on a line that both
+uses one of these names and may reach git is accepted: `grep GIT_PAGER f && git diff`,
 `export -n GIT_EDITOR; git commit`, and `LESS=-R git log` all deny. A safe literal value stays
 allowed: `GIT_PAGER=less`, `PAGER=cat`, `EDITOR=vim`, `GIT_SSH_COMMAND="ssh -i key"` and an empty
 value. The git scan blanks each program-env assignment's value, so `GIT_EDITOR='git push' ls`,

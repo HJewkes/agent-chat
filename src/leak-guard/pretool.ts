@@ -1449,8 +1449,9 @@ function scanWord(word: string): string {
 
 /**
  * Program env vars git runs (TP-636), closed as one conservative line rule. If a program env name
- * is used anywhere on a line that runs git, a plain literal assignment's value is checked as a
- * nested script and any other use denies.
+ * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
+ * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
+ * as a nested script and any other use denies.
  */
 function checkProgramEnvLine(
   command: string,
@@ -1462,7 +1463,7 @@ function checkProgramEnvLine(
   const events = cmds.flatMap(envEvents)
   if (events.length === 0) return undefined
   const scan = cmds.flatMap(cmd => cmd.marked.map(scanWord)).join(' ')
-  if (!/\bgit\b/.test(scan)) return undefined
+  if (!mayReachGit(scan, ctx.env)) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv

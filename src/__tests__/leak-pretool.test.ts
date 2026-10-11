@@ -2578,6 +2578,33 @@ describe('a config value git clone applies before it fetches (TP-636)', () => {
   })
 })
 
+describe('a program env var on a line whose git word is built from a variable (TP-636)', () => {
+  it.each([
+    "G=gi; GIT_SSH_COMMAND='git push --no-verify' ${G}t fetch origin",
+    "G=gi; GIT_EDITOR='git push --no-verify' ${G}t commit",
+    "G=gi; export GIT_SSH_COMMAND='git push --no-verify'; ${G}t fetch origin",
+    "G=gi; GIT_PAGER='git push --no-verify' ${G}t log",
+    "GIT_SEQUENCE_EDITOR='git push --no-verify' g{i,}t rebase -i HEAD~2",
+    "GIT_ASKPASS='git push --no-verify' $'g\\x69t' fetch",
+  ])('denies a skipped hook in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    "G=gi; GIT_SSH_COMMAND[0]='git push --no-verify'; ${G}t fetch origin",
+    "G=gi; GIT_EXTERNAL_DIFF+='git push --no-verify'; ${G}t diff",
+  ])('denies an indexed or appended assignment: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
+  })
+
+  it.each(['G=gi; GIT_PAGER=less ${G}t log', "GIT_EDITOR='git push --no-verify' ls"])(
+    'allows %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+})
+
 describe('an environment variable git runs as a program (TP-636 fix round 2)', () => {
   it.each([
     "GIT_EDITOR='git push --no-verify' git commit",
