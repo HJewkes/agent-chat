@@ -1,0 +1,12 @@
+---
+schema: autonomy-charter/v1
+pools:               # fixture pools
+  # a comment line inside the block
+  claude:  {config_dir: @DIR@/claude, human_uses: false, reserve_seven_day: 14, ceiling_five_hour: 100}
+  workout: {config_dir: @DIR@/workout, reserve_seven_day: 14}
+  agents:  {config_dir: @DIR@/agents, reserve_seven_day: 14}  # trailing comment
+  old:     {config_dir: @DIR@/old, reserve_seven_day: 14}
+  dark:    {config_dir: @DIR@/dark, reserve_seven_day: 14}
+other: 1
+---
+# Charter body

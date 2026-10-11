@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { posixShell } from '../leak-guard/posix-shell.js'
+
 /** Set by the shim script so the shim can skip its own directory when it looks for the real gh. */
 export const GH_SHIM_DIR_ENV = 'AGENT_CHAT_GH_SHIM_DIR'
 
@@ -11,9 +13,9 @@ export const GH_SHIM_OFF_ENV = 'AGENT_CHAT_GH_SHIM_OFF'
 const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 /** Falls back to the real gh when the node or the build it was written against has gone. */
-export const ghShimScript = (dir: string, node: string, main: string): string =>
+export const ghShimScript = (dir: string, node: string, main: string, shell = posixShell()): string =>
   [
-    '#!/bin/sh',
+    `#!${shell}`,
     '# Written by agent-chat at each spawn (CC-395); answers read-only gh commands from REST.',
     `if [ -x ${quote(node)} ] && [ -f ${quote(main)} ]; then`,
     `  ${GH_SHIM_DIR_ENV}=${quote(dir)} exec ${quote(node)} ${quote(main)} "$@"`,

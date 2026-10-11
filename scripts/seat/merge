@@ -1,0 +1,61 @@
+#!/bin/bash
+# Run premerge; on OK do one squash PUT. Prints `OK merged <R>#<N> squash <sha>` or `FAIL <reason>`.
+# Exit 0 merged (and main green with --wait-main), 1 not merged, 3 merged but MAIN red, 4 merged but MAIN timeout.
+# usage: merge <owner/repo> <pr> <head sha> <local clone> [reviewed head] [--wait-main]
+set -u
+here=$(cd "$(dirname "$0")" && pwd)
+wait_main=0; pos=()
+for a in "$@"; do if [ "$a" = --wait-main ]; then wait_main=1; else pos+=("$a"); fi; done
+[ ${#pos[@]} -ge 4 ] || { echo "usage: merge <owner/repo> <pr> <head sha> <local clone> [reviewed head] [--wait-main]" >&2; exit 2; }
+R=${pos[0]} N=${pos[1]} S=${pos[2]} L=${pos[3]} RV=${pos[4]:-${pos[2]}}
+[ -n "${SEAT:-}" ] || { echo "FAIL SEAT is not set"; exit 1; }
+
+poll_main() {
+  local sha=$1 waited=0 runs pending bad
+  while :; do
+    runs=$(gh api "repos/$R/commits/$sha/check-runs?per_page=100" --jq '.check_runs' 2>/dev/null || echo '[]')
+    pending=$(jq 'length as $n | [.[] | select(.status!="completed")] | length + (if $n==0 then 1 else 0 end)' <<<"$runs")
+    if [ "$pending" = 0 ]; then
+      bad=$(jq -r '[.[] | select(.conclusion|IN("success","skipped","neutral")|not) | .name] | join(",")' <<<"$runs")
+      [ -z "$bad" ] && { echo "MAIN green"; return 0; }
+      echo "MAIN red $bad"; return 3
+    fi
+    [ "$waited" -ge "${WAIT_MAX:-1800}" ] && { echo "MAIN timeout"; return 4; }
+    sleep "${WAIT_INTERVAL:-30}"; waited=$((waited + ${WAIT_INTERVAL:-30}))
+  done
+}
+
+# squash_message <citation>: prints the formatter's {subject, body} JSON for this PR, or the reason it could not.
+# Item 135: no fallback to GitHub's default message, which adds Co-authored-by trailers.
+squash_message() {
+  local pr commits input bin=${SQUASH_MESSAGE_BIN:-titan-squash-message}
+  command -v "$bin" >/dev/null || { echo "$bin not found"; return 1; }
+  pr=$(gh api "repos/$R/pulls/$N" 2>/dev/null) || { echo "cannot read pulls/$N"; return 1; }
+  commits=$(gh api "repos/$R/pulls/$N/commits?per_page=100" 2>/dev/null) || { echo "cannot read pulls/$N/commits"; return 1; }
+  input=$(jq -n --argjson pr "$pr" --argjson commits "$commits" --arg cite "$1" --argjson n "$N" '{
+    title: $pr.title,
+    body: ([($pr.body // "" | select(. != "")), $cite] | join("\n\n")),
+    prNumber: $n,
+    taskIds: ([$pr.title | scan("[A-Z]+-[0-9]+")] | unique),
+    commits: [$commits[].commit.message | split("\n") | {subject: .[0], body: (.[1:] | join("\n") | ltrimstr("\n"))}]
+  }' 2>&1) || { echo "cannot build formatter input: $input"; return 1; }
+  "$bin" --json <<<"$input" 2>/dev/null || { echo "$bin exited $?"; return 1; }
+}
+
+out=$("$here/premerge" "$R" "$N" "$S" "$L" "$RV" 2>&1); rc=$?
+last=$(tail -1 <<<"$out")
+if [ $rc -ne 0 ] || [ "${last%% *}" != OK ]; then echo "$out"; echo "FAIL premerge: ${last#FAIL }"; exit 1; fi
+echo "$out"
+actor=$(sed -n 's/.* actor=\([^ ]*\) msg=.*/\1/p' <<<"$last"); msg=${last##* msg=}
+note=""; [ "$RV" != "$S" ] && note=" Merged head $S is the reviewed head plus a merge of the base branch."
+cite="Reviewer $actor Verdict: MERGE at head ${RV:0:8} (msg $msg).$note Required checks green; merge-tree clean. Merged by $SEAT."
+fmt=$(squash_message "$cite") || { echo "FAIL squash message: $fmt"; exit 1; }
+subject=$(jq -r '.subject // empty' <<<"$fmt" 2>/dev/null); body=$(jq -r '.body // ""' <<<"$fmt" 2>/dev/null)
+[ -n "$subject" ] || { echo "FAIL squash message: formatter printed no subject"; exit 1; }
+resp=$(agent-chat gh-write -- api -X PUT "repos/$R/pulls/$N/merge" -f merge_method=squash -f sha="$S" \
+  -f commit_title="$subject" -f commit_message="$body")
+msha=$(jq -r 'select(.merged==true) | .sha' <<<"$resp" 2>/dev/null)
+[ -n "$msha" ] || { echo "FAIL merge PUT: $(head -c 300 <<<"$resp")"; exit 1; }
+echo "OK merged $R#$N squash $msha"
+[ $wait_main = 1 ] && { poll_main "$msha"; exit $?; }
+exit 0

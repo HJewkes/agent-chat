@@ -118,6 +118,43 @@ The answer routes back to whoever asked, arriving as a channel message with
 queue into a Matrix room; see [`docs/phone-queue.md`](docs/phone-queue.md). Sessions are limited to **3 open questions** — "ask the human"
 is cheaper for an agent than deciding, and the budget forces triage.
 
+### Service asks (`service_ask`, CC-169)
+
+A process that is not a Claude session, such as a factory gate notifier, can put a
+question on this queue with a `service_ask` frame `{ as, text }` plus the usual item shape
+(`kind`, `task`, `options`, `recommended`, `onNoAnswer`). Only an unregistered connection
+may send it. `as` is a label of 1-48 characters from `a-z0-9._-`, refused while a session
+holds that name, when it names a roster agent, or when it is reserved. A label may have 20
+open questions, and the text is capped at 4000 characters. The question is stored with
+`meta.source = "service"`, `agent-chat inbox` shows the label followed by `(service)`, and
+the decider never decides it.
+
+From a shell, `agent-chat ask` files the question and `agent-chat answers` reads back what
+happened to it, from any later process:
+
+```sh
+id=$(printf 'Merge gate 7?' | agent-chat ask --as factory --text-stdin --option approve --option decline)
+agent-chat answers factory --since "$id" --json
+# {"answers":[{"msgId":"…","questionId":"…","outcome":"answered","text":"approve",…}],"next":"…"}
+```
+
+`ask` prints the msg_id alone (or `{"msgId": …}` with `--json`). `answers` prints one line
+per row, `<outcome> <questionId> <msgId>: <text>`, where the outcome is `answered` or
+`dismissed`; pass the last `next` as `--since` to read only what is new. Both exit 1 on a
+broker refusal (including an unknown `--since`), 2 on a usage error, and 69 when the broker
+is down or is too old to know these frames, which means it needs a restart. Builtin agent
+profiles deny `Bash(agent-chat ask:*)`: an agent asks with `chat_ask` under its own name.
+
+Two caveats:
+
+- **Labels are not vouched for.** Any unregistered connection can ask under any free
+  label. This is not an escalation: an unregistered socket already holds human authority.
+  The `(service)` marker is there so that a label like `owner` does not pass for a session.
+- **The answer goes to the label, not to the asker's process.** Like any answer, it is
+  delivered live to whichever session holds that name when it lands. A session that
+  registers over an open service label after the ask receives it. This is accepted
+  because the asker reads its answers back by label, not over a live socket.
+
 ## Setup
 
 You need Claude Code with the **channels** research preview available to your
@@ -168,31 +205,37 @@ The broker starts itself on first use and outlives the session that spawned it.
 State lives in `~/.agent-chat/` (`chat.sock`, `events.db`, `broker.log`);
 override with `AGENT_CHAT_HOME`.
 
+Set `AGENT_CHAT_NO_AUTOSTART=1` to stop the CLI starting a broker: when none is
+listening, a verb prints one stderr line starting `broker unavailable` and exits 69
+(`EX_UNAVAILABLE`), so a caller can tell a down broker from any other failure. Only
+`1` enables it. `agent-chat agent resume <name> --message-stdin` reads the resume
+message from stdin instead of `--message`, keeping the text out of `ps` and argv limits.
+
 ## Tools
 
-| Tool                                                                      | Purpose                                                                                                              |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `chat_register(name, working_on, declared?)`                              | Announce this session. Call once at start.                                                                           |
-| `chat_status(status, working_on?, dnd?, declared?)`                       | `working` / `available` / `blocked`; set `dnd` to hold peer pushes.                                                  |
-| `chat_list()`                                                             | Who's active, their status, work, tags, and where.                                                                   |
-| `chat_send(to \| to_tag, text, in_reply_to?)`                             | Message one session, a named list, or everyone carrying a tag.                                                       |
-| `chat_tag(target?, add?, remove?)`                                        | Label yourself or a peer by role, e.g. `owner:src`. Not authorization.                                               |
-| `chat_activity(name, limit?)`                                             | See what a peer has been doing, without interrupting it.                                                             |
-| `chat_broadcast(text)`                                                    | Message everyone else. Use sparingly.                                                                                |
-| `chat_ask(text)`                                                          | Ask the human. Budgeted, non-blocking.                                                                               |
-| `chat_endorse(to, text)`                                                  | Have the human approve a message, then deliver it under your authority.                                              |
-| `chat_notify(text)`                                                       | Leave the human a notice needing no answer.                                                                          |
-| `chat_inbox(limit?)`                                                      | Re-read recent messages, including answers.                                                                          |
-| `chat_subscribe(scope, target?, kinds?)`                                  | Be told when sessions or agents join or leave.                                                                       |
-| `chat_unsubscribe(scope?, target?)`                                       | Stop being told; omit both to drop every subscription.                                                               |
-| `agent_spawn(name, profile, brief, inherit?, worktree?, remote_control?)` | Spawn a durable peer. `inherit: "context"` copies YOUR conversation; `remote_control: true` opts in (headless: n/a). |
-| `agent_teleport(handoff, model?, remote_control?)`                        | End this session for a successor on the current build. Keeps a `--remote-control` launch; the arg overrides.         |
-| `agent_surface(name)`                                                     | Pull a headless agent into a visible terminal.                                                                       |
-| `agent_background()`                                                      | Send yourself headless, releasing your terminal.                                                                     |
-| `agent_profiles()`                                                        | List spawnable profiles: model, tool set, surface, isolation.                                                        |
-| `agent_list()`                                                            | List durable agents with lifecycle state and whether attached.                                                       |
-| `agent_logs(name, limit?)`                                                | Read a headless agent's settings-level permission-denial trace.                                                      |
-| `chat_transcript(name?, limit?)`                                          | Recent turns of a session's own transcript.                                                                          |
+| Tool                                                                      | Purpose                                                                                                                                                                |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat_register(name, working_on, declared?)`                              | Announce this session. Call once at start.                                                                                                                             |
+| `chat_status(status, working_on?, dnd?, declared?)`                       | `working` / `available` / `blocked`; set `dnd` to hold peer pushes.                                                                                                    |
+| `chat_list()`                                                             | Who's active, their status, work, tags, and where.                                                                                                                     |
+| `chat_send(to \| to_tag, text, in_reply_to?)`                             | Message one session, a named list, or everyone carrying a tag.                                                                                                         |
+| `chat_tag(target?, add?, remove?)`                                        | Label yourself or a peer by role, e.g. `owner:src`. Not authorization.                                                                                                 |
+| `chat_activity(name, limit?)`                                             | See what a peer has been doing, without interrupting it.                                                                                                               |
+| `chat_broadcast(text)`                                                    | Message everyone else. Use sparingly.                                                                                                                                  |
+| `chat_ask(text)`                                                          | Ask the human. Budgeted, non-blocking.                                                                                                                                 |
+| `chat_endorse(to, text)`                                                  | Have the human approve a message, then deliver it under your authority.                                                                                                |
+| `chat_notify(text)`                                                       | Leave the human a notice needing no answer.                                                                                                                            |
+| `chat_inbox(limit?)`                                                      | Re-read recent messages, including answers.                                                                                                                            |
+| `chat_subscribe(scope, target?, kinds?)`                                  | Be told when sessions or agents join or leave.                                                                                                                         |
+| `chat_unsubscribe(scope?, target?)`                                       | Stop being told; omit both to drop every subscription.                                                                                                                 |
+| `agent_spawn(name, profile, brief, inherit?, worktree?, remote_control?)` | Spawn a durable peer. `inherit: "context"` copies YOUR conversation; `remote_control: true` opts in, or a coordinator profile's `remoteControl: true` (headless: n/a). |
+| `agent_teleport(handoff, model?, remote_control?)`                        | End this session for a successor on the current build. Keeps a `--remote-control` launch; the arg overrides.                                                           |
+| `agent_surface(name)`                                                     | Pull a headless agent into a visible terminal.                                                                                                                         |
+| `agent_background()`                                                      | Send yourself headless, releasing your terminal.                                                                                                                       |
+| `agent_profiles()`                                                        | List spawnable profiles: model, tool set, surface, isolation.                                                                                                          |
+| `agent_list()`                                                            | List durable agents with lifecycle state and whether attached.                                                                                                         |
+| `agent_logs(name, limit?)`                                                | Read a headless agent's settings-level permission-denial trace.                                                                                                        |
+| `chat_transcript(name?, limit?)`                                          | Recent turns of a session's own transcript.                                                                                                                            |
 
 `chat_list` splits what it knows about a session by trust, not by topic (CC-11).
 The **observed** half — git branch, checkout, whether that checkout is a linked
@@ -218,6 +261,8 @@ transcript is readable by every other session here.
 Inbound messages arrive as `<channel source="plugin:agent-chat:agent-chat"
 from="alice" msg_id="a1b2c3d4" thread_depth="1">`, plus `in_reply_to` and
 `broadcast` when they apply, and `thread_hint="wrap_up"` on a long chain.
+A wake the seat watchdog or Shepherd sent in the human's name carries
+`wake_source="watchdog"` or `wake_source="shepherd"`; a message the human typed has none.
 `source` is set by Claude Code from the server name and cannot be spoofed;
 `from` is chosen by the sender and can be.
 
@@ -235,7 +280,8 @@ agent-chat mirror start|stop|status
 agent-chat burndown plan|status dry run: the task each opted-in initiative
                                 would dispatch next, and every refusal
 agent-chat burndown install|uninstall|job-status
-                                the launchd tick job (docs/burndown.md)
+                                the launchd tick job, systemd --user timer
+                                on Linux (docs/burndown.md)
 agent-chat gh-write -- <gh args...>
                                 one gh write, spaced machine-wide (config.json
                                 ghWriteGapSeconds, default 3) and retried on
@@ -267,6 +313,12 @@ gh's `pr view`, `pr list` and `pr checks` read through GraphQL. Every agent on t
 JSON output uses gh's field names and its compact, key-sorted form. `--jq` runs through `jq -rc`, which matches gh's output. Without `jq` on `PATH`, the command passes through. `author.name` is always empty, because REST does not return it. `pr view` and `pr list` refuse fields that REST cannot answer, such as `reviewDecision`, `commits` and `mergeable` on a list. Those commands pass through.
 
 Every other command goes to the real gh with its argv untouched, writes included, and so does any command whose flags, fields or selector the shim does not recognise. When a REST read fails, the shim prints nothing and reruns the command on the real gh, so the error shown is gh's own. Set `AGENT_CHAT_GH_SHIM_OFF=1` to send every command straight through. The shim takes effect for agents launched after a broker restart.
+
+## Restart window
+
+`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when a `git push`, `git-remote-http*`, `seat-merge`, `bin/merge`, `gh pr merge` or `agent-chat gh-write` process is running (it names the pids), or when the checkout behind the installed `agent-chat` is not a clean `main`. It then runs `git pull --ff-only origin main`, `npm ci` and `npm run build` in that checkout, and only then `agent-chat service restart`, which itself refuses on an unanswered ask or a mid-spawn agent. Last it checks `broker.log` (and the rotated `broker.log.1`) for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It accepts no `--force`, and running it needs the owner's approval of the day's window. `AGENT_CHAT_HOME` moves the log directory.
+
+Exit codes: `0` prints `restart-window OK`. `1` means a pre-check or the restart guard refused and the broker was not touched. `2` means a post-check failed. `3` means the restart failed and the broker may be down; the script prints `BROKER MAY BE DOWN: run agent-chat service start`. `4` means pull, install or build failed and the broker was not touched.
 
 ## Tests
 

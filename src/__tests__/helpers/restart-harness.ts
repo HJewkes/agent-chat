@@ -25,7 +25,12 @@ import { EventLog } from '../../broker/event-log.js'
 import { Registry } from '../../broker/registry.js'
 import { Semaphore } from '../../agents/semaphore.js'
 import type { ProcessProbe } from '../../agents/detached-reap.js'
-import { Supervisor, type SpawnOutcome, type SupervisorOptions } from '../../agents/supervisor.js'
+import {
+  Supervisor,
+  type SpawnOutcome,
+  type SpawnRequest,
+  type SupervisorOptions,
+} from '../../agents/supervisor.js'
 import { shadowLedgerFromConfig, type ShadowLedger } from '../../agents/ledger/shadow-ledger.js'
 import { autoAttach } from '../broker-harness.js'
 
@@ -34,7 +39,7 @@ export interface RestartHarness {
   readonly core: BrokerCore
   readonly supervisor: Supervisor
   readonly semaphore: Semaphore
-  spawnAgent(name: string): Promise<SpawnOutcome>
+  spawnAgent(name: string, extra?: Partial<SpawnRequest>): Promise<SpawnOutcome>
   restart(options?: HarnessOptions): void
   reattach(names: readonly string[]): void
   close(): void
@@ -55,11 +60,21 @@ export interface HarnessOptions {
   ledger?: (events: EventLog) => ShadowLedger | undefined
   /** CC-406: mocked swap and limit readers; absent leaves the guard off. */
   machineGuard?: SupervisorOptions['machineGuard']
+  /** CC-288: a faked seat budget reader; absent leaves the gate off. */
+  seatBudget?: SupervisorOptions['seatBudget']
+  /** CC-932: a faked seat spawn gate mode and overlap reader; absent leaves the gate off. */
+  seatOverlap?: SupervisorOptions['seatOverlap']
+  /** CC-606: a faked pool pick reader and mode; absent leaves the pick off. */
+  poolPick?: SupervisorOptions['poolPick']
   /** CC-450: defaults to one that proves nothing dead, so no test reads the host's process table. */
   processProbe?: ProcessProbe
 }
 
-const unprovenProbe: ProcessProbe = { isAlive: () => true, readArgv: () => undefined }
+const unprovenProbe: ProcessProbe = {
+  isAlive: () => true,
+  readArgv: () => undefined,
+  sessionRecords: () => [],
+}
 
 /** A child that starts and never exits, so the attach path decides what a test sees. */
 const liveChild = (): { pid: number; unref: () => void; once: () => undefined } => ({
@@ -85,7 +100,7 @@ export function startSupervisor(options: HarnessOptions = {}): RestartHarness {
     get semaphore() {
       return generation.semaphore
     },
-    spawnAgent: name =>
+    spawnAgent: (name, extra = {}) =>
       generation.supervisor.spawn({
         name,
         profile: 'explorer',
@@ -94,6 +109,7 @@ export function startSupervisor(options: HarnessOptions = {}): RestartHarness {
         cwd: workspace,
         isolation: 'none',
         surface: 'headless',
+        ...extra,
       }),
     restart(next = options) {
       shutdown(generation)
@@ -131,6 +147,9 @@ function boot(home: string, options: HarnessOptions): Generation {
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
     ...(ledger === undefined ? {} : { ledger }),
     ...(options.machineGuard === undefined ? {} : { machineGuard: options.machineGuard }),
+    ...(options.seatBudget === undefined ? {} : { seatBudget: options.seatBudget }),
+    ...(options.seatOverlap === undefined ? {} : { seatOverlap: options.seatOverlap }),
+    ...(options.poolPick === undefined ? {} : { poolPick: options.poolPick }),
     processProbe: options.processProbe ?? unprovenProbe,
     surface: {
       platform: options.appleScript === undefined ? 'linux' : 'darwin',

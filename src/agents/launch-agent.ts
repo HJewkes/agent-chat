@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import {
   LaunchBinUnresolved,
@@ -8,13 +9,20 @@ import {
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { agentDir, distDir, ghShimDir, home } from '../paths.js'
-import { agentEnv } from './agent-env.js'
+import { agentEnv, type AgentEnvOptions } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
+import { resolveOrphanReapKill } from '../config.js'
+import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
+import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
+import { realExitTmpDeps, removeOwnTmpDir } from './agent-tmpdir.js'
 import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
+import { holderOf } from './launch-guard.js'
+import { continueStarted } from './launch-plan.js'
+import { findTranscript } from './transcript.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -51,8 +59,9 @@ function withGitShim(env: Record<string, string>): Record<string, string> {
 export function agentBaseEnv(
   parent: NodeJS.ProcessEnv = process.env,
   resolvePath: (env: NodeJS.ProcessEnv) => string = env => resolveBasePath({ env, stateDir: home() }),
+  options: AgentEnvOptions = {},
 ): Record<string, string> {
-  return { ...agentEnv(parent), PATH: resolvePath(parent) }
+  return { ...agentEnv(parent, options), PATH: resolvePath(parent) }
 }
 
 /**
@@ -69,10 +78,11 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
 }
 
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */
-export function launchOptions(agentId: string): RunAgentOptions {
+export function launchOptions(agentId: string, name?: string): RunAgentOptions {
+  const options = name === undefined ? {} : { agentTmp: { name, pid: process.pid } }
   return {
     agentDir: agentDir(agentId),
-    baseEnv: agentBaseEnv(),
+    baseEnv: agentBaseEnv(process.env, undefined, options),
     resolveBin,
     launcherPidEnv: LAUNCHER_PID_ENV,
     paneSources: diskPaneSources,
@@ -80,9 +90,35 @@ export function launchOptions(agentId: string): RunAgentOptions {
   }
 }
 
+/** The account dir the launched claude will use: the plan's, else the home one if the plan unsets it. */
+export function planConfigDir(plan: LaunchPlan, base: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (plan.env.CLAUDE_CONFIG_DIR !== undefined) return plan.env.CLAUDE_CONFIG_DIR
+  if (plan.unsetEnv?.includes('CLAUDE_CONFIG_DIR')) return path.join(os.homedir(), '.claude')
+  return base.CLAUDE_CONFIG_DIR
+}
+
 /** `agent-chat run-agent <id>`: the verb every stored relaunch script calls. */
 export function runAgentVerb(agentId: string): void {
-  const plan = withShims(readLaunchPlan(agentId))
+  const stored = readLaunchPlan(agentId)
+  const dir = planConfigDir(stored)
+  const continued = continueStarted(stored, id => findTranscript(stored.cwd, id, dir).exists)
+  if (continued !== stored) refuseIfHeld(agentId, continued, dir)
+  const plan = withShims(continued)
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  runAgent(plan, launchOptions(agentId))
+  const name = plan.env.AGENT_CHAT_NAME
+  process.on('exit', () => {
+    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
+    if (name !== undefined) removeOwnTmpDir(name, agentId, process.pid, realExitTmpDeps(logEvent))
+  })
+  runAgent(plan, launchOptions(agentId, name))
+}
+
+function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {
+  const sessionId = plan.args[plan.args.indexOf('--resume') + 1] ?? ''
+  const holder = holderOf(agentId, sessionId, [process.pid, process.ppid], undefined, dir)
+  if (holder !== undefined) {
+    process.stderr.write(`agent-chat run-agent: already running as pid ${holder}; not launched twice\n`)
+    process.exit(75)
+  }
+  process.stderr.write(`agent-chat run-agent: transcript for session ${sessionId} exists; resuming it\n`)
 }

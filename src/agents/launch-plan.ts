@@ -1,6 +1,8 @@
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
+import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
+import { RESUMED_BRIEF } from './resume-session.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -25,6 +27,9 @@ import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
  * as a healthy peer that never answers. Too important to leave to each profile.
  */
 export const AGENT_CHAT_TOOLS = 'mcp__plugin_agent-chat_agent-chat__*'
+
+/** The plugin that carries the bus, as its marketplace names it. */
+export const AGENT_CHAT_PLUGIN = 'agent-chat@agent-chat-local'
 
 /** What every spawned agent is told about its situation, before its profile speaks. */
 export const PEER_PREAMBLE = [
@@ -157,6 +162,23 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
     : {}),
 })
 
+/** CC-497: a headless agent has no pane, so the broker's terminal ids must not reach it and register as its anchor. */
+const TERMINAL_SESSION_ENV = ['ITERM_SESSION_ID', 'TERM_SESSION_ID']
+
+function unsetEnvFor(input: LaunchPlanInput, interactive: boolean): Pick<LaunchPlan, 'unsetEnv'> {
+  const unsetEnv = [
+    ...(input.configDirUnset === true ? ['CLAUDE_CONFIG_DIR'] : []),
+    ...(interactive ? [] : TERMINAL_SESSION_ENV),
+  ]
+  return unsetEnv.length > 0 ? { unsetEnv } : {}
+}
+
+/** An empty list still emits the flag: it loads no settings file at all, which is not the same as every one. */
+function settingSourceArgs(input: LaunchPlanInput): string[] {
+  const sources = settingSourcesFor(input.profile, input.cwdHoldsUserSettings)
+  return sources === undefined ? [] : ['--setting-sources', sources.join(',')]
+}
+
 export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const surface = input.surface ?? input.profile.surface
   const interactive = isInteractiveSurface(surface)
@@ -186,7 +208,8 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     systemPrompt(input, hooked),
     '--mcp-config',
     input.mcpConfigPath,
-    ...(profile.strictMcpConfig === true ? ['--strict-mcp-config'] : []),
+    ...(strictMcpFor(profile, surface) ? ['--strict-mcp-config'] : []),
+    ...settingSourceArgs(input),
     ...(profile.disableSlashCommands === true ? ['--disable-slash-commands'] : []),
     ...(settings === undefined ? [] : ['--settings', settings]),
     // Without this, notifications/claude/channel is never negotiated for the
@@ -197,7 +220,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // durable, addressable peer. Matches the flag active-work's own launcher
     // passes for a human-started session (`aw`'s buildChannelArgs).
     '--channels',
-    'plugin:agent-chat@agent-chat-local',
+    `plugin:${AGENT_CHAT_PLUGIN}`,
   ]
   // Note what an inherited posture costs: agent-chat's own tools stop being
   // allowlisted here and fall back to the session's ordinary permission rules,
@@ -264,7 +287,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     args,
     cwd: input.cwd,
     env: envFor(input),
-    ...(input.configDirUnset === true ? { unsetEnv: ['CLAUDE_CONFIG_DIR'] } : {}),
+    ...unsetEnvFor(input, interactive),
     // Headless already delivers its turn on stdin, so a resume message needs no
     // extra flag here — it just displaces the brief, which on a resume would
     // restart the work instead of continuing it.
@@ -277,3 +300,23 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
 /** The `perm_mode` value to record on `agent_spawned`; empty means inherited. */
 export const permModeFor = (surface: LaunchPlan['surface']): string =>
   isInteractiveSurface(surface) ? '' : 'default'
+
+/**
+ * CC-488: a stored plan replays `--session-id`, which Claude Code refuses once the
+ * transcript exists. Continue that conversation instead; a fork keeps minting.
+ */
+export function continueStarted(
+  plan: LaunchPlan,
+  transcriptExists: (sessionId: string) => boolean,
+): LaunchPlan {
+  const at = plan.args.indexOf('--session-id')
+  const sessionId = plan.args[at + 1]
+  if (at < 0 || sessionId === undefined) return plan
+  if (plan.args.includes('--resume') || plan.args.includes('--fork-session')) return plan
+  if (!transcriptExists(sessionId)) return plan
+
+  const args = [...plan.args.slice(0, at), '--resume', sessionId, ...plan.args.slice(at + 2)]
+  if (plan.stdin !== undefined) return { ...plan, args, stdin: RESUMED_BRIEF }
+  const briefAt = args.indexOf('--')
+  return { ...plan, args: briefAt < 0 ? args : args.slice(0, briefAt) }
+}

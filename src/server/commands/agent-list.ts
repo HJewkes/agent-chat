@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { AgentIdentity, ServerMessage } from '../../protocol.js'
-import { accountUsageLine, budgetSegment, readBudget } from '../../agents/budget.js'
+import { accountReader, accountUsageLines, budgetSegment, readBudget } from '../../agents/budget.js'
 import { transcriptLine } from '../../agents/transcript.js'
 import { accountName } from '../../agents/config-dir.js'
 import { callerName, filterRoster } from '../../agents/roster-filter.js'
@@ -11,6 +11,13 @@ const resumeHint = (agent: AgentIdentity): string =>
   agent.state === 'retired' && agent.sessionId !== ''
     ? `\n    session: ${agent.sessionId} (agent_spawn resume_session brings it back)`
     : ''
+
+/**
+ * CC-217: the ledger's `live` only says a process attached. Unless a session of
+ * that name is registered too, chat_list will not show it, so the row says so.
+ */
+const stateSegment = (agent: AgentIdentity, registered: ReadonlySet<string>): string =>
+  agent.state === 'live' && !registered.has(agent.name) ? 'live, attached-unregistered' : agent.state
 
 export const agentList = defineTool({
   name: 'agent_list',
@@ -32,6 +39,11 @@ export const agentList = defineTool({
       { t: 'agents', ...(includeRetired ? { includeRetired } : {}) },
       'agents_result',
     )) as Extract<ServerMessage, { t: 'agents_result' }>
+    const { sessions } = (await ctx.broker.request({ t: 'list' }, 'list_result')) as Extract<
+      ServerMessage,
+      { t: 'list_result' }
+    >
+    const registered = new Set(sessions.map(s => s.name))
     const agents = filterRoster(res.agents, {
       ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
       ...(prefix === undefined ? {} : { prefix }),
@@ -42,11 +54,16 @@ export const agentList = defineTool({
     // machine with a long agent history nearly every row is one of those. Reading
     // and rendering "no budget reading" on each would repeat one absence hundreds
     // of times over, which is worse than the thing CC-94 set out to fix.
-    const budgets = agents
-      .filter(a => a.state === 'live')
-      // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
-      // a session on a dedicated account publishes its status there, not here.
-      .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd) }))
+    const live = agents.filter(a => a.state === 'live')
+    // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
+    // a session on a dedicated account publishes its status there, not here.
+    const budgets = live.map(a => ({
+      name: a.name,
+      read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd),
+    }))
+    // CC-491: from each account, not from rows; a headless row's transcript carries no rate limits.
+    const account = accountReader()
+    const accounts = [...new Set(live.map(a => account(a.configDir)))]
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const rows = agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
@@ -59,13 +76,13 @@ export const agentList = defineTool({
         // An adopted identity has no profile and no surface we chose, and its
         // name is self-reported — so it says what it is rather than rendering
         // two empty fields and reading like an agent someone spawned.
-        `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
+        `- ${a.name} [${stateSegment(a, registered)}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
         ` spawned by ${a.spawnedBy}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
         `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
       )
     })
-    return `Durable agents:\n${accountUsageLine(budgets, res.slots)}\n${rows.join('\n')}`
+    return `Durable agents:\n${accountUsageLines(accounts, res.slots)}\n${rows.join('\n')}`
   },
 })

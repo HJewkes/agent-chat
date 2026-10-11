@@ -6,10 +6,12 @@ import {
   type DecidedRefusal,
   type DecisionCitation,
   type DeliveredMessage,
+  type AnswerChannel,
+  type WakeSource,
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
-import { resolveReportBatchMs } from '../config.js'
+import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
@@ -20,6 +22,41 @@ import { ClaimLedger } from './claims.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
+
+/**
+ * CC-959: whether the name on this frame was derived from the session's
+ * directory or chosen, as the frame states it. Recorded on every adoption and
+ * attach so the fold never has to infer it, and a session merely opened in a
+ * stopped agent's worktree does not supersede that agent.
+ */
+const provisionalMeta = (msg: RegisterMessage): { provisional: string } => ({
+  provisional: msg.provisional === true ? 'true' : 'false',
+})
+
+/**
+ * The register frame that puts a returning session back under the name the log
+ * says it held. CC-959: the name is the one it held, so it stays exactly as
+ * derived or as chosen as it was; the brief is no evidence either way.
+ */
+export function readoptRegistration(
+  known: AgentIdentity,
+  msg: Extract<ClientMessage, { t: 'readopt' }>,
+): RegisterMessage {
+  return {
+    t: 'register',
+    name: known.name,
+    workingOn: known.brief === '' ? 'reconnected after its MCP server was replaced' : known.brief,
+    cwd: msg.cwd,
+    pid: msg.pid,
+    sessionId: msg.sessionId,
+    ...(known.provisionalName === true ? { provisional: true } : {}),
+    ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
+    ...(msg.host === undefined ? {} : { host: msg.host }),
+    ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
+    ...(msg.observed === undefined ? {} : { observed: msg.observed }),
+    ...(msg.build === undefined ? {} : { build: msg.build }),
+  }
+}
 
 export type Conn = net.Socket
 
@@ -170,7 +207,13 @@ export class BrokerCore<C = Conn> {
     const agentId = known ?? this.adopt(msg)
     if (agentId !== undefined) {
       this.registry.bindIdentity(conn, agentId)
-      this.append({ kind: 'agent_attached', actor: msg.name, ref: agentId, body: msg.workingOn })
+      this.append({
+        kind: 'agent_attached',
+        actor: msg.name,
+        ref: agentId,
+        body: msg.workingOn,
+        ...(msg.agentId === undefined ? { meta: provisionalMeta(msg) } : {}),
+      })
     }
     return { ok: true }
   }
@@ -269,6 +312,9 @@ export class BrokerCore<C = Conn> {
         name: msg.name,
         cwd: msg.cwd,
         session_id: msg.sessionId,
+        // CC-959: observed by the MCP subprocess, so the roster can show which account a hand-started seat bills.
+        ...(msg.observed?.configDir ? { config_dir: msg.observed.configDir } : {}),
+        ...provisionalMeta(msg),
         // Spawns this session requests are now its children, and depthOf() reads
         // the parent's recorded depth and adds one. Zero leaves them at exactly
         // the depth they had while a human session had no identity to be a
@@ -369,7 +415,13 @@ export class BrokerCore<C = Conn> {
    * CC-320: keep a message for a dark seat. Undefined when `to` is not one, so the
    * send fails as before; `ok: false` when the hold is full or the seat is dark too long.
    */
-  holdForSeat(from: string, to: string, text: string, inReplyTo?: string): SeatHoldResult | undefined {
+  holdForSeat(
+    from: string,
+    to: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatHoldResult | undefined {
     if (!this.isSeat(to)) return undefined
     const verdict = holdVerdict(this.events, to, Date.now())
     if (verdict === undefined) return undefined
@@ -380,10 +432,75 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { held: SEAT_HOLD_MARK },
+      meta: { held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
+  }
+
+  /**
+   * CC-966: the steward `seatStewards` names for `seat`, unless it is `from`, so a steward's
+   * own send to its dark seat is not handed back to it.
+   */
+  stewardFor(seat: string, from: string): string | undefined {
+    const steward = resolveSeatSteward(seat)
+    return steward === from ? undefined : steward
+  }
+
+  /**
+   * CC-966: the human's message for a non-resident seat, pushed to its steward and marked as for the
+   * seat; the human overrides do-not-disturb here as on any send. Undefined when `to` has no steward,
+   * or the steward is dark and cannot hold it either, so the caller falls through to `to`'s own hold.
+   */
+  forwardForSeat(
+    from: string,
+    to: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatForwardResult | undefined {
+    const steward = this.stewardFor(to, from)
+    if (steward === undefined) return undefined
+    const forwarded = forwardedText(to, text)
+    if (this.registry.connFor(steward) !== undefined)
+      return this.pushForward({ from, to, steward, text: forwarded, inReplyTo, source })
+    return this.holdForSteward(from, steward, forwarded, inReplyTo, source)
+  }
+
+  /** CC-966: a dark steward keeps a forwarded message in its own hold, as it would its own. */
+  holdForSteward(
+    from: string,
+    steward: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatForwardResult | undefined {
+    const held = this.holdForSeat(from, steward, text, inReplyTo, source)
+    return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
+  }
+
+  private pushForward(forward: SeatForward): SeatForwardResult {
+    const { from, to, steward, text, inReplyTo, source } = forward
+    const msgId = newMsgId()
+    this.append({
+      kind: 'message',
+      actor: from,
+      target: steward,
+      msgId,
+      ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
+      body: text,
+      meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
+    })
+    this.deliverTo(steward, {
+      msgId,
+      from,
+      text,
+      at: Date.now(),
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+      ...(source === undefined ? {} : { wakeSource: source }),
+    })
+    logEvent('route', { kind: 'message', msgId, from, to: steward, delivered: true, forwardedFor: to })
+    return { steward, msgId, held: false }
   }
 
   /** The log id of the dark episode seat `name` is in, read before it registers. */
@@ -404,10 +521,13 @@ export class BrokerCore<C = Conn> {
    * asker is offline and will pick it up from its inbox, which is a query over
    * the log rather than a buffer, so nothing is lost.
    */
-  answer(msgId: string, text: string): VerdictResult {
+  answer(msgId: string, text: string, channel: AnswerChannel): VerdictResult {
     if (!this.events.isOpen(msgId)) return { ok: false, reason: `${msgId} is not an open item` }
     const author = this.events.authorOf(msgId)
     if (!author) return { ok: false, reason: `no item with id ${msgId}` }
+    // A permission prompt is a verdict, answerable only from the socket's `approve_permission`; words never close one.
+    if (this.events.isApprovalRequest(msgId))
+      return { ok: false, reason: `${msgId} is a permission prompt; it is approved or denied, not answered` }
 
     // An answer on a decided question overrules the decider; the asker must be told which one stands.
     const decision = this.events.decisionFor(msgId)
@@ -432,7 +552,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       ref: msgId,
       body: text,
-      ...(overrule ? { meta: overrule } : {}),
+      meta: { ...overrule, channel },
     })
 
     const live = this.deliverTo(author, message)
@@ -627,6 +747,25 @@ export interface VerdictResult {
 }
 
 export type SeatHoldResult = { ok: true; msgId: string } | { ok: false; reason: string }
+
+/** CC-966: how a forwarded message reads to the steward, naming the seat it was sent to. */
+export const forwardedText = (seat: string, text: string): string => `[for ${seat}] ${text}`
+
+/** CC-966: a dark seat's message sent on to its steward; `held` when the steward was dark too. */
+export interface SeatForwardResult {
+  steward: string
+  msgId: string
+  held: boolean
+}
+
+interface SeatForward {
+  from: string
+  to: string
+  steward: string
+  text: string
+  inReplyTo: string | undefined
+  source: WakeSource | undefined
+}
 
 export type DecideResult = { ok: true; reason?: string } | { ok: false; code: DecidedRefusal; reason: string }
 

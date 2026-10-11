@@ -1,3 +1,9 @@
+import { execFileSync } from 'node:child_process'
+import os from 'node:os'
+import path from 'node:path'
+import { ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
+import { clearLaunchTmpDirs } from '../launch-identity.js'
+
 /**
  * What a spawned agent's environment is allowed to carry.
  *
@@ -131,19 +137,79 @@ export function isSecretName(name: string): boolean {
   return SECRET_PATTERNS.some(pattern => pattern.test(upper))
 }
 
+const REQUIRED_PATH_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+
+/** The inherited PATH first, then any required dir it lacks, so existing shims keep winning. */
+function withRequiredPathDirs(current: string | undefined): string {
+  const have = (current ?? '').split(path.delimiter).filter(entry => entry !== '')
+  return [...have, ...REQUIRED_PATH_DIRS.filter(dir => !have.includes(dir))].join(path.delimiter)
+}
+
+/** macOS's per-user temp dir; launchd leaves TMPDIR unset, which makes `$TMPDIR/x` mean `/x`. */
+export function defaultTmpDir(): string {
+  try {
+    const dir = execFileSync('getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf8', timeout: 2000 }).trim()
+    if (dir !== '') return dir
+  } catch {
+    // Not macOS, or getconf is missing: os.tmpdir() is the right answer there.
+  }
+  return os.tmpdir()
+}
+
+export interface AgentEnvOptions {
+  /** Injected so tests do not shell out. Called only when the parent has no TMPDIR. */
+  tmpDir?: () => string
+  /** CC-901: the launch this env is for, which on Linux gets its own TMPDIR instead of the shared /tmp. */
+  agentTmp?: AgentTmpRequest
+}
+
+const isSharedTmp = (dir: string | undefined): boolean =>
+  dir === undefined || dir === '' || path.resolve(dir) === TMP_ROOT
+
+function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void {
+  // Another launch's private dir is never passed on: it goes when that launch exits (CC-901).
+  clearLaunchTmpDirs(env)
+  const own =
+    options.agentTmp !== undefined && isSharedTmp(env.TMPDIR)
+      ? ensureAgentTmpDir(options.agentTmp)
+      : undefined
+  if (own !== undefined) {
+    env.TMPDIR = env.TMP = env.TEMP = own
+    return
+  }
+  if (env.TMPDIR === undefined || env.TMPDIR === '') env.TMPDIR = (options.tmpDir ?? defaultTmpDir)()
+}
+
 /**
  * The parent environment with credential-shaped variables removed.
  *
  * Undefined values are dropped too: `process.env` is typed as possibly-undefined
  * per key, and passing `undefined` through to `spawn` is not the same as
  * omitting it.
+ *
+ * A launchd-started broker has no TMPDIR and a PATH without `/opt/homebrew/bin` or
+ * `/usr/sbin` (CC-500). TMPDIR is set only when absent and PATH only gains missing dirs.
+ *
+ * On Linux an agent launch gets its own TMPDIR, TMP and TEMP under /tmp when the parent's is /tmp
+ * or absent (CC-901); macOS keeps the per-user temp dir.
+ *
+ * Node's compile cache defaults under TMPDIR, which on Linux is one /tmp shared by
+ * every agent (CC-899), so an absent NODE_COMPILE_CACHE points under HOME instead.
  */
-export function agentEnv(parent: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function agentEnv(
+  parent: NodeJS.ProcessEnv = process.env,
+  options: AgentEnvOptions = {},
+): Record<string, string> {
   const kept: Record<string, string> = {}
   for (const [name, value] of Object.entries(parent)) {
     if (value === undefined) continue
     if (isSecretName(name)) continue
     kept[name] = value
+  }
+  kept.PATH = withRequiredPathDirs(kept.PATH)
+  withTmpDir(kept, options)
+  if (kept.NODE_COMPILE_CACHE === undefined || kept.NODE_COMPILE_CACHE === '') {
+    kept.NODE_COMPILE_CACHE = path.join(kept.HOME || os.homedir(), '.cache', 'node-compile-cache')
   }
   return kept
 }

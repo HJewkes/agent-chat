@@ -64,10 +64,23 @@
     },
     {
       "name": "chat_list",
-      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout.",
+      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout. Optional filters narrow the roster: name (one session), tag (sessions carrying it), active (only sessions whose status is working). A filter that matches nothing says so and counts the registered sessions, not an error.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "description": "Only the session with this name.",
+            "type": "string"
+          },
+          "tag": {
+            "description": "Only sessions carrying this tag.",
+            "type": "string"
+          },
+          "active": {
+            "description": "Only sessions whose status is working.",
+            "type": "boolean"
+          }
+        }
       }
     },
     {
@@ -350,13 +363,18 @@
     },
     {
       "name": "chat_inbox",
-      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed.",
+      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "limit": {
             "type": "number",
             "description": "How many recent messages to return (default 10)"
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A msg_id from this inbox. Returns only messages newer than it, oldest first, capped by limit (default 50); a truncation note gives the msg_id to continue from. Unknown ids are an error."
           }
         }
       }
@@ -450,7 +468,8 @@
               "headless",
               "iterm-pane",
               "iterm-tab",
-              "iterm-window"
+              "iterm-window",
+              "tmux-window"
             ],
             "description": "Overrides the profile's surface. Visible surfaces land in your window and can answer permission prompts; headless cannot be prompted at all."
           },
@@ -498,6 +517,25 @@
             "type": "string",
             "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
           },
+          "experiment": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The experiment this spawn belongs to, e.g. \"E3\"."
+              },
+              "arm": {
+                "type": "string",
+                "description": "The arm of that experiment this spawn runs."
+              }
+            },
+            "required": [
+              "id",
+              "arm"
+            ],
+            "additionalProperties": false,
+            "description": "Optional experiment and arm, recorded on the spawn row so an arm table is one query over the log. Pass it only for a spawn that is part of a planned experiment."
+          },
           "return_contract": {
             "type": "string",
             "enum": [
@@ -512,6 +550,19 @@
           "briefing": {
             "type": "string",
             "description": "Optional active-work initiative slug (e.g. \"claude-channels\"), or \"auto\". The broker reads that initiative's brief.md, open tasks and latest session note and prepends them to your brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and let this carry the orientation. It also asks the active-work daemon for up to six notes, sources, tasks or sessions ranked against your brief text (any initiative, foreign ones labelled) and lists them with absolute paths; if the daemon does not answer within 1 second that list is left out and the spawn carries a warning. So the brief itself is the query: name the specifics. \"auto\" resolves from your own directory first, then from cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no briefing. Omit it when the work has no active-work initiative behind it."
+          },
+          "task": {
+            "type": "string",
+            "description": "The task id this agent works on, e.g. \"CC-915\". Recorded on the agent so its work can be traced back to the task; pass it whenever the work has one."
+          },
+          "role": {
+            "type": "string",
+            "description": "What this agent does for the task: implementer, reviewer, shepherd-review, planner, other, fix-round-<n>. Omit it and the broker infers one from the profile and name, and marks it inferred."
+          },
+          "override": {
+            "type": "string",
+            "const": "fix-round",
+            "description": "Set to \"fix-round\" when this spawn is a fix round on a task burndown has claimed or that is brief-ready; it passes the seat spawn gate, which otherwise warns or refuses."
           }
         },
         "required": [
@@ -537,7 +588,7 @@
           },
           "remote_control": {
             "type": "boolean",
-            "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. A worker successor never gets it, and true is refused for one. Headless successors ignore it."
+            "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control; a coordinator seat always keeps it. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. A worker successor never gets it, and true is refused for one. Headless successors ignore it."
           },
           "reason": {
             "type": "string",
@@ -589,7 +640,8 @@
               "headless",
               "iterm-pane",
               "iterm-tab",
-              "iterm-window"
+              "iterm-window",
+              "tmux-window"
             ]
           }
         },
@@ -608,10 +660,15 @@
     },
     {
       "name": "agent_profiles",
-      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner.",
+      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. Pass name to read one profile; an unknown name errors with close matches.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "description": "Return only this profile.",
+            "type": "string"
+          }
+        }
       }
     },
     {
@@ -674,7 +731,7 @@
     },
     {
       "name": "session_budget",
-      "description": "How full your context window is and how much of the account rate-limit budget is gone — yours by default, or a peer's by name. Call it BEFORE the two decisions it exists for: teleporting to a successor while there is still room to write the handoff, and spawning agents when the weekly window is nearly spent. Both are cheap early and impossible late. The numbers come from the status line, which Claude Code hands the real figures and which is the only place they leave the session — so a reading may be MISSING (nothing has written one) or STALE (that session has not redrawn since it went idle), and both are reported rather than smoothed over. A headless agent draws no status line, so its context fill comes from its transcript instead, marked source: transcript, with no window size and no rate limits. Never read stale as current: an idle peer keeps publishing the fill it had when it stopped.",
+      "description": "How full your context window is and how much of the account rate-limit budget is gone — yours by default, or a peer's by name. Call it BEFORE the two decisions it exists for: teleporting to a successor while there is still room to write the handoff, and spawning agents when the weekly window is nearly spent. Both are cheap early and impossible late. The numbers come from the status line, which Claude Code hands the real figures and which is the only place they leave the session — so a reading may be MISSING (nothing has written one) or STALE (that session has not redrawn since it went idle), and both are reported rather than smoothed over. A headless agent draws no status line, so its context fill comes from its transcript instead, marked source: transcript, with no window size. Rate limits are per account: they come from the freshest reading on that session's account, and one over 15 minutes old is shown STALE with its age instead of a figure. A name shared by several rows reads the newest non-retired one. Never read stale as current: an idle peer keeps publishing the fill it had when it stopped.",
       "inputSchema": {
         "type": "object",
         "properties": {

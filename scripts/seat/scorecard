@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Print the W41 scorecard (CC-634): every row of factory-w41-design-2026-10-03.md section 4.4, from ledgers only.
+
+Usage: bin/scorecard [--since YYYY-MM-DD] [--json]. Default window starts 2026-10-03 (UTC) and ends now.
+Env: ACTIVE_ROOT (tasks root) or AUTONOMY_ROOT (default $ACTIVE_ROOT/claude-channels/sources/autonomy).
+Tests point these at fixtures: SCORECARD_FACTORY_DB, SCORECARD_EVENTS_DB, SCORECARD_LOGS (dir of <seat>/dispatch.jsonl), SCORECARD_TASKS (dir of <initiative>/tasks/*.yml), SCORECARD_NOW (epoch seconds).
+Every source opens read-only. A row whose source is absent or empty prints 'not measured', never 0.
+"""
+import argparse, glob, json, os, re, sqlite3, statistics, sys, time
+from datetime import datetime, timezone
+
+ACTIVE_ROOT = os.environ.get('ACTIVE_ROOT')
+ROOT = os.environ.get('AUTONOMY_ROOT') or (ACTIVE_ROOT and os.path.join(ACTIVE_ROOT, 'claude-channels', 'sources', 'autonomy'))
+FACTORY_DB = os.environ.get('SCORECARD_FACTORY_DB') or os.path.expanduser('~/.local/state/titan-factory/factory.sqlite3')
+EVENTS_DB = os.environ.get('SCORECARD_EVENTS_DB') or os.path.expanduser('~/.agent-chat/events.db')
+LOGS = os.environ.get('SCORECARD_LOGS') or (ROOT and os.path.join(ROOT, 'logs'))
+TASKS = os.environ.get('SCORECARD_TASKS') or ACTIVE_ROOT or (ROOT and os.path.dirname(os.path.dirname(os.path.dirname(ROOT))))
+if not (LOGS and TASKS):
+    sys.stderr.write('bin/scorecard: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one\n')
+    sys.exit(2)
+NOW = float(os.environ.get('SCORECARD_NOW') or time.time())
+NOT_MEASURED = 'not measured'
+WAIT_MIN = 60
+MIN_COST_COVERAGE = 0.8
+
+
+def parse_ts(text):
+    text = re.sub(r'([+-]\d\d)(\d\d)$', r'\1:\2', str(text).replace('Z', '+00:00'))
+    d = datetime.fromisoformat(text)
+    return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def since_epoch(day):
+    return datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()
+
+
+def open_ro(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        con = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        con.execute('select 1 from sqlite_master limit 1').fetchall()
+        return con
+    except sqlite3.Error:
+        # a WAL database with no -shm file cannot open mode=ro; immutable reads the main file without writing
+        try:
+            con = sqlite3.connect(f'file:{path}?immutable=1', uri=True)
+            con.execute('select 1 from sqlite_master limit 1').fetchall()
+            print(f'scorecard: {path} opened immutable; WAL contents are not read, so a live service can make it stale', file=sys.stderr)
+            return con
+        except sqlite3.Error:
+            return None
+
+
+def query(con, sql, args=()):
+    if con is None:
+        return []
+    try:
+        return con.execute(sql, args).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def pct(part, whole):
+    return f'{100 * part / whole:.1f} percent ({part} of {whole})'
+
+
+def quantile(values, q):
+    s = sorted(values)
+    k = (len(s) - 1) * q
+    lo = int(k)
+    return s[lo] + (s[min(lo + 1, len(s) - 1)] - s[lo]) * (k - lo)
+
+
+def norm_pr(repo, pr):
+    return f'{str(repo).lower().split("/")[-1]}#{pr}'
+
+
+def shepherd_merges(con, since):
+    """One dict per completed Shepherd run that merged in the window: when, which PR, whether a human approved."""
+    out = []
+    for run_id, params, steps in query(con, "select id, params, step_results from workflow_run where status = 'completed'"):
+        try:
+            p, s = json.loads(params), json.loads(steps)
+        except ValueError:
+            continue
+        merged = [v.get('completedAt') for k, v in s.items()
+                  if k.startswith('merge:') and ((v.get('data') or {}).get('result') or {}).get('done')]
+        if not merged:
+            continue
+        at = parse_ts(max(merged))
+        if since <= at <= NOW:
+            out.append({'run': run_id, 'at': at, 'pr': norm_pr(p.get('repo', ''), p.get('pr')),
+                        'task': p.get('task'), 'human': 'approve-merge' in s})
+    return out
+
+
+def dispatch_records(since):
+    out = []
+    for path in glob.glob(os.path.join(LOGS, '*', 'dispatch.jsonl')):
+        seat = os.path.basename(os.path.dirname(path))
+        for line in open(path):
+            try:
+                d = json.loads(line)
+                at = parse_ts(d['ts'])
+            except (ValueError, KeyError):
+                continue
+            if since <= at <= NOW:
+                out.append(dict(d, seat=seat, at=at))
+    return out
+
+
+def merged_dispatches(records):
+    return [d for d in records if str(d.get('outcome') or '').startswith('merged') and d.get('pr')]
+
+
+def task_created(task):
+    slug, _, tid = str(task or '').partition('/')
+    if not tid:
+        return None
+    try:
+        text = open(os.path.join(TASKS, slug, 'tasks', f'{tid}.yml')).read()
+    except OSError:
+        return None
+    m = re.search(r'^created:\s*(\d{4}-\d\d-\d\d)', text, re.M)
+    return since_epoch(m.group(1)) if m else None
+
+
+def row(key, metric, value, source, baseline, **extra):
+    return {'id': key, 'metric': metric, 'value': value, 'source': source, 'baseline': baseline,
+            'measured': value is not None, **extra}
+
+
+def merges_per_day(shep, since):
+    if not shep:
+        return None
+    auto = sum(1 for m in shep if not m['human'])
+    days = max((NOW - since) / 86400, 1)
+    return f'{auto / days:.2f} per day ({auto} with no human step of {len(shep)} merges in {days:.1f} days)'
+
+
+def ready_to_merged(shep):
+    mins = [(m['at'] - c) / 60 for m in shep if (c := task_created(m['task'])) is not None]
+    if not mins:
+        return None
+    return f'median {statistics.median(mins):.0f} min, p90 {quantile(mins, 0.9):.0f} min (n={len(mins)}; created is date-only)'
+
+
+def register_to_merge(con, shep):
+    created = dict(query(con, 'select run_id, created_at from shepherd_registration'))
+    mins = [(m['at'] - parse_ts(created[m['run']])) / 60 for m in shep if m['run'] in created]
+    return f'median {statistics.median(mins):.1f} min (n={len(mins)})' if mins else None
+
+
+def freezes(con, since):
+    rows = query(con, 'select frozen_at, thawed_at from shepherd_freeze')
+    return [(parse_ts(f), parse_ts(t) if t else None) for f, t in rows if since <= parse_ts(f) <= NOW]
+
+
+def change_failure(frozen, records, total_merges):
+    if not total_merges or (not frozen and not records):
+        return None
+    reverts = sum(1 for d in merged_dispatches(records) if re.search(r'\brevert', f"{d.get('task')} {d.get('note')}", re.I))
+    return (f'red main {pct(len(frozen), total_merges)}; reverts {pct(reverts, total_merges)}; '
+            'post-merge audit defects not measured (no audit ledger)')
+
+
+def red_time(frozen):
+    thawed = [(t - f) / 60 for f, t in frozen if t]
+    if not thawed:
+        return None
+    still = sum(1 for _, t in frozen if not t)
+    return f'median {statistics.median(thawed):.0f} min over {len(thawed)} episodes ({still} still red)'
+
+
+def first_pass_fix_first(con, since):
+    first = {}
+    for body, ts in query(con, "select body, ts from events where kind = 'message' and body like 'Verdict:%' order by id"):
+        if not since <= ts / 1000 <= NOW:
+            continue
+        verdict = re.match(r'Verdict:\s*(\w+)', body)
+        pr = re.search(r'^PR:\s*(\S+)', body, re.M)
+        # WAIT means CI had not finished; the next verdict at that PR decides the first pass
+        if verdict and pr and verdict.group(1) != 'WAIT':
+            first.setdefault(pr.group(1).lower(), verdict.group(1))
+    fix = sum(1 for v in first.values() if v == 'FIX_FIRST')
+    return pct(fix, len(first)) if first else None
+
+
+def line_value(body, label):
+    m = re.search(rf'^{label}:\s*(\S+)', body, re.M)
+    return m.group(1) if m else None
+
+
+def mechanical_first_blocker(con, since):
+    """Share of deduped FIX_FIRST rounds whose Class line names a mechanical first blocker (not defect or test)."""
+    rounds = {}
+    for actor, body, ts in query(con, "select actor, body, ts from events where kind = 'message' and body like 'Verdict: FIX_FIRST%' order by id"):
+        if since <= ts / 1000 <= NOW:
+            rounds.setdefault((actor, line_value(body, 'PR'), line_value(body, 'Head')), line_value(body, 'Class'))
+    if not rounds:
+        return None
+    classes = [c for c in rounds.values() if c]
+    unclassified = f'{len(rounds) - len(classes)} unclassified of {len(rounds)} FIX_FIRST rounds'
+    if not classes:
+        return f'n/a (no Class line yet; {unclassified})'
+    mechanical = sum(1 for c in classes if not c.startswith(('defect', 'test')))
+    return f'{pct(mechanical, len(classes))} of classified; {unclassified}'
+
+
+def seat_share(shep, records):
+    shepherd_prs = {m['pr'] for m in shep}
+    seat = {norm_pr(*d['pr'].rsplit('#', 1)) if '#' in str(d['pr']) else None for d in merged_dispatches(records)}
+    seat = {p for p in seat if p and p not in shepherd_prs}
+    total = len(seat) + len(shepherd_prs)
+    return pct(len(seat), total) if total else None
+
+
+def waiting_approved(con):
+    waiting = [parse_ts(c) for gid, c in query(con, "select id, created_at from hitl_gate where status = 'pending'")
+               if gid.endswith('/approve-merge')]
+    old = [c for c in waiting if (NOW - c) / 60 > WAIT_MIN]
+    if not waiting:
+        return None
+    oldest = f', oldest {(NOW - min(old)) / 3600:.0f} hours' if old else ''
+    return f'{len(old)} PRs over {WAIT_MIN} min{oldest}'
+
+
+def milestone_spawns(records):
+    tagged = [d for d in records if d.get('outcome') == 'dispatched'
+              and (d.get('milestone') or re.search(r'milestone:\S+', str(d.get('note') or '')))]
+    if not tagged:
+        return None
+    coord = sum(1 for d in tagged if d['seat'].endswith('-coord'))
+    return f'{pct(coord, len(tagged))} dispatched by a coordinator seat'
+
+
+def cost_per_merge(records, history):
+    """Per merged task, the usd_est of every retired row for that task in any seat's ledger and any window.
+
+    The figure is None below MIN_COST_COVERAGE so a sparse sample never prints."""
+    tasks = {d['task'] for d in records if str(d.get('outcome') or '').startswith('merged') and d.get('task')}
+    spend = {}
+    for d in history:
+        if d.get('outcome') == 'retired' and d.get('task') in tasks and isinstance(d.get('usd_est'), (int, float)):
+            spend[d['task']] = spend.get(d['task'], 0) + d['usd_est']
+    coverage = {'tasks_with_usd_est': len(spend), 'merged_tasks': len(tasks)}
+    if not tasks or len(spend) / len(tasks) < MIN_COST_COVERAGE:
+        return None, coverage
+    total = sum(spend.values())
+    return (f'${total / len(tasks):.2f} per merged task (median ${statistics.median(spend.values()):.2f}; '
+            f'${total:.2f} over {len(tasks)} merged tasks)'), coverage
+
+
+def build(since):
+    fdb, edb = open_ro(FACTORY_DB), open_ro(EVENTS_DB)
+    shep = shepherd_merges(fdb, since)
+    records = dispatch_records(since)
+    frozen = freezes(fdb, since)
+    seat_prs = {m for m in (norm_pr(*d['pr'].rsplit('#', 1)) for d in merged_dispatches(records) if '#' in str(d['pr']))}
+    cost = cost_per_merge(records, dispatch_records(0))
+    total = len(seat_prs | {m['pr'] for m in shep})
+    return [
+        row('merges', 'Merges per day by Shepherd with no human step', merges_per_day(shep, since), 'factory.sqlite3', '40 in the 10-02 window'),
+        row('lead', 'Task ready to merged', ready_to_merged(shep), 'task created, ledger merge time', 'median 14 min, p90 482 min'),
+        row('register', 'Register to merge', register_to_merge(fdb, shep), 'Shepherd ledger', 'median 15.0 min'),
+        row('cfr', 'Change failure rate', change_failure(frozen, records, total), 'shepherd_freeze, dispatch.jsonl', 'Not measured'),
+        row('recovery', 'Time main stays red', red_time(frozen), 'shepherd_freeze', 'Not measured'),
+        row('rework', 'First-pass FIX_FIRST share', first_pass_fix_first(edb, since), 'events.db verdicts', '35.2 percent'),
+        row('mechanical', 'Mechanical first-blocker share', mechanical_first_blocker(edb, since), 'events.db FIX_FIRST Class line',
+            '6.9 percent (21 of 305 deduped FIX_FIRST, hand-checked 2026-09-29..10-04)'),
+        row('breakglass', 'Share of merges by seat merge script', seat_share(shep, records), 'dispatch.jsonl, ledger', '100 percent on 10-03'),
+        row('queue', 'Approved and waiting over 60 minutes', waiting_approved(fdb), 'hitl_gate', '50 PRs, 516 hours since 09-13'),
+        row('autonomy', 'Coordinator spawns for milestone tasks', milestone_spawns(records), 'dispatch.jsonl', 'All of them'),
+        row('cost', 'Cost per merged PR', cost[0], 'dispatch.jsonl usd_est', 'none', **cost[1]),
+    ]
+
+
+def display(r):
+    if r['measured']:
+        coverage = f" [usd_est on {r['tasks_with_usd_est']} of {r['merged_tasks']} merged tasks]" if 'merged_tasks' in r else ''
+        return r['value'] + coverage
+    if 'merged_tasks' in r:
+        return f"{NOT_MEASURED} (usd_est on {r['tasks_with_usd_est']} of {r['merged_tasks']} merged tasks)"
+    return NOT_MEASURED
+
+
+def main():
+    ap = argparse.ArgumentParser(description='W41 scorecard from ledgers')
+    ap.add_argument('--since', default='2026-10-03')
+    ap.add_argument('--json', action='store_true')
+    args = ap.parse_args()
+    rows = build(since_epoch(args.since))
+    if args.json:
+        print(json.dumps({'since': args.since, 'rows': rows}, indent=2))
+        return
+    print(f'SCORECARD since {args.since}')
+    for r in rows:
+        print(f"SCORECARD {r['metric']}: {display(r)} | source {r['source']} | baseline {r['baseline']}")
+
+
+if __name__ == '__main__':
+    main()

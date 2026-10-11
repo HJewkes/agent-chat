@@ -14,6 +14,20 @@ export function filterRoster(agents: AgentIdentity[], filter: RosterFilter): Age
   )
 }
 
+/**
+ * CC-491: one row per name, the newest non-retired one. A name recurs across
+ * adoptions and resumes, and an older row's reading is not that agent today.
+ */
+export function newestByName(agents: AgentIdentity[]): AgentIdentity[] {
+  const newest = new Map<string, AgentIdentity>()
+  for (const agent of agents) {
+    if (agent.state === 'retired') continue
+    const held = newest.get(agent.name)
+    if (held === undefined || agent.lastEventAt > held.lastEventAt) newest.set(agent.name, agent)
+  }
+  return [...newest.values()]
+}
+
 /** The name the CLI attributes to the caller: the one a spawned session registers under. */
 export function callerName(env: NodeJS.ProcessEnv = process.env): string {
   const name = env.AGENT_CHAT_NAME

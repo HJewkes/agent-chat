@@ -1,0 +1,1 @@
+[{"commit":{"message":"Add the widget sorter\n\nSorts by size.\n\nCo-authored-by: T <t@example.com>"}},{"commit":{"message":"Fix the sorter tie-break\n\nSigned-off-by: T <t@example.com>"}}]

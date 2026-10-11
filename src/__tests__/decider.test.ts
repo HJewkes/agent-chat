@@ -9,7 +9,14 @@ import { Registry } from '../broker/registry.js'
 import { checkDecision, unlockTableRow } from '../broker/decisions.js'
 import { describeInbox } from '../cli/human.js'
 import { parseProfile } from '../agents/profiles.js'
-import { HUMAN, type DecisionCitation, type DeliveredMessage, type ServerMessage } from '../protocol.js'
+import { QUESTION_AGE_MS, waitingQuestions } from '../agents/burndown/decider.js'
+import {
+  HUMAN,
+  type DecisionCitation,
+  type DeliveredMessage,
+  type QueueItem,
+  type ServerMessage,
+} from '../protocol.js'
 
 /**
  * Autonomy slice 3: the decider answers derivable questions on the human's
@@ -303,5 +310,27 @@ describe('the decider profile', () => {
         'mcp__plugin_agent-chat_agent-chat__chat_endorse',
       ]),
     )
+  })
+})
+
+describe('a service ask is never handed to the decider', () => {
+  const now = new Date('2026-10-09T12:00:00Z')
+  const asked = now.getTime() - QUESTION_AGE_MS - 1
+  const question = (msgId: string, meta: Record<string, string>): QueueItem => ({
+    msgId,
+    kind: 'question',
+    from: 'factory-t',
+    text: 'Approve the gate?',
+    at: asked,
+    meta,
+  })
+
+  // Mutation caught: `waitingQuestions` dropping the `source: 'service'` filter, which wakes a decider that the broker will refuse.
+  it('skips a service question past the age line and keeps a session question of the same age', () => {
+    const queue = [question('svc', { source: 'service' }), question('peer', {})]
+
+    const waiting = waitingQuestions(queue, undefined, now)
+
+    expect(waiting.map(q => q.msgId)).toEqual(['peer'])
   })
 })

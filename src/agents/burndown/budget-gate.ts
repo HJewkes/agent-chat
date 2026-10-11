@@ -1,3 +1,5 @@
+import { MAX_ACCOUNT_READING_AGE_SECONDS } from '../budget.js'
+
 /**
  * Whether the tick may spend on an account right now (design section 7).
  *
@@ -8,17 +10,19 @@
  * the stricter numbers, never the looser ones.
  */
 
-export interface AccountRule {
-  reserve_seven_day: number
-  ceiling_five_hour: number
-  night?: { reserve_seven_day: number }
-}
+/** CC-801: a charter pool as `gateAccount` reads it, keyed by pool name; unset `human_uses` reads as true, as the charter's does. */
+export type AccountRule = Omit<PoolRule, 'name' | 'human_uses'> & { human_uses?: boolean | undefined }
 
 export interface AccountReading {
   sevenDay?: number
   fiveHour?: number
   ageSeconds: number
+  /** Epoch ms the seven_day window resets, from the same status file; it dates the declining reserve. */
+  sevenDayResetsAt?: number
 }
+
+/** A reading that holds both windows. */
+export type FullReading = Required<Omit<AccountReading, 'sevenDayResetsAt'>> & AccountReading
 
 export interface GateContext {
   now: Date
@@ -30,28 +34,45 @@ export type GateResult =
   | { open: true; account: string; headroom: number; sonnetOnly: boolean; reason: string }
   | { open: false; account: string; reason: string }
 
-export const DEFAULT_RULES: Record<string, AccountRule> = {
-  agents: { reserve_seven_day: 25, ceiling_five_hour: 70, night: { reserve_seven_day: 10 } },
-  personal: { reserve_seven_day: 35, ceiling_five_hour: 40 },
-  workout: { reserve_seven_day: 35, ceiling_five_hour: 40 },
-}
-
-const NIGHT_START_HOUR = 23
-const NIGHT_END_HOUR = 7
-const NIGHT_ABSENCE_MS = 30 * 60_000
 const PRESENT_WITHIN_MS = 15 * 60_000
 const PRESENT_CEILING = 70
 const SONNET_ONLY_ABOVE = 85
-/** Both gates use the freshest status file; an older one may hide spend since. */
-export const MAX_READING_AGE_SECONDS = 15 * 60
+/** Both gates use the pool's freshest windows; an older one may hide spend since. */
+export const MAX_READING_AGE_SECONDS = MAX_ACCOUNT_READING_AGE_SECONDS
 
 const humanAbsentFor = (ctx: GateContext, ms: number): boolean =>
   ctx.humanLastTurnAt !== undefined && ctx.now.getTime() - ctx.humanLastTurnAt >= ms
 
-const isNight = (ctx: GateContext): boolean => {
-  const hour = ctx.now.getHours()
-  const nightHour = hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR
-  return nightHour && humanAbsentFor(ctx, NIGHT_ABSENCE_MS)
+const DAY_MS = 24 * 3_600_000
+const WINDOW_DAYS = 7
+/** CC-474: on these days of a pool's seven_day window the seat per_run and per_day caps are lifted. */
+const CAPS_LIFTED_FROM_DAY = 6
+
+export interface SevenDayLine {
+  /** 100 - R, R = reserve * (8 - d) / 7, to two decimals. */
+  line: number
+  /** Day 1 to 7 of the window; undefined when the reset is unknown and the flat reserve stands. */
+  day: number | undefined
+  capsLifted: boolean
+  note: string
+}
+
+const round2 = (n: number): number => Math.round(n * 100) / 100
+
+/** CC-474: the reserve declines over the window; a missing or passed reset keeps the flat reserve. */
+export function sevenDayLine(reserve: number, resetsAt: number | undefined, nowMs: number): SevenDayLine {
+  if (resetsAt === undefined || !Number.isFinite(resetsAt) || resetsAt <= nowMs)
+    return {
+      line: 100 - reserve,
+      day: undefined,
+      capsLifted: false,
+      note: 'no seven_day resets_at, flat reserve',
+    }
+  const start = resetsAt - WINDOW_DAYS * DAY_MS
+  const day = Math.min(WINDOW_DAYS, Math.max(1, Math.floor((nowMs - start) / DAY_MS) + 1))
+  const capsLifted = day >= CAPS_LIFTED_FROM_DAY
+  const note = `day ${day} of ${WINDOW_DAYS}${capsLifted ? ', seat caps lifted' : ''}`
+  return { line: round2(100 - (reserve * (WINDOW_DAYS + 1 - day)) / WINDOW_DAYS), day, capsLifted, note }
 }
 
 /** An unusable age closes the gate; only an explicit infinite limit skips the check. */
@@ -68,25 +89,23 @@ export function gateAccount(
   ctx: GateContext,
   { maxReadingAgeSeconds = MAX_READING_AGE_SECONDS }: { maxReadingAgeSeconds?: number } = {},
 ): GateResult {
-  if (rule === undefined) return { open: false, account, reason: 'no budget rule for this account' }
+  const pool = priced(rule)
+  if (pool === undefined) return { open: false, account, reason: `pool ${account}: ${NO_POOL_STOPS}` }
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return { open: false, account, reason: 'no seven_day and five_hour reading under this account' }
   const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
   if (stale !== undefined) return { open: false, account, reason: stale }
 
-  const night = isNight(ctx) && rule.night !== undefined
-  const reserve = night ? (rule.night?.reserve_seven_day ?? rule.reserve_seven_day) : rule.reserve_seven_day
-  const present = !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
-  const ceiling = present ? Math.min(rule.ceiling_five_hour, PRESENT_CEILING) : rule.ceiling_five_hour
+  const { line, note, ceiling } = poolLines(pool, reading.sevenDayResetsAt, ctx)
   const { sevenDay, fiveHour } = reading
-  const figures = `seven_day ${sevenDay}% vs line ${100 - reserve}%${night ? ' (night)' : ''}, five_hour ${fiveHour}% vs ceiling ${ceiling}%`
+  const figures = `seven_day ${sevenDay}% vs line ${line}% (${note}), five_hour ${fiveHour}% vs ceiling ${ceiling}%`
 
-  if (sevenDay >= 100 - reserve) return { open: false, account, reason: `inside the reserve: ${figures}` }
+  if (sevenDay >= line) return { open: false, account, reason: `inside the reserve: ${figures}` }
   if (fiveHour >= ceiling) return { open: false, account, reason: `over the five-hour ceiling: ${figures}` }
   return {
     open: true,
     account,
-    headroom: 100 - reserve - sevenDay,
+    headroom: line - sevenDay,
     sonnetOnly: sevenDay > SONNET_ONLY_ABOVE,
     reason: figures,
   }
@@ -98,12 +117,20 @@ export interface PoolRule {
   human_uses: boolean
   reserve_seven_day?: number | undefined
   ceiling_five_hour?: number | undefined
+  /** CC-474: still accepted from old charters, never read; the declining reserve replaced it. */
   night_reserve_seven_day?: number | undefined
   per_day_points?: number | undefined
   /** What one dispatch is expected to spend, charged before the next gate in the same tick. */
   dispatch_seven_day_points?: number | undefined
   dispatch_five_hour_points?: number | undefined
+  /** CC-843: points below a stop where only sonnet may spawn; unset is 10, 0 lifts the band. */
+  sonnet_band_points?: number | undefined
 }
+
+export const DEFAULT_SONNET_BAND_POINTS = 10
+
+/** The sonnet-only band width the pool's gate applies. */
+export const sonnetBand = (pool: PoolRule): number => pool.sonnet_band_points ?? DEFAULT_SONNET_BAND_POINTS
 
 /** The charge for a pool that prices no dispatch; the charter should set its own. */
 export const DEFAULT_DISPATCH_COST = { sevenDay: 2, fiveHour: 10 }
@@ -116,6 +143,8 @@ export const chargesOn = (pool: string, charged: readonly string[]): number =>
 export interface SpendCaps {
   per_run_points?: number | undefined
   per_day_points?: number | undefined
+  /** How a stop names `per_day_points` when it is not the seat file's own figure. */
+  per_day_label?: string | undefined
 }
 
 export interface SevenDaySample {
@@ -150,7 +179,6 @@ export const LAST_GOOD_MAX_AGE_SECONDS = 60 * 60
 const LAST_GOOD_SEVEN_DAY_MARGIN = 5
 const LAST_GOOD_FIVE_HOUR_MARGIN = 10
 const DAY_START_HOUR = 7
-const SONNET_BAND_POINTS = 10
 
 /** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
 export function pointsSpent(samples: readonly SevenDaySample[]): number {
@@ -165,7 +193,7 @@ export function pointsSpent(samples: readonly SevenDaySample[]): number {
 }
 
 /** Spend since `start`, from the latest reading at or before it to `now`; undefined with no such reading. */
-function spendSince(
+export function spendSince(
   history: readonly SevenDaySample[],
   start: number,
   now: SevenDaySample,
@@ -196,22 +224,41 @@ export function runStartAt(now: Date, starts: { ownerMessageAt?: number; recorde
 interface WindowLines {
   ceiling: number
   line: number
+  capsLifted: boolean
   note: string
 }
 
-function windowLines(pool: PoolRule, reserve: number, ceiling: number, ctx: GateContext): WindowLines {
-  const night = isNight(ctx) && pool.night_reserve_seven_day !== undefined
-  const present = pool.human_uses && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
-  const lowered = present && ceiling > PRESENT_CEILING
+type PricedRule = AccountRule & { reserve_seven_day: number; ceiling_five_hour: number }
+
+const NO_POOL_STOPS = 'no reserve_seven_day and ceiling_five_hour for this pool in the charter'
+
+/** The rule with both stops set, or undefined, which closes the gate. */
+function priced<R extends AccountRule>(rule: R | undefined): (R & PricedRule) | undefined {
+  const { reserve_seven_day, ceiling_five_hour } = rule ?? {}
+  if (rule === undefined || reserve_seven_day === undefined || ceiling_five_hour === undefined)
+    return undefined
+  return { ...rule, reserve_seven_day, ceiling_five_hour }
+}
+
+/**
+ * CC-801: the seven_day line and five_hour ceiling `gateAccount` and `gatePool` both judge a pool by.
+ * The owner-typing ceiling applies only to a pool the owner uses, and never on days 6-7.
+ */
+export function poolLines(pool: PricedRule, resetsAt: number | undefined, ctx: GateContext): WindowLines {
+  const seven = sevenDayLine(pool.reserve_seven_day, resetsAt, ctx.now.getTime())
+  const present = pool.human_uses !== false && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
+  const lowered = present && !seven.capsLifted && pool.ceiling_five_hour > PRESENT_CEILING
   return {
-    ceiling: lowered ? PRESENT_CEILING : ceiling,
-    line: 100 - (night ? (pool.night_reserve_seven_day ?? reserve) : reserve),
-    note: [night && 'night reserve', lowered && 'owner typed in the last 15 min'].filter(Boolean).join(', '),
+    ceiling: lowered ? PRESENT_CEILING : pool.ceiling_five_hour,
+    line: seven.line,
+    capsLifted: seven.capsLifted,
+    note: [seven.note, lowered && 'owner typed in the last 15 min'].filter(Boolean).join(', '),
   }
 }
 
-function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefined {
-  const { pool, spend, runStartAt, ctx } = input
+function spendStop(input: PoolGateInput, now: SevenDaySample, capsLifted: boolean): string | undefined {
+  const { pool, ctx, runStartAt } = input
+  const spend = capsLifted ? {} : input.spend
   const runCap = spend.per_run_points
   if (runCap !== undefined) {
     const run = spendSince(input.history, Math.max(runStartAt, now.at - RUN_CAP_MS), now)
@@ -220,7 +267,7 @@ function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefine
   }
   const caps = [
     { cap: pool?.per_day_points, whose: `pool ${pool?.name ?? '?'}'s per_day_points` },
-    { cap: spend.per_day_points, whose: "seat's per_day_points" },
+    { cap: spend.per_day_points, whose: spend.per_day_label ?? "seat's per_day_points" },
   ].filter((c): c is { cap: number; whose: string } => c.cap !== undefined)
   if (caps.length === 0) return undefined
   // seven_day points are pool-wide, so both caps count spend by the owner and sibling seats too.
@@ -260,21 +307,19 @@ export function gatePool(
     pool: name,
     reason: `BUDGET-PAUSE pool ${name}: ${why}`,
   })
-  if (pool?.reserve_seven_day === undefined || pool.ceiling_five_hour === undefined)
-    return closed('no reserve_seven_day and ceiling_five_hour for this pool in the charter')
-  const priced = {
-    ...pool,
-    reserve_seven_day: pool.reserve_seven_day,
-    ceiling_five_hour: pool.ceiling_five_hour,
-  }
+  const stops = priced(pool)
+  if (stops === undefined) return closed(NO_POOL_STOPS)
   const stale = reading === undefined ? undefined : staleReason(reading.ageSeconds, maxReadingAgeSeconds)
   if (stale !== undefined) return closed(stale)
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
-    return gateLastGood(input, priced, closed)
-  return gateWindows(input, priced, { sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }, closed)
+    return gateLastGood(input, stops, closed)
+  return gateWindows(input, stops, { sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }, closed)
 }
 
-type PricedPool = PoolRule & { reserve_seven_day: number; ceiling_five_hour: number }
+type PricedPool = PoolRule & PricedRule
+
+const windowLines = (pool: PricedPool, input: PoolGateInput): WindowLines =>
+  poolLines(pool, input.reading?.sevenDayResetsAt, input.ctx)
 
 const NO_READING = 'no seven_day and five_hour reading for this pool'
 
@@ -282,7 +327,7 @@ const NO_READING = 'no seven_day and five_hour reading for this pool'
 export function standInReading(
   reading: AccountReading | undefined,
   lastGood: AccountReading | undefined,
-): Required<AccountReading> | undefined {
+): FullReading | undefined {
   if (lastGood?.sevenDay === undefined || lastGood.fiveHour === undefined) return undefined
   return {
     ageSeconds: lastGood.ageSeconds,
@@ -325,7 +370,7 @@ function gateLastGood(
     return closed(
       `${NO_READING}; the last good one is ${age}s old, over the ${LAST_GOOD_MAX_AGE_SECONDS}s limit`,
     )
-  const { ceiling, line } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, input.ctx)
+  const { ceiling, line } = windowLines(pool, input)
   const near = tooClose(input.reading, last, ceiling, line)
   if (near.length > 0)
     return closed(`${NO_READING}; in the last good one (${age}s old), ${near.join(' and ')}`)
@@ -341,20 +386,21 @@ function gateWindows(
   closed: (why: string) => PoolGateResult,
 ): PoolGateResult {
   const { ctx } = input
-  const { ceiling, line, note } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, ctx)
+  const { ceiling, line, capsLifted, note } = windowLines(pool, input)
   const charged = chargedReading(pool, reading, input.dispatched ?? 0)
   const { fiveHour, sevenDay } = charged
-  const why = note === '' ? charged.note : ` (${note})${charged.note}`
+  const why = ` (${note})${charged.note}`
   if (fiveHour >= ceiling) return closed(`five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`)
   if (sevenDay >= line) return closed(`seven_day ${sevenDay}% at or above line ${line}%${why}`)
-  const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay })
+  const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted)
   if (stop !== undefined) return closed(`${stop}${charged.note}`)
-  const sonnetOnly = fiveHour >= ceiling - SONNET_BAND_POINTS || sevenDay >= line - SONNET_BAND_POINTS
+  const band = sonnetBand(pool)
+  const sonnetOnly = fiveHour >= ceiling - band || sevenDay >= line - band
   return {
     open: true,
     pool: pool.name,
     sonnetOnly,
-    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? '; within 10 points, sonnet only' : ''}`,
+    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? `; within ${band} points, sonnet only` : ''}`,
   }
 }
 

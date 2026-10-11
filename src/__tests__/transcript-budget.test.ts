@@ -75,7 +75,9 @@ const agent: AgentIdentity = {
 
 async function callTool(tool: 'session_budget' | 'agent_list', nowS: number): Promise<string> {
   const reply: ServerMessage = { t: 'agents_result', agents: [{ ...agent, configDir }] }
-  const handler = new ToolHandler({ request: async () => reply } as unknown as BrokerClient)
+  const handler = new ToolHandler({
+    request: async (m: { t: string }) => (m.t === 'list' ? { t: 'list_result', sessions: [] } : reply),
+  } as unknown as BrokerClient)
   const realNow = Date.now
   Date.now = () => nowS * 1000
   try {
@@ -107,7 +109,7 @@ describe('a headless agent with no status line', () => {
     expect(out).toContain(
       'worker: 95k tokens of context, window unknown (source: transcript, last usage record 30s old)',
     )
-    expect(out).toContain('rate limits are not observable from a transcript')
+    expect(out).toContain(`Account on ${path.basename(configDir)}: no budget reading.`)
     expect(out).toContain('"source":"transcript"')
   })
 

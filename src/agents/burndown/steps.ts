@@ -1,11 +1,15 @@
 import path from 'node:path'
+import type { ExceptionClass } from './exception.js'
 import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
+  briefWriterBrief,
   planPathFor,
   plannerBrief,
   reviewerBrief,
   successorAfterAnswer,
+  successorAfterExit,
   successorAfterReview,
+  successorAfterStall,
   workerBrief,
   type TaskBrief,
 } from './brief.js'
@@ -15,7 +19,7 @@ import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
-import { chargesOn, type PoolGateResult } from './budget-gate.js'
+import { chargesOn, sonnetBand, type PoolGateResult } from './budget-gate.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
@@ -39,6 +43,10 @@ export interface StepContext {
   trust: (repo: string, cwd: string, account: string) => string | undefined
   taskText: (slug: string, taskId: string) => string | undefined
   readFile: (file: string) => string | undefined
+  /** Whether a named agent's process may still be running; an exited or retired one is not. */
+  running: (name: string) => boolean
+  /** The branch a released claim with this key left behind (CC-698), for the next worker's brief. */
+  priorBranch?: (key: ClaimKey) => string | undefined
   /** Seats mode only: a listed seat's spawn inputs, why a listed seat is out this tick, or undefined for a seat not listed. */
   seat?: (name: string) => SeatSpawn | { skipped: string } | undefined
 }
@@ -60,7 +68,8 @@ export interface Resolved {
 }
 
 type SpawnAction = Extract<Action, { kind: 'spawn' }>
-type Outcome = { frame: SpawnFrame; pool?: string } | { defer: string } | { stall: string }
+type Stall = { stall: string; cls: ExceptionClass }
+type Outcome = { frame: SpawnFrame; pool?: string } | { defer: string } | Stall
 
 /** Groups each claim's actions so a deferred spawn also drops the intent write that precedes it. */
 export function stepsForActions(
@@ -71,7 +80,7 @@ export function stepsForActions(
 ): Resolved {
   const groups = new Map<string, Action[]>()
   for (const action of actions) {
-    const key = action.kind === 'add' ? `add:${groups.size}` : claimKey(action.key)
+    const key = 'key' in action ? claimKey(action.key) : `${action.kind}:${groups.size}`
     groups.set(key, [...(groups.get(key) ?? []), action])
   }
   const resolved: Resolved = { steps: [], spawns: 0, deferred: [], charged: [] }
@@ -81,33 +90,97 @@ export function stepsForActions(
       resolved.steps.push(...plainSteps(group))
       continue
     }
+    const refused = spawnRefusal(group, spawn, ledger, ctx)
+    if (refused !== undefined) {
+      resolved.deferred.push(`${key}: ${refused}`)
+      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn && !isIntent(a, spawn))))
+      continue
+    }
     const outcome =
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
         : resolveSpawn(spawn, ledger, ctx, resolved.charged)
-    if ('defer' in outcome) resolved.deferred.push(`${key}: ${outcome.defer}`)
-    else if ('stall' in outcome) resolved.steps.push(ledgerStep(stallUpdate(spawn.key, outcome.stall)))
-    else {
-      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
-      resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
-      resolved.spawns += 1
-      if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
-    }
+    addOutcome(resolved, key, group, spawn, outcome)
   }
   return resolved
 }
 
+/** The update that moves the claim to `spawning` for this spawn's agent. */
+const isIntent = (action: Action, spawn: SpawnAction): boolean =>
+  action.kind === 'update' && action.patch.agentName === spawn.name
+
+/**
+ * The one gate every spawn producer passes (CC-660): the claim as this tick's other
+ * actions on its key leave it must not be stalled, and none of its agents may still
+ * run. A refused spawn drops its intent too, so the claim keeps its phase and the
+ * producer decides again next tick; the group's other actions still land.
+ */
+function spawnRefusal(
+  group: readonly Action[],
+  spawn: SpawnAction,
+  ledger: Ledger,
+  ctx: StepContext,
+): string | undefined {
+  const held = heldClaims(ledger).find(c => sameClaim(c, spawn.key))
+  if (held === undefined) return undefined
+  const claim = group.reduce<Claim>(
+    (c, a) => (a.kind === 'update' && !isIntent(a, spawn) ? { ...c, ...a.patch } : c),
+    held,
+  )
+  if (claim.stalledReason !== undefined) return `spawn of ${spawn.name} refused: claim stalls this tick`
+  const running = [...new Set([...(claim.spawned ?? []), claim.agentName])].filter(
+    (n): n is string => n !== undefined && ctx.running(n),
+  )
+  if (running.length > 0) return `spawn of ${spawn.name} refused: ${running.join(', ')} still running`
+  return undefined
+}
+
+function addOutcome(
+  resolved: Resolved,
+  key: string,
+  group: Action[],
+  spawn: SpawnAction,
+  outcome: Outcome,
+): void {
+  if ('defer' in outcome) {
+    resolved.deferred.push(`${key}: ${outcome.defer}`)
+    resolved.steps.push(...plainSteps(findingCloses(group)))
+  } else if ('stall' in outcome)
+    resolved.steps.push(
+      ledgerStep(...findingCloses(group), stallUpdate(spawn.key, outcome.stall, outcome.cls)),
+    )
+  else {
+    resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
+    resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
+    resolved.spawns += 1
+    if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
+  }
+}
+
 const ledgerStep = (...actions: Action[]): Step => ({ kind: 'ledger', actions })
 
-const stallUpdate = (key: ClaimKey, reason: string): Action => ({
+/** A claim that moved closes its finding even when its spawn waits or stalls, so the close lands this tick. */
+const findingCloses = (group: Action[]): Action[] =>
+  group.filter(a => a.kind === 'update' && 'finding' in a.patch && a.patch.finding === undefined)
+
+const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action => ({
   kind: 'update',
   key,
-  patch: { stalledReason: reason },
+  patch: { stalledReason: reason, stalledClass: cls },
 })
+
+/**
+ * A release retires every agent that may still run first, held so a refusal is recorded on the claim and
+ * spends its liveness budget; the ledger write rides along and lands only when all of them retired.
+ */
+function releaseSteps(a: Extract<Action, { kind: 'release' }>): Step[] {
+  return [{ kind: 'retire', key: a.key, names: a.names, held: true, then: [a] }]
+}
 
 function plainSteps(actions: Action[]): Step[] {
   return actions.flatMap((a): Step[] => {
-    if (a.kind === 'retire') return [{ kind: 'retire', key: a.key, names: a.names }]
+    if (a.kind === 'retire') return [a]
+    if (a.kind === 'release') return releaseSteps(a)
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]
@@ -151,7 +224,7 @@ function seatSetup(
   const closed = !gate.open
     ? gate.reason
     : gate.sonnetOnly
-      ? `${gate.pool} is within 10 points of a stop, sonnet only`
+      ? `${gate.pool} is within ${sonnetBand(dispatch.pool)} points of a stop, sonnet only`
       : undefined
   return {
     initiative,
@@ -167,13 +240,17 @@ function spawnSetup(
   claim: Claim,
   ctx: StepContext,
   charged: readonly string[],
-): SpawnSetup | { stall: string } | { defer: string } {
+): SpawnSetup | Stall | { defer: string } {
   const initiative = ctx.initiatives.get(claim.initiative)
-  if (initiative === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  if (initiative === undefined)
+    return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
   if (claim.seat === undefined) return autonomySetup(initiative, ctx)
   const seat = ctx.seat?.(claim.seat)
   if (seat === undefined)
-    return { stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner` }
+    return {
+      stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner`,
+      cls: 'gate-trip',
+    }
   if ('skipped' in seat) return { defer: `seat ${claim.seat} skipped this tick: ${seat.skipped}` }
   return seatSetup(claim, seat, initiative, charged)
 }
@@ -185,17 +262,17 @@ function resolveSpawn(
   charged: readonly string[],
 ): Outcome {
   const claim = heldClaims(ledger).find(c => sameClaim(c, action.key))
-  if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
   const setup = spawnSetup(claim, ctx, charged)
   if ('stall' in setup || 'defer' in setup) return setup
   const { initiative, repo, gate } = setup
-  if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo' }
-  if (claim.worktree === undefined) return { stall: 'no worktree recorded for the claim' }
+  if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
+  if (claim.worktree === undefined) return { stall: 'no worktree recorded for the claim', cls: 'failed' }
   if ('closed' in gate) return { defer: `budget: ${gate.closed}` }
   const untrusted = setup.trust(repo, claim.worktree, gate.account)
-  if (untrusted !== undefined) return { stall: `trust: ${untrusted}` }
+  if (untrusted !== undefined) return { stall: `trust: ${untrusted}`, cls: 'gate-trip' }
   const t = taskBrief(claim.taskId, claim.slice, initiative, setup.placement(gate.account), ctx)
-  if (typeof t === 'string') return { stall: t }
+  if (typeof t === 'string') return { stall: t, cls: 'failed' }
   const spec = {
     name: action.name,
     configDir: t.configDir,
@@ -220,23 +297,26 @@ function successorFrame(
   spec: { name: string; configDir: string; initiative: string; taskId: string },
   repo: string,
 ): SpawnFrame {
-  const context = action.context
-  const brief =
-    context?.kind === 'answer'
-      ? successorAfterAnswer(t, {
-          question: `message ${context.questionId}; your predecessor's handoff restates it`,
-          answer: context.answer.text,
-          provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
-        })
-      : successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
   return spawnFrame({
     ...spec,
     profile: IMPLEMENTER_PROFILE,
-    brief,
+    brief: successorBrief(t, action.context),
     cwd: repo,
     ...(action.predecessor === undefined ? {} : { predecessor: action.predecessor }),
     ...(action.worktree === undefined ? {} : { worktree: action.worktree }),
   })
+}
+
+function successorBrief(t: TaskBrief, context: SpawnAction['context']): string {
+  if (context?.kind === 'stall') return successorAfterStall(t, context)
+  if (context?.kind === 'resume') return successorAfterExit(t, context.ahead)
+  if (context?.kind === 'answer')
+    return successorAfterAnswer(t, {
+      question: `message ${context.questionId}; your predecessor's handoff restates it`,
+      answer: context.answer.text,
+      provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
+    })
+  return successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
 }
 
 /** Where a brief's agent works and what it may do: an initiative's autonomy block, or a seat's dispatch. */
@@ -322,6 +402,11 @@ export function retrySteps(ledger: Ledger, roster: Roster): Step[] {
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
+function briefFor(d: Dispatch, t: TaskBrief): string {
+  if (d.profile !== PLANNER_PROFILE) return workerBrief(t)
+  return d.briefer === true ? briefWriterBrief(t) : plannerBrief(t)
+}
+
 /** A new claim (or a queued slice moved to `spawning`), then its spawn; or why it cannot go. */
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {
   const initiative = ctx.initiatives.get(d.initiative)
@@ -330,6 +415,8 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   if (typeof t === 'string') return t
   const planner = d.profile === PLANNER_PROFILE
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
+  const priorBranch = ctx.priorBranch?.(key)
+  if (priorBranch !== undefined) t.priorBranch = priorBranch
   const at = ctx.now.toISOString()
   const intent = {
     phase: 'spawning' as const,
@@ -338,6 +425,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     nextPhase: planner ? ('planning' as const) : ('implementing' as const),
     agentName: d.agentName,
     spawned: [d.agentName],
+    ...(d.briefer === true ? { briefer: true } : {}),
     ...(d.worktree === undefined ? {} : { worktree: d.worktree }),
     ...(d.seat === undefined ? {} : { seat: d.seat }),
     ...(d.namePrefix === undefined ? {} : { namePrefix: d.namePrefix }),
@@ -349,11 +437,12 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   const frame = spawnFrame({
     name: d.agentName,
     profile: d.profile,
-    brief: planner ? plannerBrief(t) : workerBrief(t),
+    brief: briefFor(d, t),
     cwd: d.repo,
     configDir: t.configDir,
     initiative: d.initiative,
     taskId: d.task,
+    ...(d.tier === undefined ? {} : { tier: d.tier }),
   })
   return [ledgerStep(write), { kind: 'spawn', key, frame }]
 }

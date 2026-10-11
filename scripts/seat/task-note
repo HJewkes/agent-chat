@@ -1,0 +1,27 @@
+#!/bin/bash
+# Append a line to a task's notes with active-work's --append. The lock stays because concurrent --append calls lose writes.
+# usage: task-note <initiative> <task id> <text>
+set -u
+[ $# -eq 3 ] || { echo "usage: task-note <initiative> <task id> <text>" >&2; exit 2; }
+init=$1 tid=$2 add=$3
+root=${ACTIVE_ROOT:-}
+[ -n "$root" ] || { echo "ACTIVE_ROOT unset: export the active-work data root" >&2; exit 2; }
+file="$root/$init/tasks/$tid.yml"
+lock="${TMPDIR:-/tmp}/task-note-${init//[^A-Za-z0-9._-]/_}-${tid//[^A-Za-z0-9._-]/_}.lock"
+
+acquire_lock() {
+  local tries=0
+  until mkdir "$lock" 2>/dev/null; do
+    tries=$((tries + 1)); [ $tries -le "${LOCK_TRIES:-100}" ] || { echo "FAIL lock busy: $lock" >&2; exit 1; }
+    sleep 0.1
+  done
+  trap 'rmdir "$lock"' EXIT
+}
+
+append_note() {
+  active-work task edit "$init" "$tid" --append "$add"
+}
+
+[ -f "$file" ] || { echo "FAIL no task file $file" >&2; exit 1; }
+acquire_lock
+append_note

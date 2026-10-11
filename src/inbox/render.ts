@@ -40,7 +40,8 @@ const oneLine = (text: string): string => text.split(BREAKS).join(' ')
 function header(item: BatchItem): string {
   const kind = item.shape.kind ? `  (${item.shape.kind})` : ''
   const unlock = item.unlock ? `  unlock table: ${item.unlock}` : ''
-  return `[${item.n}] ${LABEL[item.section]} ${oneLine(item.msgId)}  from ${oneLine(item.from)}  ${ago(item.at)}${kind}${unlock}`
+  const service = item.service ? ' (service)' : ''
+  return `[${item.n}] ${LABEL[item.section]} ${oneLine(item.msgId)}  from ${oneLine(item.from)}${service}  ${ago(item.at)}${kind}${unlock}`
 }
 
 /** An endorsement's text and recipient reach the terminal with every control character escaped (CC-419). */

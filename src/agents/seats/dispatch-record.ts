@@ -8,9 +8,14 @@
  * Pure: the writer and the reader do the I/O.
  */
 
+import { BRIEF_SOURCES, type BriefSource } from '../burndown/task-tags.js'
+import type { FailureClass, RetireOutcome } from './retire-outcome.js'
+
 /** The end states only a seat can know. */
 export const SEAT_OUTCOMES = ['merged', 'done', 'parked', 'stalled', 'abandoned'] as const
 export type SeatOutcome = (typeof SEAT_OUTCOMES)[number]
+
+const BRIEF_SOURCE_VALUES: readonly BriefSource[] = [...BRIEF_SOURCES, 'unknown']
 
 export const DISPATCHED = 'dispatched'
 /** Broker-only: the agent ended and this row holds no seat outcome. */
@@ -30,6 +35,12 @@ export interface DispatchRun {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  /** The burndown plan's class-of-service tier (CC-774); absent for a hand spawn. */
+  tier?: number
+  /** CC-802: the owning seat, written when the spawner is an automation rather than the seat. */
+  seat?: string
+  /** CC-953: who wrote the task's brief, read from its `brief:src=` tag at spawn; absent when the task has no file. */
+  briefSource?: BriefSource
 }
 
 export interface DispatchUsage {
@@ -59,7 +70,7 @@ interface BrokerRow<Outcome extends string> {
   score: null
   profile: string | null
   agent: string
-  pr: null
+  pr: string | null
   outcome: Outcome
   note: null
   tokens: number | null
@@ -70,12 +81,16 @@ interface BrokerRow<Outcome extends string> {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  seat?: string
 }
 
-export type DispatchedRow = BrokerRow<typeof DISPATCHED>
+export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number; briefSource?: BriefSource }
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
+  head: string | null
+  failure_class: FailureClass
+  tool_errors: number | null
   usage?: DispatchUsage
   models?: string[]
   price_table?: number
@@ -108,22 +123,34 @@ function brokerRow<Outcome extends string>(
     spawner: run.spawner,
     model: run.model,
     predecessor: run.predecessor,
+    ...(run.seat === undefined ? {} : { seat: run.seat }),
   }
 }
 
-export const dispatchedRow = (run: DispatchRun): DispatchedRow => brokerRow(run, DISPATCHED, null, null)
+export const dispatchedRow = (run: DispatchRun): DispatchedRow => ({
+  ...brokerRow(run, DISPATCHED, null, null),
+  ...(run.tier === undefined ? {} : { tier: run.tier }),
+  ...(run.briefSource === undefined ? {} : { briefSource: run.briefSource }),
+})
 
 /** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */
 export const abandonedRow = (run: DispatchRun): BrokerRow<'abandoned'> =>
   brokerRow(run, 'abandoned', null, null)
 
-export function retiredRow(run: DispatchRun, sessionId: string | null, spend: RetireSpend): RetiredRow {
+export function retiredRow(
+  run: DispatchRun,
+  sessionId: string | null,
+  spend: RetireSpend,
+  { pr, ...outcome }: RetireOutcome,
+): RetiredRow {
+  const ended = { session_id: sessionId, ...outcome }
   if ('usage_miss' in spend) {
-    return { ...brokerRow(run, RETIRED, null, null), session_id: sessionId, usage_miss: spend.usage_miss }
+    return { ...brokerRow(run, RETIRED, null, null), pr, ...ended, usage_miss: spend.usage_miss }
   }
   return {
     ...brokerRow(run, RETIRED, spend.tokens, spend.usd_est),
-    session_id: sessionId,
+    pr,
+    ...ended,
     usage: spend.usage,
     models: spend.models,
     price_table: spend.price_table,
@@ -153,6 +180,10 @@ export interface DispatchRecord {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  /** Absent on a row written before CC-774 and on a hand spawn. */
+  tier?: number
+  /** CC-953: absent on a row written before it, and when the spawned task had no file. */
+  briefSource?: BriefSource
 }
 
 export interface DispatchFold {
@@ -230,6 +261,8 @@ function recordOf(group: readonly Row[]): DispatchRecord {
   // A group with no broker row predates the broker's writes, so the seat's own values stand in.
   const owner = broker.length > 0 ? broker : seat
   const filled = (key: string): string | null => lastOf(seat, key, text) ?? firstOf(broker, key, text)
+  const tier = firstOf(broker, 'tier', count)
+  const briefSource = firstOf(broker, 'briefSource', briefSourceOf)
   return {
     ts: firstOf(owner, 'ts', text),
     task: filled('task'),
@@ -238,7 +271,8 @@ function recordOf(group: readonly Row[]): DispatchRecord {
     score: lastOf(seat, 'score', scalar),
     profile: firstOf(owner, 'profile', text),
     agent: (group[0] as Row).agent,
-    pr: lastOf(seat, 'pr', scalar),
+    // The seat knows its PR better than the broker's reading of a report, so the broker's is only a fallback.
+    pr: lastOf(seat, 'pr', scalar) ?? lastOf(broker, 'pr', scalar),
     outcome: outcomeOf(broker, seat),
     note: lastOf(seat, 'note', scalar),
     ...(broker.length > 0 ? brokerSpend(broker) : seatSpend(seat)),
@@ -247,6 +281,8 @@ function recordOf(group: readonly Row[]): DispatchRecord {
     spawner: firstOf(owner, 'spawner', text),
     model: firstOf(owner, 'model', text),
     predecessor: firstOf(owner, 'predecessor', text),
+    ...(tier === null ? {} : { tier }),
+    ...(briefSource === null ? {} : { briefSource }),
   }
 }
 
@@ -294,6 +330,9 @@ const hasInvalidOutcome = (row: Row): boolean =>
 const text = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 
 const count = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+const briefSourceOf = (v: unknown): BriefSource | null =>
+  BRIEF_SOURCE_VALUES.find(source => source === v) ?? null
 
 const scalar = (v: unknown): Scalar => text(v) ?? count(v)
 

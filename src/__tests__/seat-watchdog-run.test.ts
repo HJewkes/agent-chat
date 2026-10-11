@@ -21,7 +21,7 @@ import {
 } from '../agents/seats/io.js'
 import { DARK_AFTER_MS, RESUME_MESSAGE, judgeLiveness, type Presence } from '../agents/seats/liveness.js'
 import { acquireRunLock } from '../agents/seats/lock.js'
-import { runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
+import { LIVE_ROW_GRACE_MS, runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
 import { seatSurface } from '../agents/seats/charter.js'
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -35,11 +35,12 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
 }
 
+const POOL_DIR = '/home/example/.claude'
 const CHARTER = `---
 owner_seat: seat-a
 seats: [seat-a, unconfigured, ../escape]
 pools:
-  claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
+  claude:  {config_dir: ${POOL_DIR}, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
 ---
 `
 const SEAT = '---\nprefix: sa\npool: claude\nspend:\n  per_run_points: 6\n  per_day_points: 10\n---\n'
@@ -75,7 +76,7 @@ interface Harness {
   /** What the next wake or resume answers. */
   wakeResult: { ok: boolean; detail: string }
   now: () => number
-  tick: () => void
+  tick: (minutes?: number) => void
 }
 
 /** Local noon of the `count` days ending on the day of `nowMs`, newest first. */
@@ -103,7 +104,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
     presence: { teleported: false, wokenByWatchdog: false, resumeStarted: false },
     wakeResult: { ok: true, detail: 'message m1' },
     now: () => now,
-    tick: () => void (now += 15 * 60_000),
+    tick: (minutes = 15) => void (now += minutes * 60_000),
     deps: {
       now: () => new Date(now),
       readCharter: () => CHARTER,
@@ -194,7 +195,7 @@ describe('runWatchdog', () => {
     const h = harness(IDLE, 70)
     expect(await runs(h, 4)).toBe(0)
     expect(h.logs).toEqual([
-      'seat-a: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve)',
     ])
     expect(h.doc.seats['seat-a']?.budgetPaused).toBe(true)
   })
@@ -205,7 +206,7 @@ describe('runWatchdog', () => {
     h.fiveHour = 41
     expect(await runs(h, 3)).toBe(1)
     expect(h.logs.filter(l => l.includes('budget open again'))).toEqual([
-      'seat-a: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65%',
+      'seat-a: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65% (no seven_day resets_at, flat reserve)',
     ])
     expect(h.logs.filter(l => l.includes('BUDGET-PAUSE'))).toHaveLength(1)
   })
@@ -286,6 +287,31 @@ describe('runWatchdog', () => {
     )
   })
 
+  it.each([
+    [1, 'budget open'],
+    [
+      6,
+      "budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's reset-aware day allowance 10",
+    ],
+  ])(
+    'paces a reset-aware seat whose pool resets %s day(s) after 07:00 to the allowance (CC-404)',
+    async (days, verdict) => {
+      const h = harness(IDLE)
+      h.doc.pools = { claude: { since: h.now() - 3_600_000, last: 19, spent: 9 } }
+      h.sevenDay = 20
+      h.deps.readSeatFile = seat =>
+        seat === 'seat-a' ? SEAT.replace('pool: claude\n', 'pool: claude\npacing: reset-aware\n') : undefined
+      const read = budget(h.fiveHour, h.sevenDay)
+      const resetsAt = (new Date(2026, 8, 29, 7).getTime() + days * 86_400_000) / 1000
+      if (read.found) read.budget.rate_limits.seven_day = { used_pct: 20, resets_at: resetsAt }
+      h.deps.readBudget = () => read
+
+      const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+      expect(out[0]).toContain(verdict)
+    },
+  )
+
   it('holds a seat at its per_run_points stop even with the day cap open', async () => {
     const h = harness(IDLE)
     h.doc.seats = {
@@ -329,6 +355,73 @@ describe('runWatchdog', () => {
   })
 })
 
+describe('seat agents stuck in spawning (CC-402)', () => {
+  const START = new Date(2026, 8, 29, 8, 38)
+  const minutesAgo = (minutes: number): number => START.getTime() - minutes * 60_000
+  const spawning = (name: string, minutes: number, spawnedBy = 'human') => ({
+    name,
+    profile: name.startsWith('sa-') ? 'implementer' : 'lead',
+    state: 'spawning',
+    spawnedBy,
+    spawnedAt: minutesAgo(minutes),
+  })
+  const flagLines = (h: Harness): string[] => h.logs.filter(line => line.includes('in state spawning'))
+
+  it("flags the seat's own successor and its implementer past ten minutes, once each across runs", async () => {
+    const roster: Roster = {
+      agents: [spawning('seat-a', 11), spawning('sa-cc-9-fix', 12, 'seat-a')],
+      connected: [],
+    }
+    const h = harness(roster, 41, START)
+
+    const first = await runWatchdog(h.deps, ONE)
+    h.tick()
+    const second = await runWatchdog(h.deps, ONE)
+
+    expect(flagLines(h)).toEqual([
+      'seat-a: Watchdog: seat-a in state spawning for 11 min; its launch never registered',
+      'seat-a: Watchdog: sa-cc-9-fix in state spawning for 12 min; its launch never registered',
+    ])
+    expect(first).toContain(
+      'seat-a: Watchdog: seat-a in state spawning for 11 min; its launch never registered',
+    )
+    expect(second.filter(line => line.includes('in state spawning'))).toEqual([])
+  })
+
+  it('leaves alone an agent at exactly ten minutes, a live one and another seat’s, then flags the first once it passes ten', async () => {
+    const live = { ...spawning('sa-cc-1-fix', 30, 'seat-a'), state: 'live' }
+    const roster: Roster = {
+      agents: [spawning('seat-a', 10), live, spawning('sb-cc-2-fix', 30, 'seat-b')],
+      connected: [],
+    }
+    const h = harness(roster, 41, START)
+
+    await runWatchdog(h.deps, ONE)
+    expect(flagLines(h)).toEqual([])
+
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    expect(flagLines(h)).toEqual([
+      'seat-a: Watchdog: seat-a in state spawning for 25 min; its launch never registered',
+    ])
+  })
+
+  it('flags an agent again after it registered and later stuck in spawning anew', async () => {
+    const roster: Roster = { agents: [spawning('seat-a', 11)], connected: [] }
+    const h = harness(roster, 41, START)
+
+    await runWatchdog(h.deps, ONE)
+    roster.agents = [{ ...spawning('seat-a', 11), state: 'live' }]
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    roster.agents = [{ ...spawning('seat-a', 0), spawnedAt: h.now() - 11 * 60_000 }]
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    expect(flagLines(h)).toHaveLength(2)
+  })
+})
+
 describe('seat liveness (CC-320)', () => {
   const DARK: Roster = { agents: [], connected: [] }
   const LIVE: Presence = { teleported: false, wokenByWatchdog: false, resumeStarted: false }
@@ -347,6 +440,39 @@ describe('seat liveness (CC-320)', () => {
       /^seat-a: Watchdog: dark 6 min since \d\d:\d\dZ with no teleport; resumed seat-a/,
     )
     expect(out.filter(line => line !== GAP_LINE)).toEqual([h.logs[0]])
+  })
+
+  // CC-947. Catches: the relaunch path not refreshing the heartbeat units, or refreshing them after a failed resume.
+  it('refreshes the heartbeat units of a resumed seat, and of no seat whose resume failed', async () => {
+    const h = harness(DARK)
+    const refreshed: string[] = []
+    h.deps.refreshHeartbeat = seat => {
+      refreshed.push(seat)
+      return 'heartbeat units refreshed (rewrite t.timer); daemon-reload to apply'
+    }
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(refreshed).toEqual(['seat-a'])
+    expect(out).toContainEqual(expect.stringMatching(/resumed seat-a .*; heartbeat units refreshed/))
+    const failed = harness(DARK)
+    failed.wakeResult = { ok: false, detail: 'refused' }
+    failed.deps.refreshHeartbeat = seat => void refreshed.push(`failed:${seat}`)
+    dark(failed, 6)
+    await runWatchdog(failed.deps, ONE)
+    expect(refreshed).toEqual(['seat-a'])
+  })
+
+  // CC-947. Catches: a unit write that throws failing the resume line it follows.
+  it('reports a heartbeat refresh that throws without losing the resume', async () => {
+    const h = harness(DARK)
+    h.deps.refreshHeartbeat = () => {
+      throw new Error('EACCES')
+    }
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(out).toContainEqual(
+      expect.stringMatching(/resumed seat-a .*; heartbeat units not refreshed \(EACCES\)$/),
+    )
   })
 
   it('does not resume again on later sweeps of the same dark episode, by either path', async () => {
@@ -405,6 +531,99 @@ describe('seat liveness (CC-320)', () => {
     h.seatLog = '08:30 PARKED handoff written, waiting for the owner\n'
     dark(h, 30)
     expect(await runs(h, 3)).toBe(0)
+  })
+
+  const LIVE_ROW: Roster = {
+    agents: [{ name: 'seat-a', profile: 'seat', state: 'live', spawnedBy: 'owner', configDir: POOL_DIR }],
+    connected: [],
+  }
+
+  it('does not resume a dark seat whose agent row the roster shows live, and says so each run', async () => {
+    const h = harness(LIVE_ROW)
+    dark(h, 10)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    expect(out.filter(line => line.includes('not resumed: roster shows it live'))).toHaveLength(1)
+    expect(h.doc.seats['seat-a']?.resumeRetry).toBeUndefined()
+  })
+
+  it('resumes a seat whose roster row stayed live past the grace, as after a broker crash', async () => {
+    const h = harness(LIVE_ROW)
+    dark(h, LIVE_ROW_GRACE_MS / 60_000 + 10)
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // CC-959, the incident's shape. Catches: the newest-pick narrowed to spawned rows, which resumes the server row by name.
+  it('refuses to resume a seat whose latest session was started by hand, and raises it once', async () => {
+    const personal = '/home/example/.profiles/personal'
+    const row = { name: 'seat-a', profile: 'lead', state: 'exited', spawnedBy: 'human' }
+    const roster: Roster = {
+      agents: [
+        {
+          ...row,
+          agentId: 'g9',
+          origin: 'spawned',
+          generation: 9,
+          configDir: '/home/example/.profiles/server',
+        },
+        { ...row, agentId: 'h1', origin: 'adopted', sessionId: 's-h1', spawnedAt: 1 },
+        { ...row, agentId: 'h2', origin: 'adopted', sessionId: 's-h2', spawnedAt: 2 },
+      ],
+      connected: [],
+    }
+    const h = harness(roster)
+    h.deps.readSeatFile = seat =>
+      seat === 'seat-a' ? SEAT.replace('---\n', `---\nconfig_dir: ${personal}\n`) : ''
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    dark(h, 54)
+
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    const out = await runWatchdog(h.deps, ONE)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    const line =
+      `watchdog resume seat-a REFUSED: latest session s-h2 is adopted on an unrecorded account; ` +
+      `seat file names ${personal}; older spawned rows still hold the name: g9`
+    expect(h.wakes).toEqual([])
+    expect(h.logs).toEqual([`seat-a: ${line}`])
+    expect(raised).toEqual([line])
+    expect(out).toContain(line)
+    expect(dry[0]).toMatch(/^seat-a: WOULD REFUSE: latest session s-h2 /)
+  })
+
+  it('treats a roster timeout as unknown: no resume, no try counted, one log line', async () => {
+    const h = harness(DARK)
+    dark(h, 30)
+    h.doc.seats['seat-a'] = { resumedDark: h.presence?.darkSince, resumeRetry: 2 } as never
+    const timedOut: Roster = {
+      agents: [],
+      connected: [],
+      unknown: 'broker did not answer agents_result',
+    }
+    h.deps.roster = async () => timedOut
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    expect(h.doc.seats['seat-a']).toMatchObject({ resumedDark: h.presence?.darkSince, resumeRetry: 2 })
+    expect(out.filter(line => line.includes('roster unreadable'))).toHaveLength(1)
+  })
+
+  it('resumes at try 1 once a roster that timed out reads again', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    h.deps.roster = async () => ({
+      agents: [],
+      connected: [],
+      unknown: 'broker did not answer agents_result',
+    })
+    await runWatchdog(h.deps, ONE)
+    h.deps.roster = async () => DARK
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toHaveLength(1)
+    expect(h.logs[0]).not.toContain('after a failed resume')
   })
 
   it('retries a refused resume on the next run, logs each try, and stops once one is accepted', async () => {
@@ -656,7 +875,7 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(h.wakes).toEqual([])
     expect(out).toContainEqual(
       expect.stringContaining(
-        'not resumed: budget closed: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+        'not resumed: budget closed: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve)',
       ),
     )
     h.fiveHour = 41
@@ -1050,7 +1269,7 @@ describe('a pool reading that lacks a window (CC-409)', () => {
     await gap(h, 1, 66)
 
     expect(pauses(h)).toEqual([
-      'seat-a: Watchdog: BUDGET-PAUSE pool claude: seven_day 66% at or above line 65%',
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: seven_day 66% at or above line 65% (no seven_day resets_at, flat reserve)',
     ])
   })
 
@@ -1083,6 +1302,155 @@ describe('a pool reading that lacks a window (CC-409)', () => {
   })
 })
 
+describe('watchdog relaunch (CC-465)', () => {
+  const DARK: Roster = { agents: [], connected: [] }
+  const HEADLESS = { ok: true, detail: 'resumed headless (none declared)' }
+
+  /** A dark seat whose presence names no deregister, so only the relaunch rule can bring it back. */
+  function relaunching(roster: Roster, quietMinutes: number): Harness & { raised: string[] } {
+    const h = harness(roster)
+    const raised: string[] = []
+    h.seatLog = `${hhmm(h.now() - quietMinutes * 60_000)} heartbeat: 0 implementers running\n`
+    h.wakeResult = HEADLESS
+    h.deps.relaunchHandoff = (seat, quiet) => `handoff for ${seat}, quiet ${quiet} min`
+    h.deps.transcriptFound = () => false
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    return Object.assign(h, { raised })
+  }
+
+  const relaunchLogs = (h: Harness): string[] => h.logs.filter(line => line.includes('watchdog relaunch'))
+
+  // Catches: the mark saved after the launch, or the line not written to the seat's log.
+  it('relaunches a stale dark seat once with the handoff and the exact line, marked before the launch', async () => {
+    const h = relaunching(DARK, 20)
+    const markedAt: (number | undefined)[] = []
+    const wake = h.deps.wake
+    h.deps.wake = async (seat, message, connected) => {
+      markedAt.push(h.doc.seats['seat-a']?.relaunchedAt)
+      return wake(seat, message, connected)
+    }
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    const line =
+      'watchdog relaunch seat-a (no log line for 20 min and no live session; ' +
+      'relaunched: resumed headless (none declared))'
+    expect(h.wakes).toEqual([
+      { seat: 'seat-a', message: 'handoff for seat-a, quiet 20 min', connected: false },
+    ])
+    expect(markedAt).toEqual([h.now()])
+    expect(h.logs).toEqual([`seat-a: ${line}`])
+    expect(out.filter(l => l.includes('watchdog relaunch'))).toEqual([line])
+  })
+
+  // Catches: the relaunch mark not carried into the next record, or the idle wake resuming a seat the relaunch held back.
+  it('does not relaunch, nor resume by the idle path, on passes 5 and 10 minutes later', async () => {
+    const h = relaunching(DARK, 70)
+
+    await runWatchdog(h.deps, ONE)
+    h.tick(5)
+    await runWatchdog(h.deps, ONE)
+    h.tick(5)
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toHaveLength(1)
+    expect(relaunchLogs(h)).toHaveLength(1)
+  })
+
+  // Catches: the relaunch limited to once per dark stretch, as the liveness resume is.
+  it('relaunches again on a pass 16 minutes later, counting the try', async () => {
+    const h = relaunching(DARK, 20)
+
+    await runWatchdog(h.deps, ONE)
+    h.tick(16)
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toHaveLength(2)
+    expect(relaunchLogs(h)[1]).toBe(
+      'seat-a: watchdog relaunch seat-a (no log line for 36 min and no live session, try 2 of 8; ' +
+        'relaunched: resumed headless (none declared))',
+    )
+  })
+
+  // Catches: the relaunch holding the idle wake of a connected seat it has no business with.
+  it('leaves a live seat to the idle wake and never relaunches it', async () => {
+    const h = relaunching(IDLE, 70)
+    h.wakeResult = { ok: true, detail: 'message m1' }
+
+    await runWatchdog(h.deps, ONE)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([
+      { seat: 'seat-a', message: 'Watchdog: 0 implementers, run Discovery', connected: true },
+    ])
+    expect(relaunchLogs(h)).toEqual([])
+  })
+
+  // Catches: the seat's own stop line left out of the relaunch's hold.
+  it('leaves a WRAP seat dark and says why', async () => {
+    const h = relaunching(DARK, 20)
+    h.seatLog = `${hhmm(h.now() - 20 * 60_000)} WRAP closing the session for the day\n`
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([])
+    expect(out).toContain(
+      'seat-a: Watchdog: not relaunched: seat logged "WRAP closing the session for the day"',
+    )
+  })
+
+  // Catches: resuming a superseded seat whose successor never started, or raising its item every pass.
+  it('gives the FAILED line and one human item for a teleport successor that never started', async () => {
+    const roster: Roster = { agents: [], connected: [] }
+    const h = relaunching(roster, 20)
+    const spawnedAt = h.now() - 16 * 60_000
+    roster.agents = [
+      {
+        name: 'seat-a',
+        agentId: 'a-old',
+        generation: 1,
+        profile: 'lead',
+        state: 'exited',
+        spawnedBy: 'human',
+      },
+      {
+        name: 'seat-a',
+        agentId: 'a-new',
+        generation: 2,
+        profile: 'lead',
+        state: 'spawning',
+        spawnedBy: 'seat-a',
+        spawnedAt,
+      },
+    ]
+    h.presence = { teleported: false, wokenByWatchdog: false, resumeStarted: false, handoffAt: spawnedAt }
+
+    const first = await runWatchdog(h.deps, ONE)
+    h.tick(16)
+    await runWatchdog(h.deps, ONE)
+
+    const line =
+      'watchdog relaunch seat-a FAILED: teleport successor a-new never started; ' +
+      'run ~/.agent-chat/agents/a-new/relaunch'
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([`seat-a: ${line}`])
+    expect(h.raised).toEqual([line])
+    expect(first).toContain(line)
+  })
+
+  // Catches: a dry run that relaunches, logs or saves.
+  it('prints WOULD RELAUNCH under --dry-run and writes nothing', async () => {
+    const h = relaunching(DARK, 20)
+
+    const out = await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: true })
+
+    expect(out).toEqual(['seat-a: WOULD RELAUNCH: no log line for 20 min and no live session', GAP_LINE])
+    expect([h.wakes, h.logs, h.doc]).toEqual([[], [], emptyDoc()])
+  })
+})
+
 describe('wakeSeat', () => {
   function client(reply: Record<string, unknown>): { frames: unknown[]; client: BrokerClient } {
     const frames: unknown[] = []
@@ -1105,6 +1473,7 @@ describe('wakeSeat', () => {
   })
 
   // Catches: the surface hard-coded to 'headless' again, or the declared surface dropped from the frame.
+  // CC-883: a visible resume asks for Remote Control; the broker grants it to a coordinator only.
   it('resumes a seat declared on iterm-window on iterm-window and holds the message as a send', async () => {
     const c = client({ t: 'spawn_result', ok: true, msgId: 'm2' })
     const woke = await wakeSeat(c.client, 's', 'Watchdog: x', false, {
@@ -1112,7 +1481,7 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(c.frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
       { t: 'human_send', to: 's', text: 'Watchdog: x', source: 'watchdog' },
     ])
     expect(woke).toEqual({ ok: true, detail: 'resumed on iterm-window (seat file); message m2' })
@@ -1155,13 +1524,57 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
       { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
     ])
     expect(woke).toEqual({
       ok: true,
       detail:
         "resumed headless (iterm-window refused: resume failed: iTerm2 is not running; use surface 'headless')",
+    })
+  })
+
+  // Catches: the fallback keyed on the typed code alone; the owner wants any visible launch failure to go headless.
+  it('falls back to headless when the visible launch fails with no code', async () => {
+    const frames: unknown[] = []
+    const replies = [
+      { t: 'spawn_result', ok: false, reason: 'resume failed: osascript exited 1' },
+      { t: 'spawn_result', ok: true },
+    ]
+    const request = async (frame: unknown) => (frames.push(frame), replies.shift())
+    const woke = await wakeSeat({ request } as unknown as BrokerClient, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(frames).toHaveLength(2)
+    expect(woke).toEqual({
+      ok: true,
+      detail: 'resumed headless (iterm-window refused: resume failed: osascript exited 1)',
+    })
+  })
+
+  // Catches: a thrown visible resume ending the wake instead of falling back.
+  it('falls back to headless when the visible resume request throws', async () => {
+    const frames: unknown[] = []
+    const request = async (frame: unknown) => {
+      frames.push(frame)
+      if (frames.length === 1) throw new Error('broker did not answer resume in 5000ms')
+      return { t: 'spawn_result', ok: true }
+    }
+    const woke = await wakeSeat({ request } as unknown as BrokerClient, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(frames[1]).toEqual({
+      t: 'resume',
+      name: 's',
+      surface: 'headless',
+      message: 'Watchdog: x',
+      source: 'watchdog',
+    })
+    expect(woke).toEqual({
+      ok: true,
+      detail: 'resumed headless (iterm-window refused: broker did not answer resume in 5000ms)',
     })
   })
 

@@ -44,6 +44,11 @@ export const AGENT_ROLES = ['coordinator', 'worker'] as const
 
 export type AgentRole = (typeof AGENT_ROLES)[number]
 
+/** The settings files `--setting-sources` can name; `user` is the one holding the account's own allow rules. */
+export const SETTING_SOURCES = ['user', 'project', 'local'] as const
+
+export type SettingSource = (typeof SETTING_SOURCES)[number]
+
 /** CC-286: the report rules the broker appends to a spawned agent's brief. */
 export const RETURN_CONTRACTS = ['implementer', 'reviewer'] as const
 
@@ -80,6 +85,8 @@ export interface AgentProfile {
   surfaceLifetime?: SurfaceLifetime
   /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
   role?: AgentRole
+  /** CC-924: spawn and teleport with Remote Control unless the request says otherwise. Coordinator profiles only. */
+  remoteControl?: boolean
   /** Absent means the contract is inferred from the name and grants; `none` opts out. */
   returnContract?: ReturnContract | 'none'
   /** Passed as --effort when set; unset leaves the harness default. */
@@ -88,12 +95,16 @@ export interface AgentProfile {
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */
   mcpServers?: Record<string, unknown>
-  /** Load only the generated --mcp-config, dropping user-scope and plugin MCP servers. */
+  /** Load only the generated --mcp-config, dropping user-scope and plugin MCP servers. Absent means on for a headless worker. */
   strictMcpConfig?: boolean
+  /** Passed to --setting-sources. Absent means project and local for a worker, and no flag for a coordinator. */
+  settingSources?: SettingSource[]
   /** Drop every skill and slash command, which otherwise load into each turn. */
   disableSlashCommands?: boolean
   /** Extra environment for the launched process. Never overrides AGENT_CHAT_* or CLAUDE_CONFIG_DIR. */
   env?: Record<string, string>
+  /** Set by the loader, never read from a file: keys in the file that no field here answers to. */
+  warnings?: string[]
 }
 
 /**
@@ -109,6 +120,11 @@ export interface LaunchPlanInput {
   profile: AgentProfile
   brief: string
   cwd: string
+  /**
+   * `cwdHoldsUserSettings(cwd, configDir)`: the project settings at `cwd` are an
+   * account's user settings. Required, so no launch path can leave the check out.
+   */
+  cwdHoldsUserSettings: boolean
   /** Overrides `profile.surface` when the request asked for a different one. */
   surface?: SurfaceName
   /**

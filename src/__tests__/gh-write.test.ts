@@ -335,12 +335,20 @@ describe('agent-chat gh-write', () => {
     expect(stderr).toBe('err:api -X PUT repos/o/r/pulls/1/merge\n')
   })
 
+  it('shows how to post a body from a quoted heredoc in its help', async () => {
+    const { stdout } = await execFileAsync(process.execPath, [CLI, 'gh-write', '--help'])
+
+    expect(stdout).toContain(
+      "agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
+    )
+  })
+
   it("exits with gh's exit code on a plain failure", async () => {
     await expect(run(['pr', 'create'], { FAKE_GH_CODE: '3' })).rejects.toMatchObject({ code: 3 })
   })
 
   it('spaces two concurrent processes by the configured gap', async () => {
-    await Promise.all([run(['a']), run(['b'])])
+    await Promise.all([run(['pr', 'view', '1']), run(['pr', 'view', '2'])])
 
     const starts = fs.readFileSync(path.join(dir, 'starts'), 'utf8').trim().split('\n').map(Number)
     expect(starts).toHaveLength(2)

@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { cpSync, existsSync, lstatSync, rmSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -311,7 +311,7 @@ async function fetchTip(gitRoot: string, branch: string, timeoutMs: number): Pro
 }
 
 /** The timeout is one budget shared by every candidate, not one per candidate. */
-async function fetchDefaultTip(gitRoot: string, timeoutMs: number): Promise<BranchBase | string> {
+export async function fetchDefaultTip(gitRoot: string, timeoutMs: number): Promise<BranchBase | string> {
   if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) === null)
     return 'the repository has no origin remote'
   const deadline = Date.now() + timeoutMs
@@ -520,6 +520,25 @@ async function raceTimer(
     throw err
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/**
+ * A repository that does not ignore its worktree directory would show it untracked, and an
+ * untracked dir is a dirty primary tree (CC-916). The repo-local exclude file is not tracked,
+ * so listing it there leaves the tree clean without a commit.
+ */
+async function excludeBasePath(gitRoot: string, basePath: string): Promise<void> {
+  const file = await gitOrNull(['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], gitRoot)
+  if (file === null) return
+  const entry = `/${basePath.replace(/^\.?\/+|\/+$/g, '')}/`
+  try {
+    const current = existsSync(file) ? readFileSync(file, 'utf8') : ''
+    if (current.split('\n').includes(entry)) return
+    mkdirSync(path.dirname(file), { recursive: true })
+    appendFileSync(file, `${current === '' || current.endsWith('\n') ? '' : '\n'}${entry}\n`)
+  } catch {
+    // Best effort: the worktree itself is already cut, and a gitignore may cover it.
   }
 }
 
@@ -801,6 +820,22 @@ function recreateAssigned(
   return readoptWorktree(record, opts)
 }
 
+/**
+ * CC-921: the park already proved the tree clean and pushed and removed it, so nothing here
+ * deletes; the grace window guards `branch -D`, which this path never runs.
+ */
+async function releaseParked(alloc: Allocation, gitRoot: string, worktreePath: string): Promise<boolean> {
+  if (existsSync(worktreePath)) {
+    recordRefusal(
+      alloc,
+      `${worktreePath} is still on disk; a branch-keeping release takes only a parked tree`,
+    )
+    return false
+  }
+  await pruneStaleWorktrees(gitRoot)
+  return true
+}
+
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
   const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
@@ -863,6 +898,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
         force: ctx.forceReset === true,
         run: boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
       })
+      await excludeBasePath(gitRoot, basePath)
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
         ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
@@ -909,6 +945,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       // that was never ours. Returning true reports the release as complete,
       // because for this agent it is: there is nothing of ours left to clean up.
       if (ref.assigned === 'true') return true
+      if (releaseOpts.keepBranch === true) return releaseParked(alloc, gitRoot, worktreePath)
 
       if (!releaseOpts.force) {
         const refusal = await refuseRelease(ctx, gitRoot, worktreePath, branch, ref.base ?? 'HEAD')

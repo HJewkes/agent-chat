@@ -119,7 +119,7 @@ describe('a spawn from a Claude session with no CLAUDE_CONFIG_DIR', () => {
 
     const plan = readLaunchPlan(agentId)
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
     expect(core.agents.get(agentId)?.configDir).toBe(path.join(process.env.HOME as string, '.claude'))
     expect(core.agents.get(agentId)?.configDirUnset).toBe(true)
   })
@@ -133,7 +133,7 @@ describe('a spawn from a Claude session with no CLAUDE_CONFIG_DIR', () => {
 
     const plan = readLaunchPlan(agentId)
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe(explicit)
-    expect(plan.unsetEnv).toBeUndefined()
+    expect(plan.unsetEnv).not.toContain('CLAUDE_CONFIG_DIR')
     expect(core.agents.get(agentId)?.configDirUnset).toBeUndefined()
   })
 })
@@ -148,6 +148,6 @@ describe('a spawn from an unknown caller with no CLAUDE_CONFIG_DIR', () => {
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe(
       path.join(process.env.HOME as string, '.claude-profiles', 'agents'),
     )
-    expect(plan.unsetEnv).toBeUndefined()
+    expect(plan.unsetEnv).not.toContain('CLAUDE_CONFIG_DIR')
   })
 })

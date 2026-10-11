@@ -1,22 +1,6 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 
-/**
- * Files that need a real process of their own, each with the reason. Everything else runs on
- * worker threads, which die with the parent vitest; forks outlive it with PPID 1 (CC-429).
- */
-const FORKS_FILES = [
-  // Sets process.env.TZ, which a worker thread keeps in its own env copy and never applies.
-  'src/__tests__/seat-journal.test.ts',
-  // Sets process.env.TZ, which a worker thread keeps in its own env copy and never applies.
-  'src/__tests__/seat-dispatches-verb.test.ts',
-  // The next five point HOME at a temp dir for the in-process broker, but os.homedir() in a
-  // worker thread still returns the developer's real home.
-  'src/__tests__/spawn-account.test.ts',
-  'src/__tests__/spawn-default-account.test.ts',
-  'src/__tests__/resume-role-gate.test.ts',
-  'src/__tests__/surface-role-gate.test.ts',
-  'src/__tests__/report-batch.test.ts',
-]
+import { FORKS_FILES } from './src/__tests__/forks-files.js'
 
 const MAX_WORKERS = 4
 

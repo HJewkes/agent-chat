@@ -13,7 +13,7 @@ import { reapBroker } from './broker-harness.js'
  */
 
 const run = promisify(execFile)
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 const entry = (): string => path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 const NOW = Date.parse('2026-09-28T12:00:00.000Z')
 

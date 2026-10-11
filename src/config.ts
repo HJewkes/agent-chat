@@ -10,18 +10,36 @@ import {
 import {
   DEFAULT_MACHINE_STOP_LOAD5,
   DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
+  DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
   type MachineStopLimits,
 } from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
+import { ALIAS_NAME } from './leak-guard/git-alias.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
+import { SEAT_SPAWN_MODES, type SeatSpawnMode } from './agents/seats/spawn-gate.js'
+import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
+import {
+  DEFAULT_PROCESS_KILL_BYTES,
+  MIN_PROCESS_KILL_BYTES,
+  PROCESS_GUARD_MODES,
+  type ProcessGuardMode,
+} from './agents/process-guard.js'
 
-interface AgentChatConfig {
+export interface AgentChatConfig {
+  /** Path to a coordinator document; its `state_dir` relocates the autonomy root. */
+  coordinatorConfig?: unknown
   agentSlots?: unknown
   worktreeBudget?: unknown
+  worktreeOwnerReserve?: unknown
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  orphanReapKill?: unknown
+  poolPick?: unknown
+  seatSpawnGate?: unknown
+  seatStewards?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
@@ -32,9 +50,32 @@ interface AgentChatConfig {
   machineMemoryFreePercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
+  machineStopSwapUsedPercent?: unknown
+  machineStopPressureLevel?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
+  poolProbe?: unknown
+  tmuxSurfaceOnLinux?: unknown
+  processKillBytes?: unknown
+  processGuardMode?: unknown
+  gitShellAliases?: unknown
+  autoRetire?: unknown
 }
+
+const loggedInvalid = new Set<string>()
+
+/**
+ * The guard reads config every 2 s (CC-495), so one typo would log on every read. Each distinct bad
+ * content is logged once per config file per process; fixing it and breaking it differently logs again.
+ */
+function logInvalidOnce(detail: Record<string, unknown>): void {
+  const key = JSON.stringify([configPath(), detail])
+  if (loggedInvalid.has(key)) return
+  loggedInvalid.add(key)
+  logEvent('config_invalid', detail)
+}
+
+export const readAgentChatConfig = (): AgentChatConfig => readConfig()
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
 function readConfig(): AgentChatConfig {
@@ -48,7 +89,7 @@ function readConfig(): AgentChatConfig {
     const parsed: unknown = JSON.parse(raw)
     return typeof parsed === 'object' && parsed !== null ? (parsed as AgentChatConfig) : {}
   } catch (err) {
-    logEvent('config_invalid', { path: configPath(), error: String(err) })
+    logInvalidOnce({ path: configPath(), error: String(err) })
     return {}
   }
 }
@@ -71,6 +112,22 @@ export function resolveWorktreeBudget(fallback: number): number {
   return positiveIntegerFrom('worktreeBudget', fallback)
 }
 
+export const DEFAULT_WORKTREE_OWNER_RESERVE = 2
+
+/**
+ * CC-872: worktree slots per repo kept free for the owner, from `worktreeOwnerReserve`.
+ * Unlike the fallback-and-log keys, a present value that is not a non-negative integer throws:
+ * a silent fallback would hand the owner's slots to agents.
+ */
+export function resolveWorktreeOwnerReserve(): number {
+  const value = readConfig().worktreeOwnerReserve
+  if (value === undefined) return DEFAULT_WORKTREE_OWNER_RESERVE
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value
+  throw new Error(
+    `config.json worktreeOwnerReserve must be a non-negative integer, got ${JSON.stringify(value)}`,
+  )
+}
+
 /**
  * CC-118's shadow-write flag, read once at broker boot. On by default as of
  * slice 5, once the backfill rehearsal (slice 3) and the divergence verifier
@@ -81,8 +138,100 @@ export function resolveLedgerShadow(): boolean {
   if (override === '0' || override === '1') return override === '1'
   const value = readConfig().ledgerShadow
   if (value === undefined || typeof value === 'boolean') return value !== false
-  logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
+  logInvalidOnce({ key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-898: whether the orphan reap may signal. Off unless `orphanReapKill` is `true` in config (or
+ * `AGENT_CHAT_ORPHAN_REAP=kill`): until then it only logs `orphans_would_reap`, so the owner sees
+ * live output before anything is killed.
+ */
+export function resolveOrphanReapKill(): boolean {
+  const override = process.env.AGENT_CHAT_ORPHAN_REAP
+  if (override === 'kill' || override === 'dry-run') return override === 'kill'
+  const value = readConfig().orphanReapKill
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logInvalidOnce({ key: 'orphanReapKill', value, fallback: false })
+  return false
+}
+
+/**
+ * CC-529: whether the seat watchdog may spend a headless turn to read a pool with no fresh reading.
+ * Off unless `poolProbe` is `true`: the turn is unattended and starts a five_hour window on an idle pool.
+ */
+export function resolvePoolProbe(): boolean {
+  const value = readConfig().poolProbe
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logInvalidOnce({ key: 'poolProbe', value, fallback: false })
+  return false
+}
+
+/** CC-804: whether a Linux host puts iTerm surfaces in tmux windows. Off unless `tmuxSurfaceOnLinux` is `true`. */
+export function resolveTmuxOnLinux(): boolean {
+  const value = readConfig().tmuxSurfaceOnLinux
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logInvalidOnce({ key: 'tmuxSurfaceOnLinux', value, fallback: false })
+  return false
+}
+
+/**
+ * CC-606: whether the broker's pool pick for an unpinned seat spawn is only recorded (`shadow`, the default)
+ * or also billed (`enforce`); `off` skips it. From `config.json`'s `poolPick`, read per spawn.
+ */
+export function resolvePoolPickMode(): PoolPickMode {
+  const value = readConfig().poolPick
+  if (value === undefined) return 'shadow'
+  const mode = POOL_PICK_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
+  return 'shadow'
+}
+
+/**
+ * CC-932: how a seat's hand spawn of a claimed or brief-ready task is treated: `off` (the default), `warn`
+ * (log `seat_spawn_overlap` and spawn) or `refuse`. From `config.json`'s `seatSpawnGate`, read per spawn.
+ */
+export function resolveSeatSpawnMode(): SeatSpawnMode {
+  const value = readConfig().seatSpawnGate
+  if (value === undefined) return 'off'
+  const mode = SEAT_SPAWN_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'seatSpawnGate', value, fallback: 'off' })
+  return 'off'
+}
+
+/**
+ * CC-966: the session that takes a non-resident seat's messages while the seat has no active session,
+ * from `config.json`'s `seatStewards` (`{"<seat>": "<steward>"}`). Read per send; an invalid entry is
+ * logged and read as no steward, so the seat keeps today's dark-seat hold.
+ */
+export function resolveSeatSteward(seat: string): string | undefined {
+  const stewards = readConfig().seatStewards
+  if (stewards === undefined) return undefined
+  if (!isObject(stewards) || Array.isArray(stewards)) {
+    logInvalidOnce({ key: 'seatStewards', value: stewards, fallback: 'no stewards' })
+    return undefined
+  }
+  const value = stewards[seat]
+  if (value === undefined || (typeof value === 'string' && value !== '' && value !== seat)) return value
+  logInvalidOnce({ key: `seatStewards.${seat}`, value, fallback: 'no steward' })
+  return undefined
+}
+
+/**
+ * CC-921: whether the broker parks and retires `spawner`'s agents when they exit on a final report.
+ * `autoRetire.onFinalReport` is `true` for every spawner or a list of spawner names; off by default.
+ * Read per exit, so a change needs no broker restart. Anything else is logged and read as off.
+ */
+export function resolveAutoRetireOnReport(spawner: string): boolean {
+  const autoRetire = readConfig().autoRetire
+  if (autoRetire === undefined) return false
+  const value = isObject(autoRetire) ? autoRetire.onFinalReport : autoRetire
+  if (value === undefined || typeof value === 'boolean') return value === true
+  if (Array.isArray(value) && value.every(name => typeof name === 'string')) return value.includes(spawner)
+  logInvalidOnce({ key: 'autoRetire.onFinalReport', value, fallback: false })
+  return false
 }
 
 /**
@@ -96,7 +245,7 @@ export function resolveDeciderAgentId(): string | undefined {
   if (decider === undefined) return undefined
   const agentId = isObject(decider) ? decider.agentId : undefined
   if (typeof agentId === 'string' && agentId !== '') return agentId
-  logEvent('config_invalid', { key: 'decider.agentId', value: agentId, fallback: 'no decider' })
+  logInvalidOnce({ key: 'decider.agentId', value: agentId, fallback: 'no decider' })
   return undefined
 }
 
@@ -145,7 +294,7 @@ function reportBatchSeconds(value: unknown): number | undefined {
   if (value === undefined) return undefined
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_REPORT_BATCH_S)
     return value
-  logEvent('config_invalid', { key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
+  logInvalidOnce({ key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
   return undefined
 }
 
@@ -153,7 +302,7 @@ function reportBatchSeconds(value: unknown): number | undefined {
 export function resolveMachineLimits(): MachineLimits {
   let memoryFreePercent = positiveIntegerFrom('machineMemoryFreePercent', DEFAULT_MACHINE_MEMORY_FREE_PERCENT)
   if (memoryFreePercent > 100) {
-    logEvent('config_invalid', {
+    logInvalidOnce({
       key: 'machineMemoryFreePercent',
       value: memoryFreePercent,
       fallback: DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
@@ -177,13 +326,53 @@ export function resolveMachineStopLimits(): MachineStopLimits {
       100,
     ),
     load5: numberFrom('machineStopLoad5', config.machineStopLoad5, DEFAULT_MACHINE_STOP_LOAD5),
+    swapUsedPercent:
+      config.machineStopSwapUsedPercent === null
+        ? null
+        : numberFrom(
+            'machineStopSwapUsedPercent',
+            config.machineStopSwapUsedPercent,
+            DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
+            100,
+          ),
+    pressureLevel: pressureLevelFrom(config.machineStopPressureLevel),
   }
+}
+
+function pressureLevelFrom(value: unknown): number {
+  if (value === undefined) return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4) return value
+  logInvalidOnce({
+    key: 'machineStopPressureLevel',
+    value,
+    fallback: DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  })
+  return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
+}
+
+/** CC-495: the rss above which an agent-descended process is a runaway. Read every guard tick. */
+export function resolveProcessKillBytes(): number {
+  const value = readConfig().processKillBytes
+  if (value === undefined) return DEFAULT_PROCESS_KILL_BYTES
+  if (typeof value === 'number' && Number.isFinite(value) && value >= MIN_PROCESS_KILL_BYTES) return value
+  logInvalidOnce({ key: 'processKillBytes', value, fallback: DEFAULT_PROCESS_KILL_BYTES })
+  return DEFAULT_PROCESS_KILL_BYTES
+}
+
+/** CC-495: `log` by default, and an unknown value falls back to `log` so a typo never turns killing on. */
+export function resolveProcessGuardMode(): ProcessGuardMode {
+  const value = readConfig().processGuardMode
+  if (value === undefined) return 'log'
+  const mode = PROCESS_GUARD_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'processGuardMode', value, fallback: 'log' })
+  return 'log'
 }
 
 function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {
   if (value === undefined) return fallback
   if (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max) return value
-  logEvent('config_invalid', { key, value, fallback })
+  logInvalidOnce({ key, value, fallback })
   return fallback
 }
 
@@ -204,7 +393,7 @@ export function resolveCoordinatorGrantableTools(): string[] {
   const value = readConfig().coordinatorGrantableTools
   if (value === undefined) return [...WEB_READ_TOOLS]
   if (!Array.isArray(value)) {
-    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value, fallback: [] })
+    logInvalidOnce({ key: 'coordinatorGrantableTools', value, fallback: [] })
     return []
   }
   const known = value.filter(
@@ -212,15 +401,33 @@ export function resolveCoordinatorGrantableTools(): string[] {
   )
   const ignored = value.filter(tool => !known.includes(tool as string))
   if (ignored.length > 0)
-    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
+    logInvalidOnce({ key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
   return known
+}
+
+/**
+ * CC-613: the `!` git aliases an agent's git shim lets run, from `gitShellAliases`, read per spawn.
+ * It fails closed: a non-array lists nothing, and an entry that is not an alias name is logged and dropped.
+ */
+export function resolveGitShellAliases(): string[] {
+  const value = readConfig().gitShellAliases
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    logInvalidOnce({ key: 'gitShellAliases', value, fallback: [] })
+    return []
+  }
+  const isName = (name: unknown): name is string => typeof name === 'string' && ALIAS_NAME.test(name)
+  const names = value.filter(isName)
+  const ignored = value.filter(name => !isName(name))
+  if (ignored.length > 0) logInvalidOnce({ key: 'gitShellAliases', value: ignored, fallback: 'ignored' })
+  return names.map(name => name.toLowerCase())
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
   const value = readConfig()[key]
   if (value === undefined) return fallback
   if (typeof value === 'number' && Number.isInteger(value) && value >= 1) return value
-  logEvent('config_invalid', { key, value, fallback })
+  logInvalidOnce({ key, value, fallback })
   return fallback
 }
 
@@ -278,7 +485,7 @@ function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): C
       typeof value.boundary === 'string' && value.boundary !== '' ? value.boundary : fallback.boundary
     return { tokens: value.tokens, boundary }
   }
-  logEvent('config_invalid', { key: `contextHints.${key}`, value, fallback })
+  logInvalidOnce({ key: `contextHints.${key}`, value, fallback })
   return fallback
 }
 
@@ -310,7 +517,7 @@ export function resolveParkAdvicePolicy(
   const number = (key: keyof ParkAdvicePolicy): number => {
     const value = configured[key]
     if (value === undefined || isPositiveInteger(value)) return value ?? DEFAULT_PARK_ADVICE[key]
-    logEvent('config_invalid', { key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
+    logInvalidOnce({ key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
     return DEFAULT_PARK_ADVICE[key]
   }
   return { tokens: number('tokens'), leadMinutes: number('leadMinutes'), ttlMinutes: number('ttlMinutes') }
@@ -333,7 +540,7 @@ function hexEntries(group: string, value: unknown): Record<string, string> {
   if (!isObject(value)) return {}
   const entries = Object.entries(value).filter(([key, colour]) => {
     if (isHexColour(colour)) return true
-    logEvent('config_invalid', {
+    logInvalidOnce({
       key: `paneColours.${group}.${key}`,
       value: colour,
       fallback: 'hashed colour',

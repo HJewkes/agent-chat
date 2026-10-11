@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { parseSince } from '../agents/seats/dispatch-read.js'
 import { dispatchedRow, retiredRow, type DispatchRun } from '../agents/seats/dispatch-record.js'
 import { dispatchesReport } from '../cli/verbs/seats.js'
+import { UNREAD_OUTCOME } from '../agents/seats/retire-outcome.js'
 
 /** CC-332: `seats dispatches` prints the folded records. Every seat, agent and path here is synthetic. */
 
@@ -58,10 +59,10 @@ function writeLog(lines: unknown[]): void {
 
 const brokerAndHand = [
   dispatchedRow(run('sx-a-1-one', '2026-09-01T00:30:00.000Z', 'A-1')),
-  retiredRow(run('sx-a-1-one', '2026-09-01T00:30:00.000Z', 'A-1'), 's1', SPEND),
+  retiredRow(run('sx-a-1-one', '2026-09-01T00:30:00.000Z', 'A-1'), 's1', SPEND, UNREAD_OUTCOME),
   hand('sx-a-1-one', 'merged', { pr: 7, score: 4, by: 'seat' }),
   dispatchedRow(run('sx-b-2-two', '2026-09-02T12:00:00.000Z', 'B-2')),
-  retiredRow(run('sx-b-2-two', '2026-09-02T12:00:00.000Z', 'B-2'), 's2', SPEND),
+  retiredRow(run('sx-b-2-two', '2026-09-02T12:00:00.000Z', 'B-2'), 's2', SPEND, UNREAD_OUTCOME),
 ]
 
 const records = (lines: string[]) =>

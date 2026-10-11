@@ -1,17 +1,21 @@
 import type { Autonomy } from '../active-work.js'
-import type { Collision, CollisionWork } from './collision.js'
+import { contractOverlap, type Collision, type CollisionWork, type HeldContracts } from './collision.js'
+import type { Contract } from './report.js'
 import { pickAccount, type AccountReading, type AccountRule, type GateContext } from './budget-gate.js'
 import {
   byRank,
   IMPLEMENTER_PROFILE,
   pickTask,
   PLANNER_PROFILE,
+  isBriefer,
   profileFor,
   SONNET_PROFILES,
   type Initiative,
   type Refusal,
   type Task,
 } from './eligibility.js'
+import { backoffHeld } from './backoff.js'
+import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { heldClaims, laneClaims, readySlices, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
@@ -26,6 +30,8 @@ export interface Dispatch {
   /** A planner's slice, dispatched from a `queued` claim rather than a task file. */
   slice?: string
   profile: string
+  /** CC-939: a planner-profile spawn that writes the task's brief. */
+  briefer?: boolean
   account: string
   /** Where trust was checked: the repo for a planner, the worktree the spawn will cut otherwise. */
   cwd: string
@@ -34,6 +40,8 @@ export interface Dispatch {
   /** The worktree the spawn cuts; absent for a planner, which shares the checkout. */
   worktree?: string
   reason: string
+  /** The class-of-service tier `planOrder` placed the task in (CC-768); absent for a slice and for an initiative's own plan. */
+  tier?: number
   /** The seat that dispatched it (CC-205); absent for an initiative's autonomy block. */
   seat?: string
   /** Prefix of the agent names the claim spawns; absent means `bd`. */
@@ -74,7 +82,8 @@ export interface PlanInputs {
   /** A leftover branch or worktree named for `agentName` that no claim accounts for. */
   orphan?: (repo: string, agentName: string) => string | undefined
   /** Why `work` collides with work landed, open or held in `repo` (CC-202), or undefined when it does not. */
-  collision?: (repo: string, work: CollisionWork) => Collision | undefined
+  /** `landedRepos` are the other checkouts whose default branch also counts as landing the task (a seat's repos). */
+  collision?: (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined
 }
 
 export interface Plan {
@@ -84,6 +93,8 @@ export interface Plan {
   notOptedIn: string[]
   /** A seat plan's malformed open tasks the scorer left out; absent for the unseated plan. */
   skippedTasks?: string[]
+  /** A seat plan's service-check state, printed under the header; absent for the unseated plan. */
+  serviceCheck?: string
 }
 
 /** A claim with no `namePrefix` names its agents `bd-...`, as every claim did before seats (CC-205). */
@@ -124,8 +135,9 @@ export function plan(inputs: PlanInputs): Plan {
     notOptedIn: focused.filter(i => i.autonomy === undefined).map(i => i.slug),
   }
   const tally: Tally = { agents: 0, worktrees: new Map() }
+  const accepted: HeldContracts[] = []
   for (const initiative of optedIn) {
-    const outcome = planInitiative(initiative, inputs, tally)
+    const outcome = planInitiative(initiative, inputs, tally, accepted)
     result.refusals.push(...outcome.refusals)
     if (outcome.dispatch !== undefined) result.dispatch.push(outcome.dispatch)
   }
@@ -136,13 +148,14 @@ function planInitiative(
   initiative: OptedIn,
   inputs: PlanInputs,
   tally: Tally,
+  accepted: HeldContracts[],
 ): { dispatch?: Dispatch; refusals: Refusal[] } {
   const lanesHeld = laneClaims(inputs.ledger).filter(c => c.initiative === initiative.slug).length
   if (lanesHeld >= initiative.autonomy.lanes) {
     const reason = `${lanesHeld} of ${initiative.autonomy.lanes} lanes held`
     return { refusals: [{ initiative: initiative.slug, kind: 'lanes-full', reason }] }
   }
-  const { work, refusals } = nextWork(initiative, inputs)
+  const { work, refusals } = nextWork(initiative, inputs, accepted)
   if (work === undefined) return { refusals }
   const refuse = (r: Pick<Refusal, 'kind' | 'reason'>): Refusal => ({
     initiative: initiative.slug,
@@ -154,6 +167,7 @@ function planInitiative(
   const capped = capacityRefusal(placed, inputs.capacity, tally)
   if (capped !== undefined) return { refusals: [...refusals, refuse(capped)] }
   tally.agents += 1
+  if (work.contracts !== undefined) accepted.push({ holder: placed.agentName, contracts: work.contracts })
   if (placed.worktree !== undefined)
     tally.worktrees.set(placed.repo, (tally.worktrees.get(placed.repo) ?? 0) + 1)
   return { dispatch: placed, refusals }
@@ -163,26 +177,45 @@ interface Work {
   taskId: string
   slice?: string
   profile: string
+  briefer?: boolean
   /** A queued slice's claim prefix and seat, so its implementer shares the planner's. */
   namePrefix?: string
   seat?: string
+  contracts?: Contract[]
 }
 
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
-function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refusals: Refusal[] } {
+function nextWork(
+  initiative: OptedIn,
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+): { work?: Work; refusals: Refusal[] } {
   const tasks = inputs.tasks.get(initiative.slug) ?? []
-  const [ready] = readySlices(inputs.ledger).filter(c => c.initiative === initiative.slug)
+  const held = backoffHeld(inputs.ledger, inputs.gate.now)
+  const [ready] = readySlices(inputs.ledger, held).filter(c => c.initiative === initiative.slug)
   if (ready?.slice !== undefined) {
     const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
-    const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
-    const collided = collisionOf(initiative, work, inputs)
+    const work = {
+      taskId: ready.taskId,
+      slice: ready.slice,
+      tags,
+      owns: ready.owns ?? [],
+      contracts: ready.contracts ?? [],
+    }
+    const collided = collisionOf(initiative, work, inputs, accepted)
     if (collided !== undefined) return { refusals: [collided] }
     const identity = {
       ...(ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }),
       ...(ready.seat === undefined ? {} : { seat: ready.seat }),
     }
     return {
-      work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE, ...identity },
+      work: {
+        taskId: ready.taskId,
+        slice: ready.slice,
+        profile: IMPLEMENTER_PROFILE,
+        contracts: work.contracts,
+        ...identity,
+      },
       refusals: [],
     }
   }
@@ -194,27 +227,37 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
       initiative,
       tasks.filter(t => !skip.has(t.id)),
       claimed,
+      held,
     )
     if (task === undefined) return { refusals: [...blocked, ...refusals] }
     const profile = profileFor(task)
     const refusal =
-      collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs) ??
+      collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs, accepted) ??
       orphanRefusal(
         { initiative: initiative.slug, repo: initiative.autonomy.repo },
         task.id,
         profile,
         inputs.orphan,
+        inputs.ledger,
       )
     if (refusal === undefined)
-      return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
+      return {
+        work: { taskId: task.id, profile, ...(isBriefer(task) ? { briefer: true } : {}) },
+        refusals: [...blocked, ...refusals],
+      }
     blocked.push(refusal)
   }
 }
 
-function collisionOf(initiative: OptedIn, work: CollisionWork, inputs: PlanInputs): Refusal | undefined {
+function collisionOf(
+  initiative: OptedIn,
+  work: CollisionWork,
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+): Refusal | undefined {
   const repo = initiative.autonomy.repo
   if (repo === undefined || inputs.collision === undefined) return undefined
-  const found = inputs.collision(repo, work)
+  const found = inputs.collision(repo, work) ?? contractOverlap(work, accepted)
   return found === undefined ? undefined : { initiative: initiative.slug, task: work.taskId, ...found }
 }
 
@@ -224,9 +267,13 @@ export function orphanRefusal(
   taskId: string,
   profile: string,
   orphan: PlanInputs['orphan'],
+  ledger?: Ledger,
 ): Refusal | undefined {
   if (profile === PLANNER_PROFILE || at.repo === undefined || orphan === undefined) return undefined
-  const reason = orphan(at.repo, agentNameFor(taskId, undefined, at.prefix))
+  const name = agentNameFor(taskId, undefined, at.prefix)
+  // The branch a ladder release kept (CC-698) is the prior attempt, not an orphan: the re-dispatch adopts it.
+  if (ledger?.ladder?.[`${taskId}#`]?.branch === `${BRANCH_PREFIX}${name}`) return undefined
+  const reason = orphan(at.repo, name)
   return reason === undefined
     ? undefined
     : { initiative: at.initiative, task: taskId, kind: 'orphan', reason }
@@ -268,6 +315,7 @@ function place(
     task: work.taskId,
     ...(work.slice === undefined ? {} : { slice: work.slice }),
     profile,
+    ...(work.briefer === true ? { briefer: true } : {}),
     account: chosen.account,
     cwd,
     repo,

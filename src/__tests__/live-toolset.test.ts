@@ -113,6 +113,7 @@ async function probe(confined: boolean): Promise<ProbeResult> {
     profile,
     brief: BRIEF,
     cwd,
+    cwdHoldsUserSettings: false,
     surface: 'headless',
     mcpConfigPath,
   })

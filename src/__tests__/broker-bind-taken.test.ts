@@ -11,7 +11,7 @@ import { start } from '../cli/service.js'
  * path is observed without standing up a competing broker.
  */
 
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 
 let dir: string
 let originalPort: string | undefined

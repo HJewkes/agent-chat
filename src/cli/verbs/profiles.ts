@@ -5,9 +5,10 @@ import { defineVerb, Report } from '../command.js'
 export const profilesVerb = defineVerb({
   name: 'profiles',
   description: 'agent profiles available to spawn with',
-  args: z.object({}),
+  args: z.object({ name: z.string().optional() }),
+  cli: { positional: ['name'] },
   result: Report,
-  async run() {
-    return profiles()
+  async run({ name }) {
+    return profiles(name)
   },
 })

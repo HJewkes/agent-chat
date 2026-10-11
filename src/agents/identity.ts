@@ -1,5 +1,6 @@
 import type { AgentEventRow, EventStore } from '../broker/event-store.js'
 import type { AgentIdentity, AgentLifecycle, AgentOrigin } from '../protocol.js'
+import { inferWorkRole } from './spawn-provenance.js'
 
 /**
  * The durable half of an agent: who it is, not whether it is currently plugged
@@ -32,6 +33,7 @@ const exitFrom = (row: AgentEventRow): NonNullable<AgentIdentity['exit']> => {
     // CC-95: written only by the supervisor's attach verification, so the roster
     // can say `failed` rather than `finished` for a process that never came up.
     ...(row.meta.failed === 'true' ? { failedToStart: true } : {}),
+    ...(row.meta.inferred === 'true' ? { inferred: true } : {}),
   }
 }
 
@@ -69,10 +71,66 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
+  ...(originOf(row) === 'adopted' && derivedName(row, true) ? { provisionalName: true as const } : {}),
+  ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
 })
+
+/** CC-915: rows written before the fields existed get an inferred role and no worktree provenance. */
+function provenanceOf(row: AgentEventRow): Partial<AgentIdentity> {
+  const { meta } = row
+  const stated = meta.work_role !== undefined && meta.work_role_inferred !== 'true'
+  return {
+    ...(meta.repo ? { repo: meta.repo } : {}),
+    ...(meta.branch ? { branch: meta.branch } : {}),
+    ...baseOf(row),
+    ...(meta.task ? { task: meta.task } : {}),
+    workRole: meta.work_role ?? inferWorkRole(meta.profile ?? '', row.target ?? meta.name ?? ''),
+    ...(stated ? {} : { workRoleInferred: true as const }),
+  }
+}
+
+const baseOf = (row: AgentEventRow): { base?: { sha: string; ref: string } } =>
+  row.meta.base_sha && row.meta.base_ref ? { base: { sha: row.meta.base_sha, ref: row.meta.base_ref } } : {}
+
+/** A resume row carries a base only when it cut a fresh branch; a surviving branch keeps its first one. */
+function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
+  const base = baseOf(row).base
+  if (base !== undefined) agent.base = base
+  if (row.meta.repo) agent.repo = row.meta.repo
+  if (row.meta.branch) agent.branch = row.meta.branch
+}
+
+/** The working-on text a provisional registration sends (`src/server/index.ts`). */
+const DERIVED_WORKING_ON = 'unregistered session in '
+
+/**
+ * CC-959: the broker states on each adopt and attach row whether the name was
+ * derived. An adopt row without the field predates it, and only its first
+ * name can be recognised, by the text a provisional registration sends. A
+ * readopt carries that text on as the brief under whatever name the session
+ * later chose, so the text alone says nothing about a later name.
+ */
+const derivedName = (row: AgentEventRow, firstName: boolean): boolean =>
+  row.meta.provisional === undefined
+    ? firstName && (row.body ?? '').startsWith(DERIVED_WORKING_ON)
+    : row.meta.provisional === 'true'
+
+/** The first name of an adopted identity minted before the broker recorded `provisional`, if it is one. */
+function legacyAdoptedName(rows: readonly AgentEventRow[]): string | undefined {
+  const row = rows.find(r => r.kind === 'agent_spawned')
+  if (row === undefined || originOf(row) !== 'adopted' || row.meta.provisional !== undefined) return undefined
+  return row.target ?? row.meta.name
+}
+
+/** An adopted name follows its latest attach, and so does whether that name was derived or chosen. */
+function attachAdopted(agent: AgentIdentity, row: AgentEventRow, legacyName: string | undefined): void {
+  agent.name = row.actor
+  if (derivedName(row, legacyName !== undefined && row.actor === legacyName)) agent.provisionalName = true
+  else delete agent.provisionalName
+}
 
 /** Lifecycle transitions, keyed by kind. Kinds absent here only bump `lastEventAt`. */
 const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
@@ -97,6 +155,8 @@ const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
  */
 export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undefined {
   let agent: AgentIdentity | undefined
+  let exitInferred = false
+  const legacyName = legacyAdoptedName(rows)
 
   for (const row of rows) {
     const id = agentIdOf(row)
@@ -115,22 +175,33 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // chat_register twice under a different one, and the attach row carries what
     // it last called itself. A spawned name never moves — it came from the launch
     // plan and peers were told it before the agent had a turn.
-    if (agent.origin === 'adopted' && row.kind === 'agent_attached') agent.name = row.actor
+    if (agent.origin === 'adopted' && row.kind === 'agent_attached') attachAdopted(agent, row, legacyName)
     // Presentation is not fixed at spawn: a mode switch resumes the SAME identity
     // into a different surface, and a roster reading `surface` off the spawn row
     // would keep reporting the pane an agent no longer has. Only `agent_resumed`
     // carries it, and only when a switch actually changed it — an ordinary resume
     // omits the field and leaves this alone.
     if (row.kind === 'agent_resumed' && row.meta.surface) agent.surface = row.meta.surface
+    if (row.kind === 'agent_resumed') applyResumeProvenance(agent, row)
     if (row.kind === 'agent_exited') {
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts
+      exitInferred = row.meta.inferred === 'true' || row.meta.failed === 'true'
+    }
+    // CC-454: an inferred exit can be false (the launcher died, claude did not); a real one is final.
+    // CC-450: so can a failed start, when the registration lands after the attach check gave up.
+    if (row.kind === 'agent_attached' && exitInferred) {
+      delete agent.exitedAt
+      delete agent.exit
+      exitInferred = false
     }
     if (row.kind === 'agent_resumed') delete agent.exitedAt
     if (row.kind === 'agent_detached') agent.detachedAt = row.ts
     if (row.kind === 'agent_resumed' || row.kind === 'agent_attached') delete agent.detachedAt
     const next = TRANSITIONS[row.kind]
-    if (next !== undefined) agent.state = next
+    // CC-450: a socket closing just after the process exited does not reopen a finished agent.
+    const closesAfterExit = row.kind === 'agent_detached' && agent.exitedAt !== undefined
+    if (next !== undefined) agent.state = closesAfterExit ? 'exited' : next
   }
 
   return agent
@@ -156,18 +227,21 @@ export function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentE
   return groups
 }
 
+/** Every status the roster can show; `failed` is spawned but never registered: the process is gone and did no work (CC-95). */
+export const ROSTER_STATUSES = [
+  'starting',
+  'running',
+  'blocked',
+  'stalled?',
+  'reconnecting',
+  'detached',
+  'finished',
+  'failed',
+  'retired',
+] as const
+
 /** How a paired identity and presence should render on the roster. */
-export type RosterStatus =
-  | 'starting'
-  | 'running'
-  | 'blocked'
-  | 'stalled?'
-  | 'reconnecting'
-  | 'detached'
-  | 'finished'
-  /** Spawned, but never registered: the process is gone and did no work (CC-95). */
-  | 'failed'
-  | 'retired'
+export type RosterStatus = (typeof ROSTER_STATUSES)[number]
 
 export interface PresenceInput {
   /** `registry.connFor(name) !== undefined`. */
@@ -263,7 +337,7 @@ export class AgentLog {
   }
 
   get(id: string): AgentIdentity | undefined {
-    return this.all().find(a => a.agentId === id)
+    return foldAgent(this.events.agentEventsFor(id))
   }
 
   /**
@@ -281,14 +355,18 @@ export class AgentLog {
   }
 
   /**
-   * CC-408: a newer spawned identity under the same name, retired or not.
+   * CC-408: a newer identity under the same name, retired or not.
    *
    * Teleport successors keep the name, so once the newest is retired `byName`
    * falls back to an older generation; resuming that would wake a stale session.
+   * CC-959: an adopted successor counts too. A seat restarted by hand is adopted,
+   * and `byName` cannot see it, so it would otherwise resume the older spawned row.
+   * Not one whose name was derived from its directory: a session merely opened in
+   * an agent's worktree takes the agent's name without meaning to replace it.
    */
   supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
     return this.all().find(
-      a => a.name === agent.name && a.origin === 'spawned' && a.spawnedAt > agent.spawnedAt,
+      a => a.name === agent.name && a.spawnedAt > agent.spawnedAt && a.provisionalName !== true,
     )
   }
 

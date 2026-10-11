@@ -34,6 +34,8 @@ export interface ScoringDefaults {
   readiness: { ready: number; untriaged: number; blocked: number }
   size: { le3: number; le8: number; gt8: number }
   stop_short_factor: number
+  /** Multiplier for work whose value lands without a human gate; absent reads as 1. */
+  gate_free_bonus?: number | undefined
 }
 
 export interface Exclusions {
@@ -44,10 +46,10 @@ export interface Exclusions {
 }
 
 export type KindSource = 'tag' | 'regex' | 'default'
-export type Route = 'triage' | 'planner' | 'implementer-lite' | 'implementer'
+export type Route = 'triage' | 'briefer' | 'planner' | 'implementer-lite' | 'implementer'
 export type RefusalCounts = Partial<Record<'excluded-tag' | 'excluded-pattern', number>>
 
-/** S, P, U, A: the additive terms. W, K, R, Z, H: the multipliers. */
+/** S, P, U, A: the additive terms. W, K, R, Z, H, G: the multipliers. */
 export interface Components {
   S: number
   P: number
@@ -58,6 +60,8 @@ export interface Components {
   R: number
   Z: number
   H: number
+  /** The charter's `gate_free_bonus` for a task whose repo is live on merge; 1 otherwise. */
+  G?: number
 }
 
 export interface ScoreRow {
@@ -250,18 +254,27 @@ export function stopShortTerm(stopShort: readonly string[], defaults: ScoringDef
   return stopShort.length > 0 ? defaults.stop_short_factor : 1
 }
 
+/** CC-939: a seat's intent awaiting a brief; `brief:proposed` means the briefer has answered. */
+export function wantsBrief(tags: readonly string[]): boolean {
+  return (
+    tags.includes('brief:wanted') &&
+    !tags.some(tag => tag === 'brief:proposed' || tag.startsWith('brief:proposed='))
+  )
+}
+
 export function route(task: ScoredTask): Route {
+  if (task.done_when && wantsBrief(tagsOf(task))) return 'briefer'
   if (!isTriaged(task)) return 'triage'
   const estimate = task.estimate as number
   if (estimate >= 3) return 'planner'
-  return estimate <= 1 ? 'implementer-lite' : 'implementer'
+  return tagsOf(task).includes('kind:feature') ? 'implementer' : 'implementer-lite'
 }
 
 /** score.py's product, in its operand order so the float result matches bit for bit. */
 export function combine(c: Components, defaults: ScoringDefaults): number {
   const w = defaults.score_terms
   const base = w.severity * c.S + w.priority_pct * c.P + w.unblocks * c.U + w.staleness * c.A
-  return pyRound(100 * base * c.W * c.K * c.R * c.Z * c.H, 1)
+  return pyRound(100 * base * c.W * c.K * c.R * c.Z * c.H * (c.G ?? 1), 1)
 }
 
 /** Locale-independent string order, by Unicode code point rather than UTF-16 unit. */
@@ -372,12 +385,18 @@ interface ScoringContext {
   today: string
   graph: DependencyGraph
   peers: Map<string, number[]>
+  dormant: ReadonlySet<string>
 }
 
 function initiativeWeight(slug: string, weights: Readonly<Record<string, number>>): number {
   const weight = own(weights, slug)
   if (weight === undefined) throw new Error(`no scope weight for initiative ${slug}`)
   return weight
+}
+
+/** The charter bonus unless the task's initiative sits in a repo that stays dormant until a restart or tag move. */
+function gateFreeTerm(slug: string, ctx: ScoringContext): number {
+  return ctx.dormant.has(slug) ? 1 : (ctx.defaults.gate_free_bonus ?? 1)
 }
 
 function scoreTask(task: ScoredTask, ctx: ScoringContext): ScoreRow {
@@ -397,6 +416,7 @@ function scoreTask(task: ScoredTask, ctx: ScoringContext): ScoreRow {
     R: readinessTerm(task, blocked.length > 0, defaults),
     Z: sizeTerm(task.estimate, defaults),
     H: stopShortTerm(stopShort, defaults),
+    G: gateFreeTerm(task.slug, ctx),
   }
   return {
     id: task.id,
@@ -433,6 +453,7 @@ export function scoreAll(
   exclusions: Exclusions,
   hardStops: readonly string[],
   today: string,
+  dormant: ReadonlySet<string> = new Set(),
 ): { rows: ScoreRow[]; refused: RefusalCounts } {
   checkToday(today)
   const ctx: ScoringContext = {
@@ -442,6 +463,7 @@ export function scoreAll(
     today,
     graph: dependencyGraph(tasks),
     peers: peersBySlug(tasks),
+    dormant,
   }
   const excludedTags = new Set([...exclusions.tags, ...RESERVED_TAGS])
   const patterns = exclusions.titlePatterns?.join('|')

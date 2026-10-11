@@ -1,0 +1,15 @@
+#!/bin/bash
+# Stub gh: `gh api [-i] <path> [--jq expr]` answers from $FIXDIR/<sanitized path>.json.
+# A <name>.status file (used when there is no .json) holds an HTTP code, answered with the .body file or an empty object; a missing fixture fails with no output.
+[ "$1" = api ] || { echo "stub gh: unsupported: $*" >&2; exit 1; }
+shift; incl=0; [ "${1:-}" = -i ] && { incl=1; shift; }
+path=${1#repos/}; path=${path#*/*/}; path=${path//${FIXSHA:-@none@}/SHA}
+name="$FIXDIR/$(sed 's/[^A-Za-z0-9]/_/g' <<<"$path")"
+if [ ! -f "$name.json" ]; then
+  [ -f "$name.status" ] || exit 1
+  code=$(cat "$name.status"); rbody='{}'; [ -f "$name.body" ] && rbody=$(cat "$name.body")
+  [ $incl = 1 ] && printf 'HTTP/2.0 %s X\r\n\r\n%s\n' "$code" "$rbody"; exit 1
+fi
+if [ $incl = 1 ]; then printf 'HTTP/2.0 200 OK\r\n\r\n'; cat "$name.json"; exit 0; fi
+[ "${2:-}" = --jq ] && exec jq -r "$3" "$name.json"
+cat "$name.json"

@@ -2,15 +2,23 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentIdentity } from '../../protocol.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
-import { finalAssistantText } from '../turns.js'
+import { findTranscript } from '../transcript.js'
+import { readTranscriptSpend, type TranscriptSpendRead } from '../transcript-spend.js'
+import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
-import type { Claim } from './ledger.js'
+import { readExitedWork, type ExitedWork } from './exited-adopt.js'
+import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
-import { parseReport, parseSlices } from './report.js'
+import { readProgress, type Progress } from './progress.js'
+import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { parseReport, readSlices } from './report.js'
+import { sumSpend } from './spend-cap.js'
+import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
 import {
+  FINISHED_PHASES,
   rowFor,
   shepherdLanded,
   shepherdRows,
@@ -30,10 +38,14 @@ export interface Roster {
   agents: AgentIdentity[]
   /** The broker's live semaphore; absent from an older broker, which the tick treats as no free slots. */
   slots?: { held: number; cap: number }
+  /** Why the retired rows are missing (CC-777): a name absent from a partial roster is unknown, not gone. */
+  partial?: string
 }
 
 export interface ObserveDeps {
   inboxSince: (name: string, afterId: number) => Promise<InboxMessage[]>
+  /** Whether a task's tags now hold `brief:proposed`; absent reads as not proposed. */
+  proposed?: (initiative: string, taskId: string) => boolean
   /** The active-work root, where a planner's plan file lives. */
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
@@ -42,6 +54,16 @@ export interface ObserveDeps {
   shepherdRows?: () => ShepherdRow[] | undefined
   landed?: (target: ShepherdTarget) => boolean | undefined
   readFile?: (file: string) => string | undefined
+  /** The row's transcript activity; defaults to `readActivity`. */
+  activity?: (agent: AgentIdentity) => ActivityRead
+  /** A worktree's progress evidence; defaults to `readProgress`. */
+  progress?: (worktree: string) => Progress | 'unreadable'
+  /** One agent's whole-session transcript spend; defaults to `findTranscript` plus `readTranscriptSpend`. */
+  spend?: (agent: AgentIdentity) => Promise<TranscriptSpendRead>
+  /** A seat's `spend.per_claim_usd`; observe reads it once per seat per tick, and a throw means no cap. */
+  spendCap?: (seat: string) => number | undefined
+  /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
+  exitedWork?: (worktree: string) => ExitedWork | undefined
 }
 
 export interface Observed {
@@ -49,6 +71,8 @@ export interface Observed {
   /** Claims the tick could not read this run, and why; `advance` sees nothing for them. */
   unread: string[]
 }
+
+const isAgentPhase = (phase: Claim['phase']): boolean => (AGENT_PHASES as readonly string[]).includes(phase)
 
 export const LIVE = new Set(['spawning', 'live', 'detached'])
 const FINISHED = new Set(['exited', 'retired'])
@@ -67,47 +91,186 @@ const readFileOrUndefined = (file: string): string | undefined => {
   }
 }
 
+const defaultActivity = (agent: AgentIdentity): ActivityRead =>
+  readActivity(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
+
+const defaultProgress = (worktree: string): Progress | 'unreadable' => readProgress(worktree)
+
+const defaultSpend = (agent: AgentIdentity): Promise<TranscriptSpendRead> =>
+  readTranscriptSpend(
+    findTranscript(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir).path,
+  )
+
+const defaultSpendCap =
+  (root: string) =>
+  (seat: string): number | undefined =>
+    loadPolicy(defaultAutonomyRoot(root), seat).seat.spend.per_claim_usd
+
+/** A seat file that fails to load gives no cap, so a bad seat never breaks the tick's observe. */
+function capsBySeat(read: (seat: string) => number | undefined): (seat: string) => number | undefined {
+  const caps = new Map<string, number | undefined>()
+  const capOf = (seat: string): number | undefined => {
+    try {
+      return read(seat)
+    } catch {
+      return undefined
+    }
+  }
+  return seat => {
+    if (!caps.has(seat)) caps.set(seat, capOf(seat))
+    return caps.get(seat)
+  }
+}
+
 const defaultFinalText = (agent: AgentIdentity): string | undefined =>
   finalAssistantText(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
 
 export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps): Promise<Observed> {
   const observations = new Map<string, Observation>()
   const unread: string[] = []
-  const once = { ...deps, shepherdRows: memo(deps.shepherdRows ?? (() => shepherdRows())) }
+  const once = {
+    ...deps,
+    shepherdRows: memo(deps.shepherdRows ?? (() => shepherdRows())),
+    spendCap: capsBySeat(deps.spendCap ?? defaultSpendCap(deps.root)),
+  }
+  // Only a caller that passes its own reader, as the tick does, has implementing claims looked up in Shepherd.
+  const prRuns = deps.shepherdRows === undefined ? undefined : once
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else observations.set(claimKey(claim), result)
+    else observations.set(claimKey(claim), prRuns === undefined ? result : withPrRun(result, claim, prRuns))
   }
   return { observations, unread }
 }
 
+/**
+ * CC-978: the Shepherd run of an implementing claim's PR, or of a queued slice linked to a hand-dispatched
+ * one, so a merge finishes the claim whether or not its agent exited. A read that fails leaves the claim as observed.
+ */
+function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
+  if (claim.phase !== 'implementing' && !(claim.phase === 'queued' && claim.pr !== undefined)) return obs
+  const row = claimRun(claim, deps.shepherdRows?.() ?? [])
+  if (row === undefined || row.pr === null) return obs
+  if (row.phase !== 'done' || row.outcome?.kind === 'merged') return { ...obs, shepherd: { row } }
+  const landed = (deps.landed ?? (t => shepherdLanded(t)))({ repo: row.repo, pr: row.pr })
+  return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
+}
+
+/**
+ * The claim's recorded PR, else an open run its agents registered or whose branch is one of theirs. Agent
+ * names repeat across dispatches of a task, so a name match only links an open PR and never finishes the
+ * claim: a finished run under the same name may be an earlier dispatch's.
+ */
+export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRow | undefined {
+  if (claim.pr !== undefined) {
+    const target = shepherdTarget(claim.pr)
+    return target === undefined ? undefined : rowFor(rows, target)
+  }
+  const names = new Set([
+    ...(claim.spawned ?? []),
+    ...(claim.agentName === undefined ? [] : [claim.agentName]),
+  ])
+  const ours = (r: ShepherdRow): boolean =>
+    (r.implementer != null && names.has(r.implementer)) ||
+    (r.branch?.startsWith(BRANCH_PREFIX) === true && names.has(r.branch.slice(BRANCH_PREFIX.length)))
+  const open = (r: ShepherdRow): boolean => r.phase !== 'post-merge' && !FINISHED_PHASES.includes(r.phase)
+  return rows.find(r => r.pr !== null && open(r) && ours(r))
+}
+
 async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
   const row = rowNamed(roster, claim.agentName)
+  if (row === undefined && claim.agentName !== undefined && roster.partial !== undefined)
+    return `no live row for ${claim.agentName} and ${roster.partial}`
   const obs: Observation = row === undefined ? {} : { agent: { id: row.agentId, state: row.state } }
   if (claim.phase === 'parked' && claim.agentName !== undefined) {
     const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
     obs.inbox = await deps.inboxSince(claim.agentName, Number.isInteger(afterId) ? afterId : 0)
   }
+  const spend = await claimSpend(claim, roster, deps)
+  if (spend !== undefined) obs.spend = spend
   if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
+  if (row !== undefined && LIVE.has(row.state) && isAgentPhase(claim.phase))
+    obs.activity = { read: (deps.activity ?? defaultActivity)(row), spawnedAt: row.spawnedAt }
+  if (
+    row !== undefined &&
+    LIVE.has(row.state) &&
+    claim.phase === 'implementing' &&
+    claim.worktree !== undefined
+  )
+    obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
+  if (claim.phase === 'planning' && claim.briefer === true) {
+    obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
+    return obs
+  }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && claim.worktree !== undefined)
+  if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
+    return withExitedWork(obs, claim.worktree, deps)
+  }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
+}
+
+/** Read only for an exit with no status line: a report already says what the agent left. */
+function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
+  const silent =
+    obs.report === undefined || (obs.report.status === 'unknown' && obs.report.parked === undefined)
+  if (!silent || !fs.existsSync(worktree)) return obs
+  return { ...obs, exitedWork: (deps.exitedWork ?? readExitedWork)(worktree) ?? 'unreadable' }
+}
+
+const SPEND_PHASES: ReadonlySet<Phase> = new Set([
+  'spawning',
+  'planning',
+  'implementing',
+  'reviewing',
+  'parked',
+])
+
+/** Every agent the claim spawned counts, so a successor or reviewer never resets the spend; a name with no row is unknown. */
+async function claimSpend(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation['spend']> {
+  if (claim.seat === undefined || !SPEND_PHASES.has(claim.phase)) return undefined
+  const cap = deps.spendCap?.(claim.seat)
+  if (cap === undefined) return undefined
+  const names = claim.spawned ?? (claim.agentName === undefined ? [] : [claim.agentName])
+  const readOne = deps.spend ?? defaultSpend
+  const reads = await Promise.all(
+    names.map(name => {
+      const row = rowNamed(roster, name)
+      return row === undefined
+        ? Promise.resolve<TranscriptSpendRead>({ ok: false, path: name, reason: 'no agent row' })
+        : spendOrUnknown(readOne, row)
+    }),
+  )
+  return { claim: sumSpend(reads), cap }
+}
+
+/** A read that throws or rejects is that one agent's unknown, so it never loses the tick's other observations (CC-729). */
+async function spendOrUnknown(
+  readOne: (agent: AgentIdentity) => Promise<TranscriptSpendRead>,
+  row: AgentIdentity,
+): Promise<TranscriptSpendRead> {
+  try {
+    return await readOne(row)
+  } catch (err) {
+    return { ok: false, path: row.name, reason: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
   const planPath = obs.report?.plan ?? planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
   const text = (deps.readFile ?? readFileOrUndefined)(planPath)
-  const slices = text === undefined ? undefined : parseSlices(text)
-  return slices === undefined ? obs : { ...obs, slices }
+  if (text === undefined) return { ...obs, sliceProblems: [`no plan file at ${planPath}`] }
+  const read = readSlices(text)
+  return read.slices === undefined
+    ? { ...obs, sliceProblems: read.problems }
+    : { ...obs, slices: read.slices }
 }
 
-const memo = <T>(read: () => T): (() => T) => {
+export const memo = <T>(read: () => T): (() => T) => {
   let cached: { value: T } | undefined
   return () => (cached ??= { value: read() }).value
 }

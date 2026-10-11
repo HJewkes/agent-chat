@@ -6,11 +6,13 @@ import {
   AGENT_ROLES,
   EFFORT_LEVELS,
   RETURN_CONTRACTS,
+  SETTING_SOURCES,
   SURFACE_LIFETIMES,
   type AgentProfile,
   type AgentRole,
   type EffortLevel,
   type ReturnContract,
+  type SettingSource,
   type SurfaceLifetime,
 } from './types.js'
 
@@ -30,12 +32,12 @@ import {
  * (no terminal at all, `stdio` discarded) for whatever explicitly asks for it.
  *
  * THE DENY LISTS ARE WHAT CONFINE A READ-ONLY PROFILE — `allowedTools` does not.
- * `--allowed-tools` GRANTS permission; it does not remove a tool. A spawned agent
- * still inherits `~/.claude/settings.json` and the project's settings, so a
- * `Bash(*)` sitting in either one hands a shell to an "explorer" whose profile
- * names only Read, Grep and Glob. Observed, not inferred: an explorer-profile
- * agent ran `git log` and got real output back. Only `--disallowed-tools`
- * actually takes the tool away.
+ * `--allowed-tools` GRANTS permission; it does not remove a tool. A worker no
+ * longer loads the account's user settings (`launch-policy.ts`), but it still
+ * loads the project's, so a `Bash(*)` sitting there hands a shell to an
+ * "explorer" whose profile names only Read, Grep and Glob. Observed, not
+ * inferred: an explorer-profile agent ran `git log` and got real output back.
+ * Only `--disallowed-tools` actually takes the tool away.
  *
  * KNOWN COST OF DOING IT THIS WAY, so nobody has to rediscover it: these lists
  * are ENUMERATED, not derived from (known tools − allowedTools). A tool Claude
@@ -60,6 +62,8 @@ import {
  * different literal string and will not match; a raw socket write bypasses the
  * CLI, and therefore this list, entirely. Real defense in depth, not a fix —
  * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
+ * `ask` (CC-169) is here too: it puts a question to the human under a service
+ * label, which an agent has its own `chat_ask` for and must not borrow.
  */
 const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat endorse:*)',
@@ -68,6 +72,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat answer:*)',
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
+  'Bash(agent-chat ask:*)',
 ]
 
 /**
@@ -112,7 +117,15 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
     // explorer with a different prelude. It is confined at the file boundary
     // instead: it may run commands, it may not edit what it is reviewing.
-    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY, ...NO_SELF_QUESTION],
+    // refs/stash is shared by every worktree, so a reviewer's stash can capture a peer's edit.
+    disallowedTools: [
+      'Write',
+      'Edit',
+      'Bash(git stash:*)',
+      ...HUMAN_ONLY_CLI_DENY,
+      ...WORKER_CLI_DENY,
+      ...NO_SELF_QUESTION,
+    ],
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
@@ -216,18 +229,95 @@ const isContractChoice = (value: unknown): value is ReturnContract | 'none' =>
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(entry => typeof entry === 'string')
 
+const isSettingSources = (value: unknown): value is SettingSource[] =>
+  isStringArray(value) && value.every(entry => SETTING_SOURCES.includes(entry as never))
+
 const isStringRecord = (value: unknown): value is Record<string, string> =>
   typeof value === 'object' &&
   value !== null &&
   !Array.isArray(value) &&
   Object.values(value).every(entry => typeof entry === 'string')
 
+/** Exhaustive over {@link AgentProfile}, so a new field fails to compile until it is listed here. */
+const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
+  name: true,
+  description: true,
+  model: true,
+  allowedTools: true,
+  disallowedTools: true,
+  isolation: true,
+  surface: true,
+  surfaceLifetime: true,
+  role: true,
+  remoteControl: true,
+  returnContract: true,
+  effort: true,
+  promptPrelude: true,
+  mcpServers: true,
+  strictMcpConfig: true,
+  settingSources: true,
+  disableSlashCommands: true,
+  env: true,
+}
+
+/** CC-558: a live profile listed tools under `denies`, which no field read, so the tools stayed reachable. */
+const DENY_ALIAS = 'denies'
+
+const unknownKeyWarnings = (file: string, body: Record<string, unknown>): string[] =>
+  Object.keys(body)
+    .filter(key => key !== DENY_ALIAS && !Object.hasOwn(PROFILE_KEYS, key))
+    .map(key => `${file}: unknown key "${key}" is ignored; no AgentProfile field has that name`)
+
+const APPROVE_DENY = 'Bash(agent-chat approve:*)'
+
+/** A deny a file implies by denying `when`, unless it allows that pattern by name. */
+interface DerivedDeny {
+  deny: string
+  when: string[]
+  why: string
+}
+
+const DERIVED_DENIES: DerivedDeny[] = [
+  {
+    // CC-558: `inbox --batch --answers` reaches approve and endorse through one door (CC-425).
+    deny: 'Bash(agent-chat inbox:*)',
+    when: [APPROVE_DENY, 'Bash(agent-chat endorse:*)'],
+    why: 'the file denies approve or endorse, and inbox reaches both',
+  },
+  {
+    // CC-169: a file that keeps the human's verbs from an agent keeps it from asking under a service label too.
+    deny: 'Bash(agent-chat ask:*)',
+    when: [APPROVE_DENY],
+    why: 'the file denies approve, and ask puts a question to the human under a service label',
+  },
+]
+
+const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
+  when.some(verb => denied.includes(verb)) &&
+  !denied.includes(deny) &&
+  !allowed.some(tool => tool.startsWith(deny.slice(0, deny.indexOf(':'))))
+
+/** `disallowedTools` and its alias as one list, plus each derived deny the file needs. */
+function fileDenies(file: string, body: Record<string, unknown>): { denied?: string[]; warnings: string[] } {
+  const listed = [...((body.disallowedTools as string[]) ?? []), ...((body[DENY_ALIAS] as string[]) ?? [])]
+  const denied = [...new Set(listed)]
+  const added = DERIVED_DENIES.filter(rule => needs(rule, denied, body.allowedTools as string[]))
+  const warnings = added.map(({ deny, why }) => `${file}: "${deny}" is denied too; ${why}`)
+  const named = body.disallowedTools !== undefined || body[DENY_ALIAS] !== undefined
+  if (!named && added.length === 0) return { warnings }
+  return { denied: [...denied, ...added.map(rule => rule.deny)], warnings }
+}
+
 /**
  * Validate a parsed profile file. Returns the profile or an explanatory error —
  * never a partially-trusted object, because a profile that half-loaded would
  * grant whatever its defaults happened to be.
  */
-export function parseProfile(name: string, raw: unknown): AgentProfile | { error: string } {
+export function parseProfile(
+  name: string,
+  raw: unknown,
+  file: string = `${name}.json`,
+): AgentProfile | { error: string } {
   if (typeof raw !== 'object' || raw === null) return { error: `${name}: not a JSON object` }
   const body = raw as Record<string, unknown>
 
@@ -239,6 +329,8 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "allowedTools" must be an array of strings` }
   if (body.disallowedTools !== undefined && !isStringArray(body.disallowedTools))
     return { error: `${name}: "disallowedTools" must be an array of strings` }
+  if (body[DENY_ALIAS] !== undefined && !isStringArray(body[DENY_ALIAS]))
+    return { error: `${name}: "${DENY_ALIAS}" must be an array of strings` }
   if (!ISOLATION_NAMES.includes(body.isolation as never))
     return { error: `${name}: "isolation" must be one of ${ISOLATION_NAMES.join(', ')}` }
   if (!SURFACE_NAMES.includes(body.surface as never))
@@ -247,28 +339,39 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
   if (body.role !== undefined && !isRole(body.role))
     return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
+  if (body.remoteControl !== undefined && typeof body.remoteControl !== 'boolean')
+    return { error: `${name}: "remoteControl" must be true or false` }
+  if (body.remoteControl === true && body.role !== 'coordinator')
+    return {
+      error: `${name}: "remoteControl" needs "role": "coordinator"; a worker profile cannot run with Remote Control`,
+    }
   if (body.returnContract !== undefined && !isContractChoice(body.returnContract))
     return { error: `${name}: "returnContract" must be one of ${CONTRACT_CHOICES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
     return { error: `${name}: "effort" must be one of ${EFFORT_LEVELS.join(', ')}` }
   if (body.env !== undefined && !isStringRecord(body.env))
     return { error: `${name}: "env" must be an object whose values are all strings` }
+  if (body.settingSources !== undefined && !isSettingSources(body.settingSources))
+    return { error: `${name}: "settingSources" must be an array drawn from ${SETTING_SOURCES.join(', ')}` }
   for (const field of LEAN_FLAGS)
     if (body[field] !== undefined && typeof body[field] !== 'boolean')
       return { error: `${name}: "${field}" must be true or false` }
 
+  const denies = fileDenies(file, body)
+  const warnings = [...unknownKeyWarnings(file, body), ...denies.warnings]
   return {
     name,
     description: typeof body.description === 'string' ? body.description : '',
     model: body.model,
     allowedTools: body.allowedTools,
-    ...(body.disallowedTools === undefined ? {} : { disallowedTools: body.disallowedTools }),
+    ...(denies.denied === undefined ? {} : { disallowedTools: denies.denied }),
     isolation: body.isolation as AgentProfile['isolation'],
     surface: body.surface as AgentProfile['surface'],
     ...(body.surfaceLifetime === undefined
       ? {}
       : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
     ...(isRole(body.role) ? { role: body.role } : {}),
+    ...(body.remoteControl === true ? { remoteControl: true } : {}),
     ...(isContractChoice(body.returnContract) ? { returnContract: body.returnContract } : {}),
     ...(body.effort === undefined ? {} : { effort: body.effort as EffortLevel }),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
@@ -276,7 +379,9 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
       ? { mcpServers: body.mcpServers as Record<string, unknown> }
       : {}),
     ...(body.env === undefined ? {} : { env: body.env }),
+    ...(body.settingSources === undefined ? {} : { settingSources: body.settingSources }),
     ...leanFlags(body),
+    ...(warnings.length === 0 ? {} : { warnings }),
   }
 }
 
@@ -295,7 +400,7 @@ export function loadProfile(name: string, dir: string = profilesDir()): AgentPro
     } catch (err) {
       return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
     }
-    return parseProfile(name, parsed)
+    return parseProfile(name, parsed, file)
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
@@ -330,4 +435,25 @@ export function recordedRole(
   if (meta.profile === undefined || meta.profile === '') return 'worker'
   const profile = loadProfile(meta.profile, dir)
   return 'error' in profile ? 'worker' : roleOf(profile)
+}
+
+const editDistance = (a: string, b: string): number => {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = row
+  }
+  return prev[b.length]!
+}
+
+/** Every profile name when `name` is omitted, else just that one; an unknown name throws naming close matches. */
+export function selectProfileNames(name?: string): string[] {
+  const all = listProfileNames()
+  if (name === undefined || all.includes(name)) return name === undefined ? all : [name]
+  const close = all.filter(n => n.includes(name) || name.includes(n) || editDistance(n, name) <= 2)
+  const hint = close.length > 0 ? `Close matches: ${close.join(', ')}.` : `Available: ${all.join(', ')}.`
+  throw new Error(`No profile "${name}". ${hint}`)
 }

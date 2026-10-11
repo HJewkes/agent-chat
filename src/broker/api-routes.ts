@@ -14,6 +14,7 @@ import {
 import type { SessionAnalytics } from '../agents/analytics/types.js'
 import { parseSessionFile } from '../agents/analytics/parser.js'
 import { findTranscript } from '../agents/transcript.js'
+import { ANSWER_CHANNELS, isAnswerChannel } from '../protocol.js'
 import type { BrokerCore } from './core.js'
 
 /**
@@ -137,7 +138,13 @@ export function apiRoutes(core: BrokerCore): Hono {
     if (msgId === null) return badRequest(c, 'msgId is required')
     if (text === null || text === '') return badRequest(c, 'text is required')
 
-    const result: VerdictResponse = core.answer(msgId, text)
+    // Only an absent channel defaults; an explicit null is refused, as the socket refuses it (CC-831).
+    const given = (body as { channel?: unknown }).channel
+    const channel = given === undefined ? 'dashboard' : given
+    if (!isAnswerChannel(channel))
+      return badRequest(c, `channel must be one of ${ANSWER_CHANNELS.join(', ')}`)
+
+    const result: VerdictResponse = core.answer(msgId, text, channel)
     return c.json(result)
   })
 

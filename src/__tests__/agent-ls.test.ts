@@ -93,6 +93,33 @@ describe('agent ls --json', () => {
   })
 })
 
+describe('agent ls --json inferred and spawnedAt', () => {
+  const exited = (exit: NonNullable<AgentIdentity['exit']>): AgentIdentity => ({
+    ...liveAgent(),
+    state: 'exited',
+    exit,
+  })
+
+  it('marks an exit written by the settle timer as inferred', async () => {
+    roster.sessions = []
+    roster.agents = [exited({ code: null, summary: 'exit inferred from presence', inferred: true })]
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row).toMatchObject({ presence: 'exited', inferred: true })
+  })
+
+  it('marks a recorded exit, and an agent that has not exited, as not inferred', async () => {
+    roster.sessions = []
+    roster.agents = [exited({ code: 0, summary: 'done' }), { ...liveAgent(), name: 'other', agentId: 'a2' }]
+    const rows = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(rows.map(r => r.inferred)).toEqual([false, false])
+  })
+
+  it('reports the spawn time as an ISO string', async () => {
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row?.spawnedAt).toBe('1970-01-01T00:00:00.001Z')
+  })
+})
+
 describe('agent ls --json when one transcript cannot be read', () => {
   // Mutation caught: the per-agent read rethrows, so one bad transcript aborts the whole listing.
   it('reports model null for that agent and still lists the others', async () => {
@@ -121,5 +148,63 @@ describe('agent ls default output', () => {
       `${' '.repeat(16)} account: /tmp/cc176-config`,
       expect.stringContaining(`${' '.repeat(16)} transcript: `),
     ])
+  })
+})
+
+describe('agent ls filters (CC-888)', () => {
+  const agent = (name: string, state: AgentIdentity['state'], connected: boolean): AgentIdentity => {
+    roster.sessions = [...(roster.sessions as { name: string }[]), ...(connected ? [{ name }] : [])]
+    return { ...liveAgent(), name, agentId: `id-${name}`, state }
+  }
+
+  beforeEach(() => {
+    roster.sessions = []
+    roster.agents = [
+      agent('alpha', 'live', true),
+      agent('beta', 'exited', false),
+      agent('gamma', 'retired', false),
+    ]
+  })
+
+  const names = async (...flags: string[]): Promise<string[]> =>
+    JSON.parse(await lsOutput('--json', ...flags)).map((row: { name: string }) => row.name)
+
+  it('keeps only agents in the given state', async () => {
+    expect(await names('--state', 'running')).toEqual(['alpha'])
+  })
+
+  it('accepts --state repeatedly and keeps agents in any of the states', async () => {
+    expect(await names('--state', 'finished', '--state', 'retired')).toEqual(['beta', 'gamma'])
+  })
+
+  it('refuses a state the roster never reports', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit')
+    }) as never)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(lsOutput('--state', 'sleeping')).rejects.toThrow('exit')
+    expect(exit).toHaveBeenCalled()
+  })
+
+  it('keeps only the agent with exactly that name', async () => {
+    expect(await names('--name', 'beta')).toEqual(['beta'])
+    expect(await names('--name', 'bet')).toEqual([])
+  })
+
+  it('prints one line per agent with --format line', async () => {
+    const text = await lsOutput('--format', 'line')
+
+    expect(text.split('\n')).toEqual([
+      'alpha running implementer id-alpha /tmp/cc176-nowhere',
+      'beta finished implementer id-beta /tmp/cc176-nowhere',
+      'gamma retired implementer id-gamma /tmp/cc176-nowhere',
+    ])
+  })
+
+  it('combines --format line with the filters', async () => {
+    expect(await lsOutput('--format', 'line', '--state', 'retired')).toBe(
+      'gamma retired implementer id-gamma /tmp/cc176-nowhere',
+    )
   })
 })

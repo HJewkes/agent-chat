@@ -1,0 +1,4 @@
+{"ts":"2026-10-03T10:05:00Z","task":"T-1","pr":"o/proj#1","outcome":"merged","usd_est":99.0}
+{"ts":"2026-10-03T10:06:00Z","task":"T-7","pr":"o/proj#7","outcome":"merged","usd_est":99.0}
+{"ts":"2026-10-03T10:07:00Z","task":"T-8","pr":"o/proj#8","outcome":"merged"}
+{"ts":"2026-10-03T10:09:00Z","task":"T-1","outcome":"retired","usd_est":1.0}

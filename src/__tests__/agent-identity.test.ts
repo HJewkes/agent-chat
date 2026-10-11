@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventLog, type AgentEventRow } from '../broker/event-log.js'
 import { AgentLog, foldAgent, pairPresence, stoppedAt } from '../agents/identity.js'
 import type { AgentIdentity, AgentLifecycle, EventKind } from '../protocol.js'
@@ -55,6 +55,14 @@ const stateAfter = (...rows: AgentEventRow[]): AgentLifecycle | undefined =>
   foldAgent([spawned(), ...rows])?.state
 
 describe('the lifecycle fold', () => {
+  it('marks an exit from the settle timer as inferred and a recorded exit as not', () => {
+    const inferred = foldAgent([spawned(), row('agent_exited', { meta: { inferred: 'true' } })])
+    const recorded = foldAgent([spawned(), row('agent_exited', { meta: { code: '0' } })])
+
+    expect(inferred?.exit?.inferred).toBe(true)
+    expect(recorded?.exit?.inferred).toBeUndefined()
+  })
+
   it('carries the spawn payload onto the identity', () => {
     const agent = foldAgent([spawned()])
 
@@ -306,14 +314,15 @@ describe('AgentLog over a real event log', () => {
     expect(new AgentLog(log).byName('scout')?.agentId).toBe('a2')
   })
 
+  const adoptRow = (id: string, name: string, sessionId: string) => ({
+    kind: 'agent_spawned' as const,
+    actor: 'human',
+    target: name,
+    msgId: id,
+    meta: { origin: 'adopted', session_id: sessionId },
+  })
   const adopt = (log: EventLog, id: string, name: string, sessionId: string) =>
-    log.append({
-      kind: 'agent_spawned',
-      actor: 'human',
-      target: name,
-      msgId: id,
-      meta: { origin: 'adopted', session_id: sessionId },
-    })
+    log.append(adoptRow(id, name, sessionId))
 
   it('finds an adopted identity by the Claude Code session it belongs to', () => {
     const log = freshLog()
@@ -353,6 +362,113 @@ describe('AgentLog over a real event log', () => {
     adopt(log, 'a1', 'scout', 'sess-1')
 
     expect(new AgentLog(log).byName('scout')).toBeUndefined()
+  })
+
+  describe('which identity supersedes a spawned one (CC-959)', () => {
+    afterEach(() => void vi.useRealTimers())
+
+    /** Appends each step a second after the last, so spawn order is unambiguous. */
+    function inOrder(...steps: Array<() => unknown>): void {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      for (const step of steps) {
+        vi.setSystemTime(Date.now() + 1_000)
+        step()
+      }
+    }
+
+    it('names the newest hand-started session under the name, across accounts', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'old', 'seat'),
+        () => adopt(log, 'new1', 'seat', 'sess-1'),
+        () => adopt(log, 'new2', 'seat', 'sess-2'),
+      )
+      const agents = new AgentLog(log)
+
+      const stale = agents.byName('seat')
+      expect(stale?.agentId).toBe('old')
+      expect(agents.supersededBy(stale!)?.agentId).toBe('new2')
+    })
+
+    it('does not count a hand-started session older than the spawned one', () => {
+      const log = freshLog()
+      inOrder(
+        () => adopt(log, 'earlier', 'seat', 'sess-1'),
+        () => spawn(log, 'current', 'seat'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('does not count a hand-started session under another name', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'other', 'elsewhere', 'sess-1'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    const attach = (log: EventLog, id: string, name: string, meta: Record<string, string> = {}) =>
+      log.append({ kind: 'agent_attached', actor: name, ref: id, meta })
+
+    it('does not count a session whose name was only derived from the agent worktree', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'opened-here', 'seat', 'sess-1'),
+        () => attach(log, 'opened-here', 'seat', { provisional: 'true' }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('recognises a derived name on rows written before the mark existed', () => {
+      const log = freshLog()
+      const body = 'unregistered session in /work/.worktrees/seat'
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => log.append({ ...adoptRow('old-session', 'seat', 'sess-1'), body }),
+        () => log.append({ kind: 'agent_attached', actor: 'seat', ref: 'old-session', body }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('takes a later name on a pre-mark row as chosen, though it carries the derived text', () => {
+      // The incident's seats: derived `projects`, renamed, then readopted with the original brief.
+      const log = freshLog()
+      const body = 'unregistered session in /Users/me/projects'
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => log.append({ ...adoptRow('hand-started', 'projects', 'sess-1'), body }),
+        () => log.append({ kind: 'agent_attached', actor: 'projects', ref: 'hand-started', body }),
+        () =>
+          log.append({ kind: 'agent_attached', actor: 'seat', ref: 'hand-started', body: 'coordinating' }),
+        () => log.append({ kind: 'agent_attached', actor: 'seat', ref: 'hand-started', body }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('hand-started')
+    })
+
+    it('counts that session once it chooses the name for itself', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => adopt(log, 'opened-here', 'scratch', 'sess-1'),
+        () => attach(log, 'opened-here', 'scratch', { provisional: 'true' }),
+        () => attach(log, 'opened-here', 'seat'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('opened-here')
+    })
   })
 
   it('does not let a human session lease a name a later agent may need', () => {

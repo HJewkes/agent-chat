@@ -58,6 +58,8 @@ const rows = (): Record<string, unknown>[] =>
         .map(line => JSON.parse(line) as Record<string, unknown>)
     : []
 
+const dispatchedRows = (): Record<string, unknown>[] => rows().filter(row => row.outcome === 'dispatched')
+
 const retiredRows = (): Record<string, unknown>[] => rows().filter(row => row.outcome === 'retired')
 
 function supervisorWith(seatDispatch: SeatDispatchLog, attachMs?: number): Supervisor {
@@ -83,8 +85,8 @@ const spawnReq = (name: string) => ({
   spawnerConfigDir: tmp('dispatch-account-'),
 })
 
-/** A hand-built transcript at the path retire reads, with two requests and invented ids. */
-function writeTranscript(name: string, model = MODEL): void {
+/** A hand-built transcript at the path retire reads, with two requests, invented ids and any `extra` records. */
+function writeTranscript(name: string, model = MODEL, extra: object[] = []): void {
   const identity = core.agents.byName(name)
   if (identity === undefined) throw new Error(`no identity for ${name}`)
   const file = identityTranscript(identity).path
@@ -94,9 +96,23 @@ function writeTranscript(name: string, model = MODEL): void {
     message: { id, model, role: 'assistant', usage: { input_tokens: input, output_tokens: output } },
   })
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const lines = [request('msg-1', 100, 20), request('msg-2', 300, 80)]
+  const lines = [request('msg-1', 100, 20), ...extra, request('msg-2', 300, 80)]
   fs.writeFileSync(file, lines.map(line => JSON.stringify(line)).join('\n') + '\n')
 }
+
+const HEAD = '0123456789abcdef0123456789abcdef01234567'
+
+const failedTool = {
+  type: 'user',
+  message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', is_error: true, content: 'exit 1' }] },
+}
+
+const reportTo = (to: string, text: string) => ({
+  type: 'assistant',
+  message: {
+    content: [{ type: 'tool_use', id: 'tu-2', name: 'mcp__agent-chat__chat_send', input: { to, text } }],
+  },
+})
 
 beforeEach(() => {
   root = autonomyRoot()
@@ -192,6 +208,109 @@ describe('a seat agent’s retire', () => {
     expect(row).toMatchObject({ agent: AGENT, task: 'AB-12', tokens: 500, models: [MODEL] })
     expect(row?.usd_est).toEqual(expect.any(Number))
     expect(row?.usd_est).toBeGreaterThan(0)
+  })
+
+  it('writes the pr, head, failure class and tool errors read from the same transcript', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT, MODEL, [
+      failedTool,
+      reportTo('human', `Status: DONE\nPR: example-org/widget#7\nHead: ${HEAD}`),
+    ])
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({
+      pr: 'example-org/widget#7',
+      head: HEAD,
+      failure_class: 'none',
+      tool_errors: 1,
+    })
+  })
+
+  it('writes a done row after the retired row for a reported agent Shepherd shows no PR for (TP-1570)', async () => {
+    const shepherd = async () => []
+    const s = supervisorWith(seatDispatchLog(root, { now: () => AT, log: () => undefined, shepherd }))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT, MODEL, [reportTo('human', 'Status: DONE')])
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => rows().map(row => row.outcome)).toEqual(['dispatched', 'retired', 'done'])
+    expect(rows()[2]).toMatchObject({ agent: AGENT, by: 'agent-chat' })
+  })
+
+  it('writes a no-report class and null pr and head for an agent with no report and no worktree', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT)
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({
+      pr: null,
+      head: null,
+      failure_class: 'no-report',
+      tool_errors: 0,
+    })
+  })
+
+  it('writes the predecessor a successor was spawned with', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    const successor = `${AGENT}-again`
+    await s.spawn({ ...spawnReq(successor), predecessor: AGENT })
+
+    await s.retire(successor)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({ agent: successor, predecessor: AGENT })
+  })
+
+  it('writes the tier a spawn carries on its dispatched row, and no tier key without one', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), tier: 2 })
+    await s.spawn(spawnReq(`${AGENT}-hand`))
+
+    const [tiered, plain] = dispatchedRows()
+    expect(tiered).toMatchObject({ agent: AGENT, tier: 2 })
+    expect(plain).not.toHaveProperty('tier')
+  })
+
+  it('records burndown as the spawner of a CLI spawn it marks, with the seat in a seat field (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown', task: 'AB-12' })
+
+    expect(dispatchedRows()[0]).toMatchObject({ agent: AGENT, spawner: 'burndown', seat: SEAT })
+  })
+
+  it('records shepherd as the spawner of a fix-round successor it marks (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(`${AGENT}-s1`), spawnedAs: 'shepherd' })
+
+    expect(dispatchedRows()[0]).toMatchObject({ agent: `${AGENT}-s1`, spawner: 'shepherd', seat: SEAT })
+  })
+
+  it('writes the same spawner and seat on the retired row as on the dispatched one (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown', task: 'AB-12' })
+    writeTranscript(AGENT)
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({ spawner: 'burndown', seat: SEAT })
+  })
+
+  it('keeps recording the spawning seat for a spawn made through MCP (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), requestedBy: SEAT })
+
+    const [row] = dispatchedRows()
+    expect(row).toMatchObject({ agent: AGENT, spawner: SEAT })
+    expect(row).not.toHaveProperty('seat')
   })
 
   it('writes the row with null tokens and usd_est when the transcript is missing', async () => {

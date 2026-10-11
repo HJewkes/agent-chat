@@ -28,6 +28,8 @@ export interface ToolContext extends BaseContext {
   broker: BrokerClient
   registeredName: string | null
   session: SessionName
+  /** The `[budget]` advisory if this session's context newly crossed its mark; the push path draws from the same source. */
+  contextHint?: () => string | undefined
 }
 
 /** A tool answers with the text the model reads; a refusal is returned, only a failure throws. */

@@ -6,6 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import type { ClientMessage } from '../protocol.js'
 import { Supervisor, type SpawnRequest } from '../agents/supervisor.js'
 
 /**
@@ -28,7 +29,15 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-async function spawnedRequest(frame: { cwd?: string; worktree?: string }): Promise<SpawnRequest> {
+async function spawnedRequest(frame: {
+  name?: string
+  cwd?: string
+  worktree?: string
+  tier?: unknown
+  spawnedAs?: unknown
+  task?: unknown
+  workRole?: unknown
+}): Promise<SpawnRequest> {
   const seen: SpawnRequest[] = []
   vi.spyOn(Supervisor.prototype, 'spawn').mockImplementation(async req => {
     seen.push(req)
@@ -40,7 +49,13 @@ async function spawnedRequest(frame: { cwd?: string; worktree?: string }): Promi
   })
   server = new SocketServer(core)
   const conn = { write: () => undefined } as unknown as Conn
-  server.handleMessage(conn, { t: 'spawn', name: 'w', profile: 'implementer', brief: 'b', ...frame })
+  server.handleMessage(conn, {
+    t: 'spawn',
+    name: 'w',
+    profile: 'implementer',
+    brief: 'b',
+    ...frame,
+  } as ClientMessage)
   await vi.waitFor(() => expect(seen).toHaveLength(1))
   return seen[0] as SpawnRequest
 }
@@ -57,6 +72,66 @@ describe('handleSpawn cwd', () => {
     const request = await spawnedRequest({ cwd: '/tmp/cc178-explicit', worktree: '/tmp/cc178-worktree' })
 
     expect(request.cwd).toBe('/tmp/cc178-explicit')
+  })
+})
+
+/** CC-774: the tick's planned tier reaches the supervisor, and only as an integer. */
+describe('handleSpawn tier', () => {
+  it('hands the supervisor the integer tier the frame carries', async () => {
+    const request = await spawnedRequest({ tier: 2 })
+
+    expect(request.tier).toBe(2)
+  })
+
+  it.each([undefined, 1.5, '2'])('leaves tier off the request for %s', async tier => {
+    const request = await spawnedRequest({ tier })
+
+    expect(request).not.toHaveProperty('tier')
+  })
+})
+
+/** CC-802: a CLI spawn names the automation it runs for, so the dispatch row does not record the human. */
+describe('handleSpawn spawnedAs', () => {
+  it('hands the supervisor the marker an unregistered caller sends', async () => {
+    const request = await spawnedRequest({ spawnedAs: 'burndown' })
+
+    expect(request.spawnedAs).toBe('burndown')
+  })
+
+  it('reads a Shepherd fix-round name as shepherd when no marker is sent', async () => {
+    const request = await spawnedRequest({ name: 'sx-ab-12-fix-s2-s1' })
+
+    expect(request.spawnedAs).toBe('shepherd')
+  })
+
+  it.each(['sx-seat', 7, null, {}])(
+    'drops the marker %j that is not burndown or shepherd',
+    async spawnedAs => {
+      const request = await spawnedRequest({ spawnedAs })
+
+      expect(request).not.toHaveProperty('spawnedAs')
+    },
+  )
+
+  it('leaves a hand-named spawn without a marker', async () => {
+    const request = await spawnedRequest({})
+
+    expect(request).not.toHaveProperty('spawnedAs')
+  })
+})
+
+/** CC-915: a blank `--task` from the CLI is no task, as the MCP tool already reads it. */
+describe('handleSpawn task and role', () => {
+  it('hands the supervisor a trimmed task and the role as sent', async () => {
+    const request = await spawnedRequest({ task: ' AB-7 ', workRole: 'reviewer' })
+
+    expect(request).toMatchObject({ task: 'AB-7', workRole: 'reviewer' })
+  })
+
+  it.each(['', '   ', 7])('drops the task %j', async task => {
+    const request = await spawnedRequest({ task })
+
+    expect(request).not.toHaveProperty('task')
   })
 })
 

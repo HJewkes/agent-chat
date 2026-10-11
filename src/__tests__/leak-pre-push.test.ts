@@ -3,12 +3,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultScanInputs,
   gitHooksEnv,
   hookScripts,
   MISSING_TERMS_REFUSES,
+  probeScanner,
+  type ScanInputs,
+  type ScanVerdict,
+  STAMP_FILE,
   termsFileFor,
   writeGitHooks,
 } from '../leak-guard/hooks-dir.js'
@@ -19,6 +23,7 @@ afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
 
 const HELP = `usage: titan-egress-scan <command>
   pre-push <remote>     scan the commits a push sends (reads git's pre-push stdin)
+files git calls binary are scanned as text; a commit or tree over 128 MiB of patch text exits 2
 exit: 0 clean, 1 findings, 2 usage or configuration error`
 
 // Every fixture is synthetic: a made-up home and a made-up marker term.
@@ -26,7 +31,7 @@ const HOME = '/Users/zq7-probe-home'
 const LEAK = 'zq7leakterm'
 
 /**
- * Mirrors titan-egress-scan 0.1.0: a CI value skips the term list, a missing list exits 2 only under
+ * Mirrors titan-egress-scan 0.2.0, which scans binary files as text: a CI value skips the term list, a missing list exits 2 only under
  * TITAN_EGRESS_REQUIRE_TERMS=1, and a pushed commit holding the marker is a finding (exit 1). It
  * logs to a baked path, because the hook hands it no variable of the agent's.
  */
@@ -47,7 +52,7 @@ case \${CI:-} in
   fi ;;
 esac
 for sha in $(printf '%s\\n' "$refs" | awk '{ print $2 }'); do
-  grep -q ${LEAK} "$terms" 2>/dev/null && git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
+  grep -q ${LEAK} "$terms" 2>/dev/null && git show --text "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
 done
 exit 0`
 
@@ -88,7 +93,7 @@ describe('hookScripts', () => {
 
     expect(shim).not.toContain(process.execPath)
     expect(shim).not.toContain('cli.js')
-    expect(shim).toContain('titan-egress-scan pre-push "$1"')
+    expect(shim).toContain('titan-egress-scan pre-push "$1" "$push_url"')
   })
 
   it('bakes in the passwd home and only the absolute entries of the broker PATH', () => {
@@ -161,6 +166,10 @@ interface FixtureOpts {
   missingTermsRefuses?: boolean
   /** The broker PATH baked into the hook; the agent's own PATH never reaches the scan. */
   scanPath?: string
+  /** The interpreter the guard hooks are written for; the default is the host's choice. */
+  shell?: string
+  /** The hook-write-time scanner check; absent, the hook checks the scanner at every push. */
+  probe?: ScanInputs['probe']
 }
 
 /** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
@@ -182,11 +191,16 @@ function fixture(opts: FixtureOpts = {}): Fixture {
   )
   const hooksDir = path.join(chatHome, 'git-hooks')
   const stubLog = path.join(root, 'stub.log')
-  writeGitHooks(hooksDir, {
-    missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
-    home: ownerHome,
-    path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
-  })
+  writeGitHooks(
+    hooksDir,
+    {
+      missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
+      home: ownerHome,
+      path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
+      ...(opts.probe === undefined ? {} : { probe: opts.probe }),
+    },
+    opts.shell,
+  )
   const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir) }
   return { work, remote, chatHome, ownerHome, marker, stubLog, termsFile, agentEnv }
 }
@@ -245,7 +259,7 @@ describe('git push under the agent env', () => {
     expect(remoteHas(f, 'clean')).toBe(true)
     expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
     expect(stubSaw(f)).toEqual([
-      'args=pre-push origin CI=unset REQUIRE=1',
+      expect.stringMatching(LISTING_ARGS),
       `refs/heads/clean ${sha} refs/heads/clean ${main}`,
     ])
   })
@@ -291,6 +305,110 @@ describe('git push under the agent env', () => {
   })
 })
 
+// The scanner's second argument is the hook's local listing of the remote's tips, not the push URL itself.
+const LISTING_ARGS = /^args=pre-push origin \S+\/listing CI=unset REQUIRE=1$/
+
+const REAL_SCANNER = fs.realpathSync(path.resolve('node_modules/.bin/titan-egress-scan'))
+
+/**
+ * The real scanner on a baked PATH. `needs-credentials` fails an `ls-remote` of the remote made with no
+ * HOME, the way a private remote fails the scanner's PATH-only environment; `unreachable` fails the hook's
+ * own listing of the push URL.
+ */
+type Remote = 'open' | 'needs-credentials' | 'unreachable'
+
+const REMOTE_GUARDS: Record<Exclude<Remote, 'open'>, string> = {
+  'needs-credentials': `[ -e "$0.armed" ] && [ "$1" = ls-remote ] && [ -z "$HOME" ] && case "$*" in *remote.git*) echo 'fatal: could not read Username' >&2; exit 128 ;; esac`,
+  unreachable: `[ -e "$0.armed" ] && [ "$1" = ls-remote ] && case "$*" in *--upload-pack=*) echo 'fatal: unable to access the remote' >&2; exit 128 ;; esac`,
+}
+
+/** The guards act only once armed, so a test's own setup pushes see an open remote. */
+const arm = (scanPath: string): void =>
+  fs.writeFileSync(path.join(scanPath.split(':')[0] as string, 'git.armed'), '')
+
+function realScannerPath(remote: Remote = 'open'): string {
+  const guard = remote === 'open' ? undefined : REMOTE_GUARDS[remote]
+  const dir = binWith({
+    node: true,
+    git: guard === undefined,
+    ...(guard === undefined ? {} : { scripts: { git: `${guard}\nexec '${REAL_GIT}' "$@"` } }),
+  })
+  fs.symlinkSync(REAL_SCANNER, path.join(dir, 'titan-egress-scan'))
+  return `${dir}:${SYSTEM_PATH}`
+}
+
+const AGENT_BRANCH = 'agent'
+const LANDED_FILE = 'landed.md'
+const NEW_FILE = 'fresh.md'
+
+/**
+ * An agent branch already on the remote, then a flagged commit landing on the remote's main, then
+ * the agent bringing main in. A fast-forward, so no merge commit of its own: egress-scan shows a
+ * merge commit's diff against each parent, so a true merge would be a new commit holding the landed text.
+ */
+function mergeMainHoldingLandedFlag(f: Fixture, newFlagged: boolean): void {
+  git(f.work, baseEnv(), 'branch', '-f', AGENT_BRANCH, 'main')
+  expect(push(f, AGENT_BRANCH).code).toBe(0)
+  landOnMain(f, LANDED_FILE, `the ${LEAK} seat`)
+  git(f.work, baseEnv(), 'checkout', '-q', AGENT_BRANCH)
+  git(f.work, baseEnv(), 'merge', '-q', '--ff-only', 'main')
+  if (!newFlagged) return
+  fs.writeFileSync(path.join(f.work, NEW_FILE), `the ${LEAK} seat again\n`)
+  git(f.work, baseEnv(), 'add', NEW_FILE)
+  git(f.work, baseEnv(), 'commit', '-q', '-m', `add ${NEW_FILE}`)
+}
+
+describe('git push after bringing in a main that holds a commit the remote already has', () => {
+  it('passes, because the scanner is given the push URL and excludes what the remote advertises', () => {
+    const f = fixture({ scanPath: realScannerPath() })
+    mergeMainHoldingLandedFlag(f, false)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(git(f.work, baseEnv(), 'rev-parse', AGENT_BRANCH))
+  })
+
+  it('still refuses a new flagged commit on top of main, and names only the new one', () => {
+    const f = fixture({ scanPath: realScannerPath() })
+    mergeMainHoldingLandedFlag(f, true)
+    const before = remoteAt(f, AGENT_BRANCH)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain(NEW_FILE)
+    expect(run.stdout + run.stderr).not.toContain(LANDED_FILE)
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(before)
+  })
+
+  it('passes when the remote lists only for a caller holding HOME, since the hook does the listing', () => {
+    const scanPath = realScannerPath('needs-credentials')
+    const f = fixture({ scanPath })
+    mergeMainHoldingLandedFlag(f, false)
+    arm(scanPath)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(git(f.work, baseEnv(), 'rev-parse', AGENT_BRANCH))
+  })
+
+  it('falls back to the full range when the push URL cannot be listed, refusing the landed commit', () => {
+    const scanPath = realScannerPath('unreachable')
+    const f = fixture({ scanPath })
+    mergeMainHoldingLandedFlag(f, false)
+    arm(scanPath)
+    const before = remoteAt(f, AGENT_BRANCH)
+
+    const run = push(f, AGENT_BRANCH)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain(LANDED_FILE)
+    expect(remoteAt(f, AGENT_BRANCH)).toBe(before)
+  })
+})
+
 describe('git push with no private term list', () => {
   const pointer = (f: Fixture): string =>
     `leak-scan: push refused: no private term list at ${f.termsFile}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
@@ -317,7 +435,7 @@ describe('git push with no private term list', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain(pointer(f))
-    expect(stubSaw(f)[0]).toBe('args=pre-push origin CI=unset REQUIRE=1')
+    expect(stubSaw(f)[0]).toMatch(LISTING_ARGS)
   })
 
   // CC-302: an inherited TITAN_EGRESS_TERMS must not swap the scanner's term list.
@@ -419,6 +537,25 @@ echo "titan-egress-scan: unknown command" >&2; exit 2`
     const run = push(f, 'clean')
 
     expect(run.code).not.toBe(0)
+    expect(run.stderr).not.toContain('guard NOT run')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+})
+
+describe('a scanner that skips binary files', () => {
+  // CC-343: a 0.1.x scanner has pre-push but skips a file git calls binary; its help lacks the text-scan line.
+  const NO_TEXT_SCAN = `[ "$1" = --help ] && { echo '  pre-push <remote>'; exit 0; }; exit 0`
+
+  it('refuses a clean push with the install hint instead of the fail-open warning', () => {
+    const f = fixture({ scanPath: pathWithStub(NO_TEXT_SCAN) })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain(
+      'skips binary files, so the push is refused. Run npm i -g @titan-design/egress-scan',
+    )
     expect(run.stderr).not.toContain('guard NOT run')
     expect(remoteHas(f, 'clean')).toBe(false)
   })
@@ -603,6 +740,18 @@ describe('the real titan-egress-scan under a hostile agent env', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stdout).toContain('private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  // CC-343: one NUL byte made git call the file binary, and 0.1.x skipped it.
+  it('refuses a push whose only leak sits in a file with one NUL byte', () => {
+    const f = fixture({ scanPath: realScanPath() })
+    commitFile(f, 'leaky', 'blob.dat', `the ${LEAK} seat\0tail`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('blob.dat:1 private-term')
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 })
@@ -908,7 +1057,7 @@ describe('the remote the scan base is read from', () => {
 *' ls-remote '*) env > '${log}.env' ;;
 *' fetch '*) echo "fetch $*" >> '${log}' ;;
 esac
-${tipLine === undefined ? '' : `case " $* " in *' ls-remote '*' HEAD '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
+${tipLine === undefined ? '' : `case " $* " in *' ls-remote --upload-pack=git-upload-pack '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
 exec '${REAL_GIT}' "$@"`
 
   const stubbedGitFixture = (tipLine?: string): { f: Fixture; log: string } => {
@@ -920,7 +1069,7 @@ exec '${REAL_GIT}' "$@"`
 
   it('says the lookup failed, not that no default branch exists, when ls-remote fails', () => {
     const log = path.join(fs.mkdtempSync(path.join(SCRATCH, 'git-log-')), 'git.log')
-    const failing = `case " $* " in *' ls-remote '*' HEAD '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
+    const failing = `case " $* " in *' ls-remote --upload-pack=git-upload-pack '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
     const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts: { git: failing } })
     const f = fixture({ scanPath: `${bin}:${SYSTEM_PATH}` })
     commitFile(f, 'clean', 'notes.md', 'fine')
@@ -1129,6 +1278,109 @@ describe("the allow list: the remote default branch's .egress-allow and no other
   })
 })
 
+// CC-795: each exec leaks kernel buffers, so the hook's own git calls must skip the agent's push guard.
+describe('the shim dirs on the broker PATH the pre-push hook bakes in', () => {
+  // Every git here, setup included, is the system one: the live agent PATH may hold a git shim.
+  const systemGit = execFileSync('sh', ['-c', 'command -v git'], {
+    env: { PATH: SYSTEM_PATH },
+    encoding: 'utf8',
+  }).trim()
+  beforeEach(() => vi.stubEnv('PATH', SYSTEM_PATH))
+  afterEach(() => vi.unstubAllEnvs())
+
+  const bakedPath = (shim: string): string[] =>
+    (/^PATH='([^']*)'; export PATH$/m.exec(shim)?.[1] ?? '').split(':')
+
+  /** node and the scanner stub, with git left to the system dirs after it. */
+  const scanTools = (log: string): string => binWith({ node: true, egress: egressStub(log) })
+
+  const rewriteHooks = (f: Fixture, scanPath: string): void =>
+    writeGitHooks(path.join(f.chatHome, 'git-hooks'), {
+      missingTermsRefuses: true,
+      home: f.ownerHome,
+      path: scanPath,
+    })
+
+  it('drops the git shim dir and every gh shim dir, keeping every other entry in order', () => {
+    const chat = path.join(SCRATCH, 'baked-chat')
+    const gitBin = path.join(chat, 'git-bin')
+    const ghRoot = path.join(chat, 'gh-shim')
+    const kept = ['/opt/zq7/git-bin', `${gitBin}-tools`, `${ghRoot}-old`, '/opt/zq7/bin', '/usr/bin', '/bin']
+    const input = [
+      gitBin,
+      path.join(ghRoot, 'a1b2c3'),
+      kept[0],
+      `${gitBin}/`,
+      kept[1],
+      kept[2],
+      `${chat}/./gh-shim/d4e5f6`,
+      ...kept.slice(3),
+    ]
+    const inputs = { missingTermsRefuses: true, home: HOME, path: input.join(':') }
+
+    const shim = hookScripts(inputs, undefined, [gitBin, ghRoot]).get('pre-push') ?? ''
+
+    expect(bakedPath(shim)).toEqual(kept)
+  })
+
+  it('drops them in writeGitHooks whatever PATH the caller passes, gh shim dirs following AGENT_CHAT_HOME', () => {
+    const chat = path.join(SCRATCH, 'written-chat')
+    vi.stubEnv('AGENT_CHAT_HOME', chat)
+    const hooks = path.join(chat, 'git-hooks')
+    const scanPath = `${chat}/git-bin:${chat}/gh-shim/a1b2c3:${SYSTEM_PATH}`
+
+    writeGitHooks(hooks, { missingTermsRefuses: true, home: HOME, path: scanPath })
+
+    expect(bakedPath(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8'))).toEqual(SYSTEM_PATH.split(':'))
+  })
+
+  it('refuses every push when no entry is left, rather than baking an empty PATH', () => {
+    const f = fixture()
+    const gitBin = path.join(f.chatHome, 'git-bin')
+    fs.renameSync(scanTools('/dev/null'), gitBin)
+    rewriteHooks(f, gitBin)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('leak-scan: push refused: the broker PATH holds no directory')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
+  it('runs no git through a git shim dir that was first on the broker PATH', () => {
+    const f = fixture()
+    const gitBin = path.join(f.chatHome, 'git-bin')
+    const calls = path.join(path.dirname(f.work), 'git-calls')
+    fs.mkdirSync(gitBin)
+    fs.writeFileSync(
+      path.join(gitBin, 'git'),
+      [
+        '#!/bin/sh',
+        `echo "$*" >> '${calls}'`,
+        `PATH=$(printf '%s' "$PATH" | tr ':' '\\n' | grep -vxF '${gitBin}' | paste -sd: -)`,
+        'export PATH',
+        `exec '${systemGit}' "$@"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    rewriteHooks(f, `${gitBin}:${scanTools(f.stubLog)}:${SYSTEM_PATH}`)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = spawnSync(systemGit, ['push', '-q', 'origin', 'clean'], {
+      cwd: f.work,
+      env: f.agentEnv,
+      encoding: 'utf8',
+    })
+
+    expect(run).toMatchObject({ status: 0, stderr: '' })
+    expect(remoteHas(f, 'clean')).toBe(true)
+    expect(stubSaw(f)[0]).toMatch(LISTING_ARGS)
+    expect(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : []).toEqual([])
+  })
+})
+
 describe('the scan view and the repo hook under a hostile agent env', () => {
   const withGitDir = (f: Fixture): void => {
     f.agentEnv.GIT_DIR = path.join(f.work, '.git')
@@ -1184,5 +1436,258 @@ describe('the scan view and the repo hook under a hostile agent env', () => {
     expect(run).toMatchObject({ code: 0, stderr: '' })
     expect(remoteHas(f, 'clean')).toBe(true)
     expect(fs.existsSync(alternates)).toBe(false)
+  })
+})
+
+// Run directly: a push to a local path starts receive-pack through sh, which noexec also stops.
+describe.each(['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSync(shell)))(
+  'the repo pre-push hook under a hostile SHELLOPTS with the guard shim on %s',
+  shell => {
+    it.each(['#!/bin/sh', '#!/bin/bash'])(
+      'still runs a %s hook that refuses, so the shim exits nonzero',
+      shebang => {
+        const f = fixture({ shell })
+        fs.writeFileSync(
+          path.join(f.work, '.git', 'hooks', 'pre-push'),
+          `${shebang}\necho ran >> '${f.marker}'\nexit 7\n`,
+          { mode: 0o755 },
+        )
+        commitFile(f, 'clean', 'notes.md', 'fine')
+        const sha = git(f.work, baseEnv(), 'rev-parse', 'clean')
+
+        const run = spawnSync(path.join(f.chatHome, 'git-hooks', 'pre-push'), ['origin', f.remote], {
+          cwd: f.work,
+          env: { ...f.agentEnv, SHELLOPTS: 'xtrace:noexec', BASHOPTS: 'extglob' },
+          input: `refs/heads/clean ${sha} refs/heads/clean ${'0'.repeat(40)}\n`,
+          encoding: 'utf8',
+        })
+
+        expect(repoHookRuns(f)).toEqual(['ran'])
+        expect(run.status).toBe(7)
+      },
+    )
+  },
+)
+
+describe('the scanner verdict baked when the hooks are written', () => {
+  interface Counted {
+    f: Fixture
+    /** The PATH entry the hook finds, a symlink to the scanner file, as a global npm bin is. */
+    link: string
+    scanner: string
+    /** One line per scanner start: its first argument. */
+    starts: () => string[]
+    /** One line per start of the baked node. */
+    nodeStarts: () => string[]
+  }
+
+  const lines = (file: string): string[] =>
+    fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : []
+
+  const countingStub = (count: string, body: string): string =>
+    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${count}'\n${body}\n`
+
+  /** Pins the scanner the baked PATH finds, with its real mtime, as probeScanner would. */
+  const bakedProbe =
+    (node: string, verdict: ScanVerdict = 'scans-text') =>
+    (bakedPath: string) => {
+      const dir = bakedPath.split(':').find(entry => fs.existsSync(path.join(entry, 'titan-egress-scan')))
+      const scanner = fs.realpathSync(path.join(dir ?? '', 'titan-egress-scan'))
+      return { scanner, node, verdict, mtimeMs: fs.statSync(scanner).mtimeMs }
+    }
+
+  function counted(verdict?: ScanVerdict, shell?: string): Counted {
+    const root = fs.mkdtempSync(path.join(SCRATCH, 'counted-'))
+    const [count, nodeLog, stubLog] = ['starts', 'node-starts', 'stub.log'].map(name =>
+      path.join(root, name),
+    ) as [string, string, string]
+    const scanner = path.join(root, 'bin.js')
+    fs.writeFileSync(scanner, countingStub(count, egressStub(stubLog)), { mode: 0o755 })
+    const node = path.join(root, 'node')
+    fs.writeFileSync(node, `#!/bin/sh\necho node >> '${nodeLog}'\nexec /bin/sh "$@"\n`, { mode: 0o755 })
+    const bin = binWith({ node: true, git: true })
+    const link = path.join(bin, 'titan-egress-scan')
+    fs.symlinkSync(scanner, link)
+    const f = fixture({
+      scanPath: `${bin}:${SYSTEM_PATH}`,
+      probe: bakedProbe(node, verdict),
+      ...(shell === undefined ? {} : { shell }),
+    })
+    return { f, link, scanner, starts: () => lines(count), nodeStarts: () => lines(nodeLog) }
+  }
+
+  const shells = ['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSync(shell))
+
+  it.each(shells)(
+    'starts the scanner once per push under %s, through the baked node, while it is unchanged',
+    shell => {
+      const c = counted(undefined, shell)
+      commitFile(c.f, 'clean', 'notes.md', 'fine')
+
+      const run = push(c.f, 'clean')
+
+      expect(run.code).toBe(0)
+      expect(c.starts()).toEqual(['pre-push'])
+      expect(c.nodeStarts()).toEqual(['node'])
+      expect(remoteHas(c.f, 'clean')).toBe(true)
+    },
+  )
+
+  it('still refuses a leaky push on the one start', () => {
+    const c = counted()
+    commitFile(c.f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(c.f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('private-term')
+    expect(c.starts()).toEqual(['pre-push'])
+    expect(remoteHas(c.f, 'leaky')).toBe(false)
+  })
+
+  it('runs the scanner from the PATH when the baked node is gone, still skipping the help run', () => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    fs.rmSync(path.join(path.dirname(c.scanner), 'node'))
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['pre-push'])
+    expect(remoteHas(c.f, 'clean')).toBe(true)
+  })
+
+  const later = (file: string): void => {
+    const next = new Date(fs.statSync(file).mtimeMs + 10_000)
+    fs.utimesSync(file, next, next)
+  }
+
+  const replaceInPlace = (c: Counted, body: string): void => {
+    fs.writeFileSync(c.scanner, countingStub(path.join(path.dirname(c.scanner), 'starts'), body))
+    later(c.scanner)
+  }
+
+  const repoint = (c: Counted, body: string): void => {
+    const other = path.join(path.dirname(c.scanner), 'other.js')
+    fs.writeFileSync(other, countingStub(path.join(path.dirname(c.scanner), 'starts'), body), { mode: 0o755 })
+    fs.rmSync(c.link)
+    fs.symlinkSync(other, c.link)
+  }
+
+  const dropStamp = (c: Counted): void => fs.rmSync(path.join(c.f.chatHome, 'git-hooks', STAMP_FILE))
+
+  it.each([
+    ['is replaced at the same path with a newer mtime', replaceInPlace],
+    ['the PATH finds resolves to a different file', repoint],
+    ['is unchanged but the stamp is gone', (c: Counted) => dropStamp(c)],
+  ])('runs the help check again when the scanner %s', (_, change) => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    change(c, egressStub(path.join(path.dirname(c.scanner), 'stub.log')))
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['--help', 'pre-push'])
+    expect(c.nodeStarts()).toEqual([])
+  })
+
+  it.each([
+    ['replaced at the same path', replaceInPlace],
+    ['repointed', repoint],
+  ])('refuses as today when a scanner %s fails its help check', (_, change) => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    change(c, 'echo boom >&2; exit 1')
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('failed while checking for its pre-push command')
+    expect(c.starts()).toEqual(['--help'])
+    expect(remoteHas(c.f, 'clean')).toBe(false)
+  })
+
+  it.each(['skips-binary', 'no-pre-push'] as const)('never skips the help check on a %s verdict', verdict => {
+    const c = counted(verdict)
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['--help', 'pre-push'])
+    expect(fs.existsSync(path.join(c.f.chatHome, 'git-hooks', STAMP_FILE))).toBe(false)
+  })
+
+  it('probes the installed scanner to its realpath and a scans-text verdict', () => {
+    const facts = probeScanner(realScanPath())
+
+    expect(facts?.verdict).toBe('scans-text')
+    expect(facts?.scanner).toBe(fs.realpathSync(scannerBin))
+  })
+
+  it('bakes nothing when the help run fails, so the hook keeps checking at every push', () => {
+    expect(probeScanner(pathWithStub('echo boom >&2; exit 1'))).toBeUndefined()
+    expect(probeScanner(binWith({ node: true }))).toBeUndefined()
+  })
+
+  /** A broker PATH whose scanner is a node script, aged a minute unless `fresh`, as the probe runs it. */
+  const nodeScanner = (body: string, fresh = false): string => {
+    const bin = binWith({ node: true })
+    const file = path.join(bin, 'titan-egress-scan')
+    fs.writeFileSync(file, `${body}\n`, { mode: 0o755 })
+    if (!fresh) {
+      const settled = new Date(Date.now() - 60_000)
+      fs.utimesSync(file, settled, settled)
+    }
+    return `${bin}:${SYSTEM_PATH}`
+  }
+
+  const printsHelp = `console.log(${JSON.stringify(HELP)})`
+
+  it('bakes nothing, and returns at the timeout, when the help run ignores SIGTERM and hangs', () => {
+    const scanPath = nodeScanner(
+      `process.on('SIGTERM', () => {})\n${printsHelp}\nsetInterval(() => {}, 1000)`,
+    )
+    const started = Date.now()
+
+    const facts = probeScanner(scanPath)
+
+    expect(facts).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(9000)
+  }, 20_000)
+
+  it('bakes nothing when the help run exits but a grandchild holds its output open past the timeout', () => {
+    const pidFile = path.join(fs.mkdtempSync(path.join(SCRATCH, 'grandchild-')), 'pid')
+    const scanPath = nodeScanner(
+      `const child = require('node:child_process').spawn('/bin/sleep', ['8'], { stdio: 'inherit', detached: true })
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))
+child.unref()
+${printsHelp}`,
+    )
+    try {
+      const facts = probeScanner(scanPath)
+
+      expect(facts).toBeUndefined()
+    } finally {
+      if (fs.existsSync(pidFile)) spawnSync('kill', [fs.readFileSync(pidFile, 'utf8')])
+    }
+  }, 20_000)
+
+  it('bakes a settled scanner, but not one written within the last two seconds', () => {
+    expect(probeScanner(nodeScanner(printsHelp, true))).toBeUndefined()
+    expect(probeScanner(nodeScanner(printsHelp))?.verdict).toBe('scans-text')
+  })
+
+  it('refuses a leaky push through the installed scanner the real probe baked', () => {
+    const f = fixture({ scanPath: realScanPath(), probe: probeScanner })
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(fs.existsSync(path.join(f.chatHome, 'git-hooks', STAMP_FILE))).toBe(true)
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
   })
 })

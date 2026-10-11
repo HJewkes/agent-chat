@@ -73,6 +73,13 @@ describe('a headless agent launched from a minimal-PATH broker', () => {
     surface: 'headless',
   }
 
+  it('sets TMPDIR on the base env when the broker has none (CC-500)', () => {
+    const base = agentBaseEnv({ PATH: MINIMAL_PATH, HOME: '/h' }, () => MINIMAL_PATH)
+
+    expect(base.TMPDIR).toMatch(/^\/.+/)
+    expect(base.TMPDIR).not.toBe('/')
+  })
+
   it('gets the agent-chat dir and sbin on PATH with the shims still first', () => {
     const parent = { PATH: MINIMAL_PATH, HOME: '/h' }
     const base = agentBaseEnv(parent, env =>

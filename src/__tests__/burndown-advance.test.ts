@@ -1,8 +1,15 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
-import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { parseReport } from '../agents/burndown/report.js'
+import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { withFindings } from '../agents/burndown/finding.js'
+import { observe } from '../agents/burndown/observe.js'
+import { parseReport, type Report } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import type { StallCode } from '../agents/burndown/stall-code.js'
+import type { AgentIdentity } from '../protocol.js'
 
 /** The phase machine over hand-built claims and observations; no broker, git or transcript. */
 
@@ -62,6 +69,32 @@ describe('burndown phase machine', () => {
     expect(landed).toEqual([expect.objectContaining({ phase: 'reviewing', agentId: 'r0' })])
   })
 
+  it('advances a DONE worker that held an open finding and closes the finding', () => {
+    const open = claim({
+      finding: {
+        kind: 'stalled-after-claim',
+        reason: 'idle',
+        since: EARLIER,
+        openedAt: EARLIER,
+        checkedAt: EARLIER,
+        detail: 'idle',
+      },
+    })
+    const obs: Observation = {
+      agent: exited,
+      report: parseReport('Status: DONE'),
+      diff: { reviewable: false, reason: 'none' },
+    }
+    const observations = new Map([[claimKey(open), obs]])
+
+    const actions = withFindings(advance([open], observations, NOW), [open], observations, NOW)
+    const after = applyActions({ ...EMPTY_LEDGER, claims: [open] }, actions, NOW).claims[0]
+
+    expect(after?.phase).toBe('done')
+    expect(after?.finding).toBeUndefined()
+    expect(after?.stalledReason).toBeUndefined()
+  })
+
   it('finishes a DONE implementer with no diff without spawning a reviewer', () => {
     const { actions, after } = step(claim(), {
       agent: exited,
@@ -83,7 +116,10 @@ describe('burndown phase machine', () => {
 
     expect(spawns(actions)).toEqual([])
     expect(after).toEqual([
-      expect.objectContaining({ stalledReason: expect.stringContaining('second failed review') }),
+      expect.objectContaining({
+        stalledReason: expect.stringContaining('second failed review'),
+        stalledClass: 'failed',
+      }),
     ])
   })
 
@@ -172,13 +208,168 @@ describe('burndown phase machine', () => {
     ])
   })
 
+  it('(CC-939) a finished briefer is done and queues no slice claims, even with a slices block', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+
+    const { after } = step(briefer, {
+      agent: exited,
+      proposed: true,
+      slices: [{ n: 'a', title: 'ledger', dependsOn: [], owns: ['src/ledger.ts'] }],
+    })
+
+    expect(after.map(c => [c.slice, c.phase])).toEqual([[undefined, 'done']])
+  })
+
+  it('(CC-939) a briefer that tagged brief:proposed is done; one that did not stalls rather than respawns', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+    const report = (status: 'DONE' | 'BLOCKED'): Report => ({
+      status,
+      firstLine: `Status: ${status}`,
+      text: '',
+    })
+
+    const proposed = step(briefer, { agent: exited, proposed: true, report: report('DONE') })
+    const untagged = step(briefer, { agent: exited, proposed: false, report: report('DONE') })
+    const blocked = step(briefer, { agent: exited, proposed: false, report: report('BLOCKED') })
+    const silent = step(briefer, { agent: exited })
+
+    expect(proposed.after.map(c => c.phase)).toEqual(['done'])
+    for (const { after } of [untagged, blocked, silent]) {
+      expect(after).toEqual([
+        expect.objectContaining({ phase: 'planning', stalledReason: expect.any(String) }),
+      ])
+    }
+    expect(blocked.after[0]?.stalledReason).toBe('Status: BLOCKED')
+  })
+
+  it("a planner slice's contracts reach its queued claim", () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+
+    const { after } = step(planning, {
+      agent: exited,
+      slices: [{ n: 'a', title: 'report', dependsOn: [], owns: ['src/report.ts'], contracts }],
+    })
+
+    expect(after.find(c => c.slice === 'a')?.contracts).toEqual(contracts)
+  })
+
+  it('a slice with no contracts makes a claim without the field', () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+
+    const { after } = step(planning, {
+      agent: exited,
+      slices: [{ n: 'a', title: 'report', dependsOn: [], owns: ['src/report.ts'], contracts: [] }],
+    })
+
+    const queued = after.find(c => c.slice === 'a')
+    expect(queued).toBeDefined()
+    expect('contracts' in (queued as Claim)).toBe(false)
+  })
+
+  it('a stored ledger with no contracts on any claim parses and round-trips', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-ledger-'))
+    const file = path.join(dir, 'ledger.json')
+    const stored: Ledger = {
+      version: 1,
+      lastTickAt: EARLIER,
+      claims: [
+        { taskId: 'CC-1', initiative: 'demo', spawnedAt: EARLIER, phase: 'implementing', phaseAt: EARLIER },
+        {
+          taskId: 'CC-2',
+          initiative: 'demo',
+          spawnedAt: EARLIER,
+          phase: 'queued',
+          phaseAt: EARLIER,
+          slice: 'a',
+          owns: ['src/a.ts'],
+        },
+      ],
+      liveness: {
+        'CC-1|spawn': {
+          byFact: { f1: { n: 2, firstAt: EARLIER, lastAt: EARLIER, lastText: 'spawn refused' } },
+        },
+      },
+    }
+    const raw = `${JSON.stringify(stored, null, 2)}\n`
+    fs.writeFileSync(file, raw)
+
+    try {
+      writeLedger(file, readLedger(file))
+
+      expect(fs.readFileSync(file, 'utf8')).toBe(raw)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['over 3 points', 'slice a: 5 points, over the 3-point limit'],
+    ['with no owns', 'slice a: owns no files'],
+    ['with an unknown dep', 'slice a: depends on unknown slice z'],
+  ])('stalls the planning phase on a slice %s with its lint reason (CC-631)', (_, reason) => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+
+    const { actions, after } = step(planning, {
+      agent: exited,
+      sliceProblems: [reason, 'slice b: no points'],
+    })
+
+    expect(spawns(actions)).toEqual([])
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'planning', stalledReason: `${reason}\nslice b: no points` }),
+    ])
+  })
+
+  it('stalls a planner whose plan file fails the lint with each reason line, read through observe', async () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+    const slices = [
+      { n: 'a', title: 'x', points: 5, doneWhen: 'a test passes', owns: ['src/a.ts'] },
+      { n: 'b', title: 'y', points: 1, doneWhen: 'b test passes', owns: [] },
+      { n: 'c', title: 'z', points: 1, doneWhen: 'c test passes', dependsOn: ['q'], owns: ['src/c.ts'] },
+    ]
+    const plan = `# Plan\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
+    const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+    const { observations } = await observe(
+      [planning],
+      { agents: [row] },
+      {
+        root: '/active-work',
+        inboxSince: async () => [],
+        finalText: () => 'Status: DONE',
+        readFile: () => plan,
+      },
+    )
+
+    const { after } = step(planning, observations.get(claimKey(planning)) ?? {})
+
+    expect(after.map(c => c.stalledReason?.split('\n'))).toEqual([
+      [
+        'slice a: 5 points, over the 3-point limit',
+        'slice b: owns no files',
+        'slice c: depends on unknown slice q',
+      ],
+    ])
+  })
+
+  it('keeps the generic stall for a planner with no slices and no reasons', () => {
+    const { after } = step(claim({ phase: 'planning', worktree: undefined }), { agent: exited })
+
+    expect(after).toEqual([
+      expect.objectContaining({ stalledReason: 'planner left no machine-readable slices' }),
+    ])
+  })
+
   it('stalls a spawn whose agent row never appears within ten minutes', () => {
     const spawning = claim({ phase: 'spawning', agentId: undefined, phaseAt: '2026-09-28T11:49:00.000Z' })
 
     const { after } = step(spawning, {})
 
     expect(after).toEqual([
-      expect.objectContaining({ stalledReason: expect.stringContaining('never landed') }),
+      expect.objectContaining({
+        stalledReason: expect.stringContaining('never landed'),
+        stalledClass: 'stalled',
+      }),
     ])
   })
 
@@ -284,4 +475,37 @@ describe('burndown hands a PR to Shepherd', () => {
       expect.objectContaining({ stalledReason: 'no PR recorded for Shepherd to merge' }),
     ])
   })
+})
+
+describe('the code on each stall', () => {
+  const sites: [string, Claim, Observation, StallCode | undefined][] = [
+    [
+      'a spawn that never landed',
+      claim({ phase: 'spawning', agentId: undefined, phaseAt: '2026-09-28T11:49:00.000Z' }),
+      {},
+      'spawn-never-landed',
+    ],
+    ['an implementer past its timeout', claim({ phaseAt: '2026-09-28T07:59:00.000Z' }), {}, 'phase-timeout'],
+    ['a planner without slices', claim({ phase: 'planning' }), { agent: exited }, 'planner-refused'],
+    [
+      'a Shepherd run that ended failed',
+      claim({ phase: 'shepherding', pr: PR }),
+      { shepherd: { row: row('failed', 'merge denied') } },
+      'shepherd-ended',
+    ],
+    [
+      'a BLOCKED worker, outside the closed set',
+      claim(),
+      { agent: exited, report: parseReport('Status: BLOCKED') },
+      undefined,
+    ],
+  ]
+  for (const [site, c, obs, code] of sites) {
+    it(`writes ${code ?? 'no code'} for ${site}`, () => {
+      const { after } = step(c, obs)
+
+      expect(after[0]?.stalledReason).toBeDefined()
+      expect(after[0]?.stallCode).toBe(code)
+    })
+  }
 })

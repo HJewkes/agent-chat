@@ -2,8 +2,9 @@ import { patternsOverlap } from '../../broker/claims.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
-import { heldClaims, type Ledger } from './ledger.js'
+import { heldClaims, sameClaim, type Ledger } from './ledger.js'
 import { defaultBranch } from './observe.js'
+import { DESTRUCTIVE_OPS, type Contract } from './report.js'
 import { GIT_BIN } from './review-diff.js'
 
 /**
@@ -14,7 +15,10 @@ import { GIT_BIN } from './review-diff.js'
  * read refuses, since a miss costs an agent redoing someone's work.
  */
 
-export type CollisionKind = Extract<RefusalKind, 'landed' | 'open-pr' | 'claimed' | 'file-overlap'>
+export type CollisionKind = Extract<
+  RefusalKind,
+  'landed' | 'open-pr' | 'claimed' | 'file-overlap' | 'contract-overlap'
+>
 
 export interface Collision {
   kind: CollisionKind
@@ -28,6 +32,8 @@ export interface CollisionWork {
   tags: string[]
   /** The paths a slice declares; empty for a whole task, which skips the file checks. */
   owns: string[]
+  /** The scopes a slice declares with an op; omitted means none. */
+  contracts?: Contract[]
 }
 
 /** A dispatch planned this tick with the work its collision check saw, so a later seat's check sees it too. */
@@ -57,13 +63,26 @@ export interface CollisionFacts {
   repo: string
   /** Commit subjects on `origin/<default>`, never bodies: a body mention is not a landing. */
   subjects: string[] | undefined
+  /** The seat's other repos' subjects: a task lands wherever its PR merged, so each counts, and a failed read names its repo. */
+  landedElsewhere?: { repo: string; subjects: string[] | undefined }[]
   prs: OpenPr[] | undefined
   prFiles: (pr: number) => string[] | undefined
   /** Live agent and session names on the broker. */
   names: string[] | undefined
   claims: FileClaim[] | undefined
+  /** Agents that exited less than one tick ago: the tick may not have seen their PR or branch yet (CC-946). */
+  recentlyExited?: string[]
+  /** Every agent any claim of this task ever spawned, done claims included: a planner whose claim just went `done` still exited from our own work. */
+  lineage?: ReadonlySet<string>
   /** Agents on this task's held claims: a sibling slice's name and branch carry the task ID by design. */
   ours: ReadonlySet<string>
+  /** Contracts on held claims other than the work's own, labelled for the refusal reason. */
+  held: readonly HeldContracts[]
+}
+
+export interface HeldContracts {
+  holder: string
+  contracts: Contract[]
 }
 
 /** `id` as a whole token, any case: TP-40 never matches TP-400, and a branch's `cc-202` matches CC-202. */
@@ -71,19 +90,25 @@ export const namesId = (text: string, id: string): boolean =>
   new RegExp(`(?<![A-Za-z0-9])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9])`, 'i').test(text)
 
 export function collision(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
-  return landed(work, facts) ?? openPr(work, facts) ?? claimed(work, facts) ?? fileOverlap(work, facts)
+  return (
+    landed(work, facts) ??
+    openPr(work, facts) ??
+    claimed(work, facts) ??
+    fileOverlap(work, facts) ??
+    contractOverlap(work, facts.held)
+  )
 }
 
 const RECONCILED = 'reconciled'
 
 function landed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   if (work.slice !== undefined || work.tags.some(tag => tag.startsWith(RECONCILED))) return undefined
-  if (facts.subjects === undefined)
-    return {
-      kind: 'landed',
-      reason: `reader git-subjects failed: no default-branch subjects in ${facts.repo}`,
-    }
-  const hit = facts.subjects.find(subject => namesId(subject, work.taskId))
+  const reads = [{ repo: facts.repo, subjects: facts.subjects }, ...(facts.landedElsewhere ?? [])]
+  for (const { repo, subjects } of reads) {
+    if (subjects === undefined)
+      return { kind: 'landed', reason: `reader git-subjects failed: no default-branch subjects in ${repo}` }
+  }
+  const hit = reads.flatMap(read => read.subjects ?? []).find(subject => namesId(subject, work.taskId))
   if (hit === undefined) return undefined
   return { kind: 'landed', reason: `"${hit}" is on the default branch; reconcile it, then tag it reconciled` }
 }
@@ -105,6 +130,11 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
     return { kind: 'claimed', reason: 'reader broker-view failed: no live agents or file claims' }
   const holder = facts.names.find(name => !facts.ours.has(name) && namesId(name, work.taskId))
   if (holder !== undefined) return { kind: 'claimed', reason: `live agent ${holder} carries ${work.taskId}` }
+  const gone = (facts.recentlyExited ?? []).find(
+    name => !facts.ours.has(name) && !facts.lineage?.has(name) && namesId(name, work.taskId),
+  )
+  if (gone !== undefined)
+    return { kind: 'claimed', reason: `agent ${gone} carrying ${work.taskId} exited less than one tick ago` }
   for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
     const path = overlapping(work.owns, claim.patterns)
     if (path !== undefined) return { kind: 'claimed', reason: `${path} is under ${claim.owner}'s file claim` }
@@ -124,6 +154,34 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
   return undefined
 }
 
+const isDestructive = (contract: Contract): boolean => DESTRUCTIVE_OPS.includes(contract.op)
+
+/** The first exact-scope pair (byte-equal, no folding) where either side's op is destructive. */
+export function contractClash(
+  ours: readonly Contract[] = [],
+  theirs: readonly Contract[] = [],
+): { ours: Contract; theirs: Contract } | undefined {
+  for (const ourContract of ours) {
+    const theirContract = theirs.find(
+      t => t.scope === ourContract.scope && (isDestructive(ourContract) || isDestructive(t)),
+    )
+    if (theirContract !== undefined) return { ours: ourContract, theirs: theirContract }
+  }
+  return undefined
+}
+
+/** Also the same-pass check: a planner passes the dispatches it has already accepted this tick as `held`. */
+export function contractOverlap(work: CollisionWork, held: readonly HeldContracts[]): Collision | undefined {
+  for (const other of held) {
+    const clash = contractClash(work.contracts, other.contracts)
+    if (clash !== undefined) return { kind: 'contract-overlap', reason: clashReason(clash, other.holder) }
+  }
+  return undefined
+}
+
+const clashReason = (clash: { ours: Contract; theirs: Contract }, holder: string): string =>
+  `${clash.ours.scope} is declared ${clash.ours.op} here and ${clash.theirs.op} by ${holder}`
+
 /** Another seat's dispatch this tick, which no reader below can see yet: the same task, or an overlapping declared path. */
 export function sameTickCollision(
   earlier: readonly SameTickClaim[],
@@ -142,6 +200,14 @@ export function sameTickCollision(
       return {
         kind: 'claimed',
         reason: `${path} is under ${claim.agentName}'s owns, dispatched by seat ${claim.seat} earlier this tick`,
+      }
+  }
+  for (const claim of earlier) {
+    const clash = contractClash(work.contracts, claim.work.contracts)
+    if (clash !== undefined)
+      return {
+        kind: 'contract-overlap',
+        reason: `${clashReason(clash, claim.agentName)}, dispatched by seat ${claim.seat} earlier this tick`,
       }
   }
   return undefined
@@ -187,6 +253,8 @@ const jsonLines = (text: string): unknown[] =>
 export interface BrokerView {
   names: string[]
   claims: FileClaim[]
+  /** Names of agents that exited less than one tick ago. */
+  recentlyExited?: string[]
 }
 
 /** The four readers a refusal reason names when its fact could not be read. */
@@ -200,12 +268,28 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
   failed: ReaderFailed = () => {},
-): (repo: string, work: CollisionWork) => Collision | undefined {
+): (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
-  return (repo, work) => {
-    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed)
+  const perSubjects = new Map<string, string[] | undefined>()
+  const subjectsOf = (repo: string): string[] | undefined => {
+    if (perSubjects.has(repo)) return perSubjects.get(repo)
+    const read = readSubjects(repo, defaultBranch(repo, exec), exec)
+    perSubjects.set(repo, read)
+    if (read === undefined) failed('git-subjects', repo)
+    return read
+  }
+  return (repo, work, landedRepos = []) => {
+    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo))
     perRepo.set(repo, facts)
-    return collision(work, { ...facts, ours: oursFor(ledger, work.taskId) })
+    return collision(work, {
+      ...facts,
+      landedElsewhere: landedRepos
+        .filter(other => other !== repo)
+        .map(other => ({ repo: other, subjects: subjectsOf(other) })),
+      ours: oursFor(ledger, work.taskId),
+      lineage: lineageOf(ledger, work.taskId),
+      held: heldContracts(ledger, work),
+    })
   }
 }
 
@@ -215,10 +299,9 @@ function readFacts(
   broker: BrokerView | undefined,
   exec: Runner,
   failed: ReaderFailed,
+  subjects: string[] | undefined,
 ): CollisionFacts {
-  const subjects = readSubjects(repo, defaultBranch(repo, exec), exec)
   const prs = readOpenPrs(repo, exec)
-  if (subjects === undefined) failed('git-subjects', repo)
   if (prs === undefined) failed('gh-pulls', repo)
   if (broker === undefined) failed('broker-view', repo)
   const files = new Map<number, string[] | undefined>()
@@ -229,7 +312,17 @@ function readFacts(
     if (read === undefined) failed('gh-pull-files', repo, `#${pr}`)
     return read
   }
-  return { repo, subjects, prs, prFiles, names: broker?.names, claims: broker?.claims, ours: new Set() }
+  return {
+    repo,
+    subjects,
+    prs,
+    prFiles,
+    names: broker?.names,
+    claims: broker?.claims,
+    ...(broker?.recentlyExited === undefined ? {} : { recentlyExited: broker.recentlyExited }),
+    ours: new Set(),
+    held: [],
+  }
 }
 
 /** A done claim's agents and PR are not ours any more: a re-pick must see them as someone else's. */
@@ -239,3 +332,23 @@ const oursFor = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
       .filter(c => c.taskId === taskId)
       .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
   )
+
+/** Includes `done` claims, since a retire may not have run when the exit is read. */
+const lineageOf = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
+  new Set(
+    ledger.claims
+      .filter(c => c.taskId === taskId)
+      .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
+  )
+
+/**
+ * Every dispatched, undone claim with contracts except the work's own; a sibling slice of the same task still
+ * counts. A queued claim holds nothing yet: counting it would let two queued claims refuse each other forever.
+ */
+const heldContracts = (ledger: Ledger, work: CollisionWork): HeldContracts[] =>
+  heldClaims(ledger)
+    .filter(c => c.phase !== 'queued' && !sameClaim(c, work) && (c.contracts ?? []).length > 0)
+    .map(c => ({
+      holder: `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`,
+      contracts: c.contracts ?? [],
+    }))

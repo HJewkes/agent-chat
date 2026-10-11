@@ -112,6 +112,7 @@ const retired = (extra: Partial<Extract<ServerMessage, { t: 'spawn_result' }>>):
 })
 
 const RETIRE_CASES: Invocation[] = [
+  { argv: ['agent', 'retire', 'bob', 'amy'], reply: retired({ ok: false, reason: 'no such agent' }) },
   { argv: ['agent', 'retire', 'bob'], reply: retired({}) },
   {
     argv: ['agent', 'retire', 'bob', '--force'],

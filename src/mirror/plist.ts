@@ -1,9 +1,9 @@
 import path from 'node:path'
 
 /** The only variables a launchd job inherits; a token must never ride along from the caller's env. */
-const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME'] as const
+const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME', 'ACTIVE_ROOT', 'AGENT_CHAT_ACTIVE_WORK_ROOT'] as const
 
-/** HOME and PATH always, AGENT_CHAT_HOME only when set; nothing else from `source`. */
+/** HOME and PATH always, the home and active-work roots only when set; nothing else from `source`. */
 export function jobEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {}
   for (const key of PASSED_ENV) {
@@ -15,6 +15,57 @@ export function jobEnv(source: NodeJS.ProcessEnv): Record<string, string> {
 
 /** Kept for existing call sites; identical to `jobEnv`. */
 export const mirrorJobEnv = jobEnv
+
+/** Worktrees are parked (deleted) after merge, so a job pointing into one dies with MODULE_NOT_FOUND. */
+const WORKTREE_SEGMENTS = [['.worktrees'], ['.claude', 'worktrees']] as const
+
+/** macOS and POSIX scratch roots; the OS reaps them, so state homed there vanishes under the job. */
+const SCRATCH_ROOTS = ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders']
+
+export interface JobPathsInput {
+  nodePath: string
+  cliEntry: string
+  env: Record<string, string>
+  tmpdir: string
+}
+
+function hasWorktreeSegment(file: string): boolean {
+  const parts = path.normalize(file).split(path.sep)
+  return WORKTREE_SEGMENTS.some(seg => parts.some((_, i) => seg.every((name, j) => parts[i + j] === name)))
+}
+
+function isInside(file: string, root: string): boolean {
+  const rel = path.relative(path.normalize(root), path.normalize(file))
+  return rel === '' || (rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel))
+}
+
+const inScratch = (file: string, tmpdir: string): boolean =>
+  [tmpdir, ...SCRATCH_ROOTS].some(root => isInside(file, root))
+
+/** Pure: why an explicitly named agent-chat home must not be baked into a job; empty when sound. */
+export function agentChatHomeRefusals(home: string, tmpdir: string): string[] {
+  if (inScratch(home, tmpdir)) return [`refused: --agent-chat-home ${home} is inside a temp dir`]
+  if (hasWorktreeSegment(home)) return [`refused: --agent-chat-home ${home} is inside a worktree`]
+  return []
+}
+
+/** Pure: why a launchd job built from these paths would break once the tree or scratch dir goes; empty when sound. */
+export function launchdJobRefusals(input: JobPathsInput): string[] {
+  const errors: string[] = []
+  for (const [what, file] of [
+    ['CLI entry', input.cliEntry],
+    ['node path', input.nodePath],
+  ] as const) {
+    if (hasWorktreeSegment(file))
+      errors.push(`refused: ${what} ${file} is inside a worktree; install from the main checkout`)
+  }
+  const home = input.env.AGENT_CHAT_HOME
+  if (home !== undefined && inScratch(home, input.tmpdir))
+    errors.push(
+      `refused: AGENT_CHAT_HOME ${home} is inside a temp dir; unset it or point it at durable state`,
+    )
+  return errors
+}
 
 const escapeXml = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -30,7 +81,8 @@ export type PlistSchedule =
   | { kind: 'interval'; seconds: number }
   | { kind: 'minutes'; minutes: readonly number[] }
 
-interface PlistInput {
+/** One scheduled job, rendered as a launchd plist on darwin and as systemd units on Linux. */
+export interface JobSpec {
   label: string
   args: string[]
   logFile: string
@@ -54,7 +106,7 @@ function scheduleLines(schedule: PlistSchedule): string[] {
 }
 
 /** Pure: the shared shape of every agent-chat launchd job. It holds no token. */
-function renderPlist(input: PlistInput): string {
+export function renderPlist(input: JobSpec): string {
   const env = Object.entries(input.env).map(([key, value]) => keyString(key, value, '    '))
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -110,16 +162,18 @@ export interface BurndownPlistInput {
 }
 
 /** `agent-chat burndown tick --once` on a schedule; never kept alive between runs. */
-export function renderBurndownPlist(input: BurndownPlistInput): string {
-  return renderPlist({
+export function burndownJob(input: BurndownPlistInput): JobSpec {
+  return {
     label: input.label,
     args: [input.nodePath, input.cliEntry, 'burndown', 'tick', '--once'],
     logFile: path.join(input.logDir, 'burndown.log'),
     runAtLoad: false,
     schedule: { kind: 'interval', seconds: input.intervalSeconds },
     env: input.env,
-  })
+  }
 }
+
+export const renderBurndownPlist = (input: BurndownPlistInput): string => renderPlist(burndownJob(input))
 
 export interface WatchdogPlistInput {
   label: string
@@ -131,13 +185,15 @@ export interface WatchdogPlistInput {
 }
 
 /** `agent-chat seats watchdog` at fixed minutes, so a replay's run times are the installed job's. */
-export function renderWatchdogPlist(input: WatchdogPlistInput): string {
-  return renderPlist({
+export function watchdogJob(input: WatchdogPlistInput): JobSpec {
+  return {
     label: input.label,
     args: [input.nodePath, input.cliEntry, 'seats', 'watchdog'],
     logFile: path.join(input.logDir, 'watchdog.log'),
     runAtLoad: false,
     schedule: { kind: 'minutes', minutes: input.minutes },
     env: input.env,
-  })
+  }
 }
+
+export const renderWatchdogPlist = (input: WatchdogPlistInput): string => renderPlist(watchdogJob(input))

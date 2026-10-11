@@ -11,6 +11,7 @@ import {
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
+import { withoutLaunchIdentity } from '../launch-identity.js'
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
@@ -40,6 +41,10 @@ const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   spawn_result: 60_000,
   // CC-323: one reply after a retire per finished agent, and a coordinator can hold over a hundred.
   retire_finished_result: 600_000,
+  // CC-777: with retired rows the reply is over 6,000 agents and 23 MB, measured at 7.9-9.1s.
+  agents_result: 30_000,
+  // CC-881: held through the teleport countdown and the successor's brief, both on the broker.
+  teleport_plan: 120_000,
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
@@ -292,7 +297,11 @@ export class BrokerClient {
   /** Starts a broker detached, so it outlives whichever session happened to spawn it. */
   private spawnBroker(): void {
     fs.mkdirSync(home(), { recursive: true })
-    spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
+    spawn(process.execPath, [cliEntry(), 'broker'], {
+      detached: true,
+      stdio: 'ignore',
+      env: withoutLaunchIdentity(process.env),
+    }).unref()
   }
 
   /**

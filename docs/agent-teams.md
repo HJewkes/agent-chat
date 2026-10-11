@@ -319,7 +319,7 @@ name          agent name (the registry name it will hold)
 parent        spawning agent id, or "" when the human spawned it
 profile       profile name (§4)
 model         resolved model id
-surface       headless | iterm-pane | iterm-tab | iterm-window
+surface       headless | iterm-pane | iterm-tab | iterm-window | tmux-window
 isolation     none | worktree | file-ownership | toolset-limited
 cwd           resolved working directory (post-isolation)
 session_id    the uuid passed to --session-id; the resume handle
@@ -578,6 +578,14 @@ Nothing is appended to a brief that already carries every line the block's repor
 requires, to a CLI spawn, to a resume, a surface switch or a teleport, or when the spawn passes
 `return_contract: "none"`. Pass that when the brief states a report format of its own. A brief
 with a `Status:` or `Verdict:` line of its own that still gets the block draws a spawn warning.
+
+A brief with a line that reads exactly `Shepherd: none` (`SHEPHERD_NONE_MARKER`; case-insensitive,
+surrounding whitespace allowed, never matched inside a sentence) gets a variant implementer block
+(CC-452). It drops the "never wait on CI" clause and the `titan-factory shepherd register` sentence,
+and tells the agent to wait for CI as the brief directs and report each check-run's conclusion at the
+final head. Seats that merge through their own reviewer and `bin/merge` use it, because the appended
+block comes after the brief and overrode prose that said not to register. The opt-out needs no spawn
+parameter. Without the marker the block is unchanged.
 
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
@@ -1395,6 +1403,13 @@ matches the whole name recorded as `spawnedBy` when the agent was spawned, so `b
 does not match an agent spawned by `boss2`. A rename since then does not move an
 agent to the new name; a successor that reuses the name does match.
 
+`agent ls --json` rows carry `spawnedAt` (ISO time of the spawn record) and `inferred`
+(CC-333). `inferred` is true when the agent's `agent_exited` row was written by the settle
+timer or a presence check, not by a recorded process exit. It is false for a recorded exit
+and for an agent that has not exited. A row with `presence: "exited"` and `inferred: true`
+does not prove the process stopped writing: a reboot or a dead launcher can leave a
+reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
+
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
 cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,
@@ -1404,7 +1419,11 @@ agent whose process the broker still tracks, an agent the broker did not spawn, 
 parked, one whose worktree a non-retired agent works in (CC-141), and one whose worktree or
 kept branch has uncommitted changes, commits not on its upstream (or on `origin/<branch>`
 when no upstream is set), commits not on the default branch when it has neither, or cannot
-be read. Each remaining agent goes through the same retire as `agent retire <name>`, so its
+be read. It also skips, with the reason `open PR (Shepherd wakes it)`, an agent whose branch
+has an open PR that no unfinished `titan-factory shepherd status --json` row names (CC-904).
+Once a run carries the agent's branch or implementer name, the PR is registered and the agent is retired
+and parked, its branch kept (CC-950). When Shepherd or `gh` cannot be read it skips too. Each remaining agent goes through
+the same retire as `agent retire <name>`, so its
 refusals still apply; the liveness check is repeated just before each one. A failed retire
 is reported and the rest continue.
 
@@ -1417,6 +1436,19 @@ the listing fails it refuses too, since the agent's process may have outlived th
 its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
 `coverage`, `.turbo`, a `*.tsbuildinfo` file at any depth (a directory so named is searched, not
 trusted), or a top-level `.claude` (CC-334).
+
+Retire at the final report (CC-921) is off by default. Set `autoRetire.onFinalReport` in
+`~/.agent-chat/config.json` to `true` for every spawner, or to a list of spawner names, for
+example `"autoRetire": { "onFinalReport": ["my-coordinator"] }`. The key is read on each exit,
+so a change needs no broker restart. When an opted-in spawner's agent exits, and its last report
+to the spawner in that run opens with `Status: DONE`, `Status: DONE_WITH_CONCERNS` or any
+`Verdict:`, the broker applies
+the CC-904 skip above and the adopter rule. `BLOCKED` and `NEEDS_CONTEXT` never trigger it, since
+those agents wait on a resume and a retired name cannot be resumed. It then parks the agent's tree under the `agent park`
+rules, so a tree another agent works in, a dirty tree, or an unpushed one stays. Last, it retires
+the agent. Neither step deletes the branch. An agent with no tree, such as a reviewer, is only
+retired. The park and the retire write their usual seat-journal lines. A kept agent is logged as
+`auto_retire_kept` with the reason, and a retired one as `auto_retired`.
 
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
@@ -1579,6 +1611,12 @@ Therefore:
   placement. Without the cap, an agent team is a fork bomb with a language
   model deciding the branching factor. A requester whose own spawn row is
   missing, or names no profile, counts as a worker.
+- **Remote Control from the profile (CC-924):** a coordinator profile may set
+  `"remoteControl": true`. `agent_spawn` uses it when `remote_control` is
+  omitted (an explicit `false` wins; a headless surface still ignores it), and
+  a teleport carries it to the successor beside the seat-file rule and the
+  argv the session reports. A profile that sets it without
+  `"role": "coordinator"` fails to load, with an error naming the field.
 - **Resume (CC-216):** a registered worker may `agent_resume` only an agent
   whose `agent_spawned.meta.parent` is its own agent id. A coordinator, a
   human-started session and the human at the CLI may resume any agent.
@@ -2326,7 +2364,7 @@ GET  /api/queue              EventLog.humanQueue()              event-log.ts:135
 GET  /api/sessions           Registry.list() + brokerUptimeMs   registry.ts:89
 GET  /api/history?limit=     EventLog.history()                 event-log.ts:180
 GET  /events                 SSE tail, §6.1–6.3
-POST /api/answer             {msgId,text} -> core.answer()
+POST /api/answer             {msgId,text,channel?} -> core.answer()
 POST /api/dismiss            {msgId}      -> core.dismiss()
 GET  /ui, /ui/*              SPA + placeholder when unbuilt
 ANY  /mcp                    404 with an explanatory body, §7.5

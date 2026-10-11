@@ -1,9 +1,9 @@
-import { budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
+import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
-import { callerName, filterRoster, type RosterFilter } from '../agents/roster-filter.js'
-import { pairPresence } from '../agents/identity.js'
+import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
+import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
-import { listProfileNames, loadProfile } from '../agents/profiles.js'
+import { loadProfile, selectProfileNames } from '../agents/profiles.js'
 import {
   createProfileIndex,
   findAgentTranscript,
@@ -11,7 +11,8 @@ import {
   transcriptLine,
   type ProfileIndex,
 } from '../agents/transcript.js'
-import { type AgentIdentity, type ServerMessage } from '../protocol.js'
+import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName } from '../protocol.js'
+import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
 
@@ -23,9 +24,19 @@ import { fail, withBroker } from './client.js'
  * query over the log and only presence depends on a socket being up.
  */
 export async function agentLs(
-  options: { json?: boolean; mine?: boolean; spawner?: string; prefix?: string } = {},
+  options: {
+    json?: boolean
+    mine?: boolean
+    spawner?: string
+    prefix?: string
+    state?: string[]
+    name?: string
+    format?: string
+  } = {},
 ): Promise<void> {
   const filter = rosterFilter(options)
+  if (options.format !== undefined && options.format !== 'line') fail(`--format must be: line`)
+  const states = stateFilter(options.state)
   const [all, sessions] = await withBroker(async b => {
     const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -37,7 +48,12 @@ export async function agentLs(
     >
     return [roster.agents, live.sessions] as const
   })
-  const agents = filterRoster(all, filter)
+  const connectedNames = new Set(sessions.map(s => s.name))
+  const agents = filterRoster(all, filter).filter(
+    a =>
+      (options.name === undefined || a.name === options.name) &&
+      (states === undefined || states.has(pairPresence(a, { connected: connectedNames.has(a.name) }).status)),
+  )
   const index = createProfileIndex()
 
   if (options.json) {
@@ -49,6 +65,13 @@ export async function agentLs(
       ),
     )
     console.log(JSON.stringify(rows, null, 2))
+    return
+  }
+  if (options.format === 'line') {
+    for (const agent of agents) {
+      const { status } = pairPresence(agent, { connected: connectedNames.has(agent.name) })
+      console.log([agent.name, status, agent.profile, agent.agentId, agent.cwd].join(' '))
+    }
     return
   }
   if (agents.length === 0) {
@@ -73,6 +96,15 @@ export async function agentLs(
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
   }
+}
+
+/** `--state` takes the status column's words; anything else would silently match nothing. */
+function stateFilter(raw: string[] | undefined): Set<string> | undefined {
+  if (raw === undefined) return undefined
+  const bad = raw.filter(s => !ROSTER_STATUSES.includes(s as RosterStatus))
+  if (bad.length > 0)
+    fail(`--state ${bad.join(', ')} is not a roster state; use: ${ROSTER_STATUSES.join(', ')}`)
+  return new Set(raw)
 }
 
 /** `--spawner` names the spawner outright; `--mine` resolves the caller or exits; printing everything instead would defeat the flag. */
@@ -118,6 +150,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     account: agent.configDir || null,
     generation: agent.generation,
     teleportFrom: agent.teleportFrom ?? null,
+    inferred: agent.exit?.inferred === true,
+    spawnedAt: new Date(agent.spawnedAt).toISOString(),
   }
 }
 
@@ -218,6 +252,13 @@ export async function agentWorktrees(options: { prune?: boolean; force?: boolean
   return { ok: true, lines }
 }
 
+/** The commander parser for `--surface`: a name outside SURFACE_NAMES is refused before any frame is sent. */
+export function parseSurface(value: string): SurfaceName {
+  const surface = SURFACE_NAMES.find(name => name === value)
+  if (surface === undefined) throw new InvalidArgumentError(`one of: ${SURFACE_NAMES.join(', ')}`)
+  return surface
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
@@ -228,7 +269,15 @@ export async function agentSpawn(
   // shell's own `CLAUDE_CONFIG_DIR` is forwarded instead — there is no registry
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
-  options: { briefing?: string; briefStdin?: boolean; configDir?: string } = {},
+  // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+  options: {
+    briefing?: string
+    briefStdin?: boolean
+    configDir?: string
+    task?: string
+    role?: string
+    surface?: SurfaceName
+  } = {},
 ): Promise<void> {
   let brief: string
   try {
@@ -248,6 +297,9 @@ export async function agentSpawn(
         cwd: process.cwd(),
         ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
         ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+        ...(options.task === undefined ? {} : { task: options.task }),
+        ...(options.role === undefined ? {} : { workRole: options.role }),
+        ...(options.surface === undefined ? {} : { surface: options.surface }),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
@@ -328,7 +380,7 @@ export async function agentBudget(
   })
   const agents = filterRoster(all, filter)
 
-  const wanted = name === undefined ? agents : agents.filter(a => a.name === name)
+  const wanted = newestByName(name === undefined ? agents : agents.filter(a => a.name === name))
   if (wanted.length === 0) {
     return {
       ok: false,
@@ -337,16 +389,25 @@ export async function agentBudget(
     }
   }
 
+  const account = accountReader()
   const lines = wanted.map(agent => {
     const read = readBudget(agent.sessionId, Date.now(), agent.configDir)
-    return read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read)
+    return read.found
+      ? formatBudget(agent.name, read, account(agent.configDir))
+      : budgetMiss(agent.name, read)
   })
   return { ok: true, lines }
 }
 
-export function profiles(): Report {
+export function profiles(only?: string): Report {
+  let names: string[]
+  try {
+    names = selectProfileNames(only)
+  } catch (e) {
+    return { ok: false, lines: [], errors: [(e as Error).message] }
+  }
   const lines: string[] = []
-  for (const name of listProfileNames()) {
+  for (const name of names) {
     const profile = loadProfile(name)
     if ('error' in profile) {
       lines.push(`${name.padEnd(14)} !! ${profile.error}`)
@@ -356,6 +417,7 @@ export function profiles(): Report {
       `${name.padEnd(14)} ${profile.model.padEnd(7)} ${profile.surface.padEnd(12)} ${profile.description}`,
     )
     lines.push(`${' '.repeat(14)} tools: ${profile.allowedTools.join(', ')}`)
+    for (const warning of profile.warnings ?? []) lines.push(`${' '.repeat(14)} warning: ${warning}`)
   }
   return { ok: true, lines }
 }

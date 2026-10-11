@@ -1,13 +1,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { resolvePermissionHookTimeout } from '../config.js'
+import { resolveGitShellAliases, resolvePermissionHookTimeout } from '../config.js'
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
-import { hooksDirOf, writeGitHooks } from '../leak-guard/hooks-dir.js'
+import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
-import type { IsolationName } from '../protocol.js'
+import type { IsolationName, SurfaceName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { readLaunchPlan as readPlanFile, relaunchScript } from '@titan-design/agent-surface'
+import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
+import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
+import { strictMcpFor } from './launch-policy.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -56,15 +59,20 @@ export const mcpConfigPath = (agentId: string): string => path.join(agentDir(age
  * setup where the plugin isn't installed, only `npm link`ed — that is the
  * regression to watch for and the reason this used to be unconditional.
  *
- * A `strictMcpConfig` profile is the exception: --strict-mcp-config drops the
- * plugin's server along with every other one (observed 2026-09-28: `mcp_servers`
- * was empty even with --channels), so the entry comes back for it, and that
- * agent reaches the bus by tools and polling rather than live pushes.
+ * A strict launch is the exception, and a headless worker is strict unless its
+ * profile says otherwise: --strict-mcp-config drops the plugin's server along
+ * with every other one (observed 2026-09-28: `mcp_servers` was empty even with
+ * --channels), so the entry comes back for it, and that agent reaches the bus by
+ * tools and polling rather than live pushes.
  */
-export function buildMcpConfig(profile: AgentProfile, entry: string): Record<string, unknown> {
+export function buildMcpConfig(
+  profile: AgentProfile,
+  entry: string,
+  surface: SurfaceName = profile.surface,
+): Record<string, unknown> {
   return {
     mcpServers: {
-      ...(profile.strictMcpConfig === true
+      ...(strictMcpFor(profile, surface)
         ? { [AGENT_CHAT_SERVER]: { command: process.execPath, args: [entry, 'mcp'] } }
         : {}),
       ...(profile.mcpServers ?? {}),
@@ -73,6 +81,14 @@ export function buildMcpConfig(profile: AgentProfile, entry: string): Record<str
 }
 
 export const hookSettingsPath = (agentId: string): string => path.join(agentDir(agentId), 'settings.json')
+
+/** Written when a teleport retires this identity; a session resumed from its transcript afterwards is stale. */
+export const supersededMarkerPath = (agentId: string): string => path.join(agentDir(agentId), 'superseded')
+
+export function markSuperseded(agentId: string): void {
+  fs.mkdirSync(agentDir(agentId), { recursive: true, mode: DIR_MODE })
+  fs.writeFileSync(supersededMarkerPath(agentId), '', { mode: FILE_MODE })
+}
 
 /** The hook gives up this long before Claude Code would kill it, so it can withdraw its row itself. */
 const HOOK_DEADLINE_MARGIN_S = 10
@@ -89,13 +105,58 @@ const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 const PRETOOL_TIMEOUT_S = 15
 
 /**
+ * What a launch without the user settings source still takes from that account. Its deny
+ * rules only narrow, so dropping them would hand a worker tools the owner denied everywhere
+ * (observed: Agent and SendMessage came back under `--setting-sources project,local`). The
+ * git-safety hook only blocks, so it travels too. No other user hook does: a hook is a
+ * shell command, and one that is not a known guard could widen what a worker does.
+ */
+export interface CarriedUserSettings {
+  denies: string[]
+  /** The user PreToolUse entries, cut down to their git-safety commands. */
+  pretool: HookEntry[]
+}
+
+interface HookEntry {
+  matcher?: string
+  hooks: Record<string, unknown>[]
+}
+
+/** The user file is also where the bus plugin is enabled, so the launch enables it here. */
+const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
+  enabledPlugins: { [AGENT_CHAT_PLUGIN]: true },
+  ...(denies.length === 0 ? {} : { permissions: { deny: denies } }),
+})
+
+/**
  * The `--settings` file every spawned agent runs with. The leak guard's PreToolUse hook
  * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
- * can contain spaces.
+ * can contain spaces. `carried` is set for a launch that loads no user settings.
  */
-export function buildHookSettings(entry: string, permissionTimeoutSeconds?: number): Record<string, unknown> {
+export function buildHookSettings(
+  entry: string,
+  permissionTimeoutSeconds?: number,
+  carried?: CarriedUserSettings,
+  agentId?: string,
+): Record<string, unknown> {
+  const staleGuard =
+    agentId === undefined
+      ? {}
+      : {
+          UserPromptSubmit: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: hookCommand(entry, `stale-session-guard ${shellQuote(agentId)}`),
+                  timeout: PRETOOL_TIMEOUT_S,
+                },
+              ],
+            },
+          ],
+        }
   const pretool = [
     {
       matcher: PRETOOL_MATCHER,
@@ -103,18 +164,75 @@ export function buildHookSettings(entry: string, permissionTimeoutSeconds?: numb
         { type: 'command', command: hookCommand(entry, 'leak-guard pretool'), timeout: PRETOOL_TIMEOUT_S },
       ],
     },
+    ...(carried?.pretool ?? []),
   ]
-  if (permissionTimeoutSeconds === undefined) return { hooks: { PreToolUse: pretool } }
+  const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
+  if (permissionTimeoutSeconds === undefined)
+    return { ...account, hooks: { PreToolUse: pretool, ...staleGuard } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
+    ...account,
     hooks: {
       PreToolUse: pretool,
+      ...staleGuard,
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],
     },
   }
+}
+
+/** The owner's git-safety hook: the command's script, run by node or directly, ends in this path. */
+const GIT_SAFETY_COMMAND = /^(?:node\s+)?["']?[^\s"']*\/git-safety\/git-safety\.mjs["']?(?:\s|$)/
+
+const isGitSafety = (hook: unknown): hook is Record<string, unknown> =>
+  typeof hook === 'object' &&
+  hook !== null &&
+  typeof (hook as { command?: unknown }).command === 'string' &&
+  (hook as { command: string }).command.match(GIT_SAFETY_COMMAND) !== null
+
+/** Each user PreToolUse entry with only its git-safety commands, and no entry that has none. */
+function gitSafetyEntries(pretool: unknown): HookEntry[] {
+  if (!Array.isArray(pretool)) return []
+  return pretool.flatMap((entry: { matcher?: unknown; hooks?: unknown } | null) => {
+    const hooks = Array.isArray(entry?.hooks) ? entry.hooks.filter(isGitSafety) : []
+    if (hooks.length === 0) return []
+    return [{ ...(typeof entry?.matcher === 'string' ? { matcher: entry.matcher } : {}), hooks }]
+  })
+}
+
+/** Read from an account's own settings file. An unreadable file carries nothing, as Claude Code reads it. */
+export function readCarriedUserSettings(configDir: string): CarriedUserSettings {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8')) as {
+      permissions?: { deny?: unknown }
+      hooks?: { PreToolUse?: unknown }
+    }
+    const deny = parsed.permissions?.deny
+    return {
+      denies: Array.isArray(deny) ? deny.filter((rule): rule is string => typeof rule === 'string') : [],
+      pretool: gitSafetyEntries(parsed.hooks?.PreToolUse),
+    }
+  } catch {
+    return { denies: [], pretool: [] }
+  }
+}
+
+/** The config dir the launched process sees: the plan's, else the broker's own, else the default account. */
+function planConfigDir(plan: LaunchPlan): string {
+  if (plan.env.CLAUDE_CONFIG_DIR !== undefined) return plan.env.CLAUDE_CONFIG_DIR
+  if (plan.unsetEnv?.includes('CLAUDE_CONFIG_DIR')) return defaultConfigDir()
+  return process.env.CLAUDE_CONFIG_DIR ?? defaultConfigDir()
+}
+
+/** Undefined when the plan loads user settings itself; the brief follows `--` and is never read as a flag. */
+function carriedUserSettings(plan: LaunchPlan): CarriedUserSettings | undefined {
+  const end = plan.args.indexOf('--')
+  const options = end === -1 ? plan.args : plan.args.slice(0, end)
+  const at = options.indexOf('--setting-sources')
+  if (at === -1 || (options[at + 1] ?? '').split(',').includes('user')) return undefined
+  return readCarriedUserSettings(planConfigDir(plan))
 }
 
 /** An interactive plan carries no `--settings`, so the guard's file is added to its argv here. */
@@ -133,7 +251,7 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout)
+  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan), plan.agentId)
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
@@ -144,9 +262,12 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   )
   const hooksDir = hooksDirOf(plan.env)
   if (hooksDir === undefined) return
-  writeGitHooks(hooksDir)
+  writeGitHooks(hooksDir, { ...defaultScanInputs(), probe: probeScanner })
   const shimDir = plan.env[GIT_SHIM_DIR_ENV]
-  if (shimDir !== undefined && !writeGitShim(shimDir, hooksDir))
+  if (
+    shimDir !== undefined &&
+    !writeGitShim(shimDir, hooksDir, process.env.PATH ?? '', resolveGitShellAliases())
+  )
     process.stderr.write(`agent-chat: git shim not written to ${shimDir}: no git on PATH\n`)
 }
 

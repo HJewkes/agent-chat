@@ -9,11 +9,12 @@ import { reportStatus } from '../digest/ledger.js'
 import type { Search } from '../digest/prs.js'
 import { renderDigest } from '../digest/render.js'
 import { parseSince } from '../digest/window.js'
+import { writePoolCharter } from './helpers/pool-charter.js'
 
 /**
  * The digest over a fixture world: an events.db written through the real
- * EventLog, an active-work root, a burndown ledger and config, and one
- * account's status cache. Nothing here reads the developer's own files.
+ * EventLog, an active-work root, a burndown ledger, a charter's pools, and
+ * one account's status cache. Nothing here reads the developer's own files.
  */
 
 const HOUR = 3_600_000
@@ -84,10 +85,15 @@ beforeEach(() => {
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.AGENT_CHAT_STATUS_CACHE
-  write(
-    path.join(homeDir(), 'burndown.config.json'),
-    JSON.stringify({ accounts: { agents: { reserve_seven_day: 25, ceiling_five_hour: 70 } } }),
-  )
+  // CC-801: the gate reads the charter's pools; these are the numbers the retired default rules held.
+  writePoolCharter(path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), {
+    agents: {
+      config_dir: path.join(world, 'profiles', 'agents'),
+      human_uses: true,
+      reserve_seven_day: 25,
+      ceiling_five_hour: 70,
+    },
+  })
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
 })
@@ -465,6 +471,39 @@ describe('Next', () => {
 
     expect(rendered).toContain('burndown plan: ledger malformed')
     expect(section(rendered, 'Next')).toContain('the burndown planner did not run')
+  })
+})
+
+describe('Milestones', () => {
+  const weekFile = (): string =>
+    path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy', 'milestones', '2026-W40.yml')
+
+  it("prints one line per milestone in this week's file", () => {
+    write(
+      weekFile(),
+      'week: 2026-W40\nappetite_days: 5\nmilestones:\n' +
+        '  - {id: M1, rank: 1, seat: seat-a}\n  - {id: M2, rank: 2, seat: seat-b}\n',
+    )
+    task('example', 'EX-1', 'status: open\npriority: 1\nestimate: 2\ntags: [milestone:M1]\n')
+    task('example', 'EX-2', 'status: open\npriority: 1\nestimate: 1\ntags: [milestone:M2]\n')
+
+    const lines = section(text(), 'Milestones').split('\n')
+
+    expect(lines).toEqual([
+      '== Milestones (2)',
+      expect.stringMatching(/^- M1 at-risk \(no points done in 3 days\): 0\/2 points done.*path 2;/),
+      expect.stringMatching(/^- M2 at-risk \(no points done in 3 days\): 0\/1 points done.*path 1;/),
+    ])
+  })
+
+  it('leaves the digest as it was when the week has no milestone file', () => {
+    expect(text()).not.toContain('Milestones')
+  })
+
+  it('reports a malformed milestone file as a gap', () => {
+    write(weekFile(), 'week: nope\n')
+
+    expect(text()).toMatch(/- milestones: milestones\/2026-W40\.yml: schema/)
   })
 })
 

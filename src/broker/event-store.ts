@@ -1,4 +1,12 @@
-import type { CursoredMessage, DecidedItem, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type {
+  CursoredMessage,
+  DecidedItem,
+  DeliveredMessage,
+  EventKind,
+  QueueItem,
+  ServiceAnswer,
+} from '../protocol.js'
+import type { StoredHandoff } from './handoffs.js'
 
 /**
  * The storage seam. Everything downstream of the broker depends on this
@@ -84,7 +92,14 @@ export interface EventStore {
    * newest-N window answers a different question — it re-reports what was
    * already seen and silently drops anything that arrived faster than N.
    */
+  inboxRowId(name: string, msgId: string): number | undefined
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
+
+  /** Position of any row by msg_id, for a cursor a caller holds as a msg_id. */
+  rowIdOf(msgId: string): number | undefined
+
+  /** Answers and dismissals of label `name`'s service questions after row `afterId`, oldest first (CC-169). */
+  answersFor(name: string, afterId: number, limit: number): ServiceAnswer[]
 
   /** Everything one session did or had done to it, newest last. */
   activityFor(name: string, limit: number): QueueItem[]
@@ -95,6 +110,9 @@ export interface EventStore {
   /** Whether `from` sent any of `to` a message opening with `Status:` or `Verdict:` at or after `since` (CC-266). */
   hasStatusReport(from: string, to: readonly string[], since: number): boolean
 
+  /** The newest of those reports, for the completion hook's facts (CC-763). */
+  lastStatusReport(from: string, to: readonly string[], since: number): QueueItem | undefined
+
   /** When the newest `kind` row about agent `ref` was written, if any (CC-266). */
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined
 
@@ -103,6 +121,9 @@ export interface EventStore {
 
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
+
+  /** Open plain notices and messages to the human written at or before `cutoff` (CC-811), oldest first. */
+  agedOutCandidates(cutoff: number): string[]
 
   /** How many items of one kind this session has outstanding, for budgeting. */
   openCount(actor: string, kind: EventKind): number
@@ -116,11 +137,17 @@ export interface EventStore {
   /** A still-open approval request, with who is blocked on it. Channel rows age out; hook rows do not. */
   openApproval(msgId: string): OpenApproval | undefined
 
+  /** Whether `msgId` names an approval request, whatever its age, meta or state (CC-831). */
+  isApprovalRequest(msgId: string): boolean
+
   /** The questions this session still has outstanding, not just how many. */
   openQuestions(actor: string): QueueItem[]
 
   /** Peer traffic that landed in `name`'s inbox since `since`. */
   inboxCountSince(name: string, since: number): number
+
+  /** CC-524: handoffs since `since` whose teleport went through and whose text nobody has read, newest first. */
+  undeliveredHandoffs(since: number): StoredHandoff[]
 
   /** An open `question` nobody has decided yet: the only thing a decider may answer. */
   undecidedQuestion(msgId: string): QueueItem | undefined
@@ -138,6 +165,9 @@ export interface EventStore {
 
   /** Every row that bears on an agent identity, oldest first. */
   agentEvents(): AgentEventRow[]
+
+  /** The rows `agentEvents` would group under `agentId`, oldest first. */
+  agentEventsFor(agentId: string): AgentEventRow[]
 
   history(limit: number): QueueItem[]
 

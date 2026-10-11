@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { seatDispatchLog, type SeatDispatchLog, type SpawnFacts } from '../agents/seats/dispatch-log.js'
 import { foldDispatch } from '../agents/seats/dispatch-record.js'
+import { UNREAD_OUTCOME } from '../agents/seats/retire-outcome.js'
 
 /**
  * CC-330: the broker's writer of a seat's dispatch log. Every seat, prefix, task id and initiative here is
@@ -92,21 +93,47 @@ describe('the rows the writer appends', () => {
     expect(logged).toEqual([])
   })
 
+  it('writes the planned tier on the dispatched row, and no tier key for a spawn with none', () => {
+    writerOver().dispatched(facts({ tier: 2 }))
+    writerOver().dispatched(facts({ agent: 'sx-cd-34-fix', agent_id: 'id-2' }))
+
+    const [tiered, plain] = rowsOf(logFile('seat-x'))
+    expect(tiered).toMatchObject({ outcome: 'dispatched', tier: 2 })
+    expect(plain).not.toHaveProperty('tier')
+    expect(foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8')).records.map(r => r.tier)).toEqual([
+      2,
+      undefined,
+    ])
+  })
+
+  it('folds a dispatched row written before tier existed', () => {
+    writerOver().dispatched(facts())
+
+    const { records } = foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8'))
+    expect(records).toHaveLength(1)
+    expect(records[0]).not.toHaveProperty('tier')
+  })
+
   it('writes a retired row with the session and spend, which folds with the dispatched row into one record', () => {
     const writer = writerOver()
     const usage = { input: 10, cache_read: 0, cache_write_5m: 0, cache_write_1h: 0, output: 5 }
 
     writer.dispatched(facts())
-    writer.retired(facts(), 'session-1', {
-      tokens: 15,
-      usd_est: 0.01,
-      usage,
-      models: ['model-a'],
-      price_table: 1,
-    })
+    const outcome = {
+      pr: 'example-org/widget#7',
+      head: 'a'.repeat(40),
+      failure_class: 'none',
+      tool_errors: 2,
+    } as const
+    writer.retired(
+      facts(),
+      'session-1',
+      { tokens: 15, usd_est: 0.01, usage, models: ['model-a'], price_table: 1 },
+      outcome,
+    )
 
     const rows = rowsOf(logFile('seat-x'))
-    expect(rows[1]).toMatchObject({ outcome: 'retired', session_id: 'session-1', tokens: 15 })
+    expect(rows[1]).toMatchObject({ outcome: 'retired', session_id: 'session-1', tokens: 15, ...outcome })
     const fold = foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8'))
     expect(fold.records).toHaveLength(1)
     expect(fold.records[0]).toMatchObject({ outcome: 'retired', tokens: 15 })
@@ -137,6 +164,26 @@ describe('task, initiative and kind', () => {
       initiative: 'demo',
       kind: 'agent-tooling',
     })
+  })
+
+  it.each(['seat', 'briefer', 'template'] as const)('records brief:src=%s on the dispatched row', source => {
+    taskFile('demo', 'AB-12', `[brief:ready=2026-10-01, brief:src=${source}]`)
+
+    writerOver().dispatched(facts())
+
+    const [row] = rowsOf(logFile('seat-x'))
+    expect(row).toMatchObject({ briefSource: source })
+    expect(foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8')).records[0]).toMatchObject({
+      briefSource: source,
+    })
+  })
+
+  it('records unknown for a task file with no or a bad brief:src tag', () => {
+    taskFile('demo', 'AB-12', '[brief:src=robot]')
+
+    writerOver().dispatched(facts())
+
+    expect(rowsOf(logFile('seat-x'))[0]).toMatchObject({ briefSource: 'unknown' })
   })
 
   it('keeps the parsed task with null initiative and kind when no task file exists', () => {
@@ -195,7 +242,7 @@ describe('which seat owns the agent', () => {
     const writer = writerOver()
 
     writer.dispatched(facts({ spawner: 'human' }))
-    writer.retired(facts({ spawner: 'human' }), null, { usage_miss: 'no transcript' })
+    writer.retired(facts({ spawner: 'human' }), null, { usage_miss: 'no transcript' }, UNREAD_OUTCOME)
 
     expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
     expect(logged).toEqual(['seat_dispatch_ambiguous'])
@@ -432,7 +479,7 @@ describe('an autonomy root the writer cannot use', () => {
 
     expect(() => {
       writer.dispatched(facts())
-      writer.retired(facts(), null, { usage_miss: 'no transcript' })
+      writer.retired(facts(), null, { usage_miss: 'no transcript' }, UNREAD_OUTCOME)
     }).not.toThrow()
 
     expect(fs.existsSync(missing)).toBe(false)

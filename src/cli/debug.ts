@@ -1,5 +1,5 @@
 import { logPath } from '../paths.js'
-import { type ServerMessage } from '../protocol.js'
+import { WAKE_SOURCES, wakeSource, type ServerMessage } from '../protocol.js'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
 
@@ -44,10 +44,17 @@ export function describeClaims(res: Extract<ServerMessage, { t: 'list_result' }>
   return { ok: true, lines }
 }
 
-export async function send(to: string, words: string[]): Promise<void> {
+export async function send(to: string, words: string[], options: { source?: string } = {}): Promise<void> {
   if (words.length === 0) fail('usage: agent-chat debug send <to> <text>')
+  const source = options.source === undefined ? undefined : wakeSource(options.source)
+  if (options.source !== undefined && source === undefined) {
+    fail(`unknown --source "${options.source}"; known: ${WAKE_SOURCES.join(', ')}`)
+  }
   const res = (await withBroker(b =>
-    b.request({ t: 'human_send', to, text: words.join(' ') }, 'send_result'),
+    b.request(
+      { t: 'human_send', to, text: words.join(' '), ...(source === undefined ? {} : { source }) },
+      'send_result',
+    ),
   )) as Extract<ServerMessage, { t: 'send_result' }>
 
   console.log(res.ok ? `Delivered to ${to} (msg_id ${res.msgId}).` : `Not delivered: ${res.reason}`)

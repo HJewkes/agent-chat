@@ -8,7 +8,7 @@ import type { Action } from './parse.js'
 /** The frame `agent-chat answer <id> <text>` sends; an overrule is the same frame on a decided id. */
 async function answer(msgId: string, text: string, ctx: VerbContext): Promise<Report> {
   const res = (await ctx.withBroker(b =>
-    b.request({ t: 'answer', msgId, text }, 'answer_result'),
+    b.request({ t: 'answer', msgId, text, channel: 'inbox-file' }, 'answer_result'),
   )) as Extract<ServerMessage, { t: 'answer_result' }>
   if (!res.ok) return { ok: false, lines: [], errors: [res.reason ?? 'refused'] }
   return { ok: true, lines: [`Answered ${msgId}.${res.reason ? ` ${res.reason}` : ''}`] }

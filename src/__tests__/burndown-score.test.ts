@@ -259,9 +259,20 @@ describe('route', () => {
     ['no estimate', { done_when: 'x' }, 'triage'],
     ['no done_when', { estimate: 5 }, 'triage'],
     ['estimate 3', { estimate: 3, done_when: 'x' }, 'planner'],
-    ['estimate 2', { estimate: 2, done_when: 'x' }, 'implementer'],
+    ['estimate 2 untagged', { estimate: 2, done_when: 'x' }, 'implementer-lite'],
+    ['estimate 2 kind:feature', { estimate: 2, done_when: 'x', tags: ['kind:feature'] }, 'implementer'],
+    ['estimate 2 other kind', { estimate: 2, done_when: 'x', tags: ['kind:bug'] }, 'implementer-lite'],
+    ['estimate 3 kind:feature', { estimate: 3, done_when: 'x', tags: ['kind:feature'] }, 'planner'],
     ['estimate 1', { estimate: 1, done_when: 'x' }, 'implementer-lite'],
+    ['estimate 1 kind:feature', { estimate: 1, done_when: 'x', tags: ['kind:feature'] }, 'implementer'],
     ['estimate 0', { estimate: 0, done_when: 'x' }, 'implementer-lite'],
+    ['brief:wanted without estimate', { done_when: 'x', tags: ['brief:wanted'] }, 'briefer'],
+    [
+      'brief:wanted already proposed',
+      { estimate: 5, done_when: 'x', tags: ['brief:wanted', 'brief:proposed=2026-10-10'] },
+      'planner',
+    ],
+    ['brief:wanted without done_when', { tags: ['brief:wanted'] }, 'triage'],
   ])('%s routes to %s', (_scenario, fields, expected) => {
     expect(route(task(fields))).toBe(expected)
   })
@@ -616,7 +627,7 @@ describe('scoreAll', () => {
       r.route,
     ])
     expect(summary).toEqual([
-      ['A-1', 93.3, 'security', 'tag', [], [], 'implementer'],
+      ['A-1', 93.3, 'security', 'tag', [], [], 'implementer-lite'],
       ['A-2', 9.2, 'product', 'regex', ['A-1'], ['deploy'], 'planner'],
       ['A-3', 8.1, 'nit', 'regex', [], [], 'triage'],
       ['B-3', 4.8, 'platform', 'default', [], [], 'implementer-lite'],
@@ -654,5 +665,36 @@ describe('scoreAll', () => {
     expect(() =>
       scoreAll([task({ slug: 'elsewhere' })], { a: 1 }, DEFAULTS, { tags: [] }, [], TODAY),
     ).toThrow('no scope weight for initiative elsewhere')
+  })
+})
+
+describe('gate_free_bonus', () => {
+  const withBonus: ScoringDefaults = { ...DEFAULTS, gate_free_bonus: 1.15 }
+  const pair = [task({ id: 'G-1', slug: 'live' }), task({ id: 'G-2', slug: 'dormant' })]
+  const scoreOf = (defaults: ScoringDefaults, dormant: ReadonlySet<string>) => {
+    const { rows } = scoreAll(pair, { live: 1, dormant: 1 }, defaults, { tags: [] }, [], TODAY, dormant)
+    return Object.fromEntries(rows.map(r => [r.id, r.components.G]))
+  }
+
+  it('multiplies a gate-free task by the charter bonus and leaves a dormant one alone', () => {
+    expect(scoreOf(withBonus, new Set(['dormant']))).toEqual({ 'G-1': 1.15, 'G-2': 1 })
+  })
+
+  it('scores two otherwise equal tasks apart by exactly the bonus', () => {
+    const { rows } = scoreAll(
+      pair,
+      { live: 1, dormant: 1 },
+      { ...withBonus, gate_free_bonus: 2 },
+      { tags: [] },
+      [],
+      TODAY,
+      new Set(['dormant']),
+    )
+    const [free, dormant] = [rows.find(r => r.id === 'G-1'), rows.find(r => r.id === 'G-2')]
+    expect(free?.score).toBeCloseTo((dormant?.score ?? 0) * 2, 0)
+  })
+
+  it('applies no bonus when the charter defaults lack the key', () => {
+    expect(scoreOf(DEFAULTS, new Set(['dormant']))).toEqual({ 'G-1': 1, 'G-2': 1 })
   })
 })

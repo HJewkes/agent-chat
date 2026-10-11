@@ -1,0 +1,19 @@
+# Synthetic milestone file in the shape of the factory design, section 4.1. Ids are invented.
+week: 2030-W01
+appetite_days: 7
+milestones:
+  - id: M3
+    rank: 3
+    seat: seat-c
+    gated_by: M2
+  - id: M1
+    rank: 1
+    seat: seat-a
+    epics: [EX-10, EX-20]
+    done_when:
+      - { kind: tasks-done, epic: EX-10, tag: 'wave:0' }
+      - { kind: metric, name: sample_share, window: 20, min: 0.9 }
+  - id: M2
+    rank: 2
+    seat: seat-b
+    epics: [EX-30]

@@ -11,10 +11,12 @@ import type {
   EventKind,
   Provenance,
   QueueItem,
+  ServiceAnswer,
 } from '../protocol.js'
-import type { CursoredMessage, DecisionCitation } from '../protocol.js'
+import { wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
+import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
 import type {
   AgentEventRow,
@@ -138,8 +140,14 @@ const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 /** A return-contract report: `Status:` or a reviewer's `Verdict:`, after any markdown decoration (CC-266). */
 const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*:/i
 
+export type ReportKind = 'status' | 'verdict'
+
+/** Which return-contract report a message opens as, if any (CC-763). */
+export const reportKindOf = (text: string): ReportKind | undefined =>
+  REPORT_OPENING.exec(text)?.[1]?.toLowerCase() as ReportKind | undefined
+
 /** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
-export const isReport = (text: string): boolean => REPORT_OPENING.test(text)
+export const isReport = (text: string): boolean => reportKindOf(text) !== undefined
 
 /** A report that says the sender is finished: a closing return-contract status, or any `Verdict:` (CC-321). */
 const TERMINAL_OPENING =
@@ -176,6 +184,7 @@ function messageText(row: Row, meta: Record<string, string>): string {
 const toMessage = (row: Row): DeliveredMessage => {
   const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
   const decided = row.kind === 'decided'
+  const woken = row.kind === 'message' ? wakeSource(meta.source) : undefined
   return {
     msgId: row.msg_id ?? String(row.id),
     from: row.actor,
@@ -184,6 +193,7 @@ const toMessage = (row: Row): DeliveredMessage => {
     ...(row.ref ? { inReplyTo: row.ref } : {}),
     ...(row.kind === 'broadcast' ? { broadcast: true } : {}),
     ...(meta.event ? { event: meta.event } : {}),
+    ...(woken === undefined ? {} : { wakeSource: woken }),
     // Replayed from the row the broker wrote, so a message re-read from the
     // inbox carries the same marker the live push did. Nothing a client sends
     // reaches `meta`, which is what keeps this as trustworthy on the way out as
@@ -194,12 +204,36 @@ const toMessage = (row: Row): DeliveredMessage => {
   }
 }
 
+const toServiceAnswer = (row: Row): ServiceAnswer => {
+  const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+  return {
+    msgId: row.msg_id ?? String(row.id),
+    questionId: row.ref ?? '',
+    outcome: row.kind === 'answer' ? 'answered' : 'dismissed',
+    text: row.body ?? '',
+    by: 'human',
+    ...(meta.channel ? { channel: meta.channel } : {}),
+    at: row.ts,
+  }
+}
+
 const toQueueItem = (row: Row): QueueItem => ({
   msgId: row.msg_id ?? String(row.id),
   kind: row.kind as QueueItem['kind'],
   from: row.actor,
   text: row.body ?? '',
   at: row.ts,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
+
+const toAgentEventRow = (row: Row): AgentEventRow => ({
+  kind: row.kind as EventKind,
+  ts: row.ts,
+  actor: row.actor,
+  target: row.target,
+  msgId: row.msg_id,
+  ref: row.ref,
+  body: row.body,
   meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
 })
 
@@ -291,6 +325,17 @@ export class EventLog implements EventStore {
     return rows.map(toMessage)
   }
 
+  /**
+   * Position of one of `name`'s own inbox rows by msg_id, for `inbox after`.
+   * Scoped to the target so an id from someone else's inbox cannot be probed.
+   */
+  inboxRowId(name: string, msgId: string): number | undefined {
+    const row = this.db
+      .prepare(`SELECT id FROM events WHERE target = ? AND kind IN (${INBOX_KINDS}) AND msg_id = ? LIMIT 1`)
+      .get(name, msgId) as { id: number } | undefined
+    return row?.id
+  }
+
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[] {
     // Ascending straight out of the query, unlike `inboxFor`: a watcher wants
     // the OLDEST unseen rows, so the limit must cut the far end of a backlog
@@ -303,6 +348,31 @@ export class EventLog implements EventStore {
       )
       .all(name, afterId, limit) as unknown as Row[]
     return rows.map(row => ({ ...toMessage(row), id: row.id }))
+  }
+
+  rowIdOf(msgId: string): number | undefined {
+    const row = this.db.prepare(`SELECT id FROM events WHERE msg_id = ? LIMIT 1`).get(msgId) as
+      { id: number } | undefined
+    return row?.id
+  }
+
+  /**
+   * The join on `ref` is what scopes this: only rows closing a `question` the
+   * label filed as a service. A session's own asks under the same name, and
+   * anything else addressed to it, never appear.
+   */
+  answersFor(name: string, afterId: number, limit: number): ServiceAnswer[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM events a
+         JOIN events q ON q.msg_id = a.ref
+         WHERE a.kind IN ('answer', 'resolution') AND a.id > ?
+           AND q.kind = 'question' AND q.actor = ?
+           AND json_extract(q.meta, '$.source') = 'service'
+         ORDER BY a.id ASC LIMIT ?`,
+      )
+      .all(afterId, name, limit) as unknown as Row[]
+    return rows.map(toServiceAnswer)
   }
 
   /**
@@ -354,14 +424,28 @@ export class EventLog implements EventStore {
   }
 
   hasStatusReport(from: string, to: readonly string[], since: number): boolean {
-    if (to.length === 0) return false
+    return this.lastStatusReport(from, to, since) !== undefined
+  }
+
+  lastStatusReport(from: string, to: readonly string[], since: number): QueueItem | undefined {
+    if (to.length === 0) return undefined
     const rows = this.db
       .prepare(
-        `SELECT body FROM events
-         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})`,
+        `SELECT * FROM events
+         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})
+         ORDER BY id DESC`,
       )
-      .all(from, since, ...to) as { body: string | null }[]
-    return rows.some(row => isReport(row.body ?? ''))
+      .all(from, since, ...to) as unknown as Row[]
+    const row = rows.find(r => isReport(r.body ?? ''))
+    if (row === undefined) return undefined
+    return {
+      msgId: row.msg_id ?? String(row.id),
+      kind: 'message',
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: row.target ? { target: row.target } : {},
+    }
   }
 
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined {
@@ -405,6 +489,19 @@ export class EventLog implements EventStore {
       at: row.ts,
       meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
     }))
+  }
+
+  agedOutCandidates(cutoff: number): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT msg_id FROM events
+         WHERE target = 'human' AND kind IN ('message', 'notice') AND ts <= ?
+           AND json_extract(meta, '$.kind') IS NULL
+           AND msg_id IS NOT NULL AND msg_id NOT IN (${CLOSED})
+         ORDER BY id ASC`,
+      )
+      .all(cutoff) as unknown as { msg_id: string }[]
+    return rows.map(row => row.msg_id)
   }
 
   /** How many items of one kind this session has outstanding, for budgeting. */
@@ -494,6 +591,14 @@ export class EventLog implements EventStore {
     return { source: 'channel', session: row.actor, requestId: meta.request_id, toolName }
   }
 
+  /** Keyed on the row's kind alone: `openApproval`'s age and meta cutoffs say whether a prompt is answerable, not what it is. */
+  isApprovalRequest(msgId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? AND kind = 'approval_request' LIMIT 1`)
+      .get(msgId) as unknown as { hit: number } | undefined
+    return row !== undefined
+  }
+
   /**
    * The questions this session still has outstanding, not just how many.
    *
@@ -538,12 +643,17 @@ export class EventLog implements EventStore {
     return row.n
   }
 
+  undeliveredHandoffs(since: number): StoredHandoff[] {
+    return undeliveredHandoffs(this.db, since)
+  }
+
   /** An open `question` nobody has decided yet: the only thing a decider may answer. */
   undecidedQuestion(msgId: string): QueueItem | undefined {
     const row = this.db
       .prepare(
         `SELECT * FROM events
          WHERE msg_id = ? AND kind = 'question' AND target = 'human'
+           AND json_extract(meta, '$.source') IS NOT 'service'
            AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})
          LIMIT 1`,
       )
@@ -630,16 +740,19 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
       .all() as unknown as Row[]
-    return rows.map(row => ({
-      kind: row.kind as EventKind,
-      ts: row.ts,
-      actor: row.actor,
-      target: row.target,
-      msgId: row.msg_id,
-      ref: row.ref,
-      body: row.body,
-      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
-    }))
+    return rows.map(toAgentEventRow)
+  }
+
+  /** CC-476: one agent's rows, by the same id rule as `groupByAgent`, so a lookup skips the full fold. */
+  agentEventsFor(agentId: string): AgentEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) AND (
+           (kind = 'agent_spawned' AND msg_id = ?) OR (kind <> 'agent_spawned' AND ref = ?)
+         ) ORDER BY id ASC`,
+      )
+      .all(agentId, agentId) as unknown as Row[]
+    return rows.map(toAgentEventRow)
   }
 
   history(limit: number): QueueItem[] {
@@ -655,6 +768,7 @@ export class EventLog implements EventStore {
       meta: {
         ...((row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>),
         ...(row.target ? { target: row.target } : {}),
+        ...(row.ref ? { ref: row.ref } : {}),
       },
     }))
   }

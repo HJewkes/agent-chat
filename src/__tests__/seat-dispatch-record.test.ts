@@ -6,6 +6,7 @@ import {
   type DispatchRun,
   type DispatchSpend,
 } from '../agents/seats/dispatch-record.js'
+import { UNREAD_OUTCOME } from '../agents/seats/retire-outcome.js'
 
 const RECORD_KEYS = [
   'ts',
@@ -22,6 +23,13 @@ const RECORD_KEYS = [
   'usd_est',
   'value',
 ]
+
+const OUTCOME = {
+  pr: 'example-org/widget#12',
+  head: '0123456789abcdef0123456789abcdef01234567',
+  failure_class: 'none',
+  tool_errors: 4,
+} as const
 
 const run = (over: Partial<DispatchRun> = {}): DispatchRun => ({
   ts: '2026-02-03T04:05:00Z',
@@ -52,7 +60,8 @@ const retired = (
   tokens = 1200,
   usdEst: number | null = 0.0123,
   over: Partial<DispatchRun> = {},
-) => retiredRow(run({ ts: '2026-02-03T05:00:00Z', ...over }), sessionId, spend(tokens, usdEst))
+) =>
+  retiredRow(run({ ts: '2026-02-03T05:00:00Z', ...over }), sessionId, spend(tokens, usdEst), UNREAD_OUTCOME)
 
 const seatRow = (over: Record<string, unknown> = {}) => ({
   ts: '2026-02-03T05:30:00Z',
@@ -69,7 +78,10 @@ describe('broker rows', () => {
   it.each([
     ['dispatched', dispatched()],
     ['retired', retired('s-1')],
-    ['retired without a usage read', retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })],
+    [
+      'retired without a usage read',
+      retiredRow(run(), 's-1', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME),
+    ],
   ])('the %s row carries every record key, by and agent_id', (_name, row) => {
     expect(Object.keys(row)).toEqual(expect.arrayContaining([...RECORD_KEYS, 'by', 'agent_id']))
     expect(row.by).toBe('broker')
@@ -105,7 +117,7 @@ describe('broker rows', () => {
   })
 
   it('writes the reason in place of the spend when the usage read failed', () => {
-    const row = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+    const row = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME)
     expect(row).toMatchObject({
       outcome: 'retired',
       tokens: null,
@@ -113,6 +125,49 @@ describe('broker rows', () => {
       usage_miss: 'no transcript written',
     })
     expect(row).not.toHaveProperty('usage')
+  })
+
+  it.each([
+    ['with a usage read', spend(1200, 0.0123)],
+    ['without one', { usage_miss: 'no transcript written' }],
+  ])('writes the pr, head, failure class and tool errors on the retired row %s', (_name, spent) => {
+    const row = retiredRow(run(), 's-1', spent, OUTCOME)
+
+    expect(row).toMatchObject(OUTCOME)
+  })
+
+  it('writes each outcome field as null, and the class as unknown, when nothing was read', () => {
+    expect(retired('s-1')).toMatchObject({
+      pr: null,
+      head: null,
+      failure_class: 'unknown',
+      tool_errors: null,
+    })
+  })
+
+  it('carries the predecessor it is given on the retired row', () => {
+    const row = retiredRow(run({ predecessor: 'sx-ab-12-first' }), 's-1', spend(1, 0), UNREAD_OUTCOME)
+
+    expect(row.predecessor).toBe('sx-ab-12-first')
+  })
+})
+
+describe('the pr a record carries', () => {
+  const broker = () => retiredRow(run(), 's-1', spend(10, 0.001), OUTCOME)
+
+  it("takes the broker's pr when the seat wrote none", () => {
+    const record = fold(dispatched(), broker(), seatRow({ pr: undefined }))
+
+    expect(record.records[0]?.pr).toBe(OUTCOME.pr)
+  })
+
+  it("keeps the seat's own pr over the broker's, written before or after it", () => {
+    expect(fold(dispatched(), broker(), seatRow({ pr: 'example-org/widget#99' })).records[0]?.pr).toBe(
+      'example-org/widget#99',
+    )
+    expect(fold(dispatched(), seatRow({ pr: 'example-org/widget#99' }), broker()).records[0]?.pr).toBe(
+      'example-org/widget#99',
+    )
   })
 })
 
@@ -234,7 +289,7 @@ describe('foldDispatch', () => {
   })
 
   it('keeps an earlier read when a later retire of the session failed to read its usage', () => {
-    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME)
 
     expect(fold(dispatched(), retired('s-1'), miss).records[0]).toMatchObject({
       tokens: 1200,
@@ -383,20 +438,20 @@ describe('foldDispatch', () => {
   })
 
   it('flags usage_partial when a session read missed and its tokens are left out', () => {
-    const miss = retiredRow(run(), 's-2', { usage_miss: 'no transcript written' })
+    const miss = retiredRow(run(), 's-2', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME)
     const { records } = fold(dispatched(), retired('s-1', 1200, 0.0123), miss)
 
     expect(records[0]).toMatchObject({ tokens: 1200, usage_partial: true })
   })
 
   it('flags usage_partial with null tokens when every read missed', () => {
-    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME)
 
     expect(fold(dispatched(), miss).records[0]).toMatchObject({ tokens: null, usage_partial: true })
   })
 
   it('does not flag usage_partial when a later miss follows an earlier read of the same session', () => {
-    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' }, UNREAD_OUTCOME)
 
     expect(fold(dispatched(), retired('s-1'), miss).records[0]?.usage_partial).toBe(false)
   })

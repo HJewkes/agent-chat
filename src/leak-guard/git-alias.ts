@@ -118,7 +118,7 @@ const VALUE_OPTS = new Set([
   '--config-env',
 ])
 /** git's rule for a config variable name, so any other word cannot be an alias. */
-const ALIAS_NAME = /^[A-Za-z][A-Za-z0-9-]*$/
+export const ALIAS_NAME = /^[A-Za-z][A-Za-z0-9-]*$/
 const DIR_ENV: Record<string, string> = { '--git-dir': 'GIT_DIR', '--work-tree': 'GIT_WORK_TREE' }
 
 function optionName(word: string): string {

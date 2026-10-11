@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { briefGateOf } from '../agents/burndown/seat-tick.js'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
 import type { Initiative, Task } from '../agents/burndown/eligibility.js'
@@ -11,8 +12,13 @@ import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
+import { readSlices } from '../agents/burndown/report.js'
+import { sliceClaims } from '../agents/burndown/seed-slices.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
+import { backlogIds, seatScopeOf } from '../agents/burndown/seat-scope.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
+import type { Step } from '../agents/burndown/execute.js'
+import { PLANNER_BRIEF_MAX_BYTES } from '../agents/burndown/brief.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
@@ -104,6 +110,8 @@ const one = (
   patch: Partial<SeatPlanInputs> = {},
 ) => planSeat(inputs([row(id, 50, r)], [task(id, t)], patch))
 
+const withoutEstimate = ({ estimate: _drop, ...rest }: Task): Task => rest
+
 const refusalOf = (plan: ReturnType<typeof planSeat>) => plan.refusals.map(x => [x.task, x.kind])
 
 describe('planSeat dispatch', () => {
@@ -133,6 +141,17 @@ describe('planSeat dispatch', () => {
       expect.objectContaining({ profile: 'bd-planner', cwd: REPO, agentName: 'sa-a-1' }),
     ])
     expect(plan.dispatch[0]?.worktree).toBeUndefined()
+  })
+
+  it('(CC-939) dispatches a brief:wanted task with no estimate as a briefer', () => {
+    const plan = planSeat(
+      inputs(
+        [row('A-1', 50, { route: 'briefer' })],
+        [withoutEstimate(task('A-1', { tags: ['brief:wanted'] }))],
+      ),
+    )
+
+    expect(plan.dispatch).toEqual([expect.objectContaining({ profile: 'bd-planner', briefer: true })])
   })
 
   it('picks the repo a repo: tag names', () => {
@@ -222,6 +241,22 @@ describe('planSeat refusals', () => {
     expect(seen).toEqual([REPO])
   })
 
+  it('hands the check every repo in the seat so a landing in any of them refuses', () => {
+    const listed: (readonly string[] | undefined)[] = []
+    const collision = (_repo: string, _work: unknown, landedRepos?: readonly string[]) => {
+      listed.push(landedRepos)
+      return undefined
+    }
+
+    one('A-1', {}, {}, { collision })
+
+    expect(listed.find(repos => repos !== undefined)).toEqual([
+      REPO,
+      '/tmp/repos/alpha-docs',
+      '/tmp/repos/beta',
+    ])
+  })
+
   it('refuses an orphan found under the seat-prefixed agent name', () => {
     const names: string[] = []
     const orphan = (_repo: string, name: string) => {
@@ -260,6 +295,46 @@ describe('planSeat refusals', () => {
     }
 
     expect(one('A-1', {}, {}, { ledger }).dispatch).toHaveLength(1)
+  })
+
+  describe('implementing claims with no live agent and no PR (CC-978)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        claim('A-7', { agentName: 'sa-a-7' }),
+        claim('A-8', { agentName: 'sa-a-8' }),
+        claim('A-9', { agentName: 'sa-a-9', pr: 'o/r#9' }),
+      ],
+    }
+    const liveAgent = (name: string | undefined) => name === 'sa-a-7'
+
+    it('leaves a dead claim with no PR out of the cap, and counts a live one and one with a PR', () => {
+      const plan = one('A-1', {}, {}, { ledger, liveAgent })
+
+      expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 3)')
+      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 3)')
+    })
+
+    it('dispatches into the slot a dead claim no longer holds', () => {
+      const dead = { ...ledger, claims: ledger.claims.slice(0, 2) }
+
+      expect(one('A-1', {}, {}, { ledger: dead, liveAgent }).dispatch).toHaveLength(1)
+    })
+
+    it('counts a dead claim whose ladder respawn is about to spawn its successor', () => {
+      const respawn = { code: 'phase-timeout' as const, occurrence: '2026-09-29T09:00:00.000Z' }
+      const [live, dead] = ledger.claims as [Claim, Claim]
+      const respawning = { ...ledger, claims: [live, { ...dead, respawn }] }
+
+      expect(refusalOf(one('A-1', {}, {}, { ledger: respawning, liveAgent }))).toEqual([['A-1', 'role-cap']])
+    })
+
+    it('counts every implementing claim when there is no roster', () => {
+      const dead = { ...ledger, claims: ledger.claims.slice(0, 2) }
+
+      expect(refusalOf(one('A-1', {}, {}, { ledger: dead }))).toEqual([['A-1', 'role-cap']])
+    })
   })
 
   it('stops at the role cap within one plan', () => {
@@ -557,11 +632,53 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         seat: 'seat-a',
         repo: REPO,
         agentName: 'sa-a-1-b',
-        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'] },
+        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'], contracts: [] },
       },
       { seat: 'seat-a', repo: REPO, agentName: 'sa-a-5', work: { taskId: 'A-5', tags: ['api'], owns: [] } },
     ])
     expect(seen).toEqual(plan.claims.map(c => c.work))
+  })
+
+  it('dispatches one of two ready sibling slices that clash on a scope and refuses the other (CC-710)', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b'])
+    expect(plan.refusals).toEqual([expect.objectContaining({ task: 'A-1', kind: 'contract-overlap' })])
+  })
+
+  it('dispatches two ready sibling slices whose contracts are both additive', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it("passes a ready slice's contracts to the collision check (CC-710)", () => {
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1', { contracts })] }
+    const seen: { contracts?: unknown }[] = []
+    const collision = (_repo: string, work: { contracts?: unknown }) => (seen.push(work), undefined)
+
+    planSeat(inputs([row('A-5', 50)], [task('A-1'), task('A-5')], { ledger, collision }))
+
+    expect(seen[0]?.contracts).toEqual(contracts)
   })
 })
 
@@ -611,6 +728,55 @@ describe('seat seams from the CC-246 review', () => {
         frame: expect.objectContaining({ name: 'sa-a-1', configDir: '/tmp/pool-x' }),
       }),
     ])
+  })
+
+  it('(c) carries the planned tier on the spawn frame, and leaves it off when the plan placed none', () => {
+    const d: Dispatch = {
+      initiative: 'alpha',
+      task: 'A-1',
+      profile: 'bd-implementer',
+      account: 'pool-x',
+      cwd: `${REPO}/.worktrees/sa-a-1`,
+      repo: REPO,
+      agentName: 'sa-a-1',
+      worktree: `${REPO}/.worktrees/sa-a-1`,
+      reason: 'test',
+      seat: 'seat-a',
+      namePrefix: 'sa',
+      configDir: '/tmp/pool-x',
+    }
+    const frameOf = (dispatch: Dispatch): Record<string, unknown> => {
+      const steps = stepsForDispatch(dispatch, stepContext())
+      const spawn = (steps as Step[]).find(s => s.kind === 'spawn')
+      return (spawn as Extract<Step, { kind: 'spawn' }>).frame as unknown as Record<string, unknown>
+    }
+
+    expect(frameOf({ ...d, tier: 2 })).toMatchObject({ tier: 2 })
+    expect(frameOf(d)).not.toHaveProperty('tier')
+  })
+
+  it('(CC-939) spawns the planner profile with the brief writer brief for a brief:wanted task', () => {
+    const d: Dispatch = {
+      initiative: 'alpha',
+      task: 'A-1',
+      profile: 'bd-planner',
+      briefer: true,
+      account: 'pool-x',
+      cwd: REPO,
+      repo: REPO,
+      agentName: 'sa-a-1',
+      reason: 'test',
+      seat: 'seat-a',
+      namePrefix: 'sa',
+    }
+    const steps = stepsForDispatch(d, stepContext()) as Step[]
+    const spawn = steps.find(s => s.kind === 'spawn') as Extract<Step, { kind: 'spawn' }>
+    const { brief } = spawn.frame as unknown as { brief: string }
+
+    expect(steps[0]).toMatchObject({ actions: [{ claims: [expect.objectContaining({ briefer: true })] }] })
+    expect(brief).toContain('/tmp/aw/alpha/sources/A-1-plan.md')
+    expect(brief).toContain('brief:proposed=<today>')
+    expect(Buffer.byteLength(brief)).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)
   })
 })
 
@@ -663,5 +829,428 @@ function stepContext(): StepContext {
     trust: () => undefined,
     taskText: () => 'id: A-1',
     readFile: () => undefined,
+    running: () => false,
   }
 }
+
+describe('planSeat stop the line (CC-629)', () => {
+  const stop = { previous: 'not loaded', current: 'not loaded', message: 'serve is not loaded' }
+  const expedite = { tags: ['cos:expedite'] }
+
+  it('refuses every implementer row but cos:expedite on a stopped line, before collision', () => {
+    const collision = () => ({ kind: 'file-overlap' as const, reason: 'overlaps' })
+    const rows = [row('A-1', 60), row('A-2', 50, { route: 'implementer-lite' }), row('A-3', 40)]
+    const tasks = [task('A-1'), task('A-2'), task('A-3', expedite)]
+
+    const plan = planSeat(inputs(rows, tasks, { lineStop: stop }))
+    const withCollision = planSeat(inputs(rows, tasks, { lineStop: stop, collision }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-3'])
+    expect(refusalOf(plan)).toEqual([
+      ['A-1', 'stop-line'],
+      ['A-2', 'stop-line'],
+    ])
+    expect(plan.refusals[0]?.reason).toBe(
+      'service check failed twice (not loaded, then not loaded): serve is not loaded; only cos:expedite dispatches',
+    )
+    expect(refusalOf(withCollision).slice(0, 2)).toEqual([
+      ['A-1', 'stop-line'],
+      ['A-2', 'stop-line'],
+    ])
+  })
+
+  it("dispatches a ready slice of an expedite task on a stopped line, and refuses another's", () => {
+    const queued = (taskId: string) => claim(taskId, { phase: 'queued', slice: 'b', owns: [] })
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1'), queued('A-2')] }
+    const tasks = [task('A-1', expedite), task('A-2')]
+
+    const plan = planSeat(inputs([], tasks, { ledger, lineStop: stop, tasks: new Map([['alpha', tasks]]) }))
+
+    expect(plan.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
+    expect(refusalOf(plan)).toEqual([['A-2', 'stop-line']])
+  })
+})
+
+describe('planSeat seat scope (CC-779)', () => {
+  const policy = (patch: Record<string, unknown>) =>
+    ({ initiatives: {}, scope_tags: [], ...patch }) as unknown as SeatPolicy
+  const SEATS = {
+    'seat-a': policy({ initiatives: { alpha: 1, beta: 1 }, scope_tags: ['lane:a'], backlog: 'backlog.md' }),
+    'seat-b': policy({ initiatives: { alpha: 1 } }),
+  }
+  const scoped = (backlog: string[] = []) => seatScopeOf(SEATS, 'seat-a', new Set(backlog))
+
+  it('refuses a task in a shared initiative that carries none of the scope tags, with the reason', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped() })
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-1',
+        kind: 'out-of-scope',
+        reason: expect.stringMatching(/scope_tags \[lane:a\] and backlog\.md does not name it/),
+      }),
+    ])
+  })
+
+  it('keeps a task the backlog names, whatever its tags', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped(['A-1']) })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('keeps a task carrying a scope tag, and every task of an initiative no other seat lists', () => {
+    const rows = [row('A-1', 50), row('B-1', 40, { initiative: 'beta' })]
+    const plan = planSeat(inputs(rows, [task('A-1', { tags: ['lane:a'] }), task('B-1')], { scope: scoped() }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'B-1'])
+  })
+
+  it('reads the task IDs a backlog file names', () => {
+    expect([...backlogIds('1. Take CC-12 first, then AB-3; not cc-4 or X-y.')]).toEqual(['CC-12', 'AB-3'])
+  })
+})
+
+describe('planSeat hand spawns against the caps (CC-779)', () => {
+  const agent = (name: string, profile: string, state: AgentLifecycle = 'live'): AgentIdentity =>
+    ({ name, profile, state, cwd: '/tmp/elsewhere', spawnedAt: 1 }) as AgentIdentity
+  const seat = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }
+
+  it('fills a cap of three with two live hand spawns and one claim', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [claim('A-9', { agentName: 'sa-a-9' })] }
+    const agents = [agent('sa-cc-1-fix', 'implementer'), agent('sa-hand-2', 'opus-implementer')]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    expect(plan.refusals[0]?.reason).toMatch(/holds 3 of 3 implementers/)
+  })
+
+  it('does not count again an agent a claim holds, nor exited, other-prefix or roleless agents', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [claim('A-9', { agentName: 'sa-a-9', spawned: ['sa-a-9'] })],
+    }
+    const agents = [
+      agent('sa-a-9', 'implementer'),
+      agent('sa-a-9-s1', 'implementer'),
+      agent('sa-done', 'implementer', 'exited'),
+      agent('sb-other', 'implementer'),
+      agent('sa-architect', 'fable-architect'),
+    ]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+})
+
+describe('planSeat brief gate (CC-925)', () => {
+  const gate = (mode: 'shadow' | 'on') => ({ brief: { gate: mode, maxAgeDays: 14 } })
+
+  it('dispatches an untagged task and notes nothing with no gate', () => {
+    const plan = one('A-1')
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.notes).toEqual([])
+  })
+
+  it('dispatches an untagged task under shadow and notes that on would refuse it', () => {
+    const plan = one('A-1', {}, {}, gate('shadow'))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-brief alpha A-1 \(seat seat-a\)/)])
+  })
+
+  it('notes a stale brief under shadow and nothing for a fresh one', () => {
+    const rows = [row('A-1', 50), row('A-2', 40)]
+    const tasks = [
+      task('A-1', { tags: ['brief:ready=2026-09-01'] }),
+      task('A-2', { tags: ['brief:ready=2026-09-28'] }),
+    ]
+
+    const plan = planSeat(inputs(rows, tasks, gate('shadow')))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-2'])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse brief-stale alpha A-1 /)])
+  })
+
+  it('refuses an untagged task and a stale brief under on, and dispatches a fresh one', () => {
+    const rows = [row('A-1', 50), row('A-2', 40), row('A-3', 30)]
+    const tasks = [
+      task('A-1'),
+      task('A-2', { tags: ['brief:ready=2026-09-01'] }),
+      task('A-3', { tags: ['brief:ready=2026-09-28'] }),
+    ]
+
+    const plan = planSeat(inputs(rows, tasks, gate('on')))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-3'])
+    expect(refusalOf(plan)).toEqual([
+      ['A-1', 'no-brief'],
+      ['A-2', 'brief-stale'],
+    ])
+    expect(plan.notes).toEqual([])
+  })
+})
+
+describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
+  const PLAN = '/tmp/alpha/sources/A-1-plan.md'
+  const SLICE = { n: 'a', title: 'x', points: 2, doneWhen: 'x renders.', dependsOn: [], owns: ['src/x.ts'] }
+  const planText = '```burndown-slices\n' + JSON.stringify([SLICE]) + '\n```\n'
+  const readPlan = (text: string | undefined) => () => ({ path: PLAN, text })
+  const brief = (gate: 'shadow' | 'on', text: string | undefined, tags = ['brief:ready=2026-09-28']) =>
+    one('A-1', { tags }, {}, { brief: { gate, maxAgeDays: 14 }, readPlan: readPlan(text) })
+
+  it('seeds an implementer-routed task from its plan with the owns it declares, and dispatches nothing', () => {
+    const plan = brief('on', planText)
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([])
+    expect(plan.seeds.map(c => [c.taskId, c.slice, c.phase, c.owns])).toEqual([
+      ['A-1', 'a', 'queued', ['src/x.ts']],
+    ])
+  })
+
+  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+    const plan = brief('on', undefined)
+
+    expect(plan.dispatch).toEqual([])
+    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
+    expect(plan.refusals[0]?.reason).toContain(PLAN)
+  })
+
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+    const plan = brief('shadow', undefined)
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+  })
+
+  it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
+    expect(brief('shadow', planText).notes).toEqual([])
+    expect(brief('shadow', undefined, []).notes).toEqual([
+      expect.stringMatching(/^would-refuse no-brief alpha A-1 /),
+    ])
+  })
+})
+
+describe('planSeat ready order (CC-926)', () => {
+  const FRESH = 'brief:ready=2026-09-28'
+  const WIDE = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }
+  const gate = (mode: 'shadow' | 'on') => ({ brief: { gate: mode, maxAgeDays: 14 } })
+  const threeReady = () => ({
+    rows: [row('A-5', 10), row('A-1', 50), row('A-9', 90)],
+    tasks: [
+      task('A-5', { priority: 5, tags: [FRESH] }),
+      task('A-1', { priority: 1, tags: [FRESH] }),
+      task('A-9', { priority: 9, tags: [FRESH] }),
+    ],
+  })
+
+  it('dispatches ready tasks by priority under on, against inverse scores', () => {
+    const { rows, tasks } = threeReady()
+
+    const plan = planSeat(inputs(rows, tasks, { ...gate('on'), seat: WIDE }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-5', 'A-9'])
+  })
+
+  it('keeps the scorer order when the gate is off or shadow', () => {
+    const { rows, tasks } = threeReady()
+
+    for (const patch of [{}, gate('shadow')]) {
+      const plan = planSeat(inputs(rows, tasks, { ...patch, seat: WIDE }))
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-9', 'A-1', 'A-5'])
+    }
+  })
+
+  it('lets an expedite row go first under on', () => {
+    const { rows, tasks } = threeReady()
+    tasks[2] = task('A-9', { priority: 9, tags: [FRESH, 'cos:expedite'] })
+    const order = {
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        priority: t.priority ?? 1,
+        tags: t.tags,
+        slug: 'alpha',
+      })),
+      today: '2026-09-29',
+    }
+
+    const plan = planSeat(
+      inputs(rows, tasks, {
+        ...gate('on'),
+        order,
+        seat: WIDE,
+      }),
+    )
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-9', 'A-1', 'A-5'])
+  })
+
+  describe('aging slot (CC-928)', () => {
+    const OLD = 'brief:ready=2026-09-26'
+    const aged = (id: string, priority: number, tags = [OLD]) => task(id, { priority, tags })
+    const stream = () => ({
+      rows: [row('A-1', 90), row('A-2', 80), row('A-3', 70), row('A-50', 5), row('A-51', 4)],
+      tasks: [
+        aged('A-1', 1, [FRESH]),
+        aged('A-2', 1, [FRESH]),
+        aged('A-3', 1, [FRESH]),
+        aged('A-50', 50),
+        aged('A-51', 51, ['brief:ready=2026-09-27']),
+      ],
+    })
+    const withAging = (patch: Partial<SeatPlanInputs> = {}, oldest: Partial<ScoreRow> = {}) => {
+      const { rows, tasks } = stream()
+      rows[3] = row('A-50', 5, oldest)
+      return planSeat(inputs(rows, tasks, { brief: { gate: 'on', maxAgeDays: 14, agingEvery: 3 }, ...patch }))
+    }
+
+    const doneTwice = [claim('X-1', { phase: 'done' }), claim('X-2', { phase: 'done' })]
+    const one = { ...SEAT, caps: { ...SEAT.caps, implementers: 1 } }
+
+    it('dispatches the longest-ready task in the slot, counting prior picks this run', () => {
+      const ledger = { ...EMPTY_LEDGER, claims: doneTwice }
+
+      const plan = withAging({ ledger, seat: one })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-50'])
+    })
+
+    it('offers the slot to the next-oldest task when the oldest is refused by the walk', () => {
+      const ledger = { ...EMPTY_LEDGER, claims: doneTwice }
+
+      const plan = withAging({ ledger, seat: one }, { stopShort: ['hard stop'] })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-51'])
+    })
+
+    it('takes the window from the config maxAgents', () => {
+      const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
+
+      expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+      })
+    })
+
+    it('does not spend the slot on a task already claimed', () => {
+      const ledger = {
+        ...EMPTY_LEDGER,
+        claims: [
+          ...doneTwice,
+          claim('A-50', { phase: 'implementing', spawnedAt: '2026-09-28T09:00:00.000Z' }),
+        ],
+      }
+
+      const plan = withAging({ ledger, seat: { ...SEAT, caps: { ...SEAT.caps, implementers: 2 } } })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-51'])
+    })
+  })
+})
+
+describe('planSeat hand reserve (CC-936)', () => {
+  const agent = (name: string, profile: string): AgentIdentity =>
+    ({ name, profile, state: 'live', cwd: '/tmp/elsewhere', spawnedAt: 1 }) as AgentIdentity
+  const seat = { ...SEAT, caps: { ...SEAT.caps, implementers: 12 } }
+  const held = (n: number): Ledger => ({
+    ...EMPTY_LEDGER,
+    claims: Array.from({ length: n }, (_, i) => claim(`H-${i}`, { agentName: `sa-h-${i}` })),
+  })
+
+  it('lets the tick fill the cap minus the reserve', () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(9), handReserve: 2 })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('refuses the tick once it holds the cap minus the reserve', () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(10), handReserve: 2 })
+
+    expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    expect(plan.refusals[0]?.reason).toMatch(/holds 10 tick implementers of 10; handReserve keeps 2 of 12/)
+  })
+
+  it('does not count hand spawns against the tick share', () => {
+    const agents = [agent('sa-hand-1', 'implementer'), agent('sa-hand-2', 'implementer')]
+
+    const plan = one('A-1', {}, {}, { seat, ledger: held(9), agents, handReserve: 2 })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it("keeps today's behaviour with no reserve", () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(10) })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+})
+
+describe('planSeat ready-slice placement (CC-946)', () => {
+  const queued = (taskId: string, patch: Partial<Claim> = {}): Claim =>
+    claim(taskId, { phase: 'queued', slice: 'a', owns: ['packages/cli/src/x.ts'], ...patch })
+  const plan = (claims: Claim[], tags: string[], over: Partial<SeatPlanInputs> = {}) =>
+    planSeat(
+      inputs([], [], {
+        tasks: new Map([['alpha', [task('A-1', { tags })]]]),
+        ledger: { ...EMPTY_LEDGER, claims },
+        ...over,
+      }),
+    )
+  const kinds = (p: ReturnType<typeof planSeat>) => p.refusals.map(r => [r.task, r.kind])
+
+  it('refuses a ready slice whose task carries the blocked tag', () => {
+    const planned = plan([queued('A-1')], ['blocked'])
+
+    expect(planned.dispatch).toEqual([])
+    expect(kinds(planned)).toEqual([['A-1', 'blocked']])
+  })
+
+  it("dispatches into the plan's repo over the initiative's first checkout", () => {
+    const planned = plan([queued('A-1', { repo: 'alpha-docs' })], [])
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/alpha-docs'])
+  })
+
+  it('places a slice by the one checkout holding what it owns', () => {
+    const pathExists = (repo: string) => repo === '/tmp/repos/beta'
+
+    const planned = plan([queued('A-1')], [], { pathExists })
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/beta'])
+  })
+
+  it('refuses as repo-ambiguous when the plan and a repo: tag disagree', () => {
+    const planned = plan([queued('A-1', { repo: 'alpha-docs' })], ['repo:alpha-app'])
+
+    expect(planned.dispatch).toEqual([])
+    expect(kinds(planned)).toEqual([['A-1', 'repo-ambiguous']])
+  })
+
+  it('keeps the tag-chosen repo when the plan names none', () => {
+    const planned = plan([queued('A-1')], ['repo:alpha-docs'])
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/alpha-docs'])
+  })
+
+  it("names the plan's repo when the seat does not list it", () => {
+    const planned = plan([queued('A-1', { repo: 'elsewhere' })], [])
+
+    expect(planned.refusals).toEqual([
+      expect.objectContaining({ kind: 'no-repo', reason: 'seat seat-a lists no repo elsewhere for alpha' }),
+    ])
+  })
+
+  it('carries a slice repo from the plan into its claim', () => {
+    const text =
+      '```burndown-slices\n[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["x.ts"],"repo":"alpha-docs"}]\n```\n'
+    const { slices } = readSlices(text)
+
+    expect(sliceClaims({ taskId: 'A-1', initiative: 'alpha' }, slices ?? [], NOW)[0]?.repo).toBe('alpha-docs')
+  })
+})

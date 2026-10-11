@@ -1,107 +1,31 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 import { findRealGit, GIT_SHIM_DIR_ENV, gitShimScript, writeGitShim } from '../leak-guard/git-shim.js'
-import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
+import {
+  type GitShimFixture as Fixture,
+  gitShimHarness,
+  HOST_PATH,
+  NO_VERIFY,
+} from './helpers/git-shim-fixture.js'
+import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
  * TP-596, against real git, temp repos and a local bare remote. Each push test names the
  * mutation of the shim it kills; the negative controls are in the PR description.
  */
 
-const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-git-shim-')))
+const harness = gitShimHarness()
+const { scratch: SCRATCH, realGit: REAL_GIT, git, runScript, remoteHasMain } = harness
 
-afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
+// Every shell alias these tests define is listed, so they exercise args_push and mentions_push, not the CC-613 allowlist gate.
+const LISTED_SHELL_ALIASES = ['g', 'p', 'ev', 'hi', 'ci', 'sp', 'ship']
 
-const isAgentShim = (dir: string): boolean => {
-  try {
-    return fs.readFileSync(path.join(dir, 'git'), 'utf8').includes('# Written by agent-chat')
-  } catch {
-    return false
-  }
-}
-
-/** PATH without an agent session's own shim, so the shim under test never execs a second shim (CC-442). */
-const HOST_PATH = (process.env.PATH ?? '')
-  .split(path.delimiter)
-  .filter(dir => !isAgentShim(dir))
-  .join(path.delimiter)
-
-const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
-const NO_VERIFY = ['--no', 'verify'].join('-')
-
-const git = (cwd: string, ...args: string[]): string =>
-  execFileSync(REAL_GIT, args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } })
-
-interface Fixture {
-  work: string
-  remote: string
-  guard: string
-  shimDir: string
-  marker: string
-  env: Record<string, string> & { PATH: string }
-}
-
-let count = 0
-
-/** A repo with one commit, a bare remote, a guard dir whose pre-push leaves a marker, and the shim. */
-function fixture(): Fixture {
-  const root = path.join(SCRATCH, `case-${++count}`)
-  const work = path.join(root, 'work')
-  const remote = path.join(root, 'remote.git')
-  const guard = path.join(root, 'git-hooks')
-  const shimDir = path.join(root, 'git-bin')
-  const home = path.join(root, 'home')
-  const marker = path.join(root, 'pre-push-ran')
-  for (const dir of [work, guard, home]) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(guard, 'pre-push'), `#!/bin/sh\ncat >/dev/null\ntouch '${marker}'\n`, {
-    mode: 0o755,
-  })
-  git(root, 'init', '-q', '--bare', remote)
-  git(work, 'init', '-q', '-b', 'main')
-  git(
-    work,
-    '-c',
-    'user.name=t',
-    '-c',
-    'user.email=t@example.com',
-    'commit',
-    '-q',
-    '--allow-empty',
-    '-m',
-    'one',
-  )
-  git(work, 'remote', 'add', 'origin', remote)
-  git(work, 'remote', 'add', 'net', 'ssh://git.invalid/remote.git')
-  expect(writeGitShim(shimDir, guard, HOST_PATH)).toBe(true)
-  const env = {
-    PATH: `${shimDir}:/usr/bin:/bin`,
-    HOME: home,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_SSH_COMMAND: 'false',
-    GIT_TERMINAL_PROMPT: '0',
-    ...gitHooksEnv(guard),
-  }
-  return { work, remote, guard, shimDir, marker, env }
-}
-
-/** Runs a script file, as make or an npm script would; a recursing shim is killed by the timeout. */
-function runScript(
-  fx: Fixture,
-  body: string,
-): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
-  const script = path.join(fx.work, '..', `script-${++count}.sh`)
-  fs.writeFileSync(script, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
-  return spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 })
-}
-
-const remoteHasMain = (fx: Fixture): boolean =>
-  spawnSync(REAL_GIT, ['--git-dir', fx.remote, 'rev-parse', '-q', '--verify', 'refs/heads/main']).status === 0
+const fixture = (): Fixture => harness.fixture(LISTED_SHELL_ALIASES)
 
 describe('the agent git shim refusing pushes that skip the leak scan', () => {
   // Kills: the argv check removed.
@@ -235,6 +159,24 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
 
     const run = runScript(fx, command)
 
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  // At 446bc7a4 these arguments passed the shim and the alias body's eval assembled push.
+  it.each([
+    ['command substitution', '$(echo pu)sh'],
+    ['variable expansion', '${P:-pu}sh'],
+    ['bare variable', '$P'],
+    ['backtick substitution', '`echo pu`sh'],
+    ['brace expansion', '{pu,}sh'],
+  ])('refuses a shell alias whose eval could build push from %s', (_form, arg) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+
+    const run = runScript(fx, `git ev '${arg}' origin main`)
+
+    expect(run.status).toBe(2)
     expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
     expect(remoteHasMain(fx)).toBe(false)
   })
@@ -555,6 +497,7 @@ describe('where the agent git shim is put on PATH', () => {
     profile,
     brief: 'brief',
     cwd: '/repo',
+    cwdHoldsUserSettings: false,
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
     ...over,
   })
@@ -604,10 +547,13 @@ describe('where the agent git shim is put on PATH', () => {
     }
     fs.mkdirSync(path.join(state, 'agents', 'agt-test'), { recursive: true })
     fs.writeFileSync(path.join(state, 'agents', 'agt-test', 'plan.json'), JSON.stringify(plan))
-    const run = spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
-      encoding: 'utf8',
-      env: { PATH: '/usr/bin:/bin', AGENT_CHAT_HOME: state, AGENT_CHAT_CLAUDE: process.execPath },
-    })
+    const run = expectSpawned(
+      spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
+        encoding: 'utf8',
+        env: { PATH: '/usr/bin:/bin', AGENT_CHAT_HOME: state, AGENT_CHAT_CLAUDE: process.execPath },
+      }),
+      'run-agent agt-test',
+    )
     return run.stdout.split(':')
   }
 

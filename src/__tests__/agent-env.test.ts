@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { agentEnv, isSecretName } from '../agents/agent-env.js'
 
@@ -96,6 +101,8 @@ describe('isSecretName', () => {
   })
 })
 
+const tmp = { tmpDir: () => '/var/folders/xx/T/' }
+
 describe('agentEnv', () => {
   it('passes ordinary variables through and drops the credentials', () => {
     const env = agentEnv({
@@ -105,20 +112,83 @@ describe('agentEnv', () => {
       AWS_SECRET_ACCESS_KEY: 'aws_secret',
     })
 
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/Users/test' })
+    expect(env).toMatchObject({ HOME: '/Users/test' })
+    expect(Object.keys(env)).not.toContain('NPM_TOKEN')
+    expect(Object.keys(env)).not.toContain('AWS_SECRET_ACCESS_KEY')
   })
 
   it('drops undefined values rather than passing them to spawn', () => {
     // process.env is typed as possibly-undefined per key, and an explicit
     // undefined is not the same thing as an absent key.
-    expect(agentEnv({ PATH: '/usr/bin', EMPTY: undefined })).toEqual({
-      PATH: '/usr/bin',
-    })
+    expect(Object.keys(agentEnv({ PATH: '/usr/bin', EMPTY: undefined }, tmp))).not.toContain('EMPTY')
   })
 
   it('reads the real environment by default without mutating it', () => {
     const before = { ...process.env }
     agentEnv()
     expect({ ...process.env }).toEqual(before)
+  })
+
+  it('sets TMPDIR from the resolver when the parent has none', () => {
+    expect(agentEnv({ PATH: '/usr/bin' }, tmp).TMPDIR).toBe('/var/folders/xx/T/')
+  })
+
+  it('keeps a TMPDIR the parent set', () => {
+    const tmpDir = () => {
+      throw new Error('resolver must not run')
+    }
+    expect(agentEnv({ TMPDIR: '/custom/tmp' }, { tmpDir }).TMPDIR).toBe('/custom/tmp')
+  })
+
+  it('appends only the missing required dirs and keeps the existing order first', () => {
+    const { PATH } = agentEnv({ PATH: '/shim:/usr/bin:/custom' }, tmp)
+
+    expect(PATH).toBe('/shim:/usr/bin:/custom:/opt/homebrew/bin:/usr/local/bin:/bin:/usr/sbin:/sbin')
+  })
+
+  it('builds the full PATH when the parent has none', () => {
+    expect(agentEnv({}, tmp).PATH).toBe('/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin')
+  })
+
+  it('puts the node compile cache under HOME when the parent sets none', () => {
+    const env = agentEnv({ HOME: '/home/test', TMPDIR: '/tmp' })
+    expect(env.NODE_COMPILE_CACHE).toBe('/home/test/.cache/node-compile-cache')
+  })
+
+  it('keeps a NODE_COMPILE_CACHE the parent set', () => {
+    const env = agentEnv({ HOME: '/home/test', TMPDIR: '/tmp', NODE_COMPILE_CACHE: '/custom/cache' })
+    expect(env.NODE_COMPILE_CACHE).toBe('/custom/cache')
+  })
+})
+
+describe('agentEnv compile cache on a real node run', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-env-ncc-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('leaves no node-compile-cache in TMPDIR', () => {
+    const home = path.join(root, 'home')
+    const tmpDir = path.join(root, 'tmp')
+    fs.mkdirSync(home)
+    fs.mkdirSync(tmpDir)
+    const module = path.join(root, 'loaded.cjs')
+    fs.writeFileSync(module, 'module.exports = 42\n')
+    const { NODE_COMPILE_CACHE: _ignored, ...parent } = process.env
+    const env = agentEnv({ ...parent, HOME: home, TMPDIR: tmpDir })
+
+    execFileSync(
+      process.execPath,
+      ['-e', `require('node:module').enableCompileCache(); require(${JSON.stringify(module)})`],
+      { env },
+    )
+
+    expect(fs.readdirSync(tmpDir)).not.toContain('node-compile-cache')
+    expect(fs.readdirSync(path.join(home, '.cache'))).toContain('node-compile-cache')
   })
 })

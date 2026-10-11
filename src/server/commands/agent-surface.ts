@@ -32,7 +32,9 @@ export const agentSurface = defineTool({
         ? 'a new iTerm window'
         : res.surface === 'iterm-tab'
           ? 'a new iTerm tab'
-          : 'a pane in your window'
+          : res.surface === 'tmux-window'
+            ? 'a new tmux window'
+            : 'a pane in your window'
     return (
       `${res.name} is now in ${where}, resumed on its existing conversation and keeping its name. ` +
       'The turn it was part way through was interrupted by the switch. If it was stuck on a ' +

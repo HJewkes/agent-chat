@@ -20,6 +20,8 @@ export interface BatchItem {
   details: string[]
   /** An endorsement's recipient, which approving it restates (CC-418). */
   recipient?: string
+  /** A service ask (CC-169): the label is not vouched for and no session waits on it live. */
+  service?: true
   /** The unlock-table row this item touches; such an item is never prefilled. */
   unlock?: string
   /** The answer line's starting value, which feeding the file back unedited sends. */
@@ -75,6 +77,7 @@ function fromQueue(item: QueueItem): Unnumbered | undefined {
     ...base,
     details: detailsOf(item),
     ...(recipient === undefined ? {} : { recipient }),
+    ...(item.meta.source === 'service' ? { service: true as const } : {}),
     ...(unlock === undefined ? {} : { unlock }),
   }
   const prefill = prefillOf(withUnlock)

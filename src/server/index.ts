@@ -13,7 +13,7 @@ import type {
 import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
-import { hostIdentity, isLaunchedProcess } from './host.js'
+import { hostIdentity, hostMarker, isLaunchedProcess } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
@@ -214,6 +214,7 @@ async function registerSpawned(broker: BrokerClient, spawned: SpawnedIdentity): 
         // it: a pane agent's Claude Code process has no pid anywhere else, since
         // the surface hands back a pane rather than a child.
         ...hostIdentity(),
+        ...hostMarker(),
         // CC-11. A spawned agent is the case this matters most for: it usually
         // runs in a worktree of its own, and the branch is the fastest way for a
         // peer to see whether it is somewhere its edits can collide.
@@ -278,6 +279,7 @@ async function readopt(broker: BrokerClient): Promise<string | undefined> {
         pid: process.pid,
         build: cliEntry(),
         ...(host.hostPid === undefined ? {} : { hostPid: host.hostPid }),
+        ...hostMarker(),
         ...(await observedRegistration()),
         ...terminalAnchor(),
       },
@@ -333,6 +335,7 @@ async function registerProvisionally(broker: BrokerClient): Promise<string | und
         pid: process.pid,
         provisional: true,
         ...host,
+        ...hostMarker(),
         ...observed,
         ...terminalAnchor(),
         build: cliEntry(),
@@ -375,6 +378,29 @@ export function batchMeta(batch: NonNullable<DeliveredMessage['batch']>): Record
     senders: batch.map(m => m.from).join(','),
     msg_ids: batch.map(m => m.msgId).join(','),
   }
+}
+
+/** The channel tag's attributes for one delivered message; keys stay in [A-Za-z0-9_] or Claude Code drops them. */
+export function channelMeta(message: DeliveredMessage): Record<string, string> {
+  const meta = senderMeta(message)
+  if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
+  if (message.broadcast) meta.broadcast = 'true'
+  // Who else was told the same thing, so three recipients do not each answer
+  // as though they were the only one asked. Multicast only; a broadcast
+  // already says "everyone" and a directed send has an audience of one.
+  if (message.audience) meta.audience = message.audience.join(',')
+  // Model-visible, so a lengthening thread is something both sides can act on
+  // before the broker has to refuse. Keys must stay in [A-Za-z0-9_] or Claude
+  // Code drops them silently.
+  if (message.threadDepth !== undefined) meta.thread_depth = String(message.threadDepth)
+  if (message.threadHint) meta.thread_hint = message.threadHint
+  // The one attribute that says a human read these exact words and approved
+  // them. It comes off a broker-written row and there is no client message
+  // that can produce it, so it means the same thing every time it appears.
+  if (message.provenance) meta.provenance = message.provenance
+  // Not `source`: Claude Code sets that one from the server name. This says which automation sent a human-seat frame.
+  if (message.wakeSource) meta.wake_source = message.wakeSource
+  return meta
 }
 
 /** Who a push is from: a batch's own id is in no log, so it names the real senders and ids instead (CC-321). */
@@ -432,22 +458,7 @@ export async function startMcpServer(): Promise<void> {
   )
 
   const deliver = (message: DeliveredMessage): void => {
-    const meta = senderMeta(message)
-    if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
-    if (message.broadcast) meta.broadcast = 'true'
-    // Who else was told the same thing, so three recipients do not each answer
-    // as though they were the only one asked. Multicast only; a broadcast
-    // already says "everyone" and a directed send has an audience of one.
-    if (message.audience) meta.audience = message.audience.join(',')
-    // Model-visible, so a lengthening thread is something both sides can act on
-    // before the broker has to refuse. Keys must stay in [A-Za-z0-9_] or Claude
-    // Code drops them silently.
-    if (message.threadDepth !== undefined) meta.thread_depth = String(message.threadDepth)
-    if (message.threadHint) meta.thread_hint = message.threadHint
-    // The one attribute that says a human read these exact words and approved
-    // them. It comes off a broker-written row and there is no client message
-    // that can produce it, so it means the same thing every time it appears.
-    if (message.provenance) meta.provenance = message.provenance
+    const meta = channelMeta(message)
     // The context hint rides this frame rather than being pushed on a timer:
     // fanout cost is payload x recipients, so telling every session its own
     // figure on a schedule is the one shape the broadcast budget exists to
@@ -543,7 +554,7 @@ export async function startMcpServer(): Promise<void> {
   // A readopted session already holds its name, so the handler must know it —
   // otherwise chat_register would look unmade and the model would be told to
   // call it, which is the confusion this whole path exists to remove.
-  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional)
+  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional, () => hinter.hint())
   serveTools(mcp, handler)
   startParkAdvisor(mcp, broker, handler)
 

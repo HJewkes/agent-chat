@@ -31,6 +31,12 @@ export interface Presence {
   wokenByWatchdog: boolean
   /** CC-326: an `agent_resumed` row since the seat's last presence row whose launch did not throw, so a resume already started. */
   resumeStarted: boolean
+  /** CC-463: epoch ms of the seat's last `registered` row. */
+  registeredAt?: number
+  /** CC-463: epoch ms of the newest `agent_resumed` or launching `agent_spawned` row targeting the seat. */
+  lastLaunchAt?: number
+  /** CC-463: epoch ms of the seat's newest `agent_handoff` row when no register followed it. */
+  handoffAt?: number
 }
 
 export interface LivenessInput {
