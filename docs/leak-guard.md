@@ -588,8 +588,8 @@ Some config keys hold a program or shell command that git runs: `core.pager`, ev
 `hook.<name>.command` and many more in `git help config`. The guard fails closed (TP-636 fix round
 9): it keeps a list of keys git never runs, and treats every other key as one whose value git may
 run. Whole sections are inert only when none of their keys runs anything, such as `user`, `color`,
-`log`, `branch`, `push`, `fetch`, `http`, `protocol` and `safe`; elsewhere single keys are, such as
-`core.quotePath`, `init.defaultBranch`, `help.autocorrect`, `remote.<name>.url` and `.fetch`, and
+`log`, `branch`, `push`, `fetch`, `http` and `safe`; elsewhere single keys are, such as
+`protocol.version`, `core.quotePath`, `init.defaultBranch`, `help.autocorrect`, `remote.<name>.url` and `.fetch`, and
 `url.<base>.insteadOf`. `include.path` and `core.hooksPath` are read by their own checks. A key the
 list lacks, such as one git adds later, is checked rather than allowed; matching is
 case-insensitive on section and key, as in git.
@@ -625,7 +625,10 @@ is denied: the two files may set `core.pager` to a push and `core.hooksPath` for
 the TP-630 allowance for `git -c "$X" log`.
 
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
-`protocol.allow=always`. git runs `ext::` only as a whole URL, so the guard checks exactly that span
+`protocol.allow=always`. A `-c`, `--config-env` or clone config word that sets either to anything
+but `never`, or to a value the guard cannot read, denies after the payloads below are checked,
+since git may then run an `ext::` URL from the repository's config that the line does not show:
+`git -c protocol.ext.allow=always fetch origin` denies. git runs `ext::` only as a whole URL, so the guard checks exactly that span
 of each word that holds `ext::`, case-insensitive: an argument that starts with it, the value of a
 `--name=` option such as `archive --remote=ext::…`, and the value of each config word in the list
 above, as in `-c remote.<x>.url=ext::…` or `-c remote.<x>.pushurl=ext::…`.
@@ -672,9 +675,14 @@ and any word under `eval`, `command`, `builtin`, `xargs` or `env -S`, which may 
 time: `eval export 'GIT_EDITOR=git\ push\ --no-verify'` is one word to a literal check and three to
 the shell. A read stays allowed: `$NAME`, and `${NAME…}` with an operator that only reads,
 such as `${PAGER-less}`. `${NAME=…}`, `${NAME:=…}` and zsh's `${NAME::=…}` assign, so they deny
-anywhere on the line, even inside git's own arguments. git's other arguments are not read for the
-names, so a commit message that mentions `GIT_PAGER` stays allowed, and `unset NAME` and
-`env -u NAME`, which only remove a name, are allowed too.
+anywhere on the line. Each word is read by the command that receives it, on the guard's unwrap of
+that command (TP-636 fix round 10). git, `gh` and `agent-chat gh-write` take their arguments as
+data: no word they receive assigns a shell variable. So their arguments count only for an
+assigning expansion the shell expands, not one inside single quotes. A commit message, PR title or
+comment body that mentions `GIT_PAGER`, `EDITOR` or `'${PAGER:=less}'` stays allowed;
+`git commit -m "${GIT_EDITOR:=x}"` denies. The may-reach-git test only decides whether the rule
+runs on a line, never which words count. `unset NAME` and `env -u NAME`, which only remove a
+name, are allowed too.
 
 "Runs git anywhere" is the guard's own may-reach-git test (CC-478), the one the hidden-command
 budget uses, not a search for the word `git`: a command word that may expand to git counts, such as

@@ -2561,6 +2561,11 @@ describe('a config key the guard does not list as inert (TP-636)', () => {
     'git -c remote.o.vcs=ext -c remote.o.url=x -c url.y.insteadOf=x fetch o',
     "git clone -c remote.origin.vcs=ext 'sh -c git% push% --no-verify' r",
     "git -c remote.origin.vcs=ext clone 'sh -c git% push% --no-verify' r",
+    'git -c protocol.ext.allow=always fetch origin',
+    'git -c protocol.allow=always fetch origin',
+    'git -c PROTOCOL.ext.ALLOW=user ls-remote origin',
+    'git clone -c protocol.ext.allow=always /r x',
+    'git --config-env=protocol.allow=A fetch origin',
   ])('denies a value or vcs URL the guard cannot read: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
   })
@@ -2573,6 +2578,8 @@ describe('a config key the guard does not list as inert (TP-636)', () => {
     'git -c init.defaultBranch=main init',
     'git -c branch.main.remote=origin status',
     'git -c protocol.version=2 fetch',
+    'git -c protocol.file.allow=always submodule update',
+    'git -c protocol.allow=never fetch origin',
     'git -c advice.detachedHead=false checkout x',
     'git -c safe.directory="$PWD" status',
     'git -c color.diff.meta="$C" log',
@@ -2691,6 +2698,32 @@ describe('a program env var that env -S splits out of one word (TP-636)', () => 
       expect(checkCommand(command, ctx())).toBeUndefined()
     },
   )
+})
+
+// Fix round 10: a word is read by the command that receives it; git and gh take their arguments as data.
+describe('a program env name in the arguments of a command that takes them as data (TP-636)', () => {
+  it.each([
+    'gh pr create --title "Handle EDITOR" --body "x"',
+    'gh issue comment 5 --body "PAGER is unset"',
+    'gh pr comment 5 --body "Set GIT_PAGER=less before git log"',
+    "gh pr comment 5 --body 'Use ${PAGER:=less} in the script'",
+    'gh pr edit 5 --title "VISUAL, BROWSER, LESS and GIT_SSH"',
+    "git commit -m 'Default ${GIT_EDITOR:=vi}'",
+    'nice gh issue comment 5 --body "EDITOR is unset"',
+    'agent-chat gh-write -- issue comment 5 --body "PAGER is unset"',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    'gh pr comment 5 --body "${PAGER:=git push --no-verify}"; git log',
+    'git commit -m "${GIT_EDITOR:=x}"',
+    'gh issue comment 5 --body x; read EDITOR; git commit',
+    'echo EDITOR; git commit',
+    'env -S "gh pr comment 5 --body ${PAGER:=x}"; git log',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.programEnv)
+  })
 })
 
 describe('an environment variable git runs as a program (TP-636 fix round 2)', () => {

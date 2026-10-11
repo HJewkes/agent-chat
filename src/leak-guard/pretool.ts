@@ -450,7 +450,8 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
   const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
-  if (scripts.length === 0) return undefined
+  const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
+  if (scripts.length === 0) return extOn
   const params = options === UNSURE_CALL ? scope.gitParams : options.params
   if (includesConfig(params)) return REASONS.includePath
   const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: params }
@@ -458,7 +459,7 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
     const reason = checkAt(script, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
-  return undefined
+  return extOn
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -1371,6 +1372,10 @@ const namesProgramEnv = (text: string): boolean =>
 /** Whether a word holds a `${NAME...}` expansion of a program env var that assigns it. */
 const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) => assign.test(text))
 
+// The same assigning expansion where the shell expands it, as marked: not inside single quotes.
+const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
+const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
+
 /** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
 function plainProgramValue(word: string): string | null | undefined {
   const name = ASSIGNMENT.exec(word)?.[1]
@@ -1379,7 +1384,7 @@ function plainProgramValue(word: string): string | null | undefined {
   return value.includes(LIVE) ? null : value
 }
 
-type WordRole = 'assign' | 'git' | 'removes' | 'arg'
+type WordRole = 'assign' | 'data' | 'removes' | 'arg'
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
 
@@ -1393,6 +1398,17 @@ function envRoles(marked: readonly string[], i: number, roles: WordRole[]): void
     } else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
     else return
   }
+}
+
+/**
+ * Whether the command `unwrap` says runs takes its arguments as data: git, gh and
+ * `agent-chat gh-write` never assign a shell variable a word names, unlike `read` or `printf -v`.
+ */
+function takesData(words: readonly string[]): boolean {
+  const head = unmark(words[0] ?? '')
+  if (head === 'gh') return true
+  if (head === 'agent-chat') return unmark(words[1] ?? '') === 'gh-write'
+  return path.basename(head) === 'git'
 }
 
 /**
@@ -1411,9 +1427,9 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
   else if (head === 'unset') roles.fill('removes', i)
   else if (head !== undefined && ENV_DECL.has(head)) roles.fill('assign', i + 1)
   const unwrapped = unwrap(marked)
-  const git = 'words' in unwrapped && path.basename(unmark(unwrapped.words[0] ?? '')) === 'git'
-  if (git && marked.slice(-unwrapped.words.length).join('\0') === unwrapped.words.join('\0'))
-    roles.fill('git', marked.length - unwrapped.words.length)
+  const data = 'words' in unwrapped && takesData(unwrapped.words)
+  if (data && marked.slice(-unwrapped.words.length).join('\0') === unwrapped.words.join('\0'))
+    roles.fill('data', marked.length - unwrapped.words.length)
   return roles
 }
 
@@ -1421,12 +1437,13 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
  * A program-env event for one word. A plain literal `NAME=value` where the shell reads an
  * assignment once gives its value to check. Any other use of a program env name gives null, since
  * the shell has many ways to assign one (`+=`, a subscript, a brace, read, printf -v, a for loop,
- * `${NAME:=x}`, eval); a read is no event. In git's own arguments only an assigning expansion counts.
+ * `${NAME:=x}`, eval); a read is no event. In the arguments of a command that takes them as data,
+ * such as git or gh, only an assigning expansion the shell expands counts.
  */
 function envEvent(word: string, role: WordRole): string | null | undefined {
   const text = unmark(word)
   if (role === 'removes') return undefined
-  if (role === 'git') return expandsProgramEnv(text) ? null : undefined
+  if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
   if (plain !== undefined) return plain
   return namesProgramEnv(text) ? null : undefined
@@ -1472,9 +1489,9 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   if ('reason' in unwrapped) return { events: [], scan: [] }
   const { words, assigns } = unwrapped
   const written = new Set(cmd.marked.filter((_, i) => roles[i] !== 'removes'))
-  const runsGit = path.basename(unmark(words[0] ?? '')) === 'git'
+  const data = takesData(words)
   const usesEnv = (word: string): boolean =>
-    runsGit ? expandsProgramEnv(unmark(word)) : namesProgramEnv(unmark(word))
+    data ? expandsProgramEnv(unmark(word)) : namesProgramEnv(unmark(word))
   const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
   const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
   return {

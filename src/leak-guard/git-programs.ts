@@ -10,8 +10,8 @@ import { LIVE, unmark } from './shell-words.js'
  * 2.53; `include.path` and `core.hooksPath` are read by their own checks.
  */
 const INERT_SECTIONS = new Set(
-  `user author committer color column advice i18n log status format commit tag branch push fetch
-  protocol http pack index feature transfer safe fsck blame grep checkout notes pretty reset stash
+  `user author committer color column advice i18n log status format commit tag branch push fetch http
+  pack index feature transfer safe fsck blame grep checkout notes pretty reset stash
   versionsort am apply`.split(/\s+/),
 )
 
@@ -24,7 +24,7 @@ const INERT_KEYS = new Set(
   diff.noprefix diff.mnemonicprefix diff.renames diff.renamelimit diff.algorithm diff.colormoved
   diff.context diff.submodule merge.ff merge.conflictstyle merge.log merge.renamelimit
   merge.autostash rebase.autosquash rebase.autostash rebase.updaterefs pull.rebase pull.ff
-  help.autocorrect help.format init.defaultbranch clone.defaultremotename gc.auto gc.autodetach
+  protocol.version help.autocorrect help.format init.defaultbranch clone.defaultremotename gc.auto gc.autodetach
   submodule.recurse submodule.*.url submodule.*.path submodule.*.branch submodule.*.active
   remote.*.url remote.*.pushurl remote.*.fetch remote.*.push remote.*.mirror remote.*.tagopt
   remote.*.prune remote.*.skipdefaultupdate url.*.insteadof url.*.pushinsteadof
@@ -217,18 +217,33 @@ function vcsPayloads(config: readonly ConfigWord[], sub: string | undefined): st
 }
 
 /**
+ * Whether git's config words switch on the `ext::` transport (TP-636): `protocol.allow` or
+ * `protocol.ext.allow` set to anything but `never`, or to a value the guard cannot read. git may
+ * then run an `ext::` URL from the repository's config, which the line does not show.
+ */
+function enablesExt(config: readonly ConfigWord[]): boolean {
+  return config.some(word => {
+    const pair = keyValue(word)
+    const parts = pair && splitKey(pair.key)
+    if (!pair || parts?.section !== 'protocol' || parts.name !== 'allow') return false
+    if (parts.sub !== undefined && parts.sub.toLowerCase() !== 'ext') return false
+    return pair.value?.toLowerCase() !== 'never'
+  })
+}
+
+/**
  * The commands `ext::` transport URLs run on a git command (TP-636): the span of each argument or
  * config value (every word `configWords` lists) git runs as an `ext::` URL, the URLs a `remote.<name>.vcs`
  * helper runs, and the command of `git remote-ext <name> <cmd>`.
  * `unreadable` when a word holding `ext::` has an expansion the guard cannot read, a span it cannot
- * pin down, or a payload it cannot decode.
+ * pin down, or a payload it cannot decode; `enabled` when the config switches the transport on.
  */
 export function extPrograms(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
   splits: readonly string[],
   at: number,
-): { scripts: string[]; unreadable: boolean } {
+): { scripts: string[]; unreadable: boolean; enabled: boolean } {
   const scripts: string[] = []
   let unreadable = false
   const decode = (payload: string | null | undefined): void => {
@@ -253,5 +268,5 @@ export function extPrograms(
     if (cmd === undefined && marked[at + 2] !== undefined) unreadable = true
     else if (cmd !== undefined) decode(cmd)
   }
-  return { scripts, unreadable }
+  return { scripts, unreadable, enabled: enablesExt(config) }
 }
