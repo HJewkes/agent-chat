@@ -477,9 +477,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
   if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
-    config.seats.length === 0 || unusable !== undefined
+    config.seats.length === 0
       ? undefined
-      : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
+      : unusable !== undefined
+        ? { loaded: [], skipped: config.seats.map(seat => ({ seat, reason: unusable })) }
+        : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
   const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])

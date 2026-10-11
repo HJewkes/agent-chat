@@ -3,8 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { burndownLedgerPath } from '../paths.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import type { SpawnFrame } from '../agents/burndown/execute.js'
+import type { AgentIdentity } from '../protocol.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { SERVICE_CHECK_WINDOW_MS } from '../agents/burndown/service-check.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
@@ -118,10 +121,10 @@ function factory(cause: string | null, message?: string) {
   return { exec, checks }
 }
 
-function fakeBroker(): { broker: TickBroker; frames: SpawnFrame[] } {
+function fakeBroker(agents: AgentIdentity[] = []): { broker: TickBroker; frames: SpawnFrame[] } {
   const frames: SpawnFrame[] = []
   const broker: TickBroker = {
-    roster: async () => ({ agents: [], slots: { held: 4, cap: 36 } }),
+    roster: async () => ({ agents, slots: { held: 4, cap: 36 } }),
     inboxSince: async () => [],
     spawn: async frame => (frames.push(frame), { ok: true, agentId: `id-${frame.name}` }),
     retire: async () => ({ ok: true }),
@@ -146,7 +149,7 @@ const tick = (exec: Runner, dryRun = false) => {
 }
 
 beforeEach(() => {
-  world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-stop-line-')))
+  world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-watchdog-unusable-')))
   process.env.AGENT_CHAT_HOME = path.join(world, 'home')
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
@@ -161,6 +164,24 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...saved }
   fs.rmSync(world, { recursive: true, force: true })
+})
+
+const exitedRow = (name: string, cwd: string): AgentIdentity => ({
+  agentId: `id-${name}`,
+  name,
+  profile: 'bd-implementer',
+  state: 'exited',
+  origin: 'spawned',
+  spawnedBy: 'human',
+  spawnedAt: NOW.getTime(),
+  brief: '',
+  cwd,
+  isolation: 'worktree',
+  surface: 'headless',
+  sessionId: '',
+  configDir: accountPath(),
+  lastEventAt: NOW.getTime(),
+  generation: 1,
 })
 
 const BROKEN = '{ not json'
@@ -204,6 +225,36 @@ describe('an unusable seat-watchdog.json with seats configured', () => {
     expect(lines[0]).toContain('burndown tick at')
   })
 
+  it('defers a held seat claim without stalling it or touching it', async () => {
+    const worktree = path.join(repo(), '.worktrees', 'st-t-1')
+    git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/st-t-1', worktree)
+    const reviewing: Claim = {
+      taskId: 'T-1',
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      spawnedAt: NOW.toISOString(),
+      phase: 'reviewing',
+      phaseAt: NOW.toISOString(),
+      agentName: 'st-t-1-r0',
+      spawned: ['st-t-1', 'st-t-1-r0'],
+      worktree,
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [reviewing] })
+    const fake = fakeBroker([exitedRow('st-t-1-r0', worktree)])
+
+    await tickFromDisk({
+      dryRun: false,
+      broker: fake.broker,
+      now: NOW,
+      log: () => {},
+      exec: factory(null).exec,
+    })
+
+    expect(fake.frames).toEqual([])
+    expect(readLedger(burndownLedgerPath()).claims).toEqual([reviewing])
+  })
+
   it('plan --seat falls back to the legacy plan and dispatches no seat', async () => {
     vi.spyOn(BrokerClient.prototype, 'connect').mockRejectedValue(new Error('no broker'))
 
@@ -213,6 +264,7 @@ describe('an unusable seat-watchdog.json with seats configured', () => {
     )
 
     expect(report.ok).toBe(true)
+    expect(report.lines[0]).toContain('seat paths skipped')
     expect(report.lines.join('\n')).toContain('not opted in (1 focused')
     expect(report.lines.join('\n')).not.toContain('would dispatch demo')
   })

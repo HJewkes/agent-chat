@@ -113,7 +113,11 @@ async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined):
   const unusable = watchdogUnusable()
   if (unusable !== undefined) {
     logEvent('burndown_seat_paths_skipped', { reason: unusable })
-    return plainPlan()
+    const plain = await plainPlan()
+    return {
+      ...plain,
+      lines: [`seat paths skipped, showing the legacy plan: ${unusable}`, ...plain.lines],
+    }
   }
   const opts = await seatPlanOptions(seat, autonomyRoot)
   return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
