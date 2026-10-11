@@ -8,7 +8,11 @@ export const BLOCKING_TOOL = 'AskUserQuestion'
 export const ACTIVITY_INTERVAL_MS = 60_000
 
 /** `end` is a prompt, stop or session end: the seat is no longer waiting on a question. */
-export type HookPhase = 'pre' | 'post' | 'end'
+export const HOOK_PHASES = ['pre', 'post', 'end'] as const
+export type HookPhase = (typeof HOOK_PHASES)[number]
+
+export const isHookPhase = (value: string): value is HookPhase =>
+  (HOOK_PHASES as readonly string[]).includes(value)
 
 /** How far before a window a block may have started and still be counted into it. */
 export const LOOKBACK_MS = 7 * 24 * 60 * 60_000
@@ -96,7 +100,7 @@ interface Span {
  * Pairs each session's rows into spans. A block ends at its unblock, or at the session's next
  * activity row: a session that is running another tool is no longer waiting on the question.
  */
-export function blockSpans(rows: LoggedEventRow[]): Span[] {
+function blockSpans(rows: LoggedEventRow[]): Span[] {
   const spans: Span[] = []
   const open = new Map<string, Span>()
   for (const row of rows) {

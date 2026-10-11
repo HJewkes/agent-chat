@@ -1,14 +1,15 @@
 import { EventLog } from '../../broker/event-log.js'
 import { parseWindow } from '../../agents/burndown/dispatch-stats.js'
 import { seatHookLogPath } from '../../paths.js'
-import { parseToolHook, recordToolCall, seatBlockReport, type HookPhase } from '../../seat-blocks.js'
+import { isHookPhase, parseToolHook, recordToolCall, seatBlockReport } from '../../seat-blocks.js'
 import { readStdin } from './permission-hook.js'
 import fs from 'node:fs'
 
 /** `agent-chat seat-hook <pre|post>`: records a seat's tool calls (CC-1056). Never fails the call. */
-export async function seatHook(phase: HookPhase): Promise<void> {
+export async function seatHook(phase: string): Promise<void> {
   let log: EventLog | undefined
   try {
+    if (!isHookPhase(phase)) return
     const input = parseToolHook(await readStdin())
     const seat = process.env.AGENT_CHAT_NAME
     if (input === undefined || seat === undefined || seat === '') return

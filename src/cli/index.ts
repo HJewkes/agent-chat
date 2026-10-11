@@ -356,7 +356,7 @@ function addHiddenCommands(program: Command): void {
   // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
   program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
     const { seatHook } = await import('./verbs/seat-hook.js')
-    if (phase === 'pre' || phase === 'post') await seatHook(phase)
+    await seatHook(phase)
   })
 
   program
