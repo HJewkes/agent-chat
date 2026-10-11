@@ -2409,6 +2409,21 @@ export class Supervisor implements TeleportHost {
     return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
   }
 
+  /** CC-959: a stale seat row by id; never whichever row holds the name now, and never a live one. */
+  async retireStale(
+    agentId: string,
+    name: string,
+    actor?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.get(agentId)
+    if (identity !== undefined && identity.name !== name)
+      return { ok: false, reason: `agent ${agentId} no longer holds the name "${name}"` }
+    const live = identity?.state === 'live' || identity?.state === 'spawning'
+    if (identity !== undefined && (live || this.namePresence(identity) === 'self'))
+      return { ok: false, reason: `agent ${agentId} (${name}) is still live; not retired` }
+    return this.retireById(agentId, actor)
+  }
+
   private async retireIdentity(
     identity: AgentIdentity,
     release: ReleaseOptions,

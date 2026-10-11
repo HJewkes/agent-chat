@@ -594,6 +594,86 @@ describe('seat liveness (CC-320)', () => {
     expect(dry[0]).toMatch(/^seat-a: WOULD REFUSE: latest session s-h2 /)
   })
 
+  // CC-959 slice c: the same incident, now with a relaunch that can retire by id and spawn on the seat's account.
+  const PERSONAL = '/home/example/.profiles/personal'
+  const incident = (): Harness => {
+    const row = { name: 'seat-a', profile: 'lead', state: 'exited', spawnedBy: 'human' }
+    const h = harness({
+      agents: [
+        {
+          ...row,
+          agentId: 'g9',
+          origin: 'spawned',
+          generation: 9,
+          configDir: '/home/example/.profiles/server',
+        },
+        { ...row, agentId: 'h1', origin: 'adopted', sessionId: 's-h1', spawnedAt: 1 },
+        {
+          ...row,
+          agentId: 'h2',
+          origin: 'adopted',
+          sessionId: 's-h2',
+          spawnedAt: 2,
+          cwd: '/home/example/projects',
+        },
+      ],
+      connected: [],
+    })
+    h.deps.readSeatFile = seat =>
+      seat === 'seat-a' ? SEAT.replace('---\n', `---\nconfig_dir: ${PERSONAL}\nprofile: lead\n`) : ''
+    h.deps.relaunchHandoff = () => 'HANDOFF'
+    dark(h, 54)
+    return h
+  }
+
+  // Catches: the stale gate still refusing when a relaunch exists, or the plan losing the latest session or its account.
+  it('relaunches the latest hand-started session on the seat file account instead of waking the stale row', async () => {
+    const h = incident()
+    const plans: unknown[] = []
+    h.deps.relaunchSeat = async (seat, plan) => (
+      plans.push({ seat, plan }),
+      { ok: true, detail: 'relaunched' }
+    )
+
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(plans).toEqual([
+      {
+        seat: 'seat-a',
+        plan: {
+          target: expect.objectContaining({ kind: 'resume-session', sessionId: 's-h2', stale: ['g9'] }),
+          account: expect.objectContaining({ configDir: PERSONAL, profile: 'lead' }),
+          message: RESUME_MESSAGE,
+          fresh: 'HANDOFF',
+        },
+      },
+    ])
+    expect(h.logs).toEqual([expect.stringMatching(/; resumed seat-a \(relaunched\)$/)])
+    expect(dry[0]).toMatch(new RegExp(`^seat-a: WOULD RESUME: .*; as session s-h2 on ${PERSONAL} `))
+  })
+
+  // Catches: a broker that ignored the retire's agent id being treated as a relaunch rather than flagged.
+  it('flags the seat once when the broker cannot retire the stale row by id', async () => {
+    const h = incident()
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    h.deps.relaunchSeat = async () => ({
+      ok: false,
+      unsupported: true,
+      detail: 'broker cannot retire g9 by id',
+    })
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(raised).toEqual([
+      expect.stringMatching(
+        /^watchdog resume seat-a REFUSED: latest session s-h2 .*; broker cannot retire g9 by id$/,
+      ),
+    ])
+  })
+
   // CC-959: the owner's pane carried on as a provisional session 2 s after the seat deregistered.
   const SEAT_CWD = '/home/example/projects'
   const paneRoster = (h: Harness, cwd = SEAT_CWD, afterDarkMs = 2_000): Roster => ({

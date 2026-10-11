@@ -289,3 +289,46 @@ describe('who a retire is recorded as (CC-218)', () => {
     expect(await retireWorker()).toBe('human')
   })
 })
+
+describe('retire a stale seat row by id (CC-959)', () => {
+  // Catches: routing the id to retire(name), which retires the newest row holding the name.
+  it('retires the named stale row and leaves the newer one under the name', async () => {
+    spawnRow('stale', 'seat-x', 'seat-x')
+    await exitRow('stale', 'seat-x')
+    spawnRow('newer', 'seat-x', 'seat-x')
+    await exitRow('newer', 'seat-x')
+
+    const out = await sup.retireStale('stale', 'seat-x')
+
+    expect(out.ok).toBe(true)
+    expect([stateOf('stale'), stateOf('newer')]).toEqual(['retired', 'exited'])
+  })
+
+  it('refuses a live row', async () => {
+    await staleAndSuccessor()
+
+    const out = await sup.retireStale('succ', 'seat-x')
+
+    expect(out).toEqual({ ok: false, reason: 'agent succ (seat-x) is still live; not retired' })
+    expect(stateOf('succ')).toBe('live')
+    expect(signals).toEqual([])
+  })
+
+  it('refuses a row that no longer holds the name', async () => {
+    spawnRow('w1', 'worker-1', 'coord-x')
+    await exitRow('w1', 'worker-1')
+
+    const out = await sup.retireStale('w1', 'seat-x')
+
+    expect(out).toEqual({ ok: false, reason: 'agent w1 no longer holds the name "seat-x"' })
+    expect(stateOf('w1')).toBe('exited')
+  })
+
+  it('refuses a row already retired', async () => {
+    spawnRow('stale', 'seat-x', 'seat-x')
+    await exitRow('stale', 'seat-x')
+    await sup.retireStale('stale', 'seat-x')
+
+    expect((await sup.retireStale('stale', 'seat-x')).ok).toBe(false)
+  })
+})

@@ -17,6 +17,19 @@ export type SeatTarget =
   /** The newest row runs on another or an unrecorded account, so only a fresh launch is safe. */
   | { kind: 'fresh'; latest: SeatAgent; stale: string[] }
 
+/** CC-959: a target the broker cannot bring back by name. */
+export type RelaunchTarget = Exclude<SeatTarget, { kind: 'resume-by-name' }>
+
+/** CC-959: what relaunching a dark seat on its own account needs. */
+export interface SeatRelaunchPlan {
+  target: RelaunchTarget
+  account: SeatAccount
+  /** What the seat is told when its latest session comes back. */
+  message: string
+  /** The brief a fresh launch starts on, when the session cannot come back. */
+  fresh: string
+}
+
 const newestFirst = (a: SeatAgent, b: SeatAgent): number =>
   (b.spawnedAt ?? 0) - (a.spawnedAt ?? 0) || (b.generation ?? 1) - (a.generation ?? 1)
 

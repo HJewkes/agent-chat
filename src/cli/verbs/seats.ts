@@ -101,6 +101,7 @@ import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watc
 import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
+import { respawnSeat } from './seat-respawn.js'
 import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -305,6 +306,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       return identity === undefined ? undefined : identityTranscript(identity).found
     },
     notifyHuman: notifyAsWatchdog,
+    relaunchSeat: async (seat, plan) =>
+      respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
   }
 }
 
