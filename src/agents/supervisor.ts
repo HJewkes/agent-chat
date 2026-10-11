@@ -3231,6 +3231,8 @@ export class Supervisor implements TeleportHost {
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
     }
   }
@@ -3277,6 +3279,8 @@ export class Supervisor implements TeleportHost {
       ...(input.configDir ? { configDir: input.configDir } : {}),
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
     })
     return { plan, sessionId }
   }

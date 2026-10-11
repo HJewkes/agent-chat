@@ -242,6 +242,8 @@ describe('what a caller takes from the broker', () => {
       'a profile value that reads as a flag',
       { profile: { ...SPEC.profile, model: '--dangerously-skip-permissions' } },
     ],
+    ['a carried channel that reads as a flag', { channels: ['-x'] }],
+    ['a carried permission mode outside the allowlist', { permissionMode: 'bypassPermissions' }],
   ])('refuses %s and writes nothing', async (_case, over) => {
     const broker = fakeBroker({ ...SPEC, ...over } as RemoteLaunch)
     const { steps, deps } = recordingDeps()
@@ -284,6 +286,18 @@ describe('what a caller takes from the broker', () => {
     await runCallerTeleport(broker, 4321, deps)
 
     expect(written[0]?.plan.args.includes('--remote-control')).toBe(expected)
+  })
+
+  it('carries the channels and permission mode the broker sent into the argv', async () => {
+    const spec = { ...SPEC, channels: ['plugin:voltras-channel@x'], permissionMode: 'auto' }
+    const broker = fakeBroker(spec)
+    const { written, deps } = recordingDeps()
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    const args = written[0]?.plan.args ?? []
+    expect(args).toContain('plugin:voltras-channel@x')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('auto')
   })
 
   it('never takes env or MCP servers from the profile the broker sent', async () => {

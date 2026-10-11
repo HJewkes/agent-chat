@@ -19,6 +19,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
+import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import {
   BrokerCore,
   readoptRegistration,
@@ -179,6 +180,9 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
+  launchSeen === undefined ? {} : { launchSeen }
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
@@ -494,6 +498,7 @@ export class SocketServer {
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...optionalPlatform(asPlatform(msg.hostPlatform)),
+      ...optionalCarried(sanitizeCarried(msg.launchSeen)),
     })
     reply(conn, {
       t: 'teleport_result',
