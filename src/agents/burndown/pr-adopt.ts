@@ -178,7 +178,7 @@ const PROTECTED_PATHS = [
   /(^|\/)tsconfig[^/]*\.json$/,
   /(^|\/)\.npmrc$/,
   /(^|\/)vitest\.config\.[^/]+$/,
-  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue|coordinator|agent|agent-dispatch|github|review-panel|agent-surface)\//,
+  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue|coordinator|agent|agent-dispatch|github|review-panel|agent-surface|daemon)\//,
   /^products\/factory\/src\/(shepherd\/|owner-keys\.ts$|required-checks\.ts$)/,
   /(^|\/)(generated-paths\.json|coordinator-allowances\.ts)$/,
 ]
