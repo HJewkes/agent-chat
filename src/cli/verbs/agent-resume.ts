@@ -28,6 +28,7 @@ export const agentResume = defineVerb({
     message: z.string().optional(),
     messageStdin: z.boolean().optional(),
     surface: z.enum(SURFACE_NAMES).optional(),
+    remoteControl: z.boolean().optional(),
   }),
   result: Report,
   cli: {
@@ -36,9 +37,13 @@ export const agentResume = defineVerb({
       message: { long: '--message', description: 'the turn it resumes on' },
       messageStdin: { long: '--message-stdin', description: 'read the turn from stdin, not argv' },
       surface: { long: '--surface', description: `where it comes back: ${SURFACE_NAMES.join(', ')}` },
+      remoteControl: {
+        long: '--remote-control',
+        description: 'run with Remote Control (coordinator profiles only; ignored headless)',
+      },
     },
   },
-  async run({ name, message: messageArg, messageStdin, surface }, ctx) {
+  async run({ name, message: messageArg, messageStdin, surface, remoteControl }, ctx) {
     const message = await resumeMessage(messageArg, messageStdin)
     const res = (await ctx.withBroker(b =>
       b.request(
@@ -47,6 +52,7 @@ export const agentResume = defineVerb({
           name,
           ...(message === undefined ? {} : { message }),
           ...(surface === undefined ? {} : { surface }),
+          ...(remoteControl === true ? { remoteControl: true } : {}),
         },
         'spawn_result',
       ),

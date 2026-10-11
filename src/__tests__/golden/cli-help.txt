@@ -1031,6 +1031,7 @@ Options:
   --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
                           iterm-tab, iterm-window, tmux-window
   --spawned-as <who>      shepherd or burndown: the automation this spawn is on behalf of
+  --remote-control        run with Remote Control (coordinator profiles only)
   -h, --help              display help for command
 
 === agent-chat agent retire
@@ -1063,6 +1064,7 @@ Options:
   --message <value>  the turn it resumes on
   --message-stdin    read the turn from stdin, not argv
   --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window, tmux-window
+  --remote-control   run with Remote Control (coordinator profiles only; ignored headless)
   -h, --help         display help for command
 
 === agent-chat agent worktrees

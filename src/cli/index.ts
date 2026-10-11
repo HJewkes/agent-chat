@@ -205,6 +205,7 @@ function addAgentCommands(program: Command): void {
       'shepherd or burndown: the automation this spawn is on behalf of',
       agents.parseSpawnedAs,
     )
+    .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
