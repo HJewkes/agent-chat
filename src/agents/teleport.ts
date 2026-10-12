@@ -505,17 +505,19 @@ export class Teleport {
   async start(req: TeleportRequest): Promise<TeleportOutcome> {
     const blocked = this.preflight(req)
     if (blocked) return { ok: false, reason: blocked }
+    const asks = this.restatedQuestions(req)
+    if ('reason' in asks) return { ok: false, reason: asks.reason }
     // CC-951: held from preflight until the entry is pending or refused, across the launcher
     // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
     this.starting.add(req.subject.agentId)
     try {
-      return await this.begin(req)
+      return await this.begin(req, asks.restated)
     } finally {
       this.starting.delete(req.subject.agentId)
     }
   }
 
-  private async begin(req: TeleportRequest): Promise<TeleportOutcome> {
+  private async begin(req: TeleportRequest, restated: string[]): Promise<TeleportOutcome> {
     const { subject } = req
 
     const identity = this.core.agents.get(subject.agentId)
@@ -554,7 +556,11 @@ export class Teleport {
       actor: subject.name,
       ref: subject.agentId,
       body: req.handoff,
-      meta: { successor: descendantId, ...(req.reason === undefined ? {} : { reason: req.reason }) },
+      meta: {
+        successor: descendantId,
+        ...(req.reason === undefined ? {} : { reason: req.reason }),
+        ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
+      },
     })
 
     const entry: Pending = {
@@ -743,19 +749,27 @@ export class Teleport {
         'instead of pasting their contents.'
       )
 
-    // The mechanical reason, unchanged from §4.1: an answer is delivered BY NAME
-    // to whoever holds it. If this name stops being held while a question is
-    // open, the human's answer is appended to the log and delivered to nothing.
-    const open = this.core.events.openQuestions(subject.name)
-    if (open.length > 0) {
-      const listed = open.map(q => `${q.msgId} (${q.text.slice(0, 60)})`).join('; ')
-      return (
-        `you have ${open.length} unanswered question(s) with the human: ${listed}. ` +
-        'Answer, dismiss (agent-chat dismiss <id>), or restate them in the handoff first — ' +
-        'teleport does not get to abandon them by leaving.'
-      )
-    }
     return undefined
+  }
+
+  /** The open question ids the handoff names, or why teleport refuses on the ones it does not. */
+  private restatedQuestions(req: TeleportRequest): { reason: string } | { restated: string[] } {
+    // CC-1089: an open question no longer strands its answer. The successor keeps the
+    // name, an answer landing while it is dark is held for it (CC-301), and the broker
+    // appendix lists what is still open (CC-524). What stays is that the successor must
+    // know the question exists, so each open id has to appear in the handoff.
+    const open = this.core.events.openQuestions(req.subject.name)
+    const unnamed = open.filter(q => !req.handoff.includes(q.msgId))
+    if (unnamed.length > 0) {
+      const listed = unnamed.map(q => `${q.msgId} (${q.text.slice(0, 60)})`).join('; ')
+      return {
+        reason:
+          `you have ${unnamed.length} unanswered question(s) with the human that the handoff does not name: ` +
+          `${listed}. Name each id in the handoff so your successor knows to expect the answer, or ` +
+          'answer it — teleport does not get to abandon a question by leaving.',
+      }
+    }
+    return { restated: open.map(q => q.msgId) }
   }
 
   /**
