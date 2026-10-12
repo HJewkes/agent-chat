@@ -19,6 +19,15 @@ export interface ApprovePorts {
   edit: (slug: string, id: string, args: string[]) => void
 }
 
+/**
+ * CC-1076: whether a briefer has answered, read by the tick when the briefer's claim finishes.
+ * Approval swaps `brief:proposed` for `brief:ready` plus `brief:src=briefer`, adding both before removing
+ * the proposal, so every state the task passes through satisfies this whichever of approve and tick runs first.
+ */
+export const briefAnswered = (tags: readonly string[]): boolean =>
+  tags.some(t => t.startsWith(PROPOSED) || t === 'brief:proposed') ||
+  (tags.includes(BRIEFER_SRC) && tags.some(t => BRIEF_READY.test(t)))
+
 const refused = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
 
 /**

@@ -25,6 +25,7 @@ import { advance, applyActions, claimKey, type Action, type ClaimKey, type Inbox
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
+import { briefAnswered } from './brief-approve.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
@@ -503,10 +504,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])
   const { observations, unread } = await observe(held, roster, {
     proposed: (initiative, taskId) =>
-      tasks
-        .get(initiative)
-        ?.find(t => t.id === taskId)
-        ?.tags.some(tag => tag === 'brief:proposed' || tag.startsWith('brief:proposed=')) ?? false,
+      briefAnswered(tasks.get(initiative)?.find(t => t.id === taskId)?.tags ?? []),
     inboxSince: opts.broker.inboxSince,
     root,
     shepherdRows: shepherd,

@@ -38,7 +38,7 @@ export interface Observation {
   report?: Report
   /** Messages to the parked worker since the claim's inbox cursor. */
   inbox?: InboxMessage[]
-  /** CC-939: whether a finished briefer's task now carries `brief:proposed`. */
+  /** CC-939: whether a finished briefer's task now carries `brief:proposed`, or (CC-1076) its approval. */
   proposed?: boolean
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
