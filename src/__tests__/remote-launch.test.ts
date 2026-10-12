@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { loadProfile } from '../agents/profiles.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import type { RemoteLaunch, SurfaceName } from '../protocol.js'
 import { placeRemoteSpawn, prepareRemoteSpawn, type SpawnHost } from '../server/remote-launch.js'
@@ -128,7 +129,47 @@ describe('checking a spawn spec on the host that launches it', () => {
   })
 })
 
+describe('the profile name the broker sends', () => {
+  /** A profile file outside the profiles dir, as a crafted .json in a cloned repo would be. */
+  function plantOutside(): { profiles: string; escape: string } {
+    const profiles = path.join(root, 'agent-chat', 'profiles')
+    fs.mkdirSync(profiles, { recursive: true })
+    const clone = path.join(homeDir, 'projects', 'clone')
+    fs.mkdirSync(clone, { recursive: true })
+    const evil = { ...LOCAL_PROFILE, name: 'evil', mcpServers: { x: { command: '/evil' } } }
+    fs.writeFileSync(path.join(clone, 'evil.json'), JSON.stringify(evil))
+    return { profiles, escape: path.relative(profiles, path.join(clone, 'evil')) }
+  }
+
+  it('never loads a file outside the profiles dir', () => {
+    const { profiles, escape } = plantOutside()
+
+    const loaded = loadProfile(escape, profiles)
+
+    expect(loaded).toEqual({ error: `the profile name ${JSON.stringify(escape)} is not a plain name` })
+  })
+
+  it('refuses a spec whose profile name leaves the profiles dir, and writes nothing', () => {
+    const { profiles, escape } = plantOutside()
+    const { host, written } = fakeHost({ loadProfile: name => loadProfile(name, profiles) })
+
+    const prepared = prepareRemoteSpawn(spec({ profile: { ...spec().profile, name: escape } }), host)
+
+    expect(!prepared.ok && prepared.reason).toContain('is not a plain name')
+    expect(written).toEqual([])
+  })
+})
+
 describe('building a spawn on the host that launches it', () => {
+  it('keys the account by its resolved path', () => {
+    const { host, written } = fakeHost()
+    const spelled = path.join(homeDir, 'projects', '..', '.claude-profiles', 'ff')
+
+    prepareRemoteSpawn(spec({ configDir: spelled }), host)
+
+    expect(written[0]?.plan.env.CLAUDE_CONFIG_DIR).toBe(account)
+  })
+
   it("runs in the spec's cwd on the spec's account", () => {
     const { host, written } = fakeHost()
 

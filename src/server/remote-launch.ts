@@ -1,11 +1,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { checkConfigDir } from '../agents/config-dir.js'
 import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import { surfaceFor } from '../agents/launcher.js'
-import { loadProfile } from '../agents/profiles.js'
+import { loadProfile, profileNameRefusal } from '../agents/profiles.js'
 import { lexicalCwdRefusal } from '../agents/spawn-cwd.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import { isCarriedPermissionMode, isChannelToken } from '../broker/host-channels.js'
@@ -48,6 +49,8 @@ export function checkLaunch(spec: RemoteLaunch): string | undefined {
     return `the successor id ${JSON.stringify(spec.agentId)} is not an agent id`
   if (!SESSION_ID.test(spec.sessionId)) return 'the successor session id is not a uuid'
   if (badName(spec.name)) return `the name ${JSON.stringify(spec.name)} is not a valid session name`
+  const profileName = profileNameRefusal(spec.profile.name)
+  if (profileName !== undefined) return profileName
   if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
   if (flagWords(spec.profile).some(word => word.startsWith('-')))
     return 'the successor profile has a value that would be read as a flag'
@@ -154,7 +157,7 @@ const realDir = (dir: string): string | undefined => {
 /** The account a spawn spec names; a spec naming none is refused rather than billed to a guess. */
 function accountOf(spec: RemoteLaunch, homeDir: string): { configDir: string | undefined } | string {
   if (spec.configDir !== undefined)
-    return checkConfigDir(spec.configDir, { home: homeDir }) ?? { configDir: spec.configDir }
+    return checkConfigDir(spec.configDir, { home: homeDir }) ?? { configDir: path.resolve(spec.configDir) }
   if (spec.configDirUnset === true) return { configDir: undefined }
   return 'the launch names no account (neither configDir nor configDirUnset)'
 }
