@@ -15,11 +15,14 @@ import path from 'node:path'
  * by definition a path Claude Code has never been run in. Checked live on this
  * machine — 70 project entries, not one of them a `.worktrees/` path.
  *
- * A DIAGNOSIS, never a gate. Nothing here is consulted before a launch: the file
- * is Claude Code's private state, its shape is not a contract, and refusing a
- * spawn on a field that may be renamed tomorrow trades a slow failure for a
- * total one. It is read only once a spawn has already failed, to turn "did not
- * register in time" into a sentence naming the likely cause.
+ * Mostly a DIAGNOSIS: the file is Claude Code's private state, its shape is not
+ * a contract, and refusing a spawn on a field that may be renamed tomorrow
+ * trades a slow failure for a total one. A local spawn reads it only once it has
+ * already failed, to turn "did not register in time" into a sentence naming the
+ * likely cause. Two gates read it before a launch: the burndown tick
+ * (`burndown/trust-gate.ts`), which fails closed on an unverified CLI version,
+ * and the host launcher (CC-1081), which refuses a teleport successor only on a
+ * definite untrusted read, so an unreadable or reshaped config launches as before.
  */
 
 const TRUST_FIELD = 'hasTrustDialogAccepted'
@@ -66,6 +69,20 @@ export function trustGap(
   return (
     `Claude Code has no accepted trust entry for ${cwd} in ${claudeConfigPath(configDir)}, ${symptom}. ` +
     'Run `claude` there once and accept it, or spawn into a directory already trusted.'
+  )
+}
+
+/**
+ * Why a host launcher must not open a successor in `cwd`, or undefined unless the
+ * config is readable and trusts none of the CLI's keys for it. Never seeds trust:
+ * accepting the prompt is the owner's call, so the sentence says how.
+ */
+export function launcherTrustRefusal(cwd: string, configDir: string | undefined): string | undefined {
+  if (isTrusted(cwd, configDir) !== false) return undefined
+  const env = configDir === undefined ? '' : ` with CLAUDE_CONFIG_DIR=${configDir}`
+  return (
+    `workspace trust prompt: Claude Code on ${os.hostname()} has no accepted trust entry for ${cwd} ` +
+    `in ${claudeConfigPath(configDir)}; the owner runs \`claude\` there once${env} and accepts it`
   )
 }
 
