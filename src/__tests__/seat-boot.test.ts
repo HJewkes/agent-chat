@@ -208,9 +208,45 @@ describe('the queue section', () => {
 
     const lines = await boot()
 
-    expect(lines.filter(line => line.includes('queue'))).toEqual([
+    expect(lines.filter(line => line.includes('queue') && !line.startsWith('edit: '))).toEqual([
       `== queue: no queue file at ${path.join(root, 'queues', `${SEAT}.md`)}`,
     ])
+  })
+})
+
+describe('the queue edit hint', () => {
+  const editLine = (lines: string[]): string | undefined => lines.find(line => line.startsWith('edit: '))
+  const scriptOf = (line: string): string => /^edit: AUTONOMY_ROOT='[^']*' '([^']*)'/.exec(line)?.[1] ?? ''
+
+  it('names the verbs with the root and an absolute queue script path that exists', async () => {
+    const lines = await boot()
+
+    const line = editLine(lines) ?? ''
+    expect(lines.indexOf(line)).toBe(lines.findIndex(l => l.startsWith('== queue ')) + 1)
+    expect(line).toContain(`AUTONOMY_ROOT='${root}' `)
+    expect(line).toContain(` ${SEAT} replace|set|add|done|park|move`)
+    const script = scriptOf(line)
+    expect(path.isAbsolute(script)).toBe(true)
+    expect(script.endsWith(path.join('scripts', 'seat', 'queue'))).toBe(true)
+    expect(fs.existsSync(script)).toBe(true)
+  })
+
+  it('still prints the hint after the line for a missing queue file', async () => {
+    fs.rmSync(path.join(root, 'queues'), { recursive: true })
+
+    const lines = await boot()
+
+    const at = lines.findIndex(line => line.startsWith('== queue: no queue file'))
+    expect(lines[at + 1]).toMatch(/^edit: AUTONOMY_ROOT=/)
+  })
+
+  it('quotes a root holding spaces and a single quote so the line runs as printed', async () => {
+    const odd = path.join(tmp, "Application Support's")
+    fs.cpSync(root, odd, { recursive: true })
+
+    const line = editLine(await boot(undefined, { autonomyRoot: odd })) ?? ''
+
+    expect(line).toContain(`AUTONOMY_ROOT='${odd.replace("'", `'\\''`)}' `)
   })
 })
 
@@ -355,7 +391,7 @@ describe('the 6,000-character cap', () => {
   })
 
   it('cuts the log section after the inbox is gone, never the queue', async () => {
-    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(300)}`
+    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(280)}`
     write(`queues/${SEAT}.md`, `${bigQueue}\n`)
     writeLog(`## State at teleport 1\n${'state line\n'.repeat(140)}`)
     sendMessages(10, 240)
