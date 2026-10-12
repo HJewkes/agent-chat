@@ -396,7 +396,9 @@ lock the timer's tick takes is the single-flight lock: while any tick holds it, 
 defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
 under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
 `burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
-Brokers on a temp-dir home never kick.
+Brokers on a temp-dir home never kick. A kicked tick runs with the timer job's env plus
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when the broker has them; without the user bus
+`systemctl --user` fails and the service check reads `not loaded` (CC-1144).
 
 To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
 prints the median wait from a burndown implementer's exit to the next tick that dispatched.
