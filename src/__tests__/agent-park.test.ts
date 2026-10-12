@@ -9,6 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
+import { parkWorktree } from '../agents/isolation/park.js'
 import { worktreeStrategy } from '../agents/isolation/worktree.js'
 import { seatLogPath } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
@@ -769,5 +770,88 @@ describe('refusing to park a running or shared agent', () => {
     await parking
 
     expect(during).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
+  })
+})
+
+describe('parking a tree pushed under another branch name (CC-1039)', () => {
+  const originOf = (repo: string): string => git(['remote', 'get-url', 'origin'], repo)
+
+  it('parks a tree whose HEAD origin holds only under a PR branch, keeping the allocated branch', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], agent.cwd)
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: true })
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchHead(repo, 'agent-chat/worker-a')).toBe(pushed)
+  })
+
+  it('names the origin branch that holds HEAD', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], agent.cwd)
+    const target = { gitRoot: repo, worktree: agent.cwd, branch: 'agent-chat/worker-a', assigned: false }
+
+    const parked = await parkWorktree(target, () => undefined)
+
+    expect(parked).toEqual({
+      ok: true,
+      head: pushed,
+      branch: 'agent-chat/worker-a',
+      containedIn: 'agent-chat/pr-x',
+    })
+  })
+
+  it('refuses a commit made after HEAD was pushed under the PR branch', async () => {
+    const agent = await spawnIn('worker-a', repoWithOrigin())
+    commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], agent.cwd)
+    commitIn(agent.cwd, 'more.ts')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses when the PR branch was deleted on origin, even with a stale tracking ref', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], agent.cwd)
+    git(['branch', '-q', '-D', 'agent-chat/pr-x'], originOf(repo))
+    await exit(agent)
+    expect(git(['rev-parse', '--verify', 'refs/remotes/origin/agent-chat/pr-x'], repo)).not.toBe('')
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('keeps the local branch HEAD is on and resumes the tree on it', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '-b', 'side'], agent.cwd)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:pr-y'], agent.cwd)
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: true, reason: expect.stringMatching(/branch side kept at/) })
+    expect(branchHead(repo, 'side')).toBe(pushed)
+
+    const resumed = await sup.resume('worker-a')
+
+    expect(resumed.reason).toBeUndefined()
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe('side')
+    expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(pushed)
   })
 })

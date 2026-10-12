@@ -1,6 +1,11 @@
 #!/bin/bash
 # Stub agent-chat: records each gh-write call in $STUB_LOG and answers like a successful merge PUT.
+# An update-branch call runs $FIXDIR/on-update.sh when present, so a case can move the PR head.
 [ "$1" = gh-write ] || { echo "stub agent-chat: unsupported: $*" >&2; exit 1; }
 printf '%s\n' "$@" >> "$STUB_LOG"; echo --- >> "$STUB_LOG"
+if [[ "$*" == *"/update-branch "* ]]; then
+  [ -f "$FIXDIR/on-update.sh" ] && bash "$FIXDIR/on-update.sh"
+  echo '{"message":"Updating pull request branch."}'; exit 0
+fi
 [ -n "${STUB_PUT_FAIL:-}" ] && { echo '{"message":"Head branch was modified"}'; exit 1; }
 echo '{"merged":true,"sha":"mergesha"}'

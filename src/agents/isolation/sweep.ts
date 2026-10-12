@@ -143,7 +143,7 @@ export interface SweepOptions {
   now?: () => number
 }
 
-const porcelain: GitLister = async gitRoot =>
+export const porcelain: GitLister = async gitRoot =>
   (await import('node:child_process')).execFileSync('git', ['worktree', 'list', '--porcelain'], {
     cwd: gitRoot,
     encoding: 'utf8',

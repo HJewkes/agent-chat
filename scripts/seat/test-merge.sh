@@ -14,6 +14,22 @@ expected_put() {
   echo ---
 }
 ok_case() { new_case "$CLEAN"; add_verdict seat-9-review msg0001 MERGE "$SHA"; }
+logged() { [ -f "$STUB_LOG" ] || { echo 0; return; }; grep -c -- "$1" "$STUB_LOG"; }
+merge_puts() { logged '/merge$'; }
+updates() { logged '/update-branch$'; }
+counts() { [ "$(updates) $(merge_puts)" = "$2" ] && { echo "PASS $1: updates and merge PUTs $2"; pass=$((pass+1)); } \
+  || { echo "FAIL $1: updates and merge PUTs $(updates) $(merge_puts), want $2"; failn=$((failn+1)); }; }
+# behind_case [conclusion]: strict and behind at $CLEAN; update-branch moves the head to $MERGED, whose checks end in conclusion.
+behind_case() {
+  ok_case; mut rules_branches_main.json '.[0].parameters.strict_required_status_checks_policy=true'
+  echo '{"behind_by":3}' > "$W/case/compare_main___SHA.json"
+  cat > "$W/case/on-update.sh" <<UPD
+jq -c '.head.sha="$MERGED"' "$W/case/pulls_7.json" > "$W/case/p.tmp" && mv "$W/case/p.tmp" "$W/case/pulls_7.json"
+jq -c '.check_runs[].conclusion="${1:-success}"' "$W/case/commits_SHA_check_runs_per_page_100.json" > "$W/case/commits_${MERGED}_check_runs_per_page_100.json"
+cp "$W/case/commits_SHA_status.json" "$W/case/commits_${MERGED}_status.json"
+echo '{"behind_by":${2:-0}}' > "$W/case/compare_main___${MERGED}.json"
+UPD
+}
 
 ok_case; run;                                     check "OK merges" 0 "^OK merged $R#$N squash mergesha"
 [ "$(puts)" = 1 ] && echo "PASS OK: exactly one PUT" && pass=$((pass+1)) || { echo "FAIL OK: PUT count $(puts)"; failn=$((failn+1)); }
@@ -50,6 +66,24 @@ ok_case; STUB_PUT_FAIL=1 run;                       check "FAIL when the PUT is 
 ok_case; WAIT_INTERVAL=0 run --wait-main;           check "--wait-main green" 0 "^MAIN green"
 ok_case; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].conclusion="failure"'; WAIT_INTERVAL=0 run --wait-main
 check "--wait-main red names the failing check, exit 3" 3 "^MAIN red post-merge"
+# cancelled_case <newer run id> <newer created_at>: post-merge passes, deploy on the merge sha was cancelled; the
+# deploy workflow's latest run on main is the given one.
+cancelled_case() {
+  ok_case; mut commits_mergesha_check_runs_per_page_100.json \
+    '.check_runs += [{name: "deploy", status: "completed", conclusion: "cancelled", check_suite: {id: 900}}]'
+  echo '{"workflow_runs":[{"id":51,"workflow_id":77,"check_suite_id":901,"created_at":"2026-10-04T10:00:00Z"},
+    {"id":52,"workflow_id":78,"check_suite_id":900,"created_at":"2026-10-04T10:00:00Z"}]}' > "$W/case/actions_runs_head_sha_mergesha_per_page_100.json"
+  echo "{\"workflow_runs\":[{\"id\":$1,\"created_at\":\"$2\"}]}" > "$W/case/actions_workflows_78_runs_branch_main_per_page_1.json"
+}
+cancelled_case 60 2026-10-04T10:02:00Z; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled and superseded by a newer main run, exit 0" 0 "^MAIN green (superseded: deploy)$"
+cancelled_case 52 2026-10-04T10:00:00Z; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled with no newer main run, exit 3" 3 "^MAIN red deploy$"
+cancelled_case 60 2026-10-04T10:02:00Z; rm "$W/case/actions_runs_head_sha_mergesha_per_page_100.json"; WAIT_INTERVAL=0 run --wait-main
+check "--wait-main cancelled when the actions API read fails, exit 3" 3 "^MAIN red deploy$"
+cancelled_case 60 2026-10-04T10:02:00Z; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].conclusion="failure"'
+WAIT_INTERVAL=0 run --wait-main
+check "--wait-main failure beside a superseded cancel stays red, exit 3" 3 "^MAIN red post-merge$"
 ok_case; mut commits_mergesha_check_runs_per_page_100.json '.check_runs[0].status="in_progress"'; WAIT_INTERVAL=1 WAIT_MAX=1 run --wait-main
 check "--wait-main timeout, exit 4" 4 "^MAIN timeout"
 new_case "$MERGED"; add_verdict seat-9-review msg0020 MERGE "$CLEAN"; out=$("$BIN/merge" "$R" "$N" "$MERGED" "$W/clone" "$CLEAN" 2>&1); rc=$?
@@ -58,4 +92,20 @@ grep -q -- "^Reviewer seat-9-review Verdict: MERGE at head ${CLEAN:0:8} .*Merged
   && { echo "PASS commit_message carries S when RV differs"; pass=$((pass+1)); } || { echo "FAIL commit_message with differing S"; failn=$((failn+1)); }
 out=$("$BIN/merge" "$R" "$N" bad "$W/clone" 2>&1); rc=$?;   check "FAIL on a bad argument names the reason" 1 "^FAIL premerge: bad argument"
 ok_case; out=$(env -u COORDINATORS "$BIN/merge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "FAIL on unset COORDINATORS" 1 "^FAIL premerge: COORDINATORS unset"; no_put "unset COORDINATORS"
+behind_case; WAIT_INTERVAL=0 run;               check "behind -> update -> green -> merged" 0 "^OK merged $R#$N squash mergesha"
+counts "behind green" "1 1"
+grep -q -- "^expected_head_sha=$CLEAN$" "$STUB_LOG" && grep -q -- "^sha=$MERGED$" "$STUB_LOG" \
+  && { echo "PASS update pins the old head, merge pins the new head"; pass=$((pass+1)); } || { echo "FAIL update/merge shas: $(cat "$STUB_LOG")"; failn=$((failn+1)); }
+grep -q -- "Verdict: MERGE at head ${CLEAN:0:8} .*Merged head $MERGED is the reviewed head plus a merge" "$STUB_LOG" \
+  && { echo "PASS update cites the reviewed head and the new head"; pass=$((pass+1)); } || { echo "FAIL update citation"; failn=$((failn+1)); }
+behind_case failure; WAIT_INTERVAL=0 run;       check "behind -> update -> red -> FAIL" 1 "^FAIL after update-branch: UPDATED red validate,lint"
+counts "behind red" "1 0"
+behind_case success 2; WAIT_INTERVAL=0 run;     check "behind again after update -> FAIL" 1 "^FAIL premerge after update-branch: .*strict and behind_by=2"
+counts "behind twice" "1 0"
+behind_case; rm "$W/case/on-update.sh"; WAIT_INTERVAL=1 WAIT_MAX=1 run
+check "head never moves after update -> FAIL" 1 "^FAIL after update-branch: head did not move"; counts "head stuck" "1 0"
+behind_case; run --no-update;                   check "behind with --no-update -> FAIL" 1 "^FAIL premerge: .*strict and behind_by=3"
+counts "--no-update" "0 0"
+behind_case; mut commits_SHA_check_runs_per_page_100.json '.check_runs[0].conclusion="failure"'; run
+check "behind plus red required check -> FAIL" 1 "^FAIL premerge: .*strict and behind_by=3"; counts "behind and red" "0 0"
 finish

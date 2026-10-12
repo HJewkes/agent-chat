@@ -122,9 +122,62 @@ describe('patternsOverlap literals and over-reports (CC-272 review)', () => {
     expect(patternsOverlap('a*', 'a/')).toBe(false)
   })
 
-  it('over-reports wildcard pairs it cannot decide, rather than miss an overlap', () => {
-    expect(patternsOverlap('src/*.ts', 'src/a*/b.ts')).toBe(true)
-    expect(patternsOverlap('*.md', '*/x.md')).toBe(true)
+  it('decides wildcard pairs exactly, so different segment counts never overlap', () => {
+    expect(patternsOverlap('src/*.ts', 'src/a*/b.ts')).toBe(false)
+    expect(patternsOverlap('*.md', '*/x.md')).toBe(false)
+  })
+})
+
+/**
+ * CC-826 (also CC-695, CC-685, CC-666, CC-294): the old wildcard fallback
+ * compared directories and literal prefixes, so two disjoint globs in one
+ * directory were always refused. Every accepted pair below is one a seat was
+ * refused in practice.
+ */
+describe('patternsOverlap decides glob pairs exactly (CC-826)', () => {
+  it.each([
+    ['products/factory/src/config*.ts', 'products/factory/src/gate-resolve-round*'],
+    ['products/factory/src/config*.ts', 'products/factory/src/cli.ts'],
+    ['src/__tests__/burndown-finding*.test.ts', 'src/__tests__/return-contract*.ts'],
+    ['packages/ui/src/theme/workout-tokens.ts', 'packages/ui/src/theme/*/*'],
+    ['packages/workflow/src/types.ts', 'packages/style-*/src/**'],
+    ['packages/ui/src/components/custom/Chat/DateSeparator*', 'packages/ui/**/DualVelocityStrip*'],
+    ['.changeset/tp-1203-*.md', '.changeset/tp-1419-*.md'],
+    ['package.json', 'packages/hitl/package.json'],
+    ['scripts/factory-build-helper*', 'scripts/codewatch-summary*'],
+    ['.changeset/tp-1204-*', '.changeset/tp-1419-*.md'],
+    ['.changeset/tp-1204-*', '.changeset/tp-995-*.md'],
+    ['packages/agent*/**', 'packages/tool-guard/src/**'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/volume.ts'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/fatigue*.ts'],
+    ['src/dashboard/read-models/goal-*.ts', 'src/dashboard/read-models/streak.ts'],
+    ['packages/agent*/**', 'products/factory/src/cli.ts'],
+    ['packages/agent*/**', 'packages/session-read/*.*'],
+  ])('accepts %s beside %s, which no path matches both', (a, b) => {
+    expect(patternsOverlap(a, b)).toBe(false)
+    expect(patternsOverlap(b, a)).toBe(false)
+  })
+
+  it.each([
+    ['src/**', 'src/a.ts'],
+    ['.changeset/**', '.changeset/x.md'],
+    ['src/**', 'src/cli/**'],
+    ['*.md', '**/*.md'],
+    ['src/a*.ts', 'src/*b.ts'],
+    ['packages/*/src/**', 'packages/ui/**'],
+    ['docs/', 'docs/*.md'],
+    ['src/**/x.ts', 'src/a/**'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/set-risk-constants.ts'],
+    ['src/analytics/set-risk*.ts', 'src/analytics/*.ts'],
+    ['packages/agent*/**', 'packages/agent-protocol/src/index.ts'],
+    ['site/reference/session-*.md', 'site/reference/*.md'],
+  ])('still refuses %s beside %s, which share a path', (a, b) => {
+    expect(patternsOverlap(a, b)).toBe(true)
+    expect(patternsOverlap(b, a)).toBe(true)
+  })
+
+  it('reports an overlap for ** inside a longer segment, which it does not decide', () => {
+    expect(patternsOverlap('src/a**b', 'lib/*.ts')).toBe(true)
   })
 })
 
@@ -181,6 +234,32 @@ describe('ClaimLedger', () => {
       expect(out.reason).toContain('alice')
       expect(out.conflicts[0]?.owner).toBe('alice')
     }
+  })
+
+  it('names the held pattern and the wanted pattern that overlap, not the whole list', () => {
+    const l = ledger()
+    l.claim({ owner: 'alice', worktreePath: WT, patterns: ['README.md', 'src/cli/**', 'docs/*.md'] })
+
+    const out = l.claim({ owner: 'bob', worktreePath: WT, patterns: ['package.json', 'src/cli/args.ts'] })
+
+    expect(out.ok).toBe(false)
+    if (!out.ok) {
+      expect(out.reason).toContain('"alice" holds src/cli/** (overlaps your src/cli/args.ts)')
+      expect(out.reason).not.toContain('README.md')
+    }
+  })
+
+  it('accepts disjoint globs in one directory beside a peer (CC-826)', () => {
+    const l = ledger()
+    l.claim({
+      owner: 'alice',
+      worktreePath: WT,
+      patterns: ['products/factory/src/gate-resolve-round*', 'products/factory/src/cli.ts'],
+    })
+
+    const out = l.claim({ owner: 'bob', worktreePath: WT, patterns: ['products/factory/src/config*.ts'] })
+
+    expect(out.ok).toBe(true)
   })
 
   it('says plainly that a claim is advisory, not a lock', () => {

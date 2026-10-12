@@ -56,10 +56,13 @@ export interface AgentChatConfig {
   coordinatorGrantableTools?: unknown
   poolProbe?: unknown
   tmuxSurfaceOnLinux?: unknown
+  machines?: unknown
   processKillBytes?: unknown
   processGuardMode?: unknown
   gitShellAliases?: unknown
   autoRetire?: unknown
+  autoPark?: unknown
+  machineHoldOperators?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -176,6 +179,25 @@ export function resolveTmuxOnLinux(): boolean {
 }
 
 /**
+ * CC-951: teleport destination aliases, alias → hostname, so `to: "mac"` names a machine. Empty unless
+ * `machines` is an object of non-empty strings; any bad entry drops the whole map rather than half of it.
+ */
+export function resolveMachines(): Record<string, string> {
+  const value = readConfig().machines
+  if (value === undefined) return {}
+  const isHost = (host: unknown): host is string => typeof host === 'string' && host.trim() !== ''
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isHost)
+  )
+    return value as Record<string, string>
+  logInvalidOnce({ key: 'machines', value, fallback: {} })
+  return {}
+}
+
+/**
  * CC-606: whether the broker's pool pick for an unpinned seat spawn is only recorded (`shadow`, the default)
  * or also billed (`enforce`); `off` skips it. From `config.json`'s `poolPick`, read per spawn.
  */
@@ -235,6 +257,19 @@ export function resolveAutoRetireOnReport(spawner: string): boolean {
 }
 
 /**
+ * CC-1039: whether the broker parks a non-reviewer agent's clean, pushed tree when it exits.
+ * `autoPark.onExit` is on by default; `false` turns it off. Read per exit, so a change needs no
+ * broker restart. Anything else is logged and read as on.
+ */
+export function resolveAutoParkOnExit(): boolean {
+  const autoPark = readConfig().autoPark
+  const value = isObject(autoPark) ? autoPark.onExit : autoPark
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  logInvalidOnce({ key: 'autoPark.onExit', value, fallback: true })
+  return true
+}
+
+/**
  * The one durable agent id allowed to send `decided` (autonomy slice 3), from
  * `config.json`'s `decider.agentId`, set once by the human for one durable
  * decider (slice 4f option c); the burndown tick only reads it. Read per frame.
@@ -247,6 +282,21 @@ export function resolveDeciderAgentId(): string | undefined {
   if (typeof agentId === 'string' && agentId !== '') return agentId
   logInvalidOnce({ key: 'decider.agentId', value: agentId, fallback: 'no decider' })
   return undefined
+}
+
+export const DEFAULT_MACHINE_HOLD_OPERATORS: readonly string[] = ['tp-operator']
+
+/**
+ * CC-957: the agents whose machine-wide sends open and lift a chat HOLD, from `machineHoldOperators`,
+ * read per call. Anything but a non-empty list of names is logged and read as the default.
+ */
+export function resolveMachineHoldOperators(): readonly string[] {
+  const value = readConfig().machineHoldOperators
+  if (value === undefined) return DEFAULT_MACHINE_HOLD_OPERATORS
+  const isName = (name: unknown): name is string => typeof name === 'string' && name !== ''
+  if (Array.isArray(value) && value.length > 0 && value.every(isName)) return value
+  logInvalidOnce({ key: 'machineHoldOperators', value, fallback: DEFAULT_MACHINE_HOLD_OPERATORS })
+  return DEFAULT_MACHINE_HOLD_OPERATORS
 }
 
 /** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */

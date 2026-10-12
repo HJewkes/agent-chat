@@ -129,6 +129,9 @@ export const burndownSettingsLogPath = (): string => path.join(home(), 'burndown
 /** Present means `burndown tick` spawns nothing; written by `burndown pause`, removed by `burndown resume`. */
 export const burndownPausePath = (): string => path.join(home(), 'burndown.paused')
 
+/** CC-957: an operator HOLD as JSON `{by, since, reason}`, which `machine status` reports while it exists. */
+export const operatorHoldPath = (): string => path.join(home(), 'operator.hold')
+
 /** The launchd label for `agent-chat burndown tick --once`; the plist and every `launchctl` call use it. */
 export const BURNDOWN_LABEL = 'dev.hjewkes.agent-chat-burndown'
 
@@ -203,6 +206,9 @@ export const ACTIVE_WORK_PORT = 7400
 
 export const activeWorkPort = (): number =>
   portFrom(process.env.AGENT_CHAT_ACTIVE_WORK_PORT, ACTIVE_WORK_PORT)
+
+/** One line per seat tool hook (CC-1056) that failed and was swallowed. */
+export const seatHookLogPath = (): string => path.join(home(), 'seat-hook.log')
 
 /** One line per time the PreToolUse leak guard allowed a call because it crashed or ran out of time (CC-371). */
 export const leakGuardLogPath = (): string => path.join(home(), 'leak-guard.log')

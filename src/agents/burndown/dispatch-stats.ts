@@ -268,6 +268,9 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
   }
 }
 
+/** CC-967: the ready depth a seat should hold, twice the config's `maxAgents`; CC-986 plans below it. */
+export const readyFloorFor = (maxAgents: number): number => 2 * maxAgents
+
 /** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
 export function dispatchStats(
   ports: DispatchStatsPorts,
@@ -280,7 +283,7 @@ export function dispatchStats(
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
-    floor: floor ?? 2 * ports.maxAgents(),
+    floor: floor ?? readyFloorFor(ports.maxAgents()),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
 }

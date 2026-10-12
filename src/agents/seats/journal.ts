@@ -2,7 +2,7 @@ import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
 import { isSeatName, parseSeat, type Seat } from './charter.js'
 import { appendSeatLog, readText, seatLogClock, seatLogPath } from './io.js'
-import { alreadyJournaled, journalText, type JournalEntry } from './journal-line.js'
+import { alreadyJournaled, alreadyMerged, journalText, type JournalEntry } from './journal-line.js'
 import { seatOf } from './seat-of.js'
 
 /** CC-316: the broker writes a seat's spawn, retire, park, merged, stalled and teleport-failed lines, so the seat does not. */
@@ -71,6 +71,8 @@ function write(root: string, entry: JournalEntry, at: Date, latch: Latch): void 
   latch.clear(REFUSED)
   const today = readText(seatLogPath(root, seat.name, at)) ?? ''
   if (alreadyJournaled(today, `${seatLogClock(at)} ${text}`)) return
+  if (entry.event === 'merged' && entry.pr !== undefined && alreadyMerged(today, entry.agent, entry.pr))
+    return
   appendSeatLog(root, seat.name, at, text)
 }
 

@@ -11,12 +11,14 @@ import { run, type Runner } from './exec.js'
 import { readExitedWork, type ExitedWork } from './exited-adopt.js'
 import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
+import type { ClaimPr } from './pr-state.js'
 import { readProgress, type Progress } from './progress.js'
 import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { outsideOwns } from './owns-fence.js'
 import { parseReport, readSlices } from './report.js'
 import { sumSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
-import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
+import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
   FINISHED_PHASES,
   rowFor,
@@ -50,6 +52,8 @@ export interface ObserveDeps {
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
+  /** The files a worktree's branch changed against its base (CC-669); undefined when git could not tell. */
+  changedFiles?: (cwd: string) => string[] | undefined
   /** Every row `shepherd status` lists; observe calls it at most once per tick. */
   shepherdRows?: () => ShepherdRow[] | undefined
   landed?: (target: ShepherdTarget) => boolean | undefined
@@ -64,6 +68,8 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
+  prState?: (claim: Claim) => ClaimPr | undefined
 }
 
 export interface Observed {
@@ -138,7 +144,10 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else observations.set(claimKey(claim), prRuns === undefined ? result : withPrRun(result, claim, prRuns))
+    else {
+      const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
+      observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
+    }
   }
   return { observations, unread }
 }
@@ -154,6 +163,20 @@ function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observati
   if (row.phase !== 'done' || row.outcome?.kind === 'merged') return { ...obs, shepherd: { row } }
   const landed = (deps.landed ?? (t => shepherdLanded(t)))({ repo: row.repo, pr: row.pr })
   return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
+}
+
+const SETTLED_STALLS: ReadonlySet<Phase> = new Set(['spawning', 'reviewing'])
+const PR_STATE_PHASES: ReadonlySet<Phase> = new Set(['implementing', 'shepherding'])
+
+/**
+ * CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. CC-1074:
+ * and for a shepherding claim, so its merge finishes it when Shepherd's row is gone, ended or behind.
+ */
+function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
+  const reads =
+    PR_STATE_PHASES.has(claim.phase) || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+  if (read === undefined || !reads) return obs
+  return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
 
 /**
@@ -206,12 +229,26 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     return obs
   }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
+  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0) obs.owned = ownedRead(claim, deps)
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
     return withExitedWork(obs, claim.worktree, deps)
   }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
+}
+
+function ownedRead(claim: Claim, deps: ObserveDeps): NonNullable<Observation['owned']> {
+  const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
+  return files === undefined ? 'unreadable' : { outside: outsideOwns(files, claim.owns ?? []) }
+}
+
+/** Committed changes only: the PR carries what was pushed, not what the worktree still holds. */
+export function changedFiles(cwd: string, exec: Runner = run): string[] | undefined {
+  const base = resolveBaseRef(cwd, exec)
+  if (base === undefined) return undefined
+  const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
+  return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
 
 /** Read only for an exit with no status line: a report already says what the agent left. */

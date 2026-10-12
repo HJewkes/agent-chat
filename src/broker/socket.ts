@@ -6,6 +6,7 @@ import {
   HUMAN,
   isAnswerChannel,
   isTeleportReason,
+  SURFACE_NAMES,
   type ClientMessage,
   type DeliveredMessage,
   type ItemShape,
@@ -17,7 +18,9 @@ import {
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
+import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
+import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import {
   BrokerCore,
   readoptRegistration,
@@ -29,6 +32,7 @@ import {
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import { asPlatform } from '../agents/teleport-config.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -38,11 +42,13 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId } from '../config.js'
+import { resolveDeciderAgentId, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
+import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import { HostDirectory, type LauncherHello } from './host-directory.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -148,6 +154,19 @@ interface HookWait {
   session: string
 }
 
+/** A directed send's reply ref and CC-168 row meta, carried through its hold and forward paths. */
+interface SendExtras {
+  inReplyTo?: string | undefined
+  meta?: Record<string, string> | undefined
+}
+
+/** What a routed send's rows carry beyond the message itself. */
+interface RouteExtras {
+  tag?: string
+  forwardedFor?: string
+  meta?: Record<string, string> | undefined
+}
+
 /** The body a hook row closes with when nobody answered it; the mirror renders it as expired at the agent. */
 const HOOK_WITHDRAWN = 'withdrawn'
 
@@ -177,6 +196,27 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
+  launchSeen === undefined ? {} : { launchSeen }
+
+/** CC-951: a hello's fields come off the wire, so each is checked rather than trusted to be typed. */
+function launcherHello(
+  msg: Extract<ClientMessage, { t: 'host_hello' }>,
+  machines: readonly string[],
+): LauncherHello | string {
+  if (typeof msg.host !== 'string' || msg.host.trim() === '') return 'host_hello needs a host name'
+  const host = msg.host.trim().toLowerCase()
+  if (machines.length > 0 && !machines.some(machine => machine.toLowerCase() === host))
+    return `${msg.host.trim()} is not one of the configured machines (${machines.join(', ')})`
+  const platform = asPlatform(msg.platform)
+  if (platform === undefined) return `unknown platform "${String(msg.platform)}"`
+  const offered: unknown[] = Array.isArray(msg.surfaces) ? msg.surfaces : []
+  const surfaces = SURFACE_NAMES.filter(surface => offered.includes(surface))
+  return { host: msg.host.trim(), platform, surfaces }
+}
+
+const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
+  hostPlatform === undefined ? {} : { hostPlatform }
 
 /**
  * The socket transport. Everything here is about turning bytes into `core`
@@ -192,6 +232,8 @@ export class SocketServer {
   private readonly hooks = new Map<string, HookWait>()
   /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
+  /** CC-951: connected host launchers, each dropped with its connection. */
+  private readonly hosts = new HostDirectory<Conn>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -213,7 +255,7 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core, supervisorOptions)
+    this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
   }
@@ -294,6 +336,7 @@ export class SocketServer {
       ...(msg.briefing === undefined ? {} : { briefing: msg.briefing }),
       ...(msg.worktree === undefined ? {} : { worktree: msg.worktree }),
       ...(msg.owns === undefined ? {} : { owns: msg.owns }),
+      ...(msg.claimPaths === undefined ? {} : { claimPaths: msg.claimPaths }),
       // Passed through rather than resolved here: WHOSE conversation a fork
       // copies is decided in the supervisor, from this requester's own registry
       // entry, so the refusals land in the log with every other spawn refusal.
@@ -446,6 +489,14 @@ export class SocketServer {
         ok: false,
         reason: `unknown teleport reason "${String(msg.reason)}"`,
       })
+    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
+      })
+    if (msg.to !== undefined && typeof msg.to !== 'string')
+      return reply(conn, { t: 'teleport_result', ok: false, reason: 'teleport "to" must be a machine name' })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -482,6 +533,11 @@ export class SocketServer {
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
       ...(msg.remoteControlSeen === undefined ? {} : { remoteControlSeen: msg.remoteControlSeen }),
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
+      ...(msg.surface === undefined ? {} : { surface: msg.surface }),
+      ...optionalPlatform(asPlatform(msg.hostPlatform)),
+      ...optionalCarried(sanitizeCarried(msg.launchSeen)),
+      ...(msg.to === undefined ? {} : { to: msg.to }),
+      ...(msg.endsSelf === true ? { endsSelf: true } : {}),
     })
     reply(conn, {
       t: 'teleport_result',
@@ -579,6 +635,41 @@ export class SocketServer {
             ...(msg.reason === undefined ? {} : { reason: msg.reason }),
           })
     reply(conn, { t: 'teleport_launched_result', ...result })
+  }
+
+  /**
+   * CC-951: a host launcher is a connection of its own. The guard is per connection: one that
+   * holds a registration may not announce a machine, and a launcher's may not register (see
+   * `refuseLauncherRegister`). A session can still open a second connection; what stops it
+   * taking over a machine is that the first live launcher holds it, and that a configured
+   * `machines` list bounds which machines may be announced at all.
+   */
+  private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
+    if (this.core.registry.nameOf(conn) !== undefined) {
+      this.refuseToSession(conn, 'announce itself as a host launcher')
+      return reply(conn, {
+        t: 'host_hello_result',
+        ok: false,
+        reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
+      })
+    }
+    const hello = launcherHello(msg, Object.values(resolveMachines()))
+    if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
+    const result = this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
+    reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /** CC-951: a launcher's connection never holds a session's name; it takes launches, not messages. */
+  private refuseLauncherRegister(conn: Conn): boolean {
+    const host = this.hosts.hostOf(conn)
+    if (host === undefined) return false
+    reply(conn, {
+      t: 'register_result',
+      ok: false,
+      reason: `this connection is the host launcher for ${host}, so it cannot register a session`,
+    })
+    return true
   }
 
   /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
@@ -711,15 +802,16 @@ export class SocketServer {
   }
 
   /** One named recipient. CC-320: a dark seat's message is held for it rather than failing to route. */
-  private handleSend(conn: Conn, to: string, text: string, inReplyTo?: string): void {
+  private handleSend(conn: Conn, to: string, text: string, extras: SendExtras): void {
     const { core } = this
+    const { inReplyTo, meta } = extras
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
-    if (unrouted && this.forwardSend(conn, from, to, text, inReplyTo)) return
-    const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
-    if (held === undefined) return this.handleRoute(conn, result, 'message', to)
-    if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
+    if (unrouted && this.forwardSend(conn, from, to, text, extras)) return
+    const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo, undefined, meta) : undefined
+    if (held === undefined) return this.handleRoute(conn, result, 'message', to, { meta })
+    if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to, { meta })
     replyHeld(conn, to, held.msgId)
   }
 
@@ -727,17 +819,18 @@ export class SocketServer {
    * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
    * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
    */
-  private forwardSend(conn: Conn, from: string, to: string, text: string, inReplyTo?: string): boolean {
+  private forwardSend(conn: Conn, from: string, to: string, text: string, extras: SendExtras): boolean {
     const { core } = this
+    const { inReplyTo, meta } = extras
     const steward = core.stewardFor(to, from)
     if (steward === undefined) return false
     const forwarded = forwardedText(to, text)
     if (core.registry.connFor(steward) !== undefined) {
       const result = core.registry.send(conn, steward, forwarded, inReplyTo)
-      this.handleRoute(conn, result, 'message', steward, undefined, to)
+      this.handleRoute(conn, result, 'message', steward, { forwardedFor: to, meta })
       return true
     }
-    const held = core.holdForSteward(from, steward, forwarded, inReplyTo)
+    const held = core.holdForSteward(from, steward, forwarded, inReplyTo, undefined, meta)
     if (held === undefined) return false
     replyHeld(conn, steward, held.msgId)
     return true
@@ -748,8 +841,7 @@ export class SocketServer {
     result: RouteResult<Conn>,
     kind: 'message' | 'broadcast',
     to: string,
-    tag?: string,
-    forwardedFor?: string,
+    { tag, forwardedFor, meta: sendMeta }: RouteExtras = {},
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -768,6 +860,7 @@ export class SocketServer {
       // in meta. EventKind is frozen into the SSE contract, so a new member
       // there would break readers broadly.
       const meta = {
+        ...sendMeta,
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
         ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
@@ -1183,7 +1276,35 @@ export class SocketServer {
     const session = core.registry.connFor(msg.session)
     if (session) core.registry.setAwaitingApproval(session, true)
     logEvent('approval_request', { msgId, from: msg.session, tool: msg.toolName, source: 'hook' })
+    this.noticePermissionWaiting(msg, msgId)
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
+  /** CC-610: the spawner of a parked agent hears about it; a human spawner already has the queue. */
+  private noticePermissionWaiting(
+    msg: Extract<ClientMessage, { t: 'permission_hook' }>,
+    approvalRef: string,
+  ): void {
+    const { core } = this
+    const session = core.registry.connFor(msg.session)
+    const agentId = session === undefined ? undefined : core.registry.entryFor(session)?.agentId
+    const identity = agentId === undefined ? core.agents.byName(msg.session) : core.agents.get(agentId)
+    const spawner = identity?.spawnedBy
+    if (spawner === undefined || spawner === HUMAN) return
+    const text = permissionNoticeText({
+      agent: msg.session,
+      toolName: msg.toolName,
+      toolInput: msg.toolInput,
+    })
+    const meta = {
+      event: PERMISSION_WAITING,
+      agent: msg.session,
+      tool: msg.toolName,
+      approval_ref: approvalRef,
+    }
+    const { msgId } = core.append({ kind: 'message', actor: 'agent-chat', target: spawner, body: text, meta })
+    core.deliverTo(spawner, { msgId, from: 'agent-chat', text, at: Date.now(), event: PERMISSION_WAITING })
+    logEvent(PERMISSION_WAITING, { msgId, agent: msg.session, spawner, tool: msg.toolName })
   }
 
   /**
@@ -1409,15 +1530,19 @@ export class SocketServer {
     this.hintUnregistered(conn, msg)
     switch (msg.t) {
       case 'register': {
+        if (this.refuseLauncherRegister(conn)) return
         // Closing the displaced socket is what makes a takeover final: leaving it
         // open would let the predecessor keep writing under a name it no longer
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
         // — the predecessor has to learn why, or it just reconnects and takes the
-        // name back.
+        // name back. CC-951: a tick later, so a remote predecessor's `endSelf`,
+        // answered on this registration's attach, is written ahead of the close.
         const dark = core.darkSeat(msg.name)
         const returning = this.returning(msg)
         const result = core.register(conn, msg, stale =>
-          stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
+          setImmediate(() =>
+            stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
+          ),
         )
         if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
         reply(conn, { t: 'register_result', ...result })
@@ -1427,6 +1552,7 @@ export class SocketServer {
         return
       }
       case 'readopt':
+        if (this.refuseLauncherRegister(conn)) return
         return this.handleReadopt(conn, msg)
       case 'status':
         return reply(conn, {
@@ -1454,6 +1580,10 @@ export class SocketServer {
       case 'unsubscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
       case 'send': {
+        const refusal = sendMetaRefusal(msg)
+        if (refusal !== undefined)
+          return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: refusal })
+        const meta = sendMeta(msg)
         // Tag addressing resolves to a set of names and then goes down the very
         // same multicast path, so there is exactly one fanout implementation to
         // keep budgeted. A tag matching nobody comes back ok:false from there.
@@ -1463,7 +1593,7 @@ export class SocketServer {
             core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
             'message',
             `tag ${msg.toTag}`,
-            msg.toTag,
+            { tag: msg.toTag, meta },
           )
         }
         if (msg.to === undefined) {
@@ -1475,7 +1605,8 @@ export class SocketServer {
           })
         }
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
-        if (!Array.isArray(msg.to)) return this.handleSend(conn, msg.to, msg.text, msg.inReplyTo)
+        if (!Array.isArray(msg.to))
+          return this.handleSend(conn, msg.to, msg.text, { inReplyTo: msg.inReplyTo, meta })
         // The human is a queue, not a session, and a multicast is a fan-out to
         // sessions. Splitting one call across both write paths is where the bugs
         // would live, so the whole call is refused rather than half-honoured.
@@ -1494,6 +1625,7 @@ export class SocketServer {
           core.registry.multicast(conn, msg.to, msg.text, msg.inReplyTo),
           'message',
           msg.to.join(', '),
+          { meta },
         )
       }
       case 'broadcast':
@@ -1596,6 +1728,17 @@ export class SocketServer {
         return this.handleTeleportLaunched(conn, msg)
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
+      case 'host_hello':
+        return this.handleHostHello(conn, msg)
+      case 'host_probe_result':
+      case 'host_launch_result':
+        this.hosts.answer(conn, msg.id, {
+          ok: msg.ok === true,
+          ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
+        })
+        return
+      case 'hosts':
+        return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return
@@ -1638,17 +1781,23 @@ export class SocketServer {
           )
         return
       }
-      case 'retire':
-        void this.supervisor
-          .retire(msg.name, msg.force === true, this.core.registry.nameOf(conn) ?? (msg.caller || undefined))
-          .then(result =>
-            reply(conn, {
-              t: 'spawn_result',
-              ok: result.ok,
-              ...(result.reason === undefined ? {} : { reason: result.reason }),
-            }),
-          )
+      case 'retire': {
+        const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
+        const agentId = msg.agentId
+        void (
+          agentId === undefined
+            ? this.supervisor.retire(msg.name, msg.force === true, actor)
+            : this.supervisor.retireStale(agentId, msg.name, actor)
+        ).then(result =>
+          reply(conn, {
+            t: 'spawn_result',
+            ok: result.ok,
+            ...(agentId === undefined ? {} : { agentId, name: msg.name }),
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+          }),
+        )
         return
+      }
     }
   }
 
@@ -1662,6 +1811,7 @@ export class SocketServer {
 
     const drop = (): void => {
       this.dropHooks(conn)
+      this.hosts.drop(conn)
       core.drop(conn)
     }
     conn.on('close', drop)

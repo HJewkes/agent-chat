@@ -14,8 +14,8 @@ ROOT = os.environ.get('AUTONOMY_ROOT') or (ACTIVE_ROOT and os.path.join(ACTIVE_R
 if not ROOT:
     sys.stderr.write('bin/pace: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one\n')
     sys.exit(2)
-WATCHDOG = os.environ.get('PACE_WATCHDOG') or os.path.expanduser('~/.agent-chat/seat-watchdog.json')
-PACE_FILE = os.environ.get('PACE_FILE') or os.path.expanduser('~/.agent-chat/pace.json')
+WATCHDOG = os.environ.get('PACE_WATCHDOG') or os.path.join(os.environ.get("AGENT_CHAT_HOME") or os.path.expanduser("~/.agent-chat"), "seat-watchdog.json")
+PACE_FILE = os.environ.get('PACE_FILE') or os.path.join(os.environ.get("AGENT_CHAT_HOME") or os.path.expanduser("~/.agent-chat"), "pace.json")
 HISTORY = os.path.join(ROOT, 'pool-readings.jsonl')
 DAY, FINISH_EARLY, STALE_S, WRITER_QUIET_S = 86400, 86400, 900, 3600
 

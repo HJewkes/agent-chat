@@ -23,6 +23,7 @@ import {
   type Policy,
   type SeatPolicy,
 } from './policy.js'
+import { readyFloorFor } from './dispatch-stats.js'
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
@@ -89,7 +90,11 @@ function sampled(
 ) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
-  const kept = (previous?.samples ?? []).filter(s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs)
+  // CC-1080: a drop across pools is a different account's reading, not a seven_day reset; an unkeyed ledger's samples are unknowable, so dropped.
+  const samePool = previous?.configDir === dispatch.configDir
+  const kept = (samePool ? (previous?.samples ?? []) : []).filter(
+    s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs,
+  )
   const sample: SevenDaySample[] =
     reading?.sevenDay === undefined
       ? []
@@ -99,7 +104,12 @@ function sampled(
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
     ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
   }
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
+  return {
+    reading,
+    resetsAt,
+    history,
+    state: { samples: [...kept, ...sample], configDir: dispatch.configDir, ...marks },
+  }
 }
 
 /**
@@ -372,7 +382,14 @@ export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: Se
   const gate = brief?.briefGate[seat] ?? 'off'
   return brief === undefined || gate === 'off'
     ? {}
-    : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
+    : {
+        brief: {
+          gate,
+          maxAgeDays: brief.briefMaxAgeDays,
+          agingEvery: brief.maxAgents,
+          readyFloor: readyFloorFor(brief.maxAgents),
+        },
+      }
 }
 
 /** CC-936: the implementer slots the seat's hand spawns keep; none is passed as none. */

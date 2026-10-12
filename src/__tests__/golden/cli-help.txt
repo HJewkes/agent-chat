@@ -21,6 +21,8 @@ Commands:
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
+  machine                    operator HOLDs, owner stops and the machine stop
+  host                       host launchers: machines a teleport can land a successor on
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
   lifecycle                  offline maintenance of the agent lifecycle ledger
@@ -259,6 +261,8 @@ Commands:
                             again; --slice drops only that slice
   link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
                             dispatches it and finishes it on merge
+  landed [options]          every open, unreconciled task in a seat's scope that a recent
+                            default-branch subject or Covers clause names (CC-611); writes nothing
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -413,6 +417,19 @@ Options:
   --slice <value>  the queued slice the PR implements
   --pr <value>     the PR, as owner/repo#n or its URL
   -h, --help       display help for command
+
+=== agent-chat burndown landed
+Usage: agent-chat burndown landed [options]
+
+every open, unreconciled task in a seat's scope that a recent default-branch subject or Covers
+clause names (CC-611); writes nothing
+
+Options:
+  --seat <value>           autonomy seat whose scope and repos to sweep
+  --days <value>           subjects from the last N days (default 7)
+  --json                   one JSON record per row, one per line
+  --autonomy-root <value>  directory holding charter.md and seats/
+  -h, --help               display help for command
 
 === agent-chat burndown config
 Usage: agent-chat burndown config [options] [command]
@@ -812,6 +829,94 @@ Options:
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
 
+=== agent-chat machine
+Usage: agent-chat machine [options] [command]
+
+operator HOLDs, owner stops and the machine stop
+
+Options:
+  -h, --help        display help for command
+
+Commands:
+  status [options]  every stop on this machine, read-only (CC-957): operator HOLDs from the stop
+                    file and from chat (a broadcast or fan-out to two or more seats by one of
+                    config.json's machineHoldOperators, default tp-operator, counted by the seats it
+                    named in broker.log, whose first sentence carries HOLD, STOP ALL, MACHINE STOP,
+                    STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with
+                    LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast
+                    lift, at most 24 h; a fan-out part for a seat that is stopped or has no seat
+                    file does not count), the owner's stopped seats in seat-watchdog.json, and the
+                    memory, load, swap and pressure readings against the machine stop. `stopped` is
+                    a hold, the machine stop or a source that cannot be read; an owner stop holds
+                    only its own seat
+  help [command]    display help for command
+
+=== agent-chat machine status
+Usage: agent-chat machine status [options]
+
+every stop on this machine, read-only (CC-957): operator HOLDs from the stop file and from chat (a
+broadcast or fan-out to two or more seats by one of config.json's machineHoldOperators, default
+tp-operator, counted by the seats it named in broker.log, whose first sentence carries HOLD, STOP
+ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with
+LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast lift, at most 24 h; a
+fan-out part for a seat that is stopped or has no seat file does not count), the owner's stopped
+seats in seat-watchdog.json, and the memory, load, swap and pressure readings against the machine
+stop. `stopped` is a hold, the machine stop or a source that cannot be read; an owner stop holds
+only its own seat
+
+Options:
+  --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?, seats?}], ownerStops,
+              machine, errors
+  -h, --help  display help for command
+
+=== agent-chat host
+Usage: agent-chat host [options] [command]
+
+host launchers: machines a teleport can land a successor on
+
+Options:
+  -h, --help         display help for command
+
+Commands:
+  serve [options]    run this machine as a host launcher (CC-951): announce it to the broker, answer
+                     its probes, and launch teleport successors here with the cwd and account the
+                     spec names; reconnects after a drop
+  list               the host launchers connected to the broker, with their platform and surfaces
+  install [options]  print, without writing or loading anything, the kept-alive launchd plist
+                     (systemd --user unit on Linux) that runs `host serve`, and the commands that
+                     install it; the owner runs them
+  help [command]     display help for command
+
+=== agent-chat host serve
+Usage: agent-chat host serve [options]
+
+run this machine as a host launcher (CC-951): announce it to the broker, answer its probes, and
+launch teleport successors here with the cwd and account the spec names; reconnects after a drop
+
+Options:
+  --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
+                 report it
+  -h, --help     display help for command
+
+=== agent-chat host list
+Usage: agent-chat host list [options]
+
+the host launchers connected to the broker, with their platform and surfaces
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat host install
+Usage: agent-chat host install [options]
+
+print, without writing or loading anything, the kept-alive launchd plist (systemd --user unit on
+Linux) that runs `host serve`, and the commands that install it; the owner runs them
+
+Options:
+  --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
+                 report it
+  -h, --help     display help for command
+
 === agent-chat debug
 Usage: agent-chat debug [options] [command]
 
@@ -974,6 +1079,8 @@ Options:
   --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review, planner or other
   --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
                           iterm-tab, iterm-window, tmux-window
+  --spawned-as <who>      shepherd or burndown: the automation this spawn is on behalf of
+  --remote-control        run with Remote Control (coordinator profiles only)
   -h, --help              display help for command
 
 === agent-chat agent retire
@@ -1006,6 +1113,7 @@ Options:
   --message <value>  the turn it resumes on
   --message-stdin    read the turn from stdin, not argv
   --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window, tmux-window
+  --remote-control   run with Remote Control (coordinator profiles only; ignored headless)
   -h, --help         display help for command
 
 === agent-chat agent worktrees
@@ -1016,6 +1124,7 @@ worktrees agent-chat is holding, and which nobody is using
 Options:
   --prune     reclaim the ones nothing would be lost from
   --force     with --prune, reclaim even those holding work
+  --json      per-repo headroom and rows as one JSON object
   -h, --help  display help for command
 
 === agent-chat agent surface
@@ -1045,11 +1154,13 @@ Usage: agent-chat teleport [options] [command]
 teleport control
 
 Options:
-  -h, --help      display help for command
+  -h, --help                display help for command
 
 Commands:
-  abort <name>    stop a session ending itself for a successor
-  help [command]  display help for command
+  abort <name>              stop a session ending itself for a successor
+  request [options] <name>  ask a session to teleport itself, optionally to a surface or another
+                            machine
+  help [command]            display help for command
 
 === agent-chat teleport abort
 Usage: agent-chat teleport abort [options] <name>
@@ -1058,6 +1169,17 @@ stop a session ending itself for a successor
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat teleport request
+Usage: agent-chat teleport request [options] <name>
+
+ask a session to teleport itself, optionally to a surface or another machine
+
+Options:
+  --surface <surface>  where the successor runs: headless, iterm-pane, iterm-tab, iterm-window,
+                       tmux-window
+  --to <machine>       the machine it lands on: an alias from config machines, or a hostname
+  -h, --help           display help for command
 
 === agent-chat handoff
 Usage: agent-chat handoff [options] [command]
@@ -1178,6 +1300,7 @@ Options:
   --pid <pid>          the predecessor's Claude Code, whose exit frees its pane
   --surface <surface>  where the successor runs
   --anchor <anchor>    the predecessor's pane
+  --now                launch at once, beside the running predecessor (CC-951)
   -h, --help           display help for command
 
 === agent-chat permission-hook
@@ -1212,6 +1335,21 @@ deny a tool call that would bypass the leak scan or post a finding
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat seat-hook
+Usage: agent-chat seat-hook [options] <phase>
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat seat-blocks
+Usage: agent-chat seat-blocks [options]
+
+each seat's blocked minutes over a window, and any block still open
+
+Options:
+  --since <window>  window such as 90m, 24h or 7d (default: "24h")
+  -h, --help        display help for command
 
 === agent-chat ps
 Usage: agent-chat ps [options]

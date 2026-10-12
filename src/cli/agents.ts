@@ -2,7 +2,20 @@ import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/b
 import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
-import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
+import { porcelain, reclaim, sweepWorktrees, type SweptWorktree } from '../agents/isolation/sweep.js'
+import { BRANCH_PREFIX, DEFAULT_WORKTREE_BUDGET } from '../agents/isolation/worktree.js'
+import {
+  formatRows,
+  lowDiskWarning,
+  nonSeatRow,
+  repoHeadroom,
+  repoSummary,
+  stateRow,
+  volumeFreeBytes,
+  type RepoHeadroom,
+} from '../agents/isolation/worktree-states.js'
+import { parseWorktreeList } from '../agents/seats/trees.js'
+import { resolveWorktreeBudget } from '../config.js'
 import { loadProfile, selectProfileNames } from '../agents/profiles.js'
 import {
   createProfileIndex,
@@ -220,7 +233,9 @@ export function resolveBrief(words: string[], stdin: string | undefined): string
  * else. `--force` overrides that per the same rule `retire --force` follows: a
  * human deciding to throw work away, never an agent.
  */
-export async function agentWorktrees(options: { prune?: boolean; force?: boolean } = {}): Promise<Report> {
+export async function agentWorktrees(
+  options: { prune?: boolean; force?: boolean; json?: boolean } = {},
+): Promise<Report> {
   const roster = await withBroker(async b => {
     const result = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -230,13 +245,11 @@ export async function agentWorktrees(options: { prune?: boolean; force?: boolean
   })
   const root = await findGitRoot(process.cwd())
   const swept = await sweepWorktrees(roster, { ...(root === null ? {} : { roots: [root] }) })
+  const repos = await headroomByRepo(swept, root)
 
-  if (swept.length === 0) return { ok: true, lines: ['No agent-chat worktrees on this machine.'] }
-  const lines: string[] = []
-  for (const entry of swept) {
-    lines.push(`${entry.status.padEnd(12)} ${entry.branch.padEnd(28)} ${entry.worktree}`)
-    lines.push(`${' '.repeat(12)} ${entry.detail}`)
-  }
+  if (options.json === true) return { ok: true, lines: [JSON.stringify({ repos })] }
+  const lines = headroomLines(repos)
+  if (swept.length === 0) return { ok: true, lines }
 
   if (options.prune !== true) {
     const n = swept.filter(e => e.status === 'reclaimable').length
@@ -252,11 +265,45 @@ export async function agentWorktrees(options: { prune?: boolean; force?: boolean
   return { ok: true, lines }
 }
 
+/** CC-284: one headroom record per repo the sweep touched, plus the one the CLI ran in. */
+async function headroomByRepo(swept: SweptWorktree[], root: string | null): Promise<RepoHeadroom[]> {
+  const roots = new Set(swept.map(e => e.gitRoot))
+  if (root !== null) roots.add(root)
+  const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
+  const repos: RepoHeadroom[] = []
+  for (const gitRoot of roots) {
+    const listed = parseWorktreeList(await porcelain(gitRoot).catch(() => ''))
+    const nonSeat = listed.filter(t => !t.branch?.startsWith(BRANCH_PREFIX)).map(nonSeatRow)
+    const seat = swept.filter(e => e.gitRoot === gitRoot).map(stateRow)
+    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, volumeFreeBytes(gitRoot)))
+  }
+  return repos
+}
+
+function headroomLines(repos: RepoHeadroom[]): string[] {
+  const rows = repos.flatMap(repo => formatRows(repo.rows))
+  return [
+    ...(rows.length === 0 ? ['No agent-chat worktrees on this machine.'] : rows),
+    ...repos.map(repoSummary),
+    ...repos.flatMap(repo => lowDiskWarning(repo.gitRoot, repo.freeDiskBytes) ?? []),
+  ]
+}
+
 /** The commander parser for `--surface`: a name outside SURFACE_NAMES is refused before any frame is sent. */
 export function parseSurface(value: string): SurfaceName {
   const surface = SURFACE_NAMES.find(name => name === value)
   if (surface === undefined) throw new InvalidArgumentError(`one of: ${SURFACE_NAMES.join(', ')}`)
   return surface
+}
+
+const SPAWNED_AS = ['shepherd', 'burndown'] as const
+type SpawnedAs = (typeof SPAWNED_AS)[number]
+
+/** The commander parser for `--spawned-as` (CC-973): only the two automations the broker records are accepted. */
+export function parseSpawnedAs(value: string): SpawnedAs {
+  const spawnedAs = SPAWNED_AS.find(name => name === value)
+  if (spawnedAs === undefined) throw new InvalidArgumentError(`one of: ${SPAWNED_AS.join(', ')}`)
+  return spawnedAs
 }
 
 export async function agentSpawn(
@@ -270,6 +317,8 @@ export async function agentSpawn(
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+  // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
+  // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
   options: {
     briefing?: string
     briefStdin?: boolean
@@ -277,6 +326,8 @@ export async function agentSpawn(
     task?: string
     role?: string
     surface?: SurfaceName
+    spawnedAs?: SpawnedAs
+    remoteControl?: boolean
   } = {},
 ): Promise<void> {
   let brief: string
@@ -300,6 +351,8 @@ export async function agentSpawn(
         ...(options.task === undefined ? {} : { task: options.task }),
         ...(options.role === undefined ? {} : { workRole: options.role }),
         ...(options.surface === undefined ? {} : { surface: options.surface }),
+        ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+        ...(options.remoteControl === true ? { remoteControl: true } : {}),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),

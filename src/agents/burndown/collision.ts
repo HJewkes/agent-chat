@@ -1,8 +1,9 @@
+import { dirname } from 'node:path'
 import { patternsOverlap } from '../../broker/claims.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
-import { heldClaims, sameClaim, type Ledger } from './ledger.js'
+import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { defaultBranch } from './observe.js'
 import { DESTRUCTIVE_OPS, type Contract } from './report.js'
 import { GIT_BIN } from './review-diff.js'
@@ -61,7 +62,7 @@ export interface FileClaim {
 /** Everything the check reads about one repo; `undefined` means the read failed. */
 export interface CollisionFacts {
   repo: string
-  /** Commit subjects on `origin/<default>`, never bodies: a body mention is not a landing. */
+  /** Commit subjects on `origin/<default>`, plus one line per body Covers clause; any other body mention is not a landing. */
   subjects: string[] | undefined
   /** The seat's other repos' subjects: a task lands wherever its PR merged, so each counts, and a failed read names its repo. */
   landedElsewhere?: { repo: string; subjects: string[] | undefined }[]
@@ -78,11 +79,19 @@ export interface CollisionFacts {
   ours: ReadonlySet<string>
   /** Contracts on held claims other than the work's own, labelled for the refusal reason. */
   held: readonly HeldContracts[]
+  /** Owns on dispatched, undone claims other than the work's own: their PRs may not be open yet (CC-952). */
+  heldOwns: readonly HeldOwns[]
 }
 
 export interface HeldContracts {
   holder: string
   contracts: Contract[]
+}
+
+export interface HeldOwns {
+  holder: string
+  repo: string
+  owns: string[]
 }
 
 /** `id` as a whole token, any case: TP-40 never matches TP-400, and a branch's `cc-202` matches CC-202. */
@@ -95,6 +104,7 @@ export function collision(work: CollisionWork, facts: CollisionFacts): Collision
     openPr(work, facts) ??
     claimed(work, facts) ??
     fileOverlap(work, facts) ??
+    liveOverlap(work, facts.repo, facts.heldOwns) ??
     contractOverlap(work, facts.held)
   )
 }
@@ -150,6 +160,19 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
     const path = overlapping(work.owns, files)
     if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
+  }
+  return undefined
+}
+
+/** Also the same-pass check: a seat passes the dispatches it has already accepted this pass as `held`. */
+export function liveOverlap(
+  work: CollisionWork,
+  repo: string,
+  held: readonly HeldOwns[],
+): Collision | undefined {
+  for (const other of held.filter(h => h.repo === repo)) {
+    const path = overlapping(work.owns, other.owns)
+    if (path !== undefined) return { kind: 'file-overlap', reason: `${path} is under ${other.holder}'s owns` }
   }
   return undefined
 }
@@ -216,11 +239,41 @@ export function sameTickCollision(
 const overlapping = (owns: string[], others: string[]): string | undefined =>
   owns.find(own => others.some(other => patternsOverlap(own, other)))
 
-/** Subjects only (`%s`) on `origin/<branch>`, fetched first so a landing since the last fetch counts. */
+const TASK_ID = '[A-Za-z][A-Za-z0-9]*-\\d+'
+const ID_SEPARATOR = '[ \\t]*(?:,[ \\t]*(?:and[ \\t]+)?|and[ \\t]+|&[ \\t]*)'
+// A clause opens a line, a list bullet or a sentence, so "Partly covers" and "This covers" stay prose.
+const COVERS_CLAUSE = new RegExp(
+  `(?:^[ \\t]*(?:[-*][ \\t]+)?|\\.[ \\t]+)(?:Also covers|Covers):?[ \\t]+(${TASK_ID}(?:${ID_SEPARATOR}${TASK_ID})*)`,
+  'gm',
+)
+
+/** Ids a body lists in a `Covers` or `Also covers` clause (CC-1068): a PR that says so delivers them too. */
+export function coveredIds(body: string): string[] {
+  const ids = [...body.matchAll(COVERS_CLAUSE)].flatMap(
+    clause => (clause[1] ?? '').match(new RegExp(TASK_ID, 'g')) ?? [],
+  )
+  return [...new Set(ids)]
+}
+
+/** The format `landingLines` parses: subject, unit separator, body, record separator. */
+export const LANDING_LOG_FORMAT = '--format=%s%x1f%b%x1e'
+
+/** Each commit's subject, then `<subject> [covers <ids>]` when its body has a Covers clause. */
+export function landingLines(log: string): string[] {
+  return log.split('\x1e').flatMap(record => {
+    const [head = '', body = ''] = record.split('\x1f')
+    const subject = head.trim()
+    if (subject.length === 0) return []
+    const covered = coveredIds(body)
+    return covered.length === 0 ? [subject] : [subject, `${subject} [covers ${covered.join(', ')}]`]
+  })
+}
+
+/** Subjects and Covers clauses on `origin/<branch>`, fetched first so a landing since the last fetch counts. */
 export function readSubjects(repo: string, branch: string, exec: Runner = run): string[] | undefined {
   if (exec(GIT_BIN, ['fetch', '--quiet', '--no-tags', 'origin', branch], repo).status !== 0) return undefined
-  const result = exec(GIT_BIN, ['log', `origin/${branch}`, '--format=%s'], repo)
-  return result.status === 0 ? result.stdout.split('\n').filter(line => line.length > 0) : undefined
+  const result = exec(GIT_BIN, ['log', `origin/${branch}`, LANDING_LOG_FORMAT], repo)
+  return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits. `{owner}/{repo}` resolves from `cwd`.
@@ -289,6 +342,7 @@ export function collisionCheck(
       ours: oursFor(ledger, work.taskId),
       lineage: lineageOf(ledger, work.taskId),
       held: heldContracts(ledger, work),
+      heldOwns: heldOwns(ledger, work),
     })
   }
 }
@@ -322,6 +376,7 @@ function readFacts(
     ...(broker?.recentlyExited === undefined ? {} : { recentlyExited: broker.recentlyExited }),
     ours: new Set(),
     held: [],
+    heldOwns: [],
   }
 }
 
@@ -341,6 +396,9 @@ const lineageOf = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
       .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
   )
 
+const holderOf = (c: Pick<Claim, 'taskId' | 'slice'>): string =>
+  `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`
+
 /**
  * Every dispatched, undone claim with contracts except the work's own; a sibling slice of the same task still
  * counts. A queued claim holds nothing yet: counting it would let two queued claims refuse each other forever.
@@ -349,6 +407,15 @@ const heldContracts = (ledger: Ledger, work: CollisionWork): HeldContracts[] =>
   heldClaims(ledger)
     .filter(c => c.phase !== 'queued' && !sameClaim(c, work) && (c.contracts ?? []).length > 0)
     .map(c => ({
-      holder: `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`,
+      holder: holderOf(c),
       contracts: c.contracts ?? [],
     }))
+
+/** As `heldContracts`, for owns; a claim's repo is its worktree's (`<repo>/.worktrees/<name>`), else the plan's. */
+const heldOwns = (ledger: Ledger, work: CollisionWork): HeldOwns[] =>
+  heldClaims(ledger).flatMap(c => {
+    const repo = c.worktree === undefined ? c.repo : dirname(dirname(c.worktree))
+    if (c.phase === 'queued' || sameClaim(c, work) || (c.owns ?? []).length === 0 || repo === undefined)
+      return []
+    return [{ holder: holderOf(c), repo, owns: c.owns ?? [] }]
+  })

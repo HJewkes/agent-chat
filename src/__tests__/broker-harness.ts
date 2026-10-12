@@ -87,7 +87,8 @@ function isAlive(pid: number): boolean {
  *
  * ADOPTED rows are skipped. `core.register` writes an `agent_spawned` row for an
  * ordinary session it adopts and appends that session's `agent_attached` itself,
- * so standing in for it here would double the row a test is counting.
+ * so standing in for it here would double the row a test is counting. An adopted
+ * session's teleport successor is launched like a spawn, so it is attached here.
  */
 export function autoAttach(core: {
   onAppend: (
@@ -97,7 +98,7 @@ export function autoAttach(core: {
 }): () => void {
   return core.onAppend(row => {
     if (row.kind !== 'agent_spawned' || row.msgId === undefined) return
-    if (row.meta?.['origin'] === 'adopted') return
+    if (row.meta?.['origin'] === 'adopted' && row.meta['teleport_from'] === undefined) return
     const ref = row.msgId
     const actor = row.target ?? ''
     queueMicrotask(() => core.append({ kind: 'agent_attached', actor, ref }))
