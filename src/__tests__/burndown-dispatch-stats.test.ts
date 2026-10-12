@@ -111,8 +111,9 @@ describe('burndown dispatch-stats', () => {
 
     expect(report.ok).toBe(true)
     const sa = report.lines.slice(report.lines.findIndex(l => l.startsWith('sa ')))
-    expect(sa.slice(1, 9)).toEqual([
+    expect(sa.slice(1, 10)).toEqual([
       '  spawns/h       tick 0.08 (2), hand 0.13 (3)',
+      '  hand share     - (hand 0, tick 0, fix rounds 0)',
       '  queue          3 queued, age p50 30m, max 50m',
       '  ready depth    ready 2, unbriefed 5, stale 1',
       '  ready floor    2 of 2 ticks below 40, min 2, p50 2, longest 10m',
@@ -239,6 +240,55 @@ describe('burndown dispatch-stats', () => {
 
   it('reads no refusal mix from a journal without a dispatched-nothing line', () => {
     expect(journalRefusals('09:00 spawn AB-1 sa-ab-1 -\n', NOW)).toBeUndefined()
+  })
+})
+
+describe('burndown dispatch-stats implementer hand share (CC-965)', () => {
+  const spawned = (agent: string, profile: string, spawner: string, minutesAgo = 10): string =>
+    JSON.stringify({ ts: ago(minutesAgo), agent, agent_id: agent, outcome: 'dispatched', profile, spawner })
+
+  const MIXED = [
+    spawned('sa-ab-1', 'bd-implementer', 'burndown'),
+    spawned('sa-ab-2', 'bd-implementer', 'burndown'),
+    spawned('sa-ab-3', 'bd-implementer', 'sa'),
+    spawned('sa-ab-4', 'bd-implementer', 'sa'),
+    spawned('sa-ab-5', 'bd-implementer', 'human'),
+    spawned('tc-cc-1-a-s1', 'bd-implementer', 'shepherd'),
+    spawned('sa-ab-6', 'bd-planner', 'sa'),
+    spawned('sa-ab-7', 'bd-implementer', 'sa', 2 * 24 * 60),
+  ]
+  const withLog = (lines: readonly string[]): DispatchStatsPorts =>
+    ports({ dispatchLog: seat => (seat === 'sa' ? lines.join('\n') : undefined) })
+
+  it('splits implementer spawns into tick and hand, sets fix rounds apart and leaves planners out', () => {
+    const sa = statsOf(withLog(MIXED), 'sa')
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 2, hand: 3, fixRound: 1, handShare: 0.6 })
+  })
+
+  it('keeps fix rounds out of the hand share however many there are', () => {
+    const rounds = Array.from({ length: 10 }, (_, i) => spawned(`sa-ab-${i + 10}-s1`, 'bd-implementer', 'sa'))
+
+    const sa = statsOf(withLog([...MIXED, ...rounds]), 'sa')
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 2, hand: 3, fixRound: 11, handShare: 0.6 })
+  })
+
+  it('reads the hand share as null, not NaN, when the seat spawned no implementer', () => {
+    const sa = statsOf(withLog([spawned('sa-ab-6', 'bd-planner', 'sa')]), 'sa')
+    const json = JSON.parse(
+      dispatchStatsLines(withLog([]), '24h', true).lines[0] ?? '{}',
+    ) as SeatDispatchStats
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 0, hand: 0, fixRound: 0, handShare: null })
+    expect(json.spawns.implementers.handShare).toBeNull()
+  })
+
+  it('prints a hand share line under the spawn rates', () => {
+    const lines = dispatchStatsLines(withLog(MIXED), '24h', false).lines
+    const spawnsAt = lines.findIndex(l => l.startsWith('  spawns/h'))
+
+    expect(lines[spawnsAt + 1]).toBe('  hand share     0.6 (hand 3, tick 2, fix rounds 1)')
   })
 })
 
