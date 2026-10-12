@@ -36,7 +36,7 @@ const row = (id: string, initiative: string, score: number): ScoreRow =>
     stopShort: [],
     route: 'implementer',
     components: { W: 1 },
-  }) as ScoreRow
+  }) as unknown as ScoreRow
 
 const task = (id: string): Task => ({
   id,
