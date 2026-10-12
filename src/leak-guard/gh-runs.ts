@@ -23,6 +23,82 @@ export const GH_BUILTINS = new Set(
   workflow`.split(/\s+/),
 )
 
+const subcommands = (groups: string, words: string): [string, ReadonlySet<string>][] => {
+  const set = new Set(words.split(/\s+/))
+  return groups.split(' ').map(group => [group, set])
+}
+
+/**
+ * Each gh command's own subcommands and their aliases (gh 2.102, `gh __complete <group>` and each
+ * subcommand's ALIASES), which gh runs before a `group word` config alias of the same name.
+ */
+const GH_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ...subcommands('agent agent-task agents', 'create list view'),
+  ...subcommands('alias', 'delete import list ls set'),
+  ...subcommands('at attestation', 'download trusted-root verify'),
+  ...subcommands('auth', 'login logout refresh setup-git status switch token'),
+  ...subcommands('cache', 'delete list ls'),
+  ...subcommands(
+    'codespace cs',
+    'code cp create delete edit jupyter list ls logs ports rebuild ssh stop view',
+  ),
+  ...subcommands('config', 'clear-cache get list ls set'),
+  ...subcommands('discussion', 'comment create edit list ls view'),
+  ...subcommands(
+    'ext extension extensions',
+    'browse create exec install list ls remove uninstall search upgrade',
+  ),
+  ...subcommands('gist', 'clone create new delete edit list ls rename view'),
+  ...subcommands('gpg-key ssh-key', 'add delete list ls'),
+  ...subcommands(
+    'issue',
+    `close comment create new delete develop edit list ls lock pin reopen status transfer unlock
+    unpin view`,
+  ),
+  ...subcommands('label', 'clone create delete edit list ls'),
+  ...subcommands('org', 'list ls'),
+  ...subcommands(
+    'pr',
+    `checkout co checks close comment create new diff edit list ls lock merge ready reopen revert
+    review status unlock update-branch view`,
+  ),
+  ...subcommands('preview', 'prompter'),
+  ...subcommands(
+    'project',
+    `close copy create delete edit field-create field-delete field-list item-add item-archive
+    item-create item-delete item-edit item-list link list ls mark-template unlink view`,
+  ),
+  ...subcommands(
+    'release',
+    'create new delete delete-asset download edit list ls upload verify verify-asset view',
+  ),
+  ...subcommands(
+    'repo',
+    `archive autolink clone create new delete deploy-key edit fork gitignore license list ls
+    read-dir read-file rename set-default sync unarchive view`,
+  ),
+  ...subcommands('rs ruleset', 'check list ls view'),
+  ...subcommands('run', 'cancel delete download list ls rerun view watch'),
+  ...subcommands('search', 'code commits issues prs repos'),
+  ...subcommands('secret', 'delete remove list ls set'),
+  ...subcommands('skill skills', 'install add list ls preview show publish search update'),
+  ...subcommands('variable', 'delete remove get list ls set'),
+  ...subcommands('workflow', 'disable enable list ls run view'),
+])
+
+/** gh commands that never run a `<command> <word>` config alias (probed on gh 2.102). */
+const NO_ALIAS_CHILD = new Set(
+  'a11y accessibility api browse completion credits licenses status version'.split(' '),
+)
+
+/**
+ * Whether `gh <command> <word>` may run a `<command> <word>` config alias: gh registers one under
+ * every command but a few, and runs it unless the word is a real subcommand. A word the guard
+ * cannot resolve may be either.
+ */
+export const mayRunGroupAlias = (command: string, word: string | undefined): boolean =>
+  !NO_ALIAS_CHILD.has(command) && (word === undefined || !GH_SUBCOMMANDS.get(command)?.has(word))
+
 export interface GhAlias {
   /** The expansion runs through `sh -c` (it was set with `--shell` or starts with `!`). */
   shell: boolean

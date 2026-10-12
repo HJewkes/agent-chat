@@ -26,6 +26,7 @@ import {
   ghAliasSet,
   ghCommandWords,
   ghPlainAlias,
+  mayRunGroupAlias,
   ghShellAlias,
   HIDDEN,
   type GhAlias,
@@ -1187,13 +1188,13 @@ function checkGhAliases(
   return set === undefined ? undefined : checkGhAliasSet(set, ctx, scope, depth)
 }
 
-/** The alias gh runs for these command words; `alias` undefined for a word that may still be an extension. */
+/** The alias gh runs for these command words; `alias` undefined for a word that may still be an alias of another config. */
 type AliasAt = { alias: GhAlias | undefined; words: readonly number[] }
 
 /**
- * Which alias gh would run: a top-level word that is not a gh command may be one, and under a gh
- * command a `group word` alias the config holds. A deny when the guard cannot tell, undefined
- * when the words cannot run an alias.
+ * Which alias gh would run: a top-level word that is not a gh command may be one, and so may a
+ * `<command> <word>` whose word is not a real subcommand. A deny when the guard cannot tell,
+ * undefined when the words cannot run an alias.
  */
 function ghAliasAt(
   args: readonly (string | undefined)[],
@@ -1205,16 +1206,14 @@ function ghAliasAt(
   if (i === HIDDEN) return REASONS.ghAliasHidden
   const first = args[i] as string
   const builtin = GH_BUILTINS.has(first)
-  if (builtin && j === undefined) return undefined
+  if (builtin && (j === undefined || !mayRunGroupAlias(first, args[j]))) return undefined
   const config = read()
   if (config.kind === 'unreadable') return REASONS.ghAliasUnreadable
   if (!builtin) return { alias: config.aliases.get(first), words: [i] }
-  if (j === HIDDEN)
-    return [...config.aliases.keys()].some(key => key.startsWith(`${first} `))
-      ? REASONS.ghAliasHidden
-      : undefined
-  const alias = config.aliases.get(`${first} ${args[j as number]}`)
-  return alias === undefined ? undefined : { alias, words: [i, j as number] }
+  if (j !== HIDDEN)
+    return { alias: config.aliases.get(`${first} ${args[j as number]}`), words: [i, j as number] }
+  const grouped = [...config.aliases.keys()].some(key => key.startsWith(`${first} `))
+  return grouped ? REASONS.ghAliasHidden : { alias: undefined, words: [i] }
 }
 
 function checkGhAliasRun(

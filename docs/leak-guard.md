@@ -744,8 +744,12 @@ guard checks a body twice:
   (help, which stores nothing). A flag the guard does not know denies;
 - when `gh <word>` runs it, with the body read from gh's `config.yml` (`GH_CONFIG_DIR`, else
   `$XDG_CONFIG_HOME/gh`, else `~/.config/gh`) and the arguments filled in. A top-level word that
-  is not a gh command may be an alias, and a `gh <group> <word>` alias is followed when the
-  config holds one. Up to four aliases deep are followed.
+  is not a gh command may be an alias, and so may `gh <command> <word>` when the word is not one
+  of that command's real subcommands or their aliases: gh registers a `<command> <word>` alias
+  under every command but `a11y`, `accessibility`, `api`, `browse`, `completion`, `credits`,
+  `licenses`, `status` and `version`, and runs a real subcommand before an alias of the same
+  name (probed on gh 2.102; the subcommand table is in `src/leak-guard/gh-runs.ts`). Up to four
+  aliases deep are followed.
 
 gh finds the command word past its flags the way cobra's `stripFlags` does, and the guard does
 the same: `--` ends the search, a `--flag` or `-f` without `=` swallows the next word unless it
@@ -762,7 +766,8 @@ It denies `gh alias import` and `gh alias set <name> -`, which read aliases from
 a definition or an argument the guard cannot resolve; and a top-level word that may be an alias on
 a line that writes gh config (`gh alias set`, `gh config set`, a `config.yml` or `hosts.yml` path)
 or that sets `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME`, since gh would read the alias from a
-config the guard did not.
+config the guard did not. The same holds for a `gh <command> <word>` that may be an alias, so
+`GH_CONFIG_DIR=/tmp/x gh pr mine` denies while `GH_CONFIG_DIR=/tmp/x gh repo view` does not.
 
 A write straight into `config.yml` in an earlier call (`printf ... >> ~/.config/gh/config.yml`)
 is not denied: the alias it adds is read and checked when `gh <alias>` runs.

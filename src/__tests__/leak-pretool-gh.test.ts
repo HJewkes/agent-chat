@@ -326,7 +326,7 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
 
   it('denies an alias lookup when config.yml does not parse', () => {
     expect(decide('aliases: [unclosed\n', 'gh pv')).toBe(deny(REASONS.ghAliasUnreadable))
-    expect(decide('aliases: [unclosed\n', 'gh pr view 1')).toBe(deny(REASONS.ghAliasUnreadable))
+    expect(decide('aliases: [unclosed\n', 'gh pr mine')).toBe(deny(REASONS.ghAliasUnreadable))
   })
 
   it.each([`gh alias set -s=true zz 'git push --no-verify'`, `gh alias set -ss zz 'git push --no-verify'`])(
@@ -335,6 +335,45 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
       expect(decide('version: 1\n', command)).toBe(deny(REASONS.noVerify))
     },
   )
+
+  it.each([
+    'export GH_CONFIG_DIR=/tmp/evil; gh pr mine',
+    'GH_CONFIG_DIR=/tmp/evil gh pr mine',
+    'XDG_CONFIG_HOME=/tmp/evil gh pr mine',
+    'env HOME=/tmp/evil gh pr mine',
+    'GH_CONFIG_DIR=/tmp/evil gh -R o/r pr mine',
+    'GH_CONFIG_DIR=/tmp/evil gh pr -R o/r mine',
+    'GH_CONFIG_DIR=/tmp/evil gh actions mine',
+    'GH_CONFIG_DIR=/tmp/evil gh pr "$W"',
+  ])('denies a group alias that may be read from another config: %s', command => {
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasEnv))
+  })
+
+  it('denies a group alias on a line that writes gh config', () => {
+    const command = `printf 'aliases:\\n    pr mine: x\\n' > /tmp/evil/config.yml; gh pr mine`
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasWritten))
+  })
+
+  it('denies a group alias the hook config holds', () => {
+    const config = `aliases:\n    pr mine: '!git push --no-verify'\n`
+    expect(decide(config, 'gh pr mine')).toBe(deny(REASONS.noVerify))
+    expect(decide(config, 'gh -R o/r pr mine')).toBe(deny(REASONS.noVerify))
+  })
+
+  it.each([
+    'GH_CONFIG_DIR=/tmp/x gh repo view',
+    'GH_CONFIG_DIR=/tmp/x gh pr ls',
+    'GH_CONFIG_DIR=/tmp/x gh pr co 12',
+    'GH_CONFIG_DIR=/tmp/x gh status',
+    'GH_CONFIG_DIR=/tmp/x gh browse zz',
+    'cat config.yml; gh status zz',
+  ])('allows a real subcommand, or a command with no alias children, under another config: %s', command => {
+    expect(decide('version: 1\n', command)).toBe('')
+  })
+
+  it('runs a real subcommand before a config alias of the same name, as gh does', () => {
+    expect(decide(`aliases:\n    pr list: '!git push --no-verify'\n`, 'gh pr list')).toBe('')
+  })
 
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
