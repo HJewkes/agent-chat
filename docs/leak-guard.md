@@ -783,9 +783,17 @@ since gh may still read an alias from it; a missing file reads as no alias.
 
 It denies `gh alias import` and `gh alias set <name> -`, which read aliases from a file or stdin;
 a definition or an argument the guard cannot resolve; and a top-level word that may be an alias on
-a line that writes gh config (`gh alias set`, `gh config set`, a `config.yml` or `hosts.yml` path)
-or that sets `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME`, since gh would read the alias from a
-config the guard did not. The same holds for a `gh <command> <word>` that may be an alias, so
+a line that names gh config: `gh alias set`, `gh config set`, a `config.yml` or `hosts.yml`
+path, or the config directory itself by path (`~/.config/gh`, `$XDG_CONFIG_HOME/gh`,
+`$GH_CONFIG_DIR` or the hook's own config directory), so `mv`, `cp -r`, `ln -sfn` or `tar -C`
+into it denies. A directory reached another way (`cd ~/.config && mv x gh`) is not seen; the
+alias it adds is still read and checked by a later call.
+
+It also denies when gh may read a config other than the hook's, judged from the same tracked
+environment git aliases use. That covers a line where the guard lost track of the environment
+(after `. file`, `source file` or `eval`), an earlier `export` or `unset` of `GH_CONFIG_DIR`,
+`XDG_CONFIG_HOME` or `HOME` that differs from the hook's value, a prefix assignment, or any
+other use of those names. The same holds for a `gh <command> <word>` that may be an alias, so
 `GH_CONFIG_DIR=/tmp/x gh pr mine` denies while `GH_CONFIG_DIR=/tmp/x gh repo view` does not.
 
 A write straight into `config.yml` in an earlier call (`printf ... >> ~/.config/gh/config.yml`)

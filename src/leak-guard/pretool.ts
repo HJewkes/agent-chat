@@ -27,6 +27,7 @@ import {
   ghAliasesUnder,
   ghAliasSlot,
   ghCommandWords,
+  ghConfigDir,
   ghPlainAlias,
   ghShellAlias,
   HIDDEN,
@@ -1161,11 +1162,34 @@ function checkGhAliasSet(
 const WRITES_GH_CONFIG = [
   /\bgh\s+(?:alias\s+(?:set|import|delete)|config\s+set)\b/,
   /\b(?:config|hosts)\.ya?ml\b/,
+  // The config directory itself (`mv`, `cp -r`, `ln -sfn`, `tar -C`), as `.config/gh` or, once
+  // `$XDG_CONFIG_HOME` is read out of the line, a bare `/gh`.
+  /\.config\/gh(?![\w.-])/,
+  /(?:^|[\s'"=:])\/gh(?![\w.-])/m,
 ]
 
-/** The line may make gh read its aliases from a config other than the one the hook reads. */
-const changesGhHome = (assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean =>
-  setsGhHome(assigns, ctx.env) || [...GH_HOME_VARS].some(name => mentions(scope.said, name))
+/** The line names gh's config file or directory, the hook's own `GH_CONFIG_DIR`, or reads `$GH_CONFIG_DIR`. */
+function writesGhConfig(ctx: GuardContext, scope: Scope): boolean {
+  const dir = ghConfigDir(ctx.env)
+  return (
+    WRITES_GH_CONFIG.some(pattern => pattern.test(scope.said)) ||
+    /\$\{?GH_CONFIG_DIR\b/.test(scope.line) ||
+    (dir !== undefined && scope.line.includes(dir))
+  )
+}
+
+/**
+ * Whether gh may read its aliases from a config other than the one the hook reads, judged from the
+ * scope's environment as `aliasEnv` judges git's: an environment the guard lost track of (after
+ * `. file`, `source` or `eval`), an earlier export or unset that differs from the hook's value, a
+ * setting it cannot tell, or a use of the name it does not model all count.
+ */
+function changesGhHome(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  if (scope.env === undefined || setsGhHome(assigns, ctx.env)) return true
+  return [...GH_HOME_VARS].some(name =>
+    scope.exports.has(name) ? scope.exports.get(name) !== ctx.env[name] : mentions(scope.said, name),
+  )
+}
 
 /**
  * gh's alias machinery (TP-2371): a body is checked when `gh alias set` stores it and again when
@@ -1241,7 +1265,7 @@ function checkGhAliasRun(
   if (ctx.readGhAliases === undefined) return undefined
   const found = ghAliasAt(args, at, ctx.readGhAliases)
   if (found === undefined || typeof found === 'string') return found
-  if (WRITES_GH_CONFIG.some(pattern => pattern.test(scope.said))) return REASONS.ghAliasWritten
+  if (writesGhConfig(ctx, scope)) return REASONS.ghAliasWritten
   if (changesGhHome(assigns, ctx, scope)) return REASONS.ghAliasEnv
   const { aliases, words } = found
   if (aliases.length === 0) return undefined

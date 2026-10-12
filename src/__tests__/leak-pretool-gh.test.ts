@@ -527,6 +527,36 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     },
   )
 
+  it.each([
+    '. /tmp/rc; gh zz',
+    'source /tmp/rc && gh pr mine',
+    'export GH_CONFIG_DIR=/tmp/e; gh zz',
+    'unset GH_CONFIG_DIR; gh zz',
+    '. /tmp/rc; agent-chat gh-write -- repo pv',
+  ])('denies an alias word once the scope may point gh at another config: %s', command => {
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasEnv))
+  })
+
+  it.each([
+    'mv /tmp/evilgh ~/.config/gh && gh zz',
+    'cp -r /tmp/evilgh/. ~/.config/gh/ && gh zz',
+    'ln -sfn /tmp/evilgh ~/.config/gh; gh zz',
+    'tar -xf e.tar -C ~/.config/gh; gh zz',
+    'mv /tmp/evilgh ~/.config/gh && gh pr mine',
+    'mv /tmp/evilgh "$XDG_CONFIG_HOME/gh"; gh zz',
+    'cp -r /tmp/evilgh/. "$GH_CONFIG_DIR"; gh zz',
+  ])('denies an alias word on a line that writes the gh config directory: %s', command => {
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasWritten))
+  })
+
+  it.each([
+    'source ./env.sh && gh pr view 1',
+    'cd "$HOME/src" && gh co 12',
+    'ls ~/.config/ghostty; gh co 12',
+  ])('allows %s, which cannot run an alias from another config', command => {
+    expect(decide(`aliases:\n    co: pr checkout\n`, command)).toBe('')
+  })
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })
