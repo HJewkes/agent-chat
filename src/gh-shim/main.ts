@@ -1,9 +1,10 @@
-import { parseRequest } from './argv.js'
+import { parseRequest, type ShimRequest } from './argv.js'
 import { fileCallLogger } from './call-log.js'
 import { runRequest } from './commands.js'
 import { GH_SHIM_DIR_ENV, GH_SHIM_OFF_ENV } from './install.js'
 import { findOnPath, processIo } from './io.js'
 import { passThrough } from './passthrough.js'
+import { shimBudget, type ShimBudget } from './rate-limit.js'
 
 /**
  * Entry point of the `gh` on a spawned agent's PATH (CC-395).
@@ -11,8 +12,26 @@ import { passThrough } from './passthrough.js'
  * gh's `pr view/list/checks` read through GraphQL, whose hourly points budget every agent on the
  * machine shares; REST has its own, far larger, quota. This answers the read-only shapes agents use
  * from REST and hands every other command, writes included, to the real gh unchanged. Every real-gh
- * call, answered or passed through, gets one gh-calls line (TP-1172 b).
+ * call, answered or passed through, gets one gh-calls line (TP-1172 b), and a call a rate limit
+ * refused starts the shared cooldown that later reads respect (CC-1162).
  */
+
+/** A shim answer that fails falls back to the real gh, unless the failure was a limit that now cools the lane. */
+async function answer(
+  realGh: string,
+  argv: readonly string[],
+  req: ShimRequest,
+  budget: ShimBudget,
+): Promise<number> {
+  const io = processIo(realGh, findOnPath('jq', process.env.PATH), budget.log)
+  try {
+    const code = await runRequest(io, req)
+    io.flush()
+    return code
+  } catch {
+    return (await budget.gate()) ?? passThrough(realGh, argv, budget.log)
+  }
+}
 
 async function main(argv: readonly string[]): Promise<number> {
   const realGh = findOnPath('gh', process.env.PATH, process.env[GH_SHIM_DIR_ENV])
@@ -20,19 +39,20 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stderr.write('agent-chat gh shim: no gh on PATH besides the shim\n')
     return 127
   }
-  const req = process.env[GH_SHIM_OFF_ENV] === '1' ? undefined : parseRequest(argv)
+  const off = process.env[GH_SHIM_OFF_ENV] === '1'
+  const req = off ? undefined : parseRequest(argv)
   const jqBin = findOnPath('jq', process.env.PATH)
   const log = fileCallLogger(process.env)
-  if (req === undefined || ('jq' in req && req.jq !== undefined && jqBin === undefined)) {
-    return passThrough(realGh, argv, log)
-  }
-  const io = processIo(realGh, jqBin, log)
+  const budget = shimBudget(argv, { env: process.env, realGh, jqBin, log, enforce: !off })
   try {
-    const code = await runRequest(io, req)
-    io.flush()
-    return code
-  } catch {
-    return passThrough(realGh, argv, log)
+    const early = await budget.gate()
+    if (early !== undefined) return early
+    if (req === undefined || ('jq' in req && req.jq !== undefined && jqBin === undefined)) {
+      return await passThrough(realGh, argv, budget.log)
+    }
+    return await answer(realGh, argv, req, budget)
+  } finally {
+    await budget.settled()
   }
 }
 
