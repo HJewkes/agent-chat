@@ -118,6 +118,8 @@ const Seat = z.looseObject({
   scope_tags: orEmpty(z.array(z.string()), []),
   /** CC-779: a file under the autonomy root whose task IDs are in scope whatever their tags. */
   backlog: z.string().min(1).optional(),
+  /** CC-1128: the accepted factory plan, relative to the autonomy root or absolute; its section 2 ids are in scope. */
+  plan_file: z.string().min(1).optional(),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
   /** TP-1974 a: hard stops this seat adds to the charter's; a seat can never remove one. */
