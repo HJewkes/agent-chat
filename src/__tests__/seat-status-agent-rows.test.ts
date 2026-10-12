@@ -9,8 +9,10 @@ import { seatStatus, type StatusDeps } from '../agents/seats/status.js'
 import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
 /**
- * CC-317 b: `seats status` carries each owned agent's context fill against `retire_k`
- * and the calling seat's own against `teleport_k`. Every name and reading is synthetic.
+ * CC-317 b: `seats status` carries each owned agent's context fill against its role's
+ * retire threshold, which CC-290 reads from the context hints (`retireThresholdK`), not
+ * the charter, and the calling seat's own against `teleport_k`. Every name and reading
+ * is synthetic.
  */
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'score-2026-09-29')
@@ -18,7 +20,7 @@ const fixture = (file: string) => fs.readFileSync(path.join(FIXTURE, file), 'utf
 
 const SEAT = 'sample-seat'
 const NOW = new Date(2026, 9, 11, 10, 0)
-const THRESHOLDS = '  retire_k: {implementer: 200, reviewer: 300, planner: 250}\n  teleport_k: 250\n'
+const THRESHOLDS = '  teleport_k: 250\n'
 
 let tmp: string
 
@@ -94,10 +96,12 @@ function deps(roster: AgentIdentity[], fills: Record<string, BudgetRead>, over: 
 
 beforeEach(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-agent-rows-')))
+  process.env.AGENT_CHAT_HOME = tmp
   writeAutonomy(THRESHOLDS)
 })
 
 afterEach(() => {
+  delete process.env.AGENT_CHAT_HOME
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
@@ -105,8 +109,8 @@ const rowOf = async (roster: AgentIdentity[], fills: Record<string, BudgetRead>,
   (await seatStatus(deps(roster, fills), SEAT)).agents.find(r => r.name === name)
 
 describe('seats status agent rows', () => {
-  it('holds each role to its own retire_k, so 210k is due for an implementer and not for a reviewer', async () => {
-    const roster = [agent('ss-impl', 'implementer'), agent('ss-rev', 'reviewer')]
+  it('holds each role to its own threshold, so 210k is due for an implementer and not for a reviewer', async () => {
+    const roster = [agent('ss-impl', 'bd-implementer'), agent('ss-rev', 'bd-reviewer')]
     const fills = { 'ss-impl': reading(210), 'ss-rev': reading(210) }
 
     const status = await seatStatus(deps(roster, fills), SEAT)
@@ -117,14 +121,48 @@ describe('seats status agent rows', () => {
     ])
   })
 
-  it('does not retire an implementer sitting exactly at retire_k', async () => {
+  it('retires a reviewer past 300k and a planner past 250k', async () => {
+    const roster = [agent('ss-plan', 'bd-planner'), agent('ss-rev', 'bd-reviewer')]
+    const fills = { 'ss-plan': reading(260), 'ss-rev': reading(310) }
+
+    const status = await seatStatus(deps(roster, fills), SEAT)
+
+    expect(status.agents.map(a => [a.name, a.retireDue])).toEqual([
+      ['ss-plan', true],
+      ['ss-rev', true],
+    ])
+  })
+
+  it('does not retire an implementer sitting exactly at its threshold', async () => {
     const row = await rowOf([agent('ss-impl', 'implementer')], { 'ss-impl': reading(200) }, 'ss-impl')
 
     expect(row).toMatchObject({ contextK: 200, retireDue: false })
   })
 
-  it('shows context but never retire-due when the charter has no retire_k', async () => {
-    writeAutonomy('')
+  it('takes the threshold from config.json contextHints', async () => {
+    fs.writeFileSync(
+      path.join(tmp, 'config.json'),
+      JSON.stringify({ contextHints: { profiles: { implementer: { tokens: 150_000 } } } }),
+    )
+
+    const row = await rowOf([agent('ss-impl', 'bd-implementer')], { 'ss-impl': reading(160) }, 'ss-impl')
+
+    expect(row).toMatchObject({ contextK: 160, retireDue: true })
+  })
+
+  it('ignores a charter that still carries retire_k', async () => {
+    writeAutonomy('  retire_k: {implementer: 900, reviewer: 900, planner: 900}\n')
+
+    const row = await rowOf([agent('ss-impl', 'implementer')], { 'ss-impl': reading(210) }, 'ss-impl')
+
+    expect(row).toMatchObject({ contextK: 210, retireDue: true })
+  })
+
+  it('shows context but never retire-due when config.json silences the role', async () => {
+    fs.writeFileSync(
+      path.join(tmp, 'config.json'),
+      JSON.stringify({ contextHints: { profiles: { implementer: null } } }),
+    )
 
     const row = await rowOf([agent('ss-impl', 'implementer')], { 'ss-impl': reading(900) }, 'ss-impl')
 

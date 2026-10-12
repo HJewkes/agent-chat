@@ -800,6 +800,15 @@ an assigned worktree, `owns`, `claim_paths`, `inherit: context` and
 `host: <broker host>` launches on the broker as before. A requester without
 `launchesHere` (an older build) keeps today's broker launch.
 
+On the wire, `spawn_result` carries `launch` and `host` for a caller-site spawn.
+The requester answers with `spawn_launched {agentId, ok, reason?}` (ready, or
+refused on its host), and an ok `spawn_launched_result` is its only go to open the
+surface. Then it sends `spawn_placed`, whose `spawn_placed_result` (the
+`spawn_result` shape) comes once the agent registers, fails, or the attach window
+passes. The socket accepts both reports only from the connection that received the
+launch. A session's host comes from its registration and never its frame. Only the
+CLI, which holds no registration, names its own with `callerHost`.
+
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
 A spawned agent starts from its brief and nothing else, so in practice every
