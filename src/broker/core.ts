@@ -470,7 +470,14 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { ...sendMeta, held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
+      meta: {
+        ...sendMeta,
+        held: SEAT_HOLD_MARK,
+        // CC-345: the episode survives a later boot, which would otherwise restart it at the new log opening.
+        dark_id: String(verdict.dark.id),
+        dark_at: String(verdict.dark.at),
+        ...(source === undefined ? {} : { source }),
+      },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
@@ -542,9 +549,14 @@ export class BrokerCore<C = Conn> {
     return { steward, msgId, held: false }
   }
 
-  /** The log id of the dark episode seat `name` is in, read before it registers. */
+  /**
+   * The log id of the dark episode seat `name` is in, read before it registers. CC-345: a name
+   * no longer holdable, such as a seat stopped while dark, still gets the mail it was held.
+   */
   darkSeat(name: string): number | undefined {
-    return this.holdable(name) ? this.events.darkSince(name)?.id : undefined
+    const dark = this.events.darkSince(name)
+    if (dark === undefined) return undefined
+    return this.holdable(name) || this.events.hasHeldSince(name, dark.id) ? dark.id : undefined
   }
 
   /** CC-301: a teleport's successor keeps the name, so a send in the gap waits for it like a seat's. */
