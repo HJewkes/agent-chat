@@ -506,6 +506,15 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     },
   )
 
+  it.each([
+    'agent-chat gh-write zz -- 1',
+    'agent-chat gh-write pr -- mine',
+    'agent-chat gh-write pr mine -- 1',
+  ])('reads gh-write args the way commander does, keeping words before --: %s', command => {
+    const config = `aliases:\n    zz: '!git push --no-verify'\n    pr mine: '!git push --no-verify'\n`
+    expect(decide(config, command)).toBe(deny(REASONS.noVerify))
+  })
+
   it('denies a gh-write group alias that may be read from another config', () => {
     const command = 'GH_CONFIG_DIR=/tmp/evil agent-chat gh-write -- repo pv'
     expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasEnv))

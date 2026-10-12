@@ -1269,8 +1269,12 @@ function checkShell(
   return script === undefined && stdin !== undefined ? checkAt(stdin, ctx, scope, depth + 1) : undefined
 }
 
-const ghWriteArgs = (args: readonly string[]): readonly string[] =>
-  args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(1)
+/** The gh args `gh-write <gh-args...>` hands gh: commander drops only the first `--` and keeps the words on both sides. */
+function ghWriteArgs(args: readonly string[]): readonly string[] {
+  const rest = args.slice(1)
+  const end = rest.indexOf('--')
+  return end < 0 ? rest : [...rest.slice(0, end), ...rest.slice(end + 1)]
+}
 
 const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes(ghKind(marked))
 
