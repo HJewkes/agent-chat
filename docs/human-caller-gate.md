@@ -56,7 +56,7 @@ the `HUMAN` fallback skips today.
 
 | Frame             | Fallback today                                                                      | What the mapping turns on                                                                                                                                                           |
 | ----------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spawn`           | `handleSpawn`: `registry.nameOf(conn) ?? HUMAN`                                     | `checkEscalation`, the worker-spawn ban, `checkCwd`, `rateRefusal`, and the predecessor-ownership check in `resolvePredecessor` (`src/agents/predecessor.ts`, via `predecessorFor`) |
+| `spawn`           | `handleSpawn`: `registry.nameOf(conn) ?? HUMAN`, no `parentAgentId`                 | `checkEscalation`, the worker-spawn ban, `checkCwd`, `rateRefusal`, and the predecessor-ownership check in `resolvePredecessor` (`src/agents/predecessor.ts`, via `predecessorFor`) |
 | `resume`          | `handleResume`: `requester?.name ?? HUMAN`, no `requesterAgentId`                   | `checkOwnership` through `checkResumer` (CC-216): a worker may resume only agents it spawned                                                                                        |
 | `surface`         | `handleSurface`: `requester?.name ?? HUMAN`, no `requesterAgentId`                  | `checkOwnership` through `checkSurfacer` (CC-225)                                                                                                                                   |
 | `park`            | the `park` case: `requester?.name ?? HUMAN`, no `requesterAgentId`                  | `checkOwnership` for `park`                                                                                                                                                         |
@@ -150,7 +150,11 @@ The design:
 - **Class 1** frames are refused from a connection that declared an id. The broker
   appends `verdict_refused` the way `refuseToSession` does today.
 - **Class 2** frames are not refused. The broker uses the declared agent as the
-  requester: `requestedBy` is its name and `requesterAgentId` is its id. For
+  requester: `requestedBy` is its name, and its id goes in `parentAgentId` for `spawn`
+  (`SpawnRequest` has no `requesterAgentId`) or in `requesterAgentId` for `resume`,
+  `surface` and `park`. Setting only `requestedBy` is not enough: with `parentAgentId`
+  unset, `requesterOf()` reads the requester as a depth-0 coordinator with no granted
+  tools, so the escalation check is skipped and fails open. For
   `retire_finished`, `caller` is its name; for `retire`, `actor` is its name. An id that
   resolves to no known agent is refused. CC-1138 also adds the retire ownership check
   described under Class 2.
