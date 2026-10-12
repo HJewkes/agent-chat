@@ -78,6 +78,11 @@ import {
 } from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
+import {
+  REVIEWER_ACCOUNT_LIMIT,
+  reviewerAccountGate,
+  type ReviewerAccountRead,
+} from './reviewer-account-gate.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
@@ -484,6 +489,12 @@ export type SpawnRefusalCode =
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
   | SeatHandReserveRefusalCode
+  | typeof REVIEWER_ACCOUNT_LIMIT
+
+/** CC-1078: reads the five_hour window and ceiling of the account a reviewer spawn bills. Absent in tests, which own no account. */
+export interface ReviewerAccountReaders {
+  read: (configDir: string, nowMs: number) => ReviewerAccountRead
+}
 
 /** CC-288: reads a seat-prefixed spawn's pool and meters. Absent in tests, which own no autonomy root. */
 export interface SeatBudgetReaders {
@@ -633,6 +644,8 @@ export interface SupervisorOptions {
   machineGuard?: MachineGuardReaders
   /** CC-288: the seat budget gate's reader. */
   seatBudget?: SeatBudgetReaders
+  /** CC-1078: the reviewer account gate's reader. */
+  reviewerAccount?: ReviewerAccountReaders
   /** CC-932: the seat spawn gate's readers. */
   seatOverlap?: SeatOverlapReaders
   /** CC-606: the pool pick's readers. Absent in tests, which own no autonomy root. */
@@ -827,6 +840,7 @@ export class Supervisor implements TeleportHost {
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
   private readonly seatBudget: SeatBudgetReaders | undefined
+  private readonly reviewerAccount: ReviewerAccountReaders | undefined
   private readonly seatOverlap: SeatOverlapReaders | undefined
   private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
@@ -857,6 +871,7 @@ export class Supervisor implements TeleportHost {
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
     this.seatBudget = options.seatBudget
+    this.reviewerAccount = options.reviewerAccount
     this.seatOverlap = options.seatOverlap
     this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
@@ -1250,7 +1265,11 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     reason: string,
     cause:
-      | { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean }
+      | {
+          code:
+            'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | typeof REVIEWER_ACCOUNT_LIMIT
+          retryable: boolean
+        }
       | { code: 'surface_refused' }
       | {} = {},
   ): SpawnOutcome {
@@ -1426,6 +1445,32 @@ export class Supervisor implements TeleportHost {
     const verdict = seatSpawnGate({ ...read.input, model: profile.model, role })
     logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
+  }
+
+  /** CC-1078: refuses a reviewer spawn into an account at or past its five_hour ceiling; a reader failure lets it through. */
+  private reviewerAccountRefusal(
+    req: SpawnRequest,
+    profile: SpawnProfile,
+    configDir: string,
+  ): string | undefined {
+    if (this.reviewerAccount === undefined) return undefined
+    const role = req.workRole
+    if (!isReviewerSpawn(profile.name, req.name) && role !== 'reviewer' && role !== 'shepherd-review')
+      return undefined
+    const now = Date.now()
+    let read: ReviewerAccountRead
+    try {
+      read = this.reviewerAccount.read(configDir, now)
+    } catch (err) {
+      logEvent('reviewer_account_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+    const verdict = reviewerAccountGate(read, now)
+    logEvent('reviewer_account_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
+    return verdict.allow ? undefined : verdict.reason
   }
 
   /**
@@ -1826,6 +1871,8 @@ export class Supervisor implements TeleportHost {
     if ('refusal' in billed)
       return this.refuse(req, billed.refusal, { code: SEAT_BUDGET_STOP, retryable: true })
     const { account } = billed
+    const limited = this.reviewerAccountRefusal(req, profile, account.dir)
+    if (limited) return this.refuse(req, limited, { code: REVIEWER_ACCOUNT_LIMIT, retryable: true })
     const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
     const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
