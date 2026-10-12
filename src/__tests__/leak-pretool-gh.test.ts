@@ -335,6 +335,35 @@ describe('a gh extension and the clone passthrough (TP-2371)', () => {
     expectDeny(checkCommand(command, ctx()), REASONS.ghExtension)
   })
 
+  it.each([
+    `gh repo clone "$R" -- -c core.sshCommand='git push --no-verify'`,
+    `gh repo clone "$R" -- --upload-pack='git push --no-verify'`,
+    `gh repo clone "$R" -- --config=core.sshCommand='git push --no-verify'`,
+    `gh repo clone "$R" d -- -u 'git push --no-verify'`,
+    `gh repo fork "$R" --clone -- -c core.sshCommand='git push --no-verify'`,
+    `gh repo "$S" o/r -- -c core.sshCommand='git push --no-verify'`,
+    `gh -R x/y repo "$S" o/r -- -c core.sshCommand='git push --no-verify'`,
+  ])("strips gh's -- after a repository the guard cannot resolve (review r1): %s", command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it.each([`gh repo clone "$R" "$D" -- "$OPTS"`, `gh repo clone o/r "$X" "$Y"`, `gh repo clone "$R" d "$Y"`])(
+    'denies an unresolved word that may sit past a hidden --: %s',
+    command => {
+      expectDeny(checkCommand(command, ctx()), REASONS.ghCloneHidden)
+    },
+  )
+
+  it.each([
+    'gh help myext',
+    'gh help myext extra words',
+    'gh help -R o/r myext',
+    'gh -R o/r help myext',
+    'gh help "$E"',
+  ])('denies gh help on a word that is no gh command, which runs the extension (review r1): %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.ghExtension)
+  })
+
   it('denies an extension with no gh config to read', () => {
     const { readGhAliases: _, ...bare } = ctx()
     expectDeny(checkCommand('gh myext', bare), REASONS.ghExtension)
@@ -355,6 +384,10 @@ describe('a gh extension and the clone passthrough (TP-2371)', () => {
     'gh extension list',
     'gh extension install o/gh-x',
     'gh help',
+    'gh help pr view',
+    'gh help environment',
+    'gh repo clone "$R" "$D"',
+    'gh repo clone -- o/r',
     'gh telemetry',
     'gh pr nosuchword',
   ])('allows %s', command => {
@@ -365,6 +398,8 @@ describe('a gh extension and the clone passthrough (TP-2371)', () => {
     expect(ghCloneArgs(['o/r', 'd', '--', '--depth', '1'])).toEqual({ git: [1, 3, 4], hidden: false })
     expect(ghCloneArgs(['-u', 'up', 'o/r', '--no-upstream'])).toEqual({ git: [], hidden: false })
     expect(ghCloneArgs(['o/r', undefined, '-c', 'x'])).toEqual({ git: [1, 2, 3], hidden: false })
+    expect(ghCloneArgs([undefined, '--', '-c', 'x'])).toEqual({ git: [2, 3], hidden: false })
+    expect(ghCloneArgs(['--', 'o/r', '-c'])).toEqual({ git: [2], hidden: false })
   })
 
   const gh = process.env.CI ? undefined : spawnSync('gh', ['help'], { encoding: 'utf8' })

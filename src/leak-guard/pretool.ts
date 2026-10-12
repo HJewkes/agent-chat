@@ -33,6 +33,7 @@ import {
   ghCommandWords,
   ghConfigDir,
   ghExtensionSlot,
+  ghHelpRunsExtension,
   ghPlainAlias,
   ghShellAlias,
   HIDDEN,
@@ -1309,8 +1310,9 @@ function checkGhAliasRun(
 }
 
 /**
- * The git and the programs gh runs for its own commands (TP-2371): `gh extension exec`, and the
- * `git clone` that `gh repo clone|fork` runs with the words after the repository, then its aliases.
+ * The git and the programs gh runs for its own commands (TP-2371): `gh extension exec`,
+ * `gh help <extension>`, and the `git clone` that `gh repo clone|fork` runs with the words after
+ * the repository, then its aliases.
  */
 function checkGhRuns(
   marked: readonly string[],
@@ -1325,8 +1327,11 @@ function checkGhRuns(
   const [verb, sub] = at.map(i => ghCommand(args[i]))
   const unsure = at[1] === HIDDEN
   if (verb === 'extension' && (sub === 'exec' || unsure)) return REASONS.ghExtension
+  if (verb === 'help' && at.length > 1 && ghHelpRunsExtension(sub)) return REASONS.ghExtension
   if (verb === 'repo' && (sub === 'clone' || sub === 'fork' || unsure)) {
-    const reason = checkGhClone(marked.slice((at[1] ?? 0) + 1), assigns, cmd, ctx, scope, depth)
+    // A subcommand the guard cannot resolve may be clone, so every word after `repo` is clone's.
+    const from = (unsure ? at[0] : at[1]) ?? 0
+    const reason = checkGhClone(marked.slice(from + 1), assigns, cmd, ctx, scope, depth)
     if (reason !== undefined) return reason
   }
   return checkGhAliases(marked, assigns, cmd, ctx, scope, depth)

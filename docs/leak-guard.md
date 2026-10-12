@@ -816,9 +816,13 @@ is not denied: the alias it adds is read and checked when `gh <alias>` runs.
 A top-level gh word that is neither a gh command nor a config alias runs an extension
 (`gh-<word>` from `gh extension list`), a program the guard cannot read, so `gh <word>` denies,
 and so do `gh extension exec <name>` (or `ext`/`extensions`) and `gh extension <word>` with a word
-the guard cannot resolve. A config alias of the same name is checked as an alias instead. `help`,
-`__complete` and `__completeNoDesc` are gh's own when no alias shadows them, and `gh extension
-list` and `gh extension install` stay allowed: installing runs nothing. The guard's list of gh
+the guard cannot resolve. A config alias of the same name is checked as an alias instead.
+`gh help <word>` runs extension `<word>` with every other word as its arguments when `<word>` is
+not a gh command (probed on gh 2.102: `gh help myext extra words` ran `gh-myext extra words
+--help`), so it denies too, as does `gh help` with a word the guard cannot resolve; `gh help pr`
+stays allowed. `__complete` and `__completeNoDesc` are gh's own when no alias shadows them (they
+did not run the extension), and `gh extension list` and `gh extension install` stay allowed:
+installing runs nothing. The guard's list of gh
 commands (`GH_BUILTINS` in `src/leak-guard/gh-runs.ts`) is checked against `gh help` in the tests
 on a machine with gh, so a new gh release that adds a command shows up as a failing test before
 it becomes a false deny.
@@ -829,9 +833,12 @@ leading one that is not a flag becomes the directory. The guard builds that argv
 `git clone` written out, so `gh repo clone o/r -- -c core.pager='git push --no-verify'`, a
 `--config`, `-u`/`--upload-pack` or `ext::` word, and `gh repo fork o/r --clone -- -c
 core.sshCommand=<denied>` deny, while `gh repo clone o/r` and `gh repo clone o/r -- --depth 1`
-stay allowed. A word after `--` that the guard cannot resolve (`-- "$OPTS"`) denies, since git
-may read it as an option; one before `--` is gh's (a directory, or a flag gh rejects), but it
-may be `--` itself, so every word after it is checked as a git flag.
+stay allowed. gh strips the first literal `--` wherever it sits, and so does the guard. A word
+after `--` that the guard cannot resolve (`-- "$OPTS"`) denies, since git may read it as an
+option; one before `--` is gh's (the repository, a directory, or a flag gh rejects), but it may be
+`--` itself, so every word after it is checked as a git flag, and a later unresolved word that
+may sit past that `--` denies. With a `repo` subcommand the guard cannot resolve
+(`gh repo "$S" ...`), the words are read as `clone`'s.
 
 ### Config the guard cannot read (TP-630)
 
