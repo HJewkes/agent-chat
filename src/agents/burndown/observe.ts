@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentIdentity } from '../../protocol.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findTranscript } from '../transcript.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from '../transcript-spend.js'
 import { githubRepoOf } from '../spawn-provenance.js'
@@ -465,6 +466,7 @@ export function worktreesUnder(repo: string, exec: Runner = run): string[] | und
 /**
  * Counts against the tick's ceilings; an unreadable repo counts as full, so the tick cuts nothing there.
  * `prefixes` is every agent-name prefix the tick spawns under: `bd` plus each enabled seat's (CC-205).
+ * Reviewer trees sit in the broker's separate reviewer pool (CC-1040), so `total` counts implementer trees only.
  */
 export function worktreeUse(
   names: string[] | undefined,
@@ -474,9 +476,17 @@ export function worktreeUse(
 ): WorktreeUse {
   const totalCeiling = Math.max(0, budget - config.reserveWorktrees)
   if (names === undefined)
-    return { total: totalCeiling, ours: 0, totalCeiling, oursCeiling: config.maxWorktreesPerRepo }
+    return {
+      total: totalCeiling,
+      ours: 0,
+      reviewers: 0,
+      totalCeiling,
+      oursCeiling: config.maxWorktreesPerRepo,
+    }
+  const reviewers = names.filter(isReviewerTreeName).length
   return {
-    total: names.length,
+    total: names.length - reviewers,
+    reviewers,
     ours: names.filter(n => prefixes.some(p => n.startsWith(`${p}-`))).length,
     totalCeiling,
     oursCeiling: config.maxWorktreesPerRepo,
