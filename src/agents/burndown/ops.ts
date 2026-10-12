@@ -93,6 +93,22 @@ export function opsLint(doneWhen: string, tags: readonly string[]): OpsHit[] {
   return opsHits(doneWhen).filter(hit => !declared.has(hit.op))
 }
 
+const SEMVER = /\b\d+\.\d+\.\d+\b/
+
+/**
+ * CC-987: why `doneWhen` is not one publish ("publish <package> at <version>"); undefined when it is.
+ * Only a publish-only task waits on the release grant, so its build and consumer work are their own tasks.
+ */
+export function publishOnlyProblem(doneWhen: string): string | undefined {
+  const hits = opsHits(doneWhen)
+  if (!hits.some(hit => hit.op === 'publish')) return 'it names no publish'
+  if (!SEMVER.test(doneWhen)) return 'it names no version to publish'
+  const other = hits.filter(hit => hit.op !== 'publish')
+  if (other.length > 0) return `it also mentions ${other.map(hit => `${hit.op} ('${hit.text}')`).join(', ')}`
+  if (doneWhen.includes(';')) return 'it lists more than one step'
+  return undefined
+}
+
 /** A task a person does: burndown routes it and never dispatches it. */
 export const isHumanStep = (tags: readonly string[]): boolean =>
   tags.includes('kind:operator') || tags.includes('kind:owner')
