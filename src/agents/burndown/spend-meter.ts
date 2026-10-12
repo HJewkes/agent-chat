@@ -57,8 +57,8 @@ export function seatSpend(input: SeatSpendInput): SeatSpend {
   const { sevenDay, now } = input
   const kept = poolSamples(input.seatState, input.configDir, now.getTime())
   const meters = meterSpend(input.saved, sevenDay, now, input.ownRun ?? true)
-  const useMeters =
-    sevenDay !== undefined && !kept.some(s => s.at <= meters.runStart) && meters.history.length > 0
+  // With no current reading the meters still stand behind the last good one (CC-409) when the ledger cannot.
+  const useMeters = !kept.some(s => s.at <= meters.runStart) && meters.history.length > 0
   const history = useMeters ? meters.history : kept
   const current = sevenDay === undefined ? undefined : { at: now.getTime(), sevenDay }
   return {
