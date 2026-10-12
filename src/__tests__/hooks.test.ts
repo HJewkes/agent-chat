@@ -28,13 +28,14 @@ function writeHooksJson(config: unknown): void {
 
 interface Captured {
   command: string
+  cwd: string
   stdin: string
 }
 
 function capturingSpawn(): { spawn: HookSpawnFn; calls: Captured[] } {
   const calls: Captured[] = []
-  const spawn: HookSpawnFn = command => {
-    const call: Captured = { command, stdin: '' }
+  const spawn: HookSpawnFn = (command, cwd) => {
+    const call: Captured = { command, cwd, stdin: '' }
     calls.push(call)
     const proc: HookProcess = {
       stdin: {
@@ -131,3 +132,61 @@ describe('a hook child that dies before reading its stdin', () => {
     expect(rejections).toEqual([])
   })
 })
+
+/**
+ * CC-1096: the broker once ran from an agent worktree that was later parked, and
+ * every hook it spawned failed with `uv_cwd` (1057 broker.log rows). A hook runs
+ * in the agent's cwd while that exists and in HOME otherwise.
+ */
+describe('the cwd a hook runs in', () => {
+  it("is the payload's cwd when that directory exists", () => {
+    writeHooksJson({ on_spawn: ['/bin/hook.sh'] })
+    const { spawn, calls } = capturingSpawn()
+
+    runHooks('on_spawn', { agentId: 'a1', cwd: dir }, { spawn })
+
+    expect(calls.map(c => c.cwd)).toEqual([dir])
+  })
+
+  it("falls back to HOME when the payload's cwd was removed", () => {
+    writeHooksJson({ on_complete: ['/bin/hook.sh'] })
+    const removed = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-hooks-gone-'))
+    fs.rmSync(removed, { recursive: true })
+    const { spawn, calls } = capturingSpawn()
+
+    runHooks('on_complete', { agentId: 'a1', cwd: removed }, { spawn })
+
+    expect(calls.map(c => c.cwd)).toEqual([os.homedir()])
+  })
+
+  it('is HOME when the payload names no cwd', () => {
+    writeHooksJson({ on_complete: ['/bin/hook.sh'] })
+    const { spawn, calls } = capturingSpawn()
+
+    runHooks('on_complete', { agentId: 'a1' }, { spawn })
+
+    expect(calls.map(c => c.cwd)).toEqual([os.homedir()])
+  })
+
+  it('reaches a real shell: pwd in a hook for a removed tree prints HOME', async () => {
+    const out = path.join(dir, 'out')
+    writeHooksJson({ on_complete: [`pwd > '${out}'`] })
+    const removed = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-hooks-gone-'))
+    fs.rmSync(removed, { recursive: true })
+
+    runHooks('on_complete', { agentId: 'a1', cwd: removed })
+
+    const printed = await pollFile(out, 5000)
+    expect(fs.realpathSync(printed.trim())).toBe(fs.realpathSync(os.homedir()))
+  })
+})
+
+async function pollFile(file: string, capMs: number): Promise<string> {
+  const deadline = Date.now() + capMs
+  while (Date.now() < deadline) {
+    const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+    if (text.endsWith('\n')) return text
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error(`${file} was not written within ${capMs} ms`)
+}

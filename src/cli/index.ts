@@ -3,6 +3,7 @@
 import './warnings.js'
 
 import { Command } from 'commander'
+import { brokerCwd } from '../agents/stable-cwd.js'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
@@ -313,7 +314,11 @@ function addAgentCommands(program: Command): void {
  * release because the README and `docs/ideas.md` name them.
  */
 function addHiddenCommands(program: Command): void {
-  program.command('broker', { hidden: true }).action(() => service.start({ foreground: true }))
+  // CC-1096: leave whatever agent tree started us, or every child inherits a cwd that parking removes.
+  program.command('broker', { hidden: true }).action(() => {
+    process.chdir(brokerCwd())
+    return service.start({ foreground: true })
+  })
 
   program.command('mcp', { hidden: true }).action(async () => {
     const { startMcpServer } = await import('../server/index.js')
