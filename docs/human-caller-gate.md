@@ -194,10 +194,13 @@ starts. What it does and does not stop:
 
 - **Stopped:** moving `HOME` or `AGENT_CHAT_HOME` to a directory of your own and planting
   a `chat.sock` symlink to the live socket there, so that a different `config.json` is
-  read. The site then resolves roots from the planted config, the broker reports its
-  own, and they differ, so the site refuses.
-- **Not stopped:** an agent that starts the broker itself with a planted `HOME` or root
-  overrides. The broker's roots are then the agent's. This is adversarial, so it falls
+  read. The site's `home()` is the planted directory and the broker's is the real one.
+  They differ, so the site refuses. This holds even when the planted `config.json` is a
+  copy of the real one and every policy root matches.
+- **Not stopped:** a broker started from an agent's environment. That includes one
+  autostarted from an agent shell, which inherits that shell's `HOME`, `ACTIVE_ROOT` and
+  `AGENT_CHAT_HOME`, and one an agent started on purpose with planted values. The
+  broker's roots and `home()` are then the agent's. This is adversarial, so it falls
   under the OS-account limit.
 - **Not stopped:** editing the owner's real charter, seat files or `config.json`. That
   changes the broker's roots too, and it is the same limit.
@@ -259,12 +262,20 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   **The root rule: the broker decides the root.** When `AGENT_CHAT_AGENT_ID` is set, each
   of the three opt-out sites does this before it acts on any policy:
   - It asks the broker, over the connection it already opens, for the roots the broker
-    resolves in its own process: `currentAutonomyRoot()` and `activeWorkRoot()`.
-  - It refuses unless no `--root` is given and every root it resolved for itself equals
-    the broker's.
+    resolves in its own process: `currentAutonomyRoot()`, `activeWorkRoot()` and
+    `home()`. `home()` is the `AGENT_CHAT_HOME` the broker runs on (`src/paths.ts`).
+  - It refuses unless no `--root` is given and every one of those it resolved for itself
+    equals the broker's.
+
+  `home()` is on the list because the policy roots are not the tick's only inputs. The
+  tick and the watchdog also read state relative to `home()`: the burndown ledger
+  (`burndown.json`, read in `burndown/run-tick.ts`), `config.json`'s limits, and
+  `seat-watchdog.json`. `retireAll` in `burndown/execute.ts` retires the claim names
+  that ledger lists. A site whose `home()` differs from the broker's would therefore act
+  on state the caller planted, even if its policy roots matched.
 
   An equivalent form is to drop the site's own resolution and use the broker's roots
-  outright. CC-1138 picks one of the two. The compare form refuses loudly on a mismatch
+  and `home()` outright. CC-1138 picks one of the two. The compare form refuses loudly on a mismatch
   rather than quietly running a different policy, so this record leans towards it. With
   no agent id, the sites behave as today.
 
