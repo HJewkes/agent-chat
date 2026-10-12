@@ -358,6 +358,13 @@ export const ledgerImplementers = (ledger: Ledger, seat: string): number =>
       (c.phase === 'implementing' || (c.phase === 'spawning' && c.nextPhase === 'implementing')),
   ).length
 
+/** CC-1098: how many claims the ledger may hold beyond the agents actually running before the count is flagged. */
+export const SLOT_MISMATCH_TOLERANCE = 3
+
+/** CC-1098: the flag shown beside a role count whose ledger runs more than the tolerance ahead of its live agents. */
+export const slotMismatch = (ledger: number, live: number): string | undefined =>
+  ledger - live > SLOT_MISMATCH_TOLERANCE ? `MISMATCH ledger ${ledger} vs ${live} live` : undefined
+
 export function isStalled(claim: Claim, now: Date): boolean {
   if (claim.stalledReason !== undefined) return true
   const timeout = PHASE_TIMEOUT_MS[claim.phase]

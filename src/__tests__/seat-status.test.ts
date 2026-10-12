@@ -435,11 +435,19 @@ describe('a seat against its concurrency caps', () => {
   it("shows the burndown ledger's implementer count beside the live one when they differ (CC-978)", async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
 
-    const differs = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+    const differs = await statusReport(deps({ ledgerImplementers: () => 4 }), SEAT, false)
     const same = await statusReport(deps({ ledgerImplementers: () => 1 }), SEAT, false)
 
-    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 5)  ss-al-1')
+    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 4)  ss-al-1')
     expect(same.lines[1]).toBe('implementers  1/2  ss-al-1')
+  })
+
+  it('flags a ledger more than 3 claims ahead of the live implementers (CC-1098)', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+
+    const report = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+
+    expect(report.lines[1]).toBe('implementers  1/2 (ledger 5)  MISMATCH ledger 5 vs 1 live  ss-al-1')
   })
 
   it('counts a detached implementer as active and names it as detached', async () => {
