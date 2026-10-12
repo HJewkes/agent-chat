@@ -48,7 +48,10 @@ t_lint() {
   bad "lint fails a recommended option that is not a key" "is not an option key" tc-131 's/  option: A/  option: C/'
   bad "lint fails id tc-130_2" "is not like tc-131" tc-130.2 's/^id: tc-130.2/id: tc-130_2/'
   bad "lint fails a one-way door with no why_owner" "needs why_owner" tc-131 '/^why_owner:/d'
-  bad "lint fails a capture outside <id>/img/" "must be under tc-131/img/" tc-131 's|file: tc-131/img/after|file: img/after|'
+  bad "lint fails a capture outside <id>/img/" "under tc-131/img/" tc-131 's|file: tc-131/img/after|file: img/after|'
+  bad "lint fails a capture that climbs out with .." "under tc-131/img/" tc-131 's|file: tc-131/img/after.png|file: tc-131/img/../../escaped.png|'
+  bad "lint fails a capture with an absolute path" "under tc-131/img/" tc-131 's|file: tc-131/img/after.png|file: /tmp/after.png|'
+  bad "lint fails a capture with a . segment" "under tc-131/img/" tc-131 's|file: tc-131/img/after.png|file: tc-131/./img/after.png|'
 }
 t_add() {
   store; cp -R "$R/tc-131" "$scratch/"; sed '/^opened_at:/d' "$R/tc-131.yml" > "$scratch/tc-131.yml"
@@ -61,6 +64,30 @@ t_add() {
     report "add refuses an existing record" ok
   run "add refuses a record for another seat" 1 add design-coord "$R/tc-130.2.yml" &&
     says "add refuses a record for another seat" "$err" "is not 'design-coord'" && report "add refuses a record for another seat" ok
+}
+# draft <dir>: a tc-131 draft with its captures in <dir>, for the symlink cases
+draft() { rm -rf "$1"; mkdir -p "$1"; cp -R "$R/tc-131" "$R/tc-131.yml" "$1/"; }
+# refuses <name> <needle> <draft dir>: add exits 1 with needle, writes no record and nothing outside the store
+refuses() {
+  run "$1" 1 add titan-coord "$3/tc-131.yml" && says "$1" "$err" "$2" || return
+  [ ! -f "$S/tc-131.yml" ] && [ ! -e "$scratch/outside/after.png" ] && report "$1" ok || report "$1" "wrote through"
+}
+t_add_escape() {
+  store; mkdir -p "$scratch/outside"
+  sed 's|file: tc-131/img/after.png|file: tc-131/img/../../escaped.png|' "$R/tc-131.yml" > "$scratch/esc.yml"
+  name="add refuses a .. capture and writes nothing outside the record"
+  run "$name" 1 add titan-coord "$scratch/esc.yml" && [ ! -e "$S/escaped.png" ] && [ ! -e "$scratch/root/escaped.png" ] &&
+    report "$name" ok
+  store; mkdir -p "$S/tc-131"; ln -s "$scratch/outside" "$S/tc-131/img"; draft "$scratch/d1"
+  refuses "add refuses a store img dir that is a symlink" "is a symlink" "$scratch/d1"
+  store; mkdir -p "$S/tc-131/img"; ln -s "$scratch/outside/after.png" "$S/tc-131/img/after.png"; draft "$scratch/d2"
+  refuses "add refuses a destination capture that is a symlink" "is a symlink" "$scratch/d2"
+  store; draft "$scratch/d3"; printf secret > "$scratch/outside/secret"
+  rm "$scratch/d3/tc-131/img/after.png"; ln -s "$scratch/outside/secret" "$scratch/d3/tc-131/img/after.png"
+  refuses "add refuses a source capture that is a symlink" "is a symlink" "$scratch/d3"
+  store; draft "$scratch/d4"; mv "$scratch/d4/tc-131/img" "$scratch/outside/img4"; ln -s "$scratch/outside/img4" "$scratch/d4/tc-131/img"
+  refuses "add refuses a source img dir that is a symlink" "through a symlink" "$scratch/d4"
+  rm -rf "$scratch/outside"
 }
 t_list() {
   store tc-131 tc-130.2 tc-129; name="list --status filters the store"
@@ -119,6 +146,6 @@ t_roots() {
   out=$(env -u AUTONOMY_ROOT ACTIVE_ROOT="$scratch/active" "$B" list 2>&1)
   says "$name" "$out" "tc-129" && report "$name" ok
 }
-t_lint; t_add; t_list; t_due; t_resolve; t_escalate; t_close; t_roots
+t_lint; t_add; t_add_escape; t_list; t_due; t_resolve; t_escalate; t_close; t_roots
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

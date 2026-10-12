@@ -71,22 +71,22 @@ record per question in `<autonomy>/backlog/<seat>/<id>.yml`, while the queue kee
 one-line pointer such as `131. tc-131 (one-way): <decision>. backlog/titan-coord/tc-131.yml`.
 It needs `node` and the `yaml` package from this checkout's `node_modules`.
 
-| Field                        | Content                                                                                  |
-| ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `id`                         | `tc-131` or `tc-130.2`: at most 3 lowercase letters, a number, an optional dotted sub-id |
-| `seat`, `initiative`, `task` | Owning seat; initiative and task id (`CC-760`) that `task-note` writes to                |
-| `decision`, `now`            | What is being decided, in one sentence; the current value or behaviour, or `none`        |
-| `options[]`                  | `{key, proposed}`, at least two; `proposed` is the proposal text, never a bare heading   |
-| `trade_off`                  | Cost of each option that is not recommended                                              |
-| `door`, `why_owner`          | `two-way` or `one-way`; a one-way door needs the charter section 10 reason               |
-| `recommended`                | `{option, reason}`; `option` is one of the keys                                          |
-| `opened_at`                  | ISO time that starts the 12 h clock; `add` stamps it when the draft has none             |
-| `visual`                     | `null` or `{captures: [{key, file, label}]}`, files under `<id>/img/` beside the record  |
-| `pr`                         | Optional `{url, summary, gate_reason}`, all three                                        |
-| `links`, `blocks`            | Optional lists of references                                                             |
-| `status`                     | `open`, `deferred`, `decided`, `escalated`, `answered` or `closed`                       |
-| `resolution`                 | `{by, answer, comment, cite, confidence, at}`, written by `resolve`                      |
-| `deferred_until`             | Set on a Defer; `due` reopens the record after it                                        |
+| Field                        | Content                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                         | `tc-131` or `tc-130.2`: at most 3 lowercase letters, a number, an optional dotted sub-id                                             |
+| `seat`, `initiative`, `task` | Owning seat; initiative and task id (`CC-760`) that `task-note` writes to                                                            |
+| `decision`, `now`            | What is being decided, in one sentence; the current value or behaviour, or `none`                                                    |
+| `options[]`                  | `{key, proposed}`, at least two; `proposed` is the proposal text, never a bare heading                                               |
+| `trade_off`                  | Cost of each option that is not recommended                                                                                          |
+| `door`, `why_owner`          | `two-way` or `one-way`; a one-way door needs the charter section 10 reason                                                           |
+| `recommended`                | `{option, reason}`; `option` is one of the keys                                                                                      |
+| `opened_at`                  | ISO time that starts the 12 h clock; `add` stamps it when the draft has none                                                         |
+| `visual`                     | `null` or `{captures: [{key, file, label}]}`; `file` is a relative path under `<id>/img/` beside the record, with no `..` or symlink |
+| `pr`                         | Optional `{url, summary, gate_reason}`, all three                                                                                    |
+| `links`, `blocks`            | Optional lists of references                                                                                                         |
+| `status`                     | `open`, `deferred`, `decided`, `escalated`, `answered` or `closed`                                                                   |
+| `resolution`                 | `{by, answer, comment, cite, confidence, at}`, written by `resolve`                                                                  |
+| `deferred_until`             | Set on a Defer; `due` reopens the record after it                                                                                    |
 
 - `add <seat> <file>`: lint, copy the record and its captures into place, set `open`.
 - `lint <file...>`: print each rule a record breaks; exit 1 if any record fails.

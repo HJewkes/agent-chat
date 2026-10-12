@@ -89,14 +89,22 @@ function lintRecommended(record) {
   return errors
 }
 
+// A capture path is copied on both sides of add, so it may hold no '..', '.', empty or absolute segment.
+function captureFileOk(id, file) {
+  if (typeof file !== 'string' || /[\\\0]/.test(file)) return false
+  const segments = file.split('/')
+  if (segments.some(segment => ['', '.', '..'].includes(segment))) return false
+  return segments.length > 2 && segments[0] === id && segments[1] === 'img'
+}
+
 function lintVisual(record) {
   if (record.visual == null) return []
   const captures = record.visual.captures
   if (!Array.isArray(captures) || captures.length === 0) return ['visual is set with no captures']
   return captures.flatMap((capture, i) => {
     if (!text(capture?.key) || !text(capture?.label)) return [`visual.captures[${i}] needs key and label`]
-    if (!String(capture.file ?? '').startsWith(`${record.id}/img/`)) {
-      return [`visual.captures[${i}].file must be under ${record.id}/img/`]
+    if (!captureFileOk(record.id, capture.file)) {
+      return [`visual.captures[${i}].file must be a plain relative path under ${record.id}/img/`]
     }
     return []
   })
@@ -178,12 +186,36 @@ function findRecord(id) {
   return { file: matches[0], record: readRecord(matches[0]) }
 }
 
+// Lint already holds the path to <id>/img/; this also refuses a symlink anywhere on either side.
+function confined(base, id, file) {
+  const target = path.join(base, file)
+  const imgDir = path.join(fs.realpathSync(base), id, 'img')
+  const parent = fs.realpathSync(path.dirname(target))
+  if (parent !== imgDir && !parent.startsWith(imgDir + path.sep)) {
+    throw new Failure(`capture ${file} resolves outside ${id}/img/ through a symlink`)
+  }
+  const stat = fs.lstatSync(target, { throwIfNoEntry: false })
+  if (stat?.isSymbolicLink()) throw new Failure(`capture ${file} is a symlink`)
+  return { target, stat }
+}
+
 function copyCaptures(record, fromDir, toDir) {
   for (const capture of record.visual?.captures ?? []) {
-    const source = path.join(fromDir, capture.file)
-    if (!fs.existsSync(source)) throw new Failure(`capture ${capture.file} not found beside the record`)
+    if (!captureFileOk(record.id, capture.file))
+      throw new Failure(`capture ${capture.file} is outside ${record.id}/img/`)
+    if (!fs.existsSync(path.join(fromDir, capture.file))) {
+      throw new Failure(`capture ${capture.file} not found beside the record`)
+    }
+    const source = confined(fromDir, record.id, capture.file)
+    if (!source.stat.isFile()) throw new Failure(`capture ${capture.file} is not a file`)
+    for (const dir of [record.id, `${record.id}/img`]) {
+      if (fs.lstatSync(path.join(toDir, dir), { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Failure(`${dir} in the store is a symlink`)
+      }
+    }
     fs.mkdirSync(path.dirname(path.join(toDir, capture.file)), { recursive: true })
-    fs.copyFileSync(source, path.join(toDir, capture.file))
+    const dest = confined(toDir, record.id, capture.file)
+    fs.copyFileSync(source.target, dest.target)
   }
 }
 
