@@ -14,7 +14,7 @@ import type { AgentIdentity } from '../protocol.js'
 
 const NOW = new Date('2026-10-12T12:00:00.000Z')
 const EARLIER = '2026-10-12T09:00:00.000Z'
-const WORKTREE = '/nowhere/tc-cc-1-a'
+const WORKTREE = '/nowhere/bd-cc-1-a'
 const BRANCH_FILES = ['src/a.ts', 'src/b.ts']
 
 const implementing = (patch: Partial<Claim> = {}): Claim => ({
@@ -23,9 +23,9 @@ const implementing = (patch: Partial<Claim> = {}): Claim => ({
   slice: 'a',
   dependsOn: [],
   owns: ['src/a.ts'],
-  agentId: 'tc-cc-1-a',
-  agentName: 'tc-cc-1-a',
-  spawned: ['tc-cc-1-a'],
+  agentId: 'bd-cc-1-a',
+  agentName: 'bd-cc-1-a',
+  spawned: ['bd-cc-1-a'],
   spawnedAt: EARLIER,
   phase: 'implementing',
   phaseAt: EARLIER,
@@ -51,8 +51,8 @@ const ports = (plan: PlanFile, files: string[] | undefined): UnstallPorts => ({
 const exited: Roster = {
   agents: [
     {
-      agentId: 'tc-cc-1-a',
-      name: 'tc-cc-1-a',
+      agentId: 'bd-cc-1-a',
+      name: 'bd-cc-1-a',
       state: 'exited',
       spawnedAt: 1,
       cwd: WORKTREE,
@@ -69,7 +69,7 @@ const mergedRun: ShepherdRow = {
   phase: 'post-merge',
   headSha: 'h41',
   stalled: null,
-  implementer: 'tc-cc-1-a',
+  implementer: 'bd-cc-1-a',
 }
 
 /** Observe then advance, as the tick does, with the branch's changed files and Shepherd stubbed. */
@@ -124,11 +124,11 @@ describe('burndown unstall (CC-1141)', () => {
     expect(handed.actions).toContainEqual(
       expect.objectContaining({
         kind: 'register',
-        registration: expect.objectContaining({ implementer: 'tc-cc-1-a' }),
+        registration: expect.objectContaining({ implementer: 'bd-cc-1-a' }),
       }),
     )
     expect(handed.actions.filter(a => a.kind === 'retire')).toEqual([])
-    expect(merged.ledger.claims[0]).toMatchObject({ phase: 'done', agentName: 'tc-cc-1-a' })
+    expect(merged.ledger.claims[0]).toMatchObject({ phase: 'done', agentName: 'bd-cc-1-a' })
   })
 
   it('refuses while a file is still outside the new owns, and writes nothing', async () => {
