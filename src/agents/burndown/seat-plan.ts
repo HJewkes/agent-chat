@@ -43,7 +43,7 @@ import {
 import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import { sliceRepo, type PathExists } from './slice-repo.js'
-import { seedSlices, type PlanReader } from './seed-slices.js'
+import { seedSlices, type PlanReader, type SliceRuns } from './seed-slices.js'
 import { OFF_PLAN_REASON } from './off-plan.js'
 import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
@@ -99,6 +99,8 @@ export interface SeatPlanInputs {
   handReserve?: number
   /** A task's seat-written plan (CC-927), read only for planner rows under an `on` gate; absent, none is read. */
   readPlan?: PlanReader
+  /** CC-1121 b: slice agents the seat's dispatch log shows already ran for a task; absent, none did. */
+  sliceRuns?: SliceRuns
   /** CC-1112: task ids a factory-review file marked off-plan; briefers refuse them. Absent, none are extra. */
   offPlanIds?: ReadonlySet<string>
   /** Whether a path exists in a checkout, for placing a ready slice by what it owns (CC-946); absent, owns place nothing. */
@@ -701,7 +703,7 @@ function seedFromPlan(
   role: Role,
   walk: Walk,
 ): Seeded | Replan | Refused | undefined {
-  const { seat, brief, readPlan, ledger, budget } = walk.inputs
+  const { seat, brief, readPlan, ledger, budget, sliceRuns } = walk.inputs
   if (readPlan === undefined || (row.route !== 'planner' && role !== 'implementers')) return undefined
   if (brief?.gate === 'shadow' && role === 'implementers')
     return briefRefusal(task, { ...brief, now: budget.ctx.now }) === undefined
@@ -711,7 +713,7 @@ function seedFromPlan(
   const plan = readPlan(row.initiative, row.id)
   if (plan.text === undefined && role === 'implementers') return { replan: plan.path }
   const parent = { taskId: row.id, initiative: row.initiative, seat: seat.seat, namePrefix: seat.prefix }
-  const seeding = seedSlices(parent, plan, ledger, budget.ctx.now)
+  const seeding = seedSlices(parent, plan, ledger, budget.ctx.now, sliceRuns)
   if (seeding === undefined) return undefined
   if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
   walk.claimed.add(row.id)
