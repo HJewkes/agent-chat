@@ -55,6 +55,7 @@ import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.j
 import { clearLaunchIdentity } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
 import { startBurndownKick } from './burndown-kick.js'
+import { brokerJobKick } from './job-kick.js'
 import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { startProcessGuard } from '../agents/process-guard-monitor.js'
 import { deliver, SocketServer } from './socket.js'
@@ -115,7 +116,9 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
     resolveOrphanReapKill,
   )
   const stopProcessGuard = isEphemeralHome(home()) ? () => undefined : startBrokerProcessGuard()
-  const stopBurndownKick = isEphemeralHome(home()) ? () => undefined : startBurndownKick(core)
+  const burndownKick = isEphemeralHome(home()) ? undefined : startBurndownKick(core)
+  const stopBurndownKick = burndownKick?.stop ?? (() => undefined)
+  socketServer.attachJobKick(brokerJobKick(burndownKick?.kicker))
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
