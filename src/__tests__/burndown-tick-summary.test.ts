@@ -128,7 +128,7 @@ describe('the tick summary row', () => {
   it('names each trust refusal by initiative, task and reason, and no other kind', () => {
     const refusals = [
       { initiative: 'cc', task: 'CC-1026', kind: 'trust', reason: 'no entry for dotfiles' },
-      { initiative: 'cc', task: 'CC-1028', kind: 'trust', reason: 'no entry for tc-cc-1028-a' },
+      { initiative: 'cc', task: 'CC-1028', kind: 'trust', reason: 'no entry for the slice tree' },
       { initiative: 'cc', task: 'CC-9', kind: 'out-of-scope', reason: 'tag' },
     ] as const
     const row = tickSummary(
@@ -138,7 +138,7 @@ describe('the tick summary row', () => {
     expect(row.seats['seat-t']?.refusals.trust).toBe(2)
     expect(row.seats['seat-t']?.trust).toEqual([
       { initiative: 'cc', task: 'CC-1026', reason: 'no entry for dotfiles' },
-      { initiative: 'cc', task: 'CC-1028', reason: 'no entry for tc-cc-1028-a' },
+      { initiative: 'cc', task: 'CC-1028', reason: 'no entry for the slice tree' },
     ])
   })
 
