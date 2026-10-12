@@ -500,6 +500,24 @@ describe('git clone of a repository the guard cannot read (TP-2444)', () => {
     expect(hookReason('git clone $U d')).toBe(REASONS.gitConfigUnresolved)
   })
 
+  it.each([
+    'git clone -c remote.up.url="$U" https://github.com/o/r',
+    'git clone -c remote.origin.pushurl="$U" https://github.com/o/r d',
+    'git clone --config remote.up.url="$U" https://github.com/o/r',
+    'git clone --config=submodule.s.url="$U" https://github.com/o/r',
+    'git clone -c submodule.s.url="$U" https://github.com/o/r',
+  ])('denies a URL config value it cannot read: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git clone -c remote.up.url=https://github.com/o/u https://github.com/o/r',
+    'git clone --config submodule.s.url=https://github.com/o/s https://github.com/o/r d',
+    'git -c remote.up.url=https://github.com/o/u clone https://github.com/o/r',
+  ])('allows a readable URL config value: %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
   it('reads a same-line literal assignment', () => {
     expect(hookReason('U=https://github.com/o/r; git clone "$U"')).toBe(REASONS.remoteUrlUnresolved)
   })

@@ -290,8 +290,8 @@ const CLONE_OPTIONS = optionSpec(
  * 2.53 (TP-2371). `lead` holds the options before the verb; `writes` the verbs that store a URL,
  * each with its options and, for `remote set-url --delete`, the option state that stores none;
  * `safe` the verbs that store none. A verb in neither is treated as one that may store any word it
- * is given. `git clone` has no verb and stores only its repository, as `remote.origin.url`, so
- * `cloneUrlEnabler` reads it instead (TP-2444).
+ * is given. `git clone` has no verb: it stores its repository as `remote.origin.url` and writes its
+ * `-c`/`--config` values into the new repository's config, so `cloneEnabler` reads it instead (TP-2444).
  */
 interface UrlCommand {
   lead: OptionSpec
@@ -419,6 +419,22 @@ function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined 
 }
 
 /**
+ * What `git clone`'s own `-c`/`--config` values, which git writes into the new repository's config,
+ * enable (TP-2444): read as a `git config` write is, so an unread value for a remote or submodule URL
+ * key is `url`. A key the guard cannot read is `url` too.
+ */
+function cloneConfigEnabler(run: GitWords, at: number): ExtEnabler | undefined {
+  for (const word of configWords(run.resolved, run.marked, run.splits)) {
+    if (word.index === undefined || word.index <= at) continue
+    const pair = keyValue(word)
+    if (pair === undefined) return 'url'
+    if (allowsExt(pair.key, pair.value)) return 'protocol'
+    if (URL_KEY.test(pair.key) && pair.value === undefined) return 'url'
+  }
+  return undefined
+}
+
+/**
  * Whether `git clone` stores a repository URL the guard cannot read as `remote.origin.url` (TP-2444):
  * `url` when its first positional is unread. Past an option the guard cannot match it is `url` for
  * any unread word and otherwise none, so an unknown literal flag stays allowed. An unread directory
@@ -441,11 +457,11 @@ function cloneUrlEnabler(args: SubArgs): ExtEnabler | undefined {
  * The words are read one shell word to one argument, so for these builtins a word after the
  * subcommand that may expand to none or several (an unquoted expansion, `"$@"`, `"${A[@]}"`, a
  * glob or a brace) leaves the argument list unknown, which is `url`. `git clone` is read by
- * `cloneUrlEnabler`; its splitting words are already `gitConfigUnresolved`.
+ * `cloneConfigEnabler` and `cloneUrlEnabler`; its splitting words are already `gitConfigUnresolved`.
  */
 export function extEnablerWrite(run: GitWords, at: number): ExtEnabler | undefined {
   const sub = run.resolved[at]
-  if (sub === 'clone') return cloneUrlEnabler(tail(run, at + 1))
+  if (sub === 'clone') return cloneConfigEnabler(run, at) ?? cloneUrlEnabler(tail(run, at + 1))
   const command = sub === undefined ? undefined : URL_COMMANDS[sub]
   if (sub !== 'config' && command === undefined) return undefined
   if (run.marked.slice(at + 1).some(word => expandsToWords(word, run.splits))) return 'url'
