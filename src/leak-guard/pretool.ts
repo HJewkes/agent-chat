@@ -191,7 +191,7 @@ export const REASONS = {
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
-  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
@@ -509,7 +509,7 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
 const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): number =>
   options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
 
-/** A `git config` or `git remote` write that switches on `ext::` or hides a URL a later git may run (TP-2371). */
+/** A `git config`, `git remote` or `git clone` write that switches on `ext::` or hides a URL a later git may run (TP-2371, TP-2444). */
 function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
   if (!run.tied) return undefined
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
@@ -1367,7 +1367,11 @@ function checkGhRuns(
 /** Any URL: the clone checks read the flags git gets, and gh builds the URL from the repository. */
 const CLONE_URL = 'https://github.com/o/r.git'
 
-/** The `git clone` gh runs, built as gh's `parseCloneArgs` does: a leading positional is the directory, put after the URL. */
+/**
+ * The `git clone` gh runs, built as gh's `parseCloneArgs` does: a leading positional is the directory,
+ * put after the URL. An unread one goes there too: git reads a flag anywhere, and before the URL it
+ * would read as the repository (TP-2444).
+ */
 function checkGhClone(
   marked: readonly string[],
   assigns: readonly string[],
@@ -1382,7 +1386,7 @@ function checkGhClone(
   if (git.length === 0) return undefined
   const [first = 0] = git
   const lead = resolved[first]
-  const dir = lead !== undefined && !lead.startsWith('-') ? [first] : []
+  const dir = lead === undefined || !lead.startsWith('-') ? [first] : []
   const flags = git.filter(i => !dir.includes(i)).map(i => marked[i] as string)
   const words = ['clone', ...flags, CLONE_URL, ...dir.map(i => marked[i] as string)]
   return checkGitRun(gitRun(words, assigns, cmd, ctx, scope, true), ctx, scope, depth)

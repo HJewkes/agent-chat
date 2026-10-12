@@ -25,6 +25,12 @@ export interface GhCallLine {
   remaining: number | null
   resource: string | null
   limit?: LimitKind
+  /** Seconds from `retry-after`, when the response carried it. */
+  retryAfter?: number
+  /** `x-ratelimit-used`, when the call saw it. */
+  used?: number
+  /** `x-ratelimit-reset`, epoch seconds, when the call saw it. */
+  reset?: number
   /** Only on `caller: "rate-limit"` lines: remaining per resource. */
   limits?: Record<string, number>
 }
