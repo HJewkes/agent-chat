@@ -183,7 +183,9 @@ process's environment rather than on the command text.
 
 **Limits, stated plainly.** The id is self-declared, so omitting or forging it fails
 open. `env -u AGENT_CHAT_AGENT_ID agent-chat debug send …` or a raw `nc` write still
-reaches the broker as the human, with `requestedBy = HUMAN` and a `permission_hook`
+reaches the broker as the human. The same `env -u` also gets past the root rule for the
+tick and seat opt-out sites (see "Tick and seat callers" below), because the rule applies
+only when an id is set. Either way the caller arrives with `requestedBy = HUMAN` and a `permission_hook`
 `session` of the caller's choosing. Declaring another agent's id makes the caller act as
 that agent. This meets the bar in
 `agent-teams.md` §11.4, which stops a confused agent but not an adversarial one. It does
@@ -227,33 +229,50 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   root.** The opt-out is a per-call argument, not a per-module default. Call sites are at
   origin/main `f91dcbe`:
 
-  | Call site                                                                                                                                  | Hello                                                                                                                  |
-  | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-  | `burndownTickVerb.run` in `cli/verbs/burndown.ts` (the `new BrokerClient` there)                                                           | **off**. The verb takes no `--root`                                                                                    |
-  | `seatsWatchdogVerb.run` → `liveRun` → `withRunningBroker` in `cli/verbs/seats.ts`                                                          | **off**, only when `--root` is absent. With `--root` and `AGENT_CHAT_AGENT_ID` set, the verb refuses before connecting |
-  | `seatsHeartbeatCheckVerb.run` → `withRunningBroker` (with `sendAsOwner`) in `cli/verbs/seats.ts`                                           | **off**, under the same `--root` rule                                                                                  |
-  | `burndownReleaseVerb.run` in `cli/verbs/burndown.ts` (its `retire` frame)                                                                  | **on**. A release from an agent shell is checked as that agent, including the new retire ownership check               |
-  | `readBroker` in `cli/verbs/burndown.ts`, and every other `withRunningBroker` use in `cli/verbs/seats.ts` (`seats status`, `seats boot`, …) | **on** (the default)                                                                                                   |
+  | Call site                                                                                                                                  | Hello                                                                                                    |
+  | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+  | `burndownTickVerb.run` in `cli/verbs/burndown.ts` (the `new BrokerClient` there)                                                           | **off**, under the root rule below                                                                       |
+  | `seatsWatchdogVerb.run` → `liveRun` → `withRunningBroker` in `cli/verbs/seats.ts`                                                          | **off**, under the root rule below                                                                       |
+  | `seatsHeartbeatCheckVerb.run` → `withRunningBroker` (with `sendAsOwner`) in `cli/verbs/seats.ts`                                           | **off**, under the root rule below                                                                       |
+  | `burndownReleaseVerb.run` in `cli/verbs/burndown.ts` (its `retire` frame)                                                                  | **on**. A release from an agent shell is checked as that agent, including the new retire ownership check |
+  | `readBroker` in `cli/verbs/burndown.ts`, and every other `withRunningBroker` use in `cli/verbs/seats.ts` (`seats status`, `seats boot`, …) | **on** (the default)                                                                                     |
 
   `withRunningBroker` therefore takes an explicit opt-out argument that only those two
   seats call sites pass. Turning the hello off inside `withRunningBroker` itself would
   cover every seats verb. A test pins the opt-out call sites, so adding one is a reviewed
-  change. Another test pins the `--root` refusal.
+  change. Another test pins the root rule.
 
-  Why the `--root` rule: `seats watchdog` and `seats heartbeat-check` read their policy
-  from `--root`. If an agent can pass its own `--root`, it can point them at a fake
-  `seats/` directory and drive `human_send` as the human, plus `spawn` and `retire` as
-  `HUMAN`, for any agent name, past the new ownership check. So the opt-out holds only
-  for the owner's default autonomy root (`defaultAutonomyRoot()`). The burndown tick takes
-  no root argument. It reads its charter and ledger from the owner's default paths.
+  **The root rule.** When `AGENT_CHAT_AGENT_ID` is set, each of the three opt-out sites
+  refuses before connecting unless both of these hold:
+  - no `--root` is given;
+  - the autonomy root it resolved equals the root resolved from a stripped environment,
+    one with `AGENT_CHAT_ACTIVE_WORK_ROOT`, `ACTIVE_ROOT` and `XDG_DATA_HOME` unset.
+
+  With no agent id, the sites behave as today.
+
+  Why: the watchdog, heartbeat-check and the tick read their policy (charter, seat files,
+  task board) from the autonomy root. `--root` is one way to choose that root, but not the
+  only one. `defaultAutonomyRoot()` follows `activeWorkRoot()`
+  (`src/agents/active-work.ts`), which reads `AGENT_CHAT_ACTIVE_WORK_ROOT`, `ACTIVE_ROOT`
+  and, on Linux, `XDG_DATA_HOME`. `currentAutonomyRoot` (`src/agents/autonomy-root.ts`)
+  then applies config.json's `coordinatorConfig`. The tick's charter resolves the same way
+  (`src/agents/burndown/policy.ts`). So `ACTIVE_ROOT=/tmp/fake agent-chat seats watchdog`
+  picks a policy the caller wrote, with no `--root` at all. With that policy, an agent
+  could drive `human_send` as the human, and `spawn` and `retire` as `HUMAN`, for any
+  agent name, past the new ownership check.
+
+  The rule states the condition rather than listing the routes in, so a new override
+  falls on the refusing side once it is added to the stripped set. It does not cover
+  config.json. Both resolutions read the same file, so an edit to `coordinatorConfig`
+  passes. That falls under the OS-account limit below.
 
   Option 2 was rejected because the broker would have to trust a self-declared source,
   which an agent can set as easily as it can omit the id. That adds broker surface for no
   extra assurance. Option 3 was rejected because it breaks the supervised ticks
   `docs/burndown.md` asks for, and a seat relaunching its peers.
 
-  **Limit.** An agent that runs `burndown tick` or `seats watchdog` with the default root
-  acts with the tick's or watchdog's authority. The owner's files bound what that
+  **Limit.** An agent that runs `burndown tick` or `seats watchdog` and passes the root
+  rule acts with the tick's or watchdog's authority. The owner's files bound what that
   authority does: the charter, the seat files and the task board. The caller's brief does
   not. Those files sit under the same OS account, though, so an agent that edits them
   edits the policy. This is §11.4's limit again, not a new one.
@@ -282,7 +301,7 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   from launchd or systemd units (`src/mirror/plist.ts`), which do not carry the id. Before
   the gate lands, confirm that no seat session runs these verbs from its own shell, where
   the id would be set. If one does, the tick and seat entry above covers it: the
-  heartbeat-check call site turns the hello off, with the default root only.
+  heartbeat-check call site turns the hello off, under the root rule.
 - **`teleport request`** (`src/cli/verbs/teleport-request.ts`) is a human verb that sends
   `human_send`. When the owner types it into a teleported agent's terminal pane, the
   shell carries the agent's id and the gate would refuse it. Decide whether that is
