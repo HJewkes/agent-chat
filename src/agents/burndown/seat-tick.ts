@@ -3,9 +3,9 @@ import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
-import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
+import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
-import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import { chargesOn, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
@@ -17,7 +17,7 @@ import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
   dormantInitiatives,
   loadPolicy,
-  mergeDefaults,
+  resolveSeat,
   seatBudget,
   seatScope,
   type Policy,
@@ -35,6 +35,7 @@ import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readOffPlanIds } from './off-plan.js'
 import { readTasks, type TickConfig } from './source.js'
+import { poolSamples, seatSpend } from './spend-meter.js'
 
 /**
  * CC-205 slice 4: seats mode for one tick. Loads the policy once, samples each
@@ -42,9 +43,6 @@ import { readTasks, type TickConfig } from './source.js'
  * cannot be loaded or planned is skipped with a reason; the others still run.
  * CLI-only.
  */
-
-/** Covers the 07:00 day start and the 12-hour run, with slack for a late tick. */
-export const SAMPLE_KEEP_MS = 26 * 3_600_000
 
 export interface SeatTickDeps {
   autonomyRoot: string
@@ -92,16 +90,18 @@ function sampled(
 ) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
-  // CC-1080: a drop across pools is a different account's reading, not a seven_day reset; an unkeyed ledger's samples are unknowable, so dropped.
-  const samePool = previous?.configDir === dispatch.configDir
-  const kept = (samePool ? (previous?.samples ?? []) : []).filter(
-    s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs,
-  )
+  const kept = poolSamples(previous, dispatch.configDir, nowMs)
   const sample: SevenDaySample[] =
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
+  const { history, runStart } = seatSpend({
+    seatState: previous,
+    configDir: dispatch.configDir,
+    saved,
+    sevenDay: reading?.sevenDay,
+    now: deps.now,
+  })
   const marks = {
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
     ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
@@ -110,32 +110,16 @@ function sampled(
     reading,
     resetsAt,
     history,
+    runStart,
     state: { samples: [...kept, ...sample], configDir: dispatch.configDir, ...marks },
   }
-}
-
-/**
- * The ledger's samples when they hold a reading at or before the run start, as before CC-782, else the
- * watchdog meters alone. Never both: a meter's samples are estimates that never drop, so sorted among
- * real readings across a seven_day reset, `pointsSpent` would count the pre-reset readings again.
- */
-function oneSource(
-  kept: SevenDaySample[],
-  saved: SavedMeters,
-  sevenDay: number,
-  now: Date,
-): SevenDaySample[] {
-  const { history, runStart } = meterSpend(saved, sevenDay, now)
-  if (kept.some(s => s.at <= runStart)) return kept
-  return history.length === 0 ? kept : history
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
   const saved = usableMeters(deps.meters(name, dispatch.pool.name))
-  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
-  const recordedAt = saved.run?.since
+  const { reading, resetsAt, history, runStart, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
   const { pool, spend } = pacedCaps({
     pacing: seat.pacing,
     ...seatBudget(policy.charter, seat),
@@ -146,13 +130,13 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
   })
   return {
     dispatch,
-    policy: { ...policy, seat, defaults: mergeDefaults(policy.charter, seat) },
+    policy: { ...policy, seat, ...resolveSeat(policy.charter, seat) },
     budget: {
       pool,
       spend,
       reading,
       history,
-      runStartAt: runStartAt(deps.now, recordedAt === undefined ? {} : { recordedAt }),
+      runStartAt: runStart,
       ctx: { now: deps.now },
     },
     state,
@@ -260,7 +244,7 @@ export interface Taken {
 }
 
 export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
-  const { charter, seats, defaults } = seat.policy
+  const { charter, seats, defaults, hardStops } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
   const slugs = Object.keys(weights)
@@ -275,7 +259,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     weights,
     defaults,
     exclusions,
-    charter.hard_stops,
+    hardStops,
     today,
     dormantInitiatives(seat.policy.seat),
   )

@@ -80,6 +80,26 @@ export interface Refusal {
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']
 
+/**
+ * CC-1121: a queued slice waits on whatever holds its parent task's row: a missing or closed parent, the
+ * `blocked` tag, or any reserved or seat-excluded tag. Ready slices skip the scorer, so this is their only gate.
+ */
+export function sliceRefusal(
+  task: Task | undefined,
+  excludedTags: readonly string[],
+): Pick<Refusal, 'kind' | 'reason'> | undefined {
+  if (task === undefined) return { kind: 'not-open', reason: 'its task is missing; its queued slices wait' }
+  if (task.status !== 'open')
+    return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}; its queued slices wait` }
+  if (task.tags.includes('blocked'))
+    return { kind: 'blocked', reason: `${task.id} carries the blocked tag; its queued slices wait` }
+  const holding = new Set([...RESERVED_TAGS, ...excludedTags])
+  const held = task.tags.filter(tag => holding.has(tag))
+  if (held.length > 0)
+    return { kind: 'reserved-tag', reason: `tagged ${held.join(', ')}; its queued slices wait` }
+  return undefined
+}
+
 const MERGE_GRANT = { grant: 'merge-on-green-approve', pattern: /\bmerg(e|ed|es|ing)\b/i }
 const RELEASE_GRANT = 'release-through-ci'
 

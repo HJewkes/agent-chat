@@ -43,6 +43,15 @@ export const PR_READY_RULE =
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
 
+/**
+ * CC-311: Claude Code cannot resolve a write target that holds a variable, so it asks, and a headless
+ * reviewer parks on that prompt until the hook's deadline. The same edit on a literal path ran unprompted.
+ */
+export const MUTANT_RULE =
+  "Mutants: in your own tree under `$TMPDIR/<your name>`, `sed -i.bak '<edit>' <literal path>`, then " +
+  '`git checkout -- <literal path>`. Never put `$VAR`, a glob on a variable or `$(...)` in a write ' +
+  'target: it raises a permission prompt nobody answers.'
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
@@ -122,6 +131,7 @@ const REVIEWER = [
   '`Earlier findings: none found`.',
   'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  MUTANT_RULE,
   SHIM_RULE,
   REVIEWER_BODY_FILE_RULE,
   QUOTE_RULE,

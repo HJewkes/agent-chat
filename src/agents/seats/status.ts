@@ -11,19 +11,19 @@ import {
 } from '../burndown/budget-gate.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { seatTrees, type SeatTree } from './trees.js'
-import { slotMismatch } from '../burndown/ledger.js'
+import { slotMismatch, type SeatState } from '../burndown/ledger.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
+import { seatSpend, type SeatSpend } from '../burndown/spend-meter.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
 import { readSeatFile } from './teleport-state.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import type { WaitingPermission } from './waiting-permission.js'
 import {
-  meterSpend,
   savedMeters,
   type SavedMeters,
   pacedCaps,
@@ -184,6 +184,8 @@ export interface StatusDeps {
   machine: (agents: AgentIdentity[]) => MachineStatus
   /** CC-431: null when no limit is breached or a reading could not be taken. */
   machineStop: () => MachineStop | null
+  /** CC-1099: the seat's burndown ledger state. Absent, or a throw: spend counts from the watchdog meters alone. */
+  seatSamples?: (seat: string) => SeatState | undefined
   /** CC-978: the seat's implementer claims in the burndown ledger. Absent, or a throw: not shown. */
   ledgerImplementers?: (seat: string) => number
   /** CC-610: every agent parked on the permission hook, machine-wide. Absent, or a throw: not shown. */
@@ -327,20 +329,29 @@ function seatMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, no
   return { ...savedMeters(doc, seat, pool), lastGood }
 }
 
-interface SeatHistory {
-  history: SevenDaySample[]
-  runStart: number
-  day: SpendMeter | undefined
+function seatState(deps: StatusDeps, seat: string): SeatState | undefined {
+  try {
+    return deps.seatSamples?.(seat)
+  } catch {
+    return undefined
+  }
 }
 
 /**
- * The watchdog's saved run and day meters, advanced to this reading as its next pass would, as `gatePool` history.
+ * The seat's spend through the one meter the tick and the spawn gate use: the ledger's samples from this
+ * pool's account when they reach the run start, else the watchdog's saved meters advanced to this reading.
  * A meter the watchdog never saved stays absent, so `gatePool` stops a cap that needs it as unknown.
- * A run meter past 12 hours counts from its last reading, because this read saves no restart.
  */
-function seatHistory(saved: SavedMeters, reading: AccountReading | undefined, now: Date): SeatHistory {
-  const { history, runStart, day } = meterSpend(saved, reading?.sevenDay, now)
-  return { history, runStart, day }
+function seatHistory(
+  deps: StatusDeps,
+  seat: string,
+  configDir: string,
+  saved: SavedMeters,
+  reading: AccountReading | undefined,
+  now: Date,
+): SeatSpend {
+  const sevenDay = reading?.sevenDay
+  return seatSpend({ seatState: seatState(deps, seat), configDir, saved, sevenDay, now, home: deps.homeDir })
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
@@ -374,6 +385,7 @@ function lateDayStart(day: SpendMeter | undefined, now: Date): Pick<Verdict, 'sp
 function spendVerdict(
   deps: StatusDeps,
   budget: SeatBudget,
+  configDir: string,
   pace: Pace,
   seat: string,
   reading: AccountReading | undefined,
@@ -389,17 +401,18 @@ function spendVerdict(
     return { ...stopped(why), allowance: pace([]).allowance }
   }
   const saved = seatMeters(doc, seat, name, now.getTime())
-  const meters = seatHistory(saved, reading, now)
-  const { allowance, ...caps } = pace(meters.history)
+  const spend = seatHistory(deps, seat, configDir, saved, reading, now)
+  const { allowance, ...caps } = pace(spend.history)
   const gate = gatePool({
     ...caps,
     reading,
     lastGood: saved.lastGood,
-    history: meters.history,
-    runStartAt: meters.runStart,
+    history: spend.history,
+    runStartAt: spend.runStart,
     ctx: { now },
   })
-  const late = lateDayStart(meters.day, now)
+  // A late day meter says nothing about a day counted from the ledger's real readings.
+  const late = lateDayStart(spend.source === 'meters' ? spend.dayMeter : undefined, now)
   if (!gate.open) return { ...stopped(gate.reason), ...late, allowance }
   const shown = gate.staleOk === true ? standInReading(reading, saved.lastGood) : undefined
   const staleOk = shown === undefined ? {} : { staleOk: shown }
@@ -433,7 +446,7 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
   const pace = seatPace(policy, budget, read, reading, now)
-  const { staleOk, ...verdict } = spendVerdict(deps, budget, pace, seat, reading, now, plain)
+  const { staleOk, ...verdict } = spendVerdict(deps, budget, configDir ?? '', pace, seat, reading, now, plain)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,

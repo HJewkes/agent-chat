@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { WatchdogDoc } from '../agents/seats/io.js'
 import { runWatchdog, type WatchdogDeps } from '../agents/seats/run.js'
 import {
+  SERVICE_CHECK_TIMEOUT_MS,
   judgeService,
   serviceCause,
   serviceCheckRunner,
@@ -205,17 +206,38 @@ describe('the cause of a service check', () => {
 })
 
 const failedExec =
-  (fields: { code?: string | number; killed?: boolean }): ExecFile =>
+  (fields: { code?: string | number | null; killed?: boolean }, stdout = ''): ExecFile =>
   (_file, _args, _options, callback) =>
-    callback(Object.assign(new Error('exec failed'), fields), '')
+    callback(Object.assign(new Error('exec failed'), fields), stdout)
 
 describe('the live service check runner', () => {
-  it('reads a timeout as its own cause', async () => {
-    const run = serviceCheckRunner(failedExec({ killed: true }))
+  it("waits at least 30 s, longer than the check's 21 s worst case", async () => {
+    const timeouts: number[] = []
+    const run = serviceCheckRunner((_file, _args, options, callback) => {
+      timeouts.push(options.timeout)
+      callback(null, '{"ok":true}')
+    })
+
+    await run()
+
+    expect(SERVICE_CHECK_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000)
+    expect(timeouts).toEqual([SERVICE_CHECK_TIMEOUT_MS])
+  })
+
+  it('reads a check killed by its timeout as unresponsive, not as a check that could not run', async () => {
+    const run = serviceCheckRunner(failedExec({ code: null, killed: true }))
 
     const result = await run()
 
-    expect(serviceCause(result)).toBe('service check could not run: timed out after 5000 ms')
+    expect(serviceCause(result)).toBe('unresponsive: no answer within 30000 ms')
+  })
+
+  it('reads non-JSON output on a failing exit as its own cause', async () => {
+    const run = serviceCheckRunner(failedExec({ code: 1 }, 'not json'))
+
+    const result = await run()
+
+    expect(serviceCause(result)).toBe('service check answered with no readable cause')
   })
 
   it('reads a missing binary as its own cause', async () => {

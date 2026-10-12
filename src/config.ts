@@ -20,6 +20,7 @@ import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 import { SEAT_SPAWN_MODES, type SeatSpawnMode } from './agents/seats/spawn-gate.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
+import { PACE_CONTROLLER_MODES, type PaceControllerMode } from './agents/seats/pace.js'
 import {
   DEFAULT_PROCESS_KILL_BYTES,
   MIN_PROCESS_KILL_BYTES,
@@ -38,6 +39,7 @@ export interface AgentChatConfig {
   ledgerShadow?: unknown
   orphanReapKill?: unknown
   poolPick?: unknown
+  paceController?: unknown
   seatSpawnGate?: unknown
   seatStewards?: unknown
   permissionHookTimeoutSeconds?: unknown
@@ -207,6 +209,19 @@ export function resolvePoolPickMode(): PoolPickMode {
   const mode = POOL_PICK_MODES.find(known => known === value)
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
+  return 'shadow'
+}
+
+/**
+ * CC-1104: whether the pace controller only logs its verdict beside per_run and per_day (`shadow`, the
+ * default), replaces them (`on`), or is skipped (`off`). From `config.json`'s `paceController`, read per call.
+ */
+export function resolvePaceControllerMode(): PaceControllerMode {
+  const value = readConfig().paceController
+  if (value === undefined) return 'shadow'
+  const mode = PACE_CONTROLLER_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'paceController', value, fallback: 'shadow' })
   return 'shadow'
 }
 

@@ -230,3 +230,30 @@ describe('reading an agent’s telemetry back', () => {
     expect(readBudget(sessionId).found).toBe(false)
   })
 })
+
+describe('a cwd entry symlinked into the active-work root (CC-236)', () => {
+  it('reaches the launch argv as --add-dir at its real path', async () => {
+    const root = fs.realpathSync(tmp('agent-chat-aw-'))
+    const sources = path.join(root, 'init', 'sources')
+    fs.mkdirSync(sources, { recursive: true })
+    const cwd = tmp('agent-chat-ws-')
+    fs.symlinkSync(sources, path.join(cwd, 'sources'))
+    process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = root
+
+    const result = await supervisor.spawn(spawnReq({ cwd }))
+
+    const args = readLaunchPlan(result.agentId as string).args
+    expect(args.filter((_, i) => args[i - 1] === '--add-dir')).toContain(sources)
+  })
+
+  it('warns in the spawn result about a brief path through an ungranted link', async () => {
+    const outside = fs.realpathSync(tmp('agent-chat-out-'))
+    const cwd = tmp('agent-chat-ws-')
+    fs.symlinkSync(outside, path.join(cwd, 'notes'))
+
+    const result = await supervisor.spawn(spawnReq({ cwd, brief: 'write notes/report.md' }))
+
+    expect(result.ok).toBe(true)
+    expect(result.warnings).toContainEqual(expect.stringContaining(path.join(outside, 'report.md')))
+  })
+})

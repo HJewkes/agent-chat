@@ -118,8 +118,8 @@ export interface MeterSpend {
 }
 
 /**
- * The saved run and day meters advanced to this reading, as `gatePool` history. The spawn gate,
- * `seats status`, and the tick when its ledger lacks a run-start sample count spend through this.
+ * The saved run and day meters advanced to this reading, as `gatePool` history. `seatSpend`
+ * (burndown/spend-meter.ts) falls back to this when the ledger lacks a run-start sample.
  * `ownRun` false keeps the run meter out of the history (a pool the seat does not own) while the
  * run start still follows it. Every meter is held to `usableMeter` here, so no caller can count a
  * malformed one: its NaN spend would compare below every cap and open the gate.
