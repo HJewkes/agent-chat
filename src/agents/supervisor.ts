@@ -111,6 +111,7 @@ import {
 } from './isolation/retire-finished.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
 import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
+import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
@@ -534,7 +535,10 @@ export interface SpawnOutcome {
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
-export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'>
+export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
+  /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
+  checkProcesses?: boolean
+}
 
 export interface ResumeRequest {
   surface?: SurfaceName
@@ -619,6 +623,10 @@ export interface SupervisorOptions {
   shepherdSkip?: ShepherdSkipPort
   /** CC-921: whether a spawner opted in to retire-at-final-report. Needs `shepherdSkip` too. */
   autoRetireOnReport?: (spawner: string) => boolean
+  /** CC-1039: whether a non-reviewer's tree is parked at exit (`autoPark.onExit`). Absent is off, so tests own it. */
+  autoParkOnExit?: () => boolean
+  /** CC-1039: why a held burndown claim still reads a tree. Absent is no hold. */
+  burndownTreeHold?: (tree: string) => string | undefined
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
   /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
@@ -810,6 +818,8 @@ export class Supervisor implements TeleportHost {
   private readonly seatJournal: SeatJournal | undefined
   private readonly shepherdSkip: ShepherdSkipPort | undefined
   private readonly autoRetireOnReport: ((spawner: string) => boolean) | undefined
+  private readonly autoParkOnExit: (() => boolean) | undefined
+  private readonly burndownTreeHold: ((tree: string) => string | undefined) | undefined
   private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
@@ -841,6 +851,8 @@ export class Supervisor implements TeleportHost {
     this.seatJournal = options.seatJournal
     this.shepherdSkip = options.shepherdSkip
     this.autoRetireOnReport = options.autoRetireOnReport
+    this.autoParkOnExit = options.autoParkOnExit
+    this.burndownTreeHold = options.burndownTreeHold
     this.launcherRunning = options.launcherRunning ?? psLauncherProbe
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
@@ -1144,6 +1156,7 @@ export class Supervisor implements TeleportHost {
     if (failed === undefined && entry.cancelReason === undefined) {
       await this.retireIfReported(agentId)
       await this.parkReviewerIfReported(agentId)
+      if (resumeOn === undefined) await this.parkImplementerIfExited(agentId)
     }
     if (resumeOn !== undefined) await this.resumeForBackground(agentId, entry.name, resumeOn)
   }
@@ -2616,7 +2629,7 @@ export class Supervisor implements TeleportHost {
       const parked = await parkWorktree(
         target,
         () => this.parkBlockerFor(identity.agentId, target),
-        identity.state === 'detached' ? this.cwdLister : undefined,
+        identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
       )
       if (!parked.ok) return parked
       this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
@@ -2675,6 +2688,29 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /** CC-1039: park a non-reviewer's clean, pushed tree at a normal exit; an earlier park already removed it. */
+  private async parkImplementerIfExited(agentId: string): Promise<void> {
+    const port = this.implementerParkPort()
+    if (port === undefined) return
+    const result = await parkImplementerAtExit(port, agentId)
+    if (result.action === 'kept')
+      logEvent('implementer_park_kept', { agentId, name: result.name, reason: result.reason })
+    if (result.action === 'parked') logEvent('implementer_parked', { agentId, ...result })
+  }
+
+  private implementerParkPort(): ImplementerParkPort | undefined {
+    const enabled = this.autoParkOnExit
+    if (enabled === undefined) return undefined
+    const treeHold = this.burndownTreeHold
+    return {
+      current: agentId => this.core.agents.get(agentId),
+      events: () => this.core.events.agentEvents(),
+      enabled,
+      treeHold: tree => treeHold?.(tree),
+      park: agentId => this.parkById(agentId, { checkProcesses: true }),
+    }
+  }
+
   private lastReportText(agent: AgentIdentity): string | undefined {
     return this.core.events.lastStatusReport(
       agent.name,
@@ -2700,11 +2736,11 @@ export class Supervisor implements TeleportHost {
   }
 
   /** `park` resolves a name, so a teleport successor holding it now is refused rather than parked. */
-  private parkById(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+  private parkById(agentId: string, req: ParkRequest = {}): Promise<{ ok: boolean; reason?: string }> {
     const name = this.core.agents.get(agentId)?.name
     if (name === undefined || this.core.agents.byName(name)?.agentId !== agentId)
       return Promise.resolve({ ok: false, reason: 'the name now belongs to another agent' })
-    return this.park(name)
+    return this.park(name, req)
   }
 
   /** Read fresh each call, so the re-check before removal sees a spawn or resume that landed during the git checks. */

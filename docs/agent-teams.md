@@ -1450,6 +1450,18 @@ the agent. Neither step deletes the branch. An agent with no tree, such as a rev
 retired. The park and the retire write their usual seat-journal lines. A kept agent is logged as
 `auto_retire_kept` with the reason, and a retired one as `auto_retired`.
 
+Park at exit (CC-1039) is on by default. When a spawned agent that is not a reviewer exits
+normally, the broker parks its allocated tree under the `agent park` rules without waiting for CI
+and without the CC-921 opt-in. Normally means the exit did not fail, was not cancelled, and is not
+about to be resumed for a pending background task. The branch is kept, and `agent resume`
+re-creates the tree for a fix round. A tree counts as pushed when origin's current branches, read
+with `ls-remote`, contain HEAD under any name, so a PR head pushed under another branch name
+counts too. A dirty tree, an unpushed commit, a process still in the tree, another unretired
+tenant, or a held burndown claim in any phase but `awaiting-merge` or `shepherding` keeps the tree.
+A kept tree is logged as `implementer_park_kept` with the reason, and a parked one as
+`implementer_parked`. Set `"autoPark": { "onExit": false }` in `~/.agent-chat/config.json` to turn
+it off. The key is read on each exit. This replaces CC-276's practice of parking once CI is green.
+
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
 §4.3): never renamed without changing the plan writer in the same commit.
