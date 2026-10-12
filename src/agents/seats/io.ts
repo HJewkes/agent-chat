@@ -102,6 +102,8 @@ export type SeatRecord = SeatState & {
   staleRefused?: string
   /** CC-959: the possible live pane whose hold outran its cap, so each is raised once. */
   paneHeld?: string
+  /** CC-344: the dark episode whose "seat is live" resume refusal was raised, so each episode is raised once. */
+  liveRefused?: string
   /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
   spawningFlagged?: string[]
   /** CC-862: the last heartbeat slot and pause reset the watchdog acted on. */
