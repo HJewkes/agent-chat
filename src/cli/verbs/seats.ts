@@ -332,6 +332,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
     openBlocks: readOpenBlocks,
     page: sendAsWatchdog,
+    seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
   }
 }
 
