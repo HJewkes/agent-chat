@@ -238,6 +238,39 @@ export function shellAlias(body: string, rest: readonly string[]): string {
   return rest.length === 0 ? filled : `${filled} ${rest.map(quoted).join(' ')}`
 }
 
+const QUOTED_POSITIONAL = /^\$(?:\{([1-9@*])\}|([1-9@*]))/
+
+/** The positionals (`1`, `@`, `*`) a shell body reads inside double quotes, where single-quoted fills do not apply. */
+export function doubleQuotedPositionals(body: string): string[] {
+  const names: string[] = []
+  let quote: string | undefined
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (quote === "'") quote = c === "'" ? undefined : quote
+    else if (c === '\\') i++
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === "'" && quote === undefined) quote = "'"
+    else if (c === '$' && quote === '"') {
+      const match = QUOTED_POSITIONAL.exec(body.slice(i))
+      if (match !== null) names.push(match[1] ?? match[2] ?? '')
+    }
+  }
+  return names
+}
+
+const FILL_PLAIN = /^[A-Za-z0-9_./:=@%+-]+$/
+
+/**
+ * Whether `fillPositionals` may misread the body: a positional inside double quotes is filled with
+ * single-quoted text the shell keeps literally, so the guard checks one word where `sh -c` splits
+ * or evals another. Safe only when every argument is a plain word, and `"$@"` has at most one.
+ */
+export function fillsUnsafely(body: string, rest: readonly string[]): boolean {
+  const names = doubleQuotedPositionals(body)
+  if (names.length === 0) return false
+  return rest.some(arg => !FILL_PLAIN.test(arg)) || (names.includes('@') && rest.length > 1)
+}
+
 /** A shell body with `$1`, `$@` and their kin replaced by the quoted words they stand for. */
 export function fillPositionals(body: string, rest: readonly string[]): string {
   const all = rest.map(quoted).join(' ')

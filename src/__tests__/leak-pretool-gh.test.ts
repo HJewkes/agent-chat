@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseTerms } from '@titan-design/egress-scan'
 import { afterEach, describe, expect, it } from 'vitest'
+import { doubleQuotedPositionals } from '../leak-guard/git-alias.js'
 import {
   ghAliasReader,
   ghAliasSet,
@@ -187,6 +188,40 @@ describe('a gh alias (TP-2371)', () => {
   ])('allows %s', command => {
     const table = { co: { shell: false, body: 'pr checkout' }, pv: { shell: false, body: 'pr view' } }
     expect(checkCommand(command, ctx(table))).toBeUndefined()
+  })
+})
+
+describe('a shell alias argument inside double quotes (TP-2371 review)', () => {
+  it.each([
+    ['y', '"$@"', 'gh y git push --no-verify'],
+    ['e', 'git "$@"', 'gh e push --no-verify'],
+    ['c', 'eval "$*"', `gh c 'git push --no-verify'`],
+    ['d', 'sh -c "$1"', `gh d 'git push --no-verify'`],
+  ])('denies gh alias %s = %s run as %s', (name, body, command) => {
+    expectDeny(checkCommand(command, ctx({ [name]: { shell: true, body } })), REASONS.ghAliasHidden)
+  })
+
+  it.each([`gh alias set --shell y '"$@"'`, `gh alias set --shell co 'gh pr checkout "$1"'`])(
+    'denies setting a shell alias that reads a positional inside double quotes: %s',
+    command => {
+      expectDeny(checkCommand(command, ctx()), REASONS.ghAliasHidden)
+    },
+  )
+
+  it.each([
+    ['e', '!git "$@"', 'git e push --no-verify'],
+    ['y', '!"$@"', 'git y git push --no-verify'],
+  ])('denies git alias %s = %s run as %s', (name, value, command) => {
+    const readAlias = (word: string) => (word === name ? { value, runsIn: '/work' } : undefined)
+    expectDeny(checkCommand(command, { ...ctx(), readAlias }), REASONS.aliasQuotedArgs)
+  })
+
+  it.each(['gh co 12', 'gh co'])('allows %s through a stored "$1" alias with a plain argument', command => {
+    expect(checkCommand(command, ctx({ co: { shell: true, body: 'gh pr checkout "$1"' } }))).toBeUndefined()
+  })
+
+  it('reads positionals inside double quotes only', () => {
+    expect(doubleQuotedPositionals(`"$1" '"$2"' "\\$3" "\${@}" $4 "a'$*'"`)).toEqual(['1', '@', '*'])
   })
 })
 

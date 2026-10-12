@@ -5,6 +5,8 @@ import {
   aliasReader,
   CONFIG_ENV,
   configEnvVars,
+  doubleQuotedPositionals,
+  fillsUnsafely,
   gitCall,
   gitGlobals,
   gitOptions,
@@ -157,6 +159,7 @@ export const REASONS = {
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
+  aliasQuotedArgs: `leak-guard: this git ! alias reads its arguments inside double quotes, and an argument is not a plain word (or "$@" gets more than one), so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
@@ -617,6 +620,7 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   const rest = run.args.slice(call.at + 1)
   // A `!` body passes the include to every git it runs and may write the file before one reads it.
   if (alias.value.startsWith('!') && includesConfig(call.params)) return REASONS.includePath
+  if (alias.value.startsWith('!') && fillsUnsafely(alias.value.slice(1), rest)) return REASONS.aliasQuotedArgs
   if (alias.value.startsWith('!'))
     return checkAt(
       shellAlias(alias.value.slice(1), rest),
@@ -1155,7 +1159,14 @@ function checkGhAliasSet(
   if (set.kind === 'unread') return REASONS.ghAliasUnread
   if (set.kind === 'spaced') return REASONS.ghAliasUnreadable
   const { shell, body } = set.alias
-  return checkAt(shell ? body : `gh ${body}`, ctx, { ...scope, cwd: undefined, env: undefined }, depth + 1)
+  const reason = checkAt(
+    shell ? body : `gh ${body}`,
+    ctx,
+    { ...scope, cwd: undefined, env: undefined },
+    depth + 1,
+  )
+  // The arguments arrive later, and a positional inside double quotes is one the guard cannot fill.
+  return reason ?? (shell && doubleQuotedPositionals(body).length > 0 ? REASONS.ghAliasHidden : undefined)
 }
 
 /** gh config writes the guard does not read before an alias in the same line runs. */
@@ -1247,6 +1258,7 @@ function checkGhAliasBody(
   scope: Scope,
   depth: number,
 ): string | undefined {
+  if (alias.shell && fillsUnsafely(alias.body, rest)) return REASONS.ghAliasHidden
   if (alias.shell) return checkAt(ghShellAlias(alias.body, rest), ctx, scope, depth + 1)
   const expanded = ghPlainAlias(alias.body, rest)
   return expanded === undefined
