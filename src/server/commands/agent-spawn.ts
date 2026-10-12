@@ -4,6 +4,7 @@ import { ISOLATION_NAMES, SURFACE_NAMES, type ClientMessage, type ServerMessage 
 import { verdictLine } from '../../agents/resume-session.js'
 import { isWorkRole, WORK_ROLE_CHOICES } from '../../agents/spawn-provenance.js'
 import { defineTool } from '../command.js'
+import { launchHereFields, requestSpawn } from '../caller-spawn.js'
 
 /** The wording `optionalEnum` used, which callers (and agent-presence.test.ts) match on. */
 const oneOf = (field: string, allowed: readonly string[]) => ({
@@ -43,10 +44,10 @@ const args = z.object({
     .string()
     .describe(
       'Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when ' +
-        'something upstream decided where this task runs — a parent task, a wave plan — rather than ' +
+        'something upstream decided where this task runs, rather than ' +
         'letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is ' +
         'made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because ' +
-        'sibling agents may still be working in it. Do not pass a path you invented; if nobody ' +
+        'siblings may still use it. Do not pass a path you invented; if nobody ' +
         'assigned a worktree, omit this and let the profile decide.',
     )
     .optional(),
@@ -99,8 +100,7 @@ const args = z.object({
         "section to the brief with the predecessor's last report (its newest chat_send to you), " +
         'its branch and worktree, and its session id and transcript path, so the brief need only ' +
         'say what to do next. Refused for an agent someone else spawned. It does not retire the ' +
-        'predecessor: the spawn warns while it is unretired, and retiring it is yours to do once ' +
-        'this one registers.',
+        'predecessor; retire it yourself once this one registers.',
     )
     .optional(),
   experiment: z
@@ -170,12 +170,13 @@ const args = z.object({
         'brief-ready; it passes the seat spawn gate, which otherwise warns or refuses.',
     )
     .optional(),
+  host: z.string().describe('Machine alias or hostname to launch on; default: yours.').optional(),
 })
 
 type SpawnArgs = z.infer<typeof args>
 
 /** Blank optional strings leave the frame, exactly as `optionalString` dropped them. */
-function spawnFrame(input: SpawnArgs): ClientMessage {
+function spawnFrame(input: SpawnArgs): Extract<ClientMessage, { t: 'spawn' }> {
   const configDir = present(input.config_dir)
   // CC-100: the broker's own CLAUDE_CONFIG_DIR is an accident of which session autostarted it.
   const spawnerConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -186,6 +187,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
   const resumeSession = present(input.resume_session)
   const predecessor = present(input.predecessor)
   const task = present(input.task)
+  const host = present(input.host)
   return {
     t: 'spawn',
     name: input.name,
@@ -208,6 +210,9 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(task === undefined ? {} : { task }),
     ...(input.role === undefined ? {} : { workRole: input.role }),
     ...(input.override === undefined ? {} : { override: input.override }),
+    ...(host === undefined ? {} : { host }),
+    // CC-1059: this process can launch here, so a broker on another host hands it the launch.
+    ...launchHereFields(),
   }
 }
 
@@ -228,8 +233,9 @@ function describeSpawn(res: Extract<ServerMessage, { t: 'spawn_result' }>, forke
     : ''
   const resumed = res.transcript === undefined ? '' : `\n  resumed session: ${verdictLine(res.transcript)}`
   const base = res.base === undefined ? '' : `\n  branched from ${res.base.ref} at ${res.base.sha}`
+  const on = res.host === undefined ? '' : ` on ${res.host}`
   return (
-    `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
+    `Spawned "${res.name}" (${res.agentId})${on}. It is a peer now — reach it with chat_send, ` +
     `not by spawning again.${forked}${resumed}${base}${warnings}${denied}`
   )
 }
@@ -257,10 +263,7 @@ export const agentSpawn = defineTool({
   async run(input, ctx) {
     if (ctx.registeredName === null)
       return 'Register with chat_register first: a spawn is attributed to the session that asked for it.'
-    const res = (await ctx.broker.request(spawnFrame(input), 'spawn_result')) as Extract<
-      ServerMessage,
-      { t: 'spawn_result' }
-    >
+    const res = await requestSpawn(ctx.broker, spawnFrame(input))
     return describeSpawn(res, input.inherit !== undefined)
   },
 })

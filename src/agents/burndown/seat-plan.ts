@@ -721,6 +721,8 @@ function seedFromPlan(
   walk.notes.push(
     `seeded ${row.initiative} ${row.id} slices ${slices} from ${seeding.plan} (seat ${seat.seat})`,
   )
+  for (const warning of seeding.warnings)
+    walk.notes.push(`slice-lint ${row.initiative} ${row.id}: ${warning}`)
   return { seeds: seeding.claims }
 }
 

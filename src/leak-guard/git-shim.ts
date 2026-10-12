@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { SAFE_GIT_PROTOCOLS } from '../git.js'
 import { ALIAS_NAME } from './git-alias.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
@@ -84,6 +85,12 @@ split() {
   [ -z "$started" ] || { quote "$word"; words="$words $q"; }
 }`
 
+// A direct remote-ext call runs its argument as a shell command without the GIT_ALLOW_PROTOCOL check.
+const REFUSE_EXT_FN = `refuse_ext() {
+  printf '%s\\n' "git-shim: refused (ext-transport): git remote-ext runs its argument as a shell command, which GIT_ALLOW_PROTOCOL does not stop. ${DOCS}" >&2
+  exit 2
+}`
+
 // help.autocorrect would run a command the shim never checked; only values git documents as "do not run" pass.
 const AUTOCORRECT_FN = `autocorrect_off() {
   ac=$(eval "\\"\\$real\\"$globals config --get --type=bool-or-int help.autocorrect" 2>/dev/null)
@@ -155,6 +162,19 @@ const HIDE_GIT_CONFIG = `unset caller_git_config
 case \${GIT_CONFIG+set} in set) caller_git_config=$GIT_CONFIG; unset GIT_CONFIG ;; esac`
 const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CONFIG="$caller_git_config"`
 
+// pinGitProtocols in sh: git reads GIT_ALLOW_PROTOCOL over every protocol.*.allow scope, so `ext::` never runs (CC-1095).
+const PIN_PROTOCOLS = `safe_protocols=${shQuote(SAFE_GIT_PROTOCOLS.join(':'))}
+if [ -n "\${GIT_ALLOW_PROTOCOL+set}" ]; then
+  pinned= rest=$GIT_ALLOW_PROTOCOL:
+  while [ -n "$rest" ]; do
+    protocol=\${rest%%:*} rest=\${rest#*:}
+    case :$safe_protocols: in *":$protocol:"*) [ -z "$protocol" ] || pinned=\${pinned:+$pinned:}$protocol ;; esac
+  done
+else
+  pinned=$safe_protocols
+fi
+export GIT_ALLOW_PROTOCOL="$pinned"`
+
 // A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
 // GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
 const SHADOWED_FN = `shadowed() {
@@ -182,6 +202,7 @@ const RESOLVE_FN = `resolve() {
       case $1 in -c?* | --config-env=*) ;; *) fileglobals="$fileglobals $q" ;; esac
       shift; continue ;;
     push) break ;;
+    remote-ext) refuse_ext ;;
     esac
     case " $builtins " in *" $1 "*) return 1 ;; esac
     alias=$(eval "\\"\\$real\\"$globals config --get \\"alias.\\$1\\"" 2>/dev/null)
@@ -434,6 +455,7 @@ export const gitShimScript = (
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
 ${ENVIRONMENT_SCRUB}${HIDE_GIT_CONFIG}
+${PIN_PROTOCOLS}
 real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
@@ -445,6 +467,7 @@ spawn_xdg=${shQuote(spawnHome.XDG_CONFIG_HOME ?? '')}
 ${QUOTE_FN}
 ${REFUSE_FN}
 ${REFUSE_ALIAS_FN}
+${REFUSE_EXT_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
 ${TYPO_FN}

@@ -5,6 +5,7 @@ import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { defaultBranch } from './observe.js'
+import { exemptFromOverlap, overlapExemptFor } from './overlap-exempt.js'
 import { DESTRUCTIVE_OPS, type Contract } from './report.js'
 import { GIT_BIN } from './review-diff.js'
 
@@ -81,6 +82,8 @@ export interface CollisionFacts {
   held: readonly HeldContracts[]
   /** Owns on dispatched, undone claims other than the work's own: their PRs may not be open yet (CC-952). */
   heldOwns: readonly HeldOwns[]
+  /** Index and generated files that merge-up resolves at land, so overlap on them alone never refuses (charter 6.2, CC-1153). */
+  overlapExempt?: readonly string[]
 }
 
 export interface HeldContracts {
@@ -99,12 +102,14 @@ export const namesId = (text: string, id: string): boolean =>
   new RegExp(`(?<![A-Za-z0-9])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9])`, 'i').test(text)
 
 export function collision(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
+  // A file claim is an explicit hold, not a merge-up conflict, so `claimed` keeps the full owns.
+  const gated = { ...work, owns: exemptFromOverlap(work.owns, facts.overlapExempt ?? []) }
   return (
     landed(work, facts) ??
     openPr(work, facts) ??
     claimed(work, facts) ??
-    fileOverlap(work, facts) ??
-    liveOverlap(work, facts.repo, facts.heldOwns) ??
+    fileOverlap(gated, facts) ??
+    liveOverlap(gated, facts.repo, facts.heldOwns) ??
     contractOverlap(work, facts.held)
   )
 }
@@ -336,6 +341,7 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
   failed: ReaderFailed = () => {},
+  exemptFor: (repo: string) => string[] = overlapExemptFor,
 ): (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
   const perSubjects = new Map<string, string[] | undefined>()
@@ -347,7 +353,8 @@ export function collisionCheck(
     return read
   }
   return (repo, work, landedRepos = []) => {
-    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo))
+    const facts =
+      perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo), exemptFor(repo))
     perRepo.set(repo, facts)
     return collision(work, {
       ...facts,
@@ -369,6 +376,7 @@ function readFacts(
   exec: Runner,
   failed: ReaderFailed,
   subjects: string[] | undefined,
+  overlapExempt: string[],
 ): CollisionFacts {
   const prs = readOpenPrs(repo, exec)
   if (prs === undefined) failed('gh-pulls', repo)
@@ -392,6 +400,7 @@ function readFacts(
     ours: new Set(),
     held: [],
     heldOwns: [],
+    overlapExempt,
   }
 }
 

@@ -1375,6 +1375,22 @@ Every other command, and a push that passes,
 A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
 that is no alias up to two more for `help.autocorrect`.
 
+Before any of that, the shim pins `GIT_ALLOW_PROTOCOL` (CC-1095), so every git it runs, a `!`
+alias body included, gets the caller's list cut down to `file:git:http:https:ssh`. An unset
+variable gets that whole list, and an empty one stays empty, which git reads as no transport.
+git reads this list over `protocol.*.allow` in every config scope, so a repository with
+`protocol.ext.allow=always` and an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
+`transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
+GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
+The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
+`agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
+burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
+alias that expands to it, with exit 2 and `git-shim: refused (ext-transport)`, because that
+helper runs its argument as a shell command without the transport check. The list keeps `file`,
+so local clones, test fixtures and a `file` submodule still work; leaving it out would break
+local-path clones. A remote helper outside the list, such as `persistent-https::` or
+`gcrypt::`, is refused for agents.
+
 Not covered:
 
 - an absolute git path (`/usr/bin/git push`), or `env -i`, which drops the shim from PATH;
@@ -1395,4 +1411,5 @@ Not covered:
 - pushing without git.
 
 The shim is live for an agent only after a broker restart picks up the
-build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote.
+build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote;
+`src/__tests__/leak-git-shim-protocol.test.ts` runs the protocol pin and the `remote-ext` refusal.

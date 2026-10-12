@@ -24,7 +24,7 @@ import {
   selfGrantRootOf,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
+import { linkedWorktreeRoot, REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import { launchEnv, oscTitle } from '@titan-design/agent-surface'
 import { terminalAnchor } from '../server/anchor.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
@@ -924,30 +924,67 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     return fs.realpathSync(root)
   }
 
-  it('arms the worktree root when the profile carries the rule and cwd is a linked worktree', () => {
+  /** A hand-written common dir whose layout git accepts, made by nothing agent-chat ran (CC-1110). */
+  function forgedWorktree(): string {
+    const base = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'forged-'))
+    const fake = path.join(base, 'fake')
+    const admin = path.join(fake, 'worktrees', 'w')
+    const cwd = path.join(base, 'cwd')
+    for (const dir of [path.join(fake, 'objects'), path.join(fake, 'refs'), admin, cwd])
+      fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(fake, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(admin, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(admin, 'commondir'), '../..\n')
+    fs.writeFileSync(path.join(admin, 'gitdir'), `${path.join(cwd, '.git')}\n`)
+    fs.writeFileSync(path.join(cwd, '.git'), `gitdir: ${admin}\n`)
+    return cwd
+  }
+
+  it('arms the root when cwd is the worktree agent-chat recorded creating', () => {
     const cwd = linkedWorktree()
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBe(cwd)
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), cwd)).toBe(cwd)
+  })
+
+  it('does not arm a forged common dir at the spawn cwd', () => {
+    const cwd = forgedWorktree()
+
+    expect(linkedWorktreeRoot(cwd)).toBe(cwd)
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+  })
+
+  it('does not arm when cwd differs from the created worktree', () => {
+    const cwd = forgedWorktree()
+
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), linkedWorktree()),
+    ).toBeUndefined()
+  })
+
+  it('does not arm a linked worktree agent-chat has no record of creating', () => {
+    const cwd = linkedWorktree()
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
   })
 
   it('does not arm a profile without the rule', () => {
     const cwd = linkedWorktree()
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd })))).toBeUndefined()
+    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd })), cwd)).toBeUndefined()
   })
 
   it('does not arm a main checkout, whose .git is a directory', () => {
     const cwd = fs.realpathSync(tmpdir())
     fs.mkdirSync(path.join(cwd, '.git'))
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), cwd)).toBeUndefined()
   })
 
   it('does not read the rule from the brief', () => {
     const cwd = linkedWorktree()
     const plan = buildLaunchPlan(input({ cwd, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }))
 
-    expect(selfGrantRootOf(plan)).toBeUndefined()
+    expect(selfGrantRootOf(plan, cwd)).toBeUndefined()
   })
 
   it('puts the root on the hook command in the written settings file', () => {
@@ -957,9 +994,22 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     writeLaunchFiles(
       buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
       {},
+      cwd,
     )
 
     expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain(`--self-grant-skills '${cwd}'`)
+  })
+
+  it('leaves the hook command unarmed when no created worktree is passed', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    const cwd = linkedWorktree()
+
+    writeLaunchFiles(
+      buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
+      {},
+    )
+
+    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).not.toContain('--self-grant-skills')
   })
 })
 

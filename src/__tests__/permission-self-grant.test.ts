@@ -143,7 +143,19 @@ describe('a malformed self-grant record', () => {
     ['a reserved label in another case', { session: 'System' }],
     ['a session that is not a string', { session: { name: 'scout' } }],
     ['an empty session', { session: '' }],
-    ['an over-long session', { session: 's'.repeat(129) }],
+    ['an over-long session', { session: 's'.repeat(65) }],
+    ['a Cyrillic lookalike of human', { session: 'h\u0443man' }],
+    ['a human label behind a zero-width space', { session: '\u200bhuman' }],
+    ['a human label before a zero-width joiner', { session: 'human\u200d' }],
+    ['a human label behind a byte-order mark', { session: '\ufeffhuman' }],
+    ['a human label behind a space', { session: ' human' }],
+    ['a human label before a space', { session: 'human ' }],
+    ['a label holding a tab', { session: 'hu\tman' }],
+    ['a label ending in a newline', { session: 'human\n' }],
+    ['a fullwidth human label', { session: '\uff48\uff55\uff4d\uff41\uff4e' }],
+    ['a label ending in NUL', { session: 'human\u0000' }],
+    ['a label holding a dot', { session: 'hu.man' }],
+    ['a label opening with a dash', { session: '-scout' }],
     ['a grant other than repo-skills', { grant: 'anything-goes' }],
     ['a toolName that is not a string', { toolName: { name: 'Write' } }],
     ['a tool outside Write, Edit and MultiEdit', { toolName: 'Bash' }],
@@ -164,6 +176,14 @@ describe('a malformed self-grant record', () => {
     expect(hook.frames.at(-1)).toMatchObject({ t: 'permission_hook_result', ok: false })
     expect(loggedCount('bad_message')).toBe(before + 1)
     expect(rows(core)).toHaveLength(0)
+  })
+
+  it.each(['claude-f91c0f3a', 'scout', 'a'.repeat(64)])('accepts the session label %s', session => {
+    const { core, wire } = setup()
+
+    wire().send({ ...GRANT, session } as ClientMessage)
+
+    expect(rows(core).find(row => row.kind === 'approval_request')).toMatchObject({ actor: session })
   })
 
   it('can never write a resolution whose actor is human', () => {
