@@ -29,6 +29,12 @@ const RULES: Rule[] = [
     (s.ops ?? [])
       .filter(op => HUMAN_OPS.includes(op))
       .map(op => `slice ${s.n}: declares ${op}; split it into a kind:operator or kind:owner task`),
+  s =>
+    (s.ops ?? []).includes('publish')
+      ? [
+          `slice ${s.n}: declares publish; a publish is its own task (ops:publish, done_when "publish <pkg> at <version>", dep: on the build task), not a slice`,
+        ]
+      : [],
 ]
 
 /**
@@ -96,7 +102,21 @@ function dependencyCycle(slices: readonly PlannedSlice[]): string[] {
  */
 export function sliceWarnings(slices: readonly PlannedSlice[]): string[] {
   const byName = new Map(slices.map(s => [s.n, s]))
-  return [...slices.flatMap(s => unexplainedEdges(s, byName)), ...disjointChains(slices, byName)]
+  return [
+    ...slices.flatMap(s => unexplainedEdges(s, byName)),
+    ...disjointChains(slices, byName),
+    ...slices.flatMap(undeclaredPublish),
+  ]
+}
+
+/** CC-987: a publish mention with no `ops` field may be subject matter, so it warns rather than fails. */
+function undeclaredPublish(slice: PlannedSlice): string[] {
+  if (slice.ops !== undefined) return []
+  const hit = opsHits(slice.doneWhen ?? '').find(h => h.op === 'publish')
+  if (hit === undefined) return []
+  return [
+    `slice ${slice.n}: doneWhen mentions publish ('${hit.text}'); if this slice publishes, move it to its own task; else add "ops": []`,
+  ]
 }
 
 type ByName = ReadonlyMap<string, PlannedSlice>
