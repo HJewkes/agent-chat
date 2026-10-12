@@ -3,7 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ledgerLockHolder, withLedgerLock } from '../agents/burndown/ledger.js'
-import { burndownKicker, KICK_DEBOUNCE_MS, type KickPorts } from '../broker/burndown-kick.js'
+import { burndownKicker, KICK_DEBOUNCE_MS, kickCommand, type KickPorts } from '../broker/burndown-kick.js'
+import { cliEntry } from '../paths.js'
+import { jobEnv } from '../mirror/plist.js'
 import type { AppendInput } from '../broker/event-store.js'
 
 const BURNDOWN_AGENTS = new Set(['bd-1', 'bd-2', 'bd-3'])
@@ -144,5 +146,49 @@ describe('ledgerLockHolder', () => {
     fs.writeFileSync(`${file}.lock`, '999999\n')
 
     expect(ledgerLockHolder(file)).toBeUndefined()
+  })
+})
+
+describe('kicked tick env', () => {
+  const BUS = { XDG_RUNTIME_DIR: 'synthetic-runtime-dir', DBUS_SESSION_BUS_ADDRESS: 'synthetic-bus-address' }
+
+  it("a kicked tick carries the broker's user bus", () => {
+    const source = { HOME: 'synthetic-home', PATH: '/usr/bin', ...BUS }
+
+    const { env } = kickCommand(source)
+
+    expect(env).toMatchObject(BUS)
+  })
+
+  it.each([
+    ['unset', {}],
+    ['empty', { XDG_RUNTIME_DIR: '', DBUS_SESSION_BUS_ADDRESS: '' }],
+  ])('a broker with a %s user bus kicks without one', (_label, bus) => {
+    const { env } = kickCommand({ HOME: 'synthetic-home', PATH: '/usr/bin', ...bus })
+
+    expect(Object.keys(env)).not.toContain('XDG_RUNTIME_DIR')
+    expect(Object.keys(env)).not.toContain('DBUS_SESSION_BUS_ADDRESS')
+  })
+
+  it('the kick passes nothing else', () => {
+    const source = {
+      HOME: 'synthetic-home',
+      PATH: '/usr/bin',
+      AGENT_CHAT_NAME: 'a-name',
+      AGENT_CHAT_AGENT_ID: 'an-id',
+      SECRET_TOKEN: 'synthetic',
+      ...BUS,
+    }
+
+    const { env } = kickCommand(source)
+
+    expect(Object.keys(env).sort()).toEqual([...Object.keys(jobEnv(source)), ...Object.keys(BUS)].sort())
+  })
+
+  it("the kick runs the timer's command", () => {
+    const { command, args } = kickCommand({})
+
+    expect(command).toBe(process.execPath)
+    expect(args).toEqual([cliEntry(), 'burndown', 'tick', '--once'])
   })
 })
