@@ -518,7 +518,7 @@
           },
           "worktree": {
             "type": "string",
-            "description": "Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when something upstream decided where this task runs — a parent task, a wave plan — rather than letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because sibling agents may still be working in it. Do not pass a path you invented; if nobody assigned a worktree, omit this and let the profile decide."
+            "description": "Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when something upstream decided where this task runs, rather than letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because siblings may still use it. Do not pass a path you invented; if nobody assigned a worktree, omit this and let the profile decide."
           },
           "owns": {
             "type": "array",
@@ -544,7 +544,7 @@
           },
           "predecessor": {
             "type": "string",
-            "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
+            "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor; retire it yourself once this one registers."
           },
           "experiment": {
             "type": "object",
@@ -592,6 +592,10 @@
             "type": "string",
             "const": "fix-round",
             "description": "Set to \"fix-round\" when this spawn is a fix round on a task burndown has claimed or that is brief-ready; it passes the seat spawn gate, which otherwise warns or refuses."
+          },
+          "host": {
+            "type": "string",
+            "description": "Machine alias or hostname to launch on; default: yours."
           }
         },
         "required": [
