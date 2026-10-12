@@ -1,0 +1,19 @@
+id: tc-130.2
+seat: titan-coord
+initiative: claude-channels
+task: CC-760
+decision: Pick the round size for the daily owner review.
+now: none
+options:
+  - key: A
+    proposed: One round a day, at most 12 questions.
+  - key: B
+    proposed: One round a day with no question limit.
+trade_off: B makes a long round the owner may not finish.
+door: two-way
+recommended:
+  option: A
+  reason: Twelve questions fit one sitting.
+opened_at: 2026-10-10T00:00:00Z
+status: open
+visual: null

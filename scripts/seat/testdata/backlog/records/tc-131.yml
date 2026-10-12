@@ -1,0 +1,34 @@
+id: tc-131
+seat: titan-coord
+initiative: claude-channels
+task: CC-760
+decision: Approve the backlog plan so its slices can dispatch.
+now: Plan questions sit in queue files over the cap.
+options:
+  - key: A
+    proposed: Approve the plan and dispatch slices a to d in order.
+  - key: B
+    proposed: Hold the plan and keep the hand-kept morning-carry files.
+trade_off: B keeps the queues over the 5,000-byte cap and the carry files by hand.
+door: one-way
+why_owner: Charter section 10 text changes, which only the owner edits.
+recommended:
+  option: A
+  reason: It is the only option that keeps every queue under the cap.
+opened_at: 2026-10-10T00:00:00Z
+status: open
+visual:
+  captures:
+    - key: before
+      file: tc-131/img/before.png
+      label: Queue before the move
+    - key: after
+      file: tc-131/img/after.png
+      label: Queue after the move
+pr:
+  url: https://github.com/HJewkes/agent-chat/pull/1
+  summary: Adds the backlog script.
+  gate_reason: Changes the seat routing the decider must not widen itself.
+links:
+  - CC-760-plan.md
+blocks: []
