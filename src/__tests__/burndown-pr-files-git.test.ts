@@ -22,23 +22,40 @@ interface FakeGit {
   refs: string[]
   failFetchOf?: number
   failDiffOf?: number
+  /** The sha `refs/pull/<n>/head` still serves, when GitHub has not yet moved it to the API's head. */
+  servedHead?: Record<number, string>
 }
 
-/** A git that answers fetch, diff, for-each-ref and update-ref; each PR's diff names `pr<n>-<sha>.ts`. */
+/**
+ * A git that answers fetch, diff, for-each-ref and update-ref. A fetch points `refs/agent-chat/pr/<n>`
+ * at the served head; a diff of a commit never fetched fails, and otherwise names `pr<n>-<sha>.ts`.
+ */
 function fakeGit(git: FakeGit) {
-  const shaOf = new Map<number, string>()
+  const prOfSha = new Map<string, number>()
+  const fetched = new Set<string>()
+  const refs = new Map<string, string>()
   return (prs: readonly PrHead[]) => {
-    for (const pr of prs) shaOf.set(pr.number, pr.headSha)
+    for (const pr of prs) prOfSha.set(pr.headSha, pr.number)
     return (_bin: string, args: string[]): RunResult => {
       git.calls.push(args)
       const ok = (stdout = ''): RunResult => ({ status: 0, stdout })
+      const fail: RunResult = { status: 128, stdout: '' }
       if (args[0] === 'fetch') {
-        const fails = args.some(a => a.startsWith(`+refs/pull/${git.failFetchOf}/head`))
-        return fails ? { status: 128, stdout: '' } : ok()
+        if (args.some(a => a.startsWith(`+refs/pull/${git.failFetchOf}/head`))) return fail
+        for (const pr of prs) {
+          if (args.includes(`+refs/pull/${pr.number}/head:refs/agent-chat/pr/${pr.number}`)) {
+            const served = git.servedHead?.[pr.number] ?? pr.headSha
+            fetched.add(served)
+            refs.set(`refs/agent-chat/pr/${pr.number}`, served)
+          }
+        }
+        return ok()
       }
       if (args[0] === 'diff') {
-        const pr = Number(/pr\/(\d+)$/.exec(args[4] ?? '')?.[1])
-        return pr === git.failDiffOf ? { status: 128, stdout: '' } : ok(`3\t1\tpr${pr}-${shaOf.get(pr)}.ts\0`)
+        const head = (args[4] ?? '').split('...')[1] ?? ''
+        const sha = refs.get(head) ?? head
+        const pr = prOfSha.get(sha)
+        return !fetched.has(sha) || pr === git.failDiffOf ? fail : ok(`3\t1\tpr${pr}-${sha}.ts\0`)
       }
       if (args[0] === 'for-each-ref') return ok(git.refs.join('\n'))
       return ok()
@@ -49,9 +66,14 @@ function fakeGit(git: FakeGit) {
 const pr = (number: number, headSha = `sha${number}`): PrHead => ({ number, headSha, base: 'main' })
 const fetches = (git: FakeGit) => git.calls.filter(args => args[0] === 'fetch')
 
-function tick(git: FakeGit, prs: readonly PrHead[]) {
-  return prFiles('/repo', prs, { exec: fakeGit(git)(prs), cacheFile })
+function tick(git: FakeGit, prs: readonly PrHead[], exec = fakeGit(git)) {
+  return prFiles('/repo', prs, { exec: exec(prs), cacheFile })
 }
+
+const storedKeys = (): string[] =>
+  Object.keys(
+    (JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as { entries: Record<string, unknown> }).entries,
+  )
 
 describe('PR file lists from local git (CC-1157 c)', () => {
   it('fetches three uncached heads in one batch, and none the next tick at the same head shas', () => {
@@ -77,10 +99,11 @@ describe('PR file lists from local git (CC-1157 c)', () => {
 
   it('re-fetches only the PR whose head moved, and reads its new files', () => {
     const git: FakeGit = { calls: [], refs: [] }
-    tick(git, [pr(1), pr(2)])
+    const exec = fakeGit(git)
+    tick(git, [pr(1), pr(2)], exec)
     git.calls = []
 
-    const after = tick(git, [pr(1), pr(2, 'pushed')])
+    const after = tick(git, [pr(1), pr(2, 'pushed')], exec)
 
     expect(fetches(git)).toEqual([
       [
@@ -107,8 +130,40 @@ describe('PR file lists from local git (CC-1157 c)', () => {
     expect(git.calls.filter(args => args[0] === 'update-ref')).toEqual([
       ['update-ref', '-d', 'refs/agent-chat/pr/2'],
     ])
-    const stored = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as { entries: Record<string, unknown> }
-    expect(Object.keys(stored.entries)).toEqual(['1:sha1'])
+    expect(storedKeys()).toEqual(['1:sha1'])
+  })
+
+  it('caches nothing when the fetched head lags the head sha the API reported', () => {
+    const git: FakeGit = { calls: [], refs: [] }
+    const exec = fakeGit(git)
+    tick(git, [pr(1)], exec)
+    git.servedHead = { 1: 'sha1' }
+
+    const lagging = tick(git, [pr(1, 'pushed')], exec)
+
+    expect(lagging.names(1)).toBeUndefined()
+    expect(storedKeys()).toEqual([])
+  })
+
+  it('reads the pushed files once GitHub serves the new head', () => {
+    const git: FakeGit = { calls: [], refs: [], servedHead: { 1: 'sha1' } }
+    const exec = fakeGit(git)
+    tick(git, [pr(1, 'pushed')], exec)
+    delete git.servedHead
+
+    expect(tick(git, [pr(1, 'pushed')], exec).names(1)).toEqual(['pr1-pushed.ts'])
+  })
+
+  it('reads a retargeted PR again against its new base', () => {
+    const git: FakeGit = { calls: [], refs: [] }
+    const exec = fakeGit(git)
+    tick(git, [pr(1)], exec)
+    git.calls = []
+
+    tick(git, [{ ...pr(1), base: 'release' }], exec)
+
+    expect(fetches(git)).toHaveLength(1)
+    expect(git.calls.find(args => args[0] === 'diff')?.[4]).toMatch(/^origin\/release\.\.\./)
   })
 
   it('gives undefined for a PR whose diff failed, and still lists the others', () => {
@@ -132,10 +187,11 @@ describe('PR file lists from local git (CC-1157 c)', () => {
 
   it('reads a failed PR again on the next tick rather than caching the failure', () => {
     const git: FakeGit = { calls: [], refs: [], failDiffOf: 2 }
-    tick(git, [pr(2)])
+    const exec = fakeGit(git)
+    tick(git, [pr(2)], exec)
     delete git.failDiffOf
 
-    expect(tick(git, [pr(2)]).names(2)).toEqual(['pr2-sha2.ts'])
+    expect(tick(git, [pr(2)], exec).names(2)).toEqual(['pr2-sha2.ts'])
   })
 })
 

@@ -55,7 +55,10 @@ export function prFilesCacheFile(githubRepo: string, root: string = home()): str
   return path.join(root, 'pr-facts', `${githubRepo.replace('/', '__')}.files.json`)
 }
 
-/** Fetches only uncached heads in one batch, diffs each against `origin/<base>`, and prunes closed PRs. */
+/**
+ * Fetches only uncached heads in one batch, diffs each against `origin/<base>`, and prunes closed
+ * PRs. `prs` must be every open PR: a PR left out has its ref deleted and its cache entry dropped.
+ */
 export function prFiles(repo: string, prs: readonly PrHead[], deps: PrFilesDeps): PrFiles {
   const exec = deps.exec ?? run
   const cached = readCache(deps.cacheFile)
@@ -97,8 +100,13 @@ function fetch(repo: string, prs: readonly PrHead[], exec: Runner): boolean {
   return exec(GIT_BIN, ['fetch', '--quiet', '--no-tags', 'origin', ...heads, ...bases], repo).status === 0
 }
 
+/**
+ * Diffs the requested head sha, not the fetched ref: GitHub can move `refs/pull/<n>/head` seconds
+ * after the API reports the new sha, and an older fetched commit cached under the new key would
+ * hide the push's files until the next one. A head not yet fetched fails the diff, so nothing is cached.
+ */
 function diffEntry(repo: string, pr: PrHead, exec: Runner): CacheEntry | undefined {
-  const range = `origin/${pr.base}...${prRef(pr.number)}`
+  const range = `origin/${pr.base}...${pr.headSha}`
   const result = exec(GIT_BIN, ['diff', '--numstat', '-z', '-M', range, '--'], repo)
   if (result.status !== 0) return undefined
   const files = parseNumstat(result.stdout)
