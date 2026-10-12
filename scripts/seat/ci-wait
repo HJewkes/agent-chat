@@ -4,6 +4,8 @@
 # With required checks on the base branch (rulesets, else classic protection; default branch unless --base),
 # GREEN needs each required context green the way bin/premerge judges it and ignores other runs.
 # Without any, every check-run and status must pass and at least one check-run must exist.
+# A cancelled run whose workflow has a newer run on the base branch was superseded by its concurrency group
+# (CC-719, the CC-739 rule in merge): it counts as green and is named in a "(superseded: ...)" note.
 # exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 64 bad arguments or a commit GitHub does not have
 set -u
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin:$PATH
@@ -62,6 +64,7 @@ load_rules() {
   local b=$base
   [ -n "$b" ] || b=$("$GH" api "repos/$repo" --jq .default_branch 2>/dev/null) || return 1
   [[ $b =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+  branch=$b
   ghget "repos/$repo/rules/branches/$b"
   if upgrade_403; then code=200 body='[]'; fi
   [ "$code" = 200 ] || return 1
@@ -76,7 +79,24 @@ load_rules() {
   rules=$(jq -ce 'if type != "object" then error("shape") else {req: (.contexts // [] | unique), pins: {}} end' <<<"$body" 2>/dev/null)
 }
 
-# Prints "GREEN", "RED <list>" or "PENDING <names>" for the two --paginate --slurp payloads (arrays of pages)
+# superseded <suite ids>: 0 when each suite's workflow run was cancelled on $branch and that workflow has a newer
+# run there, 1 when any suite is not (or is missing from the one page of runs), 2 on a read failure.
+superseded() {
+  local wruns suite id wf created newer
+  wruns=$("$GH" api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null) || return 2
+  for suite in "$@"; do
+    read -r id wf created < <(jq -r --arg s "$suite" --arg b "$branch" '.workflow_runs[]?
+      | select((.check_suite_id|tostring) == $s and .conclusion == "cancelled" and .head_branch == $b)
+      | "\(.id) \(.workflow_id) \(.created_at)"' <<<"$wruns" 2>/dev/null | head -1)
+    [ -n "${wf:-}" ] || return 1
+    newer=$("$GH" api "repos/$repo/actions/workflows/$wf/runs?branch=$branch&per_page=1" 2>/dev/null) || return 2
+    jq -e --arg id "$id" --arg c "$created" '.workflow_runs[0] | (.id|tostring) != $id and .created_at > $c' \
+      <<<"$newer" >/dev/null 2>&1 || return 1
+  done
+}
+
+# Prints "GREEN", "RED <list>", "PENDING <names>" or "CANCELLED <list>\t<suite ids>\t<names>" (only cancelled
+# runs with a check suite are not green) for the two --paginate --slurp payloads (arrays of pages)
 # and the $rules object. Exits non-zero when the pages hold fewer items than total_count, so the caller retries.
 classify() {
   python3 -c '
@@ -96,7 +116,12 @@ def judge(name, run, state):
         return None
     if (run and run["status"] != "completed") or state == "pending" or (run is None and state is None):
         return ("pending", name)
-    return ("bad", "%s=%s" % (name, run["conclusion"] if run else state))
+    return cancelled(run) or ("bad", "%s=%s" % (name, run["conclusion"] if run else state))
+def cancelled(run):
+    suite = (run.get("check_suite") or {}).get("id") if run else None
+    if suite and run["status"] == "completed" and run["conclusion"] == "cancelled":
+        return ("cancelled", "%s=cancelled" % run["name"], str(suite), run["name"])
+    return None
 def required(runs, statuses, req, pins):
     out = []
     for c in req:
@@ -112,22 +137,29 @@ def all_runs(runs, statuses):
         if r["status"] != "completed":
             out.append(("pending", r["name"]))
         elif r["conclusion"] not in ("success", "skipped", "neutral"):
-            out.append(("bad", "%s=%s" % (r["name"], r["conclusion"])))
+            out.append(cancelled(r) or ("bad", "%s=%s" % (r["name"], r["conclusion"])))
     for s in statuses:
         if s["state"] == "pending":
             out.append(("pending", s["context"]))
         elif s["state"] != "success":
             out.append(("bad", "%s=%s" % (s["context"], s["state"])))
-    if not runs and not any(k == "bad" for k, _ in out):
+    if not runs and not any(t[0] == "bad" for t in out):
         out.append(("pending", "(no check-run yet)" if statuses else "(nothing reported yet)"))
     return out
 runs = collect(sys.argv[1], "check_runs")
 statuses = collect(sys.argv[2], "statuses")
 rules = json.loads(sys.argv[3])
 found = required(runs, statuses, rules["req"], rules["pins"]) if rules["req"] else all_runs(runs, statuses)
-pending = [t for k, t in found if k == "pending"]
-bad = [t for k, t in found if k == "bad"]
-print("PENDING " + ", ".join(pending) if pending else "RED " + "; ".join(bad) if bad else "GREEN")
+pending = [t[1] for t in found if t[0] == "pending"]
+bad = [t[1] for t in found if t[0] != "pending"]
+cancels = [t for t in found if t[0] == "cancelled"]
+if pending:
+    print("PENDING " + ", ".join(pending))
+elif cancels and len(cancels) == len(bad):
+    suites = list(dict.fromkeys(t[2] for t in cancels))
+    print("CANCELLED %s\t%s\t%s" % ("; ".join(bad), " ".join(suites), ", ".join(t[3] for t in cancels)))
+else:
+    print("RED " + "; ".join(bad) if bad else "GREEN")
 ' "$1" "$2" "$rules"
 }
 
@@ -140,13 +172,27 @@ poll() {
   state=$(classify "$runs" "$status" 2>/dev/null) || return 1
 }
 
-rules="" start=$SECONDS pending="(no successful poll)"
+# Exits GREEN with a note or RED for a CANCELLED $state; a failed actions read keeps polling.
+judge_cancelled() {
+  local list suites names
+  IFS=$'\t' read -r list suites names <<<"${state#CANCELLED }"
+  # shellcheck disable=SC2086 # suite ids are digits, one word each
+  superseded $suites
+  case $? in
+    0) echo "GREEN $repo $sha (superseded: $names)"; exit 0 ;;
+    1) echo "RED $repo $sha: $list"; exit 1 ;;
+  esac
+  pending="superseded check"
+}
+
+rules="" branch="" start=$SECONDS pending="(no successful poll)"
 while :; do
   [ "$resolved" = 1 ] || resolve
   if poll; then
     case $state in
       GREEN) echo "GREEN $repo $sha"; exit 0 ;;
       RED*) echo "RED $repo $sha: ${state#RED }"; exit 1 ;;
+      CANCELLED*) judge_cancelled ;;
       *) pending=${state#PENDING } ;;
     esac
   fi
