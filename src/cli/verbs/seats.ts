@@ -563,6 +563,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machine: readMachineStatus,
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
+    seatSamples: seat => readLedger(burndownLedgerPath()).seats?.[seat],
     waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
     contextOf: agent => readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd),
     selfContext: () => {

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
 import { clearLaunchTmpDirs } from '../launch-identity.js'
+import { pinGitProtocols } from '../git.js'
 
 /**
  * What a spawned agent's environment is allowed to carry.
@@ -195,6 +196,8 @@ function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void
  *
  * Node's compile cache defaults under TMPDIR, which on Linux is one /tmp shared by
  * every agent (CC-899), so an absent NODE_COMPILE_CACHE points under HOME instead.
+ *
+ * GIT_ALLOW_PROTOCOL is narrowed to the safe transports, so no agent git runs an `ext::` remote (CC-1095).
  */
 export function agentEnv(
   parent: NodeJS.ProcessEnv = process.env,
@@ -211,5 +214,6 @@ export function agentEnv(
   if (kept.NODE_COMPILE_CACHE === undefined || kept.NODE_COMPILE_CACHE === '') {
     kept.NODE_COMPILE_CACHE = path.join(kept.HOME || os.homedir(), '.cache', 'node-compile-cache')
   }
+  kept.GIT_ALLOW_PROTOCOL = pinGitProtocols(kept.GIT_ALLOW_PROTOCOL)
   return kept
 }

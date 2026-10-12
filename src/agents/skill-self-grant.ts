@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -13,7 +14,11 @@ import path from 'node:path'
  *
  * Skills are a prompt-injection persistence surface, which is why Claude Code guards them,
  * so every check here refuses on doubt: an unreadable root, a dangling symlink, a path that
- * resolves anywhere but the subtree.
+ * resolves anywhere but the subtree, a file with a second hard link.
+ *
+ * The check runs before Claude Code writes, so a process in the worktree could swap a
+ * checked directory for a symlink in between (TOCTOU). Only the spawn itself works in
+ * its worktree, so this guards against mistakes and planted links, not a racing writer.
  */
 
 export const REPO_SKILLS_RULE = 'Edit(./.claude/skills/**)'
@@ -30,7 +35,16 @@ export function selfGrant(root: string, toolName: string, toolInput: unknown): b
   const realRoot = linkedWorktreeRoot(root)
   if (realRoot === undefined) return false
   const resolved = resolveThroughLinks(filePath)
-  return resolved !== undefined && isUnderSkillDir(realRoot, resolved)
+  return resolved !== undefined && isUnderSkillDir(realRoot, resolved) && !isHardLinked(resolved)
+}
+
+/** A write through a second hard link edits a file that also lives outside the subtree. */
+function isHardLinked(resolved: string): boolean {
+  try {
+    return fs.lstatSync(resolved).nlink > 1
+  } catch {
+    return false
+  }
 }
 
 function fileArg(toolInput: unknown): string | undefined {
@@ -41,14 +55,39 @@ function fileArg(toolInput: unknown): string | undefined {
   return filePath
 }
 
-/** A main checkout has a `.git` directory; only a linked worktree's is a file. */
-function linkedWorktreeRoot(root: string): string | undefined {
+/**
+ * The real root when `root` is a linked worktree its repository has registered, else
+ * undefined. A main checkout has a `.git` directory. A submodule also has a `.git` file,
+ * but only a registered worktree's admin dir carries a `gitdir` file pointing back at it.
+ */
+export function linkedWorktreeRoot(root: string): string | undefined {
   try {
     const realRoot = fs.realpathSync(root)
-    return fs.lstatSync(path.join(realRoot, '.git')).isFile() ? realRoot : undefined
+    const dotGit = path.join(realRoot, '.git')
+    if (!fs.lstatSync(dotGit).isFile()) return undefined
+    const pointer = /^gitdir: (.+)$/m.exec(fs.readFileSync(dotGit, 'utf8'))?.[1]?.trim()
+    if (pointer === undefined) return undefined
+    const adminDir = path.resolve(realRoot, pointer)
+    const backPointer = fs.readFileSync(path.join(adminDir, 'gitdir'), 'utf8').trim()
+    if (fs.realpathSync(path.resolve(adminDir, backPointer)) !== dotGit) return undefined
+    return isRegisteredByGit(realRoot) ? realRoot : undefined
   } catch {
     return undefined
   }
+}
+
+/** Hand-written `.git` and admin files can mimic the pointers, so ask git where the admin dir sits. */
+function isRegisteredByGit(realRoot: string): boolean {
+  const [gitDir, commonDir] = execFileSync(
+    'git',
+    ['-C', realRoot, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+    .trim()
+    .split('\n')
+  if (gitDir === undefined || commonDir === undefined) return false
+  const realAdmin = fs.realpathSync(gitDir)
+  return realAdmin === path.join(fs.realpathSync(commonDir), 'worktrees', path.basename(realAdmin))
 }
 
 /**
