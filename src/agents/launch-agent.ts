@@ -24,6 +24,7 @@ import { readLaunchPlan } from './launch-files.js'
 import { holderOf } from './launch-guard.js'
 import { continueStarted } from './launch-plan.js'
 import { findTranscript } from './transcript.js'
+import { reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -106,14 +107,16 @@ export function runAgentVerb(agentId: string): void {
   const dir = planConfigDir(stored)
   const continued = continueStarted(stored, id => findTranscript(stored.cwd, id, dir).exists)
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
-  const plan = withShims(continued)
+  const shimmed = withShims(continued)
+  const name = shimmed.env.AGENT_CHAT_NAME
+  const options = launchOptions(agentId, name)
+  const plan = withScratchAddDir(shimmed, reviewerScratchDir({ ...options.baseEnv, ...shimmed.env }))
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  const name = plan.env.AGENT_CHAT_NAME
   process.on('exit', () => {
     reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
     if (name !== undefined) removeOwnTmpDir(name, agentId, process.pid, realExitTmpDeps(logEvent))
   })
-  runAgent(plan, launchOptions(agentId, name))
+  runAgent(plan, options)
 }
 
 function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {

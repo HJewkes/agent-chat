@@ -85,6 +85,7 @@ import {
 } from './reviewer-account-gate.js'
 import { activeWorkRoot, resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { withLinkedDirs } from './linked-dirs.js'
+import { crossingBriefPaths } from './brief-paths.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
@@ -1959,6 +1960,7 @@ export class Supervisor implements TeleportHost {
       ...(req.returnContract === undefined ? {} : { requested: req.returnContract }),
     })
     warnings.push(...contracted.warnings)
+    warnings.push(...crossingBriefPaths(req.brief, allocation.cwd, allocation.addDirs ?? []))
     const plan = buildLaunchPlan({
       agentId,
       sessionId,
