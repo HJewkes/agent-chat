@@ -180,7 +180,7 @@ describe('a reviewer spawn that is already safe', () => {
 })
 
 describe('the disposable worktree', () => {
-  it('counts against the worktree budget and is removed when the reviewer retires', async () => {
+  it('counts against the reviewer worktree pool and is removed when the reviewer retires', async () => {
     const repo = makeRepo()
     await spawnAgent('rv-owner-repo-4-1', repo, 'reviewer')
     expect(treesUnder(repo)).toBe(1)
@@ -191,14 +191,24 @@ describe('the disposable worktree', () => {
     expect(treesUnder(repo)).toBe(0)
   })
 
-  it('refuses a reviewer when the budget is spent', async () => {
+  it('admits a reviewer when the implementer budget is spent', async () => {
     const repo = makeRepo()
     fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME!, 'config.json'), '{"worktreeBudget": 1}')
     await spawnAgent('worker-a', repo, 'implementer')
 
-    const refused = await sup.spawn(spawnReq('rv-owner-repo-5-1', repo, 'reviewer'))
+    await spawnAgent('rv-owner-repo-5-1', repo, 'reviewer')
 
-    expect(refused.reason).toMatch(/budget/i)
+    expect(treesUnder(repo)).toBe(2)
+  })
+
+  it('refuses a reviewer when reviewerWorktreeBudget is spent', async () => {
+    const repo = makeRepo()
+    fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME!, 'config.json'), '{"reviewerWorktreeBudget": 1}')
+    await spawnAgent('rv-owner-repo-5-1', repo, 'reviewer')
+
+    const refused = await sup.spawn(spawnReq('rv-owner-repo-5-2', repo, 'reviewer'))
+
+    expect(refused.reason).toMatch(/reviewer worktree pool exhausted/)
     expect(git(['status', '--porcelain'], repo)).toBe('')
   })
 
