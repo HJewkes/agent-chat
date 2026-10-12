@@ -166,11 +166,15 @@ function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observati
 }
 
 const SETTLED_STALLS: ReadonlySet<Phase> = new Set(['spawning', 'reviewing'])
+const PR_STATE_PHASES: ReadonlySet<Phase> = new Set(['implementing', 'shepherding'])
 
-/** CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. */
+/**
+ * CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. CC-1074:
+ * and for a shepherding claim, so its merge finishes it when Shepherd's row is gone, ended or behind.
+ */
 function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
   const reads =
-    claim.phase === 'implementing' || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+    PR_STATE_PHASES.has(claim.phase) || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
   if (read === undefined || !reads) return obs
   return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
