@@ -241,7 +241,8 @@ describe('stop-short H', () => {
       ['broker-restart', 'config-edit'],
     ],
     ['an op the charter lists no stop for', ['ops:publish'], []],
-    ['an unknown op', ['ops:dotfiles-merge'], []],
+    ['a declared dotfiles merge', ['ops:dotfiles-merge'], ['dotfiles-merge']],
+    ['an unknown op', ['ops:teleport'], []],
     ['a subject-matter tag', ['ops:none=0123abcd'], []],
     ['no tags', [], []],
   ])('%s', (_scenario, tags, expected) => {

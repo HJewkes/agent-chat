@@ -7,6 +7,7 @@ import { collisionCheck } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER } from '../agents/burndown/ledger.js'
 import { loadPolicy } from '../agents/burndown/policy.js'
+import { scoredPlanFromDisk } from '../agents/burndown/score-render.js'
 import { loadSeats, planSeats, type SeatTickDeps } from '../agents/burndown/seat-tick.js'
 import { readInitiatives } from '../agents/burndown/source.js'
 
@@ -131,5 +132,19 @@ describe('a seat resolving its policy over the charter', () => {
     const { loaded } = loadSeats(['seat-a'], ledger, deps())
 
     expect(loaded[0]?.policy.defaults.stop_short_factor).toBe(resolved)
+  })
+
+  it("shows the seat's extra_hard_stops in plan --scored (TP-1974 b)", () => {
+    editSeatA('extra_hard_stops: [npm-publish]')
+
+    const plan = scoredPlanFromDisk({
+      seat: 'seat-a',
+      top: 5,
+      today: '2026-09-29',
+      autonomyRoot: root,
+      activeWorkRoot: root,
+    })
+
+    expect(plan.order.map(row => [row.id, row.stopShort])).toEqual([['AA-1', ['npm-publish']]])
   })
 })
