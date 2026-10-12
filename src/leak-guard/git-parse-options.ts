@@ -93,7 +93,7 @@ function readShort(text: string, spec: OptionSpec, out: string[]): number | unde
 /**
  * Where a command stops reading options. Most git commands read them anywhere and stop at `--`.
  * Legacy `git config`, with no subcommand, stops at its first positional word, so a later `--get`
- * is a value pattern, not a mode, and it reads options past a `--` that comes before that word.
+ * is a value pattern, not a mode, and it reads options past a leading `--`.
  */
 export interface OptionsEnd {
   atDashDash: boolean

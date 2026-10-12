@@ -694,9 +694,11 @@ or not literal (`--$O`), denies: spell each option in full. Where git stops read
 differs by form, and the guard copies it. Legacy `git config`, whose first word names no
 subcommand, stops at its first positional word: in `git config protocol.ext.allow always --get`
 the `--get` is a value pattern, and git writes the key, so the guard reads that call as a write. A
-`--` before that word does not stop it, as in `git config -- --rename-section foo protocol`.
-`git config <subcommand>` (only as the first word: `--file f set k v` is legacy), and the
-`git remote` and `git submodule` verbs, read options anywhere. The guard skips
+leading `--` does not stop it, as in `git config -- --rename-section foo protocol`; the guard reads
+past any `--` there, which only over-denies. `git config <subcommand>` (only as the first word:
+`--file f set k v` is legacy), and the `git remote` and `git submodule` verbs, read options anywhere
+up to `--`, so in `git config set -- "$K" --get` the `--get` is the value and the unread key denies.
+The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
 

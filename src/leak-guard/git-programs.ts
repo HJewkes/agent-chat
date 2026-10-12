@@ -260,7 +260,7 @@ const CONFIG_OPTIONS = optionSpec(
   get-urlmatch replace-all add unset unset-all rename-section remove-section l:list e:edit get-color
   get-colorbool z:[no-]null [no-]name-only [no-]show-origin [no-]show-scope [no-]show-names
   t:[no-]type= bool int bool-or-int bool-or-str path expiry-date [no-]default= [no-]comment=
-  [no-]fixed-value [no-]includes [no-]all [no-]regexp [no-]value= [no-]url=`,
+  [no-]fixed-value [no-]includes [no-]append [no-]all [no-]regexp [no-]value= [no-]url=`,
 )
 // `git config` modes, legacy options and subcommands alike, that read or remove rather than set a value.
 const CONFIG_NON_WRITES = new Set(
@@ -306,7 +306,9 @@ function configCall({ options, positionals }: ParsedArgs, named: string | undefi
 }
 
 // git 2.53 names a `git config` subcommand only as its first word; `--file f set k v` is legacy.
-const SUBCOMMAND_END: OptionsEnd = { atDashDash: false, atPositional: false }
+// The subcommand form stops at `--`. Legacy reads past a leading `--`; past one after an option git
+// stops, so reading on there only over-denies.
+const SUBCOMMAND_END: OptionsEnd = { atDashDash: true, atPositional: false }
 const LEGACY_END: OptionsEnd = { atDashDash: false, atPositional: true }
 
 /** A `git config` call's subcommand, if its first word names one, and its options and positionals. */

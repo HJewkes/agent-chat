@@ -286,3 +286,24 @@ describe('legacy git config stops reading options at its first positional (TP-23
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe('git config <subcommand> stops reading options at -- (TP-2371 fix round 5)', () => {
+  it.each([
+    'git config set -- "$K" --get',
+    'git config set -- "$K" --list',
+    'git config set -- url."$B".insteadOf --get',
+  ])('denies a write whose option-looking value follows --: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it('still denies a protocol write after --', () => {
+    expect(hookReason('git config set -- protocol.allow always')).toBe(REASONS.extProtocol)
+  })
+
+  it.each(['git config set --append user.name x', 'git config set --no-append user.name x'])(
+    'allows %s',
+    command => {
+      expect(hookReason(command)).toBeUndefined()
+    },
+  )
+})
