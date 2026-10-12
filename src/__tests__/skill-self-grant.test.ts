@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,10 +19,25 @@ function tmpDir(prefix: string): string {
   return fs.realpathSync(dir)
 }
 
-/** A linked worktree as git registers it: `.git` names an admin dir whose `gitdir` points back. */
+/** A linked worktree made by `git worktree add`, so git itself registers it. */
 function linkedWorktree(): string {
-  const root = tmpDir('agent-chat-skill-wt-')
-  const adminDir = path.join(tmpDir('agent-chat-skill-repo-'), '.git', 'worktrees', 'wt')
+  const repo = tmpDir('agent-chat-skill-repo-')
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+      stdio: 'ignore',
+    })
+  }
+  git('init', '-q')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  const root = path.join(tmpDir('agent-chat-skill-wt-'), 'wt')
+  git('worktree', 'add', '-q', root)
+  return fs.realpathSync(root)
+}
+
+/** Hand-written pointers that mimic a registered worktree without git knowing it. */
+function forgedWorktree(): string {
+  const root = tmpDir('agent-chat-skill-forged-')
+  const adminDir = path.join(tmpDir('agent-chat-skill-fake-'), '.git', 'worktrees', 'wt')
   fs.mkdirSync(adminDir, { recursive: true })
   fs.writeFileSync(path.join(adminDir, 'gitdir'), `${path.join(root, '.git')}\n`)
   fs.writeFileSync(path.join(root, '.git'), `gitdir: ${adminDir}\n`)
@@ -75,6 +91,13 @@ describe('self-granting a repo skill write in the own worktree', () => {
     fs.symlinkSync(root, alias)
 
     expect(selfGrant(alias, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(true)
+  })
+
+  it('refuses a tree whose hand-written pointers git does not know', () => {
+    const root = forgedWorktree()
+    const skillFile = path.join(root, '.claude', 'skills', 'probe', 'SKILL.md')
+
+    expect(selfGrant(root, 'Write', write(skillFile))).toBe(false)
   })
 
   it('exports the owner-approved rule string as the opt-in switch', () => {

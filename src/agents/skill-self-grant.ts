@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -68,10 +69,25 @@ export function linkedWorktreeRoot(root: string): string | undefined {
     if (pointer === undefined) return undefined
     const adminDir = path.resolve(realRoot, pointer)
     const backPointer = fs.readFileSync(path.join(adminDir, 'gitdir'), 'utf8').trim()
-    return fs.realpathSync(path.resolve(adminDir, backPointer)) === dotGit ? realRoot : undefined
+    if (fs.realpathSync(path.resolve(adminDir, backPointer)) !== dotGit) return undefined
+    return isRegisteredByGit(realRoot) ? realRoot : undefined
   } catch {
     return undefined
   }
+}
+
+/** Hand-written `.git` and admin files can mimic the pointers, so ask git where the admin dir sits. */
+function isRegisteredByGit(realRoot: string): boolean {
+  const [gitDir, commonDir] = execFileSync(
+    'git',
+    ['-C', realRoot, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+    .trim()
+    .split('\n')
+  if (gitDir === undefined || commonDir === undefined) return false
+  const realAdmin = fs.realpathSync(gitDir)
+  return realAdmin === path.join(fs.realpathSync(commonDir), 'worktrees', path.basename(realAdmin))
 }
 
 /**

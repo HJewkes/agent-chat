@@ -909,14 +909,19 @@ describe('the PermissionRequest hook (CC-144)', () => {
 describe('arming the repo skill self-grant (CC-694)', () => {
   const optedIn = profile({ allowedTools: ['Read', 'Write', 'Edit', REPO_SKILLS_RULE] })
 
-  /** A linked worktree as git registers it: `.git` names an admin dir whose `gitdir` points back. */
+  /** A linked worktree made by `git worktree add`, so git itself registers it. */
   function linkedWorktree(): string {
-    const root = fs.realpathSync(tmpdir())
-    const adminDir = path.join(fs.realpathSync(tmpdir()), '.git', 'worktrees', 'wt')
-    fs.mkdirSync(adminDir, { recursive: true })
-    fs.writeFileSync(path.join(adminDir, 'gitdir'), `${path.join(root, '.git')}\n`)
-    fs.writeFileSync(path.join(root, '.git'), `gitdir: ${adminDir}\n`)
-    return root
+    const repo = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'repo-'))
+    const git = (...args: string[]): void => {
+      spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        stdio: 'ignore',
+      })
+    }
+    git('init', '-q')
+    git('commit', '-q', '--allow-empty', '-m', 'init')
+    const root = path.join(repo, 'wt')
+    git('worktree', 'add', '-q', root)
+    return fs.realpathSync(root)
   }
 
   it('arms the worktree root when the profile carries the rule and cwd is a linked worktree', () => {

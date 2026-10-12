@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { reapBroker } from './broker-harness.js'
@@ -127,18 +127,19 @@ describe('the permission-hook verb', () => {
 describe('the permission-hook verb with --self-grant-skills', () => {
   const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
 
-  /** A linked worktree as git registers it: `.git` names an admin dir whose `gitdir` points back. */
+  /** A linked worktree made by `git worktree add`, so git itself registers it. */
   function linkedWorktree(): string {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(TEST_HOME, 'wt-')))
-    const adminDir = path.join(
-      fs.realpathSync(fs.mkdtempSync(path.join(TEST_HOME, 'repo-'))),
-      'worktrees',
-      'wt',
-    )
-    fs.mkdirSync(adminDir, { recursive: true })
-    fs.writeFileSync(path.join(adminDir, 'gitdir'), `${path.join(root, '.git')}\n`)
-    fs.writeFileSync(path.join(root, '.git'), `gitdir: ${adminDir}\n`)
-    return root
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(TEST_HOME, 'repo-')))
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        stdio: 'ignore',
+      })
+    }
+    git('init', '-q')
+    git('commit', '-q', '--allow-empty', '-m', 'init')
+    const root = path.join(repo, 'wt')
+    git('worktree', 'add', '-q', root)
+    return fs.realpathSync(root)
   }
 
   const writeInput = (filePath: string, marker: string) => ({
