@@ -1288,6 +1288,11 @@ export type ServerMessage =
    * answered in the terminal is simply ignored there.
    */
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  /**
+   * CC-1059: retire of an agent on another host. A push to that agent's own connection, since the
+   * broker cannot signal a pid there; its MCP process ends its own Claude Code when `agentId` is its own.
+   */
+  | { t: 'end_self'; agentId: string; reason: string }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
@@ -1440,6 +1445,8 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-1059: the machine the spawn launched on; absent on rows written before it was recorded. */
+  host?: string
   /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
   provisionalName?: true
   /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
@@ -1503,7 +1510,7 @@ export interface RetireResult {
   reason?: string
 }
 
-export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>
+export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict' | 'end_self'>
 
 /**
  * Frames a stream of newline-delimited JSON. Returned callback is fed raw chunks.
