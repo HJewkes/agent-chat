@@ -445,6 +445,39 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     expect(decide('version: 1\n', `gh alias set 'pr mine' 'pr list --author @me'`)).toBe('')
   })
 
+  const EXOTIC = [
+    ['NBSP', ' ', '\\u00a0'],
+    ['VT', '\u000b', '\\v'],
+    ['FF', '\u000c', '\\f'],
+    ['U+2003', ' ', '\\u2003'],
+    ['U+3000', '　', '\\u3000'],
+    ['zero-width space', '​', '\\u200b'],
+  ]
+
+  it.each(EXOTIC)('denies a gh command under a stored alias name holding %s', (_, __, yamlEscape) => {
+    const config = `aliases:\n    "pr${yamlEscape}x": '!git push --no-verify'\n`
+    expect(decide(config, 'gh pr view 1')).toBe(deny(REASONS.ghAliasUnreadable))
+  })
+
+  it.each(EXOTIC)('denies setting an alias name holding %s', (_, char) => {
+    expect(decide('version: 1\n', `gh alias set 'pr${char}x' 'pr list'`)).toBe(
+      deny(REASONS.ghAliasUnreadable),
+    )
+  })
+
+  it('denies a newline inside a quoted alias name, stored and at set time', () => {
+    const config = `aliases:\n    "'pr\\nx'": '!git push --no-verify'\n`
+    expect(decide(config, 'gh pr view 1')).toBe(deny(REASONS.ghAliasUnreadable))
+    expect(decide('version: 1\n', `gh alias set "'pr\nx'" 'pr list'`)).toBe(deny(REASONS.ghAliasUnreadable))
+  })
+
+  it.each(['gh pr view 1', 'gh co 12', 'gh api user', `gh alias set mine 'pr list --author @me'`])(
+    'allows %s on the default config',
+    command => {
+      expect(decide(`version: 1\naliases:\n    co: pr checkout\n`, command)).toBe('')
+    },
+  )
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })

@@ -765,7 +765,9 @@ A key whose shlex words hold whitespace (`'pr x'` quoted, or `pr\ x` escaped) is
 a space in it, and gh 2.102 runs it in place of real commands such as `gh pr view 1`,
 `gh issue list` and `gh api user`. The guard does not model that takeover. Such a key makes
 `config.yml` read as unreadable, so every gh command with a command word denies until the key is
-removed, and `gh alias set` with such a name denies.
+removed, and `gh alias set` with such a name denies. A name holding any whitespace other than an ASCII
+space or tab (NBSP, VT, FF, U+2003, U+3000), a control character or a format character such as a
+zero-width space counts the same, since gh's shlex may split it differently than the guard.
 
 gh finds the command word past its flags the way cobra's `stripFlags` does, and the guard does
 the same: `--` ends the search, a `--flag` or `-f` without `=` swallows the next word unless it

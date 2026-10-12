@@ -190,12 +190,17 @@ const toAlias = (value: string): GhAlias =>
 const scalarKey = (pair: Pair): string | undefined =>
   isScalar(pair.key) && pair.key.value !== null ? String(pair.key.value) : undefined
 
+// Any whitespace, separator, control or format character but an ASCII space or tab.
+const EXOTIC_CHAR = /(?![ \t])[\s\p{Z}\p{Cc}\p{Cf}]/u
+
 /**
- * A name whose shlex words hold whitespace (`'pr x'`, `pr\ x`): gh 2.102 then runs the alias in
- * place of commands such as `gh pr view` and `gh api`, a takeover the guard does not model.
+ * A name the guard does not read as gh does. A shlex word with whitespace in it (`'pr x'`,
+ * `pr\ x`) makes gh 2.102 run the alias in place of commands such as `gh pr view` and `gh api`.
+ * Whitespace other than an ASCII space or tab, or a control or format character, may split
+ * differently under gh's shlex than under the guard's, so it counts too.
  */
 export const spacedAliasName = (name: string): boolean =>
-  splitAlias(name)?.some(word => /\s/.test(word)) === true
+  EXOTIC_CHAR.test(name) || splitAlias(name)?.some(word => /[ \t]/.test(word)) === true
 
 /** gh keeps the first of two equal keys, so the guard reads the first too. */
 function aliasesIn(map: YAMLMap): GhAliases {
