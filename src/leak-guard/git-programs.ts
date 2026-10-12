@@ -314,7 +314,7 @@ function renameEnabler(names: readonly (string | undefined)[]): ExtEnabler | und
 }
 
 function configEnabler(args: SubArgs): ExtEnabler | undefined {
-  const parsed = parseOptions(args, CONFIG_OPTIONS)
+  const parsed = parseOptions(args, CONFIG_OPTIONS, false)
   if (parsed === undefined) return 'option'
   const { mode, positionals } = configCall(parsed)
   if (mode === 'rename') return renameEnabler(positionals)

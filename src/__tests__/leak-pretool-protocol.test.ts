@@ -216,3 +216,37 @@ describe("abbreviated options, read as git's parse-options reads them (TP-2371 f
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe('options after -- and value-taking top-level options (TP-2371 fix round 3)', () => {
+  it.each([
+    'git config -- --rename-section foo protocol',
+    'git config -- --type bool protocol.ext.allow true',
+    'git config --global -- -f x protocol.allow always',
+    'git --attr-source HEAD config --rename-section foo protocol',
+    'git --shallow-file x config protocol.ext.allow always',
+    'git --attr-source=HEAD config protocol.ext.allow always',
+  ])('denies a protocol write: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'git config -- -f x remote.x.url "$U"',
+    'git --attr-source HEAD remote set-url x "$U"',
+    'git --shallow-file x remote add y "$U"',
+  ])('denies a hidden URL write: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it('denies a protocol config on git behind --attr-source', () => {
+    expect(hookReason('git --attr-source HEAD -c protocol.ext.allow=always fetch origin')).toBeDefined()
+  })
+
+  it.each([
+    'git config -- user.name x',
+    'git --attr-source HEAD config --get protocol.ext.allow',
+    'git --attr-source HEAD remote set-url origin https://github.com/o/r',
+    'git submodule set-url -- s https://github.com/o/s',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})

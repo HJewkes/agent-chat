@@ -90,8 +90,11 @@ function readShort(text: string, spec: OptionSpec, out: string[]): number | unde
   return 1
 }
 
-/** A call's options and positionals, or undefined when one option is unknown, ambiguous or unreadable. */
-export function parseOptions(args: SubArgs, spec: OptionSpec): ParsedArgs | undefined {
+/**
+ * A call's options and positionals, or undefined when one option is unknown, ambiguous or unreadable.
+ * `--` ends the options unless `dashDashEnds` is false: legacy `git config` reads options after it.
+ */
+export function parseOptions(args: SubArgs, spec: OptionSpec, dashDashEnds = true): ParsedArgs | undefined {
   const parsed: ParsedArgs = { options: [], positionals: [] }
   let ended = false
   for (let i = 0; i < args.resolved.length;) {
@@ -103,7 +106,7 @@ export function parseOptions(args: SubArgs, spec: OptionSpec): ParsedArgs | unde
     }
     const text = word ?? args.written[i] ?? ''
     if (text === '--') {
-      ended = true
+      ended = dashDashEnds
       i++
       continue
     }

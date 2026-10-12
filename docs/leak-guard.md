@@ -690,7 +690,10 @@ git's parse-options accepts any unique prefix of a long option (`--ren` for `--r
 (`-zf file`). The guard reads the options of `git config`, `git remote` and `git submodule` the
 same way, from each command's `-h` list on git 2.53, so it knows which word is the key, URL or
 verb. An option it cannot match to exactly one it knows, because it is ambiguous (`--re`), unknown
-or not literal (`--$O`), denies: spell each option in full.
+or not literal (`--$O`), denies: spell each option in full. Legacy `git config`, with no
+subcommand, reads options after `--` too, so the guard does not stop at it there. The guard skips
+git's own value-taking options before the subcommand from one list, which includes
+`--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
 
 ### An environment variable git runs as a program (TP-636)
 

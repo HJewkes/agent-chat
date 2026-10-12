@@ -8,6 +8,7 @@ import {
   gitCall,
   gitGlobals,
   gitOptions,
+  GIT_VALUE_OPTS,
   quoted,
   UNSURE_CALL,
   shellAlias,
@@ -198,7 +199,6 @@ const XARGS_LONG_FLAG = new Set([
   '--version',
   '--help',
 ])
-const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 // `NAME=`, `NAME+=`, `NAME[idx]=` and `NAME[idx]+=` all assign: the shell reads the next word as the command.
 // The lexer marks the `[` of a subscript as live, since it is a glob character elsewhere.

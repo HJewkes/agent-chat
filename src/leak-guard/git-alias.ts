@@ -108,15 +108,21 @@ export interface GitCall {
   at: number
 }
 
-const VALUE_OPTS = new Set([
+/**
+ * git's own options before the subcommand that take the next word as their value, other than `-c`
+ * and `--config-env`, from git.c on git 2.53 (`--super-prefix` for older git). A missing one makes
+ * its value read as the subcommand (TP-2371).
+ */
+export const GIT_VALUE_OPTS: ReadonlySet<string> = new Set([
   '-C',
-  '-c',
   '--git-dir',
   '--work-tree',
   '--namespace',
   '--super-prefix',
-  '--config-env',
+  '--attr-source',
+  '--shallow-file',
 ])
+const VALUE_OPTS = new Set([...GIT_VALUE_OPTS, '-c', '--config-env'])
 /** git's rule for a config variable name, so any other word cannot be an alias. */
 export const ALIAS_NAME = /^[A-Za-z][A-Za-z0-9-]*$/
 const DIR_ENV: Record<string, string> = { '--git-dir': 'GIT_DIR', '--work-tree': 'GIT_WORK_TREE' }
