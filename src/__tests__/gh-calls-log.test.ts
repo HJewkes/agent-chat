@@ -62,7 +62,8 @@ describe('classify403', () => {
 
   it('trusts the kind a writer read from stderr over the headers', () => {
     const limit = limitFromStderr('HTTP 403: You have exceeded a secondary rate limit.')
-    expect(classify403(callLine(rest({ status: 403, limit })))).toBe('secondary')
+    const line = callLine(rest({ status: 403, remaining: 0, ...(limit && { limit }) }))
+    expect(classify403(line)).toBe('secondary')
   })
 
   it('ignores a call that was not refused', () => {
