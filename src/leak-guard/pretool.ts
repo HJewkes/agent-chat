@@ -1413,7 +1413,11 @@ function checkSimple(
       : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
-    return checkGh(ghWriteArgs(marked), unwrapped.assigns, cmd, ctx, at, defers)
+    const ghArgs = ghWriteArgs(marked)
+    return (
+      checkGhAliases(ghArgs, unwrapped.assigns, cmd, ctx, at, depth) ??
+      checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
+    )
   }
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined

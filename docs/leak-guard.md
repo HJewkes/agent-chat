@@ -735,7 +735,7 @@ variable.
 A gh alias runs what it expands to: a shell alias (`gh alias set --shell`, or an expansion that
 starts with `!`) through `sh -c <body> -- <args>`, which appends nothing, and a plain alias as
 another gh command, with each `$N` replaced in the text and any argument left over appended. The
-guard checks a body twice:
+guard checks a body twice, for `gh` and for `agent-chat gh-write -- <gh args>` alike:
 
 - when `gh alias set` stores it, as a command line of its own with `$1` and the directory
   unresolved, so `gh alias set --shell x 'GIT_PAGER="$1" git log'` is denied by the program-env

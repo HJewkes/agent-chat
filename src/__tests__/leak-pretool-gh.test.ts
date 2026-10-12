@@ -493,6 +493,31 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     },
   )
 
+  it('denies setting an alias through gh-write whose body skips the pre-push scan', () => {
+    const command = `agent-chat gh-write -- alias set 'repo pv' '!git push --no-verify'`
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.noVerify))
+  })
+
+  it.each(['agent-chat gh-write -- repo pv', 'agent-chat gh-write -- -R o/r repo pv 1'])(
+    'denies running a stored group alias through gh-write: %s',
+    command => {
+      const config = `aliases:\n    repo pv: '!git push --no-verify'\n`
+      expect(decide(config, command)).toBe(deny(REASONS.noVerify))
+    },
+  )
+
+  it('denies a gh-write group alias that may be read from another config', () => {
+    const command = 'GH_CONFIG_DIR=/tmp/evil agent-chat gh-write -- repo pv'
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasEnv))
+  })
+
+  it.each(['agent-chat gh-write -- pr checkout 1', 'agent-chat gh-write -- repo view o/r'])(
+    'allows %s on the default config',
+    command => {
+      expect(decide(`aliases:\n    co: pr checkout\n`, command)).toBe('')
+    },
+  )
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })
