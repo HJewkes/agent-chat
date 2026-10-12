@@ -1,3 +1,4 @@
+import { selfGrant } from '../../agents/skill-self-grant.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import type { ClientMessage, PermissionBehavior, ServerMessage } from '../../protocol.js'
 
@@ -103,11 +104,19 @@ async function withdraw(client: BrokerClient, msgId: string): Promise<void> {
     .catch(() => undefined)
 }
 
-export async function permissionHook(options: { deadline: string }): Promise<void> {
+export async function permissionHook(options: { deadline: string; selfGrantSkills?: string }): Promise<void> {
   const deadlineMs = Number.parseInt(options.deadline, 10) * 1000
   if (!Number.isInteger(deadlineMs) || deadlineMs <= 0) throw new Error(`bad --deadline: ${options.deadline}`)
-  const frame = hookFrame(parseHookInput(await readStdin()), process.env)
-  const outcome = await askHuman(frame, deadlineMs)
+  const input = parseHookInput(await readStdin())
+  const root = options.selfGrantSkills
+  if (root !== undefined && selfGrant(root, input.toolName, input.toolInput)) {
+    console.error(
+      `agent-chat permission-hook: self-granted ${input.toolName} in ${root}/.claude/skills (CC-694)`,
+    )
+    process.stdout.write(hookOutput('allow'), () => process.exit(0))
+    return
+  }
+  const outcome = await askHuman(hookFrame(input, process.env), deadlineMs)
   if ('behavior' in outcome) {
     // Exit from the write callback: stdout to a pipe is asynchronous on macOS.
     process.stdout.write(hookOutput(outcome.behavior), () => process.exit(0))
