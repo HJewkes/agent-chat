@@ -28,6 +28,9 @@ case "$*" in
   "api repos/o/r --jq .default_branch") cat "$FIX/default" 2>/dev/null || echo main; exit 0 ;;
   "api -i repos/o/r/rules/branches/"*) answer rules 200 '[]'; exit 0 ;;
   "api -i repos/o/r/branches/"*/protection/required_status_checks) answer prot 404 '{"message":"Not Found"}'; exit 0 ;;
+  # Actions reads (CC-719): $FIX/wruns.json for runs on the sha, $FIX/wf.<id>.json for a workflow's newest run.
+  "api repos/o/r/actions/runs?head_sha="*) [ "$(cat "$FIX/wruns.json" 2>/dev/null || echo FAIL)" != FAIL ] || exit 1; cat "$FIX/wruns.json"; exit 0 ;;
+  "api repos/o/r/actions/workflows/"*) w=${2#repos/o/r/actions/workflows/}; cat "$FIX/wf.${w%%/*}.json" 2>/dev/null || exit 1; exit 0 ;;
 esac
 kind=runs; case "$*" in */status\?*) kind=status ;; esac
 n=$(( $(cat "$FIX/$kind.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/$kind.count"
@@ -58,6 +61,8 @@ stat_at() { pages_at status "$1" statuses 100 - "$2"; }
 many_runs() { local i x=(); for ((i=1; i<=$1; i++)); do x+=("$(cr "$2$i" "$3" "${4:-}")"); done; local IFS=,; echo "${x[*]}"; }
 many_st() { local i x=(); for ((i=1; i<=$1; i++)); do x+=("$(st "$2$i" "$3")"); done; local IFS=,; echo "${x[*]}"; }
 cr() { local c=null; [ -n "${3:-}" ] && c="\"$3\""; printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$c"; }
+# rs <name> <status> <conclusion> <check suite id> [app id]: a check-run in a check suite.
+rs() { printf '{"name":"%s","status":"%s","conclusion":"%s","check_suite":{"id":%s},"app":{"id":%s},"started_at":"2026-10-04T16:10:52Z"}' "$1" "$2" "$3" "$4" "${5:-15368}"; }
 cj() { local x=("$@"); local IFS=,; echo "${x[*]}"; }
 st() { printf '{"context":"%s","state":"%s"}' "$1" "$2"; }
 # ra <name> <status> <conclusion or ""> <app id> [started_at]: a check-run with its app, as GitHub reports it.
@@ -84,8 +89,14 @@ go --interval 0; check "red naming two failing jobs" 1 '^RED o/r abc1234567890ab
 fresh; run 1 "$(cr ok completed success)"; stat_at 1 "$(cj "$(st ci/legacy failure)" "$(st ci/fine success)")"
 go --interval 0; check "red from a commit status" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: ci/legacy=failure$'
 
+fresh; run 1 "$(rs a completed cancelled 900)" ; stat_at 1 ""
+echo '{"workflow_runs":[{"id":52,"workflow_id":78,"check_suite_id":900,"head_branch":"main","conclusion":"cancelled","created_at":"2026-10-04T16:10:52Z"}]}' > "$FIX/wruns.json"
+echo '{"workflow_runs":[{"id":52,"created_at":"2026-10-04T16:10:52Z"}]}' > "$FIX/wf.78.json"
+go --interval 0; check "cancelled with no newer run counts as red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: a=cancelled$'
+
 fresh; run 1 "$(cr a completed cancelled)" ; stat_at 1 ""
-go --interval 0; check "cancelled counts as red" 1 'a=cancelled'
+go --interval 0; check "cancelled with no check suite counts as red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: a=cancelled$'
+grep -q actions/ "$FIX/calls" && { echo "FAIL read actions for a run it cannot map"; failn=$((failn+1)); } || { echo "PASS no actions read without a check suite"; pass=$((pass+1)); }
 
 fresh; run 1 "$(cj "$(cr slow in_progress)" "$(cr bad completed failure)")" "$(cj "$(cr slow completed success)" "$(cr bad completed failure)")"; stat_at 1 ""
 go --interval 0; check "red waits for unfinished jobs, then reports all" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: bad=failure$'
@@ -196,6 +207,49 @@ go --interval 0; check "action_required and stale are red" 1 '^RED o/r abc123456
 fresh; run 1 "$(cr ok completed success)"; stat_at 1 "$(st ci/legacy error)"
 go --interval 0; check "status error is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: ci/legacy=error$'
 
+# CC-719: Deploy Storybook (suite 900, workflow 78, run 52) cancelled by a newer push beside a green CI (suite 901).
+ci_ok="$(cj "$(rs check completed success 901)" "$(rs 'build (22)' completed success 901)" "$(rs audit completed success 901)")"
+storybook="$(cj "$(rs build completed cancelled 900)" "$(rs deploy completed cancelled 900)")"
+# sb_runs [head branch]: the workflow runs on the sha. sb_newest <id> <created_at>: workflow 78's newest run.
+sb_runs() { echo "{\"workflow_runs\":[{\"id\":52,\"name\":\"Deploy Storybook\",\"workflow_id\":78,\"check_suite_id\":900,\"head_branch\":\"${1:-main}\",\"conclusion\":\"cancelled\",\"created_at\":\"2026-10-04T16:10:52Z\"},{\"id\":53,\"name\":\"CI\",\"workflow_id\":77,\"check_suite_id\":901,\"head_branch\":\"${1:-main}\",\"conclusion\":\"success\",\"created_at\":\"2026-10-04T16:10:52Z\"}]}" > "$FIX/wruns.json"; }
+sb_newest() { echo "{\"workflow_runs\":[{\"id\":$1,\"created_at\":\"$2\"}]}" > "$FIX/wf.78.json"; }
+SB_RED='^RED o/r abc1234567890abcdef1234567890abcdef12345: build=cancelled; deploy=cancelled$'
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 60 2026-10-04T16:20:00Z
+go --interval 0; check "Deploy Storybook superseded beside green CI is green with a note" 0 '^GREEN o/r abc1234567890abcdef1234567890abcdef12345 \(superseded: build, deploy\)$'
+grep -q 'actions/workflows/78/runs?branch=main&per_page=1' "$FIX/calls" && { echo "PASS newest run read from the base branch"; pass=$((pass+1)); } || { echo "FAIL workflow read"; failn=$((failn+1)); }
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 52 2026-10-04T16:10:52Z
+go --interval 0; check "cancelled run that is still the newest is red" 1 "$SB_RED"
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 40 2026-10-04T15:00:00Z
+go --interval 0; check "newest run older than the cancel is red" 1 "$SB_RED"
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs feat/x; sb_newest 60 2026-10-04T16:20:00Z
+go --interval 0; check "cancelled run on a PR branch is red" 1 "$SB_RED"
+
+fresh; run 1 "$(cj "$(rs unit completed failure 901)" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 60 2026-10-04T16:20:00Z
+go --interval 0; check "superseded cancel beside a failure is red" 1 '^RED o/r abc1234567890abcdef1234567890abcdef12345: unit=failure; build=cancelled; deploy=cancelled$'
+
+fresh; run 1 "$(cj "$(rs check in_progress '' 901)" "$storybook")" "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 60 2026-10-04T16:20:00Z
+go --interval 0; check "superseded cancel waits for running jobs, then green" 0 '^GREEN .*\(superseded: build, deploy\)$'
+[ "$(cat "$FIX/runs.count")" = 2 ] && { echo "PASS supersede judged after pending cleared"; pass=$((pass+1)); } || { echo "FAIL polls: $(cat "$FIX/runs.count")"; failn=$((failn+1)); }
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; echo FAIL > "$FIX/wruns.json"; sb_newest 60 2026-10-04T16:20:00Z
+go --timeout 1 --interval 1; check "actions read failure times out, never red" 2 '^TIMEOUT .*pending superseded check$'
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; go --timeout 1 --interval 1
+check "workflow read failure times out, never red" 2 '^TIMEOUT .*pending superseded check$'
+
+fresh; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs trunk; sb_newest 60 2026-10-04T16:20:00Z; go --base trunk --interval 0
+check "--base names the branch for the supersede check" 0 '^GREEN .*\(superseded: build, deploy\)$'
+grep -q 'actions/workflows/78/runs?branch=trunk&per_page=1' "$FIX/calls" && { echo "PASS workflow read asks the --base branch"; pass=$((pass+1)); } || { echo "FAIL --base workflow read"; failn=$((failn+1)); }
+
+fresh; rules deploy; run 1 "$(cj "$ci_ok" "$storybook")"; stat_at 1 ""; sb_runs; sb_newest 60 2026-10-04T16:20:00Z
+go --interval 0; check "rules mode: superseded required cancel is green with a note" 0 '^GREEN .*\(superseded: deploy\)$'
+
+fresh; run 1 "$ci_ok"; stat_at 1 ""; go --interval 0
+grep -q actions/ "$FIX/calls" && { echo "FAIL actions read on a green sha"; failn=$((failn+1)); } || { echo "PASS no actions read on a green sha"; pass=$((pass+1)); }
 
 # CC-781: with required checks on the base branch, GREEN needs each one green from its app; other runs do not count.
 A=15368
