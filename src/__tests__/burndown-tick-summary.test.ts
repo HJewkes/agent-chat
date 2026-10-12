@@ -125,6 +125,61 @@ describe('the tick summary row', () => {
     })
   })
 
+  it('names each trust refusal by initiative, task and reason, and no other kind', () => {
+    const refusals = [
+      { initiative: 'cc', task: 'CC-1026', kind: 'trust', reason: 'no entry for dotfiles' },
+      { initiative: 'cc', task: 'CC-1028', kind: 'trust', reason: 'no entry for tc-cc-1028-a' },
+      { initiative: 'cc', task: 'CC-9', kind: 'out-of-scope', reason: 'tag' },
+    ] as const
+    const row = tickSummary(
+      inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [...refusals] }] }),
+    )
+
+    expect(row.seats['seat-t']?.refusals.trust).toBe(2)
+    expect(row.seats['seat-t']?.trust).toEqual([
+      { initiative: 'cc', task: 'CC-1026', reason: 'no entry for dotfiles' },
+      { initiative: 'cc', task: 'CC-1028', reason: 'no entry for tc-cc-1028-a' },
+    ])
+  })
+
+  it('leaves the trust key off a seat with no trust refusal', () => {
+    expect(tickSummary(inputs()).seats['seat-t']).not.toHaveProperty('trust')
+  })
+
+  it('lists a task refused twice for the same reason once', () => {
+    const twice = { initiative: 'cc', task: 'CC-1026', kind: 'trust', reason: 'r' } as const
+    const row = tickSummary(
+      inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [twice, twice] }] }),
+    )
+
+    expect(row.seats['seat-t']?.trust).toEqual([{ initiative: 'cc', task: 'CC-1026', reason: 'r' }])
+  })
+
+  it('stores a long multi-line reason as one line of 200 chars', () => {
+    const reason = `first line\n${'x'.repeat(300)}`
+    const refusal = { initiative: 'cc', task: 'CC-1', kind: 'trust', reason } as const
+    const row = tickSummary(inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [refusal] }] }))
+
+    const stored = row.seats['seat-t']?.trust?.[0]?.reason ?? ''
+    expect(stored).toHaveLength(200)
+    expect(stored.startsWith('first line x')).toBe(true)
+  })
+
+  it('names at most ten trust refusals while the count stays exact', () => {
+    const refusals = Array.from({ length: 12 }, (_, i) => ({
+      initiative: 'cc',
+      task: `CC-${i}`,
+      kind: 'trust' as const,
+      reason: 'r',
+    }))
+    const seat = tickSummary(inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals }] })).seats[
+      'seat-t'
+    ]
+
+    expect(seat?.trust).toHaveLength(10)
+    expect(seat?.refusals.trust).toBe(12)
+  })
+
   it('has no seats outside seats mode', () => {
     const row = tickSummary(inputs({ outcomes: [], caps: {}, dispatch: [] }))
 

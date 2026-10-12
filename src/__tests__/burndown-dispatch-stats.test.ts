@@ -136,6 +136,36 @@ describe('burndown dispatch-stats', () => {
     })
   })
 
+  it("names the last row's trust refusals after the refusals line, text and JSON", () => {
+    const named = [
+      { initiative: 'claude-channels', task: 'CC-1026', reason: 'no accepted trust entry for dotfiles' },
+    ]
+    const p = ports({
+      tickRows: () =>
+        [
+          row(20, { sa: summary({ trust: [{ initiative: 'x', task: 'X-1', reason: 'old' }] }) }),
+          row(10, { sa: summary({ trust: named }) }),
+        ].join('\n'),
+    })
+
+    const lines = dispatchStatsLines(p, '24h', false).lines
+    const refusalsAt = lines.findIndex(l => l.startsWith('  refusals'))
+
+    expect(lines[refusalsAt + 1]).toBe(
+      '  trust          claude-channels CC-1026: no accepted trust entry for dotfiles',
+    )
+    expect(lines.filter(l => l.startsWith('  trust '))).toHaveLength(1)
+    expect(statsOf(p, 'sa')?.trust).toEqual(named)
+  })
+
+  it('prints no trust line for a row without trust refusals and reads them as empty', () => {
+    const lines = dispatchStatsLines(ports(), '24h', false).lines
+
+    expect(lines.some(l => l.startsWith('  trust '))).toBe(false)
+    expect(statsOf(ports(), 'sa')?.trust).toEqual([])
+    expect(statsOf(ports({ tickRows: () => undefined }), 'sa')?.trust).toBeNull()
+  })
+
   it('reports a dispatching tick and a skipped seat from the latest row that names them', () => {
     const p = ports({
       tickRows: () => row(5, { sa: summary({ dispatched: 2 }), sb: summary({ skipped: 'no plan' }) }),

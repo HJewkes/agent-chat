@@ -29,6 +29,9 @@ import type { Step } from './execute.js'
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
  *   refusals        {[refusal kind]: count}
+ *   trust           CC-1077: [{initiative, task?, reason}] for each distinct trust refusal, reason on one line of at
+ *                   most 200 chars, at most 10 entries (the exact count stays in `refusals.trust`); absent when
+ *                   the seat refused nothing on trust
  *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` is what the seat's role caps
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
@@ -48,9 +51,16 @@ export interface SeatSummary {
   stale: number
   dispatched: number
   refusals: Record<string, number>
+  trust?: NamedRefusal[]
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
   skipped?: string
+}
+
+export interface NamedRefusal {
+  initiative: string
+  task?: string
+  reason: string
 }
 
 export interface TickSummaryRow {
@@ -109,15 +119,37 @@ function briefCounts(
   return counts
 }
 
+const MAX_REASON_CHARS = 200
+const MAX_NAMED_TRUST = 10
+
+const oneLine = (reason: string): string => reason.replace(/\s+/g, ' ').trim().slice(0, MAX_REASON_CHARS)
+
+/** CC-1077: the trust refusals by task and reason, so a tick row says which task the gate refused and why. */
+function namedTrustRefusals(outcome: SeatOutcome): NamedRefusal[] {
+  const named = new Map<string, NamedRefusal>()
+  for (const r of outcome.refusals) {
+    if (r.kind !== 'trust') continue
+    const entry: NamedRefusal = {
+      initiative: r.initiative,
+      ...(r.task === undefined ? {} : { task: r.task }),
+      reason: oneLine(r.reason),
+    }
+    named.set(JSON.stringify([entry.initiative, entry.task, entry.reason]), entry)
+  }
+  return [...named.values()].slice(0, MAX_NAMED_TRUST)
+}
+
 function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   const refusals: Record<string, number> = {}
   for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
   const cap = inputs.caps[outcome.seat]
   const used = outcome.roles
+  const trust = namedTrustRefusals(outcome)
   return {
     ...briefCounts(inputs, outcome),
     dispatched: outcome.dispatched,
     refusals,
+    ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
     ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
