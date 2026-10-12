@@ -17,6 +17,7 @@ import {
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
+import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { newMsgId } from './event-log.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
@@ -1296,6 +1297,11 @@ export class SocketServer {
         ok: false,
         reason: 'permission_self_granted comes from a PermissionRequest hook; a session cannot send it',
       })
+    }
+    const refusal = selfGrantFrameRefusal(msg as unknown as Record<string, unknown>)
+    if (refusal !== undefined) {
+      logEvent('bad_message', { t: 'permission_self_granted', error: refusal })
+      return reply(conn, { t: 'permission_hook_result', ok: false, reason: refusal })
     }
     const { core } = this
     const { msgId } = core.append({

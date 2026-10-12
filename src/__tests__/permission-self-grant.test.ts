@@ -8,7 +8,8 @@ import { EventLog } from '../broker/event-log.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import type { ClientMessage, ServerMessage } from '../protocol.js'
+import { loggedCount } from '../broker/log.js'
+import { HUMAN, type ClientMessage, type ServerMessage } from '../protocol.js'
 import { recordSelfGrant } from '../cli/verbs/permission-hook.js'
 
 /**
@@ -106,6 +107,48 @@ describe('a self-grant record from the hook', () => {
 
     expect(peer.frames.at(-1)).toMatchObject({ t: 'permission_hook_result', ok: false })
     expect(rows(core).some(row => row.kind === 'approval_request')).toBe(false)
+  })
+})
+
+describe('a malformed self-grant record', () => {
+  const forged: [string, Record<string, unknown>][] = [
+    ['a human session label, which would forge a human allow', { session: 'human' }],
+    ['a reserved label in another case', { session: 'System' }],
+    ['a session that is not a string', { session: { name: 'scout' } }],
+    ['an empty session', { session: '' }],
+    ['an over-long session', { session: 's'.repeat(129) }],
+    ['a grant other than repo-skills', { grant: 'anything-goes' }],
+    ['a toolName that is not a string', { toolName: { name: 'Write' } }],
+    ['a tool outside Write, Edit and MultiEdit', { toolName: 'Bash' }],
+    ['Bash input with no file_path', { toolInput: { command: 'rm -rf /' } }],
+    ['a toolInput that is not an object', { toolInput: 'x' }],
+    ['an over-long file_path', { toolInput: { file_path: `/${'p'.repeat(4096)}` } }],
+    ['an oversized toolInput', { toolInput: { file_path: '/w/x', content: 'c'.repeat(256 * 1024) } }],
+    ['an extra key', { actor: 'human' }],
+  ]
+
+  it.each(forged)('is refused with no rows written: %s', (_label, override) => {
+    const { core, wire } = setup()
+    const hook = wire()
+    const before = loggedCount('bad_message')
+
+    hook.send({ ...GRANT, ...override } as ClientMessage)
+
+    expect(hook.frames.at(-1)).toMatchObject({ t: 'permission_hook_result', ok: false })
+    expect(loggedCount('bad_message')).toBe(before + 1)
+    expect(rows(core)).toHaveLength(0)
+  })
+
+  it('can never write a resolution whose actor is human', () => {
+    const { core, wire } = setup()
+    const hook = wire()
+
+    for (const session of ['human', 'HUMAN', 'Human']) hook.send({ ...GRANT, session } as ClientMessage)
+    hook.send(GRANT)
+
+    const resolutions = rows(core).filter(row => row.kind === 'resolution')
+    expect(resolutions).toHaveLength(1)
+    expect(resolutions.some(row => row.actor.toLowerCase() === HUMAN)).toBe(false)
   })
 })
 
