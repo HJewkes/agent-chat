@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { isSeatName, parseSeat } from './charter.js'
 import {
   INBOX_TAIL,
@@ -44,6 +47,8 @@ export interface SeatBoot {
   seatFile: SeatDigest
   heartbeat: Pick<HeartbeatStatus, 'source' | 'cron'>
   queue: QueueSections
+  /** CC-315: the absolute `scripts/seat/queue` path, or null where the install has no such file. */
+  queueScript: string | null
   inFlight: InFlight
   next: BootNext
   log: LogSection
@@ -78,12 +83,20 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
     seatFile,
     heartbeat: seatHeartbeat(deps.autonomyRoot, seat),
     queue: readQueueSections(deps.autonomyRoot, seat),
+    queueScript: queueScriptPath(),
     inFlight: await readInFlight(deps.inFlight, seat, seatFile.prefix, plain),
     next: await readNext(deps, seat, now, plain),
     log,
     inbox,
     status,
   }
+}
+
+/** Three levels up from `src/agents/seats/` and `dist/agents/seats/` alike is the package root. */
+export function queueScriptPath(): string | null {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const script = path.resolve(here, '..', '..', '..', 'scripts', 'seat', 'queue')
+  return fs.existsSync(script) ? script : null
 }
 
 function seatHeartbeat(root: string, seat: string): SeatBoot['heartbeat'] {
@@ -161,9 +174,22 @@ function nextLines({ next }: SeatBoot): string[] {
   ]
 }
 
-function queueLines({ queue }: SeatBoot): string[] {
-  if (!queue.found) return [`== queue: no queue file at ${queue.file}`]
-  return [`== queue ${queue.file}`, ...(queue.next ?? '(no "## Next" section)').split('\n')]
+const shellQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
+
+/** CC-315: seats hand-edited queue files with heredocs; name the verbs where they look, with a runnable path. */
+function queueEditLine({ seat, queue, queueScript: script }: SeatBoot): string[] {
+  if (script === null) return []
+  const root = path.dirname(path.dirname(queue.file))
+  return [
+    `edit: AUTONOMY_ROOT=${shellQuote(root)} ${shellQuote(script)} ${seat} replace|set|add|done|park|move  (never heredoc, Edit or sed -i)`,
+  ]
+}
+
+function queueLines(boot: SeatBoot): string[] {
+  const { queue } = boot
+  const edit = queueEditLine(boot)
+  if (!queue.found) return [`== queue: no queue file at ${queue.file}`, ...edit]
+  return [`== queue ${queue.file}`, ...edit, ...(queue.next ?? '(no "## Next" section)').split('\n')]
 }
 
 function logLines(log: LogSection): string[] {

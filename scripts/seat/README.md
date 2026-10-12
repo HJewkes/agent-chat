@@ -47,6 +47,23 @@ This copy differs from the live one on purpose:
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.
 
+## Queue verbs
+
+`queue <seat> <verb>` edits `queues/<seat>.md` under a lock, refuses a write that would take
+the file over 5,000 bytes, and reports the new size on stderr. Run it with no arguments for the
+full usage.
+
+- `replace <old> <new> [<old> <new>...]`, or `replace -` with `<<<` / `===` / `>>>` blocks on
+  stdin: exact text swaps. Each old must match once; nothing is written unless every pair does.
+- `set <KEY> <text...>`: rewrite one item, sub-lines included, keeping its marker.
+- `add [--top] <section> <text...>`, `done <KEY> [--pr N]`, `park <KEY>`, `move <KEY> <section>`.
+
+KEY is the item's leading id (`TP-487`) or `<section>:<n>` for a numbered item (`morning:208`).
+
+`agent-chat seats boot` prints an `edit:` line under the queue section with `AUTONOMY_ROOT` and
+the absolute path of this script, so a seat can run it as printed. The line is left out when
+the install has no `scripts/seat/queue`.
+
 ## Retired
 
 - `merge-check` (CC-1031): replaced by Shepherd's conflict check and carry-merge
@@ -60,7 +77,8 @@ Deleting them from the live `bin/` is an owner step after the cutover.
   as the normal merge path; TP-1626 decides whether premerge grows or Shepherd absorbs the
   case). `seat-merge` retires with them.
 - `pace`: retires when CC-742 lands and the charter says "read `agent-chat seats status`".
-- `queue`, `log`: retire with TP-1570. Neither is named in the charter today, so they can
-  probably go sooner.
+- `log`: retires with TP-1570. It is not named in the charter today, so it can probably go
+  sooner.
+- `queue`: stays while seats keep a queue file. `agent-chat seats boot` names it (below).
 - `task-note`: retires when `active-work task edit --append` is lock-safe.
 - `scorecard`: no TS home. It stays until a TP task (TP-1537 or a new one) ports its rows.
