@@ -1,12 +1,16 @@
 /**
- * Files that exec a script they just wrote. On Linux a sibling worker's fork can inherit the
+ * Files that exec a script they just wrote, directly or through a `helpers/` module. On Linux a sibling worker's fork can inherit the
  * write fd, and the exec fails with ETXTBSY until that child execs (CC-462, CC-477).
  */
 export const EXEC_SCRIPT_FILES = [
   'src/__tests__/gh-shim.test.ts',
+  'src/__tests__/gh-shim-call-log.test.ts',
   'src/__tests__/leak-git-shim.test.ts',
   'src/__tests__/leak-git-shim-stash.test.ts',
   'src/__tests__/leak-git-shim-locale.test.ts',
+  'src/__tests__/leak-git-shim-alias-source.test.ts',
+  'src/__tests__/leak-git-shim-allowlist.test.ts',
+  'src/__tests__/leak-git-shim-protocol.test.ts',
   'src/__tests__/gh-write.test.ts',
   'src/__tests__/gh-write-scan.test.ts',
   'src/__tests__/human-wait.test.ts',
