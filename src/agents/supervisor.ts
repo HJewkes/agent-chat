@@ -111,7 +111,7 @@ import {
 } from './isolation/retire-finished.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
 import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
-import type { ShepherdSkipPort } from './isolation/shepherd-skip.js'
+import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
@@ -2611,6 +2611,8 @@ export class Supervisor implements TeleportHost {
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
     this.parking.set(identity.agentId, canonicalPath(target.worktree))
     try {
+      const fixRound = this.shepherdSkip && (await fixRoundBlocker(this.shepherdSkip, identity, target))
+      if (fixRound) return { ok: false, reason: fixRound }
       const parked = await parkWorktree(
         target,
         () => this.parkBlockerFor(identity.agentId, target),
