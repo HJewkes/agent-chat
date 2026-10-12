@@ -15,9 +15,34 @@ const execFileAsync = promisify(execFile)
  */
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string | null>
 
+/** The transports git may use for agent-chat and its agents; `ext::` runs a shell command (CC-1095). */
+export const SAFE_GIT_PROTOCOLS: readonly string[] = ['file', 'git', 'http', 'https', 'ssh']
+
+/**
+ * The caller's GIT_ALLOW_PROTOCOL narrowed to the safe list, or the whole safe list when unset.
+ * git reads this list over every `protocol.*.allow` config scope, so a repo's config cannot re-enable `ext`.
+ * A caller list with nothing safe in it (`ext` alone) gives '', which git reads as allowing no transport.
+ */
+export function pinGitProtocols(value: string | undefined): string {
+  if (value === undefined) return SAFE_GIT_PROTOCOLS.join(':')
+  return value
+    .split(':')
+    .filter(name => SAFE_GIT_PROTOCOLS.includes(name))
+    .join(':')
+}
+
+/** `env` with GIT_ALLOW_PROTOCOL pinned, for a child that may run git without going through `gitChildEnv`. */
+export function withPinnedGitProtocols(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...env, GIT_ALLOW_PROTOCOL: pinGitProtocols(env.GIT_ALLOW_PROTOCOL) }
+}
+
 /** A git child that inherits `AGENT_CHAT_*` can register as the agent that spawned it (CC-174). */
 export function gitChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env, GIT_TERMINAL_PROMPT: '0' }
+  const out: NodeJS.ProcessEnv = {
+    ...env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ALLOW_PROTOCOL: pinGitProtocols(env.GIT_ALLOW_PROTOCOL),
+  }
   for (const key of Object.keys(out)) if (key.startsWith('AGENT_CHAT_')) delete out[key]
   return out
 }

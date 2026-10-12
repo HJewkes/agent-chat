@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { BudgetRead } from '../agents/budget.js'
+import type { SeatState } from '../agents/burndown/ledger.js'
 import type { Pool, Seat } from '../agents/seats/charter.js'
 import type { WatchdogDoc } from '../agents/seats/io.js'
 import { readSeatSpawn, type SeatSpawnReadDeps } from '../agents/seats/spawn-gate-read.js'
@@ -291,6 +292,57 @@ describe('the seat spawn gate', () => {
   })
 })
 
+describe('the seat spawn gate counting spend through seatSpend (CC-1099)', () => {
+  const HOUR = 60 * MIN
+  const seat: Seat = { ...SEAT, spend: { perRunPoints: 20, perDayPoints: 200 } }
+  const reading = { sevenDay: 40, fiveHour: 20, ageSeconds: 30 }
+  const meters = {
+    runMeter: { since: NOON.getTime() - 2 * HOUR, last: 37, spent: 3 },
+    dayMeter: { since: DAY_START, last: 37, spent: 3 },
+  }
+  const ledger = (configDir: string): SeatState => ({
+    configDir,
+    samples: [
+      { at: DAY_START - 30 * MIN, sevenDay: 10 },
+      { at: NOON.getTime() - 3 * HOUR, sevenDay: 10 },
+    ],
+  })
+
+  it('refuses an own-pool spawn on the ledger run spend when the meters read under the cap', () => {
+    const verdict = seatSpawnGate(input({ seat, reading, ...meters, seatState: ledger(AGENTS.configDir) }))
+
+    expect(verdict.allow).toBe(false)
+    expect(verdict.reason).toContain("run spend 30 points at or above the seat's per_run_points 20")
+  })
+
+  it('keeps the meter figure when the seat has no ledger samples', () => {
+    const verdict = seatSpawnGate(input({ seat, reading, ...meters }))
+
+    expect(verdict.allow).toBe(true)
+  })
+
+  it('ignores ledger samples read from another pool', () => {
+    const verdict = seatSpawnGate(input({ seat, reading, ...meters, seatState: ledger(SHARED.configDir) }))
+
+    expect(verdict.allow).toBe(true)
+  })
+
+  it("passes an overflow spawn past the seat's run spend on the pool it bills", () => {
+    const verdict = seatSpawnGate(
+      input({
+        seat,
+        pool: SHARED,
+        reading,
+        ...meters,
+        dayMeter: undefined,
+        seatState: ledger(SHARED.configDir),
+      }),
+    )
+
+    expect(verdict.allow).toBe(true)
+  })
+})
+
 const CHARTER = `---
 seats: [alpha-coord]
 pools:
@@ -319,8 +371,13 @@ describe('reading a seat spawn from the autonomy root', () => {
     return { root: dir, home: '/synthetic' }
   }
 
-  const deps = (home: string, reads: string[] = []): SeatSpawnReadDeps => ({
+  const deps = (
+    home: string,
+    reads: string[] = [],
+    seatState?: SeatSpawnReadDeps['seatState'],
+  ): SeatSpawnReadDeps => ({
     home,
+    ...(seatState === undefined ? {} : { seatState }),
     readBudget: (configDir): BudgetRead => {
       reads.push(configDir)
       return { found: false, path: configDir, reason: 'no_file' }
@@ -384,6 +441,33 @@ describe('reading a seat spawn from the autonomy root', () => {
     const read = readSeatSpawn(dir, spawn('ac-task'), deps(home))
 
     expect(read).toMatchObject({ kind: 'gate', input: { pool: { name: 'agents' }, dayMeter: { last: 40 } } })
+  })
+
+  it("carries the seat's ledger state keyed by the charter's unexpanded config_dir (CC-1099)", () => {
+    const { root: dir, home } = root()
+    const samples = [{ at: DAY_START, sevenDay: 30 }]
+    const ledger = (seat: string): SeatState | undefined =>
+      seat === 'alpha-coord' ? { configDir: '~/agents', samples } : undefined
+
+    const own = readSeatSpawn(dir, spawn('ac-task'), deps(home, [], ledger))
+    const other = readSeatSpawn(dir, spawn('ac-task', '/synthetic/shared'), deps(home, [], ledger))
+
+    expect(own).toMatchObject({
+      kind: 'gate',
+      input: { seatState: { configDir: '/synthetic/agents', samples } },
+    })
+    expect(other).toMatchObject({ kind: 'gate', input: { seatState: undefined } })
+  })
+
+  it('reads an unreadable ledger as no samples rather than refusing the spawn', () => {
+    const { root: dir, home } = root()
+    const unreadable = (): SeatState => {
+      throw new Error('ledger unreadable')
+    }
+
+    const read = readSeatSpawn(dir, spawn('ac-task'), deps(home, [], unreadable))
+
+    expect(read).toMatchObject({ kind: 'gate', input: { seatState: undefined, dayMeter: { last: 40 } } })
   })
 
   it('skips a config_dir that no charter pool names', () => {

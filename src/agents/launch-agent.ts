@@ -9,6 +9,7 @@ import {
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { agentDir, distDir, ghShimDir, home } from '../paths.js'
+import { pinGitProtocols } from '../git.js'
 import { agentEnv, type AgentEnvOptions } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
@@ -67,6 +68,7 @@ export function agentBaseEnv(
 /**
  * The plan with the shim dirs on its PATH. The launcher layers `plan.env` over the base env,
  * so a PATH the plan sets wins over the base's: the shims go onto whichever PATH will win.
+ * GIT_ALLOW_PROTOCOL is pinned the same way, so a profile's env cannot re-enable `ext` (CC-1095).
  */
 export function withShims(plan: LaunchPlan, base: Record<string, string> = agentBaseEnv()): LaunchPlan {
   const env = {
@@ -74,7 +76,8 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
     ...plan.env,
   }
   const { PATH } = withGitShim(withGhShim(env))
-  return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }) } }
+  const GIT_ALLOW_PROTOCOL = pinGitProtocols(plan.env.GIT_ALLOW_PROTOCOL ?? base.GIT_ALLOW_PROTOCOL)
+  return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }), GIT_ALLOW_PROTOCOL } }
 }
 
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */

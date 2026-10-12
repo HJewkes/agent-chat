@@ -1,16 +1,18 @@
 import { spawnSync } from 'node:child_process'
+import { pinGitProtocols } from '../../git.js'
 
 /**
  * The tick's only way to run a subprocess (`git`, `gh`). Argv only, a
  * timeout, and an environment without the agent-chat identity: a child that
  * inherits `AGENT_CHAT_NAME`/`AGENT_CHAT_AGENT_ID` registers as its parent and
  * displaces it (CC-174), and a tick run from an agent's shell carries both.
+ * GIT_ALLOW_PROTOCOL is pinned so its git never runs an `ext::` remote (CC-1095).
  */
 
 export const IDENTITY_ENV = ['AGENT_CHAT_NAME', 'AGENT_CHAT_AGENT_ID'] as const
 
 export function childEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out = { ...env }
+  const out: NodeJS.ProcessEnv = { ...env, GIT_ALLOW_PROTOCOL: pinGitProtocols(env.GIT_ALLOW_PROTOCOL) }
   for (const key of IDENTITY_ENV) delete out[key]
   return out
 }

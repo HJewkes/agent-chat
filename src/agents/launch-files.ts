@@ -11,6 +11,7 @@ import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
 import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
 import { strictMcpFor } from './launch-policy.js'
+import { linkedWorktreeRoot, REPO_SKILLS_RULE } from './skill-self-grant.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -165,12 +166,14 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
  * can contain spaces. `carried` is set for a launch that loads no user settings.
+ * `selfGrantRoot` lets the hook allow repo skill writes in that worktree (CC-694).
  */
 export function buildHookSettings(
   entry: string,
   permissionTimeoutSeconds?: number,
   carried?: CarriedUserSettings,
   agentId?: string,
+  selfGrantRoot?: string,
 ): Record<string, unknown> {
   const staleGuard: { UserPromptSubmit?: HookEntry[] } =
     agentId === undefined
@@ -202,7 +205,8 @@ export function buildHookSettings(
   if (permissionTimeoutSeconds === undefined)
     return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard) } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
-  const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
+  const selfGrant = selfGrantRoot === undefined ? '' : ` --self-grant-skills ${shellQuote(selfGrantRoot)}`
+  const command = hookCommand(entry, `permission-hook --deadline ${deadline}${selfGrant}`)
   return {
     ...account,
     hooks: {
@@ -281,9 +285,28 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
   fs.chmodSync(file, mode)
 }
 
+/**
+ * The worktree whose repo skills the hook may allow writes to: the plan's cwd, only when
+ * the profile opted in with the owner-approved rule and git has the cwd registered as a
+ * linked worktree, so a shared or main checkout stays behind the owner prompt (CC-694).
+ */
+export function selfGrantRootOf(plan: LaunchPlan): string | undefined {
+  const end = plan.args.indexOf('--')
+  const options = end === -1 ? plan.args : plan.args.slice(0, end)
+  const at = options.indexOf('--allowed-tools')
+  if (at === -1 || !(options[at + 1] ?? '').split(',').includes(REPO_SKILLS_RULE)) return undefined
+  return linkedWorktreeRoot(plan.cwd)
+}
+
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan), plan.agentId)
+  const settings = buildHookSettings(
+    cliEntry(),
+    permissionTimeout,
+    carriedUserSettings(plan),
+    plan.agentId,
+    selfGrantRootOf(plan),
+  )
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
