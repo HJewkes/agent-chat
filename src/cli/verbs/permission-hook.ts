@@ -104,6 +104,48 @@ async function withdraw(client: BrokerClient, msgId: string): Promise<void> {
     .catch(() => undefined)
 }
 
+const SELF_GRANT_RECORD_MS = 2000
+
+/**
+ * Best effort, capped at two seconds: the allow stands either way, since the
+ * transcript keeps the tool call even when the event log misses the grant.
+ */
+export async function recordSelfGrant(
+  input: HookInput,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = SELF_GRANT_RECORD_MS,
+): Promise<void> {
+  const { session, toolName, toolInput } = hookFrame(input, env)
+  const frame: ClientMessage = {
+    t: 'permission_self_granted',
+    session,
+    toolName,
+    toolInput,
+    grant: 'repo-skills',
+  }
+  // Never autoStart: a record is not worth resurrecting a broker someone stopped.
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no broker answer in ${timeoutMs} ms`)), timeoutMs)
+  })
+  const send = async (): Promise<void> => {
+    await client.connect()
+    const result = (await client.request(frame, 'permission_hook_result')) as PermissionHookResult
+    if (!result.ok) throw new Error(`broker refused the record: ${result.reason ?? 'no reason given'}`)
+  }
+  try {
+    await Promise.race([send(), timeout])
+  } catch (error) {
+    console.error(`agent-chat permission-hook: self-grant not recorded: ${(error as Error).message}`)
+  } finally {
+    clearTimeout(timer)
+    client.close()
+  }
+}
+
 export async function permissionHook(options: { deadline: string; selfGrantSkills?: string }): Promise<void> {
   const deadlineMs = Number.parseInt(options.deadline, 10) * 1000
   if (!Number.isInteger(deadlineMs) || deadlineMs <= 0) throw new Error(`bad --deadline: ${options.deadline}`)
@@ -113,6 +155,7 @@ export async function permissionHook(options: { deadline: string; selfGrantSkill
     console.error(
       `agent-chat permission-hook: self-granted ${input.toolName} in ${root}/.claude/skills (CC-694)`,
     )
+    await recordSelfGrant(input, process.env)
     process.stdout.write(hookOutput('allow'), () => process.exit(0))
     return
   }
