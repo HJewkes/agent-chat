@@ -206,3 +206,62 @@ describe('burndown lints planner slices (CC-631)', () => {
     ])
   })
 })
+
+describe('burndown warns on dependsOn across disjoint owns (CC-1155)', () => {
+  const slice = (n: string, owns: string[], dependsOn: string[] = [], extra: object = {}) => ({
+    n,
+    title: n,
+    points: 1,
+    doneWhen: 'a test passes',
+    dependsOn,
+    owns,
+    ...extra,
+  })
+  const planOf = (...slices: object[]): string => `\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\``
+
+  it('warns on an edge between slices with disjoint owns and no dependsWhy, without blocking', () => {
+    const read = readSlices(planOf(slice('a', ['src/a.ts']), slice('b', ['src/b.ts'], ['a'])))
+
+    expect(read.problems).toBeUndefined()
+    expect(read.slices?.map(s => s.n)).toEqual(['a', 'b'])
+    expect(read.warnings).toEqual([
+      'slice b: depends on a but their owns are disjoint; set dependsOn [] or say why in dependsWhy',
+    ])
+  })
+
+  it('passes an edge over disjoint owns that says why in dependsWhy', () => {
+    const b = slice('b', ['src/b.ts'], ['a'], { dependsWhy: 'b imports the type a adds' })
+
+    expect(readSlices(planOf(slice('a', ['src/a.ts']), b)).warnings).toEqual([])
+  })
+
+  it('passes an edge between slices that share a file', () => {
+    const read = readSlices(planOf(slice('a', ['src/x.ts', 'src/a.ts']), slice('b', ['src/x.ts'], ['a'])))
+
+    expect(read.warnings).toEqual([])
+  })
+
+  it('warns once on a linear chain of three over disjoint owns, whatever dependsWhy says', () => {
+    const why = { dependsWhy: 'needs the earlier export' }
+    const plan = planOf(
+      slice('a', ['src/a.ts']),
+      slice('b', ['src/b.ts'], ['a'], why),
+      slice('c', ['src/c.ts'], ['b'], why),
+    )
+
+    expect(readSlices(plan).warnings).toEqual([
+      'slices a -> b -> c form a linear chain over disjoint owns; check each edge is real',
+    ])
+  })
+
+  it('does not call a chain linear when two of its slices share a file', () => {
+    const why = { dependsWhy: 'needs the earlier export' }
+    const plan = planOf(
+      slice('a', ['src/a.ts']),
+      slice('b', ['src/b.ts'], ['a'], why),
+      slice('c', ['src/a.ts'], ['b'], why),
+    )
+
+    expect(readSlices(plan).warnings).toEqual([])
+  })
+})

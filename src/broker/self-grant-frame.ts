@@ -1,3 +1,4 @@
+import { AGENT_NAME_PATTERN } from '../launch-identity.js'
 import { RESERVED_NAMES } from '../protocol.js'
 
 /**
@@ -8,13 +9,13 @@ import { RESERVED_NAMES } from '../protocol.js'
 
 const FRAME_KEYS = new Set(['t', 'session', 'toolName', 'toolInput', 'grant'])
 const GRANTED_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
-export const MAX_SESSION_LABEL = 128
+const VALID_SESSION = new RegExp(`^${AGENT_NAME_PATTERN}$`, 'i')
 export const MAX_FILE_PATH = 4096
 export const MAX_INPUT_JSON = 256 * 1024
 
 function sessionRefusal(session: unknown): string | undefined {
-  if (typeof session !== 'string' || session === '' || session.length > MAX_SESSION_LABEL)
-    return `session must be a string of 1-${MAX_SESSION_LABEL} characters`
+  if (typeof session !== 'string' || !VALID_SESSION.test(session))
+    return `session must match ${AGENT_NAME_PATTERN}`
   if (RESERVED_NAMES.has(session.toLowerCase())) return `"${session}" is a reserved name`
   return undefined
 }

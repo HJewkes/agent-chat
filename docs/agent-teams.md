@@ -809,6 +809,15 @@ passes. The socket accepts both reports only from the connection that received t
 launch. A session's host comes from its registration and never its frame. Only the
 CLI, which holds no registration, names its own with `callerHost`.
 
+Both clients run that half (`src/server/caller-spawn.ts`): the `agent_spawn` tool,
+whose `host` argument picks the machine, and `agent-chat agent spawn --host
+<machine>`. Each sends `launchesHere`, its OS and home, and returns the
+`spawn_placed_result` verdict in place of the pending `spawn_result`, naming the
+host (`Spawned "x" (id) on mac`). A lost `spawn_placed_result` is reported as
+placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
+exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
+the old placement.
+
 Once registered, an agent on another host is known by its spawn row's `host`, which
 `agent_list` shows. The broker can read neither its pids nor its Claude Code session
 records, so a detach that outlasts the settle window is the exit: `agent_exited` is

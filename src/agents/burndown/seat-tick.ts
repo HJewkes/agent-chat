@@ -46,7 +46,7 @@ import { dispatchLogPath } from '../seats/dispatch-log.js'
 import { foldDispatch } from '../seats/dispatch-record.js'
 import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
-import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
+import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readOffPlanIds } from './off-plan.js'
 import { readTasks, type TickConfig } from './source.js'
@@ -407,6 +407,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   })
   if (prior.note !== undefined) planned.notes.push(prior.note)
   if (runs.note !== undefined) planned.notes.push(runs.note)
+  planned.notes.push(...scope.notes)
   const closed = seat.closedPools
   if (closed !== undefined)
     planned.refusals = planned.refusals.map(r => (r.kind === 'budget' ? { ...r, reason: closed } : r))
@@ -418,7 +419,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
       reason,
     })),
   )
-  return { planned, tasks, skipped: read.skipped }
+  return { planned, tasks, skipped: read.skipped, plan: scope.scope.plan }
 }
 
 /** CC-1145: under `enforce`, a task whose initiative the billed pool does not fund is refused, never billed there. */
@@ -469,12 +470,16 @@ function readSeatLog(root: string, name: string): string | undefined {
 /**
  * CC-779: the seat's scope with its backlog's task IDs. A backlog that cannot be read names no task, so
  * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
+ * CC-1128: a plan file that cannot be used widens nothing; the seat keeps tag-only scope and the tick notes it.
  */
-function scopeInputs(
-  seat: LoadedSeat,
-  aliases?: Readonly<Record<string, string>>,
-): { scope: SeatScope; faults: string[] } {
+function scopeInputs(seat: LoadedSeat, aliases?: Readonly<Record<string, string>>): SeatScopeRead {
   return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot, aliases)
+}
+
+interface SeatScopeRead {
+  scope: SeatScope
+  faults: string[]
+  notes: string[]
 }
 
 /** CC-935: `scopeInputs` for a caller holding the seats and the autonomy root, such as `seats boot`. */
@@ -483,18 +488,37 @@ export function readSeatScope(
   name: string,
   autonomyRoot: string | undefined,
   aliases?: Readonly<Record<string, string>>,
-): { scope: SeatScope; faults: string[] } {
-  const file = seats[name]?.backlog
-  if (file === undefined || autonomyRoot === undefined)
-    return { scope: seatScopeOf(seats, name, new Set(), aliases), faults: [] }
+): SeatScopeRead {
+  const backlog = readBacklog(seats[name]?.backlog, autonomyRoot)
+  const plan = readPlan(seats[name]?.plan_file, autonomyRoot)
+  return {
+    scope: seatScopeOf(seats, name, backlog.ids, aliases, plan.ids),
+    faults: backlog.faults,
+    notes: plan.notes,
+  }
+}
+
+function readBacklog(file: string | undefined, autonomyRoot: string | undefined) {
+  if (file === undefined || autonomyRoot === undefined) return { ids: new Set<string>(), faults: [] }
   try {
-    const ids = backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8'))
-    return { scope: seatScopeOf(seats, name, ids, aliases), faults: [] }
+    return { ids: backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8')), faults: [] }
   } catch (err) {
-    return {
-      scope: seatScopeOf(seats, name, new Set(), aliases),
-      faults: [`backlog ${file}: ${message(err)}`],
-    }
+    return { ids: new Set<string>(), faults: [`backlog ${file}: ${message(err)}`] }
+  }
+}
+
+/** CC-1128: section 2's task IDs of the seat's plan file, resolved against the autonomy root (absolute allowed). */
+function readPlan(
+  file: string | undefined,
+  autonomyRoot: string | undefined,
+): { ids?: Set<string>; notes: string[] } {
+  if (file === undefined || autonomyRoot === undefined) return { notes: [] }
+  const tagOnly = (why: string) => ({ notes: [`plan ${file}: ${why}; scope is tag-only`] })
+  try {
+    const ids = planSectionIds(fs.readFileSync(path.resolve(autonomyRoot, file), 'utf8'))
+    return ids === undefined ? tagOnly('no "## 2." section') : { ids, notes: [] }
+  } catch (err) {
+    return tagOnly(message(err))
   }
 }
 
@@ -606,7 +630,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
       // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
       const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
-      const { planned, tasks, skipped } = planLoaded(seat, { ...deps, ledger }, root, taken)
+      const { planned, tasks, skipped, plan } = planLoaded(seat, { ...deps, ledger }, root, taken)
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
@@ -615,7 +639,8 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals, roles } = planned
-      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles })
+      const outcome = { seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles }
+      result.outcomes.push(plan === undefined ? outcome : { ...outcome, plan })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
       result.outcomes.push({ seat: seat.dispatch.seat, dispatched: 0, refusals: [], skipped: message(err) })

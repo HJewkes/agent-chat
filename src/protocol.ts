@@ -71,8 +71,11 @@ export interface SpawnResultFields {
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'
     | 'reviewer_account_limit'
+    | 'broker_draining'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
   retryable?: boolean
+  /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
+  retryAfterMs?: number
   warnings?: string[]
   /**
    * The profile's own deny list, echoed back on success. CC-29's finding:
