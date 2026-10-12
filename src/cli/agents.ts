@@ -4,7 +4,11 @@ import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { porcelain, reclaim, sweepWorktrees, type SweptWorktree } from '../agents/isolation/sweep.js'
-import { BRANCH_PREFIX, DEFAULT_WORKTREE_BUDGET } from '../agents/isolation/worktree.js'
+import {
+  BRANCH_PREFIX,
+  DEFAULT_REVIEWER_WORKTREE_BUDGET,
+  DEFAULT_WORKTREE_BUDGET,
+} from '../agents/isolation/worktree.js'
 import {
   formatRows,
   lowDiskWarning,
@@ -16,7 +20,7 @@ import {
   type RepoHeadroom,
 } from '../agents/isolation/worktree-states.js'
 import { parseWorktreeList } from '../agents/seats/trees.js'
-import { resolveWorktreeBudget, retireThresholdK } from '../config.js'
+import { resolveReviewerWorktreeBudget, resolveWorktreeBudget, retireThresholdK } from '../config.js'
 import { loadResolvedConfig } from '../agents/burndown/settings-store.js'
 import {
   contextKOf,
@@ -367,12 +371,13 @@ async function headroomByRepo(swept: SweptWorktree[], root: string | null): Prom
   const roots = new Set(swept.map(e => e.gitRoot))
   if (root !== null) roots.add(root)
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
+  const reviewerBudget = resolveReviewerWorktreeBudget(DEFAULT_REVIEWER_WORKTREE_BUDGET)
   const repos: RepoHeadroom[] = []
   for (const gitRoot of roots) {
     const listed = parseWorktreeList(await porcelain(gitRoot).catch(() => ''))
     const nonSeat = listed.filter(t => !t.branch?.startsWith(BRANCH_PREFIX)).map(nonSeatRow)
     const seat = swept.filter(e => e.gitRoot === gitRoot).map(stateRow)
-    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, volumeFreeBytes(gitRoot)))
+    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, reviewerBudget, volumeFreeBytes(gitRoot)))
   }
   return repos
 }
