@@ -739,17 +739,33 @@ guard checks a body twice:
 
 - when `gh alias set` stores it, as a command line of its own with `$1` and the directory
   unresolved, so `gh alias set --shell x 'GIT_PAGER="$1" git log'` is denied by the program-env
-  rule, and a plain body is checked as `gh <body>`;
+  rule, and a plain body is checked as `gh <body>`. Its flags are read the way gh's flag parser
+  reads them, anywhere before `--`: `-s`, `--shell`, `-s=true`, `--shell=1`, `-ss`, and `-sh`
+  (help, which stores nothing). A flag the guard does not know denies;
 - when `gh <word>` runs it, with the body read from gh's `config.yml` (`GH_CONFIG_DIR`, else
   `$XDG_CONFIG_HOME/gh`, else `~/.config/gh`) and the arguments filled in. A top-level word that
   is not a gh command may be an alias, and a `gh <group> <word>` alias is followed when the
   config holds one. Up to four aliases deep are followed.
 
+gh finds the command word past its flags the way cobra's `stripFlags` does, and the guard does
+the same: `--` ends the search, a `--flag` or `-f` without `=` swallows the next word unless it
+is `--help` or `--version`, and any other flag is skipped. So `gh -R o/r rx` runs alias `rx`, and
+gh hands the alias every word but its own name, flags included (`$1` is `-R`). `co`, `help`,
+`__complete` and `__completeNoDesc` are not builtins to gh: a config alias of that name runs
+(probed on gh 2.102), so they are looked up like any other word.
+
+gh keeps the first of two equal YAML keys, and so does the guard. A `config.yml` the guard cannot
+parse, or whose `aliases` is not a map of strings, denies every gh call that may run an alias,
+since gh may still read an alias from it; a missing file reads as no alias.
+
 It denies `gh alias import` and `gh alias set <name> -`, which read aliases from a file or stdin;
 a definition or an argument the guard cannot resolve; and a top-level word that may be an alias on
 a line that writes gh config (`gh alias set`, `gh config set`, a `config.yml` or `hosts.yml` path)
 or that sets `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME`, since gh would read the alias from a
-config the guard did not. A missing or malformed `config.yml` reads as no alias.
+config the guard did not.
+
+A write straight into `config.yml` in an earlier call (`printf ... >> ~/.config/gh/config.yml`)
+is not denied: the alias it adds is read and checked when `gh <alias>` runs.
 
 ### Config the guard cannot read (TP-630)
 
