@@ -14,7 +14,7 @@ process that runs `agent-chat` counts as the human. That includes a spawned agen
 
 `agent-chat debug send <to> <text>` (`src/cli/debug.ts`) sends a `human_send` frame, so
 an agent that runs it delivers free text with `from="human"`. As of origin/main
-`a162351` (2026-10-12), no profile denies it: `HUMAN_ONLY_CLI_DENY` has no `debug` entry,
+`d173e6c` (2026-10-12), no profile denies it: `HUMAN_ONLY_CLI_DENY` has no `debug` entry,
 so any agent with `Bash` can run it today. CC-1083 slice a is planned, not landed. It will
 add `Bash(agent-chat debug send:*)` to `HUMAN_ONLY_CLI_DENY` and to the load-time derived
 denies. Even then, a deny list only matches the literal spelling. `node dist/cli.js debug send`, `npx agent-chat …`, an absolute path or a raw
@@ -25,8 +25,9 @@ frames by caller.
 ## Frame inventory
 
 This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
-(`src/broker/socket.ts`), read at origin/main `a162351`. It lists every case there, and
-each case appears in exactly one class. When a frame is added to the dispatcher, add it
+(`src/broker/socket.ts`), read with `git show origin/main:src/broker/socket.ts` at
+origin/main `d173e6c` (2026-10-12). It lists all 49 cases there, and each case appears in
+exactly one class: 7 refused, 6 requester mapped, 2 session bound and 34 out of scope. When a frame is added to the dispatcher, add it
 here too.
 
 ### Class 1: refused from a declared connection
@@ -79,9 +80,11 @@ finished agents. Its retirement also goes through `retireById` with no actor, so
 
 CC-1138 therefore also adds an ownership check, the way `resolvePredecessor` does for a
 takeover and `checkOwnership` does for resume. A worker requester may retire only agents
-it spawned (`spawnedBy` is the requester's name, or the spawn row's `meta.parent` is the
-requester's id). For `retire_finished` from a declared worker, `spawner` is pinned to the
-requester's name. A coordinator, a human-started session and the unregistered human keep
+it spawned. The test is that the target's spawn row has `meta.parent` equal to the
+requester's agent id, the same key `checkOwnership` uses. The check never uses the
+`spawnedBy` name, because a name can be reused by a later agent. For `retire_finished`
+from a declared worker, the same test filters the roster after `spawner` and `prefix`
+scoping. Agents the worker did not spawn are skipped, whatever `spawner` the frame names. A coordinator, a human-started session and the unregistered human keep
 today's behaviour, which matches `checkOwnership`. `retire_finished` also passes the
 caller through to `retireById` as the actor.
 
@@ -91,12 +94,15 @@ literal spelling.
 
 ### Class 3: bound to the declared session
 
-| Frame             | Today                                                | With a declared id                                        |
-| ----------------- | ---------------------------------------------------- | --------------------------------------------------------- |
-| `permission_hook` | `isHuman` passes, and the caller picks `msg.session` | accepted only when `msg.session` names the declared agent |
+| Frame                     | Today                                                                                                                     | With a declared id                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `permission_hook`         | `isHuman` passes, and the caller picks `msg.session`                                                                      | accepted only when `msg.session` names the declared agent |
+| `permission_self_granted` | `isHuman` passes; the `approval_request` and `allow` `resolution` rows take `actor = msg.session`, which the caller picks | accepted only when `msg.session` names the declared agent |
 
-The PermissionRequest hook runs inside an agent's process tree, so it always carries the
-agent's id and has to stay open.
+Both frames come from the PermissionRequest hook (`permission_self_granted` is CC-694's
+audit row for a call the hook allowed itself). The hook runs inside an agent's process
+tree, so it always carries the agent's id and has to stay open. Binding `msg.session`
+keeps one agent from filing a prompt, or an audit row, under another agent's name.
 
 ### Class 4: out of scope, guarded by its own check
 
@@ -158,8 +164,8 @@ The design:
   `retire_finished`, `caller` is its name; for `retire`, `actor` is its name. An id that
   resolves to no known agent is refused. CC-1138 also adds the retire ownership check
   described under Class 2.
-- **Class 3**: `permission_hook` is accepted only when `msg.session` names the declared
-  agent.
+- **Class 3**: `permission_hook` and `permission_self_granted` are accepted only when
+  `msg.session` names the declared agent.
 - **Class 4** frames are unchanged.
 
 Why class 2 frames get the agent as requester instead of being refused: an agent already
