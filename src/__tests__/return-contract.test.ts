@@ -15,6 +15,7 @@ import {
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
   MUTANT_RULE,
+  PROBE_SANDBOX_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
@@ -814,8 +815,10 @@ describe('CC-690: pr-ready, WAIT and the Class line', () => {
     expect(text).toMatch(/FIX_FIRST[^.]*Class:/)
   })
 
+  // CC-713. Mutation caught: dropping PROBE_SANDBOX_RULE from the REVIEWER array.
   it('runs risky probes only in a scratch repo whose origin is a local bare repo', () => {
-    expect(flat(RETURN_CONTRACT_BLOCKS.reviewer)).toContain('scratch repo whose origin is a local bare repo')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(PROBE_SANDBOX_RULE)
+    expect(PROBE_SANDBOX_RULE).toContain('local bare repo (git init --bare)')
   })
 
   it('stays under the cap with the reviewer under its own 1,200-character report limit named', () => {
