@@ -128,6 +128,8 @@ const Seat = z.looseObject({
   defaults: Defaults.partial().optional(),
   stale_pr_days: z.number().int().nonnegative().optional(),
   pool: z.string().optional(),
+  /** CC-1145: the pool the tick bills last in `poolPick: enforce`, after the pick's order and the home pool. */
+  overflow_pool: z.string().optional(),
   /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
   cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
   spend: orEmpty(

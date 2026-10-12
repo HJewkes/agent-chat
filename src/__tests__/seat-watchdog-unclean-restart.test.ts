@@ -195,9 +195,9 @@ describe('a watchdog run after an unclean broker restart', () => {
     for (let run = 0; run < 4; run++) lines.push(...(await w.run()))
 
     expect(w.resumes).toEqual([SEAT_NAME])
-    expect(lines.at(-1)).toMatch(
-      /resume REFUSED seat-hub \(seat-hub is already live: .+\); seat may be live, not counted as a try/,
-    )
+    expect(lines.at(-1)).toContain('resume REFUSED seat-hub (seat-hub is already live: ')
+    expect(lines.at(-1)).toContain('not counted as a try')
+    expect(w.doc.seats[SEAT_NAME]?.resumeRetry).toBe(0)
     expect(lines.join('\n')).not.toContain('message it instead')
     expect(stateOf()).toBe('live')
   })
