@@ -54,3 +54,41 @@ export const run: Runner = (bin, args, cwd, options) => {
     timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
   }
 }
+
+export interface ExecFailureContext {
+  cwd: string
+  elapsedMs: number
+}
+
+const STDERR_CHARS = 200
+
+/**
+ * One line naming why an async `execFile` failed (CC-1096): exit code, or the signal and whether
+ * the timeout sent it, then elapsed time, cwd and the first stderr line. Its message alone reads
+ * "Command failed: <argv>", which cannot tell a timeout from a crash from a missing binary.
+ */
+export function describeExecFailure(err: unknown, { cwd, elapsedMs }: ExecFailureContext): string {
+  const e = (err ?? {}) as ExecError
+  const stderr = firstNonEmptyLine(typeof e.stderr === 'string' ? e.stderr : '')
+  return `${failureKind(e, err, Math.round(elapsedMs))}, cwd ${cwd}${stderr === '' ? '' : `: ${stderr}`}`
+}
+
+interface ExecError {
+  code?: unknown
+  signal?: unknown
+  killed?: unknown
+  stderr?: unknown
+  message?: unknown
+}
+
+/** execFile reports a timeout as `killed` plus `signal`, with `code` null; ETIMEDOUT is spawnSync's. */
+function failureKind(e: ExecError, err: unknown, ms: number): string {
+  if (typeof e.code === 'number') return `exit ${e.code} after ${ms} ms`
+  if (typeof e.code === 'string') return `${e.code} after ${ms} ms`
+  if (typeof e.signal === 'string')
+    return `killed by ${e.signal} after ${ms} ms${e.killed === true ? ' (timeout)' : ''}`
+  return `${firstNonEmptyLine(String(e.message ?? err))} after ${ms} ms`
+}
+
+const firstNonEmptyLine = (s: string): string =>
+  (s.split('\n').find(line => line.trim() !== '') ?? '').trim().slice(0, STDERR_CHARS)

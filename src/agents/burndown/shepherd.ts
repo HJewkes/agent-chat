@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
-import { childEnv, run, type Runner, type RunResult } from './exec.js'
+import { childEnv, describeExecFailure, run, type Runner, type RunResult } from './exec.js'
 
 /**
  * Burndown's only door to Shepherd, the factory's PR-shepherding service: the
@@ -94,20 +95,30 @@ const STATUS_TIMEOUT_MS = 15_000
 /** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
 const STATUS_MAX_BYTES = 64 * 1024 * 1024
 
-/** CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session. */
+/**
+ * CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session.
+ * CC-1096: runs in HOME, since the broker's cwd can be a removed tree, and logs why a read failed.
+ */
 export async function shepherdRowsAsync(
   log: Log = logEvent,
   timeoutMs = STATUS_TIMEOUT_MS,
+  bin = SHEPHERD_BIN,
 ): Promise<ShepherdRow[] | undefined> {
+  const cwd = homedir()
+  const started = performance.now()
   try {
-    const { stdout } = await promisify(execFile)(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
+    const { stdout } = await promisify(execFile)(bin, SHEPHERD_STATUS_ARGS, {
+      cwd,
       env: childEnv(),
       encoding: 'utf8',
       timeout: timeoutMs,
       maxBuffer: STATUS_MAX_BYTES,
     })
     return parseShepherdRows(stdout, log)
-  } catch {
+  } catch (err) {
+    log('shepherd_status_failed', {
+      error: describeExecFailure(err, { cwd, elapsedMs: performance.now() - started }),
+    })
     return undefined
   }
 }
