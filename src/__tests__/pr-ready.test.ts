@@ -603,6 +603,39 @@ describe('pr-ready options and discovery', () => {
   })
 })
 
+describe('pr-ready privacy guard', () => {
+  const PRIVACY = 'npx --no-install vitest run src/__tests__/fixtures-privacy.test.ts'
+  // Synthetic names only: fixtures-privacy scans this file too.
+  const leakOutput =
+    'AssertionError: privacy leak: planted.test.ts: seat-zz-leak: expected [] to deeply equal []'
+  const agentChatRepo = () =>
+    fixtureRepo(
+      {
+        'package.json': pkg({ scripts: { lint: 'x' } }),
+        'src/__tests__/fixtures-privacy.test.ts': 'synthetic\n',
+      },
+      { 'a.txt': '1\n' },
+    )
+
+  it('fails naming the leaked file and name when the privacy test fails', async () => {
+    const leak: Override = line => (line === PRIVACY ? { code: 1, output: leakOutput } : undefined)
+
+    const result = await runPrReady(agentChatRepo(), [], {}, { override: leak })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL privacy: privacy leak: planted.test.ts: seat-zz-leak')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
+    expect(result.toolCalls).toEqual(['npm run lint', PRIVACY])
+  })
+
+  it('prints ok privacy after the checks and exits 0 when the privacy test passes', async () => {
+    const result = await runPrReady(agentChatRepo())
+
+    expect(result.code).toBe(0)
+    expect(result.out.slice(3, 5)).toEqual(['ok checks', 'ok privacy'])
+  })
+})
+
 /** What gh-write itself prints to stderr when it refuses these arguments; it never reaches gh. */
 async function ghWriteRefusal(args: string[], termsFile: string): Promise<string> {
   const unreachable = () => Promise.reject(new Error('gh-write reached gh'))
