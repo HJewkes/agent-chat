@@ -19,8 +19,8 @@ export const GH_BUILTINS = new Set(
   `a11y accessibility actions agent agent-task agents alias api at attestation auth browse cache
   codespace completion config copilot credits cs discussion environment exit-codes ext extension
   extensions formatting gist gpg-key issue label licenses mintty org pr preview project reference
-  release repo rs ruleset run search secret skill skills ssh-key status variable version
-  workflow`.split(/\s+/),
+  release repo rs ruleset run search secret skill skills ssh-key status telemetry variable
+  version workflow`.split(/\s+/),
 )
 
 const subcommands = (groups: string, words: string): [string, ReadonlySet<string>][] => {
@@ -342,4 +342,50 @@ export function ghAliasSet(rest: readonly (string | undefined)[]): GhAliasSet | 
   if (expansion === '-') return { kind: 'unread' }
   const alias = toAlias(expansion)
   return { kind: 'body', alias: { ...alias, shell: flags.get('shell') === true || alias.shell } }
+}
+
+/** gh's canonical name for a top-level command word (`ext` is `extension`). */
+export const ghCommand = (word: string | undefined): string | undefined =>
+  word === undefined ? undefined : (COMMAND_ALIASES[word] ?? word)
+
+/** Words a config alias may shadow that gh still runs itself when no alias does. */
+const SHADOWABLE_BUILTINS = new Set(['help', '__complete', '__completeNoDesc'])
+
+/**
+ * Whether gh runs the word at an alias slot as an extension once no config alias names it: a
+ * top-level word that is not a gh command runs `gh-<word>` from `gh extension list`.
+ */
+export const ghExtensionSlot = (slot: AliasSlot): boolean =>
+  slot.parent === '' && (slot.word === undefined || !SHADOWABLE_BUILTINS.has(slot.word))
+
+/** `gh repo clone` and `gh repo fork` flags that take the next word as their value. */
+const CLONE_VALUE_FLAGS = new Set(['-u', '--upstream-remote-name', '--remote-name', '--org', '--fork-name'])
+
+/** What `gh repo clone|fork` hands `git clone`, and whether a word after its `--` is one the guard cannot resolve. */
+export interface GhClone {
+  git: number[]
+  hidden: boolean
+}
+
+/**
+ * The words `gh repo clone|fork` hands `git clone`, as positions in `rest` (every word after
+ * `repo clone`): each positional after the repository, and every word after `--`, in order. A word
+ * the guard cannot resolve may be `--`, so every word after it counts too.
+ */
+export function ghCloneArgs(rest: readonly (string | undefined)[]): GhClone {
+  const git: number[] = []
+  let repo = false
+  let dash = false
+  let hidden = false
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]
+    if (!dash && word === '--') dash = true
+    else if (dash || word === undefined || !word.startsWith('-')) {
+      if (dash || repo) git.push(i)
+      hidden ||= dash && word === undefined
+      repo = true
+      dash ||= word === undefined
+    } else if (CLONE_VALUE_FLAGS.has(word)) i++
+  }
+  return { git, hidden }
 }

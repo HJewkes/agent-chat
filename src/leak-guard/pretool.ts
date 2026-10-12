@@ -28,8 +28,11 @@ import {
   ghAliasesAt,
   ghAliasesUnder,
   ghAliasSlot,
+  ghCloneArgs,
+  ghCommand,
   ghCommandWords,
   ghConfigDir,
+  ghExtensionSlot,
   ghPlainAlias,
   ghShellAlias,
   HIDDEN,
@@ -174,6 +177,8 @@ export const REASONS = {
   ghAliasHidden: `leak-guard: a gh alias definition, a gh command word, or an argument passed to a gh alias holds a word or flag the guard cannot resolve or read, so it cannot tell what the alias runs. Write it out literally. ${DOCS}`,
   ghAliasUnreadable: `leak-guard: the guard cannot parse gh's config.yml, or a gh alias name holds a quoted or escaped space, so it cannot tell whether this gh command runs an alias. Fix the file so it is plain YAML with an aliases map of strings and names of plain words. ${DOCS}`,
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
+  ghCloneHidden: `leak-guard: gh repo clone or gh repo fork hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
+  ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1225,8 +1230,15 @@ function checkGhAliases(
   return set === undefined ? undefined : checkGhAliasSet(set, ctx, scope, depth)
 }
 
+/** Without a config to read, a word that is not a gh command runs an extension. */
+function runsExtension(args: readonly (string | undefined)[], at: readonly number[]): boolean {
+  if (at.length === 0 || at[0] === HIDDEN) return false
+  const slot = ghAliasSlot(at.map(i => args[i]))
+  return slot !== undefined && ghExtensionSlot(slot)
+}
+
 /** The config aliases gh may run for these command words, and which words name the alias; none for a word that may name one in another config. */
-type AliasAt = { aliases: readonly GhAlias[]; words: readonly number[] }
+type AliasAt = { aliases: readonly GhAlias[]; words: readonly number[]; extension: boolean }
 
 /**
  * Which aliases gh would run, compared on gh's canonical command path (`gh cs x` runs key
@@ -1246,8 +1258,12 @@ function ghAliasAt(
   const slot = ghAliasSlot(at.map(i => args[i]))
   if (slot === undefined) return undefined
   const words = at.slice(0, slot.used)
-  if (slot.word !== undefined) return { aliases: ghAliasesAt(config.aliases, slot.parent, slot.word), words }
-  return ghAliasesUnder(config.aliases, slot.parent) ? REASONS.ghAliasHidden : { aliases: [], words }
+  const extension = ghExtensionSlot(slot)
+  if (slot.word !== undefined)
+    return { aliases: ghAliasesAt(config.aliases, slot.parent, slot.word), words, extension }
+  return ghAliasesUnder(config.aliases, slot.parent)
+    ? REASONS.ghAliasHidden
+    : { aliases: [], words, extension }
 }
 
 /** A shell alias runs its body with the words filled in; a plain one runs as another gh command. */
@@ -1274,13 +1290,13 @@ function checkGhAliasRun(
   scope: Scope,
   depth: number,
 ): string | undefined {
-  if (ctx.readGhAliases === undefined) return undefined
+  if (ctx.readGhAliases === undefined) return runsExtension(args, at) ? REASONS.ghExtension : undefined
   const found = ghAliasAt(args, at, ctx.readGhAliases)
   if (found === undefined || typeof found === 'string') return found
   if (writesGhConfig(ctx, scope)) return REASONS.ghAliasWritten
   if (changesGhHome(assigns, ctx, scope)) return REASONS.ghAliasEnv
   const { aliases, words } = found
-  if (aliases.length === 0) return undefined
+  if (aliases.length === 0) return found.extension ? REASONS.ghExtension : undefined
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
   const rest = args.filter((_, i) => !words.includes(i))
   if (!rest.every(arg => arg !== undefined)) return REASONS.ghAliasHidden
@@ -1290,6 +1306,54 @@ function checkGhAliasRun(
     if (reason !== undefined) return reason
   }
   return undefined
+}
+
+/**
+ * The git and the programs gh runs for its own commands (TP-2371): `gh extension exec`, and the
+ * `git clone` that `gh repo clone|fork` runs with the words after the repository, then its aliases.
+ */
+function checkGhRuns(
+  marked: readonly string[],
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const at = ghCommandWords(args, 2)
+  const [verb, sub] = at.map(i => ghCommand(args[i]))
+  const unsure = at[1] === HIDDEN
+  if (verb === 'extension' && (sub === 'exec' || unsure)) return REASONS.ghExtension
+  if (verb === 'repo' && (sub === 'clone' || sub === 'fork' || unsure)) {
+    const reason = checkGhClone(marked.slice((at[1] ?? 0) + 1), assigns, cmd, ctx, scope, depth)
+    if (reason !== undefined) return reason
+  }
+  return checkGhAliases(marked, assigns, cmd, ctx, scope, depth)
+}
+
+/** Any URL: the clone checks read the flags git gets, and gh builds the URL from the repository. */
+const CLONE_URL = 'https://github.com/o/r.git'
+
+/** The `git clone` gh runs, built as gh's `parseCloneArgs` does: a leading positional is the directory, put after the URL. */
+function checkGhClone(
+  marked: readonly string[],
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const resolved = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const { git, hidden } = ghCloneArgs(resolved)
+  if (hidden) return REASONS.ghCloneHidden
+  if (git.length === 0) return undefined
+  const [first = 0] = git
+  const lead = resolved[first]
+  const dir = lead !== undefined && !lead.startsWith('-') ? [first] : []
+  const flags = git.filter(i => !dir.includes(i)).map(i => marked[i] as string)
+  const words = ['clone', ...flags, CLONE_URL, ...dir.map(i => marked[i] as string)]
+  return checkGitRun(gitRun(words, assigns, cmd, ctx, scope, true), ctx, scope, depth)
 }
 
 function checkShell(
@@ -1448,14 +1512,14 @@ function checkSimple(
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh')
     return head === 'gh'
-      ? (checkGhAliases(marked, unwrapped.assigns, cmd, ctx, at, depth) ??
+      ? (checkGhRuns(marked, unwrapped.assigns, cmd, ctx, at, depth) ??
           checkGh(marked, unwrapped.assigns, cmd, ctx, at))
       : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
     const ghArgs = ghWriteArgs(marked)
     return (
-      checkGhAliases(ghArgs, unwrapped.assigns, cmd, ctx, at, depth) ??
+      checkGhRuns(ghArgs, unwrapped.assigns, cmd, ctx, at, depth) ??
       checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
     )
   }
