@@ -183,14 +183,28 @@ process's environment rather than on the command text.
 
 **Limits, stated plainly.** The id is self-declared, so omitting or forging it fails
 open. `env -u AGENT_CHAT_AGENT_ID agent-chat debug send …` or a raw `nc` write still
-reaches the broker as the human. The same `env -u` also gets past the root rule for the
-tick and seat opt-out sites (see "Tick and seat callers" below), because the rule applies
-only when an id is set. Either way the caller arrives with `requestedBy = HUMAN` and a `permission_hook`
+reaches the broker as the human, with `requestedBy = HUMAN` and a `permission_hook`
 `session` of the caller's choosing. Declaring another agent's id makes the caller act as
-that agent. This meets the bar in
-`agent-teams.md` §11.4, which stops a confused agent but not an adversarial one. It does
-not raise that bar. The OS account remains the trust boundary. Every agent runs as the
-human's user and can do anything the human's CLI can do.
+that agent. The same `env -u` also gets past the root rule for the tick and seat opt-out
+sites (see "Tick and seat callers" below), because the rule applies only when an id is
+set.
+
+The root rule trusts the broker's own environment, which is fixed when the broker
+starts. What it does and does not stop:
+
+- **Stopped:** moving `HOME` or `AGENT_CHAT_HOME` to a directory of your own and planting
+  a `chat.sock` symlink to the live socket there, so that a different `config.json` is
+  read. The site then resolves roots from the planted config, the broker reports its
+  own, and they differ, so the site refuses.
+- **Not stopped:** an agent that starts the broker itself with a planted `HOME` or root
+  overrides. The broker's roots are then the agent's. This is adversarial, so it falls
+  under the OS-account limit.
+- **Not stopped:** editing the owner's real charter, seat files or `config.json`. That
+  changes the broker's roots too, and it is the same limit.
+
+This meets the bar in `agent-teams.md` §11.4, which stops a confused agent but not an
+adversarial one. It does not raise that bar. The OS account remains the trust boundary.
+Every agent runs as the human's user and can do anything the human's CLI can do.
 
 ## Client-side callers
 
@@ -242,29 +256,41 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   cover every seats verb. A test pins the opt-out call sites, so adding one is a reviewed
   change. Another test pins the root rule.
 
-  **The root rule.** When `AGENT_CHAT_AGENT_ID` is set, each of the three opt-out sites
-  refuses before connecting unless both of these hold:
-  - no `--root` is given;
-  - the autonomy root it resolved equals the root resolved from a stripped environment,
-    one with `AGENT_CHAT_ACTIVE_WORK_ROOT`, `ACTIVE_ROOT` and `XDG_DATA_HOME` unset.
+  **The root rule: the broker decides the root.** When `AGENT_CHAT_AGENT_ID` is set, each
+  of the three opt-out sites does this before it acts on any policy:
+  - It asks the broker, over the connection it already opens, for the roots the broker
+    resolves in its own process: `currentAutonomyRoot()` and `activeWorkRoot()`.
+  - It refuses unless no `--root` is given and every root it resolved for itself equals
+    the broker's.
 
-  With no agent id, the sites behave as today.
+  An equivalent form is to drop the site's own resolution and use the broker's roots
+  outright. CC-1138 picks one of the two. The compare form refuses loudly on a mismatch
+  rather than quietly running a different policy, so this record leans towards it. With
+  no agent id, the sites behave as today.
 
-  Why: the watchdog, heartbeat-check and the tick read their policy (charter, seat files,
-  task board) from the autonomy root. `--root` is one way to choose that root, but not the
-  only one. `defaultAutonomyRoot()` follows `activeWorkRoot()`
-  (`src/agents/active-work.ts`), which reads `AGENT_CHAT_ACTIVE_WORK_ROOT`, `ACTIVE_ROOT`
-  and, on Linux, `XDG_DATA_HOME`. `currentAutonomyRoot` (`src/agents/autonomy-root.ts`)
-  then applies config.json's `coordinatorConfig`. The tick's charter resolves the same way
-  (`src/agents/burndown/policy.ts`). So `ACTIVE_ROOT=/tmp/fake agent-chat seats watchdog`
-  picks a policy the caller wrote, with no `--root` at all. With that policy, an agent
+  This needs one new read-only frame. The broker answers it from its own process and
+  never from the request. CC-1138 adds it to the frame inventory as Class 4.
+
+  Why the broker: the watchdog, heartbeat-check and the tick read their policy (charter,
+  seat files, task board) from roots resolved in the calling process. Every input to that
+  resolution is something the calling agent can set:
+  - `--root`;
+  - `AGENT_CHAT_ACTIVE_WORK_ROOT`, `ACTIVE_ROOT`, and `XDG_DATA_HOME` on Linux, read by
+    `activeWorkRoot()` (`src/agents/active-work.ts`);
+  - `HOME`, through `os.homedir()` when none of those is set, and `APPDATA` on win32;
+  - `AGENT_CHAT_HOME`, which picks the `config.json` whose `coordinatorConfig`
+    `currentAutonomyRoot` (`src/agents/autonomy-root.ts`) applies.
+
+  The tick's charter resolves the same way (`src/agents/burndown/policy.ts`). So
+  `ACTIVE_ROOT=/tmp/fake agent-chat seats watchdog` or `HOME=/tmp/fake agent-chat seats
+watchdog` picks a policy the caller wrote, with no `--root`. With that policy, an agent
   could drive `human_send` as the human, and `spawn` and `retire` as `HUMAN`, for any
   agent name, past the new ownership check.
 
-  The rule states the condition rather than listing the routes in, so a new override
-  falls on the refusing side once it is added to the stripped set. It does not cover
-  config.json. Both resolutions read the same file, so an edit to `coordinatorConfig`
-  passes. That falls under the OS-account limit below.
+  Earlier drafts of this rule stripped these variables one at a time, and each review
+  found another. Any rule that compares against a client-side resolution stays a list of
+  routes. The broker's environment is the one input the calling agent cannot set at call
+  time, so comparing against it closes the class rather than the instances.
 
   Option 2 was rejected because the broker would have to trust a self-declared source,
   which an agent can set as easily as it can omit the id. That adds broker surface for no
