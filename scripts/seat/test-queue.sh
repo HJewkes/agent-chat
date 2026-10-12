@@ -297,9 +297,76 @@ t_replace_size() {
   expect_fail "replace is refused past 5,000 bytes" "5,000" replace "BB-7 beta work waiting" \
     "BB-7 beta work waiting, with enough extra words to cross the limit"
 }
+t_set() {
+  name="set rewrites the head, drops its sub-lines and keeps the - marker"
+  reset; run "$name" 0 set AA-101 AA-101 merged as PR 11 || return
+  has "$name" "- AA-101 merged as PR 11" || return
+  lacks "$name" "alpha work open" || return
+  lacks "$name" "sub bullet mentioning AA-102" || return
+  has "$name" "- BB-7 beta work waiting" && report "$name" ok
+  name="set on a numbered key keeps the item's own number"
+  reset; run "$name" 0 set morning:5 ZZ-10 decided || return
+  has "$name" "5. ZZ-10 decided" || return
+  lacks "$name" "6. ZZ-10" && report "$name" ok
+  name="set on a wrapped Next item drops the wrapped line"
+  reset; run "$name" 0 set next:1 AA-201 rewritten || return
+  has "$name" "1. AA-201 rewritten" || return
+  lacks "$name" "wrapped text line" && report "$name" ok
+  reset; expect_fail "set refuses a numbered key with no such item" "no item 9. in section Next" set next:9 x
+  reset; expect_fail "set refuses an id naming two items" "CC-5 names 2 items" set CC-5 x
+  reset; expect_fail "set refuses empty text" "set needs item text" set BB-7 " "
+  reset; expect_fail "set refuses an unknown id" "ZZ-99" set ZZ-99 x
+}
+t_number() {
+  name="done morning:3 removes Morning item 3 and leaves Next item 3"
+  reset; run "$name" 0 done morning:3 || return
+  lacks "$name" "ZZ-9 owner task" || return
+  has "$name" "3. AA-204 third thing" || return
+  case "$out" in "3. ZZ-9 owner task") report "$name" ok ;; *) report "$name" "stdout: $out" ;; esac
+  name="a numbered key addresses an id-less item"
+  preset; run "$name" 0 done morning:202 || return
+  lacks "$name" "Recommend MERGE on repo#41" || return
+  has "$name" "208. EP-9" && report "$name" ok
+  name="move next:2 relocates the numbered item"
+  reset; run "$name" 0 move next:2 overflow || return
+  has "$name" "- AA-202 second thing" || return
+  lacks "$name" "2. AA-202" && report "$name" ok
+  name="park next:3 moves the item to Morning with the next number"
+  reset; run "$name" 0 park next:3 || return
+  has "$name" "6. AA-204 third thing" && report "$name" ok
+  reset; expect_fail "a key in a bulleted section finds no numbered item" "no item 1. in section In flight" \
+    done in-flight:1
+  reset; expect_fail "a key naming an unknown section fails" "unknown section 'nowhere'" done nowhere:1
+  reset; expect_fail "done by numbered key checks --pr" "#99" done next:1 --pr 99
+}
+t_top() {
+  name="add --top puts the item first under the heading"
+  reset; run "$name" 0 add --top in-flight "Gamma GG-1" || return
+  want=$(printf '## In flight\n\n- Gamma GG-1\n- AA-101 alpha work open, PR #11.')
+  got=$(grep -A3 '^## In flight' "$F")
+  [ "$got" = "$want" ] && report "$name" ok || report "$name" "got: $got"
+  name="add --top replaces the none placeholder"
+  reset; run "$name" 0 add --top overflow "Eps EE-3" || return
+  lacks "$name" "none" || return
+  has "$name" "- Eps EE-3" && report "$name" ok
+  reset; "$Q" alpha add --top next 2>/dev/null; rc=$?
+  [ "$rc" -eq 2 ] && report "add --top without text is a usage error" ok \
+    || report "add --top without text is a usage error" "exit $rc"
+}
+t_bytes() {
+  name="a write reports its size on stderr and keeps done's stdout"
+  reset; run "$name" 0 done BB-7 || return
+  size=$(wc -c < "$F" | tr -d ' ')
+  [ "$out" = "- BB-7 beta work waiting" ] || { report "$name" "stdout: $out"; return; }
+  [ "$err" = "bin/queue: $size of 5000 bytes" ] && report "$name" ok || report "$name" "stderr: $err"
+  name="a failed write reports no size"
+  reset; run "$name" 1 done ZZ-99
+  case "$err" in *"of 5000 bytes"*) report "$name" "stderr: $err" ;; *) report "$name" ok ;; esac
+}
 t_done; t_done_all; t_done_next; t_done_pr; t_park; t_add; t_move
 t_leading; t_blank; t_lock; t_race
 t_size; t_failures; t_missing; t_atomic; t_roots
 t_replace; t_replace_stdin; t_replace_usage; t_replace_size
+t_set; t_number; t_top; t_bytes
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]
