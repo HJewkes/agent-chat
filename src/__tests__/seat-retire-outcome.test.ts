@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseShepherdRows, type ShepherdRow } from '../agents/burndown/shepherd.js'
 import { seatDispatchLog, seatMergedLog, type SpawnFacts } from '../agents/seats/dispatch-log.js'
 import { foldDispatch } from '../agents/seats/dispatch-record.js'
+import { seatLogPath } from '../agents/seats/io.js'
+import { seatJournal, type SeatJournal } from '../agents/seats/journal.js'
 import type { RetireOutcome } from '../agents/seats/retire-outcome.js'
 import { retireSeatOutcome } from '../agents/seats/retire-seat-outcome.js'
 
@@ -137,13 +139,26 @@ const facts = (agent: string): SpawnFacts => ({
 
 const SPEND = { usage_miss: 'not read' }
 
-const writerWith = (shepherd: () => Promise<ShepherdRow[] | undefined>) =>
+const writerWith = (shepherd: () => Promise<ShepherdRow[] | undefined>, journal?: SeatJournal) =>
   seatDispatchLog(root, {
     now: () => AT,
     activeWork: tmp('outcome-aw-'),
     log: e => void logged.push(e),
     shepherd,
+    ...(journal === undefined ? {} : { journal }),
   })
+
+const journalAt = (at: Date): SeatJournal => seatJournal(root, { now: () => at, log: () => undefined })
+
+const dayLines = (): string[] => {
+  const file = seatLogPath(root, 'seat-x', AT)
+  return fs.existsSync(file)
+    ? fs
+        .readFileSync(file, 'utf8')
+        .split('\n')
+        .filter(line => line !== '')
+    : []
+}
 
 const endedRows = (): Record<string, unknown>[] =>
   rows().filter(row => row.outcome === 'merged' || row.outcome === 'done')
@@ -231,5 +246,48 @@ describe('the ended writer', () => {
 
   it('is absent when no Shepherd reader is given', () => {
     expect(seatDispatchLog(root).ended).toBeUndefined()
+  })
+})
+
+describe('the ended writer’s merged journal line (CC-316)', () => {
+  const MERGED_LINE = `merged AB-12 ${IMPLEMENTER} ${PR}@${HEAD.slice(0, 7)}`
+
+  it('writes one merged line beside the merged row', async () => {
+    const log = writerWith(async () => [shepherdRow()], journalAt(AT))
+
+    await log.ended?.(facts(IMPLEMENTER), reported({ pr: PR }))
+
+    expect(endedRows()).toEqual([expect.objectContaining({ outcome: 'merged', by: 'agent-chat' })])
+    expect(dayLines().map(line => line.slice(6))).toEqual([MERGED_LINE])
+  })
+
+  it('writes the done row and no journal line for a reviewer', async () => {
+    const log = writerWith(async () => [shepherdRow()], journalAt(AT))
+
+    await log.ended?.(facts(REVIEWER), reported({ pr: PR }))
+
+    expect(endedRows()).toEqual([expect.objectContaining({ agent: REVIEWER, outcome: 'done' })])
+    expect(dayLines()).toEqual([])
+  })
+
+  it('writes one line when the agent is retired again in a later minute', async () => {
+    await writerWith(async () => [shepherdRow()], journalAt(AT)).ended?.(facts(IMPLEMENTER), reported())
+    const later = new Date(AT.getTime() + 4 * 60_000)
+    await writerWith(async () => [shepherdRow()], journalAt(later)).ended?.(facts(IMPLEMENTER), reported())
+
+    expect(dayLines().map(line => line.slice(6))).toEqual([MERGED_LINE])
+  })
+
+  it('keeps the merged row and logs once when the journal throws', async () => {
+    const throwing: SeatJournal = () => {
+      throw new Error('journal down')
+    }
+    const log = writerWith(async () => [shepherdRow()], throwing)
+
+    await log.ended?.(facts(IMPLEMENTER), reported())
+    await log.ended?.(facts(IMPLEMENTER), reported())
+
+    expect(endedRows()).toEqual([expect.objectContaining({ outcome: 'merged', by: 'agent-chat' })])
+    expect(logged).toEqual(['seat_dispatch_unavailable'])
   })
 })
