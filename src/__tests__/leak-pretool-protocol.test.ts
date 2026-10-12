@@ -1,0 +1,117 @@
+import { parseTerms } from '@titan-design/egress-scan'
+import { describe, expect, it } from 'vitest'
+import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
+
+const ctx: GuardContext = {
+  terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
+  cwd: '/work',
+  env: {},
+  protectedPaths: ['titan-egress/private-terms', '.agent-chat/git-hooks'],
+  readFile: () => undefined,
+  readAlias: () => undefined,
+  readIncludedHooksPath: () => false,
+}
+
+describe('GIT_ALLOW_PROTOCOL on a line that may reach git (TP-2371)', () => {
+  it.each([
+    'GIT_ALLOW_PROTOCOL=ext git fetch x',
+    'export GIT_ALLOW_PROTOCOL=https:EXT; git fetch x',
+    'env GIT_ALLOW_PROTOCOL=file:ext git fetch',
+    'GIT_ALLOW_PROTOCOL=" ext" git fetch x',
+  ])('denies a value that lists ext: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'GIT_ALLOW_PROTOCOL="$P" git fetch x',
+    'GIT_ALLOW_PROTOCOL+=:ext git fetch x',
+    'read GIT_ALLOW_PROTOCOL; git fetch x',
+    ': ${GIT_ALLOW_PROTOCOL:=ext}; git fetch x',
+    'env --unset=GIT_ALLOW_PROTOCOL git fetch x',
+  ])('denies a value it cannot read: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'unset GIT_ALLOW_PROTOCOL; git fetch x',
+    'unset -v GIT_ALLOW_PROTOCOL; git fetch x',
+    'env -u GIT_ALLOW_PROTOCOL git fetch x',
+    'env --unset GIT_ALLOW_PROTOCOL git fetch x',
+  ])('denies unsetting it, which lifts a pinned list: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'GIT_ALLOW_PROTOCOL=https:ssh git fetch x',
+    'GIT_ALLOW_PROTOCOL=https:next git fetch x',
+    'echo $GIT_ALLOW_PROTOCOL',
+    'echo "${GIT_ALLOW_PROTOCOL:-unset}"; git status',
+    'unset GIT_ALLOW_PROTOCOL; ls',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})
+
+describe('git config writes that switch on the ext transport (TP-2371)', () => {
+  it.each([
+    'git config protocol.ext.allow always',
+    'git config --global protocol.allow always',
+    'git config set protocol.ext.allow user',
+    'git config --file .git/config protocol.EXT.allow always',
+    'git config --add Protocol.Allow always',
+    'git config protocol.ext.allow "$V"',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'git config protocol.ext.allow never',
+    'git config --get protocol.ext.allow',
+    'git config get protocol.allow',
+    'git config protocol.ext.allow',
+    'git config --unset protocol.ext.allow',
+    'git config protocol.file.allow always',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})
+
+describe('remote URL writes the guard cannot read (TP-2371)', () => {
+  it.each([
+    'git remote set-url x "$U"',
+    'git remote set-url --push x "$U"',
+    'git remote add y "$U"',
+    'git remote add -t main y $U',
+    'git config remote.x.url "$U"',
+    'git config set remote.x.pushurl "$U"',
+    'git config remote.x.vcs "$H"',
+    'git config url."$B".insteadOf https://github.com/',
+    'git config --global url.https://x/.pushInsteadOf "$P"',
+    'git config "$K" "$V"',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it('denies the Shepherd chain: a hidden ext URL, then a protocol list that runs it', () => {
+    expect(checkCommand('git remote set-url x "$U"', ctx)).toBeDefined()
+    expect(checkCommand('GIT_ALLOW_PROTOCOL=ext git fetch x', ctx)).toBeDefined()
+  })
+
+  it.each([
+    'git remote set-url origin https://github.com/o/r',
+    'git remote add up git@github.com:o/r.git',
+    'git remote -v',
+    'git remote remove "$R"',
+    'git remote set-url --delete origin "$OLD"',
+    'git config remote.origin.url',
+    'git config --get remote.origin.url',
+    'git config remote.origin.url https://github.com/o/r',
+    'git config user.name "$NAME"',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+
+  it('keeps denying an ext:: insteadOf base as before', () => {
+    expect(checkCommand('git config url."ext::sh -c x".insteadOf https://github.com/', ctx)).toBeDefined()
+  })
+})

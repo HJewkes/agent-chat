@@ -77,6 +77,16 @@ export const PROGRAM_ENV = new Set([
  */
 export const OPAQUE_PROGRAM_ENV = new Set(['LESS', 'LESSOPEN', 'LESSCLOSE', 'MANOPT'])
 
+/**
+ * The protocol list git honours over `protocol.*.allow` (TP-2371): listing `ext` lets an `ext::`
+ * URL run a shell command, and unsetting it lifts a list agent-chat pins.
+ */
+export const PROTOCOL_ENV = new Set(['GIT_ALLOW_PROTOCOL'])
+
+/** Whether a colon-separated protocol list names `ext`, as git reads it: any case, blanks trimmed. */
+export const listsExt = (value: string): boolean =>
+  value.split(':').some(protocol => protocol.trim().toLowerCase() === 'ext')
+
 /** The script one config word runs: null for none, undefined when the guard cannot read it. */
 function scriptOf(word: ConfigWord): string | null | undefined {
   const pair = keyValue(word)
@@ -224,11 +234,72 @@ function vcsPayloads(config: readonly ConfigWord[], sub: string | undefined): st
 function enablesExt(config: readonly ConfigWord[]): boolean {
   return config.some(word => {
     const pair = keyValue(word)
-    const parts = pair && splitKey(pair.key)
-    if (!pair || parts?.section !== 'protocol' || parts.name !== 'allow') return false
-    if (parts.sub !== undefined && parts.sub.toLowerCase() !== 'ext') return false
-    return pair.value?.toLowerCase() !== 'never'
+    return pair !== undefined && allowsExt(pair.key, pair.value)
   })
+}
+
+/** Whether setting `key` to `value` lets git run `ext::` URLs: `protocol.allow` or `protocol.ext.allow` other than `never`. */
+function allowsExt(key: string, value: string | null | undefined): boolean {
+  const parts = splitKey(key)
+  if (parts?.section !== 'protocol' || parts.name !== 'allow') return false
+  if (parts.sub !== undefined && parts.sub.toLowerCase() !== 'ext') return false
+  return value?.toLowerCase() !== 'never'
+}
+
+// `git config` options that take the next word as their value.
+const CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value'])
+// `git config` modes, legacy flags and subcommands alike, that read, remove or rename rather than set a value.
+const CONFIG_NON_WRITES = new Set(
+  `--get --get-all --get-regexp --get-urlmatch --get-color --get-colorbool -l --list --unset --unset-all
+  --remove-section --rename-section -e --edit get list unset remove-section rename-section edit`.split(/\s+/),
+)
+// Keys whose value git reads as a remote's URL or URL helper; `url.<base>.insteadOf` also takes one in its key.
+const URL_KEY = /^(?:remote\..*\.(?:url|pushurl|vcs)|url\..*\.(?:push)?insteadof)$/i
+
+/** The key and value words a `git config` write sets, from the words after `config`; null when it sets none. */
+function configWrite(args: readonly (string | undefined)[]): (string | undefined)[] | null {
+  const positionals: (string | undefined)[] = []
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]
+    if (
+      word !== undefined &&
+      CONFIG_NON_WRITES.has(word) &&
+      (word.startsWith('-') || positionals.length === 0)
+    )
+      return null
+    if (word !== undefined && CONFIG_VALUE_OPTS.has(word)) i++
+    else if (word === undefined || !word.startsWith('-')) positionals.push(word)
+  }
+  if (positionals[0] === 'set') positionals.shift()
+  return positionals.length < 2 ? null : positionals
+}
+
+/** Whether `git remote add|set-url` writes a URL the guard cannot read; `set-url --delete` writes none. */
+function hiddenRemoteUrl(args: readonly (string | undefined)[]): boolean {
+  const [verb, ...rest] = args
+  if (verb !== 'add' && verb !== 'set-url') return false
+  return !rest.includes('--delete') && rest.includes(undefined)
+}
+
+/**
+ * What a `git config` or `git remote` write at `at` would enable for `ext::` (TP-2371): `protocol`
+ * when it sets `protocol.allow` or `protocol.ext.allow` to anything but `never`, `url` when it writes
+ * a remote URL, URL helper or `insteadOf` rewrite, or a key, the guard cannot read, which may hide an
+ * `ext::` URL a later git runs. undefined for neither.
+ */
+export function extEnablerWrite(
+  resolved: readonly (string | undefined)[],
+  at: number,
+): 'protocol' | 'url' | undefined {
+  const rest = resolved.slice(at + 1)
+  if (resolved[at] === 'remote') return hiddenRemoteUrl(rest) ? 'url' : undefined
+  if (resolved[at] !== 'config') return undefined
+  const write = configWrite(rest)
+  if (write === null) return undefined
+  const [key, value] = write
+  if (key === undefined) return 'url'
+  if (allowsExt(key, value)) return 'protocol'
+  return URL_KEY.test(key) && value === undefined ? 'url' : undefined
 }
 
 /**

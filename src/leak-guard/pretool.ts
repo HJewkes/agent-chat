@@ -17,7 +17,15 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './git-programs.js'
+import {
+  configPrograms,
+  extEnablerWrite,
+  extPrograms,
+  listsExt,
+  OPAQUE_PROGRAM_ENV,
+  PROGRAM_ENV,
+  PROTOCOL_ENV,
+} from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
@@ -149,6 +157,8 @@ export const REASONS = {
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never. Leave the protocol list alone. ${DOCS}`,
+  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote add or set-url, git config remote.*.url, pushurl, vcs or url.*.insteadOf), or a config key, that the guard cannot read, and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -431,6 +441,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   return (
     checkGit(run.args) ??
     checkUnresolvedConfig(run) ??
+    checkExtEnablers(run, scope) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
@@ -446,9 +457,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
-  const at =
-    options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
-  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
+  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, subcommandAt(run, options))
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
   const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
@@ -461,6 +470,21 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
     if (reason !== undefined) return reason
   }
   return extOn
+}
+
+/** Where git's subcommand sits; past an option the guard cannot place, the first word that is not an option. */
+const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): number =>
+  options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
+
+/** A `git config` or `git remote` write that switches on `ext::` or hides a URL a later git may run (TP-2371). */
+function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
+  if (!run.tied) return undefined
+  const enabler = extEnablerWrite(
+    run.resolved,
+    subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams)),
+  )
+  if (enabler === 'protocol') return REASONS.extProtocol
+  return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -1375,7 +1399,7 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV]
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -1394,12 +1418,30 @@ const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) 
 const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
-/** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
-function plainProgramValue(word: string): string | null | undefined {
+/**
+ * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
+ * protocol list that lets git run `ext::` URLs.
+ */
+const EXT_ON = Symbol('ext-on')
+type EnvEvent = string | null | typeof EXT_ON
+
+const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
+const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
+
+/**
+ * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
+ * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * no event at all. undefined when the word is no such assignment.
+ */
+function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const name = ASSIGNMENT.exec(word)?.[1]
-  if (name === undefined || !PROGRAM_ENV.has(name) || !word.startsWith(`${name}=`)) return undefined
+  if (name === undefined || !word.startsWith(`${name}=`)) return undefined
+  const protocol = PROTOCOL_ENV.has(name)
+  if (!protocol && !PROGRAM_ENV.has(name)) return undefined
   const value = word.slice(name.length + 1)
-  return value.includes(LIVE) ? null : value
+  if (value.includes(LIVE)) return null
+  if (!protocol) return value
+  return listsExt(unmark(value)) ? EXT_ON : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
@@ -1458,11 +1500,13 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
  * `${NAME:=x}`, eval); a read is no event. In the arguments of a command that takes them as data,
  * such as git or gh, only an assigning expansion the shell expands counts.
  */
-function envEvent(word: string, role: WordRole): string | null | undefined {
+function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
-  if (role === 'removes') return undefined
+  // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
+  if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
   if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
+  if (plain === 'none') return undefined
   if (plain !== undefined) return plain
   return namesProgramEnv(text) ? null : undefined
 }
@@ -1483,7 +1527,7 @@ function sharedTail(words: readonly string[], written: readonly string[]): numbe
 
 /** One command's program-env events, and its text for the git scan. */
 interface EnvUse {
-  events: (string | null)[]
+  events: EnvEvent[]
   scan: string[]
 }
 
@@ -1492,7 +1536,7 @@ function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
   return {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
-      .filter((event): event is string | null => event !== undefined),
+      .filter((event): event is EnvEvent => event !== undefined),
     scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
   }
 }
@@ -1550,6 +1594,7 @@ function checkProgramEnvLine(
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
+    if (event === EXT_ON) return REASONS.extProtocol
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }

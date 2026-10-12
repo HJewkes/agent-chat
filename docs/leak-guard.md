@@ -358,6 +358,7 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | `git -c` or `--config-env` on such a key with a value the guard cannot read, or with a key it cannot read, on any git                                                                                               | the value may be a push with hooks off                    |
 | a program-running env var (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `MANPAGER` and kin, below) on a line that runs git: a plain literal assignment whose value a row above denies, or any other use but a read | git runs the value as a pager, editor or ssh command      |
 | an `ext::` transport in any git word or config value whose decoded shell command a row above denies (below)                                                                                                         | `protocol.ext.allow` lets `ext::` run a shell command     |
+| `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                   | a later git runs `ext::` as shell                         |
 
 A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
 if either reading is. As a zsh glob group, its balanced span (nesting, quotes, `$'...'` and escapes
@@ -661,6 +662,21 @@ cannot know. The decoded argv is checked as a top-level Bash line, so
 `git push --no-verify` as one argument to `sh -c`. The round-1 example `ext::sh -c 'git push …'`
 was wrong, because git splits that on its spaces into separate arguments and never runs the push. A
 value the guard cannot read (`ext::$C`) or cannot decode (a trailing or unknown `%` escape) denies.
+
+What switches the transport on, or hides an `ext::` URL for a later git, is closed too (TP-2371).
+`GIT_ALLOW_PROTOCOL`, a colon list git honours over `protocol.*.allow`, follows the program env
+rule below on a line that may reach git: a plain literal assignment (prefix, `export` or `env`)
+whose list names `ext`, in any case, denies, and any other use but a read denies, as in
+`GIT_ALLOW_PROTOCOL="$P" git fetch`. Unsetting it there (`unset`, `env -u`, `env --unset`) also
+denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh git fetch` stays
+allowed. A `git config` write, legacy or `git config set`, of `protocol.allow` or
+`protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
+stay allowed. `git remote add` or `set-url` with a word the guard cannot read, and a `git config`
+write of `remote.<name>.url`, `.pushurl`, `.vcs` or `url.<base>.insteadOf` or `.pushInsteadOf` with
+a value it cannot read, or of any key it cannot read, denies: the value may be an `ext::` URL a
+later `git fetch` runs. So of the chain `git remote set-url x "$U"` then
+`GIT_ALLOW_PROTOCOL=ext git fetch x`, each half denies on its own. A literal URL, as in
+`git remote set-url origin https://github.com/o/r`, is allowed and read as before.
 
 ### An environment variable git runs as a program (TP-636)
 
