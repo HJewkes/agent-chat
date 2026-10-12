@@ -94,6 +94,7 @@ beforeEach(() => {
     PATH: [shimDir, fakeDir, '/usr/bin', '/bin'].join(':'),
     FAKE_GH_LOG: logFile,
     FAKE_GH_FIXTURES: fixturesFile,
+    XDG_STATE_HOME: path.join(dir, 'state'),
   }
 })
 
@@ -115,13 +116,14 @@ const calls = (): string[][] =>
         .map(line => JSON.parse(line) as string[])
     : []
 
-/** Every call the shim made is `gh api <path>` with a REST path, which is the whole point of it. */
+/** Every call the shim made is `gh api <path> -i` with a REST path, which is the whole point of it. */
 function expectRestOnly(): void {
   expect(calls().length).toBeGreaterThan(0)
   for (const argv of calls()) {
-    expect(argv).toHaveLength(2)
+    expect(argv).toHaveLength(3)
     expect(argv[0]).toBe('api')
     expect(argv[1]).toMatch(/^repos\//)
+    expect(argv[2]).toBe('-i')
   }
 }
 
@@ -422,7 +424,7 @@ describe('gh shim passing commands through to the real gh', () => {
     const result = gh({}, 'pr', 'view', '404', '--repo', 'acme/widgets', '--json', 'number')
 
     expect(calls()).toEqual([
-      ['api', `${REPO}/pulls/404`],
+      ['api', `${REPO}/pulls/404`, '-i'],
       ['pr', 'view', '404', '--repo', 'acme/widgets', '--json', 'number'],
     ])
     expect(result.stdout).toBe('real-gh pr view 404 --repo acme/widgets --json number\n')

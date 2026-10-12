@@ -818,6 +818,18 @@ placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
 exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
 the old placement.
 
+Once registered, an agent on another host is known by its spawn row's `host`, which
+`agent_list` shows. The broker can read neither its pids nor its Claude Code session
+records, so a detach that outlasts the settle window is the exit: `agent_exited` is
+inferred with a body naming the host, and the slot taken at spawn is released. A
+reattach after that reopens the row and takes a slot again. Retire cannot signal a
+pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
+connection, and that MCP process ends its own Claude Code when the id is its own
+(`src/server/end-self.ts`). The `agent_retired` row says `reaped:
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
+
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
 A spawned agent starts from its brief and nothing else, so in practice every
