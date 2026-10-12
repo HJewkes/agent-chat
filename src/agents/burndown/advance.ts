@@ -11,6 +11,7 @@ import {
   type LadderRecord,
   type Ledger,
 } from './ledger.js'
+import type { Adjudication } from './owns-adjudicate.js'
 import type { ClaimPr } from './pr-state.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
@@ -49,8 +50,11 @@ export interface Observation {
   /** A live implementer's worktree HEAD and uncommitted hash (CC-659); read, not yet acted on. */
   progress?: Progress | 'unreadable'
   diff?: { reviewable: boolean; reason: string }
-  /** CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns nothing. */
-  owned?: { outside: string[] } | 'unreadable'
+  /**
+   * CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns
+   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before.
+   */
+  owned?: { outside: string[]; adjudicated?: Adjudication } | 'unreadable'
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
@@ -165,11 +169,21 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   ]
 }
 
-/** CC-669: a fresh read with nothing outside owns clears the stall, and the claim moves on this tick; a re-read, not a retry. */
+const UNSTALLED: ClaimPatch = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
+
+/**
+ * CC-669: a fresh read with nothing outside owns clears the stall, and the claim moves on this tick; a re-read, not
+ * a retry. CC-1150 f: so does an amend. An escalation rewrites the stall only when its cause changed.
+ */
 function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (obs.owned === undefined || obs.owned === 'unreadable' || obs.owned.outside.length > 0) return []
-  const cleared = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
-  return [update(claim, cleared), ...advanceClaim({ ...claim, ...cleared }, obs, now)]
+  if (obs.owned === undefined || obs.owned === 'unreadable') return []
+  const moveOn: Resume = (c, o) => [update(c, UNSTALLED), ...advanceClaim({ ...c, ...UNSTALLED }, o, now)]
+  const held = fenced(claim, obs, moveOn)
+  if (held === undefined) return moveOn(claim, obs) ?? []
+  const [restall] = held
+  const same =
+    held.length === 1 && restall?.kind === 'update' && restall.patch.stalledReason === claim.stalledReason
+  return same ? [] : held
 }
 
 /** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
@@ -226,7 +240,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     return [stall(claim, report.firstLine, 'failed')]
   const pr = report?.pr ?? claim.pr
   const handsOff = handsOffPr(report) && pr !== undefined
-  const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs.owned) : undefined
+  const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs, afterWorker) : undefined
   if (held !== undefined) return held
   if (handsOff)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport }, obs.shepherd?.row)
@@ -266,7 +280,7 @@ function relink(claim: Claim, obs: Observation): Action[] | undefined {
     stalledClass: undefined,
     ...(report === undefined ? {} : { lastReport: report.firstLine }),
   }
-  return fenced(claim, obs.owned) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+  return fenced(claim, obs, relink) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
 }
 
 /**
@@ -291,21 +305,44 @@ function exitedToShepherd(claim: Claim, obs: Observation): Action[] | undefined 
     stallCode: undefined,
     ...(report === undefined ? {} : { lastReport: report.firstLine }),
   }
-  return fenced(claim, obs.owned) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+  return (
+    fenced(claim, obs, exitedToShepherd) ??
+    handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+  )
 }
 
 /** An agent with no roster row was retired and pruned; `observe` reports a missing row on a partial roster as unread. */
 const agentGone = (claim: Claim, obs: Observation): boolean =>
   finished(obs) || (obs.agent === undefined && claim.agentName !== undefined)
 
-/** CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits. */
-function fenced(claim: Claim, owned: Observation['owned']): Action[] | undefined {
+/** The step a fence hands back to once an amend leaves nothing outside owns. */
+type Resume = (claim: Claim, obs: Observation) => Action[] | undefined
+
+/**
+ * CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits.
+ * CC-1150 f: an amend adds the files to `owns` and resumes the step this tick; an escalation names its cause.
+ */
+function fenced(claim: Claim, obs: Observation, resume: Resume): Action[] | undefined {
+  const { owned } = obs
   if (owned === undefined) return undefined
   if (owned === 'unreadable') return []
   const [first, ...rest] = owned.outside
   if (first === undefined) return undefined
+  const verdict = owned.adjudicated
+  if (verdict?.kind === 'amend') return amended(claim, obs, verdict.files, resume)
   const more = rest.length === 0 ? '' : ` (+${rest.length} more)`
-  return [parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns`)]
+  const cause = verdict === undefined ? '' : `; not amended: ${verdict.reason}`
+  return [
+    parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns${cause}`),
+  ]
+}
+
+function amended(claim: Claim, obs: Observation, files: string[], resume: Resume): Action[] {
+  const patch = {
+    owns: [...(claim.owns ?? []), ...files],
+    ownsAmended: [...(claim.ownsAmended ?? []), ...files],
+  }
+  return [update(claim, patch), ...(resume({ ...claim, ...patch }, { ...obs, owned: { outside: [] } }) ?? [])]
 }
 
 /**
