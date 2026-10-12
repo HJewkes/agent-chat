@@ -22,24 +22,32 @@ export interface RunResult {
   stdout: string
   /** Read only to classify a failure (an HTTP status); never relayed, since it can quote content. */
   stderr?: string
+  /** Set when the child was killed for outliving its timeout, so a caller can tell "slow" from "broken" (CC-1125). */
+  timedOut?: boolean
 }
 
-export type Runner = (bin: string, args: string[], cwd?: string) => RunResult
+export interface RunOptions {
+  /** Overrides the default 15 s for one call whose child is known to run longer. */
+  timeoutMs?: number
+}
+
+export type Runner = (bin: string, args: string[], cwd?: string, options?: RunOptions) => RunResult
 
 const TIMEOUT_MS = 15_000
 
 /** A spawn failure (missing binary, timeout) is a non-zero result, never a throw: callers treat it as "could not tell". */
-export const run: Runner = (bin, args, cwd) => {
+export const run: Runner = (bin, args, cwd, options) => {
   const result = spawnSync(bin, args, {
     cwd,
     env: childEnv(),
     encoding: 'utf8',
-    timeout: TIMEOUT_MS,
+    timeout: options?.timeoutMs ?? TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   return {
     status: result.error === undefined ? result.status : null,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
+    timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
   }
 }

@@ -12,8 +12,14 @@ import { TICK_INTERVAL_SECONDS } from './tick-status.js'
  * must both stop, and the previous must be recent.
  */
 
-/** A failing exec, a timeout, or output that is not the check's JSON. */
+/** A failing exec (missing binary, spawn error, unexpected exit) or output that is not the check's JSON. */
 export const UNREADABLE = 'unreadable'
+
+/** The check outlived its timeout: serve did not answer, which is an outage, not a broken check (CC-1125). */
+export const UNRESPONSIVE = 'unresponsive'
+
+/** Above the check's worst case of 21 s (three 6 s /health probes with two 1.5 s gaps, TP-2417). */
+export const SERVICE_CHECK_READ_TIMEOUT_MS = 30_000
 
 /** Causes that stop new implementers. A cause this build does not know stops too: the check failed for a reason nobody has judged harmless. */
 const NOTE_CAUSES: ReadonlySet<string> = new Set([
@@ -43,9 +49,16 @@ export interface PersistedRead {
   cause: string | null
 }
 
-/** One exec of the check; every way it can fail to answer is a read with cause `unreadable`. */
+/** One exec of the check; a timeout reads `unresponsive`, every other way it can fail to answer reads `unreadable`. */
 export function readServiceCheck(exec: Runner = run): ServiceRead {
-  const result = exec(SHEPHERD_BIN, ['service', 'check', '--json'])
+  const result = exec(SHEPHERD_BIN, ['service', 'check', '--json'], undefined, {
+    timeoutMs: SERVICE_CHECK_READ_TIMEOUT_MS,
+  })
+  if (result.timedOut === true)
+    return {
+      cause: UNRESPONSIVE,
+      message: `titan-factory service check did not finish within ${SERVICE_CHECK_READ_TIMEOUT_MS / 1000} s`,
+    }
   if (!CHECK_EXITS.has(result.status))
     return {
       cause: UNREADABLE,
