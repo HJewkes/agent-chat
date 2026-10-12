@@ -64,6 +64,24 @@ dispatches. It is shadow only: `route` and the tick's dispatch do not change. A 
 (an unknown class, prior, profile or ladder value, a misspelt key, or no fallback prior) is not used, and a
 `workflow table: <problems>` line says why. With no table file the output is unchanged.
 
+### Prior routing (CC-638)
+
+The tick config key `priorRouting` (`off`, `shadow` or `on`; default `off`) lets the same prior pick the
+implementer profile a seat's tick dispatches. It applies to implementer-routed task rows (classified by the
+task's tags, estimate, `done_when` and the union of its plan's slice `owns`) and to queued slices (by the
+slice's own `owns` and points). Planner, briefer and triage rows, fix rounds and resumes are unchanged, and a
+prior whose class names a profile other than `bd-implementer` or `bd-implementer-lite` keeps today's.
+
+- `off`: the workflow table is not read and the plan is today's.
+- `shadow`: dispatches as today and notes `would-route <initiative> <id>[ slice <n>] (seat <s>): <today> ->
+<profile> (prior <prior>: <reason>)` for each dispatch `on` would change.
+- `on`: dispatches with the prior's profile and notes the same line as `route-change ...`. The pool gate sees the
+  routed profile, so a row routed to `bd-implementer` waits under a sonnet-only pool.
+
+Under `shadow` or `on` with no table at `<autonomy-root>/workflow/shape-v1.yml`, or one that fails its lint,
+the seat routes as today and notes `prior routing <mode>: no workflow table at <path>; routing as today` or
+`prior routing <mode>: workflow table: <problems>; routing as today`.
+
 `agent-chat seats tick <seat> --dry-run` prints the same plan under a `seat <seat> tick at <time>
 (dry run)` header (CC-889). It runs only with `--dry-run`. The timer's tick advances every held
 claim, and the respawn ladder's first rung spans two ticks, so a live tick between timer ticks
