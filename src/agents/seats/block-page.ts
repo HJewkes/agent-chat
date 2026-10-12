@@ -65,6 +65,12 @@ export function pageText(block: OpenBlock, nowMs: number): string {
   )
 }
 
+/** A broker send that throws must not abort the pass before its doc is saved. */
+const notDelivered = (err: unknown): WakeResult => ({
+  ok: false,
+  detail: err instanceof Error ? err.message : String(err),
+})
+
 export interface BlockPageInput {
   /** Undefined when events.db cannot be read: nothing is paged and the paged keys are kept. */
   open: OpenBlock[] | undefined
@@ -93,12 +99,7 @@ export async function blockPageChange(input: BlockPageInput): Promise<{ lines: s
       lines.push(`would page ${BLOCK_PAGE_TO}: ${text}`)
       continue
     }
-    const sent = await input
-      .page(BLOCK_PAGE_TO, text)
-      .catch((err: unknown): WakeResult => ({
-        ok: false,
-        detail: err instanceof Error ? err.message : String(err),
-      }))
+    const sent = await input.page(BLOCK_PAGE_TO, text).catch(notDelivered)
     lines.push(`paged ${BLOCK_PAGE_TO}: ${text}${sent.ok ? '' : ` (not delivered: ${sent.detail})`}`)
     if (sent.ok) keep.push(blockKey(block))
   }
