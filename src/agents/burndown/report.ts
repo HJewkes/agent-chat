@@ -87,7 +87,7 @@ export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { c
 /** A planner's slices and their advisory lines when they pass the lint, else the reason lines. */
 export type SliceRead =
   | { slices: PlannedSlice[]; warnings: string[]; problems?: undefined }
-  | { slices?: undefined; problems: string[] }
+  | { slices?: undefined; warnings?: undefined; problems: string[] }
 
 const SLICES_BLOCK = /^```burndown-slices[ \t]*\n([\s\S]*?)^```[ \t]*$/m
 
