@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { reapBroker } from './broker-harness.js'
@@ -31,12 +31,14 @@ interface HookRun {
 const cli = (args: string[]) => execFileAsync(process.execPath, [CLI, ...args], { env: ENV })
 
 function runHook(marker: string, deadline = 30): HookRun {
-  const child = spawn(process.execPath, [CLI, 'permission-hook', '--deadline', String(deadline)], {
-    env: ENV,
-  })
+  const input = { ...HOOK_INPUT, tool_input: { ...HOOK_INPUT.tool_input, command: `echo ${marker}` } }
+  return runHookWith(input, ['--deadline', String(deadline)])
+}
+
+function runHookWith(input: object, args: string[]): HookRun {
+  const child = spawn(process.execPath, [CLI, 'permission-hook', ...args], { env: ENV })
   let stdout = ''
   child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
-  const input = { ...HOOK_INPUT, tool_input: { ...HOOK_INPUT.tool_input, command: `echo ${marker}` } }
   child.stdin.end(JSON.stringify(input))
   return { done: new Promise(resolve => child.on('exit', code => resolve({ code, stdout }))) }
 }
@@ -118,5 +120,67 @@ describe('the permission-hook verb', () => {
       },
     })
     expect(inbox).not.toContain('late-marker')
+  }, 20_000)
+})
+
+/** CC-694: a spawn armed with its linked worktree answers its own repo skill writes. */
+describe('the permission-hook verb with --self-grant-skills', () => {
+  const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+
+  /** A linked worktree made by `git worktree add`, so git itself registers it. */
+  function linkedWorktree(): string {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(TEST_HOME, 'repo-')))
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        stdio: 'ignore',
+      })
+    }
+    git('init', '-q')
+    git('commit', '-q', '--allow-empty', '-m', 'init')
+    const root = path.join(repo, 'wt')
+    git('worktree', 'add', '-q', root)
+    return fs.realpathSync(root)
+  }
+
+  const writeInput = (filePath: string, marker: string) => ({
+    ...HOOK_INPUT,
+    tool_name: 'Write',
+    tool_input: { file_path: filePath, content: marker },
+  })
+
+  it('prints allow for a skill write in its own worktree and files no prompt', async () => {
+    const root = linkedWorktree()
+    const skillFile = path.join(root, '.claude', 'skills', 'probe', 'SKILL.md')
+
+    const hook = runHookWith(writeInput(skillFile, 'grant-marker'), [
+      '--deadline',
+      '30',
+      '--self-grant-skills',
+      root,
+    ])
+    const { code, stdout } = await hook.done
+    const { stdout: inbox } = await cli(['inbox'])
+
+    expect(code).toBe(0)
+    expect(stdout).toBe(ALLOW)
+    expect(inbox).not.toContain('probe/SKILL.md')
+  }, 20_000)
+
+  it('still files a prompt for a write outside the skills subtree', async () => {
+    const root = linkedWorktree()
+    const settings = path.join(root, '.claude', 'settings.json')
+
+    const hook = runHookWith(writeInput(settings, 'ungranted-marker'), [
+      '--deadline',
+      '30',
+      '--self-grant-skills',
+      root,
+    ])
+    const id = await waitForRow(settings)
+    await cli(['approve', id, 'deny'])
+    const { code, stdout } = await hook.done
+
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout).hookSpecificOutput.decision.behavior).toBe('deny')
   }, 20_000)
 })

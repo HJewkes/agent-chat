@@ -335,7 +335,11 @@ function addHiddenCommands(program: Command): void {
   program
     .command('permission-hook', { hidden: true })
     .option('--deadline <seconds>', 'give up and withdraw the prompt after this long', '1790')
-    .action(async (options: { deadline: string }) => {
+    .option(
+      '--self-grant-skills <root>',
+      "allow writes under this worktree's .claude/skills/<name>/ (CC-694)",
+    )
+    .action(async (options: { deadline: string; selfGrantSkills?: string }) => {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
