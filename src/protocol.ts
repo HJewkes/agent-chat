@@ -36,6 +36,8 @@ export interface RemoteLaunch {
   cwd?: string
   /** CC-951: the account the predecessor spent, which must exist on the launcher's machine. */
   configDir?: string
+  /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
+  configDirUnset?: true
 }
 
 /** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
