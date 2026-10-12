@@ -238,37 +238,71 @@ export function shellAlias(body: string, rest: readonly string[]): string {
   return rest.length === 0 ? filled : `${filled} ${rest.map(quoted).join(' ')}`
 }
 
-const QUOTED_POSITIONAL = /^\$(?:\{([1-9@*])\}|([1-9@*]))/
+// `${N}` fills exactly; any other brace form (`${1:-x}`, `${@:1}`, `${1#x}`, `${#1}`, `${!1}`, `${10}`) does not.
+const BRACED = /^\$\{[#!]?([0-9@*])[^}]*\}/
+const EXACT = /^\$\{[1-9@*]\}/
+const BARE = /^\$([1-9@*])/
 
-/** The positionals (`1`, `@`, `*`) a shell body reads inside double quotes, where single-quoted fills do not apply. */
-export function doubleQuotedPositionals(body: string): string[] {
-  const names: string[] = []
+/** One read of a positional in a shell body: which, inside double quotes, and with a modifier. */
+export interface PositionalUse {
+  name: string
+  quoted: boolean
+  modified: boolean
+}
+
+function positionalAt(text: string, quoted: boolean): PositionalUse | undefined {
+  const braced = BRACED.exec(text)
+  if (braced !== null) return { name: braced[1] ?? '', quoted, modified: !EXACT.test(text) }
+  const bare = BARE.exec(text)
+  return bare === null ? undefined : { name: bare[1] ?? '', quoted, modified: false }
+}
+
+/** The index of the `'` that closes a `$'...'` string opened before `from`. */
+function ansiEnd(body: string, from: number): number {
+  for (let j = from; j < body.length; j++) {
+    if (body[j] === '\\') j++
+    else if (body[j] === "'") return j
+  }
+  return body.length
+}
+
+/** Every positional a shell body reads, outside single quotes and `$'...'` strings. */
+export function positionalUses(body: string): PositionalUse[] {
+  const uses: PositionalUse[] = []
   let quote: string | undefined
   for (let i = 0; i < body.length; i++) {
     const c = body[i]
     if (quote === "'") quote = c === "'" ? undefined : quote
     else if (c === '\\') i++
+    else if (quote === undefined && body.startsWith("$'", i)) i = ansiEnd(body, i + 2)
     else if (c === '"') quote = quote === '"' ? undefined : '"'
     else if (c === "'" && quote === undefined) quote = "'"
-    else if (c === '$' && quote === '"') {
-      const match = QUOTED_POSITIONAL.exec(body.slice(i))
-      if (match !== null) names.push(match[1] ?? match[2] ?? '')
+    else if (c === '$') {
+      const use = positionalAt(body.slice(i), quote === '"')
+      if (use !== undefined) uses.push(use)
     }
   }
-  return names
+  return uses
 }
+
+/** A body whose arguments the guard cannot fill before they are known: a quoted or modified positional. */
+export const unfillableAtSet = (body: string): boolean =>
+  positionalUses(body).some(use => use.quoted || use.modified)
 
 const FILL_PLAIN = /^[A-Za-z0-9_./:=@%+-]+$/
 
 /**
- * Whether `fillPositionals` may misread the body: a positional inside double quotes is filled with
- * single-quoted text the shell keeps literally, so the guard checks one word where `sh -c` splits
- * or evals another. Safe only when every argument is a plain word, and `"$@"` has at most one.
+ * Whether `fillPositionals` may misread the body. It fills each argument as one single-quoted
+ * word, which matches `sh -c` only for a plain word: unquoted, the shell splits and globs an
+ * argument; inside double quotes it keeps the quotes literally, and `"$@"` makes one word per
+ * argument. A modified positional (`${1:-x}`) is not filled at all. So it is safe only with no
+ * modifier, every argument a plain word, and a quoted `"$@"` given exactly one.
  */
 export function fillsUnsafely(body: string, rest: readonly string[]): boolean {
-  const names = doubleQuotedPositionals(body)
-  if (names.length === 0) return false
-  return rest.some(arg => !FILL_PLAIN.test(arg)) || (names.includes('@') && rest.length > 1)
+  const uses = positionalUses(body)
+  if (uses.length === 0) return false
+  if (uses.some(use => use.modified) || rest.some(arg => !FILL_PLAIN.test(arg))) return true
+  return uses.some(use => use.quoted && use.name === '@') && rest.length !== 1
 }
 
 /** A shell body with `$1`, `$@` and their kin replaced by the quoted words they stand for. */

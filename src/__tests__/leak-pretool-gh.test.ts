@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseTerms } from '@titan-design/egress-scan'
 import { afterEach, describe, expect, it } from 'vitest'
-import { doubleQuotedPositionals } from '../leak-guard/git-alias.js'
+import { positionalUses } from '../leak-guard/git-alias.js'
 import {
   ghAliasReader,
   ghAliasSet,
@@ -220,8 +220,61 @@ describe('a shell alias argument inside double quotes (TP-2371 review)', () => {
     expect(checkCommand(command, ctx({ co: { shell: true, body: 'gh pr checkout "$1"' } }))).toBeUndefined()
   })
 
-  it('reads positionals inside double quotes only', () => {
-    expect(doubleQuotedPositionals(`"$1" '"$2"' "\\$3" "\${@}" $4 "a'$*'"`)).toEqual(['1', '@', '*'])
+  it('reads every positional outside single quotes, with its quoting and modifier', () => {
+    const body = `"$1" '"$2"' "\\$3" "\${@}" $4 "a'$*'" "\${1:-x}" \${#1} $'\\''"$5"`
+    expect(positionalUses(body).map(use => [use.name, use.quoted, use.modified])).toEqual([
+      ['1', true, false],
+      ['@', true, false],
+      ['4', false, false],
+      ['*', true, false],
+      ['1', true, true],
+      ['1', false, true],
+      ['5', true, false],
+    ])
+  })
+
+  it.each([
+    `gh alias set --shell y 'git push "\${1:-x}"'`,
+    `gh alias set --shell y 'git push "\${@:1}"'`,
+    `gh alias set --shell y 'git push "\${1#x}"'`,
+    `gh alias set --shell y 'git push \${!1}'`,
+  ])('denies setting a shell alias that reads a positional with a modifier: %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.ghAliasHidden)
+  })
+
+  it.each(['git push "${1:-x}"', 'git push "${@:1}"', 'git push "${1#x}"'])(
+    'denies running a stored shell alias %s, whose modifier the guard does not fill',
+    body => {
+      expectDeny(checkCommand('gh y --no-verify', ctx({ y: { shell: true, body } })), REASONS.ghAliasHidden)
+    },
+  )
+
+  it.each([
+    ['git $1', `gh y 'push --no-verify'`],
+    ['git $@', `gh y 'push --no-verify'`],
+    ['git $*', `gh y 'push --no-verify'`],
+    [`x=$'\\''; eval "$1"`, `gh y 'git push --no-verify'`],
+  ])('denies gh alias %s run with an argument that is not a plain word: %s', (body, command) => {
+    expectDeny(checkCommand(command, ctx({ y: { shell: true, body } })), REASONS.ghAliasHidden)
+  })
+
+  it('denies a git ! alias with an unquoted positional fed an argument with spaces', () => {
+    const readAlias = (word: string) => (word === 'y' ? { value: '!git $1', runsIn: '/work' } : undefined)
+    expectDeny(checkCommand(`git y 'push --no-verify'`, { ...ctx(), readAlias }), REASONS.aliasQuotedArgs)
+  })
+
+  it('denies a quoted "$@" given no argument, which fills one empty word', () => {
+    expectDeny(
+      checkCommand('gh y', ctx({ y: { shell: true, body: 'git push "$@"' } })),
+      REASONS.ghAliasHidden,
+    )
+  })
+
+  it.each([
+    ['git push origin $1', 'gh y main'],
+    ['git log $@', 'gh y -1 --oneline'],
+  ])('allows gh alias %s run with plain words: %s', (body, command) => {
+    expect(checkCommand(command, ctx({ y: { shell: true, body } }))).toBeUndefined()
   })
 })
 

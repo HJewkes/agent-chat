@@ -789,12 +789,16 @@ path, or the config directory itself by path (`~/.config/gh`, `$XDG_CONFIG_HOME/
 into it denies. A directory reached another way (`cd ~/.config && mv x gh`) is not seen; the
 alias it adds is still read and checked by a later call.
 
-A shell alias that reads a positional inside double quotes (`"$1"`, `"$@"`, `"$*"`) is filled
-with single-quoted words the shell would keep literally, so the guard cannot check it as `sh -c`
-runs it. It denies when any argument is not a plain word (letters, digits and `_./:=@%+-`), or
-when `"$@"` gets more than one. So `gh co 12` through `gh pr checkout "$1"` stays allowed while
-`gh y git push --no-verify` through `"$@"` denies. `gh alias set --shell` with such a body denies,
-since its arguments are not known yet. A git `!` alias follows the same rule.
+The guard fills a shell alias's positionals (`$1`, `$@`, `$*`) with each argument as one
+single-quoted word, which matches `sh -c` only for a plain word: unquoted, the shell splits and
+globs an argument, and inside double quotes it keeps the quotes literally. A positional with a
+modifier (`${1:-x}`, `${@:1}`, `${1#x}`, `${#1}`, `${!1}`) is not filled at all. So a shell
+alias denies when it reads a modified positional, when any argument is not a plain word
+(letters, digits and `_./:=@%+-`), or when a quoted `"$@"` gets other than one argument.
+`gh co 12` through `gh pr checkout "$1"` stays allowed, while `gh y git push --no-verify` through
+`"$@"` and `gh y 'push --no-verify'` through `git $1` deny. `gh alias set --shell` with a quoted
+or modified positional denies, since its arguments are not known yet. The scan skips single
+quotes and `$'...'` strings. A git `!` alias follows the same rule.
 
 It also denies when gh may read a config other than the hook's, judged from the same tracked
 environment git aliases use. That covers a line where the guard lost track of the environment
