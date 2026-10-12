@@ -2645,7 +2645,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(fake.frames).toEqual([])
     expect(fake.sends.map(s => s.text)).toEqual([
-      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report`,
+      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report\nstale DM-1: other: proposed read the report and settle by hand`,
     ])
     expect(claimOf()?.triage).toBeUndefined()
   })

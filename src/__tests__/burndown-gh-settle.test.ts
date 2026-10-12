@@ -87,6 +87,9 @@ async function tick(ledger: Ledger, gh: FakeGh, roster: Roster): Promise<Ledger>
 
 const exited: Roster = { agents: [agent('bd-cc-1-a', 'exited')] }
 
+/** CC-1150 b: a held claim whose agent is gone only gains its stale class; nothing releases or finishes it. */
+const staleOnly = (c: Claim, cls: string): Claim => ({ ...c, stale: expect.objectContaining({ class: cls }) })
+
 describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
   it('finishes a stalled claim with no PR link whose branch PR merged', async () => {
     const ledger = { ...EMPTY_LEDGER, claims: [claim()] }
@@ -111,15 +114,18 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
     expect(after.claims).toEqual([expect.objectContaining({ phase: 'done', pr: 'o/r#9' })])
   })
 
-  it.each(['budget', 'retry-spent'] as const)(
+  it.each([
+    ['budget', 'other'],
+    ['retry-spent', 'retry-spent'],
+  ] as const)(
     'keeps a %s park whose agent retired and left no PR, for the ladder and the owner',
-    async code => {
+    async (code, cls) => {
       const parked = claim({ stallCode: code, stalledReason: `${code}: parked`, stalledClass: 'failed' })
       const ledger = { ...EMPTY_LEDGER, claims: [parked] }
 
       const after = await tick(ledger, fakeGh([]), { agents: [agent('bd-cc-1-a', 'retired')] })
 
-      expect(after).toEqual(ledger)
+      expect(after).toEqual({ ...ledger, claims: [staleOnly(parked, cls)] })
     },
   )
 
@@ -128,7 +134,7 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
 
     const after = await tick(ledger, fakeGh([pull({ state: 'open', mergedAt: null })]), exited)
 
-    expect(after).toEqual(ledger)
+    expect(after).toEqual({ ...ledger, claims: [staleOnly(claim(), 'outside-owns')] })
   })
 
   it('changes nothing when gh fails', async () => {
@@ -136,7 +142,7 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
 
     const after = await tick(ledger, fakeGh(undefined), exited)
 
-    expect(after).toEqual(ledger)
+    expect(after).toEqual({ ...ledger, claims: [staleOnly(claim(), 'outside-owns')] })
   })
 
   it("never finishes a claim on an earlier dispatch's PR merged on the same branch", async () => {

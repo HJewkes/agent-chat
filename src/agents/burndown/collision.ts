@@ -310,10 +310,27 @@ export function readOpenPrs(repo: string, exec: Runner = run): OpenPr[] | undefi
   }
 }
 
+const FILES_JQ = '.[] | {filename, previous: (.previous_filename // null)}'
+
+/**
+ * Every path the PR touches. A rename yields its old path too, so a PR that moves a file still collides with work
+ * on that file (CC-1150 f); a line that does not parse makes the whole list unreadable rather than short.
+ */
 export function readPrFiles(repo: string, pr: number, exec: Runner = run): string[] | undefined {
-  const args = ['api', '--paginate', `${PULLS}/${pr}/files?per_page=100`, '--jq', '.[].filename']
+  const args = ['api', '--paginate', `${PULLS}/${pr}/files?per_page=100`, '--jq', FILES_JQ]
   const result = exec('gh', args, repo)
-  return result.status === 0 ? result.stdout.split('\n').filter(line => line.length > 0) : undefined
+  if (result.status !== 0) return undefined
+  try {
+    return jsonLines(result.stdout).flatMap(changedPaths)
+  } catch {
+    return undefined
+  }
+}
+
+function changedPaths(line: unknown): string[] {
+  const { filename, previous } = (line ?? {}) as { filename?: unknown; previous?: unknown }
+  if (typeof filename !== 'string') throw new Error('PR file line without a filename')
+  return typeof previous === 'string' ? [previous, filename] : [filename]
 }
 
 const jsonLines = (text: string): unknown[] =>

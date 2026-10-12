@@ -61,7 +61,10 @@ export const profilesDir = (): string => path.join(home(), 'profiles')
  */
 export const hooksPath = (): string => path.join(home(), 'hooks.json')
 
-/** User-editable settings: the agent-slot cap (`agentSlots`) and the per-repo worktree cap (`worktreeBudget`). */
+/**
+ * User-editable settings: the agent-slot cap (`agentSlots`), the per-repo worktree cap (`worktreeBudget`)
+ * and the per-repo reviewer worktree cap (`reviewerWorktreeBudget`).
+ */
 export const configPath = (): string => path.join(home(), 'config.json')
 
 /** `agent-chat gh-write`'s machine-wide lock (a directory) and the time the next write may start. */
