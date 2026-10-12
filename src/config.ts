@@ -591,9 +591,13 @@ export interface ParkAdvicePolicy {
 /** 200k is where the CC-135 cold-rebuild cost cells start; keep-warm is deliberately absent. */
 export const DEFAULT_PARK_ADVICE: ParkAdvicePolicy = { tokens: 200_000, leadMinutes: 8, ttlMinutes: 60 }
 
+/** CC-290: these roles now carry a context hint as their retire threshold, but still get no park advice. */
+const NO_PARK_ADVICE_ROLES: ReadonlySet<string> = new Set(['planner', 'reviewer'])
+
 /**
  * Null means never advise: `parkAdvice.enabled` is false, the surface is headless, or the
- * profile is one the context hint never addresses.
+ * profile is one the context hint never addresses, or a
+ * planner or reviewer.
  */
 export function resolveParkAdvicePolicy(
   profile: string | undefined,
@@ -601,6 +605,7 @@ export function resolveParkAdvicePolicy(
 ): ParkAdvicePolicy | null {
   if (surface !== undefined && !isInteractiveSurface(surface as SurfaceName)) return null
   if (resolveContextHintPolicy(profile) === null) return null
+  if (profile !== undefined && NO_PARK_ADVICE_ROLES.has(roleOfProfile(profile))) return null
   const raw = readConfig().parkAdvice
   const configured = isObject(raw) ? raw : {}
   if (configured.enabled === false) return null
