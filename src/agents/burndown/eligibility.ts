@@ -1,6 +1,6 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
-import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag } from './ops.js'
+import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag, publishOnlyProblem } from './ops.js'
 import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
@@ -111,6 +111,12 @@ function declaredGap(tags: readonly string[], doneWhen: string, grants: string[]
   const human = declared.filter(op => HUMAN_OPS.includes(op))
   if (human.length > 0)
     return { kind: 'needs-human', reason: `declares ${human.map(op => `ops:${op}`).join(', ')}` }
+  const mixed = declared.includes('publish') ? publishOnlyProblem(doneWhen) : undefined
+  if (mixed !== undefined)
+    return {
+      kind: 'ops-unresolved',
+      reason: `ops:publish task is not publish-only (${mixed}); split the build and consumer work into tasks with dep: on a task whose done_when is 'publish <package> at <version>'`,
+    }
   const missing = [
     ...(declared.includes('publish') ? [RELEASE_GRANT] : []),
     ...(MERGE_GRANT.pattern.test(doneWhen) ? [MERGE_GRANT.grant] : []),
