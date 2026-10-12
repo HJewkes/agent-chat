@@ -93,7 +93,12 @@ export async function blockPageChange(input: BlockPageInput): Promise<{ lines: s
       lines.push(`would page ${BLOCK_PAGE_TO}: ${text}`)
       continue
     }
-    const sent = await input.page(BLOCK_PAGE_TO, text)
+    const sent = await input
+      .page(BLOCK_PAGE_TO, text)
+      .catch((err: unknown): WakeResult => ({
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      }))
     lines.push(`paged ${BLOCK_PAGE_TO}: ${text}${sent.ok ? '' : ` (not delivered: ${sent.detail})`}`)
     if (sent.ok) keep.push(blockKey(block))
   }

@@ -31,7 +31,7 @@ export async function withRunningBroker<T>(fn: (client: BrokerClient) => Promise
 
 /** CC-465: the human queue takes a notice only from a registered sender, so a second connection registers for it. */
 export async function notifyAsWatchdog(text: string): Promise<WakeResult> {
-  return asWatchdog('watchdog notices', async client => {
+  return asWatchdog('seat watchdog notices', async client => {
     const res = (await client.request({ t: 'notify', text }, 'send_result')) as Reply<'send_result'>
     return res.ok
       ? { ok: true, detail: `notice ${res.msgId}` }
@@ -56,7 +56,7 @@ async function asWatchdog(
   return withRunningBroker(async client => {
     const identity = {
       name: WATCHDOG_SENDER,
-      workingOn: `seat ${workingOn}`,
+      workingOn,
       cwd: process.cwd(),
       pid: process.pid,
     }
