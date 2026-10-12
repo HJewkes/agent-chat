@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
 import type { Task } from '../agents/burndown/eligibility.js'
-import { EMPTY_LEDGER } from '../agents/burndown/ledger.js'
+import { EMPTY_LEDGER, type Claim } from '../agents/burndown/ledger.js'
 import { planningCandidates, readyDepth } from '../agents/burndown/planning-supply.js'
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
-import { planSeat, type SeatBriefGate } from '../agents/burndown/seat-plan.js'
+import { planSeat, type SeatBriefGate, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 
 /** CC-986 slice b: below the ready floor, briefers take the top no-brief rows up to the planner cap. */
 
@@ -203,6 +203,72 @@ describe('planSeat ready depth counts only what the tick dispatches (CC-1055)', 
 
     expect(briefers(planned)).toEqual([])
     expect(planned.notes.some(n => n.includes('below floor'))).toBe(false)
+  })
+})
+
+describe('planSeat slice supply counts only dispatchable slices (CC-1160)', () => {
+  const queued = (slice: string, over: Partial<Claim>): Claim => ({
+    taskId: 'A-1',
+    initiative: 'alpha',
+    seat: 'seat-a',
+    spawnedAt: NOW.toISOString(),
+    phase: 'queued',
+    phaseAt: NOW.toISOString(),
+    slice,
+    owns: [`src/${slice}.ts`],
+    ...over,
+  })
+  const slicePlan = (parentTags: string[], claim: Partial<Claim> = {}, over: Partial<SeatPlanInputs> = {}) =>
+    planSeat({
+      seat: SEAT,
+      rows: [row('B-1', 50)],
+      defaults: { initiative_decay: 0.5, share_caps: {} } as unknown as ScoringDefaults,
+      tasks: new Map([['alpha', [task('A-1', [FRESH, ...parentTags]), task('B-1')]]]),
+      ledger: { ...EMPTY_LEDGER, claims: ['a', 'b', 'c', 'd'].map(n => queued(n, claim)) },
+      budget: POOL,
+      brief: { ...GATE, readyFloor: 3 },
+      readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
+      ...over,
+    })
+  const sliceKinds = (planned: ReturnType<typeof slicePlan>) =>
+    planned.refusals.filter(r => r.task === 'A-1').map(r => r.kind)
+
+  it('sends a briefer when every ready slice overlaps a landed file', () => {
+    const planned = slicePlan(
+      [],
+      {},
+      {
+        collision: (_repo, work) =>
+          work.slice === undefined ? undefined : { kind: 'file-overlap', reason: 'x' },
+      },
+    )
+
+    expect(sliceKinds(planned)).toEqual(['file-overlap', 'file-overlap', 'file-overlap', 'file-overlap'])
+    expect(briefers(planned)).toEqual(['B-1'])
+    expect(planned.notes).toContain('seat seat-a ready 0 below floor 3: planning 1 no-brief tasks')
+  })
+
+  it('counts role-capped slices as supply, so no briefer goes out', () => {
+    const planned = slicePlan([], {}, { seat: { ...SEAT, caps: { ...SEAT.caps, implementers: 1 } } })
+
+    expect(planned.dispatch.map(d => d.slice)).toEqual(['a'])
+    expect(sliceKinds(planned)).toEqual(['role-cap', 'role-cap', 'role-cap'])
+    expect(briefers(planned)).toEqual([])
+    expect(planned.notes.some(n => n.includes('below floor'))).toBe(false)
+  })
+
+  it('does not count slices placed in no seat repo', () => {
+    const planned = slicePlan([], { repo: 'nowhere' })
+
+    expect(sliceKinds(planned)).toEqual(['no-repo', 'no-repo', 'no-repo', 'no-repo'])
+    expect(briefers(planned)).toEqual(['B-1'])
+  })
+
+  it('does not count slices whose parent a reserved tag holds', () => {
+    const planned = slicePlan(['needs-decision'], {}, { seat: { ...SEAT, excludedTags: ['needs-decision'] } })
+
+    expect(sliceKinds(planned)).toEqual(['reserved-tag', 'reserved-tag', 'reserved-tag', 'reserved-tag'])
+    expect(briefers(planned)).toEqual(['B-1'])
   })
 })
 
