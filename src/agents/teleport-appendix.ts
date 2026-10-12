@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { EventStore } from '../broker/event-store.js'
-import type { AgentIdentity, QueueItem } from '../protocol.js'
+import type { AgentIdentity, DeliveredMessage, QueueItem } from '../protocol.js'
 import { frontmatterField, sessionWrapAt } from './active-work.js'
 import type { AgentLog } from './identity.js'
 import { isSeatName } from './seats/charter.js'
@@ -33,6 +33,8 @@ export interface AppendixFacts {
   /** Inbox rows that arrived during the predecessor's session; nothing tracks which were read. */
   arrived: number
   questions: QueueItem[]
+  /** CC-1089: answers to the questions the handoff restated, written after it; the predecessor may never have read them. */
+  answered: DeliveredMessage[]
   queueFile?: string
   wrapGap?: WrapGap
 }
@@ -49,6 +51,10 @@ export interface AppendixQuery {
   since: number
   /** The predecessor's Claude session id, which names its active-work session record. */
   sessionId: string
+  /** CC-1089: the open question ids the predecessor's handoff named. */
+  restated?: string[]
+  /** CC-1089: the `agent_handoff` row; only answers after it can have missed the predecessor. */
+  handoffId?: number
   autonomyRoot?: string
   activeWorkRoot?: string
 }
@@ -106,6 +112,7 @@ export function appendixFacts(agents: AgentLog, events: EventStore, query: Appen
     exitedUnretired: spawned.filter(a => a.state === 'exited').length,
     arrived: events.inboxCountSince(name, query.since),
     questions: events.openQuestions(name),
+    answered: query.handoffId === undefined ? [] : events.answersTo(query.restated ?? [], query.handoffId),
     ...(queueFile === undefined ? {} : { queueFile }),
     ...(wrapGap === undefined ? {} : { wrapGap }),
   }
@@ -133,14 +140,18 @@ const inboxLine = ({ name, arrived }: AppendixFacts): string =>
     : `Inbox: ${arrived} message(s) arrived for ${name} during your predecessor's session. Nothing ` +
       'records which it read; chat_inbox returns them.'
 
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim().slice(0, QUESTION_TEXT)
+
 function questionLines({ questions }: AppendixFacts): string[] {
   if (questions.length === 0) return ['Open chat_ask questions: none.']
-  const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim().slice(0, QUESTION_TEXT)
   return [
     `Open chat_ask questions (${questions.length}); the answers come to you:`,
     ...questions.map(q => `- ${q.msgId}: ${oneLine(q.text)}`),
   ]
 }
+
+const answeredLines = ({ answered }: AppendixFacts): string[] =>
+  answered.map(a => `Answered while you were starting: ${a.inReplyTo ?? a.msgId}: ${oneLine(a.text)}`)
 
 const wrapLines = ({ wrapGap }: AppendixFacts): string[] =>
   wrapGap === undefined
@@ -162,6 +173,7 @@ export function renderAppendix(facts: AppendixFacts): string {
       ...agentLines(facts),
       inboxLine(facts),
       ...questionLines(facts),
+      ...answeredLines(facts),
       ...wrapLines(facts),
       ...(facts.queueFile === undefined ? [] : [`Queue file: ${facts.queueFile}`]),
     ].join('\n'),

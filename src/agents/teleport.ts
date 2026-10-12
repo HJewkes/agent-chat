@@ -423,6 +423,9 @@ interface Pending {
   since: number
   /** The predecessor's Claude session id, which names its active-work session record. */
   sessionId: string
+  /** CC-1089: the open question ids the handoff named, and its `agent_handoff` row, for the appendix. */
+  restated: string[]
+  handoffId: number
   /** CC-863: the newest inbox row when it asked to teleport, which a seat's State block names as handled. */
   inboxThrough: string | undefined
   timer?: NodeJS.Timeout
@@ -551,7 +554,7 @@ export class Teleport {
     const read = readOnce(this.readArgv)
     // Stored verbatim, and the broker templates nothing: the moment it does, a
     // handoff becomes a form to fill in and stops being what the session knew.
-    this.core.append({
+    const handoffRow = this.core.append({
       kind: 'agent_handoff',
       actor: subject.name,
       ref: subject.agentId,
@@ -567,6 +570,8 @@ export class Teleport {
       subject,
       descendantId,
       handoff: req.handoff,
+      restated,
+      handoffId: handoffRow.id,
       profile: config.profile,
       surface: config.surface,
       surfaceRequested: config.requested,
@@ -1299,6 +1304,8 @@ export class Teleport {
         name: entry.subject.name,
         since: entry.since,
         sessionId: entry.sessionId,
+        restated: entry.restated,
+        handoffId: entry.handoffId,
       })
       return `${handoff}\n\n${renderAppendix(facts)}`
     } catch (err) {
