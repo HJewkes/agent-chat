@@ -16,7 +16,16 @@ import {
   type RepoHeadroom,
 } from '../agents/isolation/worktree-states.js'
 import { parseWorktreeList } from '../agents/seats/trees.js'
-import { resolveWorktreeBudget } from '../config.js'
+import { resolveWorktreeBudget, retireThresholdK } from '../config.js'
+import { loadResolvedConfig } from '../agents/burndown/settings-store.js'
+import {
+  contextKOf,
+  pastThreshold,
+  reportTargets,
+  retireCell,
+  retireDue,
+  type RetireReading,
+} from '../agents/retire-due.js'
 import { loadProfile, selectProfileNames } from '../agents/profiles.js'
 import {
   createProfileIndex,
@@ -29,6 +38,7 @@ import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName
 import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
+import type { BrokerClient } from '../client/broker-client.js'
 import { launchHereFields, requestSpawn } from '../server/caller-spawn.js'
 
 /**
@@ -70,6 +80,7 @@ export async function agentLs(
       (states === undefined || states.has(pairPresence(a, { connected: connectedNames.has(a.name) }).status)),
   )
   const index = createProfileIndex()
+  const retire = options.format === 'line' ? new Map<string, RetireRow>() : await retireRows(agents)
 
   if (options.json) {
     const rows = agents.map(agent =>
@@ -77,6 +88,7 @@ export async function agentLs(
         agent,
         sessions.some(s => s.name === agent.name),
         index,
+        retire.get(agent.agentId),
       ),
     )
     console.log(JSON.stringify(rows, null, 2))
@@ -101,8 +113,10 @@ export async function agentLs(
     // which generation of it you are talking to. Both fields are broker-derived,
     // so they are fact rather than an agent's claim about itself.
     const lineage = agent.teleportFrom ? `  gen=${agent.generation} from=${agent.teleportFrom}` : ''
+    const row = retire.get(agent.agentId)
+    const ctx = row === undefined ? '' : retireCell(row, row.retireDue)
     console.log(
-      `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}`,
+      `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}${ctx === '' ? '' : `  ${ctx}`}`,
     )
     console.log(`${' '.repeat(16)} ${agent.cwd}`)
     // CC-100: the full dir, not just the account's short name — this is the
@@ -110,6 +124,84 @@ export async function agentLs(
     // makes urgent. Omitted when the row predates the field.
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
+  }
+}
+
+type RetireRow = RetireReading & { retireDue: boolean }
+
+const retirable = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
+
+/** A session id the budget reader refuses costs that row its fill, not the whole listing. */
+function readingOf(agent: AgentIdentity): RetireReading {
+  let contextK: number | null = null
+  try {
+    contextK = contextKOf(readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd))
+  } catch {
+    contextK = null
+  }
+  return { contextK, retireK: retireThresholdK(agent.profile) ?? null }
+}
+
+/**
+ * CC-290 b: each live agent's fill against its role's threshold. The broker is asked
+ * about a report only for an agent already past it, so a quiet roster costs no frames.
+ * `since` is the spawn, not the current run, so a resumed agent's earlier report counts.
+ */
+async function retireRows(agents: readonly AgentIdentity[]): Promise<Map<string, RetireRow>> {
+  const readings = agents.filter(retirable).map(agent => [agent, readingOf(agent)] as const)
+  const past = readings.filter(([, reading]) => pastThreshold(reading))
+  const reported =
+    past.length === 0
+      ? new Set<string>()
+      : await withBroker(b =>
+          reportedNames(
+            b,
+            past.map(([agent]) => agent),
+            tickReportTo(),
+          ),
+        )
+  return new Map(
+    readings.map(([agent, reading]) => [
+      agent.agentId,
+      { ...reading, retireDue: retireDue(reading, reported.has(agent.agentId)) },
+    ]),
+  )
+}
+
+async function reportedNames(
+  broker: BrokerClient,
+  agents: readonly AgentIdentity[],
+  reportTo: string | undefined,
+): Promise<Set<string>> {
+  const hits = await Promise.all(
+    agents.map(async agent => {
+      for (const to of reportTargets(agent.spawnedBy, reportTo)) {
+        if (await hasReported(broker, agent, to)) return [agent.agentId]
+      }
+      return []
+    }),
+  )
+  return new Set(hits.flat())
+}
+
+/** An older broker that refuses the frame shows the fill without retire-due rather than failing `agent ls`. */
+async function hasReported(broker: BrokerClient, agent: AgentIdentity, to: string): Promise<boolean> {
+  try {
+    const res = (await broker.request(
+      { t: 'reported', from: agent.name, to, since: agent.spawnedAt },
+      'reported_result',
+    )) as Extract<ServerMessage, { t: 'reported_result' }>
+    return res.reported
+  } catch {
+    return false
+  }
+}
+
+function tickReportTo(): string | undefined {
+  try {
+    return loadResolvedConfig().tick.reportTo
+  } catch {
+    return undefined
   }
 }
 
@@ -145,7 +237,7 @@ function modelOrNull(agent: AgentIdentity): string | null {
 }
 
 /** One roster row for `agent ls --json`: everything the text view shows, as fields. */
-function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex) {
+function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex, retire?: RetireRow) {
   const { status } = pairPresence(agent, { connected })
   const transcript = findAgentTranscript(agent.cwd, agent.sessionId, agent.configDir, index)
   return {
@@ -167,6 +259,9 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     teleportFrom: agent.teleportFrom ?? null,
     inferred: agent.exit?.inferred === true,
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
+    contextK: retire?.contextK ?? null,
+    retireK: retire?.retireK ?? null,
+    retireDue: retire === undefined || retire.contextK === null ? null : retire.retireDue,
   }
 }
 
