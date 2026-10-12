@@ -64,8 +64,8 @@ describe('a reviewer spawn gets its own scratch dir as --add-dir', () => {
   it('leaves an implementer and a previewer profile unchanged', () => {
     const { fs, made } = fakeFs()
 
-    expect(reviewerScratchDir(env('bd-implementer', 'tc-cc-1-a'), fs)).toBeUndefined()
-    expect(reviewerScratchDir(env('previewer', 'tc-cc-1-a'), fs)).toBeUndefined()
+    expect(reviewerScratchDir(env('bd-implementer', 'impl-1'), fs)).toBeUndefined()
+    expect(reviewerScratchDir(env('previewer', 'impl-1'), fs)).toBeUndefined()
     expect(made).toEqual([])
     expect(withScratchAddDir(plan(['--', 'b']), undefined).args).toEqual(['--', 'b'])
   })
