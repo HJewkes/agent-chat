@@ -20,6 +20,7 @@ import {
   resolveProcessKillBytes,
   resolveReportBatchMs,
   resolveWorktreeBudget,
+  retireThresholdK,
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
@@ -180,8 +181,46 @@ describe('resolveContextHintPolicy', () => {
     expect(resolveContextHintPolicy(undefined)).toEqual({ tokens: 250_000, boundary: 'episode boundary' })
   })
 
-  it.each(['planner', 'researcher', 'explorer', 'reviewer'])('never hints the %s role', profile => {
+  it.each(['researcher', 'explorer', 'bd-researcher'])('never hints the %s profile', profile => {
     expect(resolveContextHintPolicy(profile)).toBeNull()
+  })
+
+  it('hints a reviewer at 300k at its verdict and a planner at 250k at a plan section', () => {
+    expect(resolveContextHintPolicy('reviewer')).toEqual({ tokens: 300_000, boundary: 'verdict' })
+    expect(resolveContextHintPolicy('planner')).toEqual({ tokens: 250_000, boundary: 'plan section' })
+  })
+
+  it('holds a bd-implementer to the implementer 200k rather than the 250k default', () => {
+    expect(resolveContextHintPolicy('bd-implementer')).toEqual({
+      tokens: 200_000,
+      boundary: 'natural stopping point',
+    })
+  })
+
+  it('holds a bd-reviewer to 300k and a bd-planner to 250k by their role', () => {
+    expect(resolveContextHintPolicy('bd-reviewer')?.boundary).toBe('verdict')
+    expect(resolveContextHintPolicy('fable-reviewer')?.tokens).toBe(300_000)
+    expect(resolveContextHintPolicy('bd-planner')?.boundary).toBe('plan section')
+  })
+
+  it('gives bd-implementer-lite the longest matching key, implementer-lite', () => {
+    writeConfigJson({ contextHints: { profiles: { 'implementer-lite': { tokens: 150_000 } } } })
+
+    expect(resolveContextHintPolicy('bd-implementer-lite')?.tokens).toBe(150_000)
+    expect(resolveContextHintPolicy('bd-implementer')?.tokens).toBe(200_000)
+  })
+
+  it('applies a config.json override of a role to the profiles that fall back to it', () => {
+    writeConfigJson({ contextHints: { profiles: { reviewer: { tokens: 250_000 } } } })
+
+    expect(resolveContextHintPolicy('bd-reviewer')).toEqual({ tokens: 250_000, boundary: 'verdict' })
+  })
+
+  it('lets an exact config.json entry beat the role fallback', () => {
+    writeConfigJson({ contextHints: { profiles: { 'bd-implementer': { tokens: 120_000 } } } })
+
+    expect(resolveContextHintPolicy('bd-implementer')?.tokens).toBe(120_000)
+    expect(resolveContextHintPolicy('relay-implementer')?.tokens).toBe(200_000)
   })
 
   it('gives an unlisted profile the default', () => {
@@ -213,6 +252,33 @@ describe('resolveContextHintPolicy', () => {
     writeConfigJson({ contextHints: { profiles: { implementer: { tokens: '200k' } } } })
 
     expect(resolveContextHintPolicy('implementer')?.tokens).toBe(200_000)
+  })
+})
+
+describe('retireThresholdK', () => {
+  it.each([
+    ['bd-implementer', 200],
+    ['bd-reviewer', 300],
+    ['bd-planner', 250],
+  ])('retires a %s past %ik', (profile, k) => {
+    expect(retireThresholdK(profile)).toBe(k)
+  })
+
+  it('follows a config.json move of a role threshold', () => {
+    writeConfigJson({ contextHints: { profiles: { implementer: { tokens: 180_000 } } } })
+
+    expect(retireThresholdK('bd-implementer')).toBe(180)
+  })
+
+  it('has no threshold for a profile naming no role, even though it is hinted', () => {
+    expect(resolveContextHintPolicy('coordinator')?.tokens).toBe(250_000)
+    expect(retireThresholdK('coordinator')).toBeUndefined()
+  })
+
+  it('has no threshold for a role that config.json silences', () => {
+    writeConfigJson({ contextHints: { profiles: { planner: null } } })
+
+    expect(retireThresholdK('bd-planner')).toBeUndefined()
   })
 })
 
