@@ -109,6 +109,8 @@ export class BrokerCore<C = Conn> {
   private readonly isSeat: (name: string) => boolean
   /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
   private readonly stranded = new Map<string, DeliveredMessage[]>()
+  /** CC-1140: the log id a non-seat name went dark at, read as it registers, until its missed answers are pushed. */
+  private readonly missedSince = new Map<string, number>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
@@ -193,9 +195,12 @@ export class BrokerCore<C = Conn> {
     // holder. A session id is merely evidence of which Claude Code process this
     // is, and letting it evict would turn the name lease — the property that makes
     // "held by another session" mean anything — into a claim anyone can make.
+    const missedSince = this.answersMissedSince(msg.name)
     const result = this.registry.register(conn, msg, this.teleportPredecessor(msg.agentId))
     logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
     if (!result.ok) return { ok: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
+    if (missedSince === undefined) this.missedSince.delete(msg.name)
+    else this.missedSince.set(msg.name, missedSince)
     if (result.evicted !== undefined)
       this.supersede(msg.name, msg.agentId, result.evictedAgentId, result.evicted, evict)
 
@@ -382,14 +387,37 @@ export class BrokerCore<C = Conn> {
     if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
   }
 
-  /** Push `name`'s new connection the reports its last one closed on, once (CC-321). */
+  /**
+   * CC-1140: where a name registering out of the dark starts missing answers. A seat
+   * or teleport is skipped: `deliverHeld` already pushes its answers.
+   */
+  private answersMissedSince(name: string): number | undefined {
+    if (this.darkSeat(name) !== undefined) return undefined
+    return this.events.darkSince(name)?.id
+  }
+
+  /**
+   * Push `name`'s new connection the reports its last one closed on (CC-321), and the
+   * answers to its own questions recorded while it was dark (CC-1140), once.
+   */
   deliverStranded(name: string): void {
+    this.deliverMissedAnswers(name)
     const unpushed = this.stranded.get(name)
     const conn = this.registry.connFor(name)
     if (unpushed === undefined || conn === undefined) return
     this.stranded.delete(name)
     this.reports.resend(conn, unpushed)
     logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+  }
+
+  private deliverMissedAnswers(name: string): void {
+    const afterId = this.missedSince.get(name)
+    const conn = this.registry.connFor(name)
+    if (afterId === undefined || conn === undefined) return
+    this.missedSince.delete(name)
+    const missed = this.events.answersToAskerSince(name, afterId, this.registry.entryFor(conn)?.agentId)
+    for (const message of missed) this.reports.now(conn, message)
+    if (missed.length > 0) logEvent('missed_answers_delivered', { name, count: missed.length })
   }
 
   /** Deliver to a named session if it happens to be connected right now. */

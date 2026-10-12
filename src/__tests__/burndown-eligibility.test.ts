@@ -177,7 +177,7 @@ describe('dispatch gate on declared ops (CC-974)', () => {
   })
 
   it('needs the release grant for a declared publish, and dispatches it with the grant', () => {
-    const publish = withDoneWhen('npm publish ships 1.2.0', ['ops:publish'])
+    const publish = withDoneWhen('publish @t/x at 1.2.0', ['ops:publish'])
 
     expect(refuse(publish)?.kind).toBe('needs-grant')
     expect(refuse(publish)?.reason).toContain('release-through-ci')
