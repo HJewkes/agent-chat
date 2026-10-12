@@ -30,8 +30,10 @@ function leakedName(text: string): string | undefined {
 
 function realSeat(text: string): string | undefined {
   const lower = text.toLowerCase()
-  const at = REAL_SEATS.map(n => [lower.indexOf(n), n.length]).find(([i]) => i >= 0)
-  return at === undefined ? undefined : text.slice(at[0], at[0] + at[1])
+  const seat = REAL_SEATS.find(n => lower.includes(n))
+  if (seat === undefined) return undefined
+  const at = lower.indexOf(seat)
+  return text.slice(at, at + seat.length)
 }
 
 function leakedSlug(text: string): string | undefined {
