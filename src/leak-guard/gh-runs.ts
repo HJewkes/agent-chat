@@ -190,13 +190,21 @@ const toAlias = (value: string): GhAlias =>
 const scalarKey = (pair: Pair): string | undefined =>
   isScalar(pair.key) && pair.key.value !== null ? String(pair.key.value) : undefined
 
+/**
+ * A name whose shlex words hold whitespace (`'pr x'`, `pr\ x`): gh 2.102 then runs the alias in
+ * place of commands such as `gh pr view` and `gh api`, a takeover the guard does not model.
+ */
+export const spacedAliasName = (name: string): boolean =>
+  splitAlias(name)?.some(word => /\s/.test(word)) === true
+
 /** gh keeps the first of two equal keys, so the guard reads the first too. */
 function aliasesIn(map: YAMLMap): GhAliases {
   const aliases = new Map<string, GhAlias>()
   for (const pair of map.items) {
     const key = scalarKey(pair)
     const value = pair.value as Node | null
-    if (key === undefined || !isScalar(value) || value.value === null) return UNREADABLE
+    if (key === undefined || !isScalar(value) || value.value === null || spacedAliasName(key))
+      return UNREADABLE
     if (!aliases.has(key)) aliases.set(key, toAlias(String(value.value)))
   }
   return { kind: 'ok', aliases }
@@ -278,7 +286,8 @@ export function ghCommandWords(args: readonly (string | undefined)[], max: numbe
  * What a `gh alias` call defines: a body to check, `unread` for an import or a `-` expansion read
  * from stdin, `hidden` for a word or flag the guard cannot read, undefined when it defines nothing.
  */
-export type GhAliasSet = { kind: 'body'; alias: GhAlias } | { kind: 'unread' } | { kind: 'hidden' }
+export type GhAliasSet =
+  { kind: 'body'; alias: GhAlias } | { kind: 'unread' } | { kind: 'hidden' } | { kind: 'spaced' }
 
 const TRUE = new Set(['1', 't', 'T', 'true', 'TRUE', 'True'])
 const FALSE = new Set(['0', 'f', 'F', 'false', 'FALSE', 'False'])
@@ -320,8 +329,10 @@ export function ghAliasSet(rest: readonly (string | undefined)[]): GhAliasSet | 
       if (!readFlag(word, flags)) return { kind: 'hidden' }
     } else positionals.push(word)
   }
-  const [, expansion] = positionals
-  if (flags.get('help') === true || positionals.length !== 2 || expansion === undefined) return undefined
+  const [name, expansion] = positionals
+  if (flags.get('help') === true || name === undefined || expansion === undefined) return undefined
+  if (positionals.length !== 2) return undefined
+  if (spacedAliasName(name)) return { kind: 'spaced' }
   if (expansion === '-') return { kind: 'unread' }
   const alias = toAlias(expansion)
   return { kind: 'body', alias: { ...alias, shell: flags.get('shell') === true || alias.shell } }

@@ -168,7 +168,7 @@ export const REASONS = {
   ghAliasWritten: `leak-guard: this command line writes gh config and runs a gh word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
   ghAliasEnv: `leak-guard: this command line sets GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME and runs a gh word that may be an alias, so the guard cannot tell which config gh reads it from. Drop the setting. ${DOCS}`,
   ghAliasHidden: `leak-guard: a gh alias definition, a gh command word, or an argument passed to a gh alias holds a word or flag the guard cannot resolve or read, so it cannot tell what the alias runs. Write it out literally. ${DOCS}`,
-  ghAliasUnreadable: `leak-guard: the guard cannot parse gh's config.yml, so it cannot tell whether this gh command runs an alias. Fix the file so it is plain YAML with an aliases map of strings. ${DOCS}`,
+  ghAliasUnreadable: `leak-guard: the guard cannot parse gh's config.yml, or a gh alias name holds a quoted or escaped space, so it cannot tell whether this gh command runs an alias. Fix the file so it is plain YAML with an aliases map of strings and names of plain words. ${DOCS}`,
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
 } as const
 
@@ -1152,6 +1152,7 @@ function checkGhAliasSet(
 ): string | undefined {
   if (set.kind === 'hidden') return REASONS.ghAliasHidden
   if (set.kind === 'unread') return REASONS.ghAliasUnread
+  if (set.kind === 'spaced') return REASONS.ghAliasUnreadable
   const { shell, body } = set.alias
   return checkAt(shell ? body : `gh ${body}`, ctx, { ...scope, cwd: undefined, env: undefined }, depth + 1)
 }
@@ -1203,10 +1204,12 @@ function ghAliasAt(
   read: ReadGhAliases,
 ): AliasAt | string | undefined {
   if (at[0] === HIDDEN) return REASONS.ghAliasHidden
-  const slot = ghAliasSlot(at.map(i => args[i]))
-  if (slot === undefined) return undefined
+  if (at.length === 0) return undefined
+  // A spaced alias name takes over real commands too, so every gh command reads the config.
   const config = read()
   if (config.kind === 'unreadable') return REASONS.ghAliasUnreadable
+  const slot = ghAliasSlot(at.map(i => args[i]))
+  if (slot === undefined) return undefined
   const words = at.slice(0, slot.used)
   if (slot.word !== undefined) return { aliases: ghAliasesAt(config.aliases, slot.parent, slot.word), words }
   return ghAliasesUnder(config.aliases, slot.parent) ? REASONS.ghAliasHidden : { aliases: [], words }

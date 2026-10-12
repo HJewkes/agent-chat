@@ -761,6 +761,12 @@ that takes an alias. So key `cs one` runs on `gh codespace one`, and key `codesp
 leaf command do not. Keys such as `pr mine extra` and `pr view seven` never run. The invocation
 is walked the same way, past gh's flags, and every key that names its path is checked.
 
+A key whose shlex words hold whitespace (`'pr x'` quoted, or `pr\ x` escaped) is one word with
+a space in it, and gh 2.102 runs it in place of real commands such as `gh pr view 1`,
+`gh issue list` and `gh api user`. The guard does not model that takeover. Such a key makes
+`config.yml` read as unreadable, so every gh command with a command word denies until the key is
+removed, and `gh alias set` with such a name denies.
+
 gh finds the command word past its flags the way cobra's `stripFlags` does, and the guard does
 the same: `--` ends the search, a `--flag` or `-f` without `=` swallows the next word unless it
 is `--help` or `--version`, and any other flag is skipped. So `gh -R o/r rx` runs alias `rx`, and

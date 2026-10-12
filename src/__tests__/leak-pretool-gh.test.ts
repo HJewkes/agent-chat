@@ -420,6 +420,31 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     expect(decide('version: 1\n', command)).toBe('')
   })
 
+  const SPACED_KEYS = [
+    ['quoted', `aliases:\n    "'pr x'": '!git push --no-verify'\n`],
+    ['backslash-escaped', `aliases:\n    pr\\ x: '!git push --no-verify'\n`],
+  ]
+  const TAKEN_OVER = ['gh pr checkout 1', 'gh pr view 1', 'gh issue list', 'gh api user', 'gh git']
+
+  it.each(SPACED_KEYS.flatMap(([form, config]) => TAKEN_OVER.map(command => [form, command, config])))(
+    'denies, under a %s alias name that holds a space, %s',
+    (_, command, config) => {
+      expect(decide(config as string, command as string)).toBe(deny(REASONS.ghAliasUnreadable))
+    },
+  )
+
+  it.each([
+    `gh alias set "'pr x'" '!git push --no-verify'`,
+    `gh alias set 'pr\\ x' 'pr list'`,
+    `gh alias set -s '"issue y"' 'echo hi'`,
+  ])('denies setting an alias whose name holds a quoted or escaped space: %s', command => {
+    expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasUnreadable))
+  })
+
+  it('allows a two-word group alias name, which gh splits into a path', () => {
+    expect(decide('version: 1\n', `gh alias set 'pr mine' 'pr list --author @me'`)).toBe('')
+  })
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })
