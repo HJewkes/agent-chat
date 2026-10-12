@@ -111,6 +111,13 @@ describe('seat budget from the charter and seat file', () => {
       open: false,
       pool: 'pool-y',
       reason: 'BUDGET-PAUSE pool pool-y: no seven_day and five_hour reading for this pool',
+      gate: {
+        lever: 'pools.pool-y.reading',
+        value: null,
+        reading: null,
+        headroom: null,
+        source: 'account status reading',
+      },
       noReading: true,
     })
   })
@@ -344,6 +351,7 @@ describe('per_day_points', () => {
       open: false,
       pool: 'pool-y',
       reason: 'BUDGET-PAUSE pool pool-y: no seven_day reading at or before 07:00, so day spend unknown',
+      gate: { lever: 'spend.reading', value: null, reading: null, headroom: null, source: 'seats/<seat>.md' },
     })
   })
 
