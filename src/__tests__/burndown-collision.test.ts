@@ -159,6 +159,32 @@ describe('file-overlap exempts the Version Packages PR and .changeset/ paths (CC
   })
 })
 
+describe('open-pr ignores the Version Packages PR (CC-1152)', () => {
+  const release = pr(1152, {
+    branch: 'changeset-release/main',
+    title: 'Version Packages',
+    body: '- TP-737 a',
+  })
+
+  it('does not refuse a task named only in a changeset-release PR body', () => {
+    expect(collision(work('TP-737'), facts({ prs: [release] }))).toBeUndefined()
+  })
+
+  it('still refuses on an ordinary PR naming the task alongside the release PR', () => {
+    const ordinary = pr(8, { branch: 'agent-chat/tc-tp-737-a', title: 'Fix the scorer' })
+    const result = collision(work('TP-737'), facts({ prs: [release, ordinary] }))
+    expect(result).toEqual({
+      kind: 'open-pr',
+      reason: '#8 (agent-chat/tc-tp-737-a) names TP-737: Fix the scorer',
+    })
+  })
+
+  it('does not exempt a branch that merely contains changeset-release', () => {
+    const lookalike = pr(9, { branch: 'fix/changeset-release-notes', body: 'Closes TP-737.' })
+    expect(collision(work('TP-737'), facts({ prs: [lookalike] }))?.kind).toBe('open-pr')
+  })
+})
+
 describe('readSubjects over a real repository', () => {
   let repo: string
   const git = (...args: string[]): string =>
