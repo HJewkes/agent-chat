@@ -46,6 +46,8 @@ import { seedSlices, type PlanReader } from './seed-slices.js'
 import { OFF_PLAN_REASON } from './off-plan.js'
 import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
+import { planFacts, priorRoute, type PriorRouter, type Routed } from './prior-route.js'
+import type { TaskFacts } from './classify-task.js'
 
 /**
  * CC-205 D2: one seat's dispatches for a tick. Walks the seat's scored order
@@ -100,6 +102,8 @@ export interface SeatPlanInputs {
   offPlanIds?: ReadonlySet<string>
   /** Whether a path exists in a checkout, for placing a ready slice by what it owns (CC-946); absent, owns place nothing. */
   pathExists?: PathExists
+  /** CC-638: route implementer dispatches by the task-time prior; absent, today's route picks the profile. */
+  priorRouter?: PriorRouter
 }
 
 export interface SeatBriefGate {
@@ -620,7 +624,8 @@ function consider(
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const seeded = seedFromPlan(row, task, route.role, walk)
   if (seeded !== undefined && !('replan' in seeded)) return seeded
-  const { role, profile } = seeded === undefined ? route : PLANNER_ROUTE
+  const { role, profile, note }: { role: Role } & Routed =
+    seeded === undefined ? taskRoute(row, task, route, walk) : PLANNER_ROUTE
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
     ...dispatchFor({ initiative: row.initiative, task: row.id, profile }, repo, reason, walk),
@@ -632,8 +637,49 @@ function consider(
   if (refused !== undefined) return refused
   if (seeded !== undefined)
     walk.notes.push(`planning ${row.initiative} ${row.id}: no plan at ${seeded.replan} (seat ${seat.seat})`)
+  if (note !== undefined) walk.notes.push(note)
   return { dispatch, role, work }
 }
+
+/** CC-638: an implementer row's profile by its prior, its facts read only when a router is set. */
+function taskRoute(
+  row: DispatchRow,
+  task: Task,
+  route: { role: Role; profile: string },
+  walk: Walk,
+): { role: Role } & Routed {
+  if (route.role !== 'implementers') return route
+  const label = `${row.initiative} ${row.id} (seat ${walk.inputs.seat.seat})`
+  const facts = () => factsOf(task, planFacts(planText(walk, row.initiative, row.id)).owns)
+  return { role: route.role, ...priorProfile(route.profile, label, facts, walk) }
+}
+
+/** A queued slice is classified by its own owns and points, with its task's tags and done_when. */
+function sliceRoute(claim: Claim, task: Task | undefined, walk: Walk): Routed {
+  const slice = claim.slice === undefined ? '' : ` slice ${claim.slice}`
+  const label = `${claim.initiative} ${claim.taskId}${slice} (seat ${walk.inputs.seat.seat})`
+  const facts = (): TaskFacts => {
+    const { points } = planFacts(planText(walk, claim.initiative, claim.taskId), claim.slice)
+    const base = factsOf(task, claim.owns ?? [])
+    return points === undefined ? base : { ...base, estimate: points }
+  }
+  return priorProfile(IMPLEMENTER_PROFILE, label, facts, walk)
+}
+
+function priorProfile(today: string, label: string, facts: () => TaskFacts, walk: Walk): Routed {
+  const router = walk.inputs.priorRouter
+  return router === undefined ? { profile: today } : priorRoute(router, facts(), today, label)
+}
+
+const planText = (walk: Walk, initiative: string, taskId: string): string | undefined =>
+  walk.inputs.readPlan?.(initiative, taskId).text
+
+const factsOf = (task: Task | undefined, owns: readonly string[]): TaskFacts => ({
+  estimate: task?.estimate ?? null,
+  done_when: task?.doneWhen ?? null,
+  tags: task?.tags ?? [],
+  owns,
+})
 
 /**
  * CC-927: under an `on` gate, a brief-ready task's seat-written plan stands in for the planner. Its slices
@@ -680,7 +726,8 @@ function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): und
 /** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */
 function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   const { seat, tasks } = walk.inputs
-  const tags = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)?.tags ?? []
+  const task = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)
+  const tags = task?.tags ?? []
   if (tags.includes('blocked'))
     return { kind: 'blocked', reason: `${claim.taskId} carries the blocked tag; its queued slices wait` }
   const placed = sliceRepo(seat, claim.initiative, tags, claim, walk.inputs.pathExists)
@@ -691,25 +738,31 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
       kind: 'no-repo',
       reason: `seat ${seat.seat} lists no repo${claim.repo === undefined ? '' : ` ${claim.repo}`} for ${claim.initiative}`,
     }
+  const { profile, note } = sliceRoute(claim, task, walk)
   const work = {
     initiative: claim.initiative,
     task: claim.taskId,
-    profile: IMPLEMENTER_PROFILE,
+    profile,
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
   }
   const dispatch = {
     ...dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk),
     ...(claim.owns?.length ? { owns: claim.owns } : {}),
   }
-  const checked = {
-    taskId: claim.taskId,
-    ...(claim.slice === undefined ? {} : { slice: claim.slice }),
-    tags,
-    owns: claim.owns ?? [],
-    contracts: claim.contracts ?? [],
-  }
-  return blocker(dispatch, checked, 'implementers', walk) ?? { dispatch, role: 'implementers', work: checked }
+  const checked = sliceWork(claim, tags)
+  const refused = blocker(dispatch, checked, 'implementers', walk)
+  if (refused !== undefined) return refused
+  if (note !== undefined) walk.notes.push(note)
+  return { dispatch, role: 'implementers', work: checked }
 }
+
+const sliceWork = (claim: Claim, tags: string[]): CollisionWork => ({
+  taskId: claim.taskId,
+  ...(claim.slice === undefined ? {} : { slice: claim.slice }),
+  tags,
+  owns: claim.owns ?? [],
+  contracts: claim.contracts ?? [],
+})
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
   const brief = briefCheck(walk.inputs)
