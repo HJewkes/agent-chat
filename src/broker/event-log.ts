@@ -305,8 +305,21 @@ export class EventLog implements EventStore {
     return this.db
   }
 
+  /**
+   * CC-1187: an 8-hex id repeats about 7% of the time across 25,000 rows, and a repeat of a
+   * resolved id makes the new item born closed. The `ref` check covers resolutions whose
+   * item was never logged under that id.
+   */
+  private mintMsgId(): string {
+    const taken = this.db.prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? OR ref = ? LIMIT 1`)
+    for (;;) {
+      const msgId = newMsgId()
+      if (!taken.get(msgId, msgId)) return msgId
+    }
+  }
+
   append(input: AppendInput): { id: number; msgId: string } {
-    const msgId = input.msgId ?? newMsgId()
+    const msgId = input.msgId ?? this.mintMsgId()
     const stmt = this.db.prepare(
       `INSERT INTO events (ts, kind, actor, target, msg_id, ref, body, meta)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
