@@ -1,9 +1,11 @@
+import type { FundsMap } from '../seats/charter.js'
 import type { PoolPickMode } from '../seats/pool-pick.js'
 import type { PoolGateResult } from './budget-gate.js'
 
 /**
  * CC-1145: which pool a seat's tick bills. In `enforce` the tick tries the pool pick's order, then the seat's home
- * pool, then its `overflow_pool`; in `shadow` and `off` it bills home only, as before. Pure.
+ * pool, then its `overflow_pool`, keeping only pools the charter's `funds` map lets pay for the seat's work; in
+ * `shadow` and `off` it bills home only, as before. Pure.
  */
 
 export interface BillingOrderInput {
@@ -14,14 +16,43 @@ export interface BillingOrderInput {
   overflow: string | undefined
   /** The charter's pools; a name outside them is never billed. */
   pools: ReadonlySet<string>
+  /** The charter's funds map; absent, `enforce` bills home only, as the broker's pick routes nothing without one. */
+  funds: FundsMap | undefined
+  /** The seat's initiatives; a pool must fund at least one, and each task is held to its own initiative. */
+  initiatives: readonly string[]
 }
 
-export function billingOrder({ mode, home, pick, overflow, pools }: BillingOrderInput): string[] {
-  if (mode !== 'enforce') return [home]
+export interface BillingOrder {
+  order: string[]
+  /** Why each pool the funds map left out of `order` was skipped. */
+  unfunded: string[]
+}
+
+/** The pools the funds map lets pay for `initiative`'s work: its own entry, else `default`; none for a human-only one. */
+export function fundedPools(funds: FundsMap, initiative: string): readonly string[] {
+  if (funds.never.includes(initiative)) return []
+  return funds.only.get(initiative) ?? funds.fallback ?? []
+}
+
+/** Whether `pool` may pay for `initiative`'s work; a seat with no initiatives is held to `default`. */
+export const funds = (map: FundsMap, pool: string, initiative: string | undefined): boolean =>
+  (initiative === undefined ? (map.fallback ?? []) : fundedPools(map, initiative)).includes(pool)
+
+export function billingOrder(input: BillingOrderInput): BillingOrder {
+  const { mode, home, pick, overflow, pools, funds: map, initiatives } = input
+  if (mode !== 'enforce' || map === undefined) return { order: [home], unfunded: [] }
   const named = [...pick, home, overflow].filter(
     (name): name is string => name !== undefined && pools.has(name),
   )
-  return [...new Set(named)]
+  const candidates = [...new Set(named)]
+  const scope = initiatives.length === 0 ? [undefined] : initiatives
+  const funded = (pool: string) => scope.some(initiative => funds(map, pool, initiative))
+  return {
+    order: candidates.filter(funded),
+    unfunded: candidates
+      .filter(pool => !funded(pool))
+      .map(pool => `pool ${pool}: not in the funds map for ${initiatives.join(', ') || 'default'}`),
+  }
 }
 
 export type BilledPool =

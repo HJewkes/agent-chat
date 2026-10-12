@@ -7,6 +7,7 @@ import { gatePool, spendSince } from '../agents/burndown/budget-gate.js'
 import { EMPTY_LEDGER, type Ledger } from '../agents/burndown/ledger.js'
 import { loadSeats, planSeats, type SeatTickDeps } from '../agents/burndown/seat-tick.js'
 import { readInitiatives } from '../agents/burndown/source.js'
+import type { FundsMap } from '../agents/seats/charter.js'
 
 /** CC-1080: samples read from another pool's account never join the series, so a cross-pool drop is no reset. */
 
@@ -92,7 +93,7 @@ const SEVEN_DAY_STOP: PoolNow = { sevenDay: 95, fiveHour: 10, daySpent: 2 }
 
 function pickDeps(
   pools: Record<string, PoolNow>,
-  pick?: { mode: 'off' | 'shadow' | 'enforce'; order: string[] },
+  pick?: { mode: 'off' | 'shadow' | 'enforce'; order: string[]; funds?: FundsMap },
 ): SeatTickDeps {
   const at = (dir: string): PoolNow => pools[DIRS[dir] ?? ''] ?? OPEN
   return {
@@ -117,7 +118,12 @@ function load(pools: Record<string, PoolNow>, pick?: Parameters<typeof pickDeps>
   return loaded[0]!
 }
 
-const enforce = (order: string[]) => ({ mode: 'enforce' as const, order })
+const ALL_FUNDED: FundsMap = { only: new Map(), fallback: ['pool-x', 'pool-y', 'pool-z'], never: [] }
+const enforce = (order: string[], funds: FundsMap = ALL_FUNDED) => ({
+  mode: 'enforce' as const,
+  order,
+  funds,
+})
 
 describe('the tick bills the first open pool under poolPick enforce', () => {
   beforeEach(() => {
@@ -203,6 +209,50 @@ describe('the tick bills the first open pool under poolPick enforce', () => {
 
     expect(seat.dispatch.pool.name).toBe('pool-z')
     expect(seat.dispatch.configDir).toBe('/tmp/pool-z')
+  })
+
+  it('skips an overflow pool the funds map does not list and fails closed on home', () => {
+    const funds: FundsMap = { only: new Map(), fallback: ['pool-x', 'pool-y'], never: [] }
+    const seat = load({ 'pool-x': HOME_AT_DAY_STOP, 'pool-z': OPEN }, enforce([], funds))
+
+    expect(seat.dispatch.pool.name).toBe('pool-x')
+    expect(seat.closedPools).toContain('pool pool-x:')
+    expect(seat.closedPools).toContain('pool pool-z: not in the funds map for init-alpha')
+  })
+
+  it('skips an unfunded pool the pick returned and bills the funded overflow', () => {
+    const funds: FundsMap = {
+      only: new Map([['init-alpha', ['pool-x', 'pool-z']]]),
+      fallback: ['pool-y'],
+      never: [],
+    }
+    const seat = load(
+      { 'pool-x': HOME_AT_DAY_STOP, 'pool-y': OPEN, 'pool-z': OPEN },
+      enforce(['pool-y'], funds),
+    )
+
+    expect(seat.dispatch.pool.name).toBe('pool-z')
+  })
+
+  it('refuses a task whose initiative the billed pool does not fund', () => {
+    writeTask(root)
+    const funds: FundsMap = { only: new Map([['init-alpha', ['pool-x']]]), fallback: ['pool-y'], never: [] }
+    const seat = load({ 'pool-x': OPEN, 'pool-y': OPEN }, enforce(['pool-x'], funds))
+    const onY = { ...seat, dispatch: { ...seat.dispatch, pool: { ...seat.dispatch.pool, name: 'pool-y' } } }
+
+    const plan = planSeats(
+      [onY],
+      { ledger: EMPTY_LEDGER, initiatives: readInitiatives(root), scopeTagAliases: {} },
+      root,
+    )
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toContainEqual(
+      expect.objectContaining({
+        task: 'AA-1',
+        reason: 'pool pool-y is not in the funds map for initiative init-alpha',
+      }),
+    )
   })
 
   it('leaves a seat unchanged in shadow mode', () => {
