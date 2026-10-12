@@ -136,9 +136,20 @@ describe('scored row flags', () => {
       'scope=2 initiatives, 0 open, skipped: 0, refused={excluded-tag: 1, share-cap:nit: 2}',
     ])
   })
+
+  it('prints an absent milestone week, and no milestone line when the plan carries none (CC-625)', () => {
+    const plan = { order: [], scope: 2, open: 0, refused: {}, skipped: [] }
+
+    expect(renderScored({ ...plan, milestones: { week: '2026-W42', errors: [], absent: true } })).toEqual([
+      'milestones=2026-W42 absent: no milestones/2026-W42.yml, order by tags alone',
+      'scope=2 initiatives, 0 open, skipped: 0, refused={}',
+    ])
+    expect(renderScored(plan)).toEqual(['scope=2 initiatives, 0 open, skipped: 0, refused={}'])
+  })
 })
 
 describe('burndown plan --seat --scored from disk', () => {
+  const NO_W40_FILE = { week: '2026-W40', errors: [], absent: true as const }
   const saved = { ...process.env }
   let world: string
 
@@ -162,7 +173,20 @@ describe('burndown plan --seat --scored from disk', () => {
 
     const report = await burndownPlanVerb.run(args, ctx)
 
-    expect(report).toEqual({ ok: true, lines: renderScored(fixturePlan()) })
+    expect(report).toEqual({ ok: true, lines: renderScored({ ...fixturePlan(), milestones: NO_W40_FILE }) })
+  })
+
+  it('prints the week as absent when the autonomy root has no milestone file for it (CC-625)', async () => {
+    const root = path.join(world, 'autonomy')
+    fs.cpSync(FIXTURE, root, { recursive: true })
+    const args = { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: root, today: snapshot.today }
+
+    const report = await burndownPlanVerb.run(args, ctx)
+
+    expect(report.lines.at(-2)).toBe(
+      'milestones=2026-W40 absent: no milestones/2026-W40.yml, order by tags alone',
+    )
+    expect(report.lines.slice(0, -2)).toEqual(renderScored(fixturePlan()).slice(0, -1))
   })
 
   it("orders by this week's milestone file in the autonomy root and prints its errors", async () => {
@@ -254,7 +278,7 @@ describe('burndown plan --seat --scored from disk', () => {
 
       const report = await burndownPlanVerb.run(installTable(repoTable()), ctx)
 
-      const today = renderScored(fixturePlan())
+      const today = renderScored({ ...fixturePlan(), milestones: NO_W40_FILE })
       const rows = report.lines.slice(0, 10)
       expect(rows.every(line => ROW.test(line))).toBe(true)
       expect(ROW.exec(rows[0]!)?.slice(1)).toEqual(['safety-path', 'bd-implementer'])
@@ -272,7 +296,7 @@ describe('burndown plan --seat --scored from disk', () => {
         'workflow table: at workflow.ui-round.merge: unknown merge ladder value "boss"',
       ])
       expect(report.lines.filter(line => !line.startsWith('workflow table'))).toEqual(
-        renderScored(fixturePlan()),
+        renderScored({ ...fixturePlan(), milestones: NO_W40_FILE }),
       )
     })
 

@@ -1,10 +1,7 @@
 import type { BudgetRead } from '../budget.js'
-import {
-  MAX_READING_AGE_SECONDS,
-  dayStart,
-  runStartAt,
-  type AccountReading,
-} from '../burndown/budget-gate.js'
+import { MAX_READING_AGE_SECONDS, dayStart, type AccountReading } from '../burndown/budget-gate.js'
+import type { SeatState } from '../burndown/ledger.js'
+import { seatSpend } from '../burndown/spend-meter.js'
 import {
   charterOwnerSeat,
   charterSeats,
@@ -42,7 +39,6 @@ import { dayOpening, publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
-  meterHistory,
   readSeatLog,
   restartWindow,
   sameSpendDay,
@@ -140,6 +136,8 @@ export interface WatchdogDeps {
   openBlocks?: (nowMs: number) => OpenBlock[] | undefined
   /** CC-1057: sends one page; absent with `openBlocks`, the pass pages nothing. */
   page?: (to: string, text: string) => Promise<WakeResult>
+  /** CC-1099: the seat's burndown ledger state, whose samples count spend before the meters do; absent, the meters alone. */
+  seatState?: (seat: string) => SeatState | undefined
 }
 
 export interface WatchdogOptions {
@@ -299,7 +297,16 @@ export async function seatGate(deps: WatchdogDeps, seat: Seat): Promise<SeatGate
   return { connected: roster.connected.includes(seat.name), hold: holdFor(holds, seat, journal.stop) }
 }
 
-/** gatePool on the seat's pool, reading the run and day meters as the spend at each window's start. */
+/** The seat's ledger state; a throw reads as none, which leaves the meters to count. */
+function ledgerState(deps: WatchdogDeps, seat: string): SeatState | undefined {
+  try {
+    return deps.seatState?.(seat)
+  } catch {
+    return undefined
+  }
+}
+
+/** CC-1099: gatePool on the seat's pool, its run and day spend counted by `seatSpend` as every reader counts it. */
 function seatBudget(
   pass: Pass,
   seat: Seat,
@@ -308,12 +315,13 @@ function seatBudget(
 ): BudgetVerdict {
   const pool = pass.pools.get(seat.pool)
   const day = pool === undefined ? undefined : pass.doc.pools[pool.name]
-  const runStart = runStartAt(pass.now, run === undefined ? {} : { recordedAt: run.since })
-  const starts = [
-    { at: runStart, meter: run },
-    { at: dayStart(pass.now), meter: day },
-  ]
-  const history = meterHistory(starts, pass.now.getTime())
+  const { history, runStart } = seatSpend({
+    seatState: pool === undefined ? undefined : ledgerState(pass.deps, seat.name),
+    configDir: pool?.configDir ?? '',
+    saved: { run, day },
+    sevenDay: reading?.sevenDay,
+    now: pass.now,
+  })
   const kept = pool === undefined ? undefined : pass.doc.lastReadings?.[pool.name]
   const lastGood = lastGoodReading(kept, pass.now.getTime())
   return poolBudget({

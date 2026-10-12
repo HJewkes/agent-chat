@@ -9,10 +9,11 @@ import {
   type ScannerFacts,
 } from '../../leak-guard/hooks-dir.js'
 import { GIT_BIN } from './review-diff.js'
+import { pinGitProtocols } from '../../git.js'
 
 /**
  * The tick's handle on `titan-egress-scan`, the scanner and private term list the pre-push hook
- * uses (CC-265). It runs with an environment of PATH, HOME and the term list alone, and requires
+ * uses (CC-265). It runs with an environment of PATH, HOME, the term list and the pinned GIT_ALLOW_PROTOCOL alone, and requires
  * the list, so a missing one is an outcome rather than a scan with generic rules only.
  */
 
@@ -84,6 +85,7 @@ export function egressRunner(inputs: EgressInputs = defaultEgressInputs()): Egre
     HOME: inputs.home,
     TITAN_EGRESS_TERMS: inputs.termsFile ?? termsFileFor(inputs.home),
     TITAN_EGRESS_REQUIRE_TERMS: '1',
+    GIT_ALLOW_PROTOCOL: pinGitProtocols(undefined),
   }
   const scan = (args: string[], cwd?: string, input?: string): EgressOutcome => {
     if (facts === undefined) return { state: 'no-scanner' }

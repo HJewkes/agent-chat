@@ -356,6 +356,75 @@ describe('runWatchdog', () => {
   })
 })
 
+describe('the watchdog counts spend through seatSpend (CC-1099, CC-271)', () => {
+  const at = (hour: number, minute = 0): number => new Date(2026, 8, 29, hour, minute).getTime()
+  const DAY_CAP_SEAT = '---\nprefix: sa\npool: claude\nspend:\n  per_run_points: 100\n---\n'
+
+  /** CC-271's reviewer case: the ledger read 20 at 07:00, the day meter's first sample read 30 at 09:00, now 35. */
+  function reviewerCase(seatState: WatchdogDeps['seatState']): Harness {
+    const h = harness(IDLE, 41, new Date(at(9, 30)))
+    h.deps.readSeatFile = seat => (seat === 'seat-a' ? DAY_CAP_SEAT : undefined)
+    h.doc.pools = { claude: { since: at(9), last: 30, spent: 0 } }
+    h.sevenDay = 35
+    if (seatState !== undefined) h.deps.seatState = seatState
+    return h
+  }
+
+  const ledger = (configDir: string) => () => ({ configDir, samples: [{ at: at(7), sevenDay: 20 }] })
+
+  it('closes the day gate on the ledger sample at 07:00 that no meter holds', async () => {
+    const h = reviewerCase(ledger(POOL_DIR))
+
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+    expect(out[0]).toMatch(
+      /BUDGET-PAUSE pool claude: day spend 15 points since 07:00 at or above the pool claude's per_day_points 13$/,
+    )
+  })
+
+  it.each([
+    ['no ledger', undefined],
+    [
+      'a ledger read that throws',
+      () => {
+        throw new Error('burndown.json unreadable')
+      },
+    ],
+    ["a ledger keyed to another pool's config dir", ledger('/home/example/.claude-other')],
+  ])('counts from the meters alone with %s, as before', async (_case, seatState) => {
+    const h = reviewerCase(seatState)
+
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+    expect(out[0]).not.toContain('BUDGET-PAUSE')
+  })
+
+  // CC-1118: the tick keys the ledger by the charter's raw `~/` string while `parsePools` expands it.
+  const TILDE_POOL = '~/synthetic-pool'
+  const ABSOLUTE_POOL = path.join(os.homedir(), 'synthetic-pool')
+
+  it.each([
+    ['a ~/ charter and a ~/ ledger key', TILDE_POOL, TILDE_POOL],
+    ['a ~/ charter and an absolute ledger key', TILDE_POOL, ABSOLUTE_POOL],
+    ['an absolute charter and a ~/ ledger key', ABSOLUTE_POOL, TILDE_POOL],
+  ])('closes the day gate on the ledger sample with %s', async (_case, charterDir, ledgerKey) => {
+    const h = reviewerCase(ledger(ledgerKey))
+    h.deps.readCharter = () => CHARTER.replace(`config_dir: ${POOL_DIR}`, `config_dir: ${charterDir}`)
+
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+    expect(out[0]).toMatch(/BUDGET-PAUSE pool claude: day spend 15 points since 07:00/)
+  })
+
+  it('still saves the advanced day meter after counting from the ledger', async () => {
+    const h = reviewerCase(ledger(POOL_DIR))
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.doc.pools.claude).toEqual({ since: at(9), last: 35, spent: 5 })
+  })
+})
+
 describe('seat agents stuck in spawning (CC-402)', () => {
   const START = new Date(2026, 8, 29, 8, 38)
   const minutesAgo = (minutes: number): number => START.getTime() - minutes * 60_000

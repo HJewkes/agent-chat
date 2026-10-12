@@ -1,3 +1,4 @@
+import { selfGrant } from '../../agents/skill-self-grant.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import type { ClientMessage, PermissionBehavior, ServerMessage } from '../../protocol.js'
 
@@ -103,11 +104,62 @@ async function withdraw(client: BrokerClient, msgId: string): Promise<void> {
     .catch(() => undefined)
 }
 
-export async function permissionHook(options: { deadline: string }): Promise<void> {
+const SELF_GRANT_RECORD_MS = 2000
+
+/**
+ * Best effort, capped at two seconds: the allow stands either way, since the
+ * transcript keeps the tool call even when the event log misses the grant.
+ */
+export async function recordSelfGrant(
+  input: HookInput,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = SELF_GRANT_RECORD_MS,
+): Promise<void> {
+  const { session, toolName, toolInput } = hookFrame(input, env)
+  const frame: ClientMessage = {
+    t: 'permission_self_granted',
+    session,
+    toolName,
+    toolInput,
+    grant: 'repo-skills',
+  }
+  // Never autoStart: a record is not worth resurrecting a broker someone stopped.
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no broker answer in ${timeoutMs} ms`)), timeoutMs)
+  })
+  const send = async (): Promise<void> => {
+    await client.connect()
+    const result = (await client.request(frame, 'permission_hook_result')) as PermissionHookResult
+    if (!result.ok) throw new Error(`broker refused the record: ${result.reason ?? 'no reason given'}`)
+  }
+  try {
+    await Promise.race([send(), timeout])
+  } catch (error) {
+    console.error(`agent-chat permission-hook: self-grant not recorded: ${(error as Error).message}`)
+  } finally {
+    clearTimeout(timer)
+    client.close()
+  }
+}
+
+export async function permissionHook(options: { deadline: string; selfGrantSkills?: string }): Promise<void> {
   const deadlineMs = Number.parseInt(options.deadline, 10) * 1000
   if (!Number.isInteger(deadlineMs) || deadlineMs <= 0) throw new Error(`bad --deadline: ${options.deadline}`)
-  const frame = hookFrame(parseHookInput(await readStdin()), process.env)
-  const outcome = await askHuman(frame, deadlineMs)
+  const input = parseHookInput(await readStdin())
+  const root = options.selfGrantSkills
+  if (root !== undefined && selfGrant(root, input.toolName, input.toolInput)) {
+    console.error(
+      `agent-chat permission-hook: self-granted ${input.toolName} in ${root}/.claude/skills (CC-694)`,
+    )
+    await recordSelfGrant(input, process.env)
+    process.stdout.write(hookOutput('allow'), () => process.exit(0))
+    return
+  }
+  const outcome = await askHuman(hookFrame(input, process.env), deadlineMs)
   if ('behavior' in outcome) {
     // Exit from the write callback: stdout to a pipe is asynchronous on macOS.
     process.stdout.write(hookOutput(outcome.behavior), () => process.exit(0))

@@ -967,6 +967,60 @@ describe("the seat's spend caps", () => {
   })
 })
 
+describe("the seat's spend through the tick's meter (CC-1099)", () => {
+  const stopOf = (why: string): string => `BUDGET-PAUSE pool ${POOL}: ${why}`
+  const RUN_STOP = stopOf("run spend 21 points at or above the seat's per_run_points 20")
+  const ledgerState = (configDir: string) => ({ samples: [{ at: at(8), sevenDay: 20 }], configDir })
+
+  beforeEach(() => {
+    writeAutonomy({ spend: { per_run_points: 20, per_day_points: 100 } })
+    doc.pools[POOL] = { since: at(7), last: 40, spent: 0 }
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: { since: at(9), last: 40, spent: 2 } }
+  })
+
+  it("stops on the ledger's run spend when the watchdog meters read below the per_run cap", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState('~/pool') })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it("stops on the ledger's run spend when the charter writes ~/ and the ledger key is absolute (CC-1118)", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState(path.join(tmp, 'pool')) })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it("stops on the ledger's run spend when the charter is absolute and the ledger key is ~/ (CC-1118)", async () => {
+    writeAutonomy({ spend: { per_run_points: 20, per_day_points: 100 }, configDir: path.join(tmp, 'pool') })
+
+    const { budget } = await status({ seatSamples: () => ledgerState('~/pool') })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it('keeps the watchdog meter figure when no ledger samples are wired', async () => {
+    const { budget } = await status()
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it("counts from the meters when the ledger's samples were read from another pool's account", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState('~/other-pool') })
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it('counts from the meters when the ledger cannot be read', async () => {
+    const unreadable = (): never => {
+      throw new Error('burndown.json is not valid JSON')
+    }
+
+    const { budget } = await status({ seatSamples: unreadable })
+
+    expect(budget.stop).toBeNull()
+  })
+})
+
 describe('reset-aware day pacing (CC-404)', () => {
   const PACED = 'pacing: reset-aware'
   const stopOf = (why: string): string => `BUDGET-PAUSE pool ${POOL}: ${why}`

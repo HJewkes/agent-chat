@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -332,6 +333,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
     openBlocks: readOpenBlocks,
     page: sendAsWatchdog,
+    seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
   }
 }
 
@@ -562,6 +564,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machine: readMachineStatus,
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
+    seatSamples: seat => readLedger(burndownLedgerPath()).seats?.[seat],
     waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
     contextOf: agent => readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd),
     selfContext: () => {
@@ -710,6 +713,57 @@ export const seatsTickVerb = defineVerb({
   },
   async run({ seat, dryRun, root }) {
     return seatTickReport(dryRun === true, () => seatPlanOptions(seat, root))
+  },
+})
+
+/** `05:17 tick` or `05:1x SWARM`: a hand-typed clock the verb would double up (CC-1058). */
+const LEADING_CLOCK = /^\s*\d{1,2}:[0-5x\d]{1,2}\b/i
+
+const isSeatDir = (root: string, seat: string): boolean =>
+  fs.existsSync(path.join(root, 'seats', `${seat}.md`)) || fs.existsSync(path.join(root, 'logs', seat))
+
+function seatLogRefusal(root: string, seat: string, text: string): string | undefined {
+  if (!isSeatName(seat)) return `not a seat name: ${seat}`
+  if (!isSeatDir(root, seat)) return `no seat '${seat}' under ${root}`
+  if (text.trim() === '') return 'the entry is empty: usage: agent-chat seats log <seat> <text...>'
+  if (/[\r\n]/.test(text)) return 'one line per entry: the text holds a line break'
+  if (LEADING_CLOCK.test(text)) return 'drop the hand-typed time; the verb stamps it'
+  return undefined
+}
+
+/** CC-1058: the log verb's body; the stamp comes from `now`, never from the text. */
+export function seatLogReport(root: string, seat: string, words: string[], now: Date): Report {
+  const text = words.join(' ')
+  const refusal = seatLogRefusal(root, seat, text)
+  if (refusal !== undefined) return refused(new Error(refusal))
+  try {
+    return { ok: true, lines: [appendSeatLog(root, seat, now, text)] }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const seatsLogVerb = defineVerb({
+  name: 'seats.log',
+  description:
+    "append one line to a seat's journal (CC-1058): '<HH:MM> <text>' in " +
+    '<root>/logs/<seat>/<YYYY-MM-DD>.md, stamped from the machine clock in local time, and print the ' +
+    'file. Refuses and writes nothing on an unknown seat, a line break in the text, or text that opens ' +
+    "with a time ('10:00 standup moved' becomes 'standup moved to 10:00')",
+  args: z.object({
+    seat: requiredString('seat'),
+    text: z.array(z.string()),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat', 'text'],
+    options: {
+      root: { long: '--root', description: 'autonomy directory holding seats/ and logs/' },
+    },
+  },
+  async run({ seat, text, root }) {
+    return seatLogReport(root ?? defaultAutonomyRoot(), seat, text, new Date())
   },
 })
 
@@ -893,6 +947,7 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsTickVerb)
   addVerb(seats, seatsDispatchesVerb)
+  addVerb(seats, seatsLogVerb)
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)

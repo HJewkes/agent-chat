@@ -21,8 +21,10 @@ import {
   hookSettingsPath,
   planPath,
   readLaunchPlan,
+  selfGrantRootOf,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
+import { REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import { launchEnv, oscTitle } from '@titan-design/agent-surface'
 import { terminalAnchor } from '../server/anchor.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
@@ -872,6 +874,25 @@ describe('the PermissionRequest hook (CC-144)', () => {
     )
   })
 
+  it('passes a self-grant root to the hook shell-quoted, and leaves the command unchanged without one', () => {
+    const command = (root?: string): string | undefined =>
+      (
+        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001', root) as {
+          hooks: { PermissionRequest: { hooks: { command: string }[] }[] }
+        }
+      ).hooks.PermissionRequest[0]?.hooks[0]?.command
+
+    expect(command('/w t')).toMatch(/ permission-hook --deadline 1790 --self-grant-skills '\/w t'$/)
+    expect(command(undefined)).toBe(
+      (
+        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001') as {
+          hooks: { PermissionRequest: { hooks: { command: string }[] }[] }
+        }
+      ).hooks.PermissionRequest[0]?.hooks[0]?.command,
+    )
+    expect(command(undefined)).not.toContain('--self-grant-skills')
+  })
+
   it('writes the settings file owner-only beside the plan, with the permission hook only for a print run', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
     const read = (): string => fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
@@ -882,6 +903,63 @@ describe('the PermissionRequest hook (CC-144)', () => {
 
     expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(read()).toContain('"timeout": 1800')
+  })
+})
+
+describe('arming the repo skill self-grant (CC-694)', () => {
+  const optedIn = profile({ allowedTools: ['Read', 'Write', 'Edit', REPO_SKILLS_RULE] })
+
+  /** A linked worktree made by `git worktree add`, so git itself registers it. */
+  function linkedWorktree(): string {
+    const repo = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'repo-'))
+    const git = (...args: string[]): void => {
+      spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        stdio: 'ignore',
+      })
+    }
+    git('init', '-q')
+    git('commit', '-q', '--allow-empty', '-m', 'init')
+    const root = path.join(repo, 'wt')
+    git('worktree', 'add', '-q', root)
+    return fs.realpathSync(root)
+  }
+
+  it('arms the worktree root when the profile carries the rule and cwd is a linked worktree', () => {
+    const cwd = linkedWorktree()
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBe(cwd)
+  })
+
+  it('does not arm a profile without the rule', () => {
+    const cwd = linkedWorktree()
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd })))).toBeUndefined()
+  })
+
+  it('does not arm a main checkout, whose .git is a directory', () => {
+    const cwd = fs.realpathSync(tmpdir())
+    fs.mkdirSync(path.join(cwd, '.git'))
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+  })
+
+  it('does not read the rule from the brief', () => {
+    const cwd = linkedWorktree()
+    const plan = buildLaunchPlan(input({ cwd, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }))
+
+    expect(selfGrantRootOf(plan)).toBeUndefined()
+  })
+
+  it('puts the root on the hook command in the written settings file', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    const cwd = linkedWorktree()
+
+    writeLaunchFiles(
+      buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
+      {},
+    )
+
+    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain(`--self-grant-skills '${cwd}'`)
   })
 })
 

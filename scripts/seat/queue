@@ -11,9 +11,11 @@ usage: bin/queue <seat> done <KEY> [--pr N]
        bin/queue <seat> replace <old> <new> [<old> <new>...]
        bin/queue <seat> replace -     (blocks on stdin: <<< old lines === new lines >>>)
 TASK must be the leading id of the item: the first token after the list marker
-(optionally in ** and followed by :), like TP-487 or agent-chat#234.
+(optionally in ** and followed by :), like TP-487 or agent-chat#234, or a backlog
+pointer id like tc-131 or tc-130.2 (CC-760).
 KEY is a TASK, or <section>:<n> for the item numbered n in that section (morning:208).
-done by TASK looks in In flight and Next only; a <section>:<n> KEY works in any section.
+done by TASK looks in In flight and Next only; a backlog id or a <section>:<n> KEY
+works in any section.
 set rewrites one item, sub-lines included, keeping its "- " or "n. " marker.
 add --top puts the item first in the section instead of last.
 replace swaps exact text: each old must occur exactly once when its pair applies;
@@ -82,10 +84,11 @@ function build(  i, b) {
   }
   nblk = b
 }
+function isbacklog(s) { return s ~ /^[a-z][a-z]?[a-z]?-[0-9]+(\.[0-9]+)?$/ }
 function leadid(s,  t, rest) {
   sub(/^(- |[0-9]+\. )/, "", s)
   sub(/^\*\*/, "", s)
-  if (!match(s, /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)/)) return ""
+  if (!match(s, /^([A-Z][A-Z0-9]*-[0-9]+|[a-z][a-z]?[a-z]?-[0-9]+(\.[0-9]+)?|[A-Za-z0-9_.-]+#[0-9]+)/)) return ""
   t = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1)
   return rest ~ /^(\*\*)?:?(\*\*)?([ \t]|$)/ ? t : ""
 }
@@ -152,9 +155,10 @@ function take(b, s,  i, body) {
   drop(b)
   place(s, body)
 }
-function doneverb(  c, i, k) {
-  c = find(1)
-  if (!c) nomatch("in In flight or Next")
+function doneverb(  c, i, k, any) {
+  any = isbacklog(task)
+  c = find(!any)
+  if (!c) nomatch(any ? "anywhere" : "in In flight or Next")
   for (i = 1; i <= c; i++)
     if (pr != "" && !hasword(btext(hit[i]), "#" pr, 0)) die("item naming " task " does not mention #" pr)
   for (i = 1; i <= c; i++) {
@@ -229,7 +233,7 @@ BEGIN {
   pairs = ENVIRON["Q_PAIRS"]; top = ENVIRON["Q_TOP"]
   if (match(task, /^[A-Za-z][A-Za-z -]*:[0-9]+$/)) {
     keyname = substr(task, 1, index(task, ":") - 1); keynum = substr(task, length(keyname) + 2) + 0
-  } else if (verb != "add" && verb != "replace" && task !~ /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)$/) die("'" task "' is not a task id like TP-487")
+  } else if (verb != "add" && verb != "replace" && !isbacklog(task) && task !~ /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)$/) die("'" task "' is not a task id like TP-487")
 }
 { L[++n] = $0 }
 END {

@@ -1,4 +1,5 @@
 import { MAX_ACCOUNT_READING_AGE_SECONDS } from '../budget.js'
+import { binaryGate, capGate, type GateReading } from './gate-reading.js'
 
 /**
  * Whether the tick may spend on an account right now (design section 7).
@@ -145,6 +146,8 @@ export interface SpendCaps {
   per_day_points?: number | undefined
   /** How a stop names `per_day_points` when it is not the seat file's own figure. */
   per_day_label?: string | undefined
+  /** CC-1097: where these caps are set, as a closed gate's `source` names it. */
+  source?: string | undefined
 }
 
 export interface SevenDaySample {
@@ -171,9 +174,14 @@ export interface PoolGateInput {
 
 export type PoolGateResult =
   | { open: true; pool: string; sonnetOnly: boolean; reason: string; staleOk?: true }
-  | { open: false; pool: string; reason: string; noReading?: true }
+  | { open: false; pool: string; reason: string; gate: GateReading; noReading?: true }
 
 type ClosedGate = Extract<PoolGateResult, { open: false }>
+type Close = (why: string, gate: GateReading) => ClosedGate
+
+const SEAT_SOURCE = 'seats/<seat>.md'
+const CHARTER_SOURCE = 'autonomy charter pools'
+const READING_SOURCE = 'account status reading'
 
 export const RUN_CAP_MS = 12 * 3_600_000
 /** CC-409: a last good reading older than this never stands in for a missing one. */
@@ -258,27 +266,63 @@ export function poolLines(pool: PricedRule, resetsAt: number | undefined, ctx: G
   }
 }
 
-function spendStop(input: PoolGateInput, now: SevenDaySample, capsLifted: boolean): string | undefined {
-  const { pool, ctx, runStartAt } = input
+interface SpendStop {
+  text: string
+  gate: GateReading
+}
+
+const unknownSpend = (text: string, source: string): SpendStop => ({
+  text,
+  gate: binaryGate('spend.reading', source),
+})
+
+function spendStop(input: PoolGateInput, now: SevenDaySample, capsLifted: boolean): SpendStop | undefined {
   const spend = capsLifted ? {} : input.spend
+  const source = spend.source ?? SEAT_SOURCE
   const runCap = spend.per_run_points
   if (runCap !== undefined) {
-    const run = spendSince(input.history, Math.max(runStartAt, now.at - RUN_CAP_MS), now)
-    if (run === undefined) return 'no seven_day reading at run start, so run spend is unknown'
-    if (run >= runCap) return `run spend ${run} points at or above the seat's per_run_points ${runCap}`
+    const run = spendSince(input.history, Math.max(input.runStartAt, now.at - RUN_CAP_MS), now)
+    if (run === undefined)
+      return unknownSpend('no seven_day reading at run start, so run spend is unknown', source)
+    if (run >= runCap)
+      return {
+        text: `run spend ${run} points at or above the seat's per_run_points ${runCap}`,
+        gate: capGate('spend.per_run_points', runCap, run, source),
+      }
   }
+  return dayStop(input, now, spend)
+}
+
+function dayStop(input: PoolGateInput, now: SevenDaySample, spend: SpendCaps): SpendStop | undefined {
+  const { pool } = input
+  const name = pool?.name ?? '?'
+  const seatSource = spend.source ?? SEAT_SOURCE
   const caps = [
-    { cap: pool?.per_day_points, whose: `pool ${pool?.name ?? '?'}'s per_day_points` },
-    { cap: spend.per_day_points, whose: spend.per_day_label ?? "seat's per_day_points" },
-  ].filter((c): c is { cap: number; whose: string } => c.cap !== undefined)
+    {
+      cap: pool?.per_day_points,
+      whose: `pool ${name}'s per_day_points`,
+      lever: `pools.${name}.per_day_points`,
+      source: CHARTER_SOURCE,
+    },
+    {
+      cap: spend.per_day_points,
+      whose: spend.per_day_label ?? "seat's per_day_points",
+      lever: 'spend.per_day_points',
+      source: seatSource,
+    },
+  ].filter((c): c is { cap: number; whose: string; lever: string; source: string } => c.cap !== undefined)
   if (caps.length === 0) return undefined
   // seven_day points are pool-wide, so both caps count spend by the owner and sibling seats too.
-  const day = spendSince(input.history, dayStart(ctx.now), now)
-  if (day === undefined) return 'no seven_day reading at or before 07:00, so day spend unknown'
+  const day = spendSince(input.history, dayStart(input.ctx.now), now)
+  if (day === undefined)
+    return unknownSpend('no seven_day reading at or before 07:00, so day spend unknown', seatSource)
   const hit = caps.filter(c => day >= c.cap).sort((a, b) => a.cap - b.cap)[0]
   return hit === undefined
     ? undefined
-    : `day spend ${day} points since 07:00 at or above the ${hit.whose} ${hit.cap}`
+    : {
+        text: `day spend ${day} points since 07:00 at or above the ${hit.whose} ${hit.cap}`,
+        gate: capGate(hit.lever, hit.cap, day, hit.source),
+      }
 }
 
 /** The reading plus this tick's charged dispatches, so seats sharing a pool cannot pass one gate together. */
@@ -304,21 +348,25 @@ export function gatePool(
 ): PoolGateResult {
   const { pool, reading, ctx } = input
   const name = pool?.name ?? 'unknown'
-  const closed = (why: string): ClosedGate => ({
+  const closed: Close = (why, gate) => ({
     open: false,
     pool: name,
     reason: `BUDGET-PAUSE pool ${name}: ${why}`,
+    gate,
   })
   const stops = priced(pool)
-  if (stops === undefined) return closed(NO_POOL_STOPS)
+  if (stops === undefined) return closed(NO_POOL_STOPS, readingGate(name, CHARTER_SOURCE))
   const stale = reading === undefined ? undefined : staleReason(reading.ageSeconds, maxReadingAgeSeconds)
-  if (stale !== undefined) return closed(stale)
+  if (stale !== undefined) return closed(stale, readingGate(name))
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return gateLastGood(input, stops, closed)
   return gateWindows(input, stops, { sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }, closed)
 }
 
 type PricedPool = PoolRule & PricedRule
+
+const readingGate = (pool: string, source = READING_SOURCE): GateReading =>
+  binaryGate(`pools.${pool}.reading`, source)
 
 const windowLines = (pool: PricedPool, input: PoolGateInput): WindowLines =>
   poolLines(pool, input.reading?.sevenDayResetsAt, input.ctx)
@@ -359,47 +407,55 @@ function tooClose(
  * CC-409: a status line drops `five_hour` when its window resets, so the pool's freshest file can lack a
  * window for hours. A recent last good reading stands in for the missing window only, and only well inside its line.
  */
-function gateLastGood(
-  input: PoolGateInput,
-  pool: PricedPool,
-  closed: (why: string) => ClosedGate,
-): PoolGateResult {
+function gateLastGood(input: PoolGateInput, pool: PricedPool, closed: Close): PoolGateResult {
   const last = input.lastGood
   const merged = standInReading(input.reading, last)
+  const gate = readingGate(pool.name)
   // CC-466: flagged so the seat watchdog can relaunch a dark seat whose own boot takes the reading.
-  if (last === undefined || merged === undefined) return { ...closed(NO_READING), noReading: true }
+  if (last === undefined || merged === undefined) return { ...closed(NO_READING, gate), noReading: true }
   const age = last.ageSeconds
   if (!(age >= 0 && age <= LAST_GOOD_MAX_AGE_SECONDS))
     return {
       ...closed(
         `${NO_READING}; the last good one is ${age}s old, over the ${LAST_GOOD_MAX_AGE_SECONDS}s limit`,
+        gate,
       ),
       noReading: true,
     }
   const { ceiling, line } = windowLines(pool, input)
   const near = tooClose(input.reading, last, ceiling, line)
   if (near.length > 0)
-    return closed(`${NO_READING}; in the last good one (${age}s old), ${near.join(' and ')}`)
-  const gate = gateWindows(input, pool, merged, closed)
-  if (!gate.open) return gate
-  return { ...gate, staleOk: true, reason: `${gate.reason}; stale-ok: last good reading ${age}s old` }
+    return closed(`${NO_READING}; in the last good one (${age}s old), ${near.join(' and ')}`, gate)
+  const windows = gateWindows(input, pool, merged, closed)
+  if (!windows.open) return windows
+  return { ...windows, staleOk: true, reason: `${windows.reason}; stale-ok: last good reading ${age}s old` }
 }
 
 function gateWindows(
   input: PoolGateInput,
   pool: PricedPool,
   reading: { sevenDay: number; fiveHour: number },
-  closed: (why: string) => PoolGateResult,
+  closed: Close,
 ): PoolGateResult {
   const { ctx } = input
   const { ceiling, line, capsLifted, note } = windowLines(pool, input)
   const charged = chargedReading(pool, reading, input.dispatched ?? 0)
   const { fiveHour, sevenDay } = charged
   const why = ` (${note})${charged.note}`
-  if (fiveHour >= ceiling) return closed(`five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`)
-  if (sevenDay >= line) return closed(`seven_day ${sevenDay}% at or above line ${line}%${why}`)
+  const lever = (stop: string, value: number, at: number) =>
+    capGate(`pools.${pool.name}.${stop}`, value, at, CHARTER_SOURCE)
+  if (fiveHour >= ceiling)
+    return closed(
+      `five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`,
+      lever('ceiling_five_hour', ceiling, fiveHour),
+    )
+  if (sevenDay >= line)
+    return closed(
+      `seven_day ${sevenDay}% at or above line ${line}%${why}`,
+      lever('reserve_seven_day', line, sevenDay),
+    )
   const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted)
-  if (stop !== undefined) return closed(`${stop}${charged.note}`)
+  if (stop !== undefined) return closed(`${stop.text}${charged.note}`, stop.gate)
   const band = sonnetBand(pool)
   const sonnetOnly = fiveHour >= ceiling - band || sevenDay >= line - band
   return {
