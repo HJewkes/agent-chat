@@ -478,6 +478,21 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     },
   )
 
+  it.each([
+    ['zz #c', 'gh zz'],
+    ['pr mine #c', 'gh pr mine'],
+  ])('denies a stored alias name %s, which gh reads up to its # comment, on %s', (key, command) => {
+    const config = `aliases:\n    "${key}": '!git push --no-verify'\n`
+    expect(decide(config, command)).toBe(deny(REASONS.ghAliasUnreadable))
+  })
+
+  it.each([`gh alias set 'zz #c' 'pr list'`, `gh alias set 'pr mine #c' 'pr list'`])(
+    'denies setting an alias name with a # comment: %s',
+    command => {
+      expect(decide('version: 1\n', command)).toBe(deny(REASONS.ghAliasUnreadable))
+    },
+  )
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })

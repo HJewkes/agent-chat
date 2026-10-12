@@ -197,10 +197,11 @@ const EXOTIC_CHAR = /(?![ \t])[\s\p{Z}\p{Cc}\p{Cf}]/u
  * A name the guard does not read as gh does. A shlex word with whitespace in it (`'pr x'`,
  * `pr\ x`) makes gh 2.102 run the alias in place of commands such as `gh pr view` and `gh api`.
  * Whitespace other than an ASCII space or tab, or a control or format character, may split
- * differently under gh's shlex than under the guard's, so it counts too.
+ * differently under gh's shlex than under the guard's, so it counts too, and so does `#`: gh's
+ * shlex reads it as a comment, so key `zz #c` runs as alias `zz`.
  */
 export const spacedAliasName = (name: string): boolean =>
-  EXOTIC_CHAR.test(name) || splitAlias(name)?.some(word => /[ \t]/.test(word)) === true
+  name.includes('#') || EXOTIC_CHAR.test(name) || splitAlias(name)?.some(word => /[ \t]/.test(word)) === true
 
 /** gh keeps the first of two equal keys, so the guard reads the first too. */
 function aliasesIn(map: YAMLMap): GhAliases {
