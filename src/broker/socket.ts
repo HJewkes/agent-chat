@@ -1280,6 +1280,47 @@ export class SocketServer {
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
   }
 
+  /**
+   * The audit row for a call the hook allowed itself (CC-694). Nobody waits on it,
+   * so the request is closed by an `allow` resolution in the same breath; the
+   * resolution's actor is the agent, never HUMAN, because no human decided.
+   */
+  private handlePermissionSelfGranted(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'permission_self_granted' }>,
+  ): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'record a self-granted permission')
+      return reply(conn, {
+        t: 'permission_hook_result',
+        ok: false,
+        reason: 'permission_self_granted comes from a PermissionRequest hook; a session cannot send it',
+      })
+    }
+    const { core } = this
+    const { msgId } = core.append({
+      kind: 'approval_request',
+      actor: msg.session,
+      target: HUMAN,
+      body: `${msg.toolName}: self-granted (${msg.grant})`,
+      meta: {
+        source: 'self-grant',
+        grant: msg.grant,
+        tool_name: msg.toolName,
+        input_preview: JSON.stringify(msg.toolInput),
+      },
+    })
+    core.append({
+      kind: 'resolution',
+      actor: msg.session,
+      ref: msgId,
+      body: 'allow',
+      meta: { reason: `self-grant: ${msg.grant}` },
+    })
+    logEvent('permission_self_granted', { msgId, from: msg.session, tool: msg.toolName, grant: msg.grant })
+    reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
   /** CC-610: the spawner of a parked agent hears about it; a human spawner already has the queue. */
   private noticePermissionWaiting(
     msg: Extract<ClientMessage, { t: 'permission_hook' }>,
@@ -1703,6 +1744,8 @@ export class SocketServer {
         return this.handlePermissionHook(conn, msg)
       case 'permission_hook_withdrawn':
         return this.handlePermissionHookWithdrawn(conn, msg.msgId)
+      case 'permission_self_granted':
+        return this.handlePermissionSelfGranted(conn, msg)
       case 'service_ask':
         return this.handleServiceAsk(conn, msg)
       case 'answers_since':
