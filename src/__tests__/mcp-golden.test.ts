@@ -611,6 +611,8 @@ const AGENT_SPAWN_CASES: CallCase[] = [
   spawnCase('return_contract none', { ...SPAWN_ARGS, return_contract: 'none' }, { reply: spawned() }),
   spawnCase('return_contract misspelled', { ...SPAWN_ARGS, return_contract: 'off' }),
   spawnCase('task and role', { ...SPAWN_ARGS, task: 'CC-1', role: 'reviewer' }, { reply: spawned() }),
+  spawnCase('host named', { ...SPAWN_ARGS, host: 'mac' }, { reply: spawned({ host: 'mac' }) }),
+  spawnCase('host blank', { ...SPAWN_ARGS, host: '  ' }, { reply: spawned() }),
   spawnCase('role a numbered fix round', { ...SPAWN_ARGS, role: 'fix-round-2' }, { reply: spawned() }),
   spawnCase('role outside the vocabulary', { ...SPAWN_ARGS, role: 'boss' }),
   spawnCase('surface blank', { ...SPAWN_ARGS, surface: '  ' }),
@@ -901,6 +903,7 @@ const CHAT_STATUS_CASES: CallCase[] = [
 const PROCESS_FIELDS: Partial<Record<ClientMessage['t'], string[]>> = {
   register: ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build'],
   teleport: ['hostPlatform', 'launchSeen'],
+  spawn: ['hostPlatform', 'callerHome'],
 }
 
 function frameLine(frame: ClientMessage): string {

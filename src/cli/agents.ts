@@ -1,3 +1,4 @@
+import os from 'node:os'
 import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
@@ -28,6 +29,7 @@ import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName
 import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
+import { launchHereFields, requestSpawn } from '../server/caller-spawn.js'
 
 /**
  * The roster: durable lifecycle paired with ephemeral presence.
@@ -319,6 +321,7 @@ export async function agentSpawn(
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
+  // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
   options: {
     briefing?: string
     briefStdin?: boolean
@@ -328,6 +331,7 @@ export async function agentSpawn(
     surface?: SurfaceName
     spawnedAs?: SpawnedAs
     remoteControl?: boolean
+    host?: string
   } = {},
 ): Promise<void> {
   let brief: string
@@ -336,33 +340,34 @@ export async function agentSpawn(
   } catch (err) {
     fail((err as Error).message)
   }
-  const res = (await withBroker(b =>
-    // The human holds no registry entry (§6.4), so the broker has no cwd to read
-    // for them — send it, or the agent inherits the broker's arbitrary one.
-    b.request(
-      {
-        t: 'spawn',
-        name,
-        profile,
-        brief,
-        cwd: process.cwd(),
-        ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
-        ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
-        ...(options.task === undefined ? {} : { task: options.task }),
-        ...(options.role === undefined ? {} : { workRole: options.role }),
-        ...(options.surface === undefined ? {} : { surface: options.surface }),
-        ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
-        ...(options.remoteControl === true ? { remoteControl: true } : {}),
-        ...(process.env.CLAUDE_CONFIG_DIR === undefined
-          ? {}
-          : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
-      },
-      'spawn_result',
-    ),
-  )) as Extract<ServerMessage, { t: 'spawn_result' }>
+  const res = await withBroker(b =>
+    // The human holds no registry entry (§6.4), so the broker has no cwd or host to
+    // read for them — send both, or the agent inherits the broker's arbitrary ones.
+    requestSpawn(b, {
+      t: 'spawn',
+      name,
+      profile,
+      brief,
+      cwd: process.cwd(),
+      ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
+      ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+      ...(options.task === undefined ? {} : { task: options.task }),
+      ...(options.role === undefined ? {} : { workRole: options.role }),
+      ...(options.surface === undefined ? {} : { surface: options.surface }),
+      ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+      ...(options.remoteControl === true ? { remoteControl: true } : {}),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
+      ...(options.host === undefined ? {} : { host: options.host }),
+      callerHost: os.hostname(),
+      ...launchHereFields(),
+    }),
+  )
 
   for (const warning of res.warnings ?? []) console.log(warning)
-  console.log(res.ok ? `Spawned ${res.name} (${res.agentId}).` : `Not spawned: ${res.reason}`)
+  const on = res.host === undefined ? '' : ` on ${res.host}`
+  console.log(res.ok ? `Spawned ${res.name} (${res.agentId})${on}.` : `Not spawned: ${res.reason}`)
   if (!res.ok && res.code !== undefined)
     console.log(`code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`)
   process.exit(res.ok ? 0 : 1)
