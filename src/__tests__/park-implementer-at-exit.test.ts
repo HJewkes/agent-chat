@@ -200,7 +200,7 @@ describe('an implementer that exits normally', () => {
     const repo = repoWithOrigin()
     const agent = await spawnIn('worker-a', repo)
     commitIn(agent.cwd, 'feature.ts')
-    git(['push', '-q', 'origin', 'HEAD:agent-chat/tc-cc-957'], agent.cwd)
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-head'], agent.cwd)
 
     await exit(agent)
 
@@ -212,8 +212,8 @@ describe('an implementer that exits normally', () => {
     const repo = repoWithOrigin()
     const agent = await spawnIn('worker-a', repo)
     commitIn(agent.cwd, 'feature.ts')
-    git(['push', '-q', 'origin', 'HEAD:agent-chat/tc-cc-957'], agent.cwd)
-    git(['branch', '-q', '-D', 'agent-chat/tc-cc-957'], git(['remote', 'get-url', 'origin'], repo))
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-head'], agent.cwd)
+    git(['branch', '-q', '-D', 'agent-chat/pr-head'], git(['remote', 'get-url', 'origin'], repo))
 
     await exit(agent)
 
