@@ -79,7 +79,9 @@ function wire(): Wire {
   return { frames, next, send: msg => conn.emit('data', JSON.stringify(msg) + '\n') }
 }
 
-const spawnFrame = (over: Partial<Extract<ClientMessage, { t: 'spawn' }>> = {}): ClientMessage => ({
+type SpawnFrame = Extract<ClientMessage, { t: 'spawn' }>
+
+const spawnFrame = (over: Partial<SpawnFrame> = {}): SpawnFrame => ({
   t: 'spawn',
   name: 'ff-planner',
   profile: 'peer',
@@ -138,7 +140,9 @@ describe("where a spawn's requester runs", () => {
     start()
     const cli = wire()
 
-    cli.send(spawnFrame({ callerHost: REMOTE, launchesHere: undefined }))
+    const older = spawnFrame({ callerHost: REMOTE })
+    delete older.launchesHere
+    cli.send(older)
 
     expect(await cli.next('spawn_result')).toMatchObject({
       ok: false,
