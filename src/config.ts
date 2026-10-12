@@ -66,6 +66,7 @@ export interface AgentChatConfig {
   autoRetire?: unknown
   autoPark?: unknown
   machineHoldOperators?: unknown
+  dispatchOverlapExempt?: unknown
 }
 
 const loggedInvalid = new Set<string>()

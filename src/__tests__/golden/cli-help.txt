@@ -1103,6 +1103,8 @@ Options:
                           iterm-tab, iterm-window, tmux-window
   --spawned-as <who>      shepherd or burndown: the automation this spawn is on behalf of
   --remote-control        run with Remote Control (coordinator profiles only)
+  --host <machine>        the machine to launch on, a configured alias or a hostname (default: this
+                          one)
   -h, --help              display help for command
 
 === agent-chat agent retire

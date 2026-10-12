@@ -138,6 +138,7 @@ import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { DrainState } from '../broker/drain.js'
 import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
@@ -632,6 +633,7 @@ export interface SpawnRequest {
 export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
+  | 'broker_draining'
   | MachineRefusalCode
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
@@ -682,6 +684,8 @@ export interface SpawnOutcome {
   code?: SpawnRefusalCode
   /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard or seat budget `code`. */
   retryable?: boolean
+  /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
+  retryAfterMs?: number
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
@@ -971,6 +975,7 @@ export class Supervisor implements TeleportHost {
   private readonly parking = new Map<string, string>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
+  private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
   private readonly attachCeilingMs: number
@@ -1434,6 +1439,7 @@ export class Supervisor implements TeleportHost {
             'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | typeof REVIEWER_ACCOUNT_LIMIT
           retryable: boolean
         }
+      | { code: 'broker_draining'; retryable: true; retryAfterMs: number }
       | { code: 'surface_refused' }
       | {} = {},
   ): SpawnOutcome {
@@ -1929,6 +1935,11 @@ export class Supervisor implements TeleportHost {
     const requester = this.requesterOf(req.parentAgentId)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
+    const drained = this.drainRefusal()
+    if (drained) {
+      const { reason, ...cause } = drained
+      return this.refuse(req, reason, cause)
+    }
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
@@ -3412,6 +3423,8 @@ export class Supervisor implements TeleportHost {
    * outcome carries the verdict either way so the caller never has to guess.
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
+    const drained = this.drainRefusal()
+    if (drained) return { ok: false, ...drained }
     let identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
     const refused =
@@ -4222,6 +4235,23 @@ export class Supervisor implements TeleportHost {
   /** Held/cap, for the roster header and `/health` — see `slots()` for the rendered form. */
   slotUsage(): SlotUsage {
     return { held: this.semaphore.inUse, cap: this.semaphore.slots }
+  }
+
+  /** CC-1179: refuse new spawns and resumes until `ttlMs` from now, or lift the drain. */
+  drain(on: boolean, ttlMs = 0, now = Date.now()): { until: number } | undefined {
+    if (on) this.drainState.enter(now + ttlMs)
+    else this.drainState.leave()
+    return this.drainState.active(now)
+  }
+
+  draining(now = Date.now()): { until: number } | undefined {
+    return this.drainState.active(now)
+  }
+
+  private drainRefusal():
+    { reason: string; code: 'broker_draining'; retryable: true; retryAfterMs: number } | undefined {
+    const refusal = this.drainState.refusal(Date.now())
+    return refusal && { ...refusal, code: 'broker_draining', retryable: true }
   }
 
   paneRefFor(name: string): string | undefined {
