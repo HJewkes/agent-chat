@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { frontmatterField } from '../active-work.js'
 import { defaultConfigDir } from '../config-dir.js'
 import { isTrusted } from '../trust.js'
 import { parseFunds, parsePools, seatInitiatives, seatPools, type Pool } from './charter.js'
@@ -24,7 +25,17 @@ export interface PoolPickRequest {
 }
 
 export type PoolPickRead =
-  { kind: 'none' } | { kind: 'pick'; seat: string; home?: string; pools: Pool[]; pick: PoolPick }
+  | { kind: 'none' }
+  | {
+      kind: 'pick'
+      seat: string
+      /** The seat file's `pool:`, or the billed pool when the seat names no charter pool. */
+      home?: string
+      /** The pool of the config dir the spawn resolves to, which it bills unless redirected. */
+      billed?: string
+      pools: Pool[]
+      pick: PoolPick
+    }
 
 export interface PoolPickReadDeps {
   readPace: () => PaceRead
@@ -41,6 +52,12 @@ const defaultDeps = (): PoolPickReadDeps => {
   return { readPace: () => readPace(), trusted: (cwd, dir) => trustsCwd(cwd, dir, home), home }
 }
 
+/** CC-1145: a seat file `pool:` the charter does not define is ignored, never billed. */
+const seatHome = (seatFile: string, all: ReadonlyMap<string, Pool>): string | undefined => {
+  const declared = frontmatterField(seatFile, 'pool')
+  return declared !== undefined && all.has(declared) ? declared : undefined
+}
+
 /** `none` is a spawn no charter seat owns. Throws when the seats directory cannot be read. */
 export function readPoolPick(
   root: string,
@@ -55,7 +72,8 @@ export function readPoolPick(
   const all = parsePools(charter, deps.home)
   const allowed = seatPools(text)
   const pools = [...all.values()].filter(pool => allowed === undefined || allowed.includes(pool.name))
-  const home = poolForConfigDir(all, spawn.homeDir)?.name
+  const billed = poolForConfigDir(all, spawn.homeDir)?.name
+  const home = seatHome(text, all) ?? billed
   const pick = pickPool({
     pinned: spawn.pinned,
     home,
@@ -66,7 +84,14 @@ export function readPoolPick(
     trusted: pool => deps.trusted(spawn.cwd, pool.configDir),
     now: spawn.now.getTime(),
   })
-  return { kind: 'pick', seat: seat.name, pools, pick, ...(home === undefined ? {} : { home }) }
+  return {
+    kind: 'pick',
+    seat: seat.name,
+    pools,
+    pick,
+    ...(home === undefined ? {} : { home }),
+    ...(billed === undefined ? {} : { billed }),
+  }
 }
 
 /** What the broker logs and writes as the `pool_pick` event row. */
@@ -96,7 +121,11 @@ const withClosed = (candidates: PoolCandidate[], closed: ReadonlyMap<string, str
     return reason === undefined ? c : { ...c, skip: reason }
   })
 
-/** Redirect before refuse: the first pool in the pick's order whose gate is open; `gate` returns why a pool is closed. */
+/**
+ * Redirect before refuse: the first pool in the pick's order whose gate is open; `gate` returns why a pool is closed.
+ * CC-1145: the redirect is judged against the billed pool, so a pick that keeps the seat's home moves a spawn that
+ * resolved to another account onto it.
+ */
 export function routePool(
   read: Extract<PoolPickRead, { kind: 'pick' }>,
   mode: PoolPickMode,
@@ -120,7 +149,7 @@ export function routePool(
   }
   if (mode !== 'enforce' || inOrder.length === 0) return { record }
   if (chosen === undefined) return { record, refusal: allClosed(closed) }
-  return chosen.name === read.home ? { record } : { record, redirect: chosen }
+  return chosen.name === read.billed ? { record } : { record, redirect: chosen }
 }
 
 const allClosed = (closed: ReadonlyMap<string, string>): string =>
