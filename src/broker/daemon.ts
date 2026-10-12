@@ -33,6 +33,7 @@ import {
   type OverlapRequest,
   type SeatSpawnRequest,
 } from '../agents/seats/spawn-gate-read.js'
+import { readReviewerAccount } from '../agents/reviewer-account-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
@@ -261,7 +262,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const core = new BrokerCore(deliver, { events, ...(ephemeral ? {} : { isSeat: isWatchedSeat }) })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
-  // CC-316, CC-331, CC-288, CC-606: the same rule for the seat journal, dispatch log, spawn budget gate and pool pick, which read the real autonomy root.
+  // CC-316, CC-331, CC-288, CC-606, CC-1078: the same rule for the seat journal, dispatch log, spawn budget gate, reviewer account gate and pool pick, which read the real autonomy root.
   // CC-316: one journal for the supervisor's lines and the ended writer's merged line, so both dedupe through one latch.
   const sharedJournal = seatJournal(defaultAutonomyRoot())
   const journal = ephemeral
@@ -277,6 +278,10 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
         autoParkOnExit: resolveAutoParkOnExit,
         burndownTreeHold: (tree: string) => burndownTreeHold(burndownLedgerPath(), tree),
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
+        reviewerAccount: {
+          read: (configDir: string, nowMs: number) =>
+            readReviewerAccount(defaultAutonomyRoot(), configDir, nowMs),
+        },
         seatOverlap: {
           mode: resolveSeatSpawnMode,
           read: (spawn: OverlapRequest) =>

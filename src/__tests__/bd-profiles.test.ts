@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseProfile } from '../agents/profiles.js'
+import { contractOf } from '../agents/return-contract.js'
 import type { AgentProfile } from '../agents/types.js'
 
 /**
@@ -113,6 +114,11 @@ describe('the bd-reviewer profile', () => {
 
   it('pins the prompt cache TTL to five minutes', () => {
     expect(profile.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' })
+  })
+
+  // Mutation caught: `returnContract: "none"`, or granting Edit so the name rule yields none.
+  it('takes the reviewer return contract', () => {
+    expect(contractOf(profile)).toBe('reviewer')
   })
 })
 

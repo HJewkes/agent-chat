@@ -208,6 +208,41 @@ def mechanical_first_blocker(con, since):
     return f'{pct(mechanical, len(classes))} of classified; {unclassified}'
 
 
+def has_earlier_findings(body):
+    m = re.search(r'^Earlier findings:(.*)$', body, re.M)
+    if not m:
+        return False
+    return 'none found' in m.group(1) or re.search(r'^- (not )?fixed:', body[m.end():], re.M) is not None
+
+
+def verdict_shape(con, since):
+    """CC-1079: deduped FIX_FIRST rounds lacking a Defect class line, and re-reviews lacking an Earlier findings checklist.
+
+    A re-review is a non-WAIT verdict on a PR with an earlier FIX_FIRST at a different Head, from any actor and any time."""
+    fix_heads, fix_first, rereviews, seen = {}, {}, {}, False
+    for actor, body, ts in query(con, "select actor, body, ts from events where kind = 'message' and body like 'Verdict:%' order by id"):
+        verdict, pr, head = line_value(body, 'Verdict'), (line_value(body, 'PR') or '').lower(), line_value(body, 'Head')
+        if not verdict or verdict == 'WAIT' or not pr:
+            continue
+        key = (actor, pr, head)
+        if since <= ts / 1000 <= NOW:
+            seen = True
+            if fix_heads.get(pr, set()) - {head}:
+                rereviews.setdefault(key, has_earlier_findings(body))
+            if verdict == 'FIX_FIRST':
+                fix_first.setdefault(key, re.search(r'^Defect class:\s*\S', body, re.M) is not None)
+        if verdict == 'FIX_FIRST':
+            fix_heads.setdefault(pr, set()).add(head)
+    if not seen:
+        return None
+    if not fix_first and not rereviews:
+        return 'n/a (no FIX_FIRST and no re-review in the window)'
+    lack_defect = sum(1 for ok in fix_first.values() if not ok)
+    lack_earlier = sum(1 for ok in rereviews.values() if not ok)
+    return (f'{lack_defect} of {len(fix_first)} FIX_FIRST lack Defect class; '
+            f'{lack_earlier} of {len(rereviews)} re-reviews lack Earlier findings')
+
+
 def seat_share(shep, records):
     shepherd_prs = {m['pr'] for m in shep}
     seat = {norm_pr(*d['pr'].rsplit('#', 1)) if '#' in str(d['pr']) else None for d in merged_dispatches(records)}
@@ -269,6 +304,8 @@ def build(since):
         row('rework', 'First-pass FIX_FIRST share', first_pass_fix_first(edb, since), 'events.db verdicts', '35.2 percent'),
         row('mechanical', 'Mechanical first-blocker share', mechanical_first_blocker(edb, since), 'events.db FIX_FIRST Class line',
             '6.9 percent (21 of 305 deduped FIX_FIRST, hand-checked 2026-09-29..10-04)'),
+        row('shape', 'Verdict shape', verdict_shape(edb, since), 'events.db verdict Defect class and Earlier findings lines',
+            'none (lines required from CC-1079)'),
         row('breakglass', 'Share of merges by seat merge script', seat_share(shep, records), 'dispatch.jsonl, ledger', '100 percent on 10-03'),
         row('queue', 'Approved and waiting over 60 minutes', waiting_approved(fdb), 'hitl_gate', '50 PRs, 516 hours since 09-13'),
         row('autonomy', 'Coordinator spawns for milestone tasks', milestone_spawns(records), 'dispatch.jsonl', 'All of them'),
