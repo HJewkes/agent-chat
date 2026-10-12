@@ -7,6 +7,7 @@ import {
   localDay,
   PLANNER_PROFILE,
   SONNET_PROFILES,
+  sliceRefusal,
   taskRefusal,
   type BriefCheck,
   type BriefGateMode,
@@ -240,7 +241,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     }
   }
   const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
-  const depth = supplyDepth(order, slices.length, walk)
+  const depth = supplyDepth(order, ungatedCount(slices, inputs), walk)
   for (const claim of slices) take(claim.initiative, claim.taskId, considerSlice(claim, walk))
   const picked = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
   const aging = { aged: agedRows(inputs, order), every: inputs.brief?.agingEvery ?? 1 }
@@ -264,6 +265,13 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
 }
 
 type Outcome = Taken | Refused | Seeded
+
+/** CC-1121: a slice its parent's tags or status hold is not ready supply for the brief floor. */
+function ungatedCount(slices: readonly Claim[], inputs: SeatPlanInputs): number {
+  const taskOf = taskOfRow(inputs)
+  const parentOf = (c: Claim) => taskOf({ initiative: c.initiative, id: c.taskId })
+  return slices.filter(c => sliceRefusal(parentOf(c), inputs.seat.excludedTags) === undefined).length
+}
 
 /** The seat's ready depth before this tick dispatches anything: the rows `consider` would not refuse. */
 function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk): number {
@@ -727,9 +735,9 @@ function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): und
 function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   const { seat, tasks } = walk.inputs
   const task = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)
+  const gated = sliceRefusal(task, seat.excludedTags)
+  if (gated !== undefined) return gated
   const tags = task?.tags ?? []
-  if (tags.includes('blocked'))
-    return { kind: 'blocked', reason: `${claim.taskId} carries the blocked tag; its queued slices wait` }
   const placed = sliceRepo(seat, claim.initiative, tags, claim, walk.inputs.pathExists)
   if ('ambiguous' in placed) return { kind: 'repo-ambiguous', reason: placed.ambiguous }
   const { repo } = placed
