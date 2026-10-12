@@ -397,6 +397,44 @@ describe('burndown hands a PR to Shepherd', () => {
     expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
   })
 
+  it("registers a DONE_WITH_CONCERNS worker's PR and moves the claim to shepherding (CC-1074)", () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport(`Status: DONE_WITH_CONCERNS\nPR: ${PR}`),
+      diff: { reviewable: true, reason: '2 commits ahead' },
+    })
+
+    expect(spawns(actions)).toEqual([])
+    expect(registers(actions)).toHaveLength(1)
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'shepherding', pr: PR, lastReport: 'Status: DONE_WITH_CONCERNS' }),
+    ])
+    expect(after[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('moves a finished worker whose PR Shepherd already holds under its name without registering again', () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport(`Status: DONE_WITH_CONCERNS\nPR: ${PR}`),
+      shepherd: { row: { ...row('ci'), implementer: 'bd-cc-1' } },
+    })
+
+    expect(registers(actions)).toEqual([])
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+  })
+
+  it('stalls a BLOCKED worker that names a PR, handing nothing to Shepherd', () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport(`Status: BLOCKED\nPR: ${PR}`),
+    })
+
+    expect(registers(actions)).toEqual([])
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'implementing', stalledReason: 'Status: BLOCKED' }),
+    ])
+  })
+
   it('stalls a DONE worker whose PR is not a GitHub PR, registering nothing', () => {
     const { actions, after } = step(claim(), {
       agent: exited,
