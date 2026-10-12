@@ -133,7 +133,7 @@ describe('PR file lists from local git (CC-1157 c)', () => {
   it('reads a failed PR again on the next tick rather than caching the failure', () => {
     const git: FakeGit = { calls: [], refs: [], failDiffOf: 2 }
     tick(git, [pr(2)])
-    git.failDiffOf = undefined
+    delete git.failDiffOf
 
     expect(tick(git, [pr(2)]).names(2)).toEqual(['pr2-sha2.ts'])
   })
