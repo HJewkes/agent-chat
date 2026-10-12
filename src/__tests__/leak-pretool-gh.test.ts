@@ -336,6 +336,21 @@ describe('a gh extension and the clone passthrough (TP-2371)', () => {
   })
 
   it.each([
+    `gh gist clone abc -- -c core.sshCommand='git push --no-verify'`,
+    `gh gist clone abc d -- --upload-pack='git push --no-verify'`,
+    `gh gist clone abc -- 'ext::sh -c git% push% --no-verify'`,
+    `gh gist clone "$G" -- -c core.pager='git push --no-verify'`,
+    `gh gist "$S" abc -- -c core.pager='git push --no-verify'`,
+    `agent-chat gh-write -- gist clone abc -- -c core.pager='git push --no-verify'`,
+  ])('checks the git clone flags gh gist clone passes on, as for repo clone (review r2): %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it('denies a gh gist clone word after -- the guard cannot resolve', () => {
+    expectDeny(checkCommand('gh gist clone abc -- "$OPTS"', ctx()), REASONS.ghCloneHidden)
+  })
+
+  it.each([
     `gh repo clone "$R" -- -c core.sshCommand='git push --no-verify'`,
     `gh repo clone "$R" -- --upload-pack='git push --no-verify'`,
     `gh repo clone "$R" -- --config=core.sshCommand='git push --no-verify'`,
@@ -388,6 +403,9 @@ describe('a gh extension and the clone passthrough (TP-2371)', () => {
     'gh help environment',
     'gh repo clone "$R" "$D"',
     'gh repo clone -- o/r',
+    'gh gist clone abc',
+    'gh gist clone abc d -- --depth 1',
+    'gh gist view abc',
     'gh telemetry',
     'gh pr nosuchword',
   ])('allows %s', command => {

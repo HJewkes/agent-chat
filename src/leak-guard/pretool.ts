@@ -37,6 +37,7 @@ import {
   ghAliasesAt,
   ghAliasesUnder,
   ghAliasSlot,
+  GH_CLONES,
   ghCloneArgs,
   ghCommand,
   ghCommandWords,
@@ -187,7 +188,7 @@ export const REASONS = {
   ghAliasHidden: `leak-guard: a gh alias definition, a gh command word, or an argument passed to a gh alias holds a word or flag the guard cannot resolve or read, so it cannot tell what the alias runs. Write it out literally. ${DOCS}`,
   ghAliasUnreadable: `leak-guard: the guard cannot parse gh's config.yml, or a gh alias name holds a quoted or escaped space, so it cannot tell whether this gh command runs an alias. Fix the file so it is plain YAML with an aliases map of strings and names of plain words. ${DOCS}`,
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
-  ghCloneHidden: `leak-guard: gh repo clone or gh repo fork hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
+  ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
@@ -1336,8 +1337,8 @@ function checkGhAliasRun(
 
 /**
  * The git and the programs gh runs for its own commands (TP-2371): `gh extension exec`,
- * `gh help <extension>`, and the `git clone` that `gh repo clone|fork` runs with the words after
- * the repository, then its aliases.
+ * `gh help <extension>`, and the `git clone` that `gh repo clone|fork` and `gh gist clone` run with
+ * the words after the repository or gist, then its aliases.
  */
 function checkGhRuns(
   marked: readonly string[],
@@ -1353,8 +1354,9 @@ function checkGhRuns(
   const unsure = at[1] === HIDDEN
   if (verb === 'extension' && (sub === 'exec' || unsure)) return REASONS.ghExtension
   if (verb === 'help' && at.length > 1 && ghHelpRunsExtension(sub)) return REASONS.ghExtension
-  if (verb === 'repo' && (sub === 'clone' || sub === 'fork' || unsure)) {
-    // A subcommand the guard cannot resolve may be clone, so every word after `repo` is clone's.
+  const clones = verb === undefined ? undefined : GH_CLONES.get(verb)
+  if (clones !== undefined && (unsure || (sub !== undefined && clones.has(sub)))) {
+    // A subcommand the guard cannot resolve may be clone, so every word after the group is clone's.
     const from = (unsure ? at[0] : at[1]) ?? 0
     const reason = checkGhClone(marked.slice(from + 1), assigns, cmd, ctx, scope, depth)
     if (reason !== undefined) return reason

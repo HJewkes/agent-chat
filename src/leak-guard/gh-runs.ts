@@ -358,18 +358,28 @@ const SHADOWABLE_BUILTINS = new Set(['help', '__complete', '__completeNoDesc'])
 export const ghExtensionSlot = (slot: AliasSlot): boolean =>
   slot.parent === '' && (slot.word === undefined || !SHADOWABLE_BUILTINS.has(slot.word))
 
-/** `gh repo clone` and `gh repo fork` flags that take the next word as their value. */
+/**
+ * The gh commands that hand the words after their first positional to `git clone`, by group:
+ * `gh repo clone|fork <repo> [<dir>] [-- <gitflags>]` and `gh gist clone <gist> [<dir>] [-- <gitflags>]`
+ * (gh 2.102 usage lines).
+ */
+export const GH_CLONES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['repo', new Set(['clone', 'fork'])],
+  ['gist', new Set(['clone'])],
+])
+
+/** `gh repo clone|fork` flags that take the next word as their value; `gh gist clone` has none. */
 const CLONE_VALUE_FLAGS = new Set(['-u', '--upstream-remote-name', '--remote-name', '--org', '--fork-name'])
 
-/** What `gh repo clone|fork` hands `git clone`, and whether a word after its `--` is one the guard cannot resolve. */
+/** What a `GH_CLONES` command hands `git clone`, and whether a word after its `--` is one the guard cannot resolve. */
 export interface GhClone {
   git: number[]
   hidden: boolean
 }
 
 /**
- * The words `gh repo clone|fork` hands `git clone`, as positions in `rest` (every word after
- * `repo clone`): each positional after the repository, and every word after `--`, in order. cobra
+ * The words a `GH_CLONES` command hands `git clone`, as positions in `rest` (every word after
+ * `repo clone` or `gist clone`): each positional after the repository, and every word after `--`, in order. cobra
  * strips the first literal `--` wherever it sits. A word the guard cannot resolve may be `--`
  * itself, so every word after it counts too, and once the words may be past a real `--` (after
  * an unresolved word past the repository, or one positional after an unresolved repository) a
