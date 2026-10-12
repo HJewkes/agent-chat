@@ -14,6 +14,7 @@ import {
   BODY_FILE_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
+  MUTANT_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
@@ -742,6 +743,27 @@ describe('PR body path (CC-444, CC-725)', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
+describe('CC-311: reviewers run mutants on literal paths', () => {
+  it('gives the reviewer the mutant rule within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(MUTANT_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // Mutation caught: trimming the rule to "use sed -i", which is the form that stalled with $S/<file>.
+  it('names the literal-path edit, its restore, the tree and the forbidden write targets', () => {
+    expect(MUTANT_RULE).toContain("sed -i.bak '<edit>' <literal path>")
+    expect(MUTANT_RULE).toContain('git checkout -- <literal path>')
+    expect(MUTANT_RULE).toContain('$TMPDIR/<your name>')
+    expect(MUTANT_RULE).toContain('`$VAR`')
+    expect(MUTANT_RULE).toContain('`$(...)`')
+  })
+
+  it('leaves the implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain(MUTANT_RULE)
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain(MUTANT_RULE)
   })
 })
 

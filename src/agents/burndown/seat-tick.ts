@@ -17,7 +17,7 @@ import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
   dormantInitiatives,
   loadPolicy,
-  mergeDefaults,
+  resolveSeat,
   seatBudget,
   seatScope,
   type Policy,
@@ -130,7 +130,7 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
   })
   return {
     dispatch,
-    policy: { ...policy, seat, defaults: mergeDefaults(policy.charter, seat) },
+    policy: { ...policy, seat, ...resolveSeat(policy.charter, seat) },
     budget: {
       pool,
       spend,
@@ -244,7 +244,7 @@ export interface Taken {
 }
 
 export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
-  const { charter, seats, defaults } = seat.policy
+  const { charter, seats, defaults, hardStops } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
   const slugs = Object.keys(weights)
@@ -259,7 +259,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     weights,
     defaults,
     exclusions,
-    charter.hard_stops,
+    hardStops,
     today,
     dormantInitiatives(seat.policy.seat),
   )
