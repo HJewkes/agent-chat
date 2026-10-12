@@ -751,6 +751,16 @@ guard checks a body twice:
   name (probed on gh 2.102; the subcommand table is in `src/leak-guard/gh-runs.ts`). Up to four
   aliases deep are followed.
 
+gh matches a key on its canonical command path, not its spelling, and the guard does the same.
+It splits the key into words, resolves command aliases (`cs` to `codespace`, `ext` and
+`extensions` to `extension`, and `at`, `rs`, `skills`, `agent`, `agents`, `a11y`), and walks
+real subcommands. The key registers only when exactly one word is left after the deepest command
+that takes an alias. So key `cs one` runs on `gh codespace one`, and key `codespace two` runs on
+`gh cs two`. Key `repo deploy-key four` runs on `gh repo deploy-key four`, since `repo autolink`,
+`repo deploy-key`, `repo gitignore` and `repo license` take an alias. `codespace ports` and every
+leaf command do not. Keys such as `pr mine extra` and `pr view seven` never run. The invocation
+is walked the same way, past gh's flags, and every key that names its path is checked.
+
 gh finds the command word past its flags the way cobra's `stripFlags` does, and the guard does
 the same: `--` ends the search, a `--flag` or `-f` without `=` swallows the next word unless it
 is `--help` or `--version`, and any other flag is skipped. So `gh -R o/r rx` runs alias `rx`, and

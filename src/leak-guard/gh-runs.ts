@@ -33,21 +33,15 @@ const subcommands = (groups: string, words: string): [string, ReadonlySet<string
  * subcommand's ALIASES), which gh runs before a `group word` config alias of the same name.
  */
 const GH_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ...subcommands('agent agent-task agents', 'create list view'),
+  ...subcommands('agent-task', 'create list view'),
   ...subcommands('alias', 'delete import list ls set'),
-  ...subcommands('at attestation', 'download trusted-root verify'),
-  ...subcommands('auth', 'login logout refresh setup-git status switch token'),
+  ...subcommands('attestation', 'download trusted-root verify'),
+  ...subcommands('auth', 'git-credential login logout refresh setup-git status switch token'),
   ...subcommands('cache', 'delete list ls'),
-  ...subcommands(
-    'codespace cs',
-    'code cp create delete edit jupyter list ls logs ports rebuild ssh stop view',
-  ),
+  ...subcommands('codespace', 'code cp create delete edit jupyter list ls logs ports rebuild ssh stop view'),
   ...subcommands('config', 'clear-cache get list ls set'),
   ...subcommands('discussion', 'comment create edit list ls view'),
-  ...subcommands(
-    'ext extension extensions',
-    'browse create exec install list ls remove uninstall search upgrade',
-  ),
+  ...subcommands('extension', 'browse create exec install list ls remove uninstall search upgrade'),
   ...subcommands('gist', 'clone create new delete edit list ls rename view'),
   ...subcommands('gpg-key ssh-key', 'add delete list ls'),
   ...subcommands(
@@ -77,27 +71,95 @@ const GH_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     `archive autolink clone create new delete deploy-key edit fork gitignore license list ls
     read-dir read-file rename set-default sync unarchive view`,
   ),
-  ...subcommands('rs ruleset', 'check list ls view'),
+  ...subcommands('ruleset', 'check list ls view'),
   ...subcommands('run', 'cancel delete download list ls rerun view watch'),
   ...subcommands('search', 'code commits issues prs repos'),
   ...subcommands('secret', 'delete remove list ls set'),
-  ...subcommands('skill skills', 'install add list ls preview show publish search update'),
+  ...subcommands('skill', 'install add list ls preview show publish search update'),
   ...subcommands('variable', 'delete remove get list ls set'),
   ...subcommands('workflow', 'disable enable list ls run view'),
 ])
 
+/** gh's command aliases, by the name gh resolves them to (gh 2.102 ALIASES). */
+const COMMAND_ALIASES: Readonly<Record<string, string>> = {
+  a11y: 'accessibility',
+  agent: 'agent-task',
+  agents: 'agent-task',
+  at: 'attestation',
+  cs: 'codespace',
+  ext: 'extension',
+  extensions: 'extension',
+  rs: 'ruleset',
+  skills: 'skill',
+}
+
 /** gh commands that never run a `<command> <word>` config alias (probed on gh 2.102). */
 const NO_ALIAS_CHILD = new Set(
-  'a11y accessibility api browse completion credits licenses status version'.split(' '),
+  'accessibility api browse completion credits licenses status version'.split(' '),
 )
 
 /**
- * Whether `gh <command> <word>` may run a `<command> <word>` config alias: gh registers one under
- * every command but a few, and runs it unless the word is a real subcommand. A word the guard
- * cannot resolve may be either.
+ * The second-level commands that run a `<command> <sub> <word>` config alias, with their own
+ * subcommands. `codespace ports` has subcommands too but runs, and takes no alias (probed).
  */
-export const mayRunGroupAlias = (command: string, word: string | undefined): boolean =>
-  !NO_ALIAS_CHILD.has(command) && (word === undefined || !GH_SUBCOMMANDS.get(command)?.has(word))
+const NESTED_GROUPS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['repo autolink', new Set('create new delete list ls view'.split(' '))],
+  ['repo deploy-key', new Set('add delete list ls'.split(' '))],
+  ['repo gitignore', new Set('list ls view'.split(' '))],
+  ['repo license', new Set('list ls view'.split(' '))],
+])
+
+/**
+ * Where an alias may hang: the canonical path of the gh command it hangs under ('' for the top
+ * level), the word that names it (undefined when the guard cannot resolve that word), and how
+ * many command words reach it.
+ */
+export interface AliasSlot {
+  parent: string
+  word: string | undefined
+  used: number
+}
+
+/**
+ * The alias slot that command words reach, as gh 2.102 finds it: command aliases resolve to
+ * their command, real subcommands are walked, and the first word that is not one names the alias.
+ * Undefined when the words end on a gh command or reach one that takes no alias.
+ */
+export function ghAliasSlot(words: readonly (string | undefined)[]): AliasSlot | undefined {
+  const [first, second, third] = words
+  if (words.length === 0) return undefined
+  if (first === undefined || !GH_BUILTINS.has(first)) return { parent: '', word: first, used: 1 }
+  const top = COMMAND_ALIASES[first] ?? first
+  if (NO_ALIAS_CHILD.has(top) || words.length < 2) return undefined
+  if (second === undefined || !GH_SUBCOMMANDS.get(top)?.has(second))
+    return { parent: top, word: second, used: 2 }
+  const nested = NESTED_GROUPS.get(`${top} ${second}`)
+  if (nested === undefined || words.length < 3 || (third !== undefined && nested.has(third))) return undefined
+  return { parent: `${top} ${second}`, word: third, used: 3 }
+}
+
+const slotKey = (parent: string, word: string): string => (parent === '' ? word : `${parent} ${word}`)
+
+/** A config key as gh registers it: split, walked to its slot, and kept only when one word is left. */
+function canonicalKey(key: string): AliasSlot | undefined {
+  const words = splitAlias(key)
+  const slot = words === undefined ? undefined : ghAliasSlot(words)
+  return slot?.word !== undefined && slot.used === words?.length ? slot : undefined
+}
+
+/** Every config alias gh may run at a slot; two keys can name one slot (`cs x`, `codespace x`). */
+export function ghAliasesAt(aliases: ReadonlyMap<string, GhAlias>, parent: string, word: string): GhAlias[] {
+  return [...aliases].flatMap(([key, alias]) => {
+    const slot = canonicalKey(key)
+    return slot?.word !== undefined && slotKey(slot.parent, slot.word) === slotKey(parent, word)
+      ? [alias]
+      : []
+  })
+}
+
+/** Whether the config holds any alias under a command, for a word the guard cannot resolve. */
+export const ghAliasesUnder = (aliases: ReadonlyMap<string, GhAlias>, parent: string): boolean =>
+  [...aliases.keys()].some(key => canonicalKey(key)?.parent === parent)
 
 export interface GhAlias {
   /** The expansion runs through `sh -c` (it was set with `--shell` or starts with `!`). */

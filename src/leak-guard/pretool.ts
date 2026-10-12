@@ -21,12 +21,13 @@ import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
-  GH_BUILTINS,
   ghAliasReader,
   ghAliasSet,
+  ghAliasesAt,
+  ghAliasesUnder,
+  ghAliasSlot,
   ghCommandWords,
   ghPlainAlias,
-  mayRunGroupAlias,
   ghShellAlias,
   HIDDEN,
   type GhAlias,
@@ -1178,42 +1179,52 @@ function checkGhAliases(
   depth: number,
 ): string | undefined {
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  const at = ghCommandWords(args, 2)
+  const at = ghCommandWords(args, 3)
   const [verb, sub] = at.map(i => args[i])
   if (verb !== 'alias' || !(sub === 'set' || sub === 'import' || at[1] === HIDDEN))
     return checkGhAliasRun(args, at, assigns, ctx, scope, depth)
   if (at[1] === HIDDEN) return REASONS.ghAliasHidden
   if (sub === 'import') return REASONS.ghAliasUnread
-  const set = ghAliasSet(args.filter((_, i) => !at.includes(i)))
+  const set = ghAliasSet(args.filter((_, i) => i !== at[0] && i !== at[1]))
   return set === undefined ? undefined : checkGhAliasSet(set, ctx, scope, depth)
 }
 
-/** The alias gh runs for these command words; `alias` undefined for a word that may still be an alias of another config. */
-type AliasAt = { alias: GhAlias | undefined; words: readonly number[] }
+/** The config aliases gh may run for these command words, and which words name the alias; none for a word that may name one in another config. */
+type AliasAt = { aliases: readonly GhAlias[]; words: readonly number[] }
 
 /**
- * Which alias gh would run: a top-level word that is not a gh command may be one, and so may a
- * `<command> <word>` whose word is not a real subcommand. A deny when the guard cannot tell,
- * undefined when the words cannot run an alias.
+ * Which aliases gh would run, compared on gh's canonical command path (`gh cs x` runs key
+ * `codespace x`, and `gh repo deploy-key x` runs key `repo deploy-key x`). A deny when the guard
+ * cannot tell, undefined when the words cannot run an alias.
  */
 function ghAliasAt(
   args: readonly (string | undefined)[],
   at: readonly number[],
   read: ReadGhAliases,
 ): AliasAt | string | undefined {
-  const [i, j] = at
-  if (i === undefined) return undefined
-  if (i === HIDDEN) return REASONS.ghAliasHidden
-  const first = args[i] as string
-  const builtin = GH_BUILTINS.has(first)
-  if (builtin && (j === undefined || !mayRunGroupAlias(first, args[j]))) return undefined
+  if (at[0] === HIDDEN) return REASONS.ghAliasHidden
+  const slot = ghAliasSlot(at.map(i => args[i]))
+  if (slot === undefined) return undefined
   const config = read()
   if (config.kind === 'unreadable') return REASONS.ghAliasUnreadable
-  if (!builtin) return { alias: config.aliases.get(first), words: [i] }
-  if (j !== HIDDEN)
-    return { alias: config.aliases.get(`${first} ${args[j as number]}`), words: [i, j as number] }
-  const grouped = [...config.aliases.keys()].some(key => key.startsWith(`${first} `))
-  return grouped ? REASONS.ghAliasHidden : { alias: undefined, words: [i] }
+  const words = at.slice(0, slot.used)
+  if (slot.word !== undefined) return { aliases: ghAliasesAt(config.aliases, slot.parent, slot.word), words }
+  return ghAliasesUnder(config.aliases, slot.parent) ? REASONS.ghAliasHidden : { aliases: [], words }
+}
+
+/** A shell alias runs its body with the words filled in; a plain one runs as another gh command. */
+function checkGhAliasBody(
+  alias: GhAlias,
+  rest: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  if (alias.shell) return checkAt(ghShellAlias(alias.body, rest), ctx, scope, depth + 1)
+  const expanded = ghPlainAlias(alias.body, rest)
+  return expanded === undefined
+    ? undefined
+    : checkAt(['gh', ...expanded].map(quoted).join(' '), ctx, scope, depth + 1)
 }
 
 function checkGhAliasRun(
@@ -1229,17 +1240,17 @@ function checkGhAliasRun(
   if (found === undefined || typeof found === 'string') return found
   if (WRITES_GH_CONFIG.some(pattern => pattern.test(scope.said))) return REASONS.ghAliasWritten
   if (changesGhHome(assigns, ctx, scope)) return REASONS.ghAliasEnv
-  const { alias, words } = found
-  if (alias === undefined) return undefined
+  const { aliases, words } = found
+  if (aliases.length === 0) return undefined
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
   const rest = args.filter((_, i) => !words.includes(i))
   if (!rest.every(arg => arg !== undefined)) return REASONS.ghAliasHidden
   const inner = { ...scope, aliases: scope.aliases + 1 }
-  if (alias.shell) return checkAt(ghShellAlias(alias.body, rest), ctx, inner, depth + 1)
-  const expanded = ghPlainAlias(alias.body, rest)
-  return expanded === undefined
-    ? undefined
-    : checkAt(['gh', ...expanded].map(quoted).join(' '), ctx, inner, depth + 1)
+  for (const alias of aliases) {
+    const reason = checkGhAliasBody(alias, rest, ctx, inner, depth)
+    if (reason !== undefined) return reason
+  }
+  return undefined
 }
 
 function checkShell(

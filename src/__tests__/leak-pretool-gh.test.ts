@@ -375,6 +375,51 @@ describe('the hook on a real gh config (TP-2371 review)', () => {
     expect(decide(`aliases:\n    pr list: '!git push --no-verify'\n`, 'gh pr list')).toBe('')
   })
 
+  it.each([
+    ['cs one', 'gh codespace one'],
+    ['codespace two', 'gh cs two'],
+    ['repo deploy-key four', 'gh repo -R o/r deploy-key four'],
+    ['ext five', 'gh extensions five'],
+    ['extension six', 'gh ext six'],
+    ['at seven', 'gh attestation seven'],
+    ['ruleset eight', 'gh rs eight'],
+    ['skills nine', 'gh skill nine'],
+    ['agents ten', 'gh agent-task ten'],
+    ['repo  autolink   eleven', 'gh repo autolink eleven'],
+  ])('reads config key %s on the canonical path gh runs it from: %s', (key, command) => {
+    const config = `aliases:\n    ${key}: '!git push --no-verify'\n`
+    expect(decide(config, command)).toBe(deny(REASONS.noVerify))
+  })
+
+  it('checks every key that names one alias path', () => {
+    const config = `aliases:\n    codespace one: pr list\n    cs one: '!git push --no-verify'\n`
+    expect(decide(config, 'gh codespace one')).toBe(deny(REASONS.noVerify))
+  })
+
+  it.each([
+    ['pr mine extra', 'gh pr mine'],
+    ['pr view seven', 'gh pr view seven'],
+    ['codespace ports nine', 'gh cs ports nine'],
+    ['accessibility twelve', 'gh a11y twelve'],
+    ['repo deploy-key list eight', 'gh repo deploy-key list eight'],
+    ['repo deploy-key list', 'gh repo deploy-key list'],
+  ])('allows config key %s, which gh never runs, on %s', (key, command) => {
+    expect(decide(`aliases:\n    ${key}: '!git push --no-verify'\n`, command)).toBe('')
+  })
+
+  it('denies a nested alias that may be read from another config', () => {
+    expect(decide('version: 1\n', 'GH_CONFIG_DIR=/tmp/evil gh repo deploy-key four')).toBe(
+      deny(REASONS.ghAliasEnv),
+    )
+  })
+
+  it.each([
+    'GH_CONFIG_DIR=/tmp/x gh repo deploy-key list',
+    'GH_CONFIG_DIR=/tmp/x gh auth git-credential get',
+  ])('allows a real nested subcommand under another config: %s', command => {
+    expect(decide('version: 1\n', command)).toBe('')
+  })
+
   it('allows gh co on the default config', () => {
     expect(decide(`aliases:\n    co: pr checkout\n`, 'gh co 12')).toBe('')
   })
