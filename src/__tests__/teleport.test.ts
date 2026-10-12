@@ -267,6 +267,34 @@ describe('what teleport refuses before it commits to anything', () => {
     expect((await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })).ok).toBe(true)
   })
 
+  /** CC-1089: the successor keeps the name, so a question it is told about is not abandoned. */
+  it('teleports with two open questions when the handoff names both ids', async () => {
+    const agentId = await spawnAgent()
+    const first = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+    const second = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'tag v2?' })
+    const handoff = `Open asks: ${first.msgId} (merge #12?) and ${second.msgId} (tag v2?)`
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff })
+
+    expect(result.ok).toBe(true)
+    const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
+    expect(row?.meta.questions).toBe(`${first.msgId},${second.msgId}`)
+  })
+
+  it('refuses naming only the question id the handoff leaves out', async () => {
+    const agentId = await spawnAgent()
+    const named = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+    const missing = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'tag v2?' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: `asked ${named.msgId}` })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(missing.msgId)
+    expect(result.reason).toContain('tag v2?')
+    expect(result.reason).not.toContain(named.msgId)
+    expect(kinds()).not.toContain('agent_handoff')
+  })
+
   /** Truncation would drop the tail, and the tail is what was already tried. */
   it('refuses an oversized handoff rather than truncating it', async () => {
     const agentId = await spawnAgent()
