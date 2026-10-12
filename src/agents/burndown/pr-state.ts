@@ -27,7 +27,11 @@ export interface RepoPulls {
 }
 
 export type ClaimPr =
-  { kind: 'merged'; pr: string; head: string } | { kind: 'open'; pr: string } | { kind: 'none' }
+  | { kind: 'merged'; pr: string; head: string }
+  | { kind: 'open'; pr: string }
+  /** CC-1150: the claim's recorded PR was closed unmerged, which is not the same as the agent leaving no PR. */
+  | { kind: 'closed'; pr: string }
+  | { kind: 'none' }
 
 const PAGE = 100
 
@@ -46,6 +50,8 @@ export function claimPrState(claim: Claim, repo: string, read: RepoPulls | undef
     .sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''))[0]
   if (merged !== undefined)
     return { kind: 'merged', pr: targetRef({ repo, pr: merged.number }), head: merged.headSha }
+  const closed = recorded === undefined ? undefined : ours[0]
+  if (closed !== undefined) return { kind: 'closed', pr: targetRef({ repo, pr: closed.number }) }
   return ours.length > 0 || read.complete ? { kind: 'none' } : undefined
 }
 

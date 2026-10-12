@@ -143,13 +143,26 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   const prRuns = deps.shepherdRows === undefined ? undefined : once
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
-    if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else {
+    if (typeof result === 'string') {
+      const settled = mergedOnGitHub(claim, deps.prState)
+      if (settled === undefined) unread.push(`${claimKey(claim)}: ${result}`)
+      else observations.set(claimKey(claim), settled)
+    } else {
       const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
       observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
     }
   }
   return { observations, unread }
+}
+
+/**
+ * CC-1150: a merge GitHub reports settles a claim whose Shepherd read failed, so an outage cannot pin it. Any
+ * other answer, or none, leaves the claim unread: an open or unknown PR is not an observation to act on.
+ */
+function mergedOnGitHub(claim: Claim, read: ObserveDeps['prState']): Observation | undefined {
+  if (read === undefined || !PR_STATE_PHASES.has(claim.phase)) return undefined
+  const prState = read(claim)
+  return prState?.kind === 'merged' ? { prState } : undefined
 }
 
 /**
