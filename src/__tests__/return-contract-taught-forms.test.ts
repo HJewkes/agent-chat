@@ -62,6 +62,7 @@ const PLACEHOLDERS: Record<string, string> = {
   '<t>': 'T',
   '<rev>': 'HEAD',
   '<path>': 'README.md',
+  '<literal path>': 'README.md',
   '#<n>': '#1',
   '<initiative>': 'demo',
   '<your name>': 'tc-demo',
