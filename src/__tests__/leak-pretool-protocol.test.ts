@@ -250,3 +250,39 @@ describe('options after -- and value-taking top-level options (TP-2371 fix round
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe('legacy git config stops reading options at its first positional (TP-2371 fix round 4)', () => {
+  it.each([
+    'git config protocol.ext.allow always --get',
+    'git config protocol.allow always --list',
+    'git config protocol.ext.allow always --unset',
+    'git config protocol.ext.allow always -l',
+    'git config --global protocol.allow always --get-all',
+    'git config protocol.ext.allow always --remove-section',
+  ])('denies a protocol write with a trailing mode word: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'git config remote.z.url "$U" --get',
+    'git config remote.z.url "$U" --unset',
+    'git config url."$B".insteadOf https://github.com/ --unset',
+    'git config url."$B".insteadOf https://github.com/ --list',
+  ])('denies a hidden URL write with a trailing mode word: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it('reads the URL a trailing mode word follows, as git writes it', () => {
+    expect(hookReason("git config remote.z.url 'ext::sh -c git% push% --no-verify' --unset")).toBeDefined()
+  })
+
+  it.each([
+    'git config --get protocol.ext.allow',
+    'git config --unset protocol.ext.allow',
+    'git config get protocol.ext.allow',
+    'git config protocol.ext.allow never --get',
+    'git config --file x set protocol.ext.allow',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})

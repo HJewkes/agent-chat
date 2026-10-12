@@ -91,22 +91,36 @@ function readShort(text: string, spec: OptionSpec, out: string[]): number | unde
 }
 
 /**
- * A call's options and positionals, or undefined when one option is unknown, ambiguous or unreadable.
- * `--` ends the options unless `dashDashEnds` is false: legacy `git config` reads options after it.
+ * Where a command stops reading options. Most git commands read them anywhere and stop at `--`.
+ * Legacy `git config`, with no subcommand, stops at its first positional word, so a later `--get`
+ * is a value pattern, not a mode, and it reads options past a `--` that comes before that word.
  */
-export function parseOptions(args: SubArgs, spec: OptionSpec, dashDashEnds = true): ParsedArgs | undefined {
+export interface OptionsEnd {
+  atDashDash: boolean
+  atPositional: boolean
+}
+
+const ANYWHERE: OptionsEnd = { atDashDash: true, atPositional: false }
+
+/** A call's options and positionals, or undefined when one option is unknown, ambiguous or unreadable. */
+export function parseOptions(
+  args: SubArgs,
+  spec: OptionSpec,
+  end: OptionsEnd = ANYWHERE,
+): ParsedArgs | undefined {
   const parsed: ParsedArgs = { options: [], positionals: [] }
   let ended = false
   for (let i = 0; i < args.resolved.length;) {
     const word = args.resolved[i]
     if (ended || !isOption(args, i)) {
       parsed.positionals.push(word)
+      ended ||= end.atPositional
       i++
       continue
     }
     const text = word ?? args.written[i] ?? ''
     if (text === '--') {
-      ended = dashDashEnds
+      ended = end.atDashDash
       i++
       continue
     }

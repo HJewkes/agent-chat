@@ -1,7 +1,14 @@
 import { quoted } from './git-alias.js'
 import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolved.js'
 import { LIVE, unmark } from './shell-words.js'
-import { isOption, optionSpec, parseOptions, type ParsedArgs, type SubArgs } from './git-parse-options.js'
+import {
+  isOption,
+  optionSpec,
+  parseOptions,
+  type OptionsEnd,
+  type ParsedArgs,
+  type SubArgs,
+} from './git-parse-options.js'
 
 /**
  * Config keys git never runs as a program or shell command (TP-636). The guard fails closed: every
@@ -291,15 +298,24 @@ interface ConfigCall {
   positionals: (string | undefined)[]
 }
 
-function configCall(parsed: ParsedArgs): ConfigCall {
-  const { options, positionals } = parsed
-  const sub = positionals[0]
-  const named = sub !== undefined && CONFIG_SUBCOMMANDS.has(sub) ? sub : undefined
-  const rest = named === undefined ? positionals : positionals.slice(1)
+function configCall({ options, positionals }: ParsedArgs, named: string | undefined): ConfigCall {
   if (options.some(o => CONFIG_NON_WRITES.has(o)) || (named !== undefined && CONFIG_NON_WRITES.has(named)))
-    return { mode: 'other', positionals: rest }
+    return { mode: 'other', positionals }
   const rename = options.includes('rename-section') || named === 'rename-section'
-  return { mode: rename ? 'rename' : 'set', positionals: rest }
+  return { mode: rename ? 'rename' : 'set', positionals }
+}
+
+// git 2.53 names a `git config` subcommand only as its first word; `--file f set k v` is legacy.
+const SUBCOMMAND_END: OptionsEnd = { atDashDash: false, atPositional: false }
+const LEGACY_END: OptionsEnd = { atDashDash: false, atPositional: true }
+
+/** A `git config` call's subcommand, if its first word names one, and its options and positionals. */
+function parseConfig(args: SubArgs): { named: string | undefined; parsed: ParsedArgs | undefined } {
+  const first = args.resolved[0]
+  if (first === undefined || !CONFIG_SUBCOMMANDS.has(first))
+    return { named: undefined, parsed: parseOptions(args, CONFIG_OPTIONS, LEGACY_END) }
+  const rest = { resolved: args.resolved.slice(1), written: args.written.slice(1) }
+  return { named: first, parsed: parseOptions(rest, CONFIG_OPTIONS, SUBCOMMAND_END) }
 }
 
 /**
@@ -314,9 +330,9 @@ function renameEnabler(names: readonly (string | undefined)[]): ExtEnabler | und
 }
 
 function configEnabler(args: SubArgs): ExtEnabler | undefined {
-  const parsed = parseOptions(args, CONFIG_OPTIONS, false)
+  const { named, parsed } = parseConfig(args)
   if (parsed === undefined) return 'option'
-  const { mode, positionals } = configCall(parsed)
+  const { mode, positionals } = configCall(parsed, named)
   if (mode === 'rename') return renameEnabler(positionals)
   if (mode === 'other' || positionals.length < 2) return undefined
   const [key, value] = positionals
