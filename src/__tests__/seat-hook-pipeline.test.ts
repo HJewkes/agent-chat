@@ -44,22 +44,52 @@ const payload = (event: string, matcher: string | undefined): string =>
   })
 
 let dir: string
+let seatsDir: string
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-hook-pipeline-'))
   process.env.AGENT_CHAT_HOME = dir
   process.env.AGENT_CHAT_NAME = 'coord'
+  process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(dir, 'active')
+  seatsDir = path.join(dir, 'active', 'claude-channels', 'sources', 'autonomy', 'seats')
+  fs.mkdirSync(seatsDir, { recursive: true })
 })
 afterEach(() => {
   delete process.env.AGENT_CHAT_HOME
   delete process.env.AGENT_CHAT_NAME
+  delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
+  vi.restoreAllMocks()
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-async function run(phase: string, input: string): Promise<void> {
+/** Runs the hook and returns what it printed for Claude Code. */
+async function run(phase: string, input: string): Promise<string> {
   stdin = input
-  await buildProgram().parseAsync(['node', 'agent-chat', 'seat-hook', phase])
+  let out = ''
+  const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+    out += String(chunk)
+    return true
+  })
+  try {
+    await buildProgram().parseAsync(['node', 'agent-chat', 'seat-hook', phase])
+  } finally {
+    write.mockRestore()
+  }
+  return out
 }
+
+const allKinds = (): string[] => {
+  const log = new EventLog()
+  try {
+    const rows = log.ledgerHandle().prepare('SELECT kind FROM events ORDER BY id').all() as { kind: string }[]
+    return rows.map(row => row.kind)
+  } finally {
+    log.close()
+  }
+}
+
+const writeSeat = (name: string, extra = ''): void =>
+  fs.writeFileSync(path.join(seatsDir, `${name}.md`), `---\nprefix: dm\npool: x\n${extra}---\n# ${name}\n`)
 
 const kinds = (): string[] => {
   const log = new EventLog()
@@ -98,13 +128,68 @@ describe('the installed seat hooks, run through the CLI', () => {
     },
   )
 
+  it('denies a seat its pane question, names chat_ask, and opens no block', async () => {
+    writeSeat('demo-coord')
+    process.env.AGENT_CHAT_NAME = 'demo-coord'
+
+    const out = await run('pre', payload('PreToolUse', 'AskUserQuestion'))
+
+    const decision = JSON.parse(out) as {
+      hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string }
+    }
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('chat_ask')
+    expect(allKinds()).toEqual(['seat_ask_denied'])
+  })
+
+  it('denies an attended seat too', async () => {
+    writeSeat('ops-attended', 'role: attended\n')
+    process.env.AGENT_CHAT_NAME = 'ops-attended'
+
+    const out = await run('pre', payload('PreToolUse', 'AskUserQuestion'))
+
+    expect(out).toContain('"deny"')
+    expect(allKinds()).toEqual(['seat_ask_denied'])
+  })
+
+  it("denies a seat's worker, matched by prefix", async () => {
+    writeSeat('demo-coord')
+    process.env.AGENT_CHAT_NAME = 'dm-x-1-review'
+
+    const out = await run('pre', payload('PreToolUse', 'AskUserQuestion'))
+
+    expect(out).toContain('"deny"')
+    expect(allKinds()).toEqual(['seat_ask_denied'])
+  })
+
+  it('lets a session with no seat file ask, and still records the block', async () => {
+    writeSeat('demo-coord')
+    process.env.AGENT_CHAT_NAME = 'tp-operator'
+
+    const out = await run('pre', payload('PreToolUse', 'AskUserQuestion'))
+
+    expect(out).toBe('')
+    expect(allKinds()).toEqual(['seat_blocked'])
+  })
+
+  it('allows the question and logs why when the seat files cannot be read', async () => {
+    fs.rmSync(seatsDir, { recursive: true })
+    process.env.AGENT_CHAT_NAME = 'demo-coord'
+
+    const out = await run('pre', payload('PreToolUse', 'AskUserQuestion'))
+
+    expect(out).toBe('')
+    expect(fs.readFileSync(path.join(dir, 'seat-hook.log'), 'utf8')).toContain('seat lookup failed, allowing')
+    expect(allKinds()).toEqual(['seat_blocked'])
+  })
+
   it('writes nothing for a session with no seat name, and never throws on a bad payload', async () => {
     delete process.env.AGENT_CHAT_NAME
     await run('pre', payload('PreToolUse', 'AskUserQuestion'))
     process.env.AGENT_CHAT_NAME = 'coord'
 
-    await expect(run('pre', 'not json')).resolves.toBeUndefined()
-    await expect(run('bogus', payload('PreToolUse', 'AskUserQuestion'))).resolves.toBeUndefined()
+    await expect(run('pre', 'not json')).resolves.toBe('')
+    await expect(run('bogus', payload('PreToolUse', 'AskUserQuestion'))).resolves.toBe('')
 
     expect(kinds()).toEqual([])
   })

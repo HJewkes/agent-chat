@@ -80,6 +80,8 @@ const KINDS_AT_FREEZE = [
   'seat_blocked',
   'seat_unblocked',
   'seat_activity',
+  // CC-1092, added through this test. A seat's denied pane question; rendered generically. Not subscribable.
+  'seat_ask_denied',
 ]
 
 describe('SSE event names cover every EventKind', () => {
