@@ -34,6 +34,8 @@ Agent commands:
   teleport                   teleport control
   handoff                    stored teleport handoffs
   profiles [name]            agent profiles available to spawn with
+  gh-calls [options]         read the GitHub call log: top callers and routes, and 403s split by
+                             limit
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -1230,6 +1232,17 @@ agent profiles available to spawn with
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat gh-calls
+Usage: agent-chat gh-calls [options]
+
+read the GitHub call log: top callers and routes, and 403s split by limit
+
+Options:
+  --since <value>  window to read, like 90m, 24h or 3d (default 24h)
+  --top <n>        how many callers and routes to list (default 5)
+  --json           print the summary as one JSON object
+  -h, --help       display help for command
 
 === agent-chat gh-write
 Usage: agent-chat gh-write [options] <gh-args...>
