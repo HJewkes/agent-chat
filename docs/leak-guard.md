@@ -144,7 +144,14 @@ the hook is rewritten at every spawn. The hook still bakes in no node or scanner
 search path, so a node upgrade does not strand it. The owner's own `XDG_CONFIG_HOME` is ignored
 as well: keep the term list under `~/.config`.
 
-If `node` or `titan-egress-scan` is missing from the broker's `PATH`, the hook prints one line
+The baked search path is the broker's `PATH` followed by two dirs from agent-chat's own install
+(CC-461): the `node_modules/.bin` holding the `@titan-design/egress-scan` that agent-chat depends
+on, and the dir of the node running the broker. They come after the broker's own entries, so a
+scanner the owner installed globally still wins, and the `.bin` dir is added only when its
+`titan-egress-scan` links to that package's `dist/bin.js`. A broker started without the scanner
+on its `PATH` therefore still scans.
+
+If `node` or `titan-egress-scan` is missing from that search path, the hook prints one line
 starting `leak-scan: guard NOT run, this push was not scanned` that names the missing tool. It
 then lets the push go ahead, still running the repository's own hook. This is a fail-open, and
 it is the same as before this hardening: a leaky push from a machine with no scanner installed
