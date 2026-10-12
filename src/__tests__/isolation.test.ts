@@ -25,6 +25,7 @@ import {
   worktreeStrategy,
 } from '../agents/isolation/worktree.js'
 import type { GitRunner } from '../agents/isolation/worktree.js'
+import { isReviewerTreeName } from '../agents/reviewer-tree.js'
 import type { Allocation, IsolationContext, LivePeer } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []
@@ -331,6 +332,80 @@ describe('worktree budget', () => {
     const ctx = ctxFor(repo, { agentName: 'bob', agentId: 'ag-2' })
     expect(refusalsIn(await strategy.check(ctx))).toEqual([])
     await expect(strategy.allocate(ctx)).resolves.toBeDefined()
+  })
+})
+
+describe('reviewer worktree pool (CC-1040)', () => {
+  const reviewer = (repo: string, n: number): IsolationContext =>
+    ctxFor(repo, { agentName: `rv-o-r-${n}`, agentId: `ag-rv-${n}` })
+
+  const allocateReviewers = async (
+    strategy: ReturnType<typeof createWorktreeStrategy>,
+    repo: string,
+    count: number,
+  ) => {
+    for (let n = 1; n <= count; n++) await strategy.allocate(reviewer(repo, n))
+  }
+
+  it('eight reviewer trees leave the implementer budget free', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 1, reviewerBudget: 8 })
+    await allocateReviewers(strategy, repo, 8)
+
+    expect(refusalsIn(await strategy.check(ctxFor(repo)))).toEqual([])
+    await expect(strategy.allocate(ctxFor(repo))).resolves.toBeDefined()
+  })
+
+  it('a ninth reviewer is refused naming the reviewer pool', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 1, reviewerBudget: 8 })
+    await allocateReviewers(strategy, repo, 8)
+
+    expect(refusalsIn(await strategy.check(reviewer(repo, 9)))[0]).toMatch(
+      /reviewer worktree pool exhausted: 8\/8/,
+    )
+    const refused = await strategy.allocate(reviewer(repo, 9)).catch((err: unknown) => err)
+    expect(refused).toBeInstanceOf(WorktreeBudgetExhaustedError)
+    expect((refused as WorktreeBudgetExhaustedError).pool).toBe('reviewer')
+    expect((refused as Error).message).toMatch(/reviewer worktree pool exhausted: 8\/8/)
+  })
+
+  it('implementer trees do not consume reviewer slots', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 3, reviewerBudget: 1 })
+    await strategy.allocate(ctxFor(repo))
+    await strategy.allocate(ctxFor(repo, { agentName: 'bob', agentId: 'ag-2' }))
+
+    await expect(strategy.allocate(reviewer(repo, 1))).resolves.toBeDefined()
+  })
+
+  it('reads reviewerWorktreeBudget from config.json on every spawn', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-budget-'))
+    tmpdirs.push(home)
+    process.env.AGENT_CHAT_HOME = home
+    try {
+      const repo = makeRepo()
+      const strategy = createWorktreeStrategy({ budget: 1 })
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ reviewerWorktreeBudget: 1 }))
+      await strategy.allocate(reviewer(repo, 1))
+      await expect(strategy.allocate(reviewer(repo, 2))).rejects.toBeInstanceOf(WorktreeBudgetExhaustedError)
+
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ reviewerWorktreeBudget: 2 }))
+
+      await expect(strategy.allocate(reviewer(repo, 2))).resolves.toBeDefined()
+    } finally {
+      delete process.env.AGENT_CHAT_HOME
+    }
+  })
+})
+
+describe('isReviewerTreeName', () => {
+  it.each(['rv-o-r-4-1', 'tc-cc-1-reviewer', 'RV-x'])('classifies %s as a reviewer tree', name => {
+    expect(isReviewerTreeName(name)).toBe(true)
+  })
+
+  it.each(['previewer-x', 'bd-cc-1-a-r0', 'driver', 'a-rv'])('classifies %s as an implementer tree', name => {
+    expect(isReviewerTreeName(name)).toBe(false)
   })
 })
 

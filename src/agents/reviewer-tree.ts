@@ -22,6 +22,15 @@ export function isReviewerSpawn(profileName: string, agentName: string): boolean
 }
 
 /**
+ * CC-1040: a tree on disk carries only its directory name, so the reviewer worktree pool is
+ * decided from the agent name alone, the same way when allocating and when counting.
+ */
+export function isReviewerTreeName(name: string): boolean {
+  const tokens = tokensOf(name)
+  return tokens[0] === 'rv' || tokens.includes('reviewer')
+}
+
+/**
  * The primary checkout `cwd` sits in, when it does: the nearest ancestor holding `.git`, and
  * that `.git` is a directory. A linked worktree's `.git` is a file, and a directory with no
  * repository above it (a review dir under the user's data home) has none.

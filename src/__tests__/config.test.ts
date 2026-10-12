@@ -19,6 +19,7 @@ import {
   resolveProcessGuardMode,
   resolveProcessKillBytes,
   resolveReportBatchMs,
+  resolveReviewerWorktreeBudget,
   resolveWorktreeBudget,
   retireThresholdK,
 } from '../config.js'
@@ -147,6 +148,24 @@ describe('resolveWorktreeBudget', () => {
     writeConfigJson({ worktreeBudget: value })
 
     expect(resolveWorktreeBudget(3)).toBe(3)
+  })
+})
+
+describe('resolveReviewerWorktreeBudget', () => {
+  it('keeps the fallback when config.json does not exist', () => {
+    expect(resolveReviewerWorktreeBudget(8)).toBe(8)
+  })
+
+  it('returns a positive integer reviewerWorktreeBudget, not worktreeBudget', () => {
+    writeConfigJson({ worktreeBudget: 32, reviewerWorktreeBudget: 5 })
+
+    expect(resolveReviewerWorktreeBudget(8)).toBe(5)
+  })
+
+  it.each([0, -2, 2.5, '10', null])('falls back when reviewerWorktreeBudget is %j', value => {
+    writeConfigJson({ worktreeBudget: 32, reviewerWorktreeBudget: value })
+
+    expect(resolveReviewerWorktreeBudget(8)).toBe(8)
   })
 })
 
