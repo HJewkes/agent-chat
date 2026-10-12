@@ -6,6 +6,7 @@ import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
+import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 import type { Step } from './execute.js'
@@ -29,6 +30,9 @@ import type { Step } from './execute.js'
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
  *   refusals        {[refusal kind]: count}
+ *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refusals whose task the seat's plan_file section 2
+ *                   names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent when the seat has no
+ *                   readable plan_file
  *   trust           CC-1077: [{initiative, task?, reason}] for each distinct trust refusal, reason on one line of at
  *                   most 200 chars, at most 10 entries (the exact count stays in `refusals.trust`); absent when
  *                   the seat refused nothing on trust
@@ -51,6 +55,7 @@ export interface SeatSummary {
   stale: number
   dispatched: number
   refusals: Record<string, number>
+  onPlanRefusals?: Record<string, number>
   trust?: NamedRefusal[]
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
@@ -139,16 +144,31 @@ function namedTrustRefusals(outcome: SeatOutcome): NamedRefusal[] {
   return [...named.values()].slice(0, MAX_NAMED_TRUST)
 }
 
+/** CC-1128: refusals of on-plan tasks by kind; a refused task not in the inputs is matched by its id alone. */
+function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<string, number> | undefined {
+  const plan = outcome.plan
+  if (plan === undefined) return undefined
+  const counts: Record<string, number> = {}
+  for (const r of outcome.refusals) {
+    if (r.task === undefined) continue
+    const task = inputs.tasks.get(r.initiative)?.find(t => t.id === r.task) ?? { id: r.task, tags: [] }
+    if (onPlan(plan, task)) counts[r.kind] = (counts[r.kind] ?? 0) + 1
+  }
+  return counts
+}
+
 function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   const refusals: Record<string, number> = {}
   for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
   const cap = inputs.caps[outcome.seat]
   const used = outcome.roles
   const trust = namedTrustRefusals(outcome)
+  const onPlanCounts = onPlanRefusals(inputs, outcome)
   return {
     ...briefCounts(inputs, outcome),
     dispatched: outcome.dispatched,
     refusals,
+    ...(onPlanCounts === undefined ? {} : { onPlanRefusals: onPlanCounts }),
     ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),

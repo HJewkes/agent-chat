@@ -705,8 +705,11 @@ Each option ends in its final state, the last spelling winning as in git, so
 a remote or submodule URL (`remote`, `submodule` and the internal `submodule--helper`) are read
 from one table of verbs: a verb that stores a URL, or one outside the table, with a word the guard
 cannot read denies, and only `remote set-url --delete` and the verbs listed as storing none are
-exempt. `git clone "$URL"` stays allowed as before (TP-636); the protocol-list rules and the
-CC-1095 pin cover a later `ext::` run of the URL it stores.
+exempt. `git clone` stores its repository as `remote.origin.url`, so a clone whose repository
+argument (its first positional, read with clone's own options) the guard cannot read denies too,
+as in `git clone "$URL"`, `git clone -b main "$(cat u)" d` or `U=https://github.com/o/r; git clone
+"$U"` (TP-2444, reversing the TP-636 allowance). An unread directory argument, a literal URL, `-h`,
+an unknown literal flag and `gh repo clone "$R"` stay allowed; the CC-1095 pin stays as a backstop.
 These rules read one shell word as one argument, so for `git config` and the URL-storing
 builtins a word after the subcommand that the shell may expand to none or several denies as an
 unreadable write: an unquoted `$X` or `$(...)`, `"$@"`, `"${A[@]}"`, a glob or a brace, as in

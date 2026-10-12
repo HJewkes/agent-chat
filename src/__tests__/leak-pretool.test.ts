@@ -2627,10 +2627,14 @@ describe('a config value git clone applies before it fetches (TP-636)', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
 
+  it('denies a repository URL the guard cannot read (TP-2444)', () => {
+    expect(checkCommand('git clone -b main --depth=1 "$URL" x', ctx())).toBe(REASONS.remoteUrlUnresolved)
+  })
+
   it.each([
     'git clone -c core.sshCommand="ssh -i key" ssh://h/r x',
     'git clone -qc core.sshCommand="ssh -i key" ssh://h/r x',
-    'git clone -b main --depth=1 "$URL" x',
+    'git clone -b main --depth=1 https://github.com/o/r "$DIR"',
     'git clone -o c "core.sshCommand=git push --no-verify"',
     'git clone --config user.name=x /r x',
     'git clone /r x -- -c',

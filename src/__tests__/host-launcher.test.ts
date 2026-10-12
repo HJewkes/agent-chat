@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '../agents/types.js'
 import type { ClientMessage, RemoteLaunch } from '../protocol.js'
 import {
@@ -32,9 +32,14 @@ beforeEach(() => {
   configDir = path.join(home, '.claude-profiles', 'personal')
   fs.mkdirSync(cwd, { recursive: true })
   fs.mkdirSync(configDir, { recursive: true })
+  // A spec with no config dir reads `~/.claude.json`; keep the real one out of these tests.
+  vi.spyOn(os, 'homedir').mockReturnValue(home)
 })
 
-afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
+afterEach(() => {
+  vi.restoreAllMocks()
+  fs.rmSync(home, { recursive: true, force: true })
+})
 
 const spec = (over: Partial<RemoteLaunch> = {}): RemoteLaunch => ({
   agentId: 'abcd1234',
@@ -143,8 +148,9 @@ describe('a host_launch spec', () => {
     const { deps, launched } = fakeDeps()
     const { configDir: _account, ...noAccount } = spec()
 
-    await answerLaunch(noAccount, LINUX, deps)
+    const answer = await answerLaunch(noAccount, LINUX, deps)
 
+    expect(answer).toEqual({ ok: true })
     expect(launched[0]?.plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
   })
 
@@ -194,6 +200,78 @@ describe('a host_probe', () => {
     const answer = answerProbe({ cwd: missing, surface: 'headless' }, LINUX, deps)
 
     expect(answer).toEqual({ ok: false, reason: `its cwd ${missing} is not a directory on this machine` })
+  })
+})
+
+describe('a launch into a cwd the destination account has not trusted (CC-1081)', () => {
+  const trusting = (projects: Record<string, { hasTrustDialogAccepted: boolean }>): string => {
+    const file = path.join(configDir, '.claude.json')
+    fs.writeFileSync(file, JSON.stringify({ projects }))
+    return file
+  }
+
+  it('is refused at the probe, naming the trust prompt, the cwd and the config file', () => {
+    const file = trusting({ '/elsewhere': { hasTrustDialogAccepted: true } })
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'tmux-window' }, LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer.reason).toContain('workspace trust prompt')
+    expect(answer.reason).toContain(cwd)
+    expect(answer.reason).toContain(file)
+  })
+
+  it('is refused at launch with nothing written, opened or superseded', async () => {
+    trusting({ '/elsewhere': { hasTrustDialogAccepted: true } })
+    const { deps, launched, written, superseded } = fakeDeps()
+
+    const answer = await answerLaunch(spec(), LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer.reason).toContain('workspace trust prompt')
+    expect(written).toEqual([])
+    expect(launched).toEqual([])
+    expect(superseded).toEqual([])
+  })
+
+  it('with no config dir is refused from the home ~/.claude.json', () => {
+    const file = path.join(home, '.claude.json')
+    fs.writeFileSync(file, JSON.stringify({ projects: {} }))
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, surface: 'headless' }, LINUX, deps)
+
+    expect(answer.reason).toContain(file)
+    expect(answer.reason).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  it('is refused when its entry was seen but not accepted', () => {
+    trusting({ [cwd]: { hasTrustDialogAccepted: false } })
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'headless' }, LINUX, deps)
+
+    expect(answer.reason).toContain('workspace trust prompt')
+  })
+
+  it('launches a subdirectory whose git root is trusted, even with a space in its path', async () => {
+    fs.mkdirSync(path.join(cwd, '.git'))
+    const sub = path.join(cwd, 'Application Support', 'seat')
+    fs.mkdirSync(sub, { recursive: true })
+    trusting({ [cwd]: { hasTrustDialogAccepted: true } })
+    const { deps, launched } = fakeDeps()
+
+    expect(answerProbe({ cwd: sub, configDir, surface: 'tmux-window' }, LINUX, deps)).toEqual({ ok: true })
+    expect(await answerLaunch(spec({ cwd: sub }), LINUX, deps)).toEqual({ ok: true })
+    expect(launched).toHaveLength(1)
+  })
+
+  it('launches as before when the config file cannot be read', () => {
+    fs.writeFileSync(path.join(configDir, '.claude.json'), '{not json')
+    const { deps } = fakeDeps()
+
+    expect(answerProbe({ cwd, configDir, surface: 'tmux-window' }, LINUX, deps)).toEqual({ ok: true })
   })
 })
 

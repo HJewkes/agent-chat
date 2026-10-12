@@ -27,20 +27,38 @@ never fails because its line could not be written.
 }
 ```
 
-| Field       | Meaning                                                                                                                |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `v`         | Always `1`. Readers skip any other version.                                                                            |
-| `at`        | ISO time the call finished.                                                                                            |
-| `caller`    | Who made the call: the agent name for the shim (`shim` when unset), `burndown-tick`, `session-miner`, or `rate-limit`. |
-| `api`       | `rest` or `graphql`.                                                                                                   |
-| `method`    | HTTP method, upper case.                                                                                               |
-| `route`     | The path with owner, repo and every number replaced and the query dropped: `repos/{o}/{r}/pulls/{n}/files`.            |
-| `status`    | HTTP status, or `ok`/`error` from a caller that never sees one.                                                        |
-| `ms`        | Wall time of the call.                                                                                                 |
-| `remaining` | `x-ratelimit-remaining` when the call saw it, else `null`.                                                             |
-| `resource`  | `x-ratelimit-resource` when the call saw it, else `null`.                                                              |
-| `limit`     | Optional. `secondary` or `primary`, set by a writer that read GitHub's error text. The text itself is never stored.    |
-| `limits`    | Only on `caller: "rate-limit"` lines: remaining per resource, e.g. `{"core":4100,"graphql":5000,"search":30}`.         |
+| Field        | Meaning                                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `v`          | Always `1`. Readers skip any other version.                                                                            |
+| `at`         | ISO time the call finished.                                                                                            |
+| `caller`     | Who made the call: the agent name for the shim (`shim` when unset), `burndown-tick`, `session-miner`, or `rate-limit`. |
+| `api`        | `rest` or `graphql`.                                                                                                   |
+| `method`     | HTTP method, upper case, or `CLI` for a gh command the shim passed through.                                            |
+| `route`      | The path with owner, repo and every number replaced and the query dropped: `repos/{o}/{r}/pulls/{n}/files`.            |
+| `status`     | HTTP status, or `ok`/`error` from a caller that never sees one.                                                        |
+| `ms`         | Wall time of the call.                                                                                                 |
+| `remaining`  | `x-ratelimit-remaining` when the call saw it, else `null`.                                                             |
+| `resource`   | `x-ratelimit-resource` when the call saw it, else `null`.                                                              |
+| `limit`      | Optional. `secondary` or `primary`, set by a writer that read GitHub's error text. The text itself is never stored.    |
+| `retryAfter` | Optional. Seconds from `retry-after`, when the response carried it.                                                    |
+| `used`       | Optional. `x-ratelimit-used`, when the call saw it.                                                                    |
+| `reset`      | Optional. `x-ratelimit-reset` (epoch seconds), when the call saw it.                                                   |
+| `limits`     | Only on `caller: "rate-limit"` lines: remaining per resource, e.g. `{"core":4100,"graphql":5000,"search":30}`.         |
+
+## The gh shim
+
+The shim on a spawned agent's PATH writes one line per real-gh call, with `caller` set to
+`$AGENT_CHAT_NAME` (`shim` when unset):
+
+- **Answered reads** run `gh api <path> -i`, so the line carries the status and rate-limit headers.
+  The body after the header block is parsed as before, so the command's output is unchanged.
+- **Passed-through commands** run with stdout and stderr piped and written straight through. A
+  `gh api` call gets `api`, `method` and `route` from its arguments; any other command gets
+  `method: "CLI"` and `route: "<command> <subcommand>"` (`api` is `rest` for `run`, `workflow`,
+  `release`, `cache`, `secret`, `variable` and `gist`, else `graphql`). The status comes from the
+  header block when the caller passed `-i`, else from `HTTP nnn` in gh's error text, else `ok` or
+  `error` from the exit code. Commands that never reach GitHub (`help`, `version`, `config`, ...) get
+  no line. On a terminal the streams stay inherited and only the exit status is logged.
 
 The burndown tick writes one `rate-limit` line per tick from `gh api rate_limit`, which does not count
 against the limit.
