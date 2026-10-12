@@ -204,7 +204,8 @@ describe('retire at the final report', () => {
 
   it('retires and parks an implementer whose open PR a live Shepherd run names by its branch', async () => {
     shepherd.openPr = true
-    shepherd.runs = () => Promise.resolve([{ branch: 'agent-chat/cc-shep', names: [], implementer: null }])
+    shepherd.runs = () =>
+      Promise.resolve([{ branch: 'agent-chat/cc-shep', names: [], implementer: null, phase: 'review' }])
     const agent = await pushedImplementer('cc-shep')
     const repo = repoOf(agent)
 
@@ -217,7 +218,8 @@ describe('retire at the final report', () => {
 
   it('retires an agent a live Shepherd run names by implementer name', async () => {
     shepherd.openPr = true
-    shepherd.runs = () => Promise.resolve([{ branch: null, names: ['cc-named'], implementer: 'cc-named' }])
+    shepherd.runs = () =>
+      Promise.resolve([{ branch: null, names: ['cc-named'], implementer: 'cc-named', phase: 'review' }])
     const agent = await pushedImplementer('cc-named')
 
     await exit(agent)
@@ -227,7 +229,9 @@ describe('retire at the final report', () => {
 
   it('keeps a reviewer a live Shepherd run names, since a malformed verdict resumes it by name', async () => {
     shepherd.runs = () =>
-      Promise.resolve([{ branch: 'agent-chat/impl', names: ['impl', 'cc-rv'], implementer: 'impl' }])
+      Promise.resolve([
+        { branch: 'agent-chat/impl', names: ['impl', 'cc-rv'], implementer: 'impl', phase: 'review' },
+      ])
     const agent = await spawnIn('cc-rv', makeRepo())
     report(agent, 'Verdict: MERGE')
 
@@ -358,7 +362,8 @@ describe('retire --finished shares the CC-904 rule', () => {
 
   it('retires an agent whose open PR a registered Shepherd run names', async () => {
     shepherd.openPr = true
-    shepherd.runs = () => Promise.resolve([{ branch: 'agent-chat/cc-reg', names: [], implementer: null }])
+    shepherd.runs = () =>
+      Promise.resolve([{ branch: 'agent-chat/cc-reg', names: [], implementer: null, phase: 'review' }])
     sup.close()
     sup = supervisor({ autoRetireOnReport: () => false })
     const agent = await pushedImplementer('cc-reg')
@@ -408,8 +413,8 @@ describe('reading Shepherd runs', () => {
     ])
 
     expect(parseActiveRuns(stdout)).toEqual([
-      { branch: 'agent-chat/b', names: ['impl-b', 'rv-b'], implementer: 'impl-b' },
-      { branch: null, names: [], implementer: null },
+      { branch: 'agent-chat/b', names: ['impl-b', 'rv-b'], implementer: 'impl-b', phase: 'review' },
+      { branch: null, names: [], implementer: null, phase: 'something-new' },
     ])
   })
 
