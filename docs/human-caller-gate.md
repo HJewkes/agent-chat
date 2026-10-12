@@ -22,11 +22,16 @@ socket write all pass it (`src/agents/profiles.ts`, the comment on
 `HUMAN_ONLY_CLI_DENY`). This note decides whether the broker should also gate these
 frames by caller.
 
-## Frames in scope
+## Frame inventory
 
-An unregistered connection gets the human's authority in three different ways.
+This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
+(`src/broker/socket.ts`), read at origin/main `a162351`. It lists every case there, and
+each case appears in exactly one class. When a frame is added to the dispatcher, add it
+here too.
 
-**Human-only frames.** `isHuman` guards these, and they mean "the human decided":
+### Class 1: refused from a declared connection
+
+These frames are guarded by `isHuman`, and they mean "the human decided".
 
 | Frame                | Handler                                                         |
 | -------------------- | --------------------------------------------------------------- |
@@ -38,35 +43,79 @@ An unregistered connection gets the human's authority in three different ways.
 | `teleport_abort`     | `handleTeleportAbort`                                           |
 | `service_ask`        | `handleServiceAsk`                                              |
 
-`service_ask` is on the list because an agent that sends it asks the human under a
-service label that nothing vouches for. Profiles already deny agents `agent-chat ask`
-(CC-169, `src/agents/profiles.ts`), so leaving the frame open would undo that deny.
+`service_ask` is here because it asks the human under a service label that nothing
+vouches for. Profiles already deny agents `agent-chat ask` (CC-169, landed), and leaving
+the frame open would get around that deny.
 
-**Lifecycle frames that fall back to `requestedBy = HUMAN`.** These do not check
-`isHuman`. They take the requester's registered name, or `HUMAN` when there is none:
+### Class 2: requester mapped to the declared agent
 
-| Frame     | Where the fallback happens                                                |
-| --------- | ------------------------------------------------------------------------- |
-| `spawn`   | `handleSpawn`: `registry.nameOf(conn) ?? HUMAN`                           |
-| `resume`  | `handleResume`: `requester?.name ?? HUMAN`                                |
-| `surface` | `switchSurface` call: `requester?.name ?? HUMAN`                          |
-| `park`    | the `park` case in the dispatcher: `requester?.name ?? HUMAN`             |
-| `retire`  | the `retire` case: the actor is `msg.caller`, a field the caller fills in |
+These frames take the requester from the connection and fall back to the human when the
+connection has no registered name. With a declared id, the broker sets the declared agent
+as the requester instead. The last column lists the checks the mapping turns on, which
+the `HUMAN` fallback skips today.
 
-`requestedBy === HUMAN` switches off these checks in `src/agents/supervisor.ts`:
-`checkEscalation`, the worker-spawn ban, the cwd policy (`checkCwd`) and the spawn rate
-limit (`rateRefusal`). It also switches off the predecessor-ownership check
-(`resolvePredecessor` in `src/agents/predecessor.ts`). So an agent that reaches these
-frames over the CLI acts without its own role's limits. The CC-216 `WORKER_CLI_DENY` deny
-list (`Bash(agent-chat agent:*)`) covers the same gap, with the same weakness as
-`HUMAN_ONLY_CLI_DENY`: it matches only the literal spelling.
+| Frame             | Fallback today                                                                      | What the mapping turns on                                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spawn`           | `handleSpawn`: `registry.nameOf(conn) ?? HUMAN`                                     | `checkEscalation`, the worker-spawn ban, `checkCwd`, `rateRefusal`, and the predecessor-ownership check in `resolvePredecessor` (`src/agents/predecessor.ts`, via `predecessorFor`) |
+| `resume`          | `handleResume`: `requester?.name ?? HUMAN`, no `requesterAgentId`                   | `checkOwnership` through `checkResumer` (CC-216): a worker may resume only agents it spawned                                                                                        |
+| `surface`         | `handleSurface`: `requester?.name ?? HUMAN`, no `requesterAgentId`                  | `checkOwnership` through `checkSurfacer` (CC-225)                                                                                                                                   |
+| `park`            | the `park` case: `requester?.name ?? HUMAN`, no `requesterAgentId`                  | `checkOwnership` for `park`                                                                                                                                                         |
+| `retire_finished` | the `retire_finished` case: `caller` is `registry.nameOf(conn)`, so it is undefined | the "is the caller itself" refusal in `planFinished` (`src/agents/isolation/retire-finished.ts`). It does **not** limit `spawner` (see below)                                       |
+| `retire`          | the `retire` case: the actor is `msg.caller`, a field the caller fills in           | **nothing**. The mapping fixes only the record (see below)                                                                                                                          |
 
-**`permission_hook`** stays open to agent connections. The PermissionRequest hook runs
-inside an agent's process tree, so it always carries the agent's id. Today, though, the
-caller chooses `msg.session`, which names the agent the prompt is filed for
-(`handlePermissionHook`).
+For `retire_finished`, the broker passes the declared agent's name as `caller`. For
+`retire`, it passes that name as `actor` and ignores `msg.caller`. If the declared id
+resolves to no known agent, every frame in this class is refused rather than falling back
+to `HUMAN`.
 
-`approval` is a session frame (it requires a name), so it is out of scope.
+**`retire` stays unguarded under the mapping alone.** `retire`, `retireStale`,
+`retireById` and `retireIdentity` (`src/agents/supervisor.ts`) never check ownership or
+role. They use the actor only to name who did the retiring in the `agent_retired` row.
+Making the declared agent the actor fixes that row, but any agent can still retire any
+agent, through the CLI or otherwise. `retire_finished` has the same gap: `spawner` is
+`msg.spawner`, which the caller chooses, so an agent can retire another spawner's
+finished agents. Its retirement also goes through `retireById` with no actor, so the
+`agent_retired` row says `human`.
+
+CC-1138 therefore also adds an ownership check, the way `resolvePredecessor` does for a
+takeover and `checkOwnership` does for resume. A worker requester may retire only agents
+it spawned (`spawnedBy` is the requester's name, or the spawn row's `meta.parent` is the
+requester's id). For `retire_finished` from a declared worker, `spawner` is pinned to the
+requester's name. A coordinator, a human-started session and the unregistered human keep
+today's behaviour, which matches `checkOwnership`. `retire_finished` also passes the
+caller through to `retireById` as the actor.
+
+The CC-216 `WORKER_CLI_DENY` deny list (`Bash(agent-chat agent:*)`, landed) covers these
+frames today. It has the same weakness as `HUMAN_ONLY_CLI_DENY`: it matches only the
+literal spelling.
+
+### Class 3: bound to the declared session
+
+| Frame             | Today                                                | With a declared id                                        |
+| ----------------- | ---------------------------------------------------- | --------------------------------------------------------- |
+| `permission_hook` | `isHuman` passes, and the caller picks `msg.session` | accepted only when `msg.session` names the declared agent |
+
+The PermissionRequest hook runs inside an agent's process tree, so it always carries the
+agent's id and has to stay open.
+
+### Class 4: out of scope, guarded by its own check
+
+The gate leaves these frames alone. Each one already refuses an unregistered
+connection, checks something other than "unregistered", or only reads.
+
+| Frame                                                                                                                        | Its own check                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `send`, `broadcast`, `ask`, `notify`, `endorse`, `subscribe`, `unsubscribe`, `tag`, `claim`, `release`, `status`, `approval` | `SESSION_FRAMES`: each handler refuses or no-ops without a registered name                                                     |
+| `decided`                                                                                                                    | `handleDecided`: the connection's bound agent id must equal the configured decider's                                           |
+| `teleport`, `teleport_plan_wait`, `teleport_launched`, `background`                                                          | the subject is the connection's own durable identity (`registry.entryFor(conn)?.agentId`); refused without one                 |
+| `teleport_land_failed`                                                                                                       | `landFailed` requires the armed landing's token                                                                                |
+| `register`                                                                                                                   | registry name rules, plus `refuseLauncherRegister`; it creates a name, it does not use the human's authority                   |
+| `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it           |
+| `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                       |
+| `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host |
+| `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                          |
+| `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                  |
+| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate       |
 
 ## Options weighed
 
@@ -98,24 +147,26 @@ The design:
   connection before its first request.
 - The broker resolves the declared id to that agent's name, and records the name and id
   per connection.
-- **Human-only frames** (the first table, including `service_ask`) are refused from a
-  connection that declared an id. The broker appends `verdict_refused` the way
-  `refuseToSession` does today.
-- **Lifecycle frames** (the second table) are not refused. The broker uses the declared
-  agent as the requester: `requestedBy` is its name and `requesterAgentId` is its id, and
-  for `retire` the actor is its name, with `msg.caller` ignored. If the id resolves to no
-  known agent, the frame is refused rather than falling back to `HUMAN`.
-- **`permission_hook`** is accepted only when `msg.session` names the declared agent.
-  Any other session is refused.
+- **Class 1** frames are refused from a connection that declared an id. The broker
+  appends `verdict_refused` the way `refuseToSession` does today.
+- **Class 2** frames are not refused. The broker uses the declared agent as the
+  requester: `requestedBy` is its name and `requesterAgentId` is its id. For
+  `retire_finished`, `caller` is its name; for `retire`, `actor` is its name. An id that
+  resolves to no known agent is refused. CC-1138 also adds the retire ownership check
+  described under Class 2.
+- **Class 3**: `permission_hook` is accepted only when `msg.session` names the declared
+  agent.
+- **Class 4** frames are unchanged.
 
-Why lifecycle frames get the agent as requester instead of being refused: an agent
-already has these verbs through its own MCP tools (`agent_spawn`, `agent_resume`,
-`agent_surface`, and so on), and those tools apply its role's checks. Mapping the CLI path
-to the same requester gives the two paths the same result. The worker-spawn ban, the
-escalation check, the cwd policy, the rate limit and the predecessor-ownership check then
-apply however the agent spells the command. Refusing outright would also refuse a
-coordinator that drives the CLI from its shell, which those checks already allow. Once
-the gate lands, `WORKER_CLI_DENY` becomes defence in depth rather than the only guard.
+Why class 2 frames get the agent as requester instead of being refused: an agent already
+has these verbs through its own MCP tools (`agent_spawn`, `agent_resume`, `agent_surface`,
+and so on), and those tools apply its role's checks. Mapping the CLI path to the same
+requester gives the two paths the same result: the checks in the Class 2 table apply
+however the agent spells the command. Refusing outright would also refuse a coordinator
+that drives the CLI from its shell, which those checks already allow. `retire` and
+`retire_finished` gain a limit only from the new ownership check, not from the mapping.
+Once the gate lands, `WORKER_CLI_DENY` becomes defence in depth rather than the only
+guard.
 
 This catches every CLI spelling that the deny lists miss, because the gate keys on the
 process's environment rather than on the command text.
