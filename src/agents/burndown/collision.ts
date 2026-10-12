@@ -152,13 +152,23 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
   return undefined
 }
 
+/** The changesets Version Packages PR's head; it is nearly always open and deletes every pending changeset. */
+const RELEASE_BRANCH = 'changeset-release/'
+
+/** One changeset file per change, never edited together, so two of them cannot conflict. */
+const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
+
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
-  if (work.owns.length === 0 || facts.prs === undefined) return undefined
-  for (const pr of facts.prs) {
+  const owns = work.owns.filter(path => !isChangeset(path))
+  if (owns.length === 0 || facts.prs === undefined) return undefined
+  for (const pr of facts.prs.filter(pr => !pr.branch.startsWith(RELEASE_BRANCH))) {
     const files = facts.prFiles(pr.number)
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
-    const path = overlapping(work.owns, files)
+    const path = overlapping(
+      owns,
+      files.filter(path => !isChangeset(path)),
+    )
     if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
   }
   return undefined
