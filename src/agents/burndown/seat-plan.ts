@@ -43,7 +43,8 @@ import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import { sliceRepo, type PathExists } from './slice-repo.js'
 import { seedSlices, type PlanReader } from './seed-slices.js'
-import { planningCandidates, readyDepth } from './planning-supply.js'
+import { OFF_PLAN_REASON } from './off-plan.js'
+import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
 import { planFacts, priorRoute, type PriorRouter, type Routed } from './prior-route.js'
 import type { TaskFacts } from './classify-task.js'
@@ -97,6 +98,8 @@ export interface SeatPlanInputs {
   handReserve?: number
   /** A task's seat-written plan (CC-927), read only for planner rows under an `on` gate; absent, none is read. */
   readPlan?: PlanReader
+  /** CC-1112: task ids a factory-review file marked off-plan; briefers refuse them. Absent, none are extra. */
+  offPlanIds?: ReadonlySet<string>
   /** Whether a path exists in a checkout, for placing a ready slice by what it owns (CC-946); absent, owns place nothing. */
   pathExists?: PathExists
   /** CC-638: route implementer dispatches by the task-time prior; absent, today's route picks the profile. */
@@ -299,8 +302,13 @@ function planBelowFloor(
   const { brief, seat, tasks } = walk.inputs
   if (brief?.gate !== 'on' || brief.readyFloor === undefined || depth >= brief.readyFloor) return
   const reason = `ready ${depth} below floor ${brief.readyFloor}`
+  const offPlanIds = walk.inputs.offPlanIds ?? new Set<string>()
+  for (const refusal of offPlanRefusals(plan.refusals, tasks, offPlanIds)) {
+    refusal.kind = 'off-plan'
+    refusal.reason = OFF_PLAN_REASON
+  }
   let planned = 0
-  for (const refusal of planningCandidates(plan.refusals, tasks)) {
+  for (const refusal of planningCandidates(plan.refusals, tasks, offPlanIds)) {
     const outcome = briefFor(refusal, reason, walk)
     if (outcome === undefined) continue
     if ('kind' in outcome) {
