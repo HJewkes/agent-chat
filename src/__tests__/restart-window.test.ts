@@ -3,8 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { noAnswerMessage } from '../cli/restart-guard.js'
 
 const SCRIPT = path.resolve(import.meta.dirname, '../../scripts/restart-window.sh')
+
+/** The exact refusal the guard prints when the broker does not answer (CC-1182 a). */
+const NO_ANSWER = noAnswerMessage('restart', 'queue_result', 5)
 
 const shim = (body: string): string => `#!/usr/bin/env bash\n${body}\n`
 
@@ -38,6 +42,7 @@ case "$1 $2" in
       [ -z "\${FAKE_EDIT_TRACKED:-}" ] || echo edited > "$SHIM_REPO/$FAKE_EDIT_TRACKED"
       echo "$FAKE_RESTART_FAIL_ONCE" >&2; exit 1
     fi
+    if [ -n "\${FAKE_RESTART_FAIL_THEN:-}" ]; then echo "$FAKE_RESTART_FAIL_THEN" >&2; exit 1; fi
     now=$(date -u +%Y-%m-%dT%H:%M:%S.999Z)
     for ((i = 0; i < \${FAKE_STARTED:-1}; i++)); do
       echo "{\\"ts\\":\\"$now\\",\\"event\\":\\"broker_started\\"}" >> "$AGENT_CHAT_HOME/broker.log\${FAKE_LOG_SUFFIX:-}"
@@ -178,6 +183,14 @@ describe('restart-window pre-checks', () => {
 
     expect(r.code).toBe(1)
     expect(r.out).toContain('unanswered ask from alice')
+    expect(r.out).not.toContain('BROKER MAY BE DOWN')
+  })
+
+  it('exits 1 with the guard message when the broker does not answer the guard', () => {
+    const r = run({ FAKE_RESTART_FAIL: NO_ANSWER })
+
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('the broker was not touched')
     expect(r.out).not.toContain('BROKER MAY BE DOWN')
   })
 
@@ -332,6 +345,31 @@ describe('restart-window update and restart', () => {
     expect(r.out).toContain('rolled back; the broker runs the old build')
     expect(r.out).not.toContain('BROKER MAY BE DOWN')
     expect(liveGaps()).toBe('')
+  })
+
+  it('says the broker is up and untouched when the guard refuses the rollback restart', () => {
+    pushToOrigin('remote.txt')
+    const r = run({
+      FAKE_RESTART_FAIL_ONCE: 'Error: broker did not answer queue_result',
+      FAKE_RESTART_FAIL_THEN: NO_ANSWER,
+    })
+
+    expect(r.code).toBe(3)
+    expect(liveMarkers()).toEqual(['old', 'old'])
+    expect(r.out).toContain('did not answer queue_result within 5s')
+    expect(r.out).toContain('the broker is up and the rollback restart did not touch it')
+    expect(r.out).not.toContain('BROKER MAY BE DOWN')
+  })
+
+  it('still says the broker may be down when the rollback restart fails without a guard refusal', () => {
+    pushToOrigin('remote.txt')
+    const r = run({
+      FAKE_RESTART_FAIL_ONCE: 'Started, but nothing is answering',
+      FAKE_RESTART_FAIL_THEN: 'Started, but nothing is answering',
+    })
+
+    expect(r.code).toBe(3)
+    expect(r.out).toContain('BROKER MAY BE DOWN: run agent-chat service start')
   })
 
   it('on a failed restart still restarts on the old build when the src reset fails', () => {

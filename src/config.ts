@@ -34,6 +34,7 @@ export interface AgentChatConfig {
   coordinatorConfig?: unknown
   agentSlots?: unknown
   worktreeBudget?: unknown
+  reviewerWorktreeBudget?: unknown
   worktreeOwnerReserve?: unknown
   contextHints?: unknown
   parkAdvice?: unknown
@@ -117,6 +118,11 @@ export function resolveAgentSlots(): number {
 /** Per-repository worktree cap (`worktreeBudget`), read per spawn so a new value needs no broker restart. */
 export function resolveWorktreeBudget(fallback: number): number {
   return positiveIntegerFrom('worktreeBudget', fallback)
+}
+
+/** CC-1040: per-repository cap on reviewer worktrees (`reviewerWorktreeBudget`), a pool apart from `worktreeBudget`. */
+export function resolveReviewerWorktreeBudget(fallback: number): number {
+  return positiveIntegerFrom('reviewerWorktreeBudget', fallback)
 }
 
 export const DEFAULT_WORKTREE_OWNER_RESERVE = 2

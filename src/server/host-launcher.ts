@@ -4,6 +4,7 @@ import path from 'node:path'
 import { markSuperseded, writeLaunchFiles } from '../agents/launch-files.js'
 import { surfaceFor } from '../agents/launcher.js'
 import { SENSITIVE_DIRS } from '../agents/spawn-cwd.js'
+import { launcherTrustRefusal } from '../agents/trust.js'
 import { surfaceBlockerFor } from '../agents/surface-resolution.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { HostAnswer } from '../broker/host-directory.js'
@@ -99,7 +100,7 @@ interface LocalPaths {
   configDir?: string
 }
 
-function resolvePaths(
+function resolveDirs(
   paths: { cwd: string; configDir?: string | undefined },
   homeDir: string,
 ): LocalPaths | string {
@@ -109,6 +110,16 @@ function resolvePaths(
   const configDir = localPath('config dir', paths.configDir, homeDir)
   if ('reason' in configDir) return configDir.reason
   return { cwd: cwd.real, configDir: configDir.real }
+}
+
+/** CC-1081: a successor in an untrusted cwd sits on the trust prompt with nobody to answer it. */
+function resolvePaths(
+  paths: { cwd: string; configDir?: string | undefined },
+  homeDir: string,
+): LocalPaths | string {
+  const local = resolveDirs(paths, homeDir)
+  if (typeof local === 'string') return local
+  return launcherTrustRefusal(local.cwd, local.configDir) ?? local
 }
 
 const refused = (reason: string): HostAnswer => ({ ok: false, reason })
