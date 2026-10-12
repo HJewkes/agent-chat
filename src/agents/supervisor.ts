@@ -108,6 +108,7 @@ import {
   checkResumeSession,
   allocationRecord,
   createdWorktreeFor,
+  type CreatedWorktree,
   goneWorktree,
   identityTranscript,
   missingAgent,
@@ -2411,7 +2412,7 @@ export class Supervisor implements TeleportHost {
     writeLaunchFiles(
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
-      this.createdWorktree(allocation, isolationName),
+      this.createdWorktree(agentId, allocation, isolationName),
     )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
@@ -3594,8 +3595,12 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-1110: the self-grant anchor, the tree this allocation launches in only if agent-chat recorded creating it. */
-  private createdWorktree(allocation: Allocation, isolation: IsolationName): string | undefined {
-    return createdWorktreeFor(this.core.events.agentEvents(), allocation, isolation)
+  private createdWorktree(
+    agentId: string,
+    allocation: Allocation,
+    isolation: IsolationName,
+  ): CreatedWorktree | undefined {
+    return createdWorktreeFor(this.core.events.agentEvents(), agentId, allocation, isolation)
   }
 
   /** Re-create the worktree and record it, so a later retire treats it like the allocation or adoption it was. */
@@ -3650,7 +3655,7 @@ export class Supervisor implements TeleportHost {
     writeLaunchFiles(
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
-      this.createdWorktree(allocation, isolation),
+      this.createdWorktree(agent.agentId, allocation, isolation),
     )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
@@ -3773,7 +3778,7 @@ export class Supervisor implements TeleportHost {
     writeLaunchFiles(
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
-      this.createdWorktree(allocation, isolation),
+      this.createdWorktree(agent.agentId, allocation, isolation),
     )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
@@ -3941,7 +3946,7 @@ export class Supervisor implements TeleportHost {
     writeLaunchFiles(
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
-      this.createdWorktree(allocation, isolation),
+      this.createdWorktree(input.agentId, allocation, isolation),
     )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 

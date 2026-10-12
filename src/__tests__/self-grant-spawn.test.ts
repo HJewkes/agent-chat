@@ -2,11 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
+import { loadProfile } from '../agents/profiles.js'
+import type { AgentProfile } from '../agents/types.js'
 import { hookSettingsPath } from '../agents/launch-files.js'
 import { linkedWorktreeRoot, REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import { transcriptPath } from '../agents/transcript.js'
@@ -72,7 +74,12 @@ function writeProfile(name: string, isolation: 'none' | 'worktree'): void {
   )
 }
 
-async function spawnIn(name: string, cwd: string, profile: string): Promise<AgentIdentity> {
+async function spawnIn(
+  name: string,
+  cwd: string,
+  profile: string,
+  over: Record<string, unknown> = {},
+): Promise<AgentIdentity> {
   const spawned = await sup.spawn({
     name,
     profile,
@@ -81,6 +88,7 @@ async function spawnIn(name: string, cwd: string, profile: string): Promise<Agen
     cwd,
     surface: 'headless',
     spawnerConfigDir: tmp('selfgrant-account-'),
+    ...over,
   })
   expect(spawned.reason).toBeUndefined()
   const agent = core.agents.get(spawned.agentId as string)!
@@ -109,9 +117,11 @@ beforeEach(() => {
   stopAutoAttach = autoAttach(core)
   sup = new Supervisor(core, {
     cwdLister: async () => [],
+    nameFreeMs: 200,
     surface: {
-      platform: 'linux',
+      platform: 'darwin',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+      runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
     },
   })
 })
@@ -119,6 +129,7 @@ beforeEach(() => {
 afterEach(() => {
   stopAutoAttach()
   sup.close()
+  vi.restoreAllMocks()
   delete process.env.AGENT_CHAT_HOME
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -149,5 +160,72 @@ describe('arming the self-grant from the supervisor (CC-1110)', () => {
 
     expect(resumed.reason).toBeUndefined()
     expect(hookCommands(agent.agentId)).toContain(`--self-grant-skills '${agent.cwd}'`)
+  })
+
+  it('gives no self-grant to an assigned tree swapped for a forged common dir behind an old record', async () => {
+    const repo = makeRepo()
+    const first = await spawnIn('worker-d', repo, 'skill-writer')
+    await exit(first)
+    git(['worktree', 'remove', '--force', first.cwd], repo)
+    fs.symlinkSync(forgedWorktree(), first.cwd)
+
+    const second = await spawnIn('worker-e', repo, 'skill-writer', { worktree: first.cwd })
+
+    expect(hookCommands(second.agentId)).not.toContain('--self-grant-skills')
+  })
+
+  /** A headless plan is the only one with a permission hook, so the switch goes that way. */
+  async function backgrounded(name: string, agent: AgentIdentity) {
+    const kill = process.kill.bind(process)
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => pid === 7777 || kill(pid, signal))
+    fs.writeFileSync(hookSettingsPath(agent.agentId), '{}')
+    const switched = await sup.switchSurface({
+      name,
+      to: 'headless',
+      requestedBy: name,
+      hostPid: 7777,
+      host: os.hostname(),
+    })
+    expect(switched.reason).toBeUndefined()
+  }
+
+  it('keeps the self-grant when a live agent switches surface onto its own tree', async () => {
+    const agent = await spawnIn('worker-f', makeRepo(), 'skill-writer', { surface: 'iterm-pane' })
+
+    await backgrounded('worker-f', agent)
+
+    expect(hookCommands(agent.agentId)).toContain(`--self-grant-skills '${agent.cwd}'`)
+  })
+
+  it('gives no self-grant when a surface switch falls back to the bare cwd', async () => {
+    const agent = await spawnIn('worker-g', makeRepo(), 'skill-writer', { surface: 'iterm-pane' })
+    await exit(agent)
+
+    await backgrounded('worker-g', agent)
+
+    expect(hookCommands(agent.agentId)).toContain('permission-hook')
+    expect(hookCommands(agent.agentId)).not.toContain('--self-grant-skills')
+  })
+
+  it("arms a teleport successor on the predecessor's tree it inherits", async () => {
+    const agent = await spawnIn('worker-h', makeRepo(), 'skill-writer')
+    const inherited = sup.inheritedIsolation(agent.agentId)
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'worker-h', ref: agent.agentId })
+
+    await sup.relaunch({
+      agentId: 'ag-succ1',
+      name: 'worker-h',
+      profile: loadProfile('skill-writer') as AgentProfile,
+      brief: 'carry on',
+      cwd: agent.cwd,
+      surface: 'headless',
+      preamble: 'you are the continuation',
+      meta: {},
+      ...(inherited === undefined ? {} : { inherited }),
+      inheritedFrom: agent.agentId,
+    })
+
+    expect(inherited).toBeDefined()
+    expect(hookCommands('ag-succ1')).toContain(`--self-grant-skills '${agent.cwd}'`)
   })
 })
