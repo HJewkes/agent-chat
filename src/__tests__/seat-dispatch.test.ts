@@ -10,7 +10,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { openServices } from '../broker/daemon.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import type { ServerMessage } from '../protocol.js'
+import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -410,7 +410,10 @@ describe('the broker’s services', () => {
 
   const dispatchLog = (): string => path.join(autonomy, 'logs', SEAT, 'dispatch.jsonl')
 
-  const retireOver = async (ephemeral: boolean): Promise<ServerMessage> => {
+  const retireOver = async (
+    ephemeral: boolean,
+    frame: ClientMessage = { t: 'retire', name: AGENT },
+  ): Promise<ServerMessage> => {
     const services = openServices(ephemeral)
     try {
       services.core.append({
@@ -424,7 +427,7 @@ describe('the broker’s services', () => {
       const conn = {
         write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
       } as unknown as Conn
-      services.socketServer.handleMessage(conn, { t: 'retire', name: AGENT })
+      services.socketServer.handleMessage(conn, frame)
       await expect.poll(() => frames.length).toBe(1)
       if (!ephemeral) await expect.poll(() => fs.existsSync(dispatchLog())).toBe(true)
       return frames[0] as ServerMessage
@@ -439,6 +442,24 @@ describe('the broker’s services', () => {
 
     expect(reply).toMatchObject({ t: 'spawn_result', ok: true })
     expect(fs.readFileSync(dispatchLog(), 'utf8')).toMatch(/"outcome":"retired"/)
+  })
+
+  // CC-959: retire by name succeeds on this row (above); by id it is refused, since a row still spawning is live.
+  it('routes a retire with an agent id to that row and echoes the id', async () => {
+    const live = await retireOver(true, { t: 'retire', name: AGENT, agentId: 'a1' })
+    const renamed = await retireOver(true, { t: 'retire', name: 'another-name', agentId: 'a1' })
+
+    expect(live).toMatchObject({
+      ok: false,
+      agentId: 'a1',
+      name: AGENT,
+      reason: expect.stringMatching(/still live/),
+    })
+    expect(renamed).toMatchObject({
+      ok: false,
+      agentId: 'a1',
+      reason: expect.stringMatching(/no longer holds/),
+    })
   })
 
   it('builds no seat dispatch writer when the home is a test’s', () => {

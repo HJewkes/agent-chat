@@ -42,6 +42,6 @@ describe('stale session guard', () => {
     }
     const without = buildHookSettings('/x/cli.js') as { hooks: Record<string, unknown> }
     expect(JSON.stringify(withId.hooks.UserPromptSubmit)).toContain("stale-session-guard 'a1'")
-    expect(without.hooks.UserPromptSubmit).toBeUndefined()
+    expect(JSON.stringify(without.hooks.UserPromptSubmit)).not.toContain('stale-session-guard')
   })
 })

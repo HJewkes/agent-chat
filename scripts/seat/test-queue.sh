@@ -222,8 +222,151 @@ t_roots() {
     report "both roots unset fails loudly" ok
   else report "both roots unset fails loudly" "exit $rc: $(cat "$scratch/err")"; fi
 }
+# replace runs against the prose fixture: id-less items, quotes, $ and backticks
+preset() { mkdir -p "$scratch/queues"; cp "$here/testdata/queue/prose.md" "$F"; }
+t_replace() {
+  name="replace swaps one id-less line and leaves the rest byte-identical"
+  preset; run "$name" 0 replace "(status: red)" "(status: green)" || return
+  sed 's/(status: red)/(status: green)/' "$here/testdata/queue/prose.md" > "$scratch/want"
+  cmp -s "$scratch/want" "$F" && [ -z "$out" ] && report "$name" ok || report "$name" "got: $(cat "$F")"
+  preset; expect_fail "replace refuses old text matching twice and names the count" "matches 2 times" \
+    replace '$12.50' '$13'
+  preset; expect_fail "replace writes nothing when a later pair misses" 'no match for "absent text"' \
+    replace "(status: red)" "(status: green)" "absent text" "x"
+  preset; expect_fail "replace refuses an empty old text" "empty old" replace "" "x"
+  name="replace applies pairs in order, each against the result of the last"
+  preset; run "$name" 0 replace "run 41" "run 42" "run 42 (status: red)" "run 42 (status: green)" || return
+  has "$name" "CI, run 42 (status: green)" && report "$name" ok
+  name="replace with an empty new deletes the text"
+  preset; run "$name" 0 replace "Re-held: " "" || return
+  has "$name" "- gamma review waits" && report "$name" ok
+}
+t_replace_stdin() {
+  name="replace - takes multi-line blocks and writes \$, backticks, quotes and backslashes literally"
+  preset
+  out=$("$Q" alpha replace - 2>"$scratch/err" <<'BLOCKS'
+<<<
+- Cost line reads $12.50 today, $12.50 yesterday
+  - sub bullet: no change since 'monday'
+===
+- Cost line: $HOME `date` 'single' "double" \n \\ done
+>>>
+
+<<<
+202. Recommend MERGE on repo#41
+===
+202. Merged repo#41
+>>>
+BLOCKS
+  ); rc=$?
+  [ "$rc" -eq 0 ] || { report "$name" "exit $rc: $(cat "$scratch/err")"; return; }
+  lacks "$name" "sub bullet: no change" || return
+  has "$name" "202. Merged repo#41" || return
+  grep -qxF -- '- Cost line: $HOME `date` '"'single'"' "double" \n \\ done' "$F" && report "$name" ok \
+    || report "$name" "got: $(grep 'Cost line' "$F")"
+  name="replace - refuses an unterminated block with exit 2, file unchanged"
+  preset; before=$(cksum < "$F")
+  printf '<<<\nRe-held\n===\nx\n' | "$Q" alpha replace - 2>"$scratch/err"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q "missing >>>" "$scratch/err" && [ "$before" = "$(cksum < "$F")" ] \
+    && report "$name" ok || report "$name" "exit $rc: $(cat "$scratch/err")"
+  name="replace - refuses text outside a block with exit 2"
+  printf 'Re-held\n' | "$Q" alpha replace - 2>"$scratch/err"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q "outside" "$scratch/err" && report "$name" ok || report "$name" "exit $rc"
+  name="replace - matches across a line break only as written"
+  preset; expect_fail "$name" "no match" replace - <<'BLOCKS'
+<<<
+1. EP-3 epsilon cleanup
+1. Recommend MERGE
+===
+x
+>>>
+BLOCKS
+}
+t_replace_usage() {
+  preset; before=$(cksum < "$F")
+  "$Q" alpha replace "one" "two" "three" 2>/dev/null; rc=$?
+  [ "$rc" -eq 2 ] && [ "$before" = "$(cksum < "$F")" ] && report "replace refuses an odd argv count with exit 2" ok \
+    || report "replace refuses an odd argv count with exit 2" "exit $rc"
+}
+t_replace_size() {
+  reset
+  printf '\n## Pad\n\n- ' >> "$F"
+  base=$(wc -c < "$F" | tr -d ' ')
+  awk -v k=$((4990 - base - 1)) 'BEGIN { for (i = 0; i < k; i++) printf "y" }' >> "$F"
+  printf '\n' >> "$F"
+  expect_fail "replace is refused past 5,000 bytes" "5,000" replace "BB-7 beta work waiting" \
+    "BB-7 beta work waiting, with enough extra words to cross the limit"
+}
+t_set() {
+  name="set rewrites the head, drops its sub-lines and keeps the - marker"
+  reset; run "$name" 0 set AA-101 AA-101 merged as PR 11 || return
+  has "$name" "- AA-101 merged as PR 11" || return
+  lacks "$name" "alpha work open" || return
+  lacks "$name" "sub bullet mentioning AA-102" || return
+  has "$name" "- BB-7 beta work waiting" && report "$name" ok
+  name="set on a numbered key keeps the item's own number"
+  reset; run "$name" 0 set morning:5 ZZ-10 decided || return
+  has "$name" "5. ZZ-10 decided" || return
+  lacks "$name" "6. ZZ-10" && report "$name" ok
+  name="set on a wrapped Next item drops the wrapped line"
+  reset; run "$name" 0 set next:1 AA-201 rewritten || return
+  has "$name" "1. AA-201 rewritten" || return
+  lacks "$name" "wrapped text line" && report "$name" ok
+  reset; expect_fail "set refuses a numbered key with no such item" "no item 9. in section Next" set next:9 x
+  reset; expect_fail "set refuses an id naming two items" "CC-5 names 2 items" set CC-5 x
+  reset; expect_fail "set refuses empty text" "set needs item text" set BB-7 " "
+  reset; expect_fail "set refuses an unknown id" "ZZ-99" set ZZ-99 x
+}
+t_number() {
+  name="done morning:3 removes Morning item 3 and leaves Next item 3"
+  reset; run "$name" 0 done morning:3 || return
+  lacks "$name" "ZZ-9 owner task" || return
+  has "$name" "3. AA-204 third thing" || return
+  case "$out" in "3. ZZ-9 owner task") report "$name" ok ;; *) report "$name" "stdout: $out" ;; esac
+  name="a numbered key addresses an id-less item"
+  preset; run "$name" 0 done morning:202 || return
+  lacks "$name" "Recommend MERGE on repo#41" || return
+  has "$name" "208. EP-9" && report "$name" ok
+  name="move next:2 relocates the numbered item"
+  reset; run "$name" 0 move next:2 overflow || return
+  has "$name" "- AA-202 second thing" || return
+  lacks "$name" "2. AA-202" && report "$name" ok
+  name="park next:3 moves the item to Morning with the next number"
+  reset; run "$name" 0 park next:3 || return
+  has "$name" "6. AA-204 third thing" && report "$name" ok
+  reset; expect_fail "a key in a bulleted section finds no numbered item" "no item 1. in section In flight" \
+    done in-flight:1
+  reset; expect_fail "a key naming an unknown section fails" "unknown section 'nowhere'" done nowhere:1
+  reset; expect_fail "done by numbered key checks --pr" "#99" done next:1 --pr 99
+}
+t_top() {
+  name="add --top puts the item first under the heading"
+  reset; run "$name" 0 add --top in-flight "Gamma GG-1" || return
+  want=$(printf '## In flight\n\n- Gamma GG-1\n- AA-101 alpha work open, PR #11.')
+  got=$(grep -A3 '^## In flight' "$F")
+  [ "$got" = "$want" ] && report "$name" ok || report "$name" "got: $got"
+  name="add --top replaces the none placeholder"
+  reset; run "$name" 0 add --top overflow "Eps EE-3" || return
+  lacks "$name" "none" || return
+  has "$name" "- Eps EE-3" && report "$name" ok
+  reset; "$Q" alpha add --top next 2>/dev/null; rc=$?
+  [ "$rc" -eq 2 ] && report "add --top without text is a usage error" ok \
+    || report "add --top without text is a usage error" "exit $rc"
+}
+t_bytes() {
+  name="a write reports its size on stderr and keeps done's stdout"
+  reset; run "$name" 0 done BB-7 || return
+  size=$(wc -c < "$F" | tr -d ' ')
+  [ "$out" = "- BB-7 beta work waiting" ] || { report "$name" "stdout: $out"; return; }
+  [ "$err" = "bin/queue: $size of 5000 bytes" ] && report "$name" ok || report "$name" "stderr: $err"
+  name="a failed write reports no size"
+  reset; run "$name" 1 done ZZ-99
+  case "$err" in *"of 5000 bytes"*) report "$name" "stderr: $err" ;; *) report "$name" ok ;; esac
+}
 t_done; t_done_all; t_done_next; t_done_pr; t_park; t_add; t_move
 t_leading; t_blank; t_lock; t_race
 t_size; t_failures; t_missing; t_atomic; t_roots
+t_replace; t_replace_stdin; t_replace_usage; t_replace_size
+t_set; t_number; t_top; t_bytes
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

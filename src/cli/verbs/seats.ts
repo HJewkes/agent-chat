@@ -7,7 +7,8 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { gitChildEnv } from '../../git.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
-import { readAccountBudget } from '../../agents/budget.js'
+import { readAccountBudget, readBudget } from '../../agents/budget.js'
+import { hostIdentity } from '../../server/host.js'
 import {
   countLiveHeadless,
   machineStatus,
@@ -20,7 +21,7 @@ import {
   type MachineStatus,
 } from '../../agents/machine-guard.js'
 import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
-import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
+import { machineStop, type MachineStop, type MachineStopReadings } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
@@ -29,7 +30,15 @@ import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents
 import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
 import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
-import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
+import {
+  charterSeats,
+  isSeatName,
+  parsePools,
+  parseSeat,
+  seatSurfaceFor,
+} from '../../agents/seats/charter.js'
+import { chooseSurface } from '../../agents/surface-resolution.js'
+import { brokerHost } from '../../broker/host-guard.js'
 import {
   appendSeatLog,
   defaultAutonomyRoot,
@@ -77,6 +86,7 @@ import {
   type StatusDeps,
 } from '../../agents/seats/status.js'
 import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
+import { readWaitingPermission } from '../../agents/seats/waiting-permission.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -92,6 +102,7 @@ import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watc
 import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
+import { respawnSeat } from './seat-respawn.js'
 import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -201,13 +212,43 @@ export async function wakeSeat(
     : { ok: false, detail: res.reason ?? 'resume refused' }
 }
 
-/** The seat file's `surface:` wins, since the agent record takes whatever surface the last resume used. */
-async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
-  const fromFile = seatSurface(readText(path.join(root, 'seats', `${seat}.md`)))
-  if (fromFile !== undefined) return { surface: fromFile, from: 'seat file' }
+/**
+ * CC-951: the watchdog resumes by teleport's rule, `chooseSurface`, so a mac-only seat surface
+ * lands a linux broker in tmux rather than in a refusal and a headless fallback. The seat file
+ * wins over the agent record, which takes whatever surface the last resume used, headless included.
+ */
+export function resumeSurface(
+  seatFile: string | undefined,
+  recorded: SurfaceName | undefined,
+  machine: string,
+  platform: NodeJS.Platform,
+): DeclaredSurface {
+  const fromFile = seatSurfaceFor(seatFile, machine)
+  const named = fromFile === undefined ? recorded : undefined
+  if (fromFile === undefined && named === undefined) return UNDECLARED
+  const choice = chooseSurface({ seatSurface: fromFile, recorded: named, platform })
+  // With nothing requested, chooseSurface always picks.
+  if (!choice.ok) return UNDECLARED
+  const source = fromFile === undefined ? 'agent record' : 'seat file'
+  if (choice.from !== 'platform') return { surface: choice.surface, from: source }
+  return {
+    surface: choice.surface,
+    from: `${platform} default; ${source} ${fromFile ?? named} cannot run here`,
+  }
+}
+
+async function recordedSurface(client: BrokerClient, seat: string): Promise<SurfaceName | undefined> {
   const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
-  const recorded = SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
-  return recorded === undefined ? UNDECLARED : { surface: recorded, from: 'agent record' }
+  return SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
+}
+
+/** The watchdog runs on the broker's host, so that host's seat entry and OS decide. */
+async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
+  const seatFile = readText(path.join(root, 'seats', `${seat}.md`))
+  const machine = brokerHost()
+  const recorded =
+    seatSurfaceFor(seatFile, machine) === undefined ? await recordedSurface(client, seat) : undefined
+  return resumeSurface(seatFile, recorded, machine, process.platform)
 }
 
 /** Undefined when events.db cannot be read, so the caller holds every seat rather than risk a restart window. */
@@ -266,6 +307,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       return identity === undefined ? undefined : identityTranscript(identity).found
     },
     notifyHuman: notifyAsWatchdog,
+    relaunchSeat: async (seat, plan) =>
+      respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
   }
 }
 
@@ -495,20 +538,28 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machine: readMachineStatus,
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
+    waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
+    contextOf: agent => readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd),
+    selfContext: () => {
+      const { sessionId } = hostIdentity()
+      return sessionId === undefined ? null : readBudget(sessionId)
+    },
   }
 }
 
+/** The live memory, swap, pressure level and load readings the machine stop decides on. */
+export const readMachineStopReadings = (): MachineStopReadings => ({
+  memoryFreePercent: readMemoryPressure(),
+  load5: readLoad5(),
+  swapUsedPercent: swapPercent(readSwapUsage()),
+  pressureLevel: readPressureLevel(),
+})
+
 /** CC-431, CC-492: the live memory, swap, pressure level and load readings against the stop limits. */
-function readMachineStop(): MachineStop | null {
-  return machineStop(
-    {
-      memoryFreePercent: readMemoryPressure(),
-      load5: readLoad5(),
-      swapUsedPercent: swapPercent(readSwapUsage()),
-      pressureLevel: readPressureLevel(),
-    },
-    resolveMachineStopLimits(),
-  )
+export function readMachineStop(
+  readings: MachineStopReadings = readMachineStopReadings(),
+): MachineStop | null {
+  return machineStop(readings, resolveMachineStopLimits())
 }
 
 /** CC-406: the live readings the spawn guard decides on, for the `machine` block. */

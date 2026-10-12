@@ -4,6 +4,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { burndownConfigPath, burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
+import { repoVisibilityReader } from '../agents/brief-lint.js'
 import {
   resolveOrphanReapKill,
   resolveAgentSlots,
@@ -13,6 +14,7 @@ import {
   resolveProcessGuardMode,
   resolveProcessKillBytes,
   resolveAutoRetireOnReport,
+  resolveAutoParkOnExit,
 } from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
@@ -21,6 +23,7 @@ import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
 import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
+import { burndownTreeHold } from '../agents/burndown/tree-hold.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
 import {
@@ -259,13 +262,20 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
   // CC-316, CC-331, CC-288, CC-606: the same rule for the seat journal, dispatch log, spawn budget gate and pool pick, which read the real autonomy root.
+  // CC-316: one journal for the supervisor's lines and the ended writer's merged line, so both dedupe through one latch.
+  const sharedJournal = seatJournal(defaultAutonomyRoot())
   const journal = ephemeral
     ? {}
     : {
-        seatJournal: seatJournal(defaultAutonomyRoot()),
-        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), { shepherd: () => shepherdRowsAsync() }),
+        seatJournal: sharedJournal,
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), {
+          shepherd: () => shepherdRowsAsync(),
+          journal: sharedJournal,
+        }),
         shepherdSkip: cliShepherdSkipPort,
         autoRetireOnReport: resolveAutoRetireOnReport,
+        autoParkOnExit: resolveAutoParkOnExit,
+        burndownTreeHold: (tree: string) => burndownTreeHold(burndownLedgerPath(), tree),
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
         seatOverlap: {
           mode: resolveSeatSpawnMode,
@@ -295,6 +305,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     {
       semaphore: newAgentSlots(),
       machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      repoVisibility: repoVisibilityReader(),
       ...(ledger === undefined ? {} : { ledger }),
       ...journal,
     },

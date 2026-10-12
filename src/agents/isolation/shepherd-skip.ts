@@ -21,6 +21,8 @@ export interface ShepherdRun {
   names: string[]
   /** CC-950: the implementer alone, since Shepherd replaces it with a successor but resumes a reviewer by name. */
   implementer: string | null
+  /** CC-754: Shepherd's phase; `fixing` holds from an implementer wake until a new head arrives. */
+  phase: string
 }
 
 export interface ShepherdSkipPort {
@@ -61,6 +63,34 @@ export async function shepherdSkip(
   }
 }
 
+const FIX_ROUND_PHASE = 'fixing'
+
+/**
+ * CC-754: why `agent`'s tree must not be parked now, or undefined when it may be. A run in a fix round has
+ * queued (or is about to queue) a wake for its implementer; parking would leave that wake a missing cwd.
+ */
+export async function fixRoundBlocker(
+  port: ShepherdSkipPort,
+  agent: AgentIdentity,
+  target: ParkTarget | undefined,
+): Promise<string | undefined> {
+  let runs: ShepherdRun[]
+  try {
+    runs = await port.activeRuns()
+  } catch (err) {
+    return `Shepherd could not be read (${firstLine(err)}), so a fix round for its PR cannot be ruled out`
+  }
+  const branches = new Set([`agent-chat/${agent.name}`, ...(target ? [target.branch] : [])])
+  const fixing = runs.find(
+    r =>
+      r.phase === FIX_ROUND_PHASE &&
+      ((r.branch !== null && branches.has(r.branch)) || r.implementer === agent.name),
+  )
+  if (fixing === undefined) return undefined
+  const branch = fixing.branch ?? target?.branch ?? `agent-chat/${agent.name}`
+  return `Shepherd run for ${branch} is in a fix round (phase fixing); parking would strand its wake`
+}
+
 const execFileAsync = promisify(execFile)
 const READ_TIMEOUT_MS = 15_000
 /** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
@@ -80,6 +110,7 @@ export function parseActiveRuns(stdout: string): ShepherdRun[] {
       branch: text(row.branch) ?? null,
       names: [row.implementer, row.reviewer].map(text).filter((n): n is string => n !== undefined),
       implementer: text(row.implementer) ?? null,
+      phase: String(row.phase),
     }))
 }
 

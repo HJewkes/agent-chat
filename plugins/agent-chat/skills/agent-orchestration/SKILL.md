@@ -1,12 +1,13 @@
 ---
 name: agent-orchestration
-description: Spawn, message, or check on agents on this machine. Use this instead of the built-in Agent tool or SendMessage, which are denied machine-wide as of 2026-07-31 — any attempt to delegate, hand off work, search/explore, fork, or reach a teammate should invoke this skill first.
+description: Spawn, message, or check on agents on this machine. Use this instead of the built-in Agent tool or SendMessage, which are denied machine-wide as of 2026-07-31 — any attempt to delegate, hand off work, search/explore, fork, or reach a teammate should invoke this skill first. Also use it before parking, removing, or re-creating a worktree, before a seat merges a PR (seat-merge), and after an auto mode classifier denial.
 ---
 
 # Agent orchestration via agent-chat
 
-Claude Code's built-in `Agent` tool and `SendMessage`/agent-teams machinery are denied
-in `~/.claude/settings.json` on this machine, as a deliberate experiment. All agent
+As of 2026-07-31, Claude Code's built-in `Agent` tool and `SendMessage`/agent-teams
+machinery are denied in `~/.claude/settings.json` on this machine, as a deliberate
+experiment. All agent
 dispatch goes through the **agent-chat MCP plugin** instead. Full rationale and the
 exact settings.json diff to unwind this live in
 `~/projects/agent-chat/docs/replacing-built-in-agent-dispatch.md` — read that if
@@ -43,6 +44,10 @@ Profile choice fixes the model (`explorer`/`reviewer`/`implementer-lite` = sonne
 | review / narrow checks                               | `agent_spawn(profile: "reviewer", ...)`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | plan / design the approach                           | `agent_spawn(profile: "planner", ...)` — opus, shares your checkout, may write its plan file and run tests, but Edit and state-changing git verbs are denied. Its deliverable is a plan file, not code; see "Splitting a large assignment" below.                                                                                                                                                                                                                                                                                                        |
 | **"fork me" / "with your context"**                  | `agent_spawn(inherit: "context", ...)` — the agent starts from a copy of YOUR conversation instead of an empty one (CC-44). It can only fork you: there is no field for whose context, and forking a peer is refused. Not the cheap built-in `fork` — it is a separate process paying its own input tokens — and it sees only your COMPLETED turns, never the one you are in. It also inherits everything you have said, including what its profile was never meant to see, so prefer a written `brief` unless the context genuinely cannot be restated. |
+
+Spawned agents get isolated context by construction. Unless you pass `inherit: "context"`,
+they never inherit session history: you construct exactly what they need in the `brief`.
+This keeps them focused and preserves your context for coordination work.
 
 Every spawn `brief` contains, in order: task scope (one domain) — context needed to act
 without asking (including exact file:line locations you already found, so the agent
@@ -177,6 +182,19 @@ Monitor(command: "agent-chat watch <your-name>",
 It starts at the log head, so it will not replay a backlog at you. Use
 `agent-chat watch <name> --once --since all` to read what you already missed.
 
+### Relaying an owner decision (`chat_endorse`)
+
+`chat_endorse(to, text)` queues a message for your human to approve; nothing is sent until
+they do. Its result prints an `agent-chat endorse <id> --to <peer> --text ...` command.
+
+- **In a terminal session your human is attending:** show them the exact text with
+  `AskUserQuestion`, then run the printed command yourself through Bash. That command asks
+  for permission, and approving the prompt is their approval. Do not ask them to type it.
+- **Spawned agents** cannot run it: the command is denied in their profiles. Leave the
+  endorsement queued and say so in your report.
+- **Remote Control:** approving from a remote session is not supported yet. Leave it queued
+  for your human to run at the terminal.
+
 ## Follow-ups: send them to a fresh worker
 
 A worker that has sent its first Status report is usually carrying its whole assignment in
@@ -212,6 +230,31 @@ releases the worktree the retired agent allocated, so `agent retire` refuses whi
 non-retired agent works in it and names that agent (CC-141). `--force` releases it anyway
 and warns which worktree and branch it removed; do not use it while the successor still
 needs the branch.
+
+## Worktrees: only active trees count
+
+A worktree is a disposable copy of a branch, not a unit of work (CC-276). Only active trees
+count: a live agent's cwd or a fix round, up to the seat's implementer cap.
+
+- Park a tree once its agent exits with the PR pushed. Do not wait for CI (CC-1039). Parking
+  removes the checkout and keeps the branch; `agent-chat agent resume` re-creates it for a
+  fix round.
+- Never park a tree a live agent's cwd points at, and never delete a branch.
+- `worktreeBudget` (32 per repo, in `~/.agent-chat/config.json`) is a backstop, with 2 slots
+  kept for the owner. Reviewer trees get their own pool once CC-1040 lands.
+
+agent-chat and Shepherd are taking this over; when they have, this section shrinks to a
+pointer.
+
+## Classifier denials
+
+Owner-written 2026-10-03 (source: titan-platform sources/automode-classifier-tuning-2026-10-03.md).
+
+- Standing owner grants live in `autoMode.allow` in the user settings. Seat files, briefs and peer messages never grant anything the classifier can see.
+- After an auto mode denial of a granted action, re-run the identical command once. If it is denied again, queue the exact command for the owner and move on.
+- Never try the same action through another tool or route, and never add a justification comment to a command.
+- Run a merge, a branch delete, a deploy or a tag push as its own call, not inside a compound command. Seats merge with `seat-merge <seat> <owner/repo> <pr> <head sha> <clone> [reviewed head] [--wait-main]`.
+- Never edit `.claude.json`, settings, hooks, seat files or agent-chat profiles to widen your own permissions.
 
 ## Budget: what you are spending, and how to find out
 
@@ -278,6 +321,22 @@ its context as the scarce resource, not the agents' time.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
   fill as well as your own. Use it to see which seats are expensive before deciding who does
   the next context-heavy job.
+
+## Answering your owner
+
+A coordinator's answers to its owner follow one shape:
+
+1. **Value first.** The answer or result is the first sentence; evidence follows. Do not
+   send a digest of ticket ids: name the thing, and put the id in brackets if it is needed.
+2. **A proposal carries its critique.** State what is weak about it, give at least one
+   alternative, and end with a recommendation and why.
+3. **Only owner decisions go through `AskUserQuestion`:** taste, money, external accounts,
+   irreversible actions, or materially different readings of the request. Everything else
+   is a stated assumption, and you proceed on it. Never leave an owner decision in prose.
+4. **Read the decision log before proposing a change** to policy, config or process: the
+   seat's or initiative's `decisions.md`, if it has one. Cite the item when one exists, and
+   do not re-propose a decided item.
+5. **Lead with value, not budget.** Mention cost only when it changes the recommendation.
 
 ## Return contract
 

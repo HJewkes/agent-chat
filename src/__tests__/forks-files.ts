@@ -21,6 +21,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/worktree-setup.test.ts',
   'src/__tests__/restart-window.test.ts',
   'src/__tests__/restart-window-guard.test.ts',
+  'src/__tests__/live-skill-write.test.ts',
 ]
 
 /**

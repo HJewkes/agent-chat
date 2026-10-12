@@ -153,7 +153,9 @@ For each listed seat, in order, the tick:
 - dispatches the seat planners' ready slices first, then scores the seat's scope and walks
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
-  gate;
+  gate. The collision check and `burndown landed` count a task as landed when a
+  default-branch commit subject names it, or when a commit body lists it in a line or
+  sentence opening `Covers` or `Also covers`; no other body mention counts (CC-1068);
 - under an `on` brief gate, queues a brief:ready task's slices from its seat-written
   `sources/<ID>-plan.md` instead of spawning a planner or an implementer (CC-927). The
   plan's slice `owns` is where a brief:ready task declares the files it will touch, and

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Run a batched shell script under bash, whatever shell the caller is in.
+#
+# Agents' Bash tool calls run under the owner's zsh, which differs from bash in
+# two ways that keep breaking batched scripts:
+#   - an unquoted "$p" holding "a b" is one word in zsh, not two;
+#   - `echo ====` fails, because zsh expands a leading `=` as a command path.
+#
+# Usage:
+#   run-bash <script> [args...]       run a file
+#   run-bash [- [args...]] <<'EOF'    run stdin (quote the heredoc delimiter)
+#
+# The script runs under `bash --noprofile --norc` with BASH_ENV unset, so no rc
+# file of the owner's leaks in, and run-bash exits with the script's status.
+#
+# This shim is POSIX sh, not bash: a bash shebang would itself source BASH_ENV
+# before it could be unset.
+
+case "$1" in
+  -h | --help)
+    sed -n '9,11s/^# //p' "$0"
+    exit 0
+    ;;
+esac
+
+unset BASH_ENV
+
+if [ $# -eq 0 ] || [ "$1" = "-" ]; then
+  [ $# -gt 0 ] && shift
+  exec bash --noprofile --norc -s -- "$@"
+fi
+
+if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+  echo "FAIL no script $1" >&2
+  exit 2
+fi
+
+exec bash --noprofile --norc "$@"

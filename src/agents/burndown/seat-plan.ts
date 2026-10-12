@@ -13,7 +13,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { contractOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
+import { contractOverlap, liveOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
 import { stopLineRefusal, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
@@ -43,6 +43,7 @@ import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import { sliceRepo, type PathExists } from './slice-repo.js'
 import { seedSlices, type PlanReader } from './seed-slices.js'
+import { planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -103,6 +104,8 @@ export interface SeatBriefGate {
   maxAgeDays: number
   /** `maxAgents` (CC-928): one pick in every this many goes to the longest-ready row; absent, none does. */
   agingEvery?: number
+  /** CC-986: under an `on` gate, a ready depth below this sends briefers to the no-brief rows; absent, none go. */
+  readyFloor?: number
 }
 
 export interface SeatPlan {
@@ -142,6 +145,8 @@ type Role = keyof SeatDispatch['caps']
 type Refused = Pick<Refusal, 'kind' | 'reason'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
+/** CC-986: an implementer-routed task with no plan to seed from; a planner writes the one at this path. */
+type Replan = { replan: string }
 
 const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
   briefer: { role: 'planners', profile: PLANNER_PROFILE },
@@ -149,6 +154,9 @@ const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
   implementer: { role: 'implementers', profile: IMPLEMENTER_PROFILE },
   'implementer-lite': { role: 'implementers', profile: 'bd-implementer-lite' },
 }
+
+/** CC-986: the route a brief:ready task with no plan takes, so a planner writes the slices that declare its owns. */
+const PLANNER_ROUTE = { role: 'planners', profile: PLANNER_PROFILE } as const
 
 const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
   planning: 'planners',
@@ -209,7 +217,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const walk = startWalk({
     ...inputs,
     collision: (repo, work, landedRepos) =>
-      inputs.collision?.(repo, work, landedRepos) ?? contractOverlap(work, acceptedContracts(plan)),
+      inputs.collision?.(repo, work, landedRepos) ??
+      liveOverlap(work, repo, acceptedOwns(plan)) ??
+      contractOverlap(work, acceptedContracts(plan)),
   })
   const take = (initiative: string, task: string, outcome: Taken | Refused | Seeded): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
@@ -221,8 +231,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  for (const claim of readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat))
-    take(claim.initiative, claim.taskId, considerSlice(claim, walk))
+  const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
+  const depth = supplyDepth(order, slices.length, walk)
+  for (const claim of slices) take(claim.initiative, claim.taskId, considerSlice(claim, walk))
   const picked = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
   const aging = { aged: agedRows(inputs, order), every: inputs.brief?.agingEvery ?? 1 }
   walkOrder(
@@ -235,6 +246,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       return outcome
     },
   )
+  planBelowFloor(plan, depth, walk, take)
   for (const { initiative, task, reason } of planRefusals)
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
@@ -247,6 +259,68 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
 }
 
 type Outcome = Taken | Refused | Seeded
+
+/** The seat's ready depth before this tick dispatches anything: the rows `consider` would not refuse. */
+function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk): number {
+  const check = briefCheck(walk.inputs)
+  if (check === undefined) return 0
+  const taskOf = taskOfRow(walk.inputs)
+  const dispatchable = (row: DispatchRow): boolean => {
+    const task = taskOf(row)
+    if (task === undefined || row.stopShort.length > 0) return false
+    const { seat } = walk.inputs
+    if (taskRefusal(task, seat.grants, walk.claimed, walk.held) !== undefined) return false
+    if (briefRefusal(task, check) !== undefined) return false
+    const repo = repoForTask(seat, row.initiative, task.tags)
+    if (repo === undefined || ROUTES[row.route] === undefined) return false
+    const work = { taskId: row.id, tags: task.tags, owns: [] }
+    return walk.inputs.collision?.(repo, work, landedRepos(seat)) === undefined
+  }
+  return readyDepth(order, dispatchable, slices)
+}
+
+/** A planner cap or a closed pool stops the pass; any other refusal leaves that row refused no-brief. */
+const STOPS_PLANNING: ReadonlySet<Refusal['kind']> = new Set(['role-cap', 'budget'])
+
+/**
+ * CC-986: under an `on` gate with a ready depth below the floor, briefers take the no-brief rows in walk
+ * order until the planner cap or the pool stops them. Each dispatch replaces its row's no-brief refusal.
+ */
+function planBelowFloor(
+  plan: Pick<SeatPlan, 'refusals'>,
+  depth: number,
+  walk: Walk,
+  take: (initiative: string, task: string, outcome: Taken) => void,
+): void {
+  const { brief, seat, tasks } = walk.inputs
+  if (brief?.gate !== 'on' || brief.readyFloor === undefined || depth >= brief.readyFloor) return
+  const reason = `ready ${depth} below floor ${brief.readyFloor}`
+  let planned = 0
+  for (const refusal of planningCandidates(plan.refusals, tasks)) {
+    const outcome = briefFor(refusal, reason, walk)
+    if (outcome === undefined) continue
+    if ('kind' in outcome) {
+      if (STOPS_PLANNING.has(outcome.kind)) break
+      continue
+    }
+    plan.refusals.splice(plan.refusals.indexOf(refusal), 1)
+    take(refusal.initiative, outcome.work.taskId, outcome)
+    planned += 1
+  }
+  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks`)
+}
+
+/** A briefer for a no-brief row, as `consider` sends one for a `brief:wanted` task; undefined with no repo. */
+function briefFor(refusal: Refusal, reason: string, walk: Walk): Taken | Refused | undefined {
+  const { seat, tasks } = walk.inputs
+  const task = tasks.get(refusal.initiative)?.find(t => t.id === refusal.task)
+  const repo = task === undefined ? undefined : repoForTask(seat, refusal.initiative, task.tags)
+  if (task === undefined || repo === undefined) return undefined
+  const work = { initiative: refusal.initiative, task: task.id, profile: PLANNER_PROFILE }
+  const dispatch = { ...dispatchFor(work, repo, reason, walk), briefer: true }
+  const checked = { taskId: task.id, tags: task.tags, owns: [] }
+  return blocker(dispatch, checked, 'planners', walk) ?? { dispatch, role: 'planners', work: checked }
+}
 
 /**
  * Considers each row in order. Before a row, when the seat's next pick is its aging slot, the aged rows get
@@ -289,6 +363,9 @@ function inScope(inputs: SeatPlanInputs): { rows: ScoreRow[]; outOfScope: Refusa
 /** The dispatches this pass already accepted: a queued claim holds nothing in the ledger until it goes out. */
 const acceptedContracts = (plan: Pick<SeatPlan, 'claims'>) =>
   plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
+
+const acceptedOwns = (plan: Pick<SeatPlan, 'claims'>) =>
+  plan.claims.map(c => ({ holder: c.agentName, repo: c.repo, owns: c.work.owns }))
 
 interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
@@ -534,24 +611,34 @@ function consider(
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const seeded = seedFromPlan(row, task, route.role, walk)
-  if (seeded !== undefined) return seeded
+  if (seeded !== undefined && !('replan' in seeded)) return seeded
+  const { role, profile } = seeded === undefined ? route : PLANNER_ROUTE
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
-    ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
+    ...dispatchFor({ initiative: row.initiative, task: row.id, profile }, repo, reason, walk),
     ...(row.tier === undefined ? {} : { tier: row.tier }),
     ...(isBriefer(task) ? { briefer: true } : {}),
   }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
-  return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }
+  const refused = blocker(dispatch, work, role, walk)
+  if (refused !== undefined) return refused
+  if (seeded !== undefined)
+    walk.notes.push(`planning ${row.initiative} ${row.id}: no plan at ${seeded.replan} (seat ${seat.seat})`)
+  return { dispatch, role, work }
 }
 
 /**
  * CC-927: under an `on` gate, a brief-ready task's seat-written plan stands in for the planner. Its slices
  * hold the task from here and dispatch as ready slices from the next tick; a plan failing the lint blocks it.
- * CC-952: an implementer-routed task seeds the same way, and with no plan it refuses `no-owns`, since only
- * the plan's slices declare the files it will touch. A planner with no plan runs as before.
+ * CC-952: an implementer-routed task seeds the same way, since only the plan's slices declare the files it
+ * will touch. CC-986: with no plan it goes to a planner instead of being refused. A planner with no plan runs as before.
  */
-function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): Seeded | Refused | undefined {
+function seedFromPlan(
+  row: DispatchRow,
+  task: Task,
+  role: Role,
+  walk: Walk,
+): Seeded | Replan | Refused | undefined {
   const { seat, brief, readPlan, ledger, budget } = walk.inputs
   if (readPlan === undefined || (row.route !== 'planner' && role !== 'implementers')) return undefined
   if (brief?.gate === 'shadow' && role === 'implementers')
@@ -560,7 +647,7 @@ function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): See
       : undefined
   if (brief?.gate !== 'on') return undefined
   const plan = readPlan(row.initiative, row.id)
-  if (plan.text === undefined && role === 'implementers') return noOwns(plan.path)
+  if (plan.text === undefined && role === 'implementers') return { replan: plan.path }
   const parent = { taskId: row.id, initiative: row.initiative, seat: seat.seat, namePrefix: seat.prefix }
   const seeding = seedSlices(parent, plan, ledger, budget.ctx.now)
   if (seeding === undefined) return undefined
@@ -573,19 +660,12 @@ function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): See
   return { seeds: seeding.claims }
 }
 
-const noOwns = (plan: string): Refused => ({
-  kind: 'no-owns',
-  reason: `no plan at ${plan}; a brief:ready task declares the files it touches as slice owns there`,
-})
-
-/** A shadow gate dispatches the implementer as today and notes that `on` would refuse it for want of a plan. */
+/** A shadow gate dispatches the implementer as today and notes that `on` would send a planner for want of a plan. */
 function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): undefined {
   const plan = readPlan(row.initiative, row.id)
   if (plan.text !== undefined) return undefined
   const seat = walk.inputs.seat.seat
-  walk.notes.push(
-    `would-refuse no-owns ${row.initiative} ${row.id} (seat ${seat}): ${noOwns(plan.path).reason}`,
-  )
+  walk.notes.push(`would-plan ${row.initiative} ${row.id} (seat ${seat}): no plan at ${plan.path}`)
   return undefined
 }
 
@@ -609,7 +689,10 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
     profile: IMPLEMENTER_PROFILE,
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
   }
-  const dispatch = dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk)
+  const dispatch = {
+    ...dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk),
+    ...(claim.owns?.length ? { owns: claim.owns } : {}),
+  }
   const checked = {
     taskId: claim.taskId,
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),

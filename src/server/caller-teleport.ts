@@ -5,6 +5,7 @@ import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
 import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
+import { isCarriedPermissionMode, isChannelToken } from '../broker/host-channels.js'
 import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -20,6 +21,10 @@ import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName 
  *
  * CC-913: the report means armed, not launched. The successor reuses the predecessor's pane, which
  * frees only when the predecessor exits, so the launch (`caller-land.ts`) runs after that exit.
+ *
+ * CC-951: successor first. A plan with `endSelf` means the broker launched the successor elsewhere
+ * and it attached, so this ends its parent and writes nothing. A `successorFirst` spec opens a new
+ * surface at once, and this waits for the `endSelf` plan that follows the successor's attach.
  */
 
 /** What this host contributes to the plan: never taken from the broker. */
@@ -52,6 +57,7 @@ function landArgs(local: LocalHost, spec: RemoteLaunch, hostPid: number): string
     `--pid=${hostPid}`,
     `--surface=${spec.surface}`,
     ...anchor,
+    ...(spec.successorFirst === true ? ['--now'] : []),
   ]
 }
 
@@ -119,6 +125,15 @@ export function checkLaunch(spec: RemoteLaunch): string | undefined {
   if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
   if (flagWords(spec.profile).some(word => word.startsWith('-')))
     return 'the successor profile has a value that would be read as a flag'
+  return carriedFlagReason(spec)
+}
+
+/** CC-951: carried flags reach this host's argv, so each passes the allowlist a local read applies. */
+function carriedFlagReason(spec: RemoteLaunch): string | undefined {
+  const bad = (spec.channels ?? []).find(token => !isChannelToken(token))
+  if (bad !== undefined) return `the carried channel ${JSON.stringify(bad)} is not a channel target`
+  if (spec.permissionMode !== undefined && !isCarriedPermissionMode(spec.permissionMode))
+    return `the carried permission mode ${JSON.stringify(spec.permissionMode)} is not one a successor may inherit`
   return undefined
 }
 
@@ -167,6 +182,10 @@ export function buildCallerLaunch(
     ...(configDir ? { configDir } : { configDirUnset: true }),
     // CC-883: checked again here, so a worker never gets Remote Control whatever the broker sent.
     ...(spec.remoteControl && profile.role === 'coordinator' ? { remoteControl: true } : {}),
+    ...(spec.channels?.length ? { channels: spec.channels.filter(isChannelToken) } : {}),
+    ...(spec.permissionMode !== undefined && isCarriedPermissionMode(spec.permissionMode)
+      ? { permissionMode: spec.permissionMode }
+      : {}),
   })
   return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
 }
@@ -215,16 +234,25 @@ async function armLocally(spec: RemoteLaunch, hostPid: number | undefined, deps:
   return deps.arm(spec, hostPid)
 }
 
+type Plan = Extract<ServerMessage, { t: 'teleport_plan' }>
+
+const awaitPlan = async (broker: Broker): Promise<Plan> =>
+  (await broker.request({ t: 'teleport_plan_wait' }, 'teleport_plan')) as Plan
+
+/** CC-951: the successor attached, so this session's Claude Code ends; anything else leaves it live. */
+function endOnAttach(plan: Plan, hostPid: number | undefined, deps: CallerLaunchDeps): void {
+  if (plan.ok && plan.endSelf === true && hostPid !== undefined) return deps.endParent(hostPid)
+  warn(`did not complete (${plan.reason ?? 'no successor attached'})`)
+}
+
 /** Waits out the countdown for the spec, arms it, and ends `hostPid` only on an accepted report. */
 export async function runCallerTeleport(
   broker: Broker,
   hostPid: number | undefined,
   deps: CallerLaunchDeps,
 ): Promise<void> {
-  const reply = (await broker.request({ t: 'teleport_plan_wait' }, 'teleport_plan')) as Extract<
-    ServerMessage,
-    { t: 'teleport_plan' }
-  >
+  const reply = await awaitPlan(broker)
+  if (reply.ok && reply.endSelf === true) return endOnAttach(reply, hostPid, deps)
   if (!reply.ok || reply.launch === undefined) return
   const spec = reply.launch
   let armed: Armed
@@ -241,8 +269,9 @@ export async function runCallerTeleport(
     return warn(`report not accepted (${ack.reason ?? 'no reason'}); disarmed successor ${spec.agentId}`)
   }
   const token = spec.landToken ?? ''
-  if (armed.go(token)) return deps.endParent(hostPid as number)
-  await helperLost(broker, spec, token, hostPid as number, deps)
+  if (!armed.go(token)) return helperLost(broker, spec, token, hostPid as number, deps)
+  if (spec.successorFirst !== true) return deps.endParent(hostPid as number)
+  endOnAttach(await awaitPlan(broker), hostPid, deps)
 }
 
 /**

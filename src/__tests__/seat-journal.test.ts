@@ -6,6 +6,7 @@ import { advance, claimKey } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { deliverSeatEvents, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import { seatLogPath } from '../agents/seats/io.js'
+import { shepherdPrRef } from '../agents/seats/journal-line.js'
 import { seatJournal, type SeatJournal } from '../agents/seats/journal.js'
 import { readSeatLog } from '../agents/seats/stops.js'
 import { Supervisor } from '../agents/supervisor.js'
@@ -312,6 +313,49 @@ describe('a line that is already there', () => {
     expect(journalText()).toBe(
       `04:05 spawn AB-12 ${AGENT} -\n04:05 retire AB-12 ${AGENT} -\n04:05 spawn AB-12 ${AGENT} -\n`,
     )
+  })
+})
+
+describe('a merged line from two paths', () => {
+  const LATER = new Date(2026, 1, 3, 4, 9)
+  const laterJournal = (): SeatJournal =>
+    seatJournal(root, { now: () => LATER, log: event => void logged.push(event) })
+  const FIRST = `04:05 merged AB-12 ${AGENT} example-org/widget#7@abcdef1\n`
+
+  it('writes no second line for the same agent and pull request, whatever the case, head or minute', () => {
+    const before = seatWrote(FIRST)
+
+    laterJournal()({ event: 'merged', agent: AGENT, pr: 'Example-Org/Widget#7@1234567' })
+
+    expect(journalText()).toBe(before)
+  })
+
+  it('writes a line for another pull request of the agent and for another agent on the same pull request', () => {
+    const before = seatWrote(FIRST)
+    const journal = laterJournal()
+
+    journal({ event: 'merged', agent: AGENT, pr: 'example-org/widget#8@abcdef1' })
+    journal({ event: 'merged', agent: 'sx-ab-12-again', pr: 'example-org/widget#7@abcdef1' })
+
+    expect(journalText()).toBe(
+      `${before}04:09 merged AB-12 ${AGENT} example-org/widget#8@abcdef1\n` +
+        '04:09 merged AB-12 sx-ab-12-again example-org/widget#7@abcdef1\n',
+    )
+  })
+
+  it('is not suppressed by a MERGED line the seat wrote by hand', () => {
+    const byHand = seatWrote('04:05 MERGED example-org/widget#7\n')
+
+    laterJournal()({ event: 'merged', agent: AGENT, pr: 'example-org/widget#7@abcdef1' })
+
+    expect(journalText()).toBe(`${byHand}04:09 merged AB-12 ${AGENT} example-org/widget#7@abcdef1\n`)
+  })
+
+  it('takes its ref from Shepherd’s owner/repo#n and head, and none without both', () => {
+    expect(shepherdPrRef('example-org/widget#7', HEAD)).toBe('example-org/widget#7@abcdef1')
+    expect(shepherdPrRef('example-org/widget#7', null)).toBeUndefined()
+    expect(shepherdPrRef('example-org/widget', HEAD)).toBeUndefined()
+    expect(shepherdPrRef('widget#7', HEAD)).toBeUndefined()
   })
 })
 

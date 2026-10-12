@@ -26,9 +26,11 @@ import {
 } from './mode-switch.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
 import { cwdHoldsUserSettings } from './launch-policy.js'
+import { lintBrief, mentionsSyntheticData, type BriefLint, type RepoVisibility } from './brief-lint.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
+  clearSuperseded,
   hookSettingsPath,
   mcpConfigPath,
   readRuntimeState,
@@ -63,7 +65,7 @@ import {
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
-import { resolveSurface } from './surface-resolution.js'
+import { defaultSpawnSurface, resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
@@ -108,10 +110,12 @@ import {
   type RetireScope,
 } from './isolation/retire-finished.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
-import type { ShepherdSkipPort } from './isolation/shepherd-skip.js'
+import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
+import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
+import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
-import { isTrusted, trustGap } from './trust.js'
+import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -146,10 +150,17 @@ import {
 } from './seats/pool-route.js'
 import type { PoolPickMode } from './seats/pool-pick.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
+import { finalAssistantText } from './turns.js'
 import { completionPayload, type CompletionPayload, type ExitFacts } from './worker-facts.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
-import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
+import { readExitTail, unreportedExitText, UNREPORTED_EXIT, type ExitTail } from './exit-report.js'
+import {
+  BACKGROUND_RESUME,
+  BACKGROUND_RESUME_MESSAGE,
+  backgroundResumeDecision,
+  resumedForBackground,
+} from './background-resume.js'
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
@@ -164,6 +175,7 @@ import {
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
+  type LauncherSite,
 } from './teleport.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
@@ -414,6 +426,8 @@ export interface SpawnRequest {
   worktree?: string
   /** CC-81: path globs inside the worktree this agent owns. */
   owns?: string[]
+  /** CC-952: globs the broker claims for the agent in its worktree at spawn; isolates nothing. */
+  claimPaths?: string[]
   /** CC-44: start from a copy of the REQUESTER's own conversation, not an empty one. */
   inherit?: 'context'
   /** H-12: explicit opt-in to `--remote-control`; a spawned agent never gets it otherwise. */
@@ -521,7 +535,10 @@ export interface SpawnOutcome {
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
-export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'>
+export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
+  /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
+  checkProcesses?: boolean
+}
 
 export interface ResumeRequest {
   surface?: SurfaceName
@@ -536,6 +553,8 @@ export interface ResumeRequest {
   anchor?: string
   /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
   remoteControl?: boolean
+  /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
+  cause?: typeof BACKGROUND_RESUME
 }
 
 interface Live {
@@ -555,6 +574,8 @@ interface Live {
   cancelReason?: string
   /** CC-118: `observe_running` is written once; a later attach is presence, not lifecycle. */
   runningObserved?: boolean
+  /** CC-951: kept while its successor-first successor starts, so its own exit is not a finish. */
+  teleporting?: boolean
 }
 
 export interface SupervisorOptions {
@@ -581,6 +602,8 @@ export interface SupervisorOptions {
   argvReader?: ArgvReader
   /** CC-863: where a seat's teleport State block is written and how Shepherd is read. Faked in tests. */
   seatTeleport?: SeatTeleportDeps
+  /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
+  hosts?: LauncherSite
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -600,6 +623,10 @@ export interface SupervisorOptions {
   shepherdSkip?: ShepherdSkipPort
   /** CC-921: whether a spawner opted in to retire-at-final-report. Needs `shepherdSkip` too. */
   autoRetireOnReport?: (spawner: string) => boolean
+  /** CC-1039: whether a non-reviewer's tree is parked at exit (`autoPark.onExit`). Absent is off, so tests own it. */
+  autoParkOnExit?: () => boolean
+  /** CC-1039: why a held burndown claim still reads a tree. Absent is no hold. */
+  burndownTreeHold?: (tree: string) => string | undefined
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
   /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
@@ -612,6 +639,8 @@ export interface SupervisorOptions {
   poolPick?: PoolPickReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
   processProbe?: ProcessProbe
+  /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
+  repoVisibility?: (cwd: string) => Promise<RepoVisibility>
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -789,6 +818,8 @@ export class Supervisor implements TeleportHost {
   private readonly seatJournal: SeatJournal | undefined
   private readonly shepherdSkip: ShepherdSkipPort | undefined
   private readonly autoRetireOnReport: ((spawner: string) => boolean) | undefined
+  private readonly autoParkOnExit: (() => boolean) | undefined
+  private readonly burndownTreeHold: ((tree: string) => string | undefined) | undefined
   private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
@@ -799,6 +830,7 @@ export class Supervisor implements TeleportHost {
   private readonly seatOverlap: SeatOverlapReaders | undefined
   private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
+  private readonly repoVisibility: ((cwd: string) => Promise<RepoVisibility>) | undefined
   private readonly reaper: DetachedReaper
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
@@ -819,6 +851,8 @@ export class Supervisor implements TeleportHost {
     this.seatJournal = options.seatJournal
     this.shepherdSkip = options.shepherdSkip
     this.autoRetireOnReport = options.autoRetireOnReport
+    this.autoParkOnExit = options.autoParkOnExit
+    this.burndownTreeHold = options.burndownTreeHold
     this.launcherRunning = options.launcherRunning ?? psLauncherProbe
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
@@ -826,11 +860,19 @@ export class Supervisor implements TeleportHost {
     this.seatOverlap = options.seatOverlap
     this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
+    this.repoVisibility = options.repoVisibility
     this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
       this.reapIfDead(agentId, probe),
     )
     this.unwatch = core.onAppend(row => this.onRow(row))
-    this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader, options.seatTeleport)
+    this.teleporter = new Teleport(
+      core,
+      this,
+      options.countdownMs,
+      options.argvReader,
+      options.seatTeleport,
+      options.hosts,
+    )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
     for (const agentId of [...this.staleAtBoot.keys()]) this.reapAtStart(agentId)
@@ -1007,6 +1049,36 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-951: a predecessor that ended while its successor starts. Its slot already moved
+   * to the successor, and it did not finish its work, so the exit is recorded and nothing
+   * else: no completion hook, no report check, no auto-retire. The teleport is told.
+   */
+  private recordTeleportingExit(
+    entry: Live,
+    outcome: { code: number | null; signal: string | null; inferred?: boolean },
+  ): void {
+    this.live.delete(entry.agentId)
+    this.core.append({
+      kind: 'agent_exited',
+      actor: entry.name,
+      ref: entry.agentId,
+      body: 'exited while its teleport successor was starting',
+      meta: {
+        ...(outcome.code === null ? {} : { code: String(outcome.code) }),
+        ...(outcome.signal === null ? {} : { signal: outcome.signal }),
+        ...(outcome.inferred ? { inferred: 'true' } : {}),
+      },
+    })
+    logEvent('agent_exited', {
+      agentId: entry.agentId,
+      name: entry.name,
+      code: outcome.code,
+      teleporting: true,
+    })
+    this.teleporter.predecessorExited(entry.agentId)
+  }
+
+  /**
    * Idempotent: a headless child's exit and its detach settle can both arrive.
    *
    * `launch`, when given, is the exact `Live` object this exit belongs to —
@@ -1029,6 +1101,7 @@ export class Supervisor implements TeleportHost {
     if (entry.settle) clearTimeout(entry.settle)
     if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
     this.attachWaiters.delete(agentId)
+    if (entry.teleporting === true) return this.recordTeleportingExit(entry, outcome)
     this.live.delete(agentId)
     this.semaphore.release(agentId)
 
@@ -1055,8 +1128,10 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
-    if (failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless')
-      this.reportIfUnreported(agentId, entry.name)
+    const resumeOn =
+      failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
+        ? this.reportIfUnreported(agentId, entry.name)
+        : undefined
     this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelReason))
     // CC-95: the surface goes with the agent, including on an INFERRED exit —
     // which is the only exit an iTerm agent ever gets, and therefore the only
@@ -1078,7 +1153,12 @@ export class Supervisor implements TeleportHost {
     if (this.closesOnExit(agentId)) await this.closeSurface(entry)
     const exit = { code: outcome.code, signal: outcome.signal, inferred: outcome.inferred ?? false }
     this.fireHook('on_complete', { ...(await this.completionPayloadFor(agentId, exit)) })
-    if (failed === undefined && entry.cancelReason === undefined) await this.retireIfReported(agentId)
+    if (failed === undefined && entry.cancelReason === undefined) {
+      await this.retireIfReported(agentId)
+      await this.parkReviewerIfReported(agentId)
+      if (resumeOn === undefined) await this.parkImplementerIfExited(agentId)
+    }
+    if (resumeOn !== undefined) await this.resumeForBackground(agentId, entry.name, resumeOn)
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -1111,14 +1191,37 @@ export class Supervisor implements TeleportHost {
   /**
    * CC-266: a headless agent that ended its run without a report to its spawner
    * or to burndown's `reportTo` gets one written for it, naming its last action.
+   * CC-336: when it ended on a background task, the tail is returned instead, for
+   * one resume once the exit is fully recorded; a second such exit is noticed.
    */
-  private reportIfUnreported(agentId: string, name: string): void {
+  private reportIfUnreported(agentId: string, name: string): ExitTail | undefined {
     const identity = this.core.agents.get(agentId)
-    if (identity === undefined) return
-    const spawner = identity.spawnedBy
-    const recipients = reportRecipients(spawner)
-    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return
+    if (identity === undefined) return undefined
+    const recipients = reportRecipients(identity.spawnedBy)
+    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return undefined
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
+    const decision = backgroundResumeDecision({
+      pendingBackground: tail.pendingBackground,
+      resumedForBackgroundThisChain: resumedForBackground(this.core.events.agentEventsFor(agentId)),
+    })
+    if (decision === 'resume') return tail
+    this.notifyUnreported(agentId, name, identity.spawnedBy, tail)
+    return undefined
+  }
+
+  /** CC-336: a refused resume (budget, machine stop, no transcript) falls back to the notice. */
+  private async resumeForBackground(agentId: string, name: string, tail: ExitTail): Promise<void> {
+    const spawner = this.core.agents.get(agentId)?.spawnedBy ?? HUMAN
+    const outcome = await this.resume(name, {
+      message: BACKGROUND_RESUME_MESSAGE,
+      requestedBy: spawner,
+      cause: BACKGROUND_RESUME,
+    })
+    logEvent(BACKGROUND_RESUME, { agentId, name, spawner, ok: outcome.ok })
+    if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
+  }
+
+  private notifyUnreported(agentId: string, name: string, spawner: string, tail: ExitTail): void {
     const body = unreportedExitText(name, tail)
     const { msgId } = this.core.append({
       kind: 'message',
@@ -1147,7 +1250,9 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     reason: string,
     cause:
-      { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
+      | { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean }
+      | { code: 'surface_refused' }
+      | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
@@ -1630,10 +1735,12 @@ export class Supervisor implements TeleportHost {
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const reserve = this.handReserveRefusal(req, profile.name)
     if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
-    const machine = this.machineRefusal(this.resolve(req.surface ?? profile.surface))
+    const machine = this.machineRefusal(this.spawnSurface(req, profile))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
     if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
+    const lint = await this.lintBrief(req, profile)
+    if (lint.refusal !== undefined) return this.refuse(req, lint.refusal)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
     if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
@@ -1687,6 +1794,7 @@ export class Supervisor implements TeleportHost {
     const floor = floorWarning(isolationName, profile.isolation)
     const warnings = [
       ...(profile.warnings ?? []),
+      ...lint.warnings,
       ...(reviewerRoot === undefined ? [] : [reviewerRewriteWarning(reviewerRoot)]),
       ...(floor ? [floor] : []),
       ...(await resolveIsolation([isolationName]).check(ctx)),
@@ -1743,8 +1851,17 @@ export class Supervisor implements TeleportHost {
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
-      return this.refuse(req, reason)
+      // CC-959: typed as resume's is, so a caller can fall back to headless without reading the text.
+      return this.refuse(req, reason, err instanceof SurfaceRefused ? { code: 'surface_refused' } : {})
     }
+  }
+
+  /** CC-398: lints the caller's brief alone, before the return contract is appended to it. */
+  private async lintBrief(req: SpawnRequest, profile: AgentProfile): Promise<BriefLint> {
+    const read = mentionsSyntheticData(req.brief) ? undefined : this.repoVisibility
+    const repoVisibility =
+      read === undefined ? 'unknown' : await read(req.worktree ?? req.cwd ?? process.cwd())
+    return lintBrief({ brief: req.brief, profile, surface: this.spawnSurface(req, profile), repoVisibility })
   }
 
   /** CC-916: the primary checkout a reviewer spawn would run in, which it must not touch; an assigned worktree is the caller's own. */
@@ -1776,7 +1893,7 @@ export class Supervisor implements TeleportHost {
       body: allocation.note ?? '',
       meta: { strategy: isolationName, ...(allocation.ref ?? {}) },
     })
-    const surface = this.resolve(req.surface ?? profile.surface)
+    const surface = this.spawnSurface(req, profile)
     // CC-158: on disk before anything can fail, so a launch that dies still leaves something to release.
     writeRuntimeState(agentId, { handle: { surface }, allocation, isolation: isolationName })
 
@@ -1883,6 +2000,7 @@ export class Supervisor implements TeleportHost {
     const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
+    this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
 
@@ -2211,6 +2329,8 @@ export class Supervisor implements TeleportHost {
    * runtime state for retire --force.
    */
   private async releaseFailedSpawn(req: SpawnRequest, agentId: string, when: FailedRelease): Promise<void> {
+    // A name that never registered never reaches `core.drop`, so its spawn-time claim would outlive it.
+    this.core.claims.releaseAll(req.name)
     const held = readRuntimeState(agentId)
     if (held === undefined || when === 'keep') return
     if (when === 'if-pane-closed' && (await this.paneStillOpen(held.handle))) return
@@ -2218,6 +2338,23 @@ export class Supervisor implements TeleportHost {
     if (!(await this.releaseHeld(ctx, held, {}))) return
     // Kept, not cleared, so retire still closes the pane; `none` so it never releases the tree twice.
     writeRuntimeState(agentId, { ...held, allocation: { cwd: held.allocation.cwd }, isolation: 'none' })
+  }
+
+  /**
+   * CC-952: hold the agent's declared paths before it registers, so the next
+   * burndown tick refuses an overlapping task. The repo is the spawn cwd's main
+   * checkout, the key the tick filters claims by; a refused claim spawns anyway.
+   */
+  private claimAtSpawn(req: SpawnRequest, worktreePath: string, cwd: string): void {
+    if (!req.claimPaths?.length) return
+    const root = gitRootOf(cwd)
+    const outcome = this.core.claims.claim({
+      owner: req.name,
+      worktreePath,
+      ...(root === undefined ? {} : { repoPath: canonicalRootOf(root) }),
+      patterns: req.claimPaths,
+    })
+    if (!outcome.ok) logEvent('agent_spawn_claim_refused', { name: req.name, reason: outcome.reason })
   }
 
   /**
@@ -2232,6 +2369,33 @@ export class Supervisor implements TeleportHost {
       if (entry.anchor === anchor && entry.handle.paneRef) bottom = entry.handle.paneRef
     }
     return bottom
+  }
+
+  /** CC-485: the host surface a fresh spawn launches on; a seat's worker with none requested runs headless. */
+  private spawnSurface(req: SpawnRequest, profile: AgentProfile): SurfaceName {
+    const requested = defaultSpawnSurface({
+      requested: req.surface,
+      profileSurface: profile.surface,
+      role: roleOf(profile),
+      seatSpawn: req.surface === undefined && this.isSeatSpawn(req),
+    })
+    return this.resolve(requested)
+  }
+
+  /** A seat owns the name; an unreadable seats directory counts as no seat, so the profile's surface stands. */
+  private isSeatSpawn(req: SpawnRequest): boolean {
+    if (this.seatBudget === undefined) return false
+    try {
+      const spawn = {
+        name: req.name,
+        spawner: req.requestedBy,
+        configDir: defaultConfigDir(),
+        now: new Date(),
+      }
+      return this.seatBudget.read(spawn).kind !== 'none'
+    } catch {
+      return false
+    }
   }
 
   /** CC-804: the surface a requested name lands on, given this host's platform. */
@@ -2355,6 +2519,21 @@ export class Supervisor implements TeleportHost {
     return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
   }
 
+  /** CC-959: a stale seat row by id; never whichever row holds the name now, and never a live one. */
+  async retireStale(
+    agentId: string,
+    name: string,
+    actor?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.get(agentId)
+    if (identity !== undefined && identity.name !== name)
+      return { ok: false, reason: `agent ${agentId} no longer holds the name "${name}"` }
+    const live = identity?.state === 'live' || identity?.state === 'spawning'
+    if (identity !== undefined && (live || this.namePresence(identity) === 'self'))
+      return { ok: false, reason: `agent ${agentId} (${name}) is still live; not retired` }
+    return this.retireById(agentId, actor)
+  }
+
   private async retireIdentity(
     identity: AgentIdentity,
     release: ReleaseOptions,
@@ -2445,10 +2624,12 @@ export class Supervisor implements TeleportHost {
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
     this.parking.set(identity.agentId, canonicalPath(target.worktree))
     try {
+      const fixRound = this.shepherdSkip && (await fixRoundBlocker(this.shepherdSkip, identity, target))
+      if (fixRound) return { ok: false, reason: fixRound }
       const parked = await parkWorktree(
         target,
         () => this.parkBlockerFor(identity.agentId, target),
-        identity.state === 'detached' ? this.cwdLister : undefined,
+        identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
       )
       if (!parked.ok) return parked
       this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
@@ -2488,6 +2669,56 @@ export class Supervisor implements TeleportHost {
     if (result.action === 'retired') logEvent('auto_retired', { agentId, ...result })
   }
 
+  /** CC-976: park a reviewer's tree at its final Verdict, opt-in or not; a CC-921 park already removed it. */
+  private async parkReviewerIfReported(agentId: string): Promise<void> {
+    const result = await parkReviewerAtReport(this.reviewerParkPort(), agentId)
+    if (result.action === 'kept')
+      logEvent('reviewer_park_kept', { agentId, name: result.name, reason: result.reason })
+    if (result.action === 'parked') logEvent('reviewer_parked', { agentId, ...result })
+  }
+
+  private reviewerParkPort(): ReviewerParkPort {
+    return {
+      current: agentId => this.core.agents.get(agentId),
+      events: () => this.core.events.agentEvents(),
+      lastReport: agent => this.lastReportText(agent),
+      finalText: agent =>
+        finalAssistantText(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir),
+      park: agentId => this.parkById(agentId),
+    }
+  }
+
+  /** CC-1039: park a non-reviewer's clean, pushed tree at a normal exit; an earlier park already removed it. */
+  private async parkImplementerIfExited(agentId: string): Promise<void> {
+    const port = this.implementerParkPort()
+    if (port === undefined) return
+    const result = await parkImplementerAtExit(port, agentId)
+    if (result.action === 'kept')
+      logEvent('implementer_park_kept', { agentId, name: result.name, reason: result.reason })
+    if (result.action === 'parked') logEvent('implementer_parked', { agentId, ...result })
+  }
+
+  private implementerParkPort(): ImplementerParkPort | undefined {
+    const enabled = this.autoParkOnExit
+    if (enabled === undefined) return undefined
+    const treeHold = this.burndownTreeHold
+    return {
+      current: agentId => this.core.agents.get(agentId),
+      events: () => this.core.events.agentEvents(),
+      enabled,
+      treeHold: tree => treeHold?.(tree),
+      park: agentId => this.parkById(agentId, { checkProcesses: true }),
+    }
+  }
+
+  private lastReportText(agent: AgentIdentity): string | undefined {
+    return this.core.events.lastStatusReport(
+      agent.name,
+      reportRecipients(agent.spawnedBy),
+      this.core.runStartedAt(agent),
+    )?.text
+  }
+
   private reportRetirePort(): ReportRetirePort | undefined {
     const enabledFor = this.autoRetireOnReport
     if (enabledFor === undefined || this.shepherdSkip === undefined) return undefined
@@ -2496,12 +2727,7 @@ export class Supervisor implements TeleportHost {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       enabledFor,
-      lastReport: agent =>
-        this.core.events.lastStatusReport(
-          agent.name,
-          reportRecipients(agent.spawnedBy),
-          this.core.runStartedAt(agent),
-        )?.text,
+      lastReport: agent => this.lastReportText(agent),
       tracked: agentId => this.live.has(agentId),
       skip: this.shepherdSkip,
       park: agentId => this.parkById(agentId),
@@ -2510,11 +2736,11 @@ export class Supervisor implements TeleportHost {
   }
 
   /** `park` resolves a name, so a teleport successor holding it now is refused rather than parked. */
-  private parkById(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+  private parkById(agentId: string, req: ParkRequest = {}): Promise<{ ok: boolean; reason?: string }> {
     const name = this.core.agents.get(agentId)?.name
     if (name === undefined || this.core.agents.byName(name)?.agentId !== agentId)
       return Promise.resolve({ ok: false, reason: 'the name now belongs to another agent' })
-    return this.park(name)
+    return this.park(name, req)
   }
 
   /** Read fresh each call, so the re-check before removal sees a spawn or resume that landed during the git checks. */
@@ -2930,6 +3156,7 @@ export class Supervisor implements TeleportHost {
         from_surface: agent.surface,
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
+        ...(req.cause === undefined ? {} : { cause: req.cause }),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },
@@ -3147,9 +3374,12 @@ export class Supervisor implements TeleportHost {
 
   /** CC-880: why a surface cannot launch here, so teleport refuses before ending anyone. */
   surfaceBlocker(surface: SurfaceName): string | undefined {
-    const platform = this.surfaceOptions?.platform ?? process.platform
-    if (!surface.startsWith('iterm') || platform === 'darwin') return undefined
-    return `iTerm2 surfaces need macOS (this broker is ${platform}); use surface 'headless'`
+    return surfaceBlockerFor(surface, this.surfacePlatform())
+  }
+
+  /** CC-951: the OS this broker launches on, faked in tests. */
+  surfacePlatform(): NodeJS.Platform {
+    return this.surfaceOptions?.platform ?? process.platform
   }
 
   /**
@@ -3171,11 +3401,11 @@ export class Supervisor implements TeleportHost {
     // to clear: `find(name)` scans by name, and for as long as both entries sit
     // in the map, "the live agent called scout" resolves to the dead one — so a
     // kill or an `agent attach` would be aimed at a process that is already gone.
+    // CC-951: a successor-first teleport keeps it, since the predecessor is still
+    // running and is kept if the successor never attaches; `standDown` drops it.
     const predecessor = input.inheritedFrom === undefined ? undefined : this.live.get(input.inheritedFrom)
-    if (predecessor !== undefined) {
-      if (predecessor.settle) clearTimeout(predecessor.settle)
-      this.live.delete(predecessor.agentId)
-    }
+    if (predecessor !== undefined && input.successorFirst === true) predecessor.teleporting = true
+    else if (predecessor !== undefined) this.standDown(predecessor.agentId)
 
     const isolation = input.inherited?.isolation ?? 'none'
     const allocation = input.inherited?.allocation ?? { cwd: input.cwd }
@@ -3207,6 +3437,67 @@ export class Supervisor implements TeleportHost {
     this.announceSuccessor(input, sessionId, allocation.cwd)
   }
 
+  /** CC-951: the predecessor's entry goes once it is being ended, so its own exit records nothing over its successor. */
+  standDown(agentId: string): void {
+    const predecessor = this.live.get(agentId)
+    if (predecessor === undefined) return
+    if (predecessor.settle) clearTimeout(predecessor.settle)
+    this.live.delete(agentId)
+    // CC-951: a successor on another machine took no slot here, so the predecessor's goes with it.
+    this.semaphore.release(agentId)
+  }
+
+  /**
+   * CC-951: a successor-first teleport whose successor never attached, while its
+   * predecessor still runs. The predecessor gets back what `relaunch` moved to it: its
+   * slot, and prompts its stale-session guard would now block. The successor is stopped,
+   * headless or in a surface the broker opened, since its row retires.
+   */
+  keepPredecessor(input: RelaunchInput, reason: string): void {
+    const successor = this.live.get(input.agentId)
+    if (successor !== undefined) {
+      if (successor.settle) clearTimeout(successor.settle)
+      this.live.delete(input.agentId)
+      this.finishFailedLaunch(successor.executionId, reason)
+      this.stopSuccessor(successor)
+    }
+    this.semaphore.release(input.agentId)
+    if (input.inheritedFrom === undefined) return
+    const predecessor = this.live.get(input.inheritedFrom)
+    if (predecessor !== undefined) delete predecessor.teleporting
+    if (input.inherited?.slot) this.semaphore.acquire(input.inheritedFrom)
+    clearSuperseded(input.inheritedFrom)
+  }
+
+  /** CC-951: the predecessor ended and its successor did not start, so only the human can act. */
+  noticeLostTeleport(input: RelaunchInput, reason: string): void {
+    this.noticeDeadSuccessor(
+      input,
+      `${input.name} ended while its teleport successor was starting, and the successor did not start: ${reason}`,
+      reason,
+    )
+  }
+
+  private stopSuccessor(entry: Live): void {
+    if (entry.handle.surface !== 'headless') {
+      void this.closeSurface(entry).catch(err =>
+        logEvent('teleport_successor_stop_failed', { name: entry.name, error: (err as Error).message }),
+      )
+      return
+    }
+    this.stopHeadless(entry)
+  }
+
+  private stopHeadless(entry: Live): void {
+    const { pid, surface } = entry.handle
+    if (surface !== 'headless' || pid === undefined) return
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch (err) {
+      logEvent('teleport_successor_stop_failed', { name: entry.name, pid, error: (err as Error).message })
+    }
+  }
+
   /**
    * CC-881: the successor of a session on another host. Its row is recorded here, so it
    * registers into an identity the broker already holds, but its files and surface are the
@@ -3228,6 +3519,8 @@ export class Supervisor implements TeleportHost {
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
     }
   }
@@ -3238,14 +3531,14 @@ export class Supervisor implements TeleportHost {
     this.remoteSessions.delete(input.agentId)
   }
 
-  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void {
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string, where = "its caller's host"): void {
     this.remoteSessions.delete(input.agentId)
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',
       target: input.name,
       ref: input.agentId,
-      body: `teleport successor not launched on its caller's host: ${reason}`,
+      body: `teleport successor not launched on ${where}: ${reason}`,
     })
   }
 
@@ -3274,6 +3567,8 @@ export class Supervisor implements TeleportHost {
       ...(input.configDir ? { configDir: input.configDir } : {}),
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.channels?.length ? { channels: input.channels } : {}),
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
     })
     return { plan, sessionId }
   }
@@ -3400,13 +3695,21 @@ export class Supervisor implements TeleportHost {
   /** The human queue and the seat's log, since nobody is left inside the session to notice (CC-191, CC-402). */
   private reportDeadSuccessor(input: RelaunchInput, reason: string): void {
     if (this.hasAttached(input.agentId)) return
+    // CC-951: the teleport it waits on decides who is told, since its predecessor may still run.
+    if (input.successorFirst === true && this.teleporter.successorFailed(input.agentId, reason)) return
+    this.noticeDeadSuccessor(
+      input,
+      `${input.name} shut down for a teleport and its successor was still not running after one retry: ${reason}`,
+      reason,
+    )
+  }
+
+  private noticeDeadSuccessor(input: RelaunchInput, lead: string, reason: string): void {
     this.core.append({
       kind: 'notice',
       actor: 'agent-chat',
       target: HUMAN,
-      body:
-        `${input.name} shut down for a teleport and its successor was still not running after one retry: ${reason}. ` +
-        `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
+      body: `${lead}. Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
     })
     this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })

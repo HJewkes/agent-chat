@@ -20,6 +20,7 @@ import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
 import { readSeatFile } from './teleport-state.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
+import type { WaitingPermission } from './waiting-permission.js'
 import {
   meterSpend,
   savedMeters,
@@ -33,6 +34,9 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
+import { agentRows, selfContext, type AgentRole, type SeatAgentRow, type SelfContext } from './agent-rows.js'
+
+export type { SeatAgentRow, SelfContext } from './agent-rows.js'
 
 /**
  * CC-317: what a coordinator seat reads before it dispatches, in one call.
@@ -149,6 +153,12 @@ export interface SeatStatus {
   stop: 'machine' | null
   /** The readings behind a machine stop; null without one. */
   machineStop: MachineStop | null
+  /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
+  waitingPermission: WaitingPermission[]
+  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against `retire_k`. */
+  agents: SeatAgentRow[]
+  /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
+  self: SelfContext | null
 }
 
 export interface StatusDeps {
@@ -175,6 +185,12 @@ export interface StatusDeps {
   machineStop: () => MachineStop | null
   /** CC-978: the seat's implementer claims in the burndown ledger. Absent, or a throw: not shown. */
   ledgerImplementers?: (seat: string) => number
+  /** CC-610: every agent parked on the permission hook, machine-wide. Absent, or a throw: not shown. */
+  waitingPermission?: (nowMs: number) => WaitingPermission[]
+  /** CC-317 b: one agent's context reading. Absent: rows carry no fill. */
+  contextOf?: (agent: AgentIdentity) => BudgetRead
+  /** CC-317 b: the calling session's context reading, null when it has no session id. Absent: `self` is null. */
+  selfContext?: () => BudgetRead | null
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -217,7 +233,7 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
 const ROLES = ['implementer', 'reviewer', 'planner'] as const
-type Role = (typeof ROLES)[number] | 'other'
+type Role = AgentRole
 
 /** The first role word in the profile, so a profile holding two counts once. */
 const roleOf = (agent: AgentIdentity): Role => ROLES.find(role => agent.profile.includes(role)) ?? 'other'
@@ -262,6 +278,15 @@ function withLedger(load: RoleLoad, deps: StatusDeps, seat: string): RoleLoad {
     return ledger === undefined ? load : { ...load, ledger }
   } catch {
     return load
+  }
+}
+
+function waitingPermission(deps: StatusDeps, agents: AgentIdentity[], nowMs: number): WaitingPermission[] {
+  const names = new Set(agents.filter(running).map(a => a.name))
+  try {
+    return (deps.waitingPermission?.(nowMs) ?? []).filter(w => names.has(w.agent))
+  } catch {
+    return []
   }
 }
 
@@ -511,6 +536,9 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     machine: deps.machine(roster),
     stop: machineStop === null ? null : 'machine',
     machineStop,
+    waitingPermission: waitingPermission(deps, mine, now.getTime()),
+    agents: agentRows(mine, roleOf, deps.contextOf, policy.charter.defaults.retire_k),
+    self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
   }
 }
 
@@ -603,6 +631,30 @@ function poolPickLines(picks: PoolPickStatus): string[] {
   return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
 }
 
+function waitAge(since: string, at: string): string {
+  const seconds = Math.max(0, Math.round((Date.parse(at) - Date.parse(since)) / 1000))
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`
+}
+
+/** No line while nothing waits, so a seat with no parked prompt reads as before. */
+function waitingPermissionLines(status: SeatStatus): string[] {
+  const waits = status.waitingPermission.map(w => `${w.agent} (${w.tool}, ${waitAge(w.since, status.at)})`)
+  return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
+}
+
+/** No line while no agent is past `retire_k`, so the page reads as before. */
+function retireDueLines(agents: SeatAgentRow[]): string[] {
+  const due = agents.filter(a => a.retireDue).map(a => `${a.name} (${a.contextK}k)`)
+  return due.length === 0 ? [] : [line('retire-due', due.join(', '))]
+}
+
+function selfLines(self: SelfContext | null): string[] {
+  if (self === null) return []
+  const fill =
+    self.contextK === null ? 'no reading' : `${self.contextK}k context${self.stale ? ', STALE' : ''}`
+  return [line('self', self.teleportDue ? `${fill}  TELEPORT` : fill)]
+}
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox } = status
@@ -615,6 +667,7 @@ export function renderBrief(status: SeatStatus): string[] {
     line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
     line('parked', String(status.parked.count)),
+    ...waitingPermissionLines(status),
   ]
 }
 
@@ -628,6 +681,9 @@ export function renderStatus(status: SeatStatus): string[] {
     roleLine('planners', status.planners),
     agentLine('other', status.other, String(status.other.active)),
     line('parked', `${parked.count}${trees}`),
+    ...waitingPermissionLines(status),
+    ...retireDueLines(status.agents),
+    ...selfLines(status.self),
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),

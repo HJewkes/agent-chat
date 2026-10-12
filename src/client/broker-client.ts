@@ -37,14 +37,17 @@ const REQUEST_TIMEOUT_MS = 5000
  * a loaded machine. It is a ceiling, not a duration: the ordinary spawn answers
  * in a few seconds and nothing waits for this.
  */
-const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
+export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   spawn_result: 60_000,
   // CC-323: one reply after a retire per finished agent, and a coordinator can hold over a hundred.
   retire_finished_result: 600_000,
   // CC-777: with retired rows the reply is over 6,000 agents and 23 MB, measured at 7.9-9.1s.
   agents_result: 30_000,
   // CC-881: held through the teleport countdown and the successor's brief, both on the broker.
-  teleport_plan: 120_000,
+  // CC-951: and through the successor's attach, which the broker waits on for LAND_WINDOW_MS (5 min).
+  teleport_plan: 7 * 60_000,
+  // CC-951: a move to another machine waits on that machine's launcher probe (10s) before answering.
+  teleport_result: 20_000,
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]

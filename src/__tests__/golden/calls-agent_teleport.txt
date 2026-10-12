@@ -18,7 +18,7 @@ args: {}
 
 === agent_teleport: visible, with a countdown and a warning
 args: {"handoff":"mid-way through S6"}
-frame: {"t":"teleport","handoff":"mid-way through S6"}
+frame: {"t":"teleport","handoff":"mid-way through S6","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -28,7 +28,7 @@ frame: {"t":"teleport","handoff":"mid-way through S6"}
 
 === agent_teleport: headless, onto another model
 args: {"handoff":"h","model":"claude-sonnet-5"}
-frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"}
+frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -38,7 +38,7 @@ frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"}
 
 === agent_teleport: remote_control forced on
 args: {"handoff":"h","remote_control":true}
-frame: {"t":"teleport","handoff":"h","remoteControl":true}
+frame: {"t":"teleport","handoff":"h","remoteControl":true,"endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -48,7 +48,7 @@ frame: {"t":"teleport","handoff":"h","remoteControl":true}
 
 === agent_teleport: remote_control forced off
 args: {"handoff":"h","remote_control":false}
-frame: {"t":"teleport","handoff":"h","remoteControl":false}
+frame: {"t":"teleport","handoff":"h","remoteControl":false,"endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -58,7 +58,7 @@ frame: {"t":"teleport","handoff":"h","remoteControl":false}
 
 === agent_teleport: blank model
 args: {"handoff":"h","model":"  "}
-frame: {"t":"teleport","handoff":"h"}
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -68,7 +68,7 @@ frame: {"t":"teleport","handoff":"h"}
 
 === agent_teleport: refused by the broker
 args: {"handoff":"h"}
-frame: {"t":"teleport","handoff":"h"}
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -105,7 +105,7 @@ args: {"handoff":"h","model":4}
 
 === agent_teleport: parked on the human
 args: {"handoff":"h","reason":"park"}
-frame: {"t":"teleport","handoff":"h","reason":"park"}
+frame: {"t":"teleport","handoff":"h","reason":"park","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -119,5 +119,44 @@ args: {"handoff":"h","reason":"refresh"}
   {
     "type": "text",
     "text": "Error: Invalid arguments: reason: Invalid input: expected \"park\""
+  }
+]
+
+=== agent_teleport: onto a named surface
+args: {"handoff":"h","surface":"tmux-window"}
+frame: {"t":"teleport","handoff":"h","surface":"tmux-window","endsSelf":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: unknown surface
+args: {"handoff":"h","surface":"bogus"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: surface: Invalid option: expected one of \"headless\"|\"iterm-pane\"|\"iterm-tab\"|\"iterm-window\"|\"tmux-window\""
+  }
+]
+
+=== agent_teleport: onto another machine
+args: {"handoff":"h","to":"basement"}
+frame: {"t":"teleport","handoff":"h","to":"basement","endsSelf":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: blank machine
+args: {"handoff":"h","to":" "}
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
   }
 ]

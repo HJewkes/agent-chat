@@ -645,7 +645,7 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
@@ -661,13 +661,42 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
     const plan = planSeat(inputs([], [task('A-1')], { ledger }))
 
     expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it('dispatches the first of two tasks whose owns overlap in one repo and refuses the second file-overlap (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/a/x.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-2',
+        kind: 'file-overlap',
+        reason: "src/a/x.ts is under sa-a-1-b's owns",
+      }),
+    ])
+  })
+
+  it('dispatches two tasks in one repo in one pass when their owns are disjoint (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/b.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-2'])
   })
 
   it("passes a ready slice's contracts to the collision check (CC-710)", () => {
@@ -1013,20 +1042,20 @@ describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
     ])
   })
 
-  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+  it('sends an implementer-routed task with no plan to a planner under on, naming the plan path (CC-986)', () => {
     const plan = brief('on', undefined)
 
-    expect(plan.dispatch).toEqual([])
-    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
-    expect(plan.refusals[0]?.reason).toContain(PLAN)
+    expect(plan.dispatch).toEqual([expect.objectContaining({ task: 'A-1', profile: 'bd-planner' })])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringContaining(PLAN)])
   })
 
-  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would plan it', () => {
     const plan = brief('shadow', undefined)
 
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
     expect(plan.refusals).toEqual([])
-    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-plan alpha A-1 \(seat seat-a\): no plan at /)])
   })
 
   it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
@@ -1134,7 +1163,7 @@ describe('planSeat ready order (CC-926)', () => {
       const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
 
       expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
-        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4, readyFloor: 8 },
       })
     })
 

@@ -4,11 +4,15 @@ import type { ToolContext } from '../server/command.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
-const argv = vi.hoisted(() => ({ seen: undefined as boolean | undefined }))
+const argv = vi.hoisted(() => ({
+  seen: undefined as boolean | undefined,
+  carried: undefined as { channels: string[]; effort?: 'high' } | undefined,
+}))
 
 vi.mock('../broker/host-channels.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../broker/host-channels.js')>()),
   hostRemoteControl: () => argv.seen,
+  hostCarriedFlags: () => argv.carried,
 }))
 
 const { agentTeleport } = await import('../server/commands/agent-teleport.js')
@@ -42,29 +46,46 @@ async function teleportFrame(args: Record<string, unknown>): Promise<ClientMessa
   return sent[0]
 }
 
+/** CC-951: every frame names this process's OS, so a broker on another host picks the right default surface. */
+const frame = { t: 'teleport', handoff: 'h', hostPlatform: process.platform, endsSelf: true }
+
 describe('agent_teleport reports the Remote Control its own session was launched with', () => {
   beforeEach(() => {
     argv.seen = undefined
+    argv.carried = undefined
   })
 
   it('tells the broker it saw --remote-control in its Claude Code argv', async () => {
     argv.seen = true
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h', remoteControlSeen: true })
+    expect(await teleportFrame({})).toEqual({ ...frame, remoteControlSeen: true })
   })
 
   it('says nothing when the argv lacks it or cannot be read', async () => {
     argv.seen = false
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h' })
+    expect(await teleportFrame({})).toEqual(frame)
     argv.seen = undefined
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h' })
+    expect(await teleportFrame({})).toEqual(frame)
   })
 
   it('leaves an explicit remote_control to speak for itself', async () => {
     argv.seen = true
-    expect(await teleportFrame({ remote_control: false })).toEqual({
-      t: 'teleport',
-      handoff: 'h',
-      remoteControl: false,
-    })
+    expect(await teleportFrame({ remote_control: false })).toEqual({ ...frame, remoteControl: false })
+  })
+})
+
+/** CC-951: the flags a broker on another host cannot read from this session's argv. */
+describe('agent_teleport reports the launch flags its own session was launched with', () => {
+  beforeEach(() => {
+    argv.seen = undefined
+  })
+
+  it('sends what its argv shows as launchSeen', async () => {
+    argv.carried = { channels: ['plugin:voltras-channel@x'], effort: 'high' }
+    expect(await teleportFrame({})).toEqual({ ...frame, launchSeen: argv.carried })
+  })
+
+  it('sends none when the argv cannot be read', async () => {
+    argv.carried = undefined
+    expect(await teleportFrame({})).toEqual(frame)
   })
 })

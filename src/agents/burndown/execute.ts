@@ -35,6 +35,8 @@ export interface SpawnFrame {
   tier?: number
   /** CC-802: the dispatch row's spawner; this frame goes out on the CLI socket, which holds no session. */
   spawnedAs: 'burndown'
+  /** CC-952: the slice's owns, which the broker claims for the agent so the next tick sees them. */
+  claimPaths?: string[]
 }
 
 export interface SpawnSpec {
@@ -48,6 +50,7 @@ export interface SpawnSpec {
   predecessor?: string
   worktree?: string
   tier?: number
+  claimPaths?: string[]
 }
 
 export function spawnFrame(s: SpawnSpec): SpawnFrame {
@@ -66,6 +69,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
     ...(s.tier === undefined ? {} : { tier: s.tier }),
+    ...(s.claimPaths?.length ? { claimPaths: s.claimPaths } : {}),
   }
 }
 

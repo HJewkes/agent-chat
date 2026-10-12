@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,6 +12,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import {
   HANDOFF_MAX_BYTES,
+  LAND_WINDOW_MS,
   PANE_EXIT_TIMEOUT_MS,
   PANE_SETTLE_MS,
   PARK_LINE,
@@ -90,6 +92,7 @@ function makeSupervisor(
   semaphore?: Semaphore,
   argvReader: ArgvReader = () => 'claude',
   seatTeleport: SeatTeleportDeps = isolatedSeatTeleport(),
+  platform: NodeJS.Platform = 'darwin',
 ): Supervisor {
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
@@ -98,7 +101,7 @@ function makeSupervisor(
     launcherRunning: async () => false,
     ...(semaphore ? { semaphore } : {}),
     surface: {
-      platform: 'darwin',
+      platform,
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
       runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
     },
@@ -1251,6 +1254,63 @@ describe('a session on another host', () => {
     expect(await supervisor.teleportPlan('nobody')).toMatchObject({ ok: false })
   })
 
+  // CC-951 e: a move off the predecessor's host is refused before the handoff while no site can launch it.
+  it('refuses a cross-host move of a worktree-isolated agent before the handoff row', async () => {
+    const repo = workspace()
+    for (const args of [
+      ['init', '-b', 'main'],
+      ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'seed'],
+    ])
+      execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    const agentId = await spawnAgent({ cwd: repo, isolation: 'worktree' })
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/worktree isolation.*not ended/),
+    })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+  })
+
+  it('refuses an unknown machine, naming the known ones, and ends nothing', async () => {
+    const agentId = adoptSession('cc27', workspace())
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27' }),
+      handoff: 'h',
+      to: 'attic',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/unknown machine "attic"; known machines: /),
+    })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+    expect(killed).toEqual([])
+  })
+
+  it("resolves a configured alias for the caller's own host and launches there as before", async () => {
+    fs.writeFileSync(
+      path.join(process.env.AGENT_CHAT_HOME as string, 'config.json'),
+      JSON.stringify({ machines: { mac: 'caller-host' } }),
+    )
+    const agentId = adoptSession('cc27', workspace())
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', host: 'caller-host' }),
+      handoff: 'h',
+      to: 'mac',
+    })
+
+    expect(result).toMatchObject({ ok: true, remote: true })
+  })
+
   it('leaves a same-host teleport launching locally', async () => {
     const cwd = workspace()
     const agentId = adoptSession('cc27', cwd)
@@ -1347,6 +1407,67 @@ describe('remote control across a teleport', () => {
   it('lets the session say so itself, for Remote Control switched on mid-session', async () => {
     expect(await successorArgs('claude', true)).toContain('--remote-control')
     expect(await successorArgs(PRIMARY, false)).not.toContain('--remote-control')
+  })
+})
+
+/** CC-951: a successor keeps its predecessor's channels, permission mode and effort. */
+describe('launch flags across a teleport', () => {
+  const ARGV =
+    'claude --channels plugin:agent-chat@agent-chat-local plugin:voltras-channel@x --permission-mode auto --effort high'
+
+  async function successor(argv: string | undefined, over: Record<string, unknown> = {}) {
+    supervisor.close()
+    makeSupervisor(undefined, () => argv)
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd }),
+      handoff: 'h',
+      ...over,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return planFor(result.agentId as string).args
+  }
+
+  const after = (args: string[], name: string): string | undefined => args[args.indexOf(name) + 1]
+
+  it("carries what the predecessor's own argv shows", async () => {
+    const args = await successor(ARGV)
+
+    expect(args).toContain('plugin:voltras-channel@x')
+    expect(after(args, '--permission-mode')).toBe('auto')
+    expect(after(args, '--effort')).toBe('high')
+  })
+
+  it('reads this host before trusting what the caller reported', async () => {
+    const args = await successor('claude', { launchSeen: { channels: ['plugin:other@x'] } })
+
+    expect(args).not.toContain('plugin:other@x')
+  })
+
+  it("falls back to the caller's report when this host cannot read the argv", async () => {
+    const args = await successor(undefined, { launchSeen: { channels: ['plugin:other@x'], effort: 'max' } })
+
+    expect(args).toContain('plugin:other@x')
+    expect(after(args, '--effort')).toBe('max')
+  })
+
+  it('hands a remote caller its own reported flags in the spec', async () => {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      launchSeen: { channels: ['plugin:voltras-channel@x'], permissionMode: 'plan', effort: 'low' },
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect((await plan).launch).toMatchObject({
+      channels: ['plugin:voltras-channel@x'],
+      permissionMode: 'plan',
+      profile: { effort: 'low' },
+    })
   })
 })
 
@@ -1677,5 +1798,542 @@ describe('a seat teleport (CC-863)', () => {
 
     expect(handoffPart(result.agentId as string)).toBe('the handoff')
     expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
+  })
+})
+
+/**
+ * CC-951: the successor's surface follows its destination's OS. The incident was an adopted
+ * session on the linux broker, whose successor was handed iTerm and refused; tmux is never run
+ * here, because `relaunch` is where the launch would happen and it is captured instead.
+ */
+describe('the surface a successor opens in', () => {
+  function onPlatform(platform: NodeJS.Platform, seatTeleport = isolatedSeatTeleport()) {
+    supervisor.close()
+    makeSupervisor(undefined, undefined, seatTeleport, platform)
+    return vi.spyOn(supervisor, 'relaunch').mockResolvedValue(undefined)
+  }
+
+  async function teleportAdopted(
+    over: Record<string, unknown> = {},
+    subjectOver: Record<string, unknown> = {},
+  ) {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, ...subjectOver }),
+      handoff: 'h',
+      ...over,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return { agentId, result }
+  }
+
+  it('lands an adopted session on a linux broker in a tmux window when none is named', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { result } = await teleportAdopted()
+
+    expect(result.ok).toBe(true)
+    expect(relaunch).toHaveBeenCalledOnce()
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('tmux-window')
+  })
+
+  it('refuses a named surface the broker cannot run, before recording or ending anything', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { agentId, result } = await teleportAdopted({ surface: 'iterm-window' })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/iterm-window.*macOS/)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+    expect(killed).toEqual([])
+    expect(relaunch).not.toHaveBeenCalled()
+  })
+
+  it('opens a named surface the broker can run', async () => {
+    const relaunch = onPlatform('linux')
+
+    const { result } = await teleportAdopted({ surface: 'headless' })
+
+    expect(result.ok).toBe(true)
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('headless')
+  })
+
+  it("opens a named surface fresh, never typed into the predecessor's pane", async () => {
+    const relaunch = onPlatform('darwin')
+
+    await teleportAdopted({ surface: 'iterm-window' }, { anchor: 'pane-1' })
+
+    expect(relaunch.mock.calls[0]?.[0]).toMatchObject({ surface: 'iterm-window', anchor: 'pane-1' })
+    expect(relaunch.mock.calls[0]?.[0].reuseAnchor).toBeUndefined()
+  })
+
+  it("takes the seat file's surface for this machine", async () => {
+    const seatTeleport = isolatedSeatTeleport()
+    fs.mkdirSync(path.join(seatTeleport.autonomyRoot, 'seats'))
+    fs.writeFileSync(
+      path.join(seatTeleport.autonomyRoot, 'seats', 'cc27.md'),
+      `---\nname: cc27\nsurface: iterm-window\nsurfaces:\n  ${os.hostname()}: headless\n---\n`,
+    )
+    const relaunch = onPlatform('linux', seatTeleport)
+
+    await teleportAdopted()
+
+    expect(relaunch.mock.calls[0]?.[0].surface).toBe('headless')
+  })
+
+  it("gives a remote caller the default for its own OS, not the broker's", async () => {
+    onPlatform('darwin')
+
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      hostPlatform: 'linux',
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect((await plan).launch?.surface).toBe('tmux-window')
+  })
+
+  it('refuses a remote caller a surface its own OS cannot run', async () => {
+    onPlatform('darwin')
+
+    const { result } = await teleportAdopted(
+      { surface: 'iterm-tab', hostPlatform: 'linux' },
+      { host: 'caller-host' },
+    )
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/macOS \(this host is linux\)/) })
+  })
+})
+
+/**
+ * CC-951 slice d: on the local path the successor launches first, and its own
+ * registration is what evicts the predecessor, so the old session ends only once
+ * the new one holds the name. A successor that never registers costs nothing: the
+ * predecessor was never signalled and is told so.
+ */
+describe('successor-first ordering (CC-951)', () => {
+  const PREDECESSOR_PID = 9999
+
+  /** The predecessor's live connection, the way its MCP server holds the name. */
+  function connectAs(name: string, agentId: string): Conn {
+    const conn = fakeConn()
+    const reply = core.register(conn, {
+      t: 'register',
+      name,
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      agentId,
+      hostPid: PREDECESSOR_PID,
+      host: os.hostname(),
+    })
+    expect(reply.ok).toBe(true)
+    return conn
+  }
+
+  const signalled = () => killed.filter(k => k.pid === PREDECESSOR_PID)
+
+  it('ends the predecessor only after its successor registers and evicts it', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+    const evicted: Conn[] = []
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(signalled()).toEqual([])
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_stood_down')
+
+    const successorId = result.agentId as string
+    const successor = fakeConn()
+    const reply = core.register(
+      successor,
+      { t: 'register', name: 'scout', workingOn: 'w', cwd: '/tmp', pid: 2, agentId: successorId },
+      conn => evicted.push(conn),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(reply.ok).toBe(true)
+    expect(evicted).toEqual([predecessor])
+    expect(signalled()[0]).toEqual({ pid: PREDECESSOR_PID, signal: 'SIGTERM' })
+    const order = core.events
+      .agentEvents()
+      .filter(r => r.ref === agentId || r.ref === successorId || r.msgId === successorId)
+      .map(r => `${r.kind}:${r.ref === agentId ? 'old' : 'new'}`)
+    expect(order.indexOf('agent_spawned:new')).toBeLessThan(order.indexOf('agent_attached:new'))
+    expect(order.indexOf('agent_attached:new')).toBeLessThan(order.indexOf('agent_stood_down:old'))
+    expect(order).toContain('agent_retired:old')
+  })
+
+  it('refuses the evicted predecessor when its MCP server reconnects', async () => {
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+    const successor = fakeConn()
+    core.register(successor, {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: result.agentId as string,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const again = core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      agentId,
+      hostPid: PREDECESSOR_PID,
+    })
+
+    expect(again.ok).toBe(false)
+    expect(core.registry.connFor('scout')).toBe(successor)
+  })
+
+  it('keeps the predecessor and retires the successor when it never registers', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    const successorId = result.agentId as string
+    expect(signalled()).toEqual([])
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(successorId).map(r => r.kind)).toContain('agent_retired')
+    expect(core.registry.connFor('scout')).toBe(predecessor)
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(false)
+    expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(true)
+  })
+
+  /** The predecessor's own exit, as its headless child reports it. */
+  async function predecessorExits(agentId: string): Promise<void> {
+    const recordExit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
+      .recordExit
+    await recordExit.call(supervisor, agentId, { code: 0, signal: null })
+  }
+
+  const humanNotices = () => core.events.humanQueue().map(item => item.text)
+
+  it('records a predecessor that exits during the overlap without finishing or retiring it', async () => {
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    core.append({
+      kind: 'message',
+      actor: 'scout',
+      target: 'human',
+      body: 'Status: DONE\nPR: example/repo#1',
+    })
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+    const noticesBefore = humanNotices().length
+
+    await predecessorExits(agentId)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const exited = rowsFor(agentId).find(r => r.kind === 'agent_exited')
+    expect(exited?.body).toBe('exited while its teleport successor was starting')
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(humanNotices()).toHaveLength(noticesBefore)
+
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: result.agentId as string,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rowsFor(agentId).filter(r => r.kind === 'agent_retired')).toHaveLength(1)
+    expect(signalled()).toEqual([])
+  })
+
+  it('tells the human, not the gone predecessor, when neither is left running', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    await predecessorExits(agentId)
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    const successorId = result.agentId as string
+    expect(humanNotices().some(t => t.includes('ended while its teleport successor was starting'))).toBe(true)
+    expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(false)
+    expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(true)
+  })
+
+  it('closes a visible successor the broker opened when the teleport rolls back', async () => {
+    const scripts: string[] = []
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      seatTeleport: isolatedSeatTeleport(),
+      launcherRunning: async () => false,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        runAppleScript: async script => {
+          scripts.push(script)
+          return script.includes('is running') ? 'true' : 'fake-pane-uuid'
+        },
+      },
+    })
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h', surface: 'iterm-tab' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(scripts.some(script => script.includes('to close'))).toBe(true)
+  })
+
+  it('keeps waiting when a retry is skipped because the successor run-agent is already running', async () => {
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      seatTeleport: isolatedSeatTeleport(),
+      launcherRunning: async () => true,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        runAppleScript: async () => 'true',
+      },
+    })
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    vi.spyOn(supervisor as unknown as { launchOn: () => Promise<object> }, 'launchOn').mockRejectedValueOnce(
+      new Error('launch check timed out'),
+    )
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS + 1_000)
+    const successorId = result.agentId as string
+    expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: successorId,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(signalled()[0]).toEqual({ pid: PREDECESSOR_PID, signal: 'SIGTERM' })
+  })
+
+  it('still ends the predecessor first when the successor reuses its pane', async () => {
+    const agentId = await spawnAgent()
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }),
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(PANE_EXIT_TIMEOUT_MS)
+
+    const kindsInOrder = core.events
+      .agentEvents()
+      .filter(r => r.ref === agentId || r.msgId === result.agentId)
+      .map(r => r.kind)
+    expect(kindsInOrder.indexOf('agent_stood_down')).toBeLessThan(kindsInOrder.lastIndexOf('agent_spawned'))
+  })
+})
+
+/**
+ * CC-951 slice f: a predecessor on another host moving to the broker's host. The broker launches
+ * the successor itself, and the predecessor, which only its own host can signal, is told to end
+ * itself once its successor has registered.
+ */
+describe('a remote predecessor moving to the broker host (CC-951)', () => {
+  const REMOTE_PID = 7777
+
+  /** The predecessor's MCP server, connected from its own host. */
+  function connectFromAway(agentId: string, cwd: string): Conn {
+    const conn = fakeConn()
+    const reply = core.register(conn, {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd,
+      pid: 1,
+      agentId,
+      hostPid: REMOTE_PID,
+      host: 'caller-host',
+    })
+    expect(reply.ok).toBe(true)
+    return conn
+  }
+
+  async function moveHere(cwd: string) {
+    const agentId = await spawnAgent()
+    connectFromAway(agentId, cwd)
+    stopAutoAttach()
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { cwd, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+      endsSelf: true,
+    })
+    let answered: Awaited<ReturnType<typeof supervisor.teleportPlan>> | undefined
+    void supervisor.teleportPlan(agentId).then(reply => (answered = reply))
+    return { agentId, result, answered: () => answered }
+  }
+
+  const registerSuccessor = (successorId: string) =>
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: successorId,
+    })
+
+  it('refuses a cwd that does not exist on the broker host, and ends nothing', async () => {
+    const missing = path.join(workspace(), 'only-on-the-mac')
+    const agentId = await spawnAgent()
+    connectFromAway(agentId, missing)
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { cwd: missing, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+      endsSelf: true,
+    })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/working directory .*only-on-the-mac does not exist on .*not ended/),
+    })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(killed).toEqual([])
+  })
+
+  it('refuses a caller whose agent-chat cannot end itself, and ends nothing', async () => {
+    const cwd = workspace()
+    const agentId = await spawnAgent()
+    connectFromAway(agentId, cwd)
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { cwd, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+    })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/predates.*not ended/) })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+  })
+
+  it('launches the successor here, and tells the predecessor to end itself only after it attaches', async () => {
+    const { agentId, result, answered } = await moveHere(workspace())
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    const successorId = result.agentId as string
+    expect(result).toMatchObject({ ok: true, remote: true })
+    expect(fs.existsSync(planPath(successorId))).toBe(true)
+    expect(answered()).toBeUndefined()
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_stood_down')
+
+    expect(registerSuccessor(successorId).ok).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(answered()).toEqual({ ok: true, endSelf: true })
+    expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+    expect(killed.filter(k => k.pid === REMOTE_PID)).toEqual([])
+  })
+
+  it('keeps the predecessor and tells its host when the successor never attaches', async () => {
+    const { agentId, result, answered } = await moveHere(workspace())
+
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(answered()).toMatchObject({ ok: false, reason: expect.stringMatching(/did not register/) })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(result.agentId as string).map(r => r.kind)).toContain('agent_retired')
+    expect(
+      core.events
+        .inboxFor('scout', 5)
+        .map(r => r.text)
+        .join('\n'),
+    ).toMatch(/still live/)
+  })
+})
+
+/** CC-951 slice f: a new surface on the remote predecessor's own host opens before it ends. */
+describe('a remote predecessor asking for a new surface on its own host (CC-951)', () => {
+  async function newSurface(endsSelf: boolean) {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    stopAutoAttach()
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      surface: 'iterm-window',
+      hostPlatform: 'darwin',
+      ...(endsSelf ? { endsSelf: true } : {}),
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return {
+      cwd,
+      agentId,
+      successorId: result.agentId as string,
+      plan: await supervisor.teleportPlan(agentId),
+    }
+  }
+
+  it('hands a successor-first spec, and sends endSelf only once the successor attaches', async () => {
+    const { cwd, agentId, successorId, plan } = await newSurface(true)
+    expect(plan.launch).toMatchObject({ surface: 'iterm-window', successorFirst: true })
+
+    expect(supervisor.teleportLaunched(agentId, { successor: successorId, ok: true })).toEqual({ ok: true })
+    // Asked at once, before any continuation runs: it must not get the launch plan back.
+    let answered: Awaited<ReturnType<typeof supervisor.teleportPlan>> | undefined
+    void supervisor.teleportPlan(agentId).then(reply => (answered = reply))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(answered).toBeUndefined()
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'cc27',
+      workingOn: 'w',
+      cwd,
+      pid: 2,
+      agentId: successorId,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(answered).toEqual({ ok: true, endSelf: true })
+    expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+  })
+
+  it('keeps the CC-913 order for a caller whose agent-chat cannot end itself', async () => {
+    const { plan } = await newSurface(false)
+
+    expect(plan.launch?.surface).toBe('iterm-window')
+    expect(plan.launch).not.toHaveProperty('successorFirst')
   })
 })

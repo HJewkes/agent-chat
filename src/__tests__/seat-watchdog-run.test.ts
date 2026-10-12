@@ -26,6 +26,7 @@ import { seatSurface } from '../agents/seats/charter.js'
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { watchdogInstall, wakeSeat } from '../cli/verbs/seats.js'
+import { respawnSeat } from '../cli/verbs/seat-respawn.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { startSupervisor, type RestartHarness, type SurfaceSpawn } from './helpers/restart-harness.js'
 import type { Launchctl } from '../mirror/launchd.js'
@@ -594,6 +595,180 @@ describe('seat liveness (CC-320)', () => {
     expect(dry[0]).toMatch(/^seat-a: WOULD REFUSE: latest session s-h2 /)
   })
 
+  // CC-959 slice c: the same incident, now with a relaunch that can retire by id and spawn on the seat's account.
+  const PERSONAL = '/home/example/.profiles/personal'
+  const incident = (spawnedDir = '/home/example/.profiles/server'): Harness => {
+    const row = { name: 'seat-a', profile: 'lead', state: 'exited', spawnedBy: 'human' }
+    const h = harness({
+      agents: [
+        {
+          ...row,
+          agentId: 'g9',
+          origin: 'spawned',
+          generation: 9,
+          configDir: spawnedDir,
+        },
+        { ...row, agentId: 'h1', origin: 'adopted', sessionId: 's-h1', spawnedAt: 1 },
+        {
+          ...row,
+          agentId: 'h2',
+          origin: 'adopted',
+          sessionId: 's-h2',
+          spawnedAt: 2,
+          cwd: '/home/example/projects',
+        },
+      ],
+      connected: [],
+    })
+    h.deps.readSeatFile = seat =>
+      seat === 'seat-a' ? SEAT.replace('---\n', `---\nconfig_dir: ${PERSONAL}\nprofile: lead\n`) : ''
+    h.deps.relaunchHandoff = () => 'HANDOFF'
+    dark(h, 54)
+    return h
+  }
+
+  // Catches: the stale gate still refusing when a relaunch exists, or the plan losing the latest session or its account.
+  it('relaunches the latest hand-started session on the seat file account instead of waking the stale row', async () => {
+    const h = incident()
+    const plans: unknown[] = []
+    h.deps.relaunchSeat = async (seat, plan) => (
+      plans.push({ seat, plan }),
+      { ok: true, detail: 'relaunched' }
+    )
+
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(plans).toEqual([
+      {
+        seat: 'seat-a',
+        plan: {
+          target: expect.objectContaining({ kind: 'resume-session', sessionId: 's-h2', stale: ['g9'] }),
+          account: expect.objectContaining({ configDir: PERSONAL, profile: 'lead' }),
+          message: RESUME_MESSAGE,
+          fresh: 'HANDOFF',
+        },
+      },
+    ])
+    expect(h.logs).toEqual([expect.stringMatching(/; resumed seat-a \(relaunched\)$/)])
+    expect(dry[0]).toMatch(new RegExp(`^seat-a: WOULD RESUME: .*; as session s-h2 on ${PERSONAL} `))
+  })
+
+  // Catches: a broker that ignored the retire's agent id being treated as a relaunch rather than flagged.
+  it('flags the seat once when the broker cannot retire the stale row by id', async () => {
+    const h = incident()
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    h.deps.relaunchSeat = async () => ({
+      ok: false,
+      refused: true,
+      detail: 'broker cannot retire g9 by id',
+    })
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(raised).toEqual([
+      expect.stringMatching(
+        /^watchdog resume seat-a REFUSED: latest session s-h2 .*; broker cannot retire g9 by id$/,
+      ),
+    ])
+  })
+
+  // CC-959 review, fails on b1b3297c: the retire ran, then the broker refused the spawn; that went
+  // unraised, and the next run found no granted row, so the seat stayed dark with nobody told.
+  it('raises one item when the broker refuses the spawn after the stale row was retired', async () => {
+    // CC-1053: the seat file's account must be one its spawned row ran on, or nothing is retired.
+    const h = incident(PERSONAL)
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    // CC-1053: g9 ran as s-h2, so the hand-started h2 is the owner resuming the seat's own session.
+    const lineage = { name: 'seat-a', agentId: 'g9', origin: 'spawned', sessionId: 's-h2', spawnedAt: 0 }
+    const replies = [
+      { t: 'agents_result', agents: [lineage] },
+      { t: 'spawn_result', ok: true, agentId: 'g9', name: 'seat-a' },
+      { t: 'spawn_result', ok: false, code: 'machine_headless_limit', reason: 'headless limit reached' },
+    ]
+    const client = { request: async () => replies.shift() } as unknown as BrokerClient
+    h.deps.relaunchSeat = (seat, plan) =>
+      respawnSeat(client, seat, plan, { surface: 'headless', from: 'seat file' })
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(raised).toEqual([
+      expect.stringMatching(
+        /^watchdog resume seat-a REFUSED: .*; spawn refused: headless limit reached; already retired g9 \(profile lead, cwd \/home\/example\/projects\)$/,
+      ),
+    ])
+  })
+
+  // CC-959: the owner's pane carried on as a provisional session 2 s after the seat deregistered.
+  const SEAT_CWD = '/home/example/projects'
+  const paneRoster = (h: Harness, cwd = SEAT_CWD, afterDarkMs = 2_000): Roster => ({
+    agents: [
+      {
+        name: 'projects',
+        profile: 'adopted',
+        state: 'live',
+        spawnedBy: 'human',
+        agentId: 'p1',
+        origin: 'adopted',
+        provisionalName: true,
+        cwd,
+        spawnedAt: (h.presence?.darkSince ?? 0) + afterDarkMs,
+      },
+    ],
+    connected: ['projects'],
+  })
+  const paneHarness = (darkMinutes: number, cwd?: string, afterDarkMs?: number) => {
+    const h = harness(DARK)
+    h.deps.readSeatFile = seat => (seat === 'seat-a' ? SEAT.replace('---\n', `---\ncwd: ${SEAT_CWD}\n`) : '')
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    dark(h, darkMinutes)
+    const roster = paneRoster(h, cwd, afterDarkMs)
+    h.deps.roster = async () => roster
+    return { h, raised }
+  }
+
+  // Catches: the 60 s window check removed or widened.
+  it('holds the resume while a provisional session continues the seat pane, and names it', async () => {
+    const { h, raised } = paneHarness(10)
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    expect(raised).toEqual([])
+    expect(dry[0]).toMatch(/^seat-a: skip: .*not resumed: possible live seat pane projects \(p1\)/)
+    expect(out.filter(line => line.includes('possible live seat pane projects (p1)'))).toHaveLength(1)
+  })
+
+  it('resumes when the provisional session appeared over a minute after the seat went dark', async () => {
+    const { h } = paneHarness(10, SEAT_CWD, 61_000)
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // Catches: the cwd match removed.
+  it('resumes when the provisional session runs in another cwd', async () => {
+    const { h } = paneHarness(10, '/home/example/elsewhere')
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // Catches: the cap dropped, or a cap that resumes instead of asking.
+  it('raises one human item, and still resumes nothing, once the pane has held the seat over 60 min', async () => {
+    const { h, raised } = paneHarness(61)
+    await runWatchdog(h.deps, ONE)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    const line =
+      'watchdog resume seat-a HELD over 60 min: possible live seat pane projects (p1) in ' +
+      `${SEAT_CWD}; not resumed, check whether it is the seat`
+    expect(h.wakes).toEqual([])
+    expect(raised).toEqual([line])
+    expect(h.logs).toEqual([`seat-a: ${line}`])
+  })
+
   it('treats a roster timeout as unknown: no resume, no try counted, one log line', async () => {
     const h = harness(DARK)
     dark(h, 30)
@@ -894,11 +1069,13 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(out).toContainEqual(expect.stringMatching(/not resumed: budget closed: .*per_day_points 10$/))
   })
 
-  it('does not resume a seat whose pool has no budget reading', async () => {
+  // CC-466: catches liveness given the old hold, which any closed budget filled, while the relaunch got the split one.
+  it('resumes once a seat whose pool has no budget reading, since its own boot takes one', async () => {
     const h = harness(DARK)
     h.deps.readBudget = () => ({ found: false, path: '/x' }) as BudgetRead
     dark(h, 30)
-    expect(await runs(h, 3)).toBe(0)
+    expect(await runs(h, 3)).toBe(1)
+    expect(resumes(h)).toBe(1)
   })
 
   it('never wakes by the idle path a dark seat whose resume a stop refused, and counts no wake against it', async () => {
@@ -1438,6 +1615,62 @@ describe('watchdog relaunch (CC-465)', () => {
     expect(relaunchLogs(h)).toEqual([`seat-a: ${line}`])
     expect(h.raised).toEqual([line])
     expect(first).toContain(line)
+  })
+
+  // CC-466: catches `pass.machine` dropped from the hold.
+  it('leaves a stale dark seat dark while the machine is under pressure', async () => {
+    const h = relaunching(DARK, 20)
+    h.deps.machineStop = () => 'machine under pressure: load5 31 (limit 28)'
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([])
+    expect(out).toContainEqual(expect.stringMatching(/not relaunched: machine under pressure/))
+  })
+
+  // CC-466: catches `noReading` ignored by the relaunch hold, or not set when no reading was ever kept.
+  it('relaunches a stale dark seat whose pool has no reading, still logging the pause', async () => {
+    const h = relaunching(DARK, 20)
+    h.deps.readBudget = () => ({ found: false, path: '/x' }) as BudgetRead
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([
+      { seat: 'seat-a', message: 'handoff for seat-a, quiet 20 min', connected: false },
+    ])
+    expect(relaunchLogs(h)).toHaveLength(1)
+    expect(h.logs).toContain(
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: no seven_day and five_hour reading for this pool',
+    )
+    expect(h.doc.seats['seat-a']?.budgetPaused).toBe(true)
+  })
+
+  // CC-466: catches the flag set on only one of the two no-reading closures.
+  it('relaunches a stale dark seat whose last good reading is too old to stand in', async () => {
+    const h = relaunching(DARK, 20)
+    const read = budget(h.fiveHour, h.sevenDay)
+    if (read.found) delete read.budget.rate_limits.five_hour
+    h.deps.readBudget = () => read
+    h.doc.lastReadings = { claude: { at: h.now() - 61 * 60_000, sevenDay: 19, fiveHour: 41 } }
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toHaveLength(1)
+    expect(h.logs).toContainEqual(expect.stringContaining('the last good one is 3660s old'))
+  })
+
+  // CC-466: catches any closed budget let through, not only a missing reading.
+  it('leaves a stale dark seat at its per_day_points stop dark', async () => {
+    const h = relaunching(DARK, 20)
+    h.doc.pools = { claude: { since: h.now() - 3_600_000, last: 19, spent: 9 } }
+    h.sevenDay = 20
+
+    const out = await runWatchdog(h.deps, ONE)
+
+    expect(h.wakes).toEqual([])
+    expect(relaunchLogs(h)).toEqual([])
+    expect(out).toContainEqual(expect.stringMatching(/not relaunched: budget closed: .*per_day_points 10/))
   })
 
   // Catches: a dry run that relaunches, logs or saves.

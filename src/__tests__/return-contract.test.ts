@@ -611,23 +611,23 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
     expect(IMPLEMENTER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 
+  const BARE = [SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t']
+  const LIST_ITEMS = ['- Shepherd: none', '* Shepherd: none', '2. Shepherd: none']
+
   // Mutation caught: ignoring the marker hands the agent the register sentence again.
-  it.each([SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t'])(
-    'drops the register and no-wait text for the line %j',
-    async marker => {
-      const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
+  it.each([...BARE, ...LIST_ITEMS])('drops the register and no-wait text for the line %j', async marker => {
+    const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
 
-      const { text } = await delivered({ brief })
+    const { text } = await delivered({ brief })
 
-      const appended = flat(text.slice(brief.length))
-      expect(appended).not.toContain(REGISTER)
-      expect(appended).not.toContain('never wait on CI')
-      expect(appended).not.toContain('you do not wait for CI')
-      expect(appended).toContain('Do not run `titan-factory shepherd register`.')
-      expect(appended).toContain(CI_WAIT)
-      expect(appended).toContain('chat_send to coord')
-    },
-  )
+    const appended = flat(text.slice(brief.length))
+    expect(appended).not.toContain(REGISTER)
+    expect(appended).not.toContain('never wait on CI')
+    expect(appended).not.toContain('you do not wait for CI')
+    expect(appended).toContain('Do not run `titan-factory shepherd register`.')
+    expect(appended).toContain(CI_WAIT)
+    expect(appended).toContain('chat_send to coord')
+  })
 
   // Mutation caught: a substring test opts out a brief that only talks about the marker.
   it('keeps Shepherd for a brief that mentions the marker mid-sentence', async () => {
@@ -637,6 +637,18 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
 
     expect(text).toBe(`${brief}\n\n${block('implementer')}`)
   })
+
+  // Mutation caught: stripping any leading text, not just one list marker, opts these out.
+  it.each(['- note: Shepherd: none is for seats', '-Shepherd: none'])(
+    'keeps Shepherd for the line %j',
+    async line => {
+      const brief = `add the parser\n${line}`
+
+      const { text } = await delivered({ brief })
+
+      expect(text).toBe(`${brief}\n\n${block('implementer')}`)
+    },
+  )
 
   it('hands a brief without the marker the default block unchanged', async () => {
     const { text } = await delivered()
@@ -668,8 +680,29 @@ describe('the load-test rule (CC-473)', () => {
     ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
   ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
     expect(text).not.toContain('pkill')
-    expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
-    expect(flat(text)).toContain('kill only those, never by name pattern; confirm with `pgrep` none survive')
+    expect(flat(text)).toContain(
+      'Load test only if the brief asks: kill only burner PIDs you recorded, not by name; `pgrep` shows none left.',
+    )
+  })
+})
+
+describe('the Concerns and Notes lines (CC-399)', () => {
+  // Mutation caught: dropping the Concerns/Notes sentence, which let a DONE_WITH_CONCERNS carry only notes.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block splits action-needed Concerns from Notes, within the cap', (_which, block) => {
+    const text = flat(block)
+
+    expect(text).toContain('Then `Concerns:` (what <spawner> must act on, or none;')
+    expect(text).toContain('DONE_WITH_CONCERNS needs one)')
+    expect(text).toContain('and `Notes:` (the rest).')
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  it('leaves the reviewer block without either line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Concerns:')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Notes:')
   })
 })
 

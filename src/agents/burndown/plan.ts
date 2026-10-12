@@ -50,6 +50,8 @@ export interface Dispatch {
   configDir?: string
   /** The seat's `grants_extra`; absent means the initiative's autonomy grants. */
   grants?: string[]
+  /** CC-952: the slice's declared owns, claimed for the agent at spawn. */
+  owns?: string[]
 }
 
 /** Worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */

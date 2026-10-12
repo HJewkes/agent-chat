@@ -31,14 +31,18 @@ import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
+import { addHostCommands } from './verbs/host.js'
+import { addMachineCommands } from './verbs/machine.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
+import { teleportRequestVerb } from './verbs/teleport-request.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
+import { unknownCommand } from './unknown-command.js'
 import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
@@ -198,6 +202,12 @@ function addAgentCommands(program: Command): void {
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
       agents.parseSurface,
     )
+    .option(
+      '--spawned-as <who>',
+      'shepherd or burndown: the automation this spawn is on behalf of',
+      agents.parseSpawnedAs,
+    )
+    .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
@@ -208,6 +218,7 @@ function addAgentCommands(program: Command): void {
 
   const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
   addVerb(teleport, teleportAbortVerb)
+  addVerb(teleport, teleportRequestVerb)
 
   const handoff = program.command('handoff').description('stored teleport handoffs').helpGroup(AGENTS)
   addVerb(handoff, handoffLastVerb)
@@ -314,7 +325,8 @@ function addHiddenCommands(program: Command): void {
     .requiredOption('--pid <pid>', "the predecessor's Claude Code, whose exit frees its pane")
     .requiredOption('--surface <surface>', 'where the successor runs')
     .option('--anchor <anchor>', "the predecessor's pane")
-    .action(async (id: string, options: { pid: string; surface: string; anchor?: string }) => {
+    .option('--now', 'launch at once, beside the running predecessor (CC-951)')
+    .action(async (id: string, options: { pid: string; surface: string; anchor?: string; now?: boolean }) => {
       const { runLandVerb } = await import('../server/caller-land.js')
       await runLandVerb(id, options)
     })
@@ -345,6 +357,26 @@ function addHiddenCommands(program: Command): void {
       await leakPretool()
     })
 
+  // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
+  program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
+    const { seatHook } = await import('./verbs/seat-hook.js')
+    await seatHook(phase)
+  })
+
+  program
+    .command('seat-blocks', { hidden: true })
+    .description("each seat's blocked minutes over a window, and any block still open")
+    .option('--since <window>', 'window such as 90m, 24h or 7d', '24h')
+    .action(async (options: { since: string }) => {
+      const { seatBlocks } = await import('./verbs/seat-hook.js')
+      try {
+        console.log(seatBlocks(options).join('\n'))
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err))
+        process.exitCode = 1
+      }
+    })
+
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })
@@ -367,6 +399,8 @@ export function buildProgram(): Command {
   addMirrorCommands(program)
   addBurndownCommands(program)
   addSeatsCommands(program)
+  addMachineCommands(program)
+  addHostCommands(program)
   addDebugCommands(program)
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
@@ -382,5 +416,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     program.outputHelp()
     return
   }
+  const unknown = unknownCommand(program, argv.slice(2))
+  if (unknown !== undefined)
+    program.error(`error: unknown command '${unknown}'`, { exitCode: 1, code: 'commander.unknownCommand' })
   await program.parseAsync(argv)
 }

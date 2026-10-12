@@ -49,6 +49,9 @@ verdict() { printf "(1791050000000,'message','%s','Verdict: FIX_FIRST\nPR: o/pro
 } | sqlite3 "$scratch/classes.db"
 out=$(SCORECARD_EVENTS_DB="$scratch/classes.db" "$here/scorecard" 2>&1)
 expect "mechanical share counts deduped classified rounds and reports unclassified" "Mechanical first-blocker share" "60.0 percent (3 of 5) of classified; 1 unclassified of 6 FIX_FIRST rounds"
+mkdir "$scratch/agent-chat-home"; cp "$scratch/classes.db" "$scratch/agent-chat-home/events.db"
+out=$(unset SCORECARD_EVENTS_DB; AGENT_CHAT_HOME="$scratch/agent-chat-home" HOME="$scratch/no-home" "$here/scorecard" 2>&1)
+expect "the events db defaults to AGENT_CHAT_HOME" "Mechanical first-blocker share" "60.0 percent (3 of 5) of classified; 1 unclassified of 6 FIX_FIRST rounds"
 
 low=$(SCORECARD_LOGS="$fx/logs-lowcov" "$here/scorecard" 2>&1)
 case "$(printf '%s\n' "$low" | grep '^SCORECARD Cost per merged PR:')" in

@@ -10,11 +10,11 @@ const SEAT_DIR = path.resolve(import.meta.dirname, '../../scripts/seat')
 const HERMETIC_SUITES = [
   'test-ci-wait.sh',
   'test-log.sh',
-  'test-merge-check.sh',
   'test-merge.sh',
   'test-pace.sh',
   'test-premerge.sh',
   'test-queue.sh',
+  'test-queue-turns.sh',
   'test-scorecard.sh',
 ]
 // Drives the real active-work CLI, which is not shown to write only under ACTIVE_ROOT.
