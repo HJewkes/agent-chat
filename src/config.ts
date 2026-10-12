@@ -61,6 +61,7 @@ export interface AgentChatConfig {
   processGuardMode?: unknown
   gitShellAliases?: unknown
   autoRetire?: unknown
+  autoPark?: unknown
   machineHoldOperators?: unknown
 }
 
@@ -253,6 +254,19 @@ export function resolveAutoRetireOnReport(spawner: string): boolean {
   if (Array.isArray(value) && value.every(name => typeof name === 'string')) return value.includes(spawner)
   logInvalidOnce({ key: 'autoRetire.onFinalReport', value, fallback: false })
   return false
+}
+
+/**
+ * CC-1039: whether the broker parks a non-reviewer agent's clean, pushed tree when it exits.
+ * `autoPark.onExit` is on by default; `false` turns it off. Read per exit, so a change needs no
+ * broker restart. Anything else is logged and read as on.
+ */
+export function resolveAutoParkOnExit(): boolean {
+  const autoPark = readConfig().autoPark
+  const value = isObject(autoPark) ? autoPark.onExit : autoPark
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  logInvalidOnce({ key: 'autoPark.onExit', value, fallback: true })
+  return true
 }
 
 /**
