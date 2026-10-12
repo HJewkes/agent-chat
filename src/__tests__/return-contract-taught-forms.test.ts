@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   BODY_FILE_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
+  PROBE_SANDBOX_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
@@ -159,6 +160,13 @@ describe('the repo profile templates', () => {
     const prelude = (JSON.parse(fs.readFileSync(file, 'utf8')) as { promptPrelude: string }).promptPrelude
     expect(prelude).toContain(rule)
     expect(prelude).toContain(QUOTE_RULE)
+  })
+
+  // CC-713. Mutation caught: deleting the sentence from profiles/bd-reviewer.json.
+  it('bd-reviewer carries the probe-sandbox rule', () => {
+    const file = path.resolve(import.meta.dirname, '../../profiles/bd-reviewer.json')
+    const prelude = (JSON.parse(fs.readFileSync(file, 'utf8')) as { promptPrelude: string }).promptPrelude
+    expect(prelude).toContain(PROBE_SANDBOX_RULE)
   })
 
   it('has the implementer delete its pr-ready file and the reviewer write none', () => {
