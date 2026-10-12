@@ -21,17 +21,26 @@ const task = (id: string, doneWhen: string, tags: string[]): Task => ({
 const refuse = (t: Task, grants: string[] = []) => taskRefusal(t, grants, new Set())
 
 describe('publishOnlyProblem', () => {
-  it('accepts one publish of a package at a version', () => {
-    expect(publishOnlyProblem('Publish @t/coordinator at 0.9.0.')).toBeUndefined()
+  it.each([
+    ['one package', 'Publish @t/coordinator at 0.9.0.'],
+    ['a v-prefixed version', 'publish agent-chat at v1.2.0'],
+    ['a short package list', 'Publish @t/a, @t/b and @t/c at 2.0.0.'],
+  ])('accepts %s at a version', (_name, doneWhen) => {
+    expect(publishOnlyProblem(doneWhen)).toBeUndefined()
   })
 
   it.each([
-    ['no publish', 'The widget renders at 1.0.0.', 'names no publish'],
-    ['no version', 'publish the release', 'names no version'],
-    ['another op', 'Publish @t/x at 1.0.0 and deploy the site.', "deploy ('deploy')"],
-    ['a second step', 'Add the flag; publish 0.9.0.', 'more than one step'],
-  ])('rejects a done_when with %s', (_name, doneWhen, why) => {
-    expect(publishOnlyProblem(doneWhen)).toContain(why)
+    ['empty', ''],
+    ['no publish', 'The widget renders at 1.0.0.'],
+    ['no version', 'publish the release'],
+    ['another op', 'Publish @t/x at 1.0.0 and deploy the site.'],
+    ['a semicolon step', 'Add the flag; publish 0.9.0.'],
+    ['a comma step', 'Add the flag, publish @t/x at 0.9.0.'],
+    ['a then step', 'Add the --foo flag to the CLI, then publish @t/x at 1.0.0.'],
+    ['a trailing condition', 'X and publish @t/x at 1.0.0 once CI is green'],
+    ['a step on its own line', 'Add flag.\nPublish @t/x at 1.0.0.'],
+  ])('rejects a done_when with %s', (_name, doneWhen) => {
+    expect(publishOnlyProblem(doneWhen)).toContain('publish <package> at <version>')
   })
 })
 
@@ -44,17 +53,24 @@ describe('the dispatch gate on an ops:publish task', () => {
   })
 
   it.each([
-    ['without', []],
-    ['with', RELEASE],
-  ])('refuses a mixed publish as ops-unresolved naming the split, %s the grant', (_name, grants) => {
-    const mixed = task('P-2', 'Add the flag; publish 0.9.0.', ['ops:publish'])
+    ['without', [], 'Add the flag; publish 0.9.0.'],
+    ['with', RELEASE, 'Add the flag; publish 0.9.0.'],
+    ['with', RELEASE, 'Add the --foo flag to the CLI, then publish @t/x at 1.0.0.'],
+    ['with', RELEASE, 'X and publish @t/x at 1.0.0 once CI is green'],
+    ['with', RELEASE, 'Add flag.\nPublish @t/x at 1.0.0.'],
+    ['with', RELEASE, 'Add the flag, publish @t/x at 0.9.0.'],
+  ])(
+    'refuses a mixed publish as ops-unresolved naming the split, %s the grant: %j',
+    (_name, grants, doneWhen) => {
+      const mixed = task('P-2', doneWhen, ['ops:publish'])
 
-    const refusal = refuse(mixed, grants)
+      const refusal = refuse(mixed, grants)
 
-    expect(refusal?.kind).toBe('ops-unresolved')
-    expect(refusal?.reason).toContain('dep:')
-    expect(refusal?.reason).toContain('publish <package> at <version>')
-  })
+      expect(refusal?.kind).toBe('ops-unresolved')
+      expect(refusal?.reason).toContain('dep:')
+      expect(refusal?.reason).toContain('publish <package> at <version>')
+    },
+  )
 
   it('refuses a publish with no version as ops-unresolved', () => {
     expect(refuse(task('P-3', 'publish the release', ['ops:publish']), RELEASE)?.kind).toBe('ops-unresolved')

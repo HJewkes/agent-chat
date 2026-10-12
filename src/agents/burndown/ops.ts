@@ -93,21 +93,21 @@ export function opsLint(doneWhen: string, tags: readonly string[]): OpsHit[] {
   return opsHits(doneWhen).filter(hit => !declared.has(hit.op))
 }
 
-const SEMVER = /\b\d+\.\d+\.\d+\b/
+const PACKAGE = String.raw`[@\w][\w@./-]*`
+
+/** The whole done_when is one publish of one or more packages at a semver, and nothing else. */
+const PUBLISH_ONLY = new RegExp(
+  String.raw`^\s*publish\s+${PACKAGE}(\s*(,|\band\b)\s*${PACKAGE})*\s+at\s+v?\d+\.\d+\.\d+\.?\s*$`,
+  'i',
+)
 
 /**
  * CC-987: why `doneWhen` is not one publish ("publish <package> at <version>"); undefined when it is.
  * Only a publish-only task waits on the release grant, so its build and consumer work are their own tasks.
+ * The shape is matched over the whole text, so any other clause fails closed.
  */
-export function publishOnlyProblem(doneWhen: string): string | undefined {
-  const hits = opsHits(doneWhen)
-  if (!hits.some(hit => hit.op === 'publish')) return 'it names no publish'
-  if (!SEMVER.test(doneWhen)) return 'it names no version to publish'
-  const other = hits.filter(hit => hit.op !== 'publish')
-  if (other.length > 0) return `it also mentions ${other.map(hit => `${hit.op} ('${hit.text}')`).join(', ')}`
-  if (doneWhen.includes(';')) return 'it lists more than one step'
-  return undefined
-}
+export const publishOnlyProblem = (doneWhen: string): string | undefined =>
+  PUBLISH_ONLY.test(doneWhen) ? undefined : `its done_when is not exactly 'publish <package> at <version>'`
 
 /** A task a person does: burndown routes it and never dispatches it. */
 export const isHumanStep = (tags: readonly string[]): boolean =>
