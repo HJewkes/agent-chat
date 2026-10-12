@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { isProcessAlive } from '../broker/lifecycle.js'
+import { brokerHost } from '../broker/host-guard.js'
 import { psArgvReader, type ArgvReader } from '../broker/host-channels.js'
 import type { AgentIdentity } from '../protocol.js'
 import { knownConfigDirs, readSessionRecords, type SessionRecord } from './claude-sessions.js'
@@ -77,10 +78,27 @@ export function sessionLiveness(agent: AgentIdentity, probe: ProcessProbe): Live
   )
 }
 
-export const agentLiveness = (agent: AgentIdentity, probe: ProcessProbe): Liveness =>
-  launcherPid(agent.agentId) === undefined
+/** CC-1059: the host a spawn launched on when it is not this one; its pids and session records are not here. */
+export const remoteHostOf = (
+  agent: Pick<AgentIdentity, 'host'>,
+  localHost = brokerHost(),
+): string | undefined => (agent.host !== undefined && agent.host !== localHost ? agent.host : undefined)
+
+/**
+ * A remote agent's only evidence is presence, and the caller asks only once the settle window
+ * has passed with no connection, so that absence is the verdict. A reattach reopens the row.
+ */
+export function agentLiveness(agent: AgentIdentity, probe: ProcessProbe, localHost = brokerHost()): Liveness {
+  const remote = remoteHostOf(agent, localHost)
+  if (remote !== undefined)
+    return {
+      dead: true,
+      reason: `on host ${remote}, no connection through the settle window (the broker cannot probe that host)`,
+    }
+  return launcherPid(agent.agentId) === undefined
     ? sessionLiveness(agent, probe)
     : launcherLiveness(agent.agentId, probe)
+}
 
 /** A detached agent, spawned or adopted, whose exit is not yet on the log. */
 export const awaitsExit = (agent: AgentIdentity | undefined): agent is AgentIdentity =>

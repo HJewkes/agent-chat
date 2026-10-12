@@ -71,6 +71,7 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
+  ...(row.meta.host ? { host: row.meta.host } : {}),
   ...(originOf(row) === 'adopted' && derivedName(row, true) ? { provisionalName: true as const } : {}),
   ...provenanceOf(row),
   lastEventAt: row.ts,

@@ -48,6 +48,8 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   teleport_plan: 7 * 60_000,
   // CC-951: a move to another machine waits on that machine's launcher probe (10s) before answering.
   teleport_result: 20_000,
+  // CC-1059: held until the remote agent registers, for the supervisor's 30s attach window.
+  spawn_placed_result: 45_000,
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
@@ -121,6 +123,8 @@ export interface BrokerClientOptions {
    * it on the next connect attempt would make "stop" mean nothing.
    */
   autoStart?: boolean
+  /** CC-1059: the broker asked the agent `agentId` to end, because it was retired on another host. */
+  onEndSelf?: (agentId: string, reason: string) => void
 }
 
 /**
@@ -163,6 +167,7 @@ export class BrokerClient {
     // A push with no waiter, like the two above: nothing on this side asked for
     // it, and the CLI leaves the callback unset so it can never be its target.
     if (msg.t === 'permission_verdict') return this.onPermissionVerdict?.(msg.requestId, msg.behavior)
+    if (msg.t === 'end_self') return this.options.onEndSelf?.(msg.agentId, msg.reason)
     if (msg.t === 'error') {
       if (msg.code === 'not_registered') return void this.reregister()
       if (!msg.fatal) return
