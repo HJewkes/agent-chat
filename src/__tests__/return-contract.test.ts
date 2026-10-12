@@ -12,6 +12,7 @@ import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
 import {
   BODY_FILE_RULE,
+  FOLLOW_UPS_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
   MUTANT_RULE,
@@ -241,6 +242,32 @@ describe('the reviewer findings shape (CC-1079)', () => {
     expect(text).toContain('`- fixed: <item>`')
     expect(text).toContain('`- not fixed: <item>`')
     expect(text).toContain('`Earlier findings: none found`')
+  })
+})
+
+describe('the reviewer Follow-ups block (TP-2498)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: dropping "never blocks MERGE" or the one-line-per-task form.
+  it('names an optional Follow-ups block, one title | done_when | severity line per task, that never blocks MERGE', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(FOLLOW_UPS_RULE)
+    expect(text).toContain('`Follow-ups:` then `- <title> | <done_when> | low|medium|high` per task')
+    expect(text).toContain('never blocks MERGE')
+  })
+
+  // Mutation caught: placing the block ahead of the blocking items.
+  it('places the block after the blocking items', () => {
+    expect(text.indexOf('Follow-ups:')).toBeGreaterThan(text.indexOf('Then blocking items before nits.'))
+  })
+
+  // Mutation caught: adding the rule to a shared line (NEVER_PARK, SHIM_RULE) instead of the reviewer block.
+  it('leaves both implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain('Follow-ups:')
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain('Follow-ups:')
+  })
+
+  it('keeps the reviewer block within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })
 
