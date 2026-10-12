@@ -50,18 +50,24 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-const remoteReq = (over: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  name: 'ff-planner',
-  profile: 'peer',
-  brief: 'plan the draft',
-  requestedBy: 'human',
-  cwd: MAC_CWD,
-  surface: 'iterm-tab',
-  callerHost: CALLER,
-  hostPlatform: 'darwin',
-  launchesHere: true,
-  ...over,
-})
+/** An `undefined` in `over` drops that default, as a requester that never sent the field would. */
+const remoteReq = (over: { [K in keyof SpawnRequest]?: SpawnRequest[K] | undefined } = {}): SpawnRequest => {
+  const merged: Record<string, unknown> = {
+    name: 'ff-planner',
+    profile: 'peer',
+    brief: 'plan the draft',
+    requestedBy: 'human',
+    cwd: MAC_CWD,
+    surface: 'iterm-tab',
+    callerHost: CALLER,
+    hostPlatform: 'darwin',
+    launchesHere: true,
+    ...over,
+  }
+  return Object.fromEntries(
+    Object.entries(merged).filter(([, value]) => value !== undefined),
+  ) as unknown as SpawnRequest
+}
 
 const rows = (kind: string) => core.events.agentEvents().filter(row => row.kind === kind)
 const attach = (agentId: string): void =>
