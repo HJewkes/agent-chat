@@ -162,9 +162,11 @@ describe('the watchdog paging tp-operator for a blocked seat', () => {
   it('saves the pass and retries next pass when the broker send throws', async () => {
     const h = harness()
     h.open = [block('coord', 's1')]
-    const page = h.deps.page
-    h.deps.page = async () => {
-      throw new Error('broker did not answer')
+    let brokerUp = false
+    h.deps.page = async (to, text) => {
+      if (!brokerUp) throw new Error('broker did not answer')
+      h.pages.push({ to, text })
+      return h.deliver
     }
 
     const lines = await passAt(h, T0 + 12 * MIN)
@@ -172,7 +174,7 @@ describe('the watchdog paging tp-operator for a blocked seat', () => {
     expect(lines.join('\n')).toContain('(not delivered: broker did not answer)')
     expect(h.saves).toBe(1)
     expect(h.doc.blockPaged).toBeUndefined()
-    h.deps.page = page
+    brokerUp = true
     await passAt(h, T0 + 27 * MIN)
     expect(h.pages).toHaveLength(1)
     expect(h.doc.blockPaged).toEqual([blockKey(block('coord', 's1'))])
