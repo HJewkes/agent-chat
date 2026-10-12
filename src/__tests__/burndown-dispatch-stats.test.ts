@@ -253,7 +253,7 @@ describe('burndown dispatch-stats implementer hand share (CC-965)', () => {
     spawned('sa-ab-3', 'bd-implementer', 'sa'),
     spawned('sa-ab-4', 'bd-implementer', 'sa'),
     spawned('sa-ab-5', 'bd-implementer', 'human'),
-    spawned('tc-cc-1-a-s1', 'bd-implementer', 'shepherd'),
+    spawned('sa-ab-8-s1', 'bd-implementer', 'shepherd'),
     spawned('sa-ab-6', 'bd-planner', 'sa'),
     spawned('sa-ab-7', 'bd-implementer', 'sa', 2 * 24 * 60),
   ]
