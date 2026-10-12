@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,7 +8,9 @@ import { positionalUses } from '../leak-guard/git-alias.js'
 import {
   ghAliasReader,
   ghAliasSet,
+  ghCloneArgs,
   ghCommandWords,
+  GH_BUILTINS,
   ghPlainAlias,
   HIDDEN,
   parseGhAliases,
@@ -179,7 +182,6 @@ describe('a gh alias (TP-2371)', () => {
     `gh alias set prs 'pr list --author @me'`,
     `gh alias set --shell st 'git status'`,
     'gh repo clone o/r',
-    'gh nosuchword',
     'GH_CONFIG_DIR=/tmp/x gh repo view',
     'gh pv 7',
     'gh -R o/r pr view 1',
@@ -289,6 +291,143 @@ describe('gh plain alias expansion', () => {
 
   it('runs nothing when a $N is left unfilled', () => {
     expect(ghPlainAlias('issue list --author="$1"', [])).toBeUndefined()
+  })
+})
+
+describe('a gh extension and the clone passthrough (TP-2371)', () => {
+  it.each([
+    `gh repo clone o/r -- -c core.pager='git push --no-verify'`,
+    `gh repo clone o/r d -- -c core.pager='git push --no-verify'`,
+    `gh repo clone o/r -- d -c core.pager='git push --no-verify'`,
+    `gh repo clone -u up o/r -- -c core.pager='git push --no-verify'`,
+    `gh repo fork o/r --clone -- -c core.sshCommand='git push --no-verify'`,
+    `gh repo fork --remote-name x o/r --clone -- --config core.pager='git push --no-verify'`,
+    `gh repo clone o/r -- 'ext::sh -c git% push% --no-verify'`,
+    `agent-chat gh-write -- repo clone o/r -- -c core.pager='git push --no-verify'`,
+  ])('denies a git clone flag that skips the pre-push scan: %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it.each([
+    `gh repo clone o/r -- "$OPTS"`,
+    `gh repo clone o/r "$D" -- "$OPTS"`,
+    `gh repo fork o/r --clone -- --depth "$N"`,
+  ])(
+    'denies a word after -- the guard cannot resolve, which git clone may read as an option: %s',
+    command => {
+      expectDeny(checkCommand(command, ctx()), REASONS.ghCloneHidden)
+    },
+  )
+
+  it('checks the words after a hidden word that may be --', () => {
+    const command = `gh repo clone o/r "$D" -c core.pager='git push --no-verify'`
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it.each([
+    'gh myext',
+    'gh myext --no-verify',
+    'gh -R o/r myext',
+    'gh extension exec myext',
+    'gh ext exec myext',
+    'gh extension "$SUB" myext',
+  ])('denies running a gh extension: %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.ghExtension)
+  })
+
+  it.each([
+    `gh gist clone abc -- -c core.sshCommand='git push --no-verify'`,
+    `gh gist clone abc d -- --upload-pack='git push --no-verify'`,
+    `gh gist clone abc -- 'ext::sh -c git% push% --no-verify'`,
+    `gh gist clone "$G" -- -c core.pager='git push --no-verify'`,
+    `gh gist "$S" abc -- -c core.pager='git push --no-verify'`,
+    `agent-chat gh-write -- gist clone abc -- -c core.pager='git push --no-verify'`,
+  ])('checks the git clone flags gh gist clone passes on, as for repo clone (review r2): %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it('denies a gh gist clone word after -- the guard cannot resolve', () => {
+    expectDeny(checkCommand('gh gist clone abc -- "$OPTS"', ctx()), REASONS.ghCloneHidden)
+  })
+
+  it.each([
+    `gh repo clone "$R" -- -c core.sshCommand='git push --no-verify'`,
+    `gh repo clone "$R" -- --upload-pack='git push --no-verify'`,
+    `gh repo clone "$R" -- --config=core.sshCommand='git push --no-verify'`,
+    `gh repo clone "$R" d -- -u 'git push --no-verify'`,
+    `gh repo fork "$R" --clone -- -c core.sshCommand='git push --no-verify'`,
+    `gh repo "$S" o/r -- -c core.sshCommand='git push --no-verify'`,
+    `gh -R x/y repo "$S" o/r -- -c core.sshCommand='git push --no-verify'`,
+  ])("strips gh's -- after a repository the guard cannot resolve (review r1): %s", command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.noVerify)
+  })
+
+  it.each([`gh repo clone "$R" "$D" -- "$OPTS"`, `gh repo clone o/r "$X" "$Y"`, `gh repo clone "$R" d "$Y"`])(
+    'denies an unresolved word that may sit past a hidden --: %s',
+    command => {
+      expectDeny(checkCommand(command, ctx()), REASONS.ghCloneHidden)
+    },
+  )
+
+  it.each([
+    'gh help myext',
+    'gh help myext extra words',
+    'gh help -R o/r myext',
+    'gh -R o/r help myext',
+    'gh help "$E"',
+  ])('denies gh help on a word that is no gh command, which runs the extension (review r1): %s', command => {
+    expectDeny(checkCommand(command, ctx()), REASONS.ghExtension)
+  })
+
+  it('denies an extension with no gh config to read', () => {
+    const { readGhAliases: _, ...bare } = ctx()
+    expectDeny(checkCommand('gh myext', bare), REASONS.ghExtension)
+  })
+
+  it('runs a config alias before an extension of the same name', () => {
+    expect(checkCommand('gh myext', ctx({ myext: { shell: false, body: 'pr list' } }))).toBeUndefined()
+  })
+
+  it.each([
+    'gh repo clone o/r',
+    'gh repo clone o/r d',
+    'gh repo clone o/r -- --depth 1',
+    'gh repo clone o/r d -- -c core.pager=less',
+    'gh repo fork o/r --clone',
+    'gh repo clone "$REPO"',
+    'gh repo clone o/r "$DIR"',
+    'gh extension list',
+    'gh extension install o/gh-x',
+    'gh help',
+    'gh help pr view',
+    'gh help environment',
+    'gh repo clone "$R" "$D"',
+    'gh repo clone -- o/r',
+    'gh gist clone abc',
+    'gh gist clone abc d -- --depth 1',
+    'gh gist view abc',
+    'gh telemetry',
+    'gh pr nosuchword',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it('hands git clone each word after the repository, in order', () => {
+    expect(ghCloneArgs(['o/r', 'd', '--', '--depth', '1'])).toEqual({ git: [1, 3, 4], hidden: false })
+    expect(ghCloneArgs(['-u', 'up', 'o/r', '--no-upstream'])).toEqual({ git: [], hidden: false })
+    expect(ghCloneArgs(['o/r', undefined, '-c', 'x'])).toEqual({ git: [1, 2, 3], hidden: false })
+    expect(ghCloneArgs([undefined, '--', '-c', 'x'])).toEqual({ git: [2, 3], hidden: false })
+    expect(ghCloneArgs(['--', 'o/r', '-c'])).toEqual({ git: [2], hidden: false })
+  })
+
+  const gh = process.env.CI ? undefined : spawnSync('gh', ['help'], { encoding: 'utf8' })
+  it.skipIf(gh?.status !== 0)('knows every command gh help lists, on the machine gh', () => {
+    const sections = (gh?.stdout ?? '').split(/\n(?=[A-Z][A-Z ]+\n)/)
+    const listed = sections
+      .filter(section => !/^(ALIAS|EXTENSION) COMMANDS/.test(section))
+      .flatMap(section => [...section.matchAll(/^ {2}([a-z][\w-]*):/gm)].map(match => match[1]))
+    expect(listed.length).toBeGreaterThan(20)
+    expect(listed.filter(name => !GH_BUILTINS.has(name as string))).toEqual([])
   })
 })
 

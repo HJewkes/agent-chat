@@ -19,7 +19,13 @@ import {
   seatLogPath,
   type WatchdogDoc,
 } from '../agents/seats/io.js'
-import { DARK_AFTER_MS, RESUME_MESSAGE, judgeLiveness, type Presence } from '../agents/seats/liveness.js'
+import {
+  DARK_AFTER_MS,
+  RESUME_MESSAGE,
+  judgeLiveness,
+  seatIsLiveRefusal,
+  type Presence,
+} from '../agents/seats/liveness.js'
 import { acquireRunLock } from '../agents/seats/lock.js'
 import { LIVE_ROW_GRACE_MS, runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
 import { seatSurface } from '../agents/seats/charter.js'
@@ -937,6 +943,63 @@ describe('seat liveness (CC-320)', () => {
     const out = await runWatchdog(h.deps, ONE)
     expect(out).toEqual([expect.stringContaining('not resumed: 8 resume attempts failed this dark episode')])
     expect(h.logs).toHaveLength(8)
+  })
+
+  describe('a refusal saying the seat is live (CC-344)', () => {
+    const LIVE_REFUSAL = 'seat-a is already live: no Claude Code session records to read'
+    const raising = (h: Harness): string[] => {
+      const raised: string[] = []
+      h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+      return raised
+    }
+
+    it('spends no try over ten runs and raises the human once', async () => {
+      const h = harness(DARK)
+      const raised = raising(h)
+      h.wakeResult = { ok: false, detail: LIVE_REFUSAL }
+      dark(h, 6)
+      expect(await runs(h, 10)).toBe(10)
+      expect(h.logs.join('\n')).not.toMatch(/try \d of 8|giving up/)
+      expect(h.doc.seats['seat-a']?.resumeRetry).toBe(0)
+      expect(raised).toEqual([expect.stringContaining(`resume REFUSED seat-a (${LIVE_REFUSAL})`)])
+      expect(h.logs.at(-1)).toContain('seat may be live, not counted as a try')
+    })
+
+    it('resumes at try 1 once the broker accepts after a live refusal', async () => {
+      const h = harness(DARK)
+      raising(h)
+      h.wakeResult = { ok: false, detail: LIVE_REFUSAL }
+      dark(h, 6)
+      await runs(h, 1)
+      h.wakeResult = { ok: true, detail: 'resumed' }
+      expect(await runs(h, 2)).toBe(1)
+      expect(h.logs.at(-1)).toMatch(/with no teleport; resumed seat-a/)
+      expect(h.logs.at(-1)).not.toContain('after a failed resume')
+    })
+
+    it('raises once per dark episode', async () => {
+      const h = harness(DARK)
+      const raised = raising(h)
+      h.wakeResult = { ok: false, detail: LIVE_REFUSAL }
+      dark(h, 6)
+      await runs(h, 2)
+      dark(h, 6)
+      await runs(h, 2)
+      expect(raised).toHaveLength(2)
+    })
+  })
+
+  it('matches every broker wording for a seat that is or may be live, and no other refusal', () => {
+    const name = 'seat-hub'
+    const live = [
+      `${name} is already live; message it instead`,
+      `${name} is already live: its run-agent is still running`,
+      `${name} is marked live and the process table could not be read, so it is not resumed`,
+      `${name} is already live: no recorded pid or session id`,
+    ]
+    for (const reason of live) expect(seatIsLiveRefusal(reason), reason).toBe(true)
+    for (const reason of ['no free agent slots (4/4)', 'transcript is gone', 'broker went away'])
+      expect(seatIsLiveRefusal(reason), reason).toBe(false)
   })
 
   it('does not resume a session the watchdog itself started, which ends on its own', async () => {

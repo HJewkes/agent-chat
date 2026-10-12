@@ -320,6 +320,8 @@ Every other command goes to the real gh with its argv untouched, writes included
 
 Exit codes: `0` prints `restart-window OK`. `1` means a pre-check or the restart guard refused and the broker was not touched. `2` means a post-check failed. `3` means the restart failed and the broker may be down; the script prints `BROKER MAY BE DOWN: run agent-chat service start`. `4` means pull, install or build failed and the broker was not touched.
 
+`npm run build` and `npm run build:dashboard` refuse in the main checkout (a `.git` directory), because its `dist/` is what the live broker and every spawn run. Build in a worktree instead. Worktrees (a `.git` file), CI (`CI` set) and this script's staging copy (no `.git`) build as usual. Inside an approved restart window, `AGENT_CHAT_BUILD_IN_MAIN=1 npm run build` builds the main checkout. The guard prevents accidents and is not a security boundary: `npx tsc` skips it.
+
 ## Tests
 
 ```bash
