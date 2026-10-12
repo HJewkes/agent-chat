@@ -6,7 +6,7 @@ import { isHumanStep } from './ops.js'
 import { seatScope } from './policy.js'
 import { scopeRefusal } from './seat-scope.js'
 import { readSeatScope, type LoadedSeat, type OwnerQueuePort } from './seat-tick.js'
-import { readTasks } from './source.js'
+import { parseTask, readTasks } from './source.js'
 
 /**
  * CC-974 slice c: a `kind:owner` or `kind:operator` task never dispatches. Once every `dep:` it names is done, the
@@ -47,11 +47,20 @@ function humanStepDeposit(seat: string, initiative: string, task: Task): OwnerIt
   }
 }
 
-/** Deposits each due step not already open in the queue, once across seats; returns the deposited task ids. */
+type Log = (event: string, detail: Record<string, unknown>) => void
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/**
+ * Deposits each due step not already open in the queue, once across seats; returns the ids the spool wrote. A step
+ * whose item was answered while the task stays open is skipped by the write-once spool and is not counted. One
+ * refused deposit is one `burndown_human_steps_failed` event naming the task, and the rest still file.
+ */
 export async function routeHumanSteps(
   sources: readonly HumanStepSource[],
   isDone: (id: string) => boolean,
   port: OwnerQueuePort,
+  log: Log,
 ): Promise<string[]> {
   const due = sources.flatMap(({ seat, tasks }) =>
     [...tasks].flatMap(([initiative, list]) =>
@@ -63,34 +72,55 @@ export async function routeHumanSteps(
   const routed: string[] = []
   for (const { seat, initiative, task } of due) {
     if (filed.has(humanStepKey(task.id))) continue
-    await port.deposit(humanStepDeposit(seat, initiative, task))
     filed.add(humanStepKey(task.id))
-    routed.push(task.id)
+    try {
+      if (await port.deposit(humanStepDeposit(seat, initiative, task))) routed.push(task.id)
+    } catch (err) {
+      log('burndown_human_steps_failed', { task: task.id, detail: message(err) })
+    }
   }
   return routed
 }
 
 /**
- * The tick's step: reads the sources only when called and routes them. A throw, from a reader or the port, is one
- * `burndown_human_steps_failed` event and no lines, never a failed tick.
+ * The tick's step: reads the sources only when called and routes them. A throw from the sources or the queue read
+ * is one `burndown_human_steps_failed` event and no lines, never a failed tick.
  */
 export async function fileHumanSteps(
   sources: () => readonly HumanStepSource[],
   isDone: (id: string) => boolean,
   port: OwnerQueuePort,
-  log: (event: string, detail: Record<string, unknown>) => void,
+  log: Log,
 ): Promise<string[]> {
   try {
-    const routed = await routeHumanSteps(sources(), isDone, port)
+    const routed = await routeHumanSteps(sources(), isDone, port, log)
     return routed.map(id => `routed human step ${id} to the owner queue`)
   } catch (err) {
-    log('burndown_human_steps_failed', { detail: err instanceof Error ? err.message : String(err) })
+    log('burndown_human_steps_failed', { detail: message(err) })
     return []
   }
 }
 
+/** Each seat's source; a seat whose scope cannot be read is one event naming it, and the other seats still route. */
+export function humanStepSources(
+  seats: readonly LoadedSeat[],
+  initiatives: readonly Initiative[],
+  root: string,
+  aliases: Readonly<Record<string, string>> | undefined,
+  log: Log,
+): HumanStepSource[] {
+  return seats.flatMap(seat => {
+    try {
+      return [humanStepSource(seat, initiatives, root, aliases)]
+    } catch (err) {
+      log('burndown_human_steps_failed', { seat: seat.dispatch.seat, detail: message(err) })
+      return []
+    }
+  })
+}
+
 /** The seat's scope, as dispatch reads it: its initiatives, narrowed by `scope_tags` in shared ones. */
-export function humanStepSource(
+function humanStepSource(
   seat: LoadedSeat,
   initiatives: readonly Initiative[],
   root: string,
@@ -114,13 +144,25 @@ const listDir = (dir: string): string[] => {
   }
 }
 
+/** An archived task's `id:`, falling back to its file name as `readTasks` does. */
+function archivedIds(dir: string): string[] {
+  return listDir(dir)
+    .filter(file => file.endsWith('.yml'))
+    .flatMap(file => {
+      try {
+        return [parseTask(fs.readFileSync(path.join(dir, file), 'utf8'), file.slice(0, -'.yml'.length)).id]
+      } catch {
+        return []
+      }
+    })
+}
+
 /** Every task id on disk with status done, in any initiative; an archived task counts as done. */
 export function doneIdsOnDisk(root: string): Set<string> {
   const done = new Set<string>()
   for (const slug of listDir(root)) {
     for (const task of readTasks(root, slug)) if (task.status === 'done') done.add(task.id)
-    for (const file of listDir(path.join(root, slug, 'tasks', 'archive')))
-      if (file.endsWith('.yml')) done.add(file.slice(0, -'.yml'.length))
+    for (const id of archivedIds(path.join(root, slug, 'tasks', 'archive'))) done.add(id)
   }
   return done
 }

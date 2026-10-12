@@ -29,7 +29,7 @@ import { collisionCheck, type BrokerView, type CollisionReader } from './collisi
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
-import { doneIdsOnDisk, fileHumanSteps, humanStepSource } from './human-steps.js'
+import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
@@ -334,14 +334,12 @@ async function fileSeatHumanSteps(
   if (seats.length === 0) return []
   const root = opts.root ?? activeWorkRoot()
   const done = memo(() => doneIdsOnDisk(root))
+  const log = opts.log ?? logEvent
   return fileHumanSteps(
-    () => {
-      const initiatives = readInitiatives(root)
-      return seats.map(s => humanStepSource(s, initiatives, root, config.scopeTagAliases))
-    },
+    () => humanStepSources(seats, readInitiatives(root), root, config.scopeTagAliases, log),
     id => done().has(id),
     spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir()),
-    opts.log ?? logEvent,
+    log,
   )
 }
 

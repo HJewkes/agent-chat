@@ -475,7 +475,8 @@ const SCOPE_EXHAUSTED_REC =
 /** The owner queue as the tick sees it: its open items, and a deposit into it. */
 export interface OwnerQueuePort {
   open(): Promise<OwnerItem[]>
-  deposit(deposit: OwnerItemDeposit): Promise<void>
+  /** True when this call wrote the item; false when the deposit id was already in the queue, answered or not. */
+  deposit(deposit: OwnerItemDeposit): Promise<boolean>
 }
 
 const exhaustedKey = (seat: string): string => `scope-exhausted:${seat}`

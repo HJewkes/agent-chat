@@ -45,7 +45,7 @@ export function spoolOwnerQueue(dir: string): OwnerQueuePort {
       return open.filter((item): item is OwnerItem => item !== undefined)
     },
     async deposit(deposit) {
-      await writeDeposit(dir, deposit)
+      return (await writeDeposit(dir, deposit)).created
     },
   }
 }
