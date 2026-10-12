@@ -73,6 +73,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
   'Bash(agent-chat ask:*)',
+  'Bash(agent-chat teleport:*)',
 ]
 
 /**

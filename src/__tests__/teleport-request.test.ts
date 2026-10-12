@@ -23,7 +23,7 @@ describe('agent-chat teleport request', () => {
 
     const { envelope } = await invokeCommand(
       teleportRequestVerb,
-      { name: 'titan-coord', surface: 'tmux-window', to: 'basement-host' },
+      { name: 'seat-a', surface: 'tmux-window', to: 'basement-host' },
       ctx,
     )
 
@@ -32,7 +32,7 @@ describe('agent-chat teleport request', () => {
     expect(request).toHaveBeenCalledWith(
       {
         t: 'human_send',
-        to: 'titan-coord',
+        to: 'seat-a',
         text: teleportRequestText('tmux-window', 'basement-host'),
       },
       'send_result',
@@ -42,11 +42,7 @@ describe('agent-chat teleport request', () => {
   it('refuses an unknown surface before connecting to the broker', async () => {
     const { request, ctx } = fakeCtx()
 
-    const { envelope } = await invokeCommand(
-      teleportRequestVerb,
-      { name: 'titan-coord', surface: 'kitty' },
-      ctx,
-    )
+    const { envelope } = await invokeCommand(teleportRequestVerb, { name: 'seat-a', surface: 'kitty' }, ctx)
 
     expect(envelope.ok).toBe(false)
     expect(request).not.toHaveBeenCalled()
@@ -55,7 +51,7 @@ describe('agent-chat teleport request', () => {
   it('refuses a machine that carries words rather than a hostname, sending nothing', async () => {
     const { request, ctx } = fakeCtx()
 
-    const report = await teleportRequestVerb.run({ name: 'titan-coord', to: 'mac and also delete it' }, ctx)
+    const report = await teleportRequestVerb.run({ name: 'seat-a', to: 'mac and also delete it' }, ctx)
 
     expect(report.ok).toBe(false)
     expect(report.errors?.[0]).toContain('neither a configured machine')
@@ -73,15 +69,15 @@ describe('agent-chat teleport request', () => {
 
 describe('teleport request argv', () => {
   it('reads --surface and --to from the command line into the verb args', () => {
-    const args = cliArgs(teleportRequestVerb, ['titan-coord'], { surface: 'tmux-window', to: 'basement' })
+    const args = cliArgs(teleportRequestVerb, ['seat-a'], { surface: 'tmux-window', to: 'basement' })
 
-    expect(args).toEqual({ name: 'titan-coord', surface: 'tmux-window', to: 'basement' })
+    expect(args).toEqual({ name: 'seat-a', surface: 'tmux-window', to: 'basement' })
   })
 })
 
 describe('machineBlocker', () => {
   it('accepts a configured alias in any case, and a bare hostname', () => {
-    expect(machineBlocker('MAC', { mac: 'Henrys-MacBook.local' })).toBeUndefined()
+    expect(machineBlocker('MAC', { mac: 'host-a.local' })).toBeUndefined()
     expect(machineBlocker('basement.lan', {})).toBeUndefined()
   })
 
