@@ -157,8 +157,8 @@ export const REASONS = {
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
-  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never. Leave the protocol list alone. ${DOCS}`,
-  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote add or set-url, git config remote.*.url, pushurl, vcs or url.*.insteadOf), or a config key, that the guard cannot read, and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -479,10 +479,8 @@ const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): numb
 /** A `git config` or `git remote` write that switches on `ext::` or hides a URL a later git may run (TP-2371). */
 function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
   if (!run.tied) return undefined
-  const enabler = extEnablerWrite(
-    run.resolved,
-    subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams)),
-  )
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  const enabler = extEnablerWrite(run.resolved, run.args, at)
   if (enabler === 'protocol') return REASONS.extProtocol
   return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
 }

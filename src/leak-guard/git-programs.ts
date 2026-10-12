@@ -248,58 +248,101 @@ function allowsExt(key: string, value: string | null | undefined): boolean {
 
 // `git config` options that take the next word as their value.
 const CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value'])
-// `git config` modes, legacy flags and subcommands alike, that read, remove or rename rather than set a value.
+// `git config` modes, legacy flags and subcommands alike, that read or remove rather than set a value.
 const CONFIG_NON_WRITES = new Set(
   `--get --get-all --get-regexp --get-urlmatch --get-color --get-colorbool -l --list --unset --unset-all
-  --remove-section --rename-section -e --edit get list unset remove-section rename-section edit`.split(/\s+/),
+  --remove-section -e --edit get list unset remove-section edit`.split(/\s+/),
 )
-// Keys whose value git reads as a remote's URL or URL helper; `url.<base>.insteadOf` also takes one in its key.
-const URL_KEY = /^(?:remote\..*\.(?:url|pushurl|vcs)|url\..*\.(?:push)?insteadof)$/i
+const CONFIG_RENAMES = new Set(['--rename-section', 'rename-section'])
+// Keys whose value git reads as a remote's or submodule's URL or URL helper; `url.<base>.insteadOf` also takes one in its key.
+const URL_KEY = /^(?:(?:remote|submodule)\..*\.(?:url|pushurl|vcs)|url\..*\.(?:push)?insteadof)$/i
+// Sections a renamed section may land in and so set a protocol policy or a URL git later runs.
+const URL_SECTION = /^(?:remote|url|submodule)(?:[."\s]|$)/i
+const PROTOCOL_SECTION = /^protocol(?:[."\s]|$)/i
 
-/** The key and value words a `git config` write sets, from the words after `config`; null when it sets none. */
-function configWrite(args: readonly (string | undefined)[]): (string | undefined)[] | null {
-  const positionals: (string | undefined)[] = []
-  for (let i = 0; i < args.length; i++) {
-    const word = args[i]
-    if (
-      word !== undefined &&
-      CONFIG_NON_WRITES.has(word) &&
-      (word.startsWith('-') || positionals.length === 0)
-    )
-      return null
-    if (word !== undefined && CONFIG_VALUE_OPTS.has(word)) i++
-    else if (word === undefined || !word.startsWith('-')) positionals.push(word)
-  }
-  if (positionals[0] === 'set') positionals.shift()
-  return positionals.length < 2 ? null : positionals
+type Words = readonly (string | undefined)[]
+
+/** A git command's words after its subcommand: as the shell passes them, and as written. */
+interface SubArgs {
+  resolved: Words
+  written: readonly string[]
 }
 
-/** Whether `git remote add|set-url` writes a URL the guard cannot read; `set-url --delete` writes none. */
-function hiddenRemoteUrl(args: readonly (string | undefined)[]): boolean {
-  const [verb, ...rest] = args
+/** Whether word `i` is an option, read from what was written when the guard cannot resolve it. */
+const isOption = (args: SubArgs, i: number): boolean =>
+  (args.resolved[i] ?? args.written[i] ?? '').startsWith('-')
+
+/** What a `git config` call does with its words: sets a key, renames a section, or neither. */
+interface ConfigCall {
+  mode: 'set' | 'rename' | 'other'
+  positionals: (string | undefined)[]
+}
+
+function configCall(args: SubArgs): ConfigCall {
+  const positionals: (string | undefined)[] = []
+  let mode: ConfigCall['mode'] = 'set'
+  for (let i = 0; i < args.resolved.length; i++) {
+    const word = args.resolved[i]
+    const verb = word !== undefined && (isOption(args, i) || positionals.length === 0)
+    if (verb && CONFIG_NON_WRITES.has(word)) return { mode: 'other', positionals }
+    if (verb && CONFIG_RENAMES.has(word)) mode = 'rename'
+    else if (word !== undefined && CONFIG_VALUE_OPTS.has(word)) i++
+    else if (!isOption(args, i)) positionals.push(word)
+  }
+  if (mode === 'set' && positionals[0] === 'set') positionals.shift()
+  return { mode, positionals }
+}
+
+/**
+ * A section rename that may land a protocol policy or a URL where git reads one: `protocol` for a
+ * target under `protocol`, `url` for one under `remote`, `url` or `submodule`, or a name the guard cannot read.
+ */
+function renameEnabler(names: readonly (string | undefined)[]): 'protocol' | 'url' | undefined {
+  const target = names[1]
+  if (names.includes(undefined) || target === undefined) return 'url'
+  if (PROTOCOL_SECTION.test(target)) return 'protocol'
+  return URL_SECTION.test(target) ? 'url' : undefined
+}
+
+function configEnabler(args: SubArgs): 'protocol' | 'url' | undefined {
+  const { mode, positionals } = configCall(args)
+  if (mode === 'rename') return renameEnabler(positionals)
+  if (mode === 'other' || positionals.length < 2) return undefined
+  const [key, value] = positionals
+  if (key === undefined) return 'url'
+  if (allowsExt(key, value)) return 'protocol'
+  return URL_KEY.test(key) && value === undefined ? 'url' : undefined
+}
+
+/**
+ * Whether `git remote` or `git submodule` may write a URL the guard cannot read: a verb it cannot
+ * read, or `add` or `set-url` with a word it cannot read. `remote set-url --delete` writes none.
+ */
+function hiddenUrl(args: SubArgs): boolean {
+  const at = args.resolved.findIndex((_, i) => !isOption(args, i))
+  if (at < 0) return false
+  const verb = args.resolved[at]
+  if (verb === undefined) return true
   if (verb !== 'add' && verb !== 'set-url') return false
+  const rest = args.resolved.slice(at + 1)
   return !rest.includes('--delete') && rest.includes(undefined)
 }
 
 /**
- * What a `git config` or `git remote` write at `at` would enable for `ext::` (TP-2371): `protocol`
- * when it sets `protocol.allow` or `protocol.ext.allow` to anything but `never`, `url` when it writes
- * a remote URL, URL helper or `insteadOf` rewrite, or a key, the guard cannot read, which may hide an
- * `ext::` URL a later git runs. undefined for neither.
+ * What a `git config`, `git remote` or `git submodule` write at `at` would enable for `ext::`
+ * (TP-2371): `protocol` when it sets `protocol.allow` or `protocol.ext.allow` to anything but
+ * `never`, or renames a section into `protocol`; `url` when it writes a remote or submodule URL,
+ * URL helper or `insteadOf` rewrite, a key or verb, the guard cannot read, or renames a section into
+ * one of those, so it may hide an `ext::` URL a later git runs. undefined for neither.
  */
 export function extEnablerWrite(
-  resolved: readonly (string | undefined)[],
+  resolved: Words,
+  written: readonly string[],
   at: number,
 ): 'protocol' | 'url' | undefined {
-  const rest = resolved.slice(at + 1)
-  if (resolved[at] === 'remote') return hiddenRemoteUrl(rest) ? 'url' : undefined
-  if (resolved[at] !== 'config') return undefined
-  const write = configWrite(rest)
-  if (write === null) return undefined
-  const [key, value] = write
-  if (key === undefined) return 'url'
-  if (allowsExt(key, value)) return 'protocol'
-  return URL_KEY.test(key) && value === undefined ? 'url' : undefined
+  const args = { resolved: resolved.slice(at + 1), written: written.slice(at + 1) }
+  if (resolved[at] === 'remote' || resolved[at] === 'submodule') return hiddenUrl(args) ? 'url' : undefined
+  return resolved[at] === 'config' ? configEnabler(args) : undefined
 }
 
 /**

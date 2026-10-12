@@ -676,7 +676,14 @@ write of `remote.<name>.url`, `.pushurl`, `.vcs` or `url.<base>.insteadOf` or `.
 a value it cannot read, or of any key it cannot read, denies: the value may be an `ext::` URL a
 later `git fetch` runs. So of the chain `git remote set-url x "$U"` then
 `GIT_ALLOW_PROTOCOL=ext git fetch x`, each half denies on its own. A literal URL, as in
-`git remote set-url origin https://github.com/o/r`, is allowed and read as before.
+`git remote set-url origin https://github.com/o/r`, is allowed and read as before. A section rename
+(`--rename-section` or `rename-section`) can move an innocent `foo.allow always` or `foo.url "$U"`
+into place, so a rename whose target is under `protocol` denies as a protocol write, and one whose
+target is under `remote`, `url` or `submodule`, or that the guard cannot read, denies as a URL
+write. `git remote` with a verb the guard cannot read (`git remote "$V" x "$U"`) denies, and
+`git submodule add` or `set-url` and `submodule.<name>.url` writes follow the remote rules. A
+direct edit of `.git/config` or `.gitmodules` is not read here; the `GIT_ALLOW_PROTOCOL` pin
+(CC-1095) is the backstop.
 
 ### An environment variable git runs as a program (TP-636)
 

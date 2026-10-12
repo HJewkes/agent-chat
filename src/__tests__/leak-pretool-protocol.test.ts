@@ -1,6 +1,6 @@
 import { parseTerms } from '@titan-design/egress-scan'
 import { describe, expect, it } from 'vitest'
-import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
+import { checkCommand, pretoolDecision, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 const ctx: GuardContext = {
   terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
@@ -113,5 +113,55 @@ describe('remote URL writes the guard cannot read (TP-2371)', () => {
 
   it('keeps denying an ext:: insteadOf base as before', () => {
     expect(checkCommand('git config url."ext::sh -c x".insteadOf https://github.com/', ctx)).toBeDefined()
+  })
+})
+
+/** The deny reason the hook entry point prints for one Bash command, undefined when it allows. */
+function hookReason(command: string): string | undefined {
+  const raw = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: '/work', session_id: 's' })
+  const out = pretoolDecision(raw, () => ctx)
+  if (out === '') return undefined
+  return (JSON.parse(out) as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput
+    .permissionDecisionReason
+}
+
+describe('section renames and unreadable verbs at the hook entry point (TP-2371 fix round)', () => {
+  it.each([
+    'git config foo.allow always && git config --rename-section foo protocol',
+    'git config --rename-section foo protocol.ext',
+    'git config rename-section foo Protocol',
+    'git config --global --rename-section foo protocol',
+  ])('denies a rename into protocol: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'git config foo.url "$U"; git config --rename-section foo remote.x',
+    'git config rename-section foo url.x',
+    'git config --rename-section foo submodule.s',
+    'git config --rename-section foo REMOTE.origin',
+    'git config --rename-section foo "$S"',
+    'git config rename-section "$A" "$B"',
+    'git remote "$V" x "$U"',
+    'git remote -v "$V" x https://github.com/o/r',
+    'git submodule set-url s "$U"',
+    'git submodule set-url -- s "$U"',
+    'git submodule add "$U" s',
+    'git config -f .gitmodules submodule.s.url "$U"',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git config --rename-section foo bar',
+    'git config --rename-section protocol old-protocol',
+    'git config --remove-section protocol',
+    'git config set --comment="$C" protocol.ext.allow never',
+    'git config --comment "$C" protocol.ext.allow never',
+    'git submodule set-url s https://github.com/o/s',
+    'git submodule update --init',
+    'git remote',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
   })
 })
