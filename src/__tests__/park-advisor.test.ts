@@ -234,8 +234,13 @@ describe('resolveParkAdvicePolicy', () => {
     expect(DEFAULT_PARK_ADVICE).toEqual({ tokens: 200_000, leadMinutes: 8, ttlMinutes: 60 })
   })
 
-  it('is off for a planner, whose context hint policy is null', () => {
+  it('is off for a planner or reviewer pane, though both now carry a context hint', () => {
     expect(resolveParkAdvicePolicy('planner', 'iterm-pane')).toBeNull()
+    expect(resolveParkAdvicePolicy('bd-reviewer', 'iterm-pane')).toBeNull()
+  })
+
+  it('is on for an implementer pane', () => {
+    expect(resolveParkAdvicePolicy('bd-implementer', 'iterm-pane')).toEqual(DEFAULT_PARK_ADVICE)
   })
 
   it('is off on a headless surface', () => {

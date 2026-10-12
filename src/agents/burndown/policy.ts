@@ -48,11 +48,6 @@ const Defaults = z.looseObject({
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
   /** CC-861: idle days before the tick flags a seat's unregistered PR. */
   stale_pr_days: z.number().int().nonnegative().optional(),
-  /** CC-317: thousands of context tokens past which a seat retires an agent of that role. */
-  retire_k: z
-    .object({ implementer: z.number(), reviewer: z.number(), planner: z.number() })
-    .partial()
-    .optional(),
   /** CC-317: thousands of context tokens past which a seat teleports itself. */
   teleport_k: z.number().optional(),
 })
@@ -128,6 +123,8 @@ const Seat = z.looseObject({
   defaults: Defaults.partial().optional(),
   stale_pr_days: z.number().int().nonnegative().optional(),
   pool: z.string().optional(),
+  /** CC-1145: the pool the tick bills last in `poolPick: enforce`, after the pick's order and the home pool. */
+  overflow_pool: z.string().optional(),
   /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
   cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
   spend: orEmpty(

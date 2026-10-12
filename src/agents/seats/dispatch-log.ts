@@ -165,19 +165,35 @@ interface Target {
   refuse: (reason?: string) => void
 }
 
-function targetOf(ctx: WriteContext, agent: string, spawner: string | undefined): Target | undefined {
+function targetOf(
+  ctx: WriteContext,
+  agent: string,
+  spawner: string | undefined,
+  unseated: (ctx: WriteContext, agent: string) => Target | undefined = () => undefined,
+): Target | undefined {
   const unreadable = (seat: string): void => ctx.once(`${UNREADABLE}:${seat}`, UNREADABLE, { seat })
   const match = seatOf(ctx.root, agent, spawner, unreadable)
   if (match.kind === 'ambiguous') {
     ctx.once(`${AMBIGUOUS}:${match.prefix}`, AMBIGUOUS, { prefix: match.prefix, seats: match.seats })
     return undefined
   }
-  if (match.kind === 'none') return undefined
+  if (match.kind === 'none') return unseated(ctx, agent)
   const seat = match.seat.seat.name
   const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
   const file = dispatchLogPath(ctx.root, match.seat)
   if (file === undefined) return void refuse()
   return { file, task: taskOf(agent, match.seat.seat.prefix) ?? null, seat, refuse }
+}
+
+/** TP-2529: Shepherd's `rv-*` reviewers match no seat; their dispatched and retired rows go to `logs/shepherd/`. */
+const SHEPHERD_REVIEWER = 'rv-'
+const SHEPHERD_LOG = path.join('logs', 'shepherd', 'dispatch.jsonl')
+
+function shepherdReviewerTarget(ctx: WriteContext, agent: string): Target | undefined {
+  if (!agent.startsWith(SHEPHERD_REVIEWER)) return undefined
+  const seat = 'shepherd'
+  const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
+  return { file: path.join(ctx.root, SHEPHERD_LOG), task: null, seat, refuse }
 }
 
 function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: string) => boolean): void {
@@ -190,7 +206,7 @@ function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: stri
 }
 
 function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run: DispatchRun) => Row): void {
-  const target = targetOf(ctx, spawn.agent, spawn.spawner ?? undefined)
+  const target = targetOf(ctx, spawn.agent, spawn.spawner ?? undefined, shepherdReviewerTarget)
   if (target === undefined) return
   const { spawnedAs, ...facts } = spawn
   const attribution = spawnedAs === undefined ? {} : { spawner: spawnedAs, seat: target.seat }
