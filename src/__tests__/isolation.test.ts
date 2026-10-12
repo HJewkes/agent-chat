@@ -400,7 +400,7 @@ describe('reviewer worktree pool (CC-1040)', () => {
 })
 
 describe('isReviewerTreeName', () => {
-  it.each(['rv-o-r-4-1', 'tc-cc-1-reviewer', 'RV-x'])('classifies %s as a reviewer tree', name => {
+  it.each(['rv-o-r-4-1', 'impl-task-1-reviewer', 'RV-x'])('classifies %s as a reviewer tree', name => {
     expect(isReviewerTreeName(name)).toBe(true)
   })
 
