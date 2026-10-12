@@ -135,6 +135,38 @@ describe('billingOrder against the funds map', () => {
     expect(order.order).toEqual([])
   })
 
+  it('keeps every pool for an initiative the map does not name when it has no default', () => {
+    const funds: FundsMap = { only: new Map([['init-other', ['pool-fast']]]), never: [] }
+
+    const order = billingOrder({
+      ...enforce,
+      pick: ['pool-fast'],
+      overflow: 'pool-spare',
+      funds,
+      initiatives: ['init-a'],
+    })
+
+    expect(order).toEqual({ order: ['pool-fast', 'pool-home', 'pool-spare'], unfunded: [] })
+  })
+
+  it('holds an initiative the map does not name to its default', () => {
+    const funds: FundsMap = {
+      only: new Map([['init-other', ['pool-fast']]]),
+      fallback: ['pool-home'],
+      never: [],
+    }
+
+    const order = billingOrder({
+      ...enforce,
+      pick: ['pool-fast'],
+      overflow: 'pool-spare',
+      funds,
+      initiatives: ['init-a'],
+    })
+
+    expect(order.order).toEqual(['pool-home'])
+  })
+
   it('bills home alone in enforce mode when the charter has no funds map', () => {
     const order = billingOrder({
       ...enforce,

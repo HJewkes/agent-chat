@@ -255,6 +255,21 @@ describe('the tick bills the first open pool under poolPick enforce', () => {
     )
   })
 
+  it('dispatches on home when the funds map has no default and does not name the initiative', () => {
+    writeTask(root)
+    const funds: FundsMap = { only: new Map([['init-other', ['pool-y']]]), never: [] }
+    const seat = load({ 'pool-x': OPEN }, enforce([], funds))
+
+    const plan = planSeats(
+      [seat],
+      { ledger: EMPTY_LEDGER, initiatives: readInitiatives(root), scopeTagAliases: {} },
+      root,
+    )
+
+    expect(seat.closedPools).toBeUndefined()
+    expect(plan.dispatch.map(d => [d.task, d.account])).toEqual([['AA-1', 'pool-x']])
+  })
+
   it('leaves a seat unchanged in shadow mode', () => {
     const pools = { 'pool-x': HOME_AT_DAY_STOP, 'pool-y': OPEN }
 

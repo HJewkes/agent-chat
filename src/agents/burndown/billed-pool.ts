@@ -1,5 +1,5 @@
 import type { FundsMap } from '../seats/charter.js'
-import type { PoolPickMode } from '../seats/pool-pick.js'
+import { poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
 import type { PoolGateResult } from './budget-gate.js'
 
 /**
@@ -28,16 +28,6 @@ export interface BillingOrder {
   unfunded: string[]
 }
 
-/** The pools the funds map lets pay for `initiative`'s work: its own entry, else `default`; none for a human-only one. */
-export function fundedPools(funds: FundsMap, initiative: string): readonly string[] {
-  if (funds.never.includes(initiative)) return []
-  return funds.only.get(initiative) ?? funds.fallback ?? []
-}
-
-/** Whether `pool` may pay for `initiative`'s work; a seat with no initiatives is held to `default`. */
-export const funds = (map: FundsMap, pool: string, initiative: string | undefined): boolean =>
-  (initiative === undefined ? (map.fallback ?? []) : fundedPools(map, initiative)).includes(pool)
-
 export function billingOrder(input: BillingOrderInput): BillingOrder {
   const { mode, home, pick, overflow, pools, funds: map, initiatives } = input
   if (mode !== 'enforce' || map === undefined) return { order: [home], unfunded: [] }
@@ -46,7 +36,7 @@ export function billingOrder(input: BillingOrderInput): BillingOrder {
   )
   const candidates = [...new Set(named)]
   const scope = initiatives.length === 0 ? [undefined] : initiatives
-  const funded = (pool: string) => scope.some(initiative => funds(map, pool, initiative))
+  const funded = (pool: string) => scope.some(initiative => poolFunds(map, pool, initiative))
   return {
     order: candidates.filter(funded),
     unfunded: candidates
