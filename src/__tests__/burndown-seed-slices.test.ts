@@ -58,6 +58,8 @@ const SLICES = [
   },
 ]
 
+const EDGE = 'slice b: depends on a but their owns are disjoint; set dependsOn [] or say why in dependsWhy'
+
 const planText = (slices: unknown): string =>
   `# Plan\n\nProse the seat wrote.\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
 
@@ -138,6 +140,18 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
       ['a', 'queued', [], ['src/ledger.ts'], [{ scope: 'api:/v1/ledger', op: 'add' }]],
       ['b', 'queued', ['a'], ['src/tick.ts'], undefined],
     ])
+    expect(result.notes).toEqual([
+      `seeded alpha A-1 slices a, b from ${PLAN_PATH} (seat seat-a)`,
+      `slice-lint alpha A-1: ${EDGE}`,
+    ])
+  })
+
+  it('seeds a plan whose slices share files with no slice-lint note (CC-1155)', () => {
+    const shared = [SLICES[0], { ...SLICES[1], owns: ['src/ledger.ts', 'src/tick.ts'] }]
+
+    const result = plan({ ...ON, readPlan: reader(planText(shared)) })
+
+    expect(result.seeds.map(c => c.slice)).toEqual(['a', 'b'])
     expect(result.notes).toEqual([`seeded alpha A-1 slices a, b from ${PLAN_PATH} (seat seat-a)`])
   })
 
@@ -238,7 +252,7 @@ describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b)',
   it('seeds as before when no slice agent ran', () => {
     const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () => [])
 
-    expect(result).toEqual({ claims: expect.any(Array), plan: PLAN_PATH })
+    expect(result).toEqual({ claims: expect.any(Array), plan: PLAN_PATH, warnings: [EDGE] })
   })
 
   it('refuses plan-blocked through planSeat when the seat log shows a slice run', () => {
