@@ -112,6 +112,13 @@ describe('planner brief', () => {
       expect(brief).toContain(op)
     }
   })
+
+  it('requires dependsOn [] for disjoint owns unless dependsWhy says why (CC-1155)', () => {
+    const brief = plannerBrief(task())
+
+    expect(brief).toContain('`dependsWhy`')
+    expect(brief).toContain('otherwise leave `dependsOn` empty')
+  })
 })
 
 describe('brief writer brief (CC-939)', () => {

@@ -152,6 +152,9 @@ export interface EventStore {
   /** CC-1089: answers and decisions to `refs` written after row `afterId`, oldest first. */
   answersTo(refs: string[], afterId: number): DeliveredMessage[]
 
+  /** CC-1140: answers and decisions to `name`'s own questions after row `afterId`, from the identity that asked. */
+  answersToAskerSince(name: string, afterId: number, agentId?: string): DeliveredMessage[]
+
   /** Peer traffic that landed in `name`'s inbox since `since`. */
   inboxCountSince(name: string, since: number): number
 
