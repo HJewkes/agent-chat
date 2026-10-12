@@ -1466,6 +1466,12 @@ and for an agent that has not exited. A row with `presence: "exited"` and `infer
 does not prove the process stopped writing: a reboot or a dead launcher can leave a
 reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
 
+`agent ls` shows each live agent's context fill against its role's retire threshold, as
+`ctx=212k/200k` (CC-290). The thresholds are `DEFAULT_CONTEXT_HINTS`, overridable by
+`contextHints` in config. `retire-due` follows when the agent is past its threshold and has
+sent a `Status:` or `Verdict:` report to its spawner, or to `tick.reportTo` for a burndown
+spawn. `--json` rows carry `contextK`, `retireK` and `retireDue`, each null when unread.
+
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
 cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,
