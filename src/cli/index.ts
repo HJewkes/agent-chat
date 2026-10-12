@@ -36,6 +36,7 @@ import { addMachineCommands } from './verbs/machine.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
+import { teleportRequestVerb } from './verbs/teleport-request.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
@@ -217,6 +218,7 @@ function addAgentCommands(program: Command): void {
 
   const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
   addVerb(teleport, teleportAbortVerb)
+  addVerb(teleport, teleportRequestVerb)
 
   const handoff = program.command('handoff').description('stored teleport handoffs').helpGroup(AGENTS)
   addVerb(handoff, handoffLastVerb)
