@@ -1,0 +1,157 @@
+#!/bin/sh
+# CC-1148: the local, git-versioned store for deployment-specific Titan Factory values. The values live only in the
+# store, never in this public repo; seat.env is KEY=VALUE that systemd EnvironmentFile= and `set -a; .` read alike.
+set -u
+
+KEYS='ACTIVE_ROOT AUTONOMY_ROOT AGENT_CHAT_HOME COORDINATORS SEAT_SCRIPTS TITAN_FACTORY_DB'
+
+usage() {
+  cat >&2 <<'EOF'
+usage: factory-config path | init | check [dir]
+  path   print the store dir: $TITAN_FACTORY_CONFIG_DIR, else ~/.local/share/titan-factory/config
+  init   create the store from ACTIVE_ROOT AUTONOMY_ROOT AGENT_CHAT_HOME COORDINATORS SEAT_SCRIPTS
+         TITAN_FACTORY_DB in the environment: git init (no remote), seat.env, a dated CHANGELOG.md entry, one commit
+  check  validate seat.env and the store's history; exits 1 naming each problem
+To change a value: edit seat.env, add "- KEY: old -> new (why)" under today's "## YYYY-MM-DD" in CHANGELOG.md,
+commit both together, then run check.
+EOF
+  exit 2
+}
+
+store_dir() {
+  printf '%s\n' "${TITAN_FACTORY_CONFIG_DIR:-$HOME/.local/share/titan-factory/config}"
+}
+
+fail() {
+  printf 'FAIL %s\n' "$1" >&2
+  failed=1
+}
+
+host_names() {
+  full=$(hostname 2>/dev/null) || full=
+  [ -n "$full" ] || return 0
+  printf '%s\n' "$full" "${full%%.*}" | sort -u
+}
+
+holds_host_literal() {
+  case $1 in *://* | *.ts.net* | *http*) return 0 ;; esac
+  for h in $(host_names); do
+    pattern=$(printf '%s' "$h" | sed 's/\./\\./g')
+    printf '%s' "$1" | grep -Eiq "(^|[^A-Za-z0-9-])$pattern([^A-Za-z0-9-]|$)" && return 0
+  done
+  return 1
+}
+
+# Prints why a value is unusable for its key, or nothing when it is fine.
+value_problem() {
+  key=$1 value=$2
+  [ -n "$value" ] || { echo "$key is empty"; return; }
+  case $value in *'$'* | *'`'* | *'\'* | *"'"* | *'"'*) echo "$key holds \$, a backtick, a backslash or a quote"; return ;; esac
+  holds_host_literal "$value" && { echo "$key holds a hostname or URL literal"; return; }
+  case $key in
+    COORDINATORS) printf '%s' "$value" | grep -Eq '^[A-Za-z0-9._-]+( [A-Za-z0-9._-]+)*$' ||
+      echo "COORDINATORS is not space-separated seat names" ;;
+    *) case $value in /*) ;; *) echo "$key is not an absolute path" ;; esac ;;
+  esac
+}
+
+env_line() {
+  case $2 in *' '*) printf '%s="%s"\n' "$1" "$2" ;; *) printf '%s=%s\n' "$1" "$2" ;; esac
+}
+
+# Echoes the unquoted value of a seat.env line's right-hand side, or fails when its quoting is unusable.
+unquote() {
+  case $1 in
+    \"*\") inner=${1#\"}; printf '%s' "${inner%\"}" ;;
+    *' '* | *\"* | *"'"*) return 1 ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+check_line() {
+  n=$1 line=$2
+  case $line in '' | '#'*) return ;; esac
+  key=${line%%=*}
+  printf '%s' "$line" | grep -Eq '^[A-Z_][A-Z0-9_]*=' || { fail "seat.env line $n is not KEY=VALUE"; return; }
+  value=$(unquote "${line#*=}") || { fail "seat.env line $n: $key is quoted wrongly (double quotes only, around the whole value)"; return; }
+  problem=$(value_problem "$key" "$value")
+  [ -z "$problem" ] || fail "seat.env line $n: $problem"
+  seen="$seen $key "
+}
+
+check_env_file() {
+  file=$1 n=0 seen=' '
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    check_line "$n" "$line"
+  done <"$file"
+  for key in $KEYS; do
+    case $seen in *" $key "*) ;; *) fail "seat.env is missing $key" ;; esac
+  done
+  sh -c 'set -a; . "$1"' sh "$file" >/dev/null 2>&1 || fail "seat.env does not source under sh"
+}
+
+check_history() {
+  dir=$1
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || { fail "$dir is not a git repository"; return; }
+  [ -z "$(git -C "$dir" status --porcelain)" ] || fail "store worktree is dirty; commit seat.env with its CHANGELOG.md entry"
+  for commit in $(git -C "$dir" log --format=%H -- seat.env); do
+    git -C "$dir" diff-tree --no-commit-id --name-only -r --root "$commit" | grep -qx CHANGELOG.md ||
+      fail "commit $commit changed seat.env without a CHANGELOG.md entry"
+  done
+}
+
+cmd_check() {
+  dir=${1:-$(store_dir)} failed=0
+  [ -f "$dir/seat.env" ] || { fail "no seat.env in $dir; run factory-config init"; return 1; }
+  check_env_file "$dir/seat.env"
+  check_history "$dir"
+  [ "$failed" -eq 0 ] && echo "ok $dir"
+  return "$failed"
+}
+
+init_values_ok() {
+  failed=0
+  for key in $KEYS; do
+    eval "set_=\${$key+x} value=\${$key-}"
+    [ -n "$set_" ] || { fail "$key is unset; export it for init"; continue; }
+    problem=$(value_problem "$key" "$value")
+    [ -z "$problem" ] || fail "$problem"
+  done
+  return "$failed"
+}
+
+write_store() {
+  dir=$1 today=$(date +%Y-%m-%d)
+  {
+    echo "# Titan Factory deployment values. Change only with a CHANGELOG.md entry in the same commit."
+    for key in $KEYS; do eval "env_line $key \"\$$key\""; done
+  } >"$dir/seat.env"
+  printf '# factory-config changelog\n\n## %s\n\n- created seat.env with %s (factory-config init)\n' \
+    "$today" "$(echo $KEYS | sed 's/ /, /g')" >"$dir/CHANGELOG.md"
+}
+
+commit_store() {
+  dir=$1
+  git -C "$dir" add seat.env CHANGELOG.md &&
+    git -C "$dir" -c user.name="${GIT_AUTHOR_NAME:-$(git -C "$dir" config user.name || echo factory-config)}" \
+      -c user.email="${GIT_AUTHOR_EMAIL:-$(git -C "$dir" config user.email || echo factory-config@localhost)}" \
+      commit -q -m "Create seat.env" >/dev/null
+}
+
+cmd_init() {
+  dir=$(store_dir)
+  [ ! -e "$dir/seat.env" ] || { echo "FAIL $dir/seat.env exists; edit it and log the change instead" >&2; return 1; }
+  init_values_ok || return 1
+  mkdir -p "$dir" && git init -q "$dir" || return 1
+  write_store "$dir" && commit_store "$dir" || { echo "FAIL could not write and commit the store" >&2; return 1; }
+  cmd_check "$dir"
+}
+
+[ $# -ge 1 ] || usage
+case $1 in
+  path) [ $# -eq 1 ] || usage; store_dir ;;
+  init) [ $# -eq 1 ] || usage; cmd_init ;;
+  check) [ $# -le 2 ] || usage; shift; cmd_check "$@" ;;
+  *) usage ;;
+esac
