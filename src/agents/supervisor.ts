@@ -3354,7 +3354,8 @@ export class Supervisor implements TeleportHost {
 
   /**
    * CC-1059: the broker cannot signal a pid on another host, so it asks the agent's own MCP
-   * process, which ends its Claude Code when the id is its own. The exit row follows the detach.
+   * process, which ends its Claude Code when the id is its own. Nothing confirms it: retired is
+   * terminal, so the detach that follows changes no row.
    */
   private requestRemoteEnd(identity: AgentIdentity, host: string): Reaped {
     const conn = this.core.registry.connFor(identity.name)
@@ -3389,7 +3390,8 @@ export class Supervisor implements TeleportHost {
     if (reaped === 'remote_end_requested')
       notes.push(
         `${name} runs on ${remoteHost ?? 'another host'}, so the broker asked its own process to end ` +
-          'rather than signalling it; its exit is recorded when its connection closes',
+          'rather than signalling it. Nothing confirms that it ended, and an older agent-chat there ' +
+          'ignores the request; check its terminal on that host',
       )
     if (!hadHandle)
       notes.push(

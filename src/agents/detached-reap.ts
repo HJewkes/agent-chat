@@ -85,8 +85,9 @@ export const remoteHostOf = (
 ): string | undefined => (agent.host !== undefined && agent.host !== localHost ? agent.host : undefined)
 
 /**
- * A remote agent's only evidence is presence, and the caller asks only once the settle window
- * has passed with no connection, so that absence is the verdict. A reattach reopens the row.
+ * A remote agent's only evidence is presence: with no connection, it is read as gone. The detach
+ * reaper asks after the settle window; a resume asks at once, as it does for a local agent with no
+ * process. A reattach reopens the row.
  */
 export function agentLiveness(agent: AgentIdentity, probe: ProcessProbe, localHost = brokerHost()): Liveness {
   const remote = remoteHostOf(agent, localHost)

@@ -817,7 +817,9 @@ reattach after that reopens the row and takes a slot again. Retire cannot signal
 pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
 connection, and that MCP process ends its own Claude Code when the id is its own
 (`src/server/end-self.ts`). The `agent_retired` row says `reaped:
-remote_end_requested`, and the exit row follows when the connection closes.
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
 
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 

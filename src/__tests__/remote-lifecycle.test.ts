@@ -159,4 +159,17 @@ describe('an agent running on another host', () => {
     expect(rows('agent_retired', agentId)[0]?.meta.reaped).toBe('remote_end_requested')
     expect(supervisor.slotIds()).toEqual([])
   })
+
+  it('stays retired with no exit row and no slot when its connection closes after retire', async () => {
+    const agentId = await liveRemoteAgent(fakeConn())
+    const result = await supervisor.retire('ff-planner')
+
+    core.append({ kind: 'agent_detached', actor: 'ff-planner', ref: agentId })
+    await pause(SETTLE_MS * 3)
+
+    expect(result.reason).toContain('Nothing confirms that it ended')
+    expect(rows('agent_exited', agentId)).toHaveLength(0)
+    expect(core.agents.get(agentId)?.state).toBe('retired')
+    expect(supervisor.slotIds()).toEqual([])
+  })
 })
