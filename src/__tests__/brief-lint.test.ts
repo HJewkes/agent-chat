@@ -123,6 +123,17 @@ describe('the brief lint only warns on a tool it names without asking for it', (
     expect(result.warnings).toEqual([expect.stringContaining('ScheduleWakeup')])
   })
 
+  it('gives no warning for a negated mention', () => {
+    expect(lint({ brief: 'Never use AskUserQuestion.' })).toEqual({ warnings: [] })
+  })
+
+  it('reads a hard-wrapped sentence whole, so a wrapped verb does not open a sentence', () => {
+    const result = lint({ brief: 'Fix the parser and\nuse ScheduleWakeup to check back on CI.' })
+
+    expect(result.refusal).toBeUndefined()
+    expect(result.warnings).toHaveLength(1)
+  })
+
   it('does not refuse a task that describes the lint itself', () => {
     const brief = 'Done when: A test brief naming ScheduleWakeup for a headless implementer is refused.'
 
