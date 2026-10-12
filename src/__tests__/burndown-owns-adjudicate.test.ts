@@ -1,9 +1,14 @@
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { checkoutPrs, observe, type CheckoutPr } from '../agents/burndown/observe.js'
+import { changedFiles, checkoutPrs, observe, type CheckoutPr } from '../agents/burndown/observe.js'
 import { adjudicateOutside, type OtherPr } from '../agents/burndown/owns-adjudicate.js'
+import { outsideOwns } from '../agents/burndown/owns-fence.js'
 import type { PrFacts } from '../agents/burndown/pr-facts.js'
 import type { AgentIdentity } from '../protocol.js'
 
@@ -183,6 +188,38 @@ describe('an outside-owns PR that collides fails closed (test 22)', () => {
 
     expect(verdict).toEqual({ kind: 'escalate', reason: 'src/agents/x.ts is a protected path' })
     expect(read).toEqual([])
+  })
+})
+
+describe('a protected file moved out of its tree', () => {
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+      cwd,
+      stdio: 'ignore',
+    })
+  }
+
+  it('reads the old path as changed, so the move escalates instead of amending', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'owns-rename-'))
+    try {
+      git(repo, 'init', '-q', '-b', 'main')
+      fs.mkdirSync(path.join(repo, 'scripts'))
+      fs.writeFileSync(path.join(repo, 'scripts/merge-guard.sh'), 'exit 0\n')
+      git(repo, 'add', '.')
+      git(repo, 'commit', '-q', '-m', 'base')
+      git(repo, 'checkout', '-q', '-b', 'work')
+      fs.mkdirSync(path.join(repo, 'tools'))
+      git(repo, 'mv', 'scripts/merge-guard.sh', 'tools/helper.sh')
+      git(repo, 'commit', '-q', '-m', 'move')
+
+      const files = changedFiles(repo) ?? []
+      const verdict = adjudicateOutside(outsideOwns(files, [OWNED]), { held: [], openPrs: () => [] })
+
+      expect(files).toEqual(expect.arrayContaining(['scripts/merge-guard.sh', 'tools/helper.sh']))
+      expect(verdict).toEqual({ kind: 'escalate', reason: 'scripts/merge-guard.sh is a protected path' })
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
   })
 })
 

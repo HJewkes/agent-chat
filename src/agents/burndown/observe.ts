@@ -353,11 +353,14 @@ export function checkoutPrs(
   }))
 }
 
-/** Committed changes only: the PR carries what was pushed, not what the worktree still holds. */
+/**
+ * Committed changes only: the PR carries what was pushed, not what the worktree still holds. `--no-renames` lists a
+ * moved file's old path too, so moving a protected file out of its tree still reads as touching it (CC-1150 f).
+ */
 export function changedFiles(cwd: string, exec: Runner = run): string[] | undefined {
   const base = resolveBaseRef(cwd, exec)
   if (base === undefined) return undefined
-  const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
+  const result = exec(GIT_BIN, ['diff', '--no-renames', '--name-only', `${base}...HEAD`], cwd)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
 
