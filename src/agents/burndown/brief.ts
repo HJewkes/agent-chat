@@ -236,6 +236,7 @@ function slicesRequirement(): string {
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
+    'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
     'The tick lints this block; a plan without it, or failing the lint, stalls. ' +

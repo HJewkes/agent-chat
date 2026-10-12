@@ -209,6 +209,10 @@ function addAgentCommands(program: Command): void {
       agents.parseSpawnedAs,
     )
     .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
+    .option(
+      '--host <machine>',
+      'the machine to launch on, a configured alias or a hostname (default: this one)',
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)

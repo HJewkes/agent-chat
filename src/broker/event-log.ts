@@ -704,6 +704,27 @@ export class EventLog implements EventStore {
   }
 
   /**
+   * CC-1140: answers and decisions to `name`'s own questions written after row `afterId`, oldest first.
+   *
+   * `agentId` scopes it to the identity that asked: a question filed while another
+   * agent held the name is skipped. A question with no attached identity before it
+   * matches on the name alone.
+   */
+  answersToAskerSince(name: string, afterId: number, agentId?: string): DeliveredMessage[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM events a JOIN events q ON q.msg_id = a.ref AND q.kind = 'question' AND q.actor = ?
+         WHERE a.kind IN ('answer','decided') AND a.target = ? AND a.id > ?
+           AND (? IS NULL OR COALESCE((
+             SELECT x.ref FROM events x WHERE x.kind = 'agent_attached' AND x.actor = q.actor AND x.id < q.id
+             ORDER BY x.id DESC LIMIT 1), ?) = ?)
+         ORDER BY a.id ASC`,
+      )
+      .all(name, name, afterId, agentId ?? null, agentId ?? null, agentId ?? null) as unknown as Row[]
+    return rows.map(toMessage)
+  }
+
+  /**
    * Peer traffic that landed in `name`'s inbox since `since`.
    *
    * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so

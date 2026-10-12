@@ -57,7 +57,8 @@ export function sliceClaims(parent: Parent, slices: readonly PlannedSlice[], now
 export const seedSteps = (seeds: readonly Claim[] = []): Step[] =>
   seeds.length === 0 ? [] : [{ kind: 'ledger', actions: [{ kind: 'add', claims: [...seeds] }] }]
 
-export type Seeding = { claims: Claim[]; plan: string } | { blocked: string }
+/** `warnings` are the slice lint's advisory lines (CC-1155); they never block seeding. */
+export type Seeding = { claims: Claim[]; plan: string; warnings: string[] } | { blocked: string }
 
 /** The slice agents already run for a task, by name (CC-1121 b). */
 export type SliceRuns = (taskId: string) => string[]
@@ -101,5 +102,5 @@ export function seedSlices(
   const read = readSlices(plan.text)
   return read.slices === undefined
     ? { blocked: `${plan.path}: ${read.problems.join('; ')}` }
-    : { claims: sliceClaims(parent, read.slices, now), plan: plan.path }
+    : { claims: sliceClaims(parent, read.slices, now), plan: plan.path, warnings: read.warnings }
 }
