@@ -9,6 +9,7 @@ import {
   type Task,
 } from '../agents/burndown/eligibility.js'
 import type { Ledger } from '../agents/burndown/ledger.js'
+import { opsNoneTag } from '../agents/burndown/ops.js'
 
 const NOW = new Date('2026-10-01T12:00:00.000Z')
 
@@ -113,5 +114,81 @@ describe('profileFor (owner decision 186)', () => {
 
   it.each([[[]], [['kind:feature']]])('plans an estimate-3 task with tags %j', tags => {
     expect(profileFor(sized(3, tags))).toBe('bd-planner')
+  })
+})
+
+describe('dispatch gate on declared ops (CC-974)', () => {
+  const withDoneWhen = (doneWhen: string, tags: string[] = []): Task => ({
+    ...task('O-1', 1),
+    doneWhen,
+    tags,
+  })
+  const refuse = (t: Task, grants: string[] = []) => taskRefusal(t, grants, new Set())
+
+  const subjectMatter = [
+    ['a filename', 'probe-deploy.ts drops its isAlive helper; unit tests cover it'],
+    ['a fixture name', "the 'Deploy Preview' workflow fixture parses into one job"],
+    ['a test scenario', 'an integration test survives a broker restart on a throwaway broker'],
+    ['a read-only check', 'the doctor reads the branch protection ruleset and reports drift'],
+  ]
+
+  it.each(subjectMatter)('dispatches %s tagged ops:none for its text', (_scenario, doneWhen) => {
+    expect(refuse(withDoneWhen(doneWhen, [opsNoneTag(doneWhen)]))).toBeUndefined()
+  })
+
+  it.each(subjectMatter)(
+    'refuses %s with no tag as ops-unresolved, naming the tag',
+    (_scenario, doneWhen) => {
+      const refusal = refuse(withDoneWhen(doneWhen))
+
+      expect(refusal?.kind).toBe('ops-unresolved')
+      expect(refusal?.reason).toContain(opsNoneTag(doneWhen))
+    },
+  )
+
+  it('refuses an ops:none tag minted for different text', () => {
+    const tag = opsNoneTag('the deploy checkout path is read')
+
+    expect(refuse(withDoneWhen('the deploy checkout path is written', [tag]))?.kind).toBe('ops-unresolved')
+  })
+
+  it('refuses a declared human op as needs-human, with or without prose', () => {
+    expect(refuse(withDoneWhen('unit tests cover it', ['ops:restart']))).toEqual({
+      kind: 'needs-human',
+      reason: 'declares ops:restart',
+    })
+  })
+
+  it.each([
+    ['kind:owner', 'owner'],
+    ['kind:operator', 'operator'],
+  ])('routes a %s task as human-step', (tag, queue) => {
+    expect(refuse(withDoneWhen('the owner answers', [tag]))).toEqual({
+      kind: 'human-step',
+      reason: `routed to the ${queue}, never dispatched`,
+    })
+  })
+
+  it('needs the release grant for a declared publish, and dispatches it with the grant', () => {
+    const publish = withDoneWhen('npm publish ships 1.2.0', ['ops:publish'])
+
+    expect(refuse(publish)?.kind).toBe('needs-grant')
+    expect(refuse(publish)?.reason).toContain('release-through-ci')
+    expect(refuse(publish, ['release-through-ci'])).toBeUndefined()
+  })
+
+  it.each([
+    'Publish @titan-design/registry 0.3.0 through changesets',
+    'cut a release of 2.0',
+    'the package is published and consumers install it',
+  ])('refuses untagged publish wording %j as ops-unresolved', doneWhen => {
+    expect(refuse(withDoneWhen(doneWhen), ['release-through-ci'])?.kind).toBe('ops-unresolved')
+  })
+
+  it('still reads the merge grant off prose', () => {
+    const merge = withDoneWhen('PR merged to main')
+
+    expect(refuse(merge)?.reason).toContain('merge-on-green-approve')
+    expect(refuse(merge, ['merge-on-green-approve'])).toBeUndefined()
   })
 })

@@ -18,6 +18,7 @@ import { matchPattern } from '../agents/isolation/file-ownership.js'
 import {
   createWorktreeStrategy,
   findGitRoot,
+  reattachWorktree,
   RECLAIM_GRACE_MS,
   WorktreeBudgetExhaustedError,
   WorktreeInUseError,
@@ -392,6 +393,52 @@ describe('worktree re-allocation after a crash', () => {
     const second = await worktreeStrategy.allocate({ ...ctx, forceReset: true })
     expect(second.cwd).toBe(first.cwd)
     expect(fs.existsSync(path.join(second.cwd, 'scratch.ts'))).toBe(false)
+  })
+})
+
+describe('a sibling tree whose branch extends the name (CC-1082)', () => {
+  /** Leaves `impl` parked with one commit and `impl-review` live beside it. */
+  const parkBesideLiveReviewer = async (repo: string) => {
+    const impl = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl' }))
+    const sha = commitIn(impl.cwd, 'work.ts')
+    git(['worktree', 'remove', '--force', impl.cwd], repo)
+    const review = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl-review' }))
+    return { implPath: impl.cwd, reviewPath: review.cwd, sha }
+  }
+
+  it('resumes the agent while its reviewer holds the -review branch', async () => {
+    const repo = makeRepo()
+    const { implPath, reviewPath, sha } = await parkBesideLiveReviewer(repo)
+
+    const again = await reattachWorktree({ gitRoot: repo, worktree: implPath, branch: 'agent-chat/impl' })
+
+    expect(again.cwd).toBe(implPath)
+    expect(again.ref?.reattached).toBe('local')
+    expect(git(['branch', '--show-current'], implPath)).toBe('agent-chat/impl')
+    expect(git(['rev-parse', 'HEAD'], implPath)).toBe(sha)
+    expect(git(['branch', '--show-current'], reviewPath)).toBe('agent-chat/impl-review')
+  })
+
+  it('allocates the agent onto its kept branch while its reviewer is live', async () => {
+    const repo = makeRepo()
+    const { sha } = await parkBesideLiveReviewer(repo)
+
+    const again = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl' }))
+
+    expect(again.ref?.reused).toBe('true')
+    expect(git(['rev-parse', 'HEAD'], again.cwd)).toBe(sha)
+  })
+
+  it('still refuses when another tree really holds the branch', async () => {
+    const repo = makeRepo()
+    const { implPath } = await parkBesideLiveReviewer(repo)
+    const other = path.join(repo, '.worktrees', 'other')
+    git(['worktree', 'add', other, 'agent-chat/impl'], repo)
+
+    const resumed = reattachWorktree({ gitRoot: repo, worktree: implPath, branch: 'agent-chat/impl' })
+
+    await expect(resumed).rejects.toBeInstanceOf(WorktreeInUseError)
+    await expect(resumed).rejects.toMatchObject({ worktreePath: other })
   })
 })
 

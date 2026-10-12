@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto'
 
 /**
  * CC-974: the human ops a task or slice may declare, and the one copy of the patterns that spot
- * them in prose. The patterns are the union of eligibility's HUMAN_ONLY and score's
- * HARD_STOP_PATTERNS, moved verbatim. They run as a brief-time lint, never as the dispatch decision.
+ * them in prose. The patterns are the union of eligibility's HUMAN_ONLY and release GRANTABLE
+ * patterns and score's HARD_STOP_PATTERNS, moved verbatim. They run as a brief-time lint, never as the dispatch decision.
  */
 
 export const OPS = [
@@ -31,6 +31,7 @@ export const OP_PATTERNS: Record<Op, RegExp[]> = {
   publish: [
     /\bnpm publish|first publish|publish(es|ed)? to npm|version packages/i,
     /\bmove (the )?v1\b|cut a (release )?tag|tag push/i,
+    /\b(publish(es|ed|ing)?|tag push|cut a release)\b/i,
   ],
   spend: [/\b(purchase|pay for|spend money)\b/i, /\b(purchase|pay for|spend money|submit (the )?order)\b/i],
   'force-push': [/force-push|reset --hard/i],
