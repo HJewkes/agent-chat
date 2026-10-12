@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { OPS } from './ops.js'
-import { lintSlices } from './slice-lint.js'
+import { lintSlices, sliceWarnings } from './slice-lint.js'
 
 /**
  * Parses what a tick-spawned agent leaves behind: the first line of its final
@@ -78,13 +78,16 @@ const PlannedSlice = z.object({
   contracts: z.array(Contract).default([]),
   /** CC-974: the ops the slice's doneWhen names; `[]` says its hits are subject matter. */
   ops: z.array(z.enum(OPS)).optional(),
+  /** CC-1155: the semantic reason a slice waits on one whose owns it does not share. */
+  dependsWhy: z.string().optional(),
 })
 /** `contracts` is optional on the type so fixtures built by hand stay valid; `readSlices` always fills it. */
 export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { contracts?: Contract[] }
 
-/** A planner's slices when they pass the lint, else the reason lines. */
+/** A planner's slices and their advisory lines when they pass the lint, else the reason lines. */
 export type SliceRead =
-  { slices: PlannedSlice[]; problems?: undefined } | { slices?: undefined; problems: string[] }
+  | { slices: PlannedSlice[]; warnings: string[]; problems?: undefined }
+  | { slices?: undefined; problems: string[] }
 
 const SLICES_BLOCK = /^```burndown-slices[ \t]*\n([\s\S]*?)^```[ \t]*$/m
 
@@ -101,7 +104,7 @@ export function readSlices(planText: string): SliceRead {
   const parsed = z.array(PlannedSlice).min(1).safeParse(json)
   if (!parsed.success) return { problems: parsed.error.issues.map(shapeProblem) }
   const problems = lintSlices(parsed.data)
-  return problems.length === 0 ? { slices: parsed.data } : { problems }
+  return problems.length === 0 ? { slices: parsed.data, warnings: sliceWarnings(parsed.data) } : { problems }
 }
 
 const shapeProblem = (issue: z.core.$ZodIssue): string =>
