@@ -152,3 +152,30 @@ describe('the ask deny (CC-169)', () => {
     }
   })
 })
+
+describe('the teleport deny (CC-951)', () => {
+  const SEND = 'Bash(agent-chat send:*)'
+  const TELEPORT = 'Bash(agent-chat teleport:*)'
+
+  // Mutation caught: no derived deny, which left every installed profile file able to run `teleport request` as the human.
+  it('adds it to a file that denies send, and says so', () => {
+    const profile = parsed({ disallowedTools: ['Write', SEND] })
+
+    expect(profile.disallowedTools?.filter(tool => tool === TELEPORT)).toEqual([TELEPORT])
+    expect(deniedAtLaunch(profile)).toContain(TELEPORT)
+    expect(profile.warnings).toContainEqual(expect.stringMatching(/fixture\.json.*agent-chat teleport/))
+  })
+
+  it('leaves a file that denies neither send nor teleport unchanged', () => {
+    const profile = parsed({ disallowedTools: ['Write'] })
+
+    expect(profile.disallowedTools).toEqual(['Write'])
+    expect(profile).not.toHaveProperty('warnings')
+  })
+
+  it('keeps teleport for a file that allows it by name', () => {
+    const profile = parsed({ allowedTools: ['Read', TELEPORT], disallowedTools: [SEND] })
+
+    expect(profile.disallowedTools).toEqual([SEND])
+  })
+})

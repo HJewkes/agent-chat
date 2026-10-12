@@ -412,9 +412,16 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat approve:*)',
       'Bash(agent-chat inbox:*)',
       'Bash(agent-chat ask:*)',
+      'Bash(agent-chat teleport:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
+
+    for (const profile of BUILTIN_PROFILES.filter(p =>
+      p.disallowedTools?.includes('Bash(agent-chat send:*)'),
+    )) {
+      expect(profile.disallowedTools).toContain('Bash(agent-chat teleport:*)')
+    }
 
     for (const name of ['explorer', 'reviewer']) {
       const denied = flag(
