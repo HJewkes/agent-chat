@@ -4,7 +4,13 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EventLog } from '../broker/event-log.js'
 import { buildHookSettings } from '../agents/launch-files.js'
-import { openBlocks, parseToolHook, recordToolCall, seatBlockReport } from '../seat-blocks.js'
+import {
+  openBlocks,
+  paneQuestionVerdict,
+  parseToolHook,
+  recordToolCall,
+  seatBlockReport,
+} from '../seat-blocks.js'
 
 const MIN = 60_000
 let dir: string
@@ -127,5 +133,34 @@ describe('seat block instrument', () => {
     expect(commands('PostToolUse')).toContain('seat-hook post')
     for (const event of ['UserPromptSubmit', 'Stop', 'SessionEnd'])
       expect(commands(event)).toContain('seat-hook end')
+  })
+})
+
+describe('a seat pane question (CC-1092)', () => {
+  it('denies a seat asking a pane question', () => {
+    expect(paneQuestionVerdict('demo-coord', 'AskUserQuestion', () => true)).toBe('deny')
+  })
+
+  it('lets a non-seat attended session keep AskUserQuestion', () => {
+    expect(paneQuestionVerdict('tp-operator', 'AskUserQuestion', () => false)).toBe('allow')
+  })
+
+  it("leaves a seat's other tools untouched, without looking the seat up", () => {
+    let lookedUp = false
+    const isSeat = (): boolean => {
+      lookedUp = true
+      return true
+    }
+
+    expect(paneQuestionVerdict('demo-coord', 'Bash', isSeat)).toBe('allow')
+    expect(lookedUp).toBe(false)
+  })
+
+  it('writes seat_ask_denied for a denied question and never seat_blocked', () => {
+    recordToolCall(log, 'demo-coord', 'pre', ask, true)
+
+    const rows = log.ledgerHandle().prepare('SELECT kind FROM events ORDER BY id').all() as { kind: string }[]
+    expect(rows.map(r => r.kind)).toEqual(['seat_ask_denied'])
+    expect(openBlocks(log, Date.now() + MIN)).toEqual([])
   })
 })
