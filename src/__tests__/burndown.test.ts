@@ -318,7 +318,10 @@ describe('burndown plan collision check (CC-202)', () => {
     (seen: Seen): Runner =>
     (bin, args) => {
       if (bin === 'gh' && args.some(a => a.includes('/files')))
-        return { status: 0, stdout: (seen.files ?? []).join('\n') }
+        return {
+          status: 0,
+          stdout: (seen.files ?? []).map(filename => JSON.stringify({ filename })).join('\n'),
+        }
       if (bin === 'gh') return { status: 0, stdout: (seen.prs ?? []).map(p => JSON.stringify(p)).join('\n') }
       if (args[0] === 'fetch') return { status: 0, stdout: '' }
       if (args[0] === 'log')

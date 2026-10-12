@@ -12,7 +12,7 @@
 #      and dist.prev (the message names the rollback command)
 #   3  the restart failed; the checkout was rolled back to the old commit and build and the
 #      broker restarted on it, and if that restart failed too the broker may be down
-#      (run: agent-chat service start)
+#      (run: agent-chat service start); if the guard refused that restart, the broker is up and untouched
 #   4  fetch, staged install or staged build failed, or the swap failed; the broker was not
 #      touched and the live src, node_modules and dist are on the old commit
 #
@@ -174,8 +174,20 @@ if [ "$restart_code" -ne 0 ]; then
     exit 1
   fi
   echo "restart-window: the restart failed; rolling back to $old_head and restarting on it" >&2
-  if roll_back && agent-chat service restart; then
+  if ! roll_back; then
+    echo "BROKER MAY BE DOWN: run agent-chat service start"
+    exit 3
+  fi
+  set +e
+  rollback_out="$(agent-chat service restart 2>&1)"
+  rollback_code=$?
+  set -e
+  [ -z "$rollback_out" ] || echo "$rollback_out"
+  if [ "$rollback_code" -eq 0 ]; then
     echo "restart-window: rolled back; the broker runs the old build"
+  elif [[ "$rollback_out" == "refusing to restart:"* ]]; then
+    # The guard only runs once the socket answers, so its refusal means the broker is up (CC-1182).
+    echo "restart-window: the old build is back; the broker is up and the rollback restart did not touch it (guard refusal above)"
   else
     echo "BROKER MAY BE DOWN: run agent-chat service start"
   fi
