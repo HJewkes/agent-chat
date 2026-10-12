@@ -66,11 +66,11 @@ describe('the agent ls retire cell', () => {
 
 describe('who an agent reports to', () => {
   it('a human-spawned agent counts a report to the human or to the tick reportTo', () => {
-    expect(reportTargets('human', 'titan-coord')).toEqual(['human', 'titan-coord'])
+    expect(reportTargets('human', 'tick-lead')).toEqual(['human', 'tick-lead'])
   })
 
   it('a seat-spawned agent counts only a report to its spawner', () => {
-    expect(reportTargets('seat-a', 'titan-coord')).toEqual(['seat-a'])
+    expect(reportTargets('seat-a', 'tick-lead')).toEqual(['seat-a'])
   })
 
   it('a human-spawned agent with no reportTo counts only the human', () => {
