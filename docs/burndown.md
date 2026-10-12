@@ -209,8 +209,14 @@ failing cause.
 - **Note-only causes.** `stale build` (serve still merges on an old build; it is a restart
   hint), `tick failing` and `tick stale` (they describe the tick itself, which would otherwise
   block itself). The tick reports them and the line runs.
-- **Fail closed.** A check that exits other than 0 or 1, times out, or prints anything but
-  its JSON is read as cause `unreadable`, which stops.
+- **Fail closed.** A check that exits other than 0 or 1, cannot be spawned (`ENOENT` and
+  other spawn errors), or prints anything but its JSON is read as cause `unreadable`, which
+  stops.
+- **Timeout (CC-1125).** The read waits `SERVICE_CHECK_READ_TIMEOUT_MS` (30 s), above the
+  check's own worst case of 21 s (three 6 s `/health` probes with two 1.5 s gaps). A check
+  killed by that timeout means serve did not answer, so it is read as cause `unresponsive`,
+  which stops, never as `unreadable`. The seat watchdog's read waits the same 30 s
+  (`SERVICE_CHECK_TIMEOUT_MS`) and reports a timeout as `unresponsive: ...`.
 - **Two reads.** One stopping read never stops the line, because one failed `/health` probe
   can read as `stale pid` while serve is healthy (TP-1726). The line stops only when this
   read and the previous persisted read both stop and the previous one is at most two tick

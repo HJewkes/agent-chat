@@ -83,7 +83,8 @@ import {
   reviewerAccountGate,
   type ReviewerAccountRead,
 } from './reviewer-account-gate.js'
-import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
+import { activeWorkRoot, resolveSpawnBriefing, type BriefingResult } from './active-work.js'
+import { withLinkedDirs } from './linked-dirs.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
@@ -1929,9 +1930,10 @@ export class Supervisor implements TeleportHost {
     resolved: Resolved,
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
-    const allocation = resumed?.reattach
+    const allocated = resumed?.reattach
       ? await recreateWorktree(resumed.reattach)
       : await resolveIsolation([isolationName]).allocate(ctx)
+    const allocation = withLinkedDirs(allocated, activeWorkRoot())
     warnings.push(...(allocation.warnings ?? []))
     this.core.append({
       kind: 'isolation_allocated',
