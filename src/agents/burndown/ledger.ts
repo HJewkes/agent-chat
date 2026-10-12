@@ -177,6 +177,8 @@ const NoDispatchMark = z.object({ key: z.string(), at: z.string() })
 
 const SeatState = z.object({
   samples: z.array(SeatSample),
+  /** Config dir the samples were read from (CC-1080); samples of another pool never share a series. Absent on old ledgers. */
+  configDir: z.string().optional(),
   noDispatch: NoDispatchMark.optional(),
   /** Ticks in a row on which nothing in the seat's scope was eligible (CC-864); absent after a dispatch or a stop. */
   exhaustedTicks: z.number().int().positive().optional(),

@@ -90,7 +90,11 @@ function sampled(
 ) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
-  const kept = (previous?.samples ?? []).filter(s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs)
+  // CC-1080: a drop across pools is a different account's reading, not a seven_day reset; an unkeyed ledger's samples are unknowable, so dropped.
+  const samePool = previous?.configDir === dispatch.configDir
+  const kept = (samePool ? (previous?.samples ?? []) : []).filter(
+    s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs,
+  )
   const sample: SevenDaySample[] =
     reading?.sevenDay === undefined
       ? []
@@ -100,7 +104,12 @@ function sampled(
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
     ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
   }
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
+  return {
+    reading,
+    resetsAt,
+    history,
+    state: { samples: [...kept, ...sample], configDir: dispatch.configDir, ...marks },
+  }
 }
 
 /**
