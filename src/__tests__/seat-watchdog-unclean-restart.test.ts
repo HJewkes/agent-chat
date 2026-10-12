@@ -196,7 +196,7 @@ describe('a watchdog run after an unclean broker restart', () => {
 
     expect(w.resumes).toEqual([SEAT_NAME])
     expect(lines.at(-1)).toMatch(
-      /resume FAILED seat-hub \(seat-hub is already live: .+\); will retry next run/,
+      /resume REFUSED seat-hub \(seat-hub is already live: .+\); seat may be live, not counted as a try/,
     )
     expect(lines.join('\n')).not.toContain('message it instead')
     expect(stateOf()).toBe('live')
