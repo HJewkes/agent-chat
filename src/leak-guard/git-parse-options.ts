@@ -15,9 +15,9 @@ interface Option {
 
 export type OptionSpec = readonly Option[]
 
-/** Builds a spec from words such as `x:[no-]file=`, `[no-]global` or `get`. */
+/** Builds a spec from words such as `x:[no-]file=`, `[no-]global` or `get`; every builtin also takes `-h` and `--help`. */
 export function optionSpec(text: string): OptionSpec {
-  return text
+  return `${text} h:help`
     .split(/\s+/)
     .filter(Boolean)
     .map(word => {

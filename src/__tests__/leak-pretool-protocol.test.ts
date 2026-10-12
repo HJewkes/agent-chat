@@ -27,7 +27,6 @@ describe('GIT_ALLOW_PROTOCOL on a line that may reach git (TP-2371)', () => {
     'GIT_ALLOW_PROTOCOL+=:ext git fetch x',
     'read GIT_ALLOW_PROTOCOL; git fetch x',
     ': ${GIT_ALLOW_PROTOCOL:=ext}; git fetch x',
-    'env --unset=GIT_ALLOW_PROTOCOL git fetch x',
   ])('denies a value it cannot read: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.programEnv)
   })
@@ -37,6 +36,7 @@ describe('GIT_ALLOW_PROTOCOL on a line that may reach git (TP-2371)', () => {
     'unset -v GIT_ALLOW_PROTOCOL; git fetch x',
     'env -u GIT_ALLOW_PROTOCOL git fetch x',
     'env --unset GIT_ALLOW_PROTOCOL git fetch x',
+    'env --unset=GIT_ALLOW_PROTOCOL git fetch x',
   ])('denies unsetting it, which lifts a pinned list: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
   })
@@ -197,7 +197,7 @@ describe("abbreviated options, read as git's parse-options reads them (TP-2371 f
     'git config --get-c protocol.ext.allow always',
     'git config --bogus protocol.ext.allow always',
     'git config -x protocol.ext.allow always',
-    'git config --$O x protocol.ext.allow always',
+    'git config --"$O" x protocol.ext.allow always',
     'git remote --bogus add y https://github.com/o/r',
     'git submodule add --bogus https://github.com/o/s s',
   ])('denies an option it cannot match to one git option: %s', command => {
@@ -343,4 +343,70 @@ describe('final option state and one table of URL-storing builtins (TP-2371 fix 
   ])('allows %s', command => {
     expect(hookReason(command)).toBeUndefined()
   })
+})
+
+describe('words the shell may expand to none or several (TP-2371 fix round 7)', () => {
+  it.each([
+    'git config {protocol.ext.allow,always}',
+    'git config set {protocol.ext.allow,always}',
+    'git config --global {protocol.allow,always}',
+    'git config protocol.{ext.allow,always}',
+    'git config {--rename-section,foo,protocol}',
+    "X='protocol.ext.allow always'; git config $X",
+    'set -- protocol.ext.allow always; git config "$@"',
+    "git config $(printf 'protocol.ext.allow always')",
+    'git config "${A[@]}"',
+    'git config *',
+    'git config protocol.ext.allow ?',
+    'git config set $X',
+    'git config --file f $X',
+    'git config -- $X',
+    'git config {remote.x.url,"$U"}',
+    'git remote set-url {origin,"$U"}',
+    'git remote $X',
+    'git submodule add $X',
+    'git submodule--helper set-url {p,"$U"}',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git config -h',
+    'git config --help',
+    'git config -h protocol.ext.allow always',
+    'git remote --help',
+    'git remote set-url -h',
+    'git config user.name "$NAME"',
+    'git config user.name ~/x',
+    'git config --get user.name',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it('still reads a trailing -h in legacy config as the value pattern', () => {
+    expect(hookReason('git config protocol.ext.allow always -h')).toBe(REASONS.extProtocol)
+  })
+})
+
+describe('a variable name the shell builds, on a line that runs git (TP-2371 fix round 7)', () => {
+  it.each([
+    'env $A git fetch x',
+    'env "$A" git fetch x',
+    'export $A; git fetch x',
+    'unset $V; git fetch x',
+    'env -u $V git fetch x',
+    'env -u$V git fetch x',
+    'env --unset=$V git fetch x',
+    'export GIT_ALLOW_PROTOCOL={https,ext}; git fetch x',
+    'export {GIT_ALLOW_PROTOCOL=https,GIT_ALLOW_PROTOCOL=ext}; git fetch x',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each(['export PATH=$HOME/bin:$PATH; git fetch x', 'env FOO=$X git fetch x', 'unset -f f; git fetch x'])(
+    'allows %s',
+    command => {
+      expect(hookReason(command)).toBeUndefined()
+    },
+  )
 })

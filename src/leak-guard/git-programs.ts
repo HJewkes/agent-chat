@@ -1,5 +1,5 @@
 import { quoted } from './git-alias.js'
-import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolved.js'
+import { configWords, expandsToWords, keyOf, unreadable, type ConfigWord } from './git-unresolved.js'
 import { LIVE, unmark } from './shell-words.js'
 import {
   isOption,
@@ -266,7 +266,7 @@ const CONFIG_OPTIONS = optionSpec(
 )
 // `git config` modes, legacy options and subcommands alike, that read or remove rather than set a value.
 const CONFIG_NON_WRITES = new Set(
-  `get get-all get-regexp get-urlmatch get-color get-colorbool list unset unset-all remove-section edit`.split(
+  `get get-all get-regexp get-urlmatch get-color get-colorbool list unset unset-all remove-section edit help`.split(
     /\s+/,
   ),
 )
@@ -394,8 +394,9 @@ const tail = (args: SubArgs, from: number): SubArgs => ({
 function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined {
   const at = args.resolved.findIndex((_, i) => !isOption(args, i))
   const lead = at < 0 ? args : { resolved: args.resolved.slice(0, at), written: args.written.slice(0, at) }
-  if (parseOptions(lead, command.lead) === undefined) return 'option'
-  if (at < 0) return undefined
+  const leading = parseOptions(lead, command.lead)
+  if (leading === undefined) return 'option'
+  if (at < 0 || isSet(leading, 'help')) return undefined
   const verb = args.resolved[at]
   if (verb !== undefined && command.safe.has(verb)) return undefined
   const rest = tail(args, at + 1)
@@ -403,7 +404,7 @@ function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined 
   if (write === undefined) return args.resolved.slice(at).includes(undefined) ? 'url' : undefined
   const parsed = parseOptions(rest, write.options)
   if (parsed === undefined) return 'option'
-  if (write.storesNone?.(parsed)) return undefined
+  if (isSet(parsed, 'help') || write.storesNone?.(parsed)) return undefined
   return rest.resolved.includes(undefined) ? 'url' : undefined
 }
 
@@ -414,17 +415,25 @@ function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined 
  * URL helper or `insteadOf` rewrite, a key or verb, the guard cannot read, or renames a section into
  * one of those, so it may hide an `ext::` URL a later git runs; `option` when an option is one git
  * would read but the guard cannot match to exactly one it knows. undefined for none.
+ * The words are read one shell word to one argument, so for these builtins a word after the
+ * subcommand that may expand to none or several (an unquoted expansion, `"$@"`, `"${A[@]}"`, a
+ * glob or a brace) leaves the argument list unknown, which is `url`.
  */
-export function extEnablerWrite(
-  resolved: readonly (string | undefined)[],
-  written: readonly string[],
-  at: number,
-): ExtEnabler | undefined {
-  const args = { resolved: resolved.slice(at + 1), written: written.slice(at + 1) }
-  const sub = resolved[at]
-  if (sub === 'config') return configEnabler(args)
+export function extEnablerWrite(run: GitWords, at: number): ExtEnabler | undefined {
+  const sub = run.resolved[at]
   const command = sub === undefined ? undefined : URL_COMMANDS[sub]
-  return command === undefined ? undefined : urlEnabler(args, command)
+  if (sub !== 'config' && command === undefined) return undefined
+  if (run.marked.slice(at + 1).some(word => expandsToWords(word, run.splits))) return 'url'
+  const args = { resolved: run.resolved.slice(at + 1), written: run.written.slice(at + 1) }
+  return command === undefined ? configEnabler(args) : urlEnabler(args, command)
+}
+
+/** A git command's words: as the shell passes them, as written, and marked, with those the shell splits. */
+export interface GitWords {
+  resolved: readonly (string | undefined)[]
+  written: readonly string[]
+  marked: readonly string[]
+  splits: readonly string[]
 }
 
 /**

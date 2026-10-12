@@ -705,6 +705,14 @@ from one table of verbs: a verb that stores a URL, or one outside the table, wit
 cannot read denies, and only `remote set-url --delete` and the verbs listed as storing none are
 exempt. `git clone "$URL"` stays allowed as before (TP-636); the protocol-list rules and the
 CC-1095 pin cover a later `ext::` run of the URL it stores.
+These rules read one shell word as one argument, so for `git config` and the URL-storing
+builtins a word after the subcommand that the shell may expand to none or several denies as an
+unreadable write: an unquoted `$X` or `$(...)`, `"$@"`, `"${A[@]}"`, a glob or a brace, as in
+`git config {protocol.ext.allow,always}` or `git config $X`. `-h` and `--help` write nothing and
+stay allowed. On the env side, an assignment or unset whose variable name the shell builds
+(`export $A`, `env $A`, `env "$A"`, `unset $V`, `env -u $V`) may set or lift any program var or
+`GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the
+line's other checks so a more specific reason wins.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
