@@ -13,13 +13,14 @@ import {
 import { HEARTBEAT_UNIT_PREFIX, type HeartbeatJobContext } from '../../agents/seats/heartbeat-external.js'
 import { installHeartbeats, refreshHeartbeat } from '../../agents/seats/heartbeat-install.js'
 import { defaultAutonomyRoot, readSeatJournal, readText, seatFileNames } from '../../agents/seats/io.js'
+import { stableNodePath } from '../../mirror/node-path.js'
 import { jobEnv } from '../../mirror/plist.js'
 import { requiredString } from '../../args.js'
 import { cliEntry, linuxJobLogDir, logPath, systemdUserUnitDir } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
 
 const jobContext = (root: string): HeartbeatJobContext => ({
-  nodePath: process.execPath,
+  nodePath: stableNodePath(process.execPath),
   cliEntry: cliEntry(),
   root: path.resolve(root),
   env: jobEnv(process.env),

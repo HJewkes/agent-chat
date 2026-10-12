@@ -10,6 +10,7 @@ import {
   type JobHost,
 } from '../../mirror/job-host.js'
 import { jobState, startJob, stopJob, type JobControl } from '../../mirror/launchd.js'
+import { stableNodePath } from '../../mirror/node-path.js'
 import { burndownJob, jobEnv, launchdJobRefusals, renderPlist, type JobSpec } from '../../mirror/plist.js'
 import { installUnits, uninstallUnits, unitStatus } from '../../mirror/systemd.js'
 import { renderUnits, unitName, type RenderedUnits } from '../../mirror/systemd-unit.js'
@@ -49,7 +50,7 @@ const installedUnits = (): RenderedUnits =>
   renderUnits(
     burndownJob({
       label: BURNDOWN_LABEL,
-      nodePath: process.execPath,
+      nodePath: stableNodePath(process.execPath),
       cliEntry: cliEntry(),
       env: {},
       logDir: linuxLogDir(),
@@ -65,7 +66,7 @@ function preflight(): Preflight {
   if (!loadResolvedConfig().tick.enabled) {
     return { refused: { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] } }
   }
-  const job = { nodePath: process.execPath, cliEntry: cliEntry(), env: jobEnv(process.env) }
+  const job = { nodePath: stableNodePath(process.execPath), cliEntry: cliEntry(), env: jobEnv(process.env) }
   const errors = launchdJobRefusals({ ...job, tmpdir: os.tmpdir() })
   if (errors.length > 0) return { refused: { ok: false, lines, errors } }
   const spec = (logDir: string): JobSpec =>
