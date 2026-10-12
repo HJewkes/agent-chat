@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
+import { withPinnedGitProtocols } from '../../git.js'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
 import {
   basementCommandText,
@@ -437,7 +438,7 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
 
 export const spawnRun: Run = (cmd, args, cwd) =>
   new Promise(resolve => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(cmd, args, { cwd, env: withPinnedGitProtocols(), stdio: ['ignore', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk))
