@@ -146,6 +146,13 @@ describe('dispatch gate on declared ops (CC-974)', () => {
     },
   )
 
+  it('dispatches a ruleset done_when tagged ops:none and refuses it untagged (CC-1154)', () => {
+    const doneWhen = 'the tick no longer refuses; update the ruleset docs page'
+
+    expect(refuse(withDoneWhen(doneWhen, [opsNoneTag(doneWhen)]))).toBeUndefined()
+    expect(refuse(withDoneWhen(doneWhen))?.kind).toBe('ops-unresolved')
+  })
+
   it('refuses an ops:none tag minted for different text', () => {
     const tag = opsNoneTag('the deploy checkout path is read')
 
