@@ -88,9 +88,9 @@ const claim = (taskId: string, patch: Partial<Claim> = {}): Claim => ({
 
 function inputs(rows: ScoreRow[], tasks: Task[], patch: Partial<SeatPlanInputs> = {}): SeatPlanInputs {
   const byInitiative = new Map<string, Task[]>()
-  for (const r of rows) {
-    const t = tasks.find(x => x.id === r.id)
-    if (t !== undefined) byInitiative.set(r.initiative, [...(byInitiative.get(r.initiative) ?? []), t])
+  for (const t of tasks) {
+    const initiative = rows.find(r => r.id === t.id)?.initiative ?? 'alpha'
+    byInitiative.set(initiative, [...(byInitiative.get(initiative) ?? []), t])
   }
   return {
     seat: SEAT,
@@ -1292,6 +1292,54 @@ describe('planSeat ready-slice placement (CC-946)', () => {
 
     expect(planned.dispatch).toEqual([])
     expect(kinds(planned)).toEqual([['A-1', 'blocked']])
+  })
+
+  describe('parent gate (CC-1121)', () => {
+    const seat = { ...SEAT, excludedTags: ['needs-decision', 'owner-review-round'] }
+    const afterMerge = [
+      claim('A-1', { phase: 'done', slice: 'a', pr: 'https://github.com/o/r/pull/1' }),
+      queued('A-1', { slice: 'b', dependsOn: ['a'] }),
+    ]
+    const withParent = (parent: Task[], over: Partial<SeatPlanInputs> = {}) =>
+      plan(afterMerge, [], { seat, tasks: new Map([['alpha', parent]]), ...over })
+
+    it('dispatches nothing for a needs-decision parent with brief:ready after slice a merged', () => {
+      const planned = withParent([task('A-1', { tags: ['needs-decision', 'brief:ready=2026-10-12'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+      expect(planned.refusals[0]?.reason).toMatch(/tagged needs-decision; its queued slices wait/)
+    })
+
+    it("holds a slice on a tag only the seat's excluded_tags name", () => {
+      const planned = withParent([task('A-1', { tags: ['owner-review-round'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice on a reserved tag the seat does not exclude', () => {
+      const bare = { ...SEAT, excludedTags: [] }
+
+      const planned = withParent([task('A-1', { tags: ['human-only'] })], { seat: bare })
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice whose parent is closed or missing', () => {
+      const closed = withParent([task('A-1', { status: 'done' })])
+      const missing = withParent([])
+
+      expect([closed.dispatch, missing.dispatch]).toEqual([[], []])
+      expect([kinds(closed), kinds(missing)]).toEqual([[['A-1', 'not-open']], [['A-1', 'not-open']]])
+    })
+
+    it('dispatches the next slice of an ungated parent', () => {
+      const planned = withParent([task('A-1')])
+
+      expect(planned.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
+    })
   })
 
   it("dispatches into the plan's repo over the initiative's first checkout", () => {

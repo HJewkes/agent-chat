@@ -19,7 +19,8 @@ import {
   type ServerMessage,
   type SurfaceName,
 } from '../protocol.js'
-import { buildCallerLaunch, checkLaunch, type LocalHost } from './caller-teleport.js'
+import { buildCallerLaunch, type LocalHost } from './caller-teleport.js'
+import { checkLaunch } from './remote-launch.js'
 
 /**
  * CC-951 g2: the machine side of a host launcher. It holds a connection of its own to the broker,

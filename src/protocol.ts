@@ -36,6 +36,8 @@ export interface RemoteLaunch {
   cwd?: string
   /** CC-951: the account the predecessor spent, which must exist on the launcher's machine. */
   configDir?: string
+  /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
+  configDirUnset?: true
 }
 
 /** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
@@ -888,6 +890,20 @@ export type ClientMessage =
   | { t: 'permission_hook'; session: string; toolName: string; toolInput: unknown; description?: string }
   /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
   | { t: 'permission_hook_withdrawn'; msgId: string }
+  /**
+   * The hook allowed a call itself under a standing grant (CC-694) and records it.
+   *
+   * Same caller rule as `permission_hook`. The broker appends a closed
+   * `approval_request` (`meta.source = 'self-grant'`) and its `allow` resolution,
+   * so the queue never shows it, and answers with `permission_hook_result`.
+   */
+  | {
+      t: 'permission_self_granted'
+      session: string
+      toolName: string
+      toolInput: unknown
+      grant: 'repo-skills'
+    }
   /**
    * A process that is not a session asks the human a question under a label (CC-169).
    *

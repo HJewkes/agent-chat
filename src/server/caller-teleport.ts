@@ -3,14 +3,12 @@ import { once } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
-import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
-import { buildLaunchPlan } from '../agents/launch-plan.js'
-import { isCarriedPermissionMode, isChannelToken } from '../broker/host-channels.js'
-import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
-import type { AgentProfile, LaunchPlan } from '../agents/types.js'
+import { writeLaunchFiles } from '../agents/launch-files.js'
+import type { LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
-import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName } from '../protocol.js'
+import { agentDir, cliEntry } from '../paths.js'
+import type { RemoteLaunch, ServerMessage } from '../protocol.js'
+import { buildLaunch, checkLaunch, type BuiltLaunch } from './remote-launch.js'
 
 /**
  * CC-881: the half of a teleport that runs on the caller's host. When the broker is on another
@@ -97,97 +95,13 @@ export const defaultCallerLaunch = (): CallerLaunchDeps => {
   }
 }
 
-const AGENT_ID = /^[0-9a-f]{8}$/
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const CONTROL = /[\u0000-\u001f\u007f]/
-
-/** A name becomes a pane title and a registry key; it must never steer a path. */
-const badName = (name: string): boolean =>
-  name === '' || name.length > 128 || /[/\\]/.test(name) || name.includes('..') || CONTROL.test(name)
-
-/** Profile values that become argv words: one starting with `-` would be read as a flag. */
-function flagWords(profile: RemoteLaunch['profile']): string[] {
-  return [
-    profile.model,
-    ...profile.allowedTools,
-    ...(profile.disallowedTools ?? []),
-    ...(profile.settingSources ?? []),
-    profile.effort ?? '',
-  ]
-}
-
-/** Why the spec cannot be run here, or undefined when it can. */
-export function checkLaunch(spec: RemoteLaunch): string | undefined {
-  if (!AGENT_ID.test(spec.agentId))
-    return `the successor id ${JSON.stringify(spec.agentId)} is not an agent id`
-  if (!SESSION_ID.test(spec.sessionId)) return 'the successor session id is not a uuid'
-  if (badName(spec.name)) return `the name ${JSON.stringify(spec.name)} is not a valid session name`
-  if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
-  if (flagWords(spec.profile).some(word => word.startsWith('-')))
-    return 'the successor profile has a value that would be read as a flag'
-  return carriedFlagReason(spec)
-}
-
-/** CC-951: carried flags reach this host's argv, so each passes the allowlist a local read applies. */
-function carriedFlagReason(spec: RemoteLaunch): string | undefined {
-  const bad = (spec.channels ?? []).find(token => !isChannelToken(token))
-  if (bad !== undefined) return `the carried channel ${JSON.stringify(bad)} is not a channel target`
-  if (spec.permissionMode !== undefined && !isCarriedPermissionMode(spec.permissionMode))
-    return `the carried permission mode ${JSON.stringify(spec.permissionMode)} is not one a successor may inherit`
-  return undefined
-}
-
-/** Only these profile fields are read from the broker; env and MCP servers never are. */
-const profileOf = (p: RemoteLaunch['profile']): AgentProfile => ({
-  name: p.name,
-  description: p.description,
-  model: p.model,
-  allowedTools: [...p.allowedTools],
-  ...(p.disallowedTools === undefined ? {} : { disallowedTools: [...p.disallowedTools] }),
-  isolation: p.isolation,
-  surface: p.surface,
-  ...(p.surfaceLifetime === undefined ? {} : { surfaceLifetime: p.surfaceLifetime }),
-  ...(p.role === undefined ? {} : { role: p.role }),
-  ...(p.returnContract === undefined ? {} : { returnContract: p.returnContract }),
-  ...(p.effort === undefined ? {} : { effort: p.effort }),
-  promptPrelude: p.promptPrelude,
-  ...(p.strictMcpConfig === undefined ? {} : { strictMcpConfig: p.strictMcpConfig }),
-  ...(p.settingSources === undefined ? {} : { settingSources: [...p.settingSources] }),
-  ...(p.disableSlashCommands === undefined ? {} : { disableSlashCommands: p.disableSlashCommands }),
-})
-
-/** The plan and MCP config, every path, binary and variable from this host. */
-export function buildCallerLaunch(
-  spec: RemoteLaunch,
-  local: LocalHost,
-): { plan: LaunchPlan; mcpConfig: Record<string, unknown> } {
-  const profile = profileOf(spec.profile)
-  const configDir = local.env.CLAUDE_CONFIG_DIR
-  const plan = buildLaunchPlan({
-    agentId: spec.agentId,
-    sessionId: spec.sessionId,
-    name: spec.name,
-    profile,
-    brief: spec.brief,
+/** The plan and MCP config from this process's own cwd and account; a teleport carries neither. */
+export function buildCallerLaunch(spec: RemoteLaunch, local: LocalHost): BuiltLaunch {
+  return buildLaunch(spec, {
+    cliEntry: local.cliEntry,
     cwd: local.cwd,
-    cwdHoldsUserSettings: cwdHoldsUserSettings(local.cwd, configDir),
-    surface: spec.surface,
-    preamble: spec.preamble,
-    mcpConfigPath: mcpConfigPath(spec.agentId),
-    hookSettingsPath: hookSettingsPath(spec.agentId),
-    ...(spec.tags?.length ? { tags: spec.tags } : {}),
-    ...(spec.subscriptions?.length ? { subscriptions: spec.subscriptions } : {}),
-    agentChatHome: home(),
-    gitHooksDir: gitHooksDir(),
-    ...(configDir ? { configDir } : { configDirUnset: true }),
-    // CC-883: checked again here, so a worker never gets Remote Control whatever the broker sent.
-    ...(spec.remoteControl && profile.role === 'coordinator' ? { remoteControl: true } : {}),
-    ...(spec.channels?.length ? { channels: spec.channels.filter(isChannelToken) } : {}),
-    ...(spec.permissionMode !== undefined && isCarriedPermissionMode(spec.permissionMode)
-      ? { permissionMode: spec.permissionMode }
-      : {}),
+    configDir: local.env.CLAUDE_CONFIG_DIR || undefined,
   })
-  return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
 }
 
 type Broker = Pick<BrokerClient, 'request'>

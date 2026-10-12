@@ -7,6 +7,7 @@ import {
   IMPLEMENTER_PROFILE,
   pickTask,
   PLANNER_PROFILE,
+  sliceRefusal,
   isBriefer,
   profileFor,
   SONNET_PROFILES,
@@ -14,9 +15,9 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { backoffHeld } from './backoff.js'
+import { backoffHeld, type Hold } from './backoff.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
-import { heldClaims, laneClaims, readySlices, type Ledger } from './ledger.js'
+import { heldClaims, laneClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -194,33 +195,65 @@ function nextWork(
 ): { work?: Work; refusals: Refusal[] } {
   const tasks = inputs.tasks.get(initiative.slug) ?? []
   const held = backoffHeld(inputs.ledger, inputs.gate.now)
-  const [ready] = readySlices(inputs.ledger, held).filter(c => c.initiative === initiative.slug)
-  if (ready?.slice !== undefined) {
-    const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
-    const work = {
+  const gated: Refusal[] = []
+  const ready = readySlices(inputs.ledger, held).filter(
+    (c): c is Claim & { slice: string } => c.initiative === initiative.slug && c.slice !== undefined,
+  )
+  for (const slice of ready) {
+    const task = tasks.find(t => t.id === slice.taskId)
+    const refusal = sliceRefusal(task, [])
+    if (refusal !== undefined) {
+      gated.push({ initiative: initiative.slug, task: slice.taskId, ...refusal })
+      continue
+    }
+    const outcome = sliceWork(initiative, slice, task?.tags ?? [], inputs, accepted)
+    return { ...outcome, refusals: [...gated, ...outcome.refusals] }
+  }
+  const picked = nextTask(initiative, tasks, inputs, accepted, held)
+  return { ...picked, refusals: [...gated, ...picked.refusals] }
+}
+
+/** The implementer for a ready slice whose parent passed `sliceRefusal`, or its collision. */
+function sliceWork(
+  initiative: OptedIn,
+  ready: Claim & { slice: string },
+  tags: string[],
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+): { work?: Work; refusals: Refusal[] } {
+  const work = {
+    taskId: ready.taskId,
+    slice: ready.slice,
+    tags,
+    owns: ready.owns ?? [],
+    contracts: ready.contracts ?? [],
+  }
+  const collided = collisionOf(initiative, work, inputs, accepted)
+  if (collided !== undefined) return { refusals: [collided] }
+  const identity = {
+    ...(ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }),
+    ...(ready.seat === undefined ? {} : { seat: ready.seat }),
+  }
+  return {
+    work: {
       taskId: ready.taskId,
       slice: ready.slice,
-      tags,
-      owns: ready.owns ?? [],
-      contracts: ready.contracts ?? [],
-    }
-    const collided = collisionOf(initiative, work, inputs, accepted)
-    if (collided !== undefined) return { refusals: [collided] }
-    const identity = {
-      ...(ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }),
-      ...(ready.seat === undefined ? {} : { seat: ready.seat }),
-    }
-    return {
-      work: {
-        taskId: ready.taskId,
-        slice: ready.slice,
-        profile: IMPLEMENTER_PROFILE,
-        contracts: work.contracts,
-        ...identity,
-      },
-      refusals: [],
-    }
+      profile: IMPLEMENTER_PROFILE,
+      contracts: work.contracts,
+      ...identity,
+    },
+    refusals: [],
   }
+}
+
+/** The best eligible task with no orphan or collision. */
+function nextTask(
+  initiative: OptedIn,
+  tasks: Task[],
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+  held: ReadonlyMap<string, Hold>,
+): { work?: Work; refusals: Refusal[] } {
   const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
   const blocked: Refusal[] = []
   for (;;) {

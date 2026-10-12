@@ -5,21 +5,47 @@ import {
   aliasReader,
   CONFIG_ENV,
   configEnvVars,
+  fillsUnsafely,
   gitCall,
   gitGlobals,
   gitOptions,
+  GIT_VALUE_OPTS,
   quoted,
   UNSURE_CALL,
   shellAlias,
   splitAlias,
+  unfillableAtSet,
   type GitCall,
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './git-programs.js'
+import {
+  configPrograms,
+  extEnablerWrite,
+  extPrograms,
+  listsExt,
+  OPAQUE_PROGRAM_ENV,
+  PROGRAM_ENV,
+  PROTOCOL_ENV,
+} from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
+import {
+  ghAliasReader,
+  ghAliasSet,
+  ghAliasesAt,
+  ghAliasesUnder,
+  ghAliasSlot,
+  ghCommandWords,
+  ghConfigDir,
+  ghPlainAlias,
+  ghShellAlias,
+  HIDDEN,
+  type GhAlias,
+  type GhAliasSet,
+  type ReadGhAliases,
+} from './gh-runs.js'
 import {
   hasOptionAlternation,
   hasSplittableOption,
@@ -62,6 +88,8 @@ export interface GuardContext {
   readFile(file: string): string | undefined
   readAlias: ReadAlias
   readIncludedHooksPath: ReadIncludedHooksPath
+  /** gh's aliases from the config the hook's environment points at; without it no gh alias is followed. */
+  readGhAliases?: ReadGhAliases
   /** `realpath` proved that `agent-chat` on the hook's `PATH` is the hook's own entry script, whose `gh-write` scans at run time. */
   scansGhWrite?: boolean
   /** The real path of that install and of the `PATH` directory that holds it, which a body file may not be or share. */
@@ -78,7 +106,7 @@ interface Scope {
   cdpath: boolean
   /** The command line names git or gh, so a script the guard cannot read may run either. */
   namesGit: boolean
-  /** How many git aliases the guard has expanded to reach this command. */
+  /** How many git or gh aliases the guard has expanded to reach this command. */
   aliases: number
   /** Variables earlier commands set, unset (undefined) or changed in a way the guard cannot tell (UNSURE). */
   exports: ReadonlyMap<string, Setting>
@@ -140,6 +168,7 @@ export const REASONS = {
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
+  aliasQuotedArgs: `leak-guard: this git ! alias reads an argument with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
@@ -149,6 +178,14 @@ export const REASONS = {
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
+  ghAliasWritten: `leak-guard: this command line writes gh config and runs a gh word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
+  ghAliasEnv: `leak-guard: this command line sets GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME and runs a gh word that may be an alias, so the guard cannot tell which config gh reads it from. Drop the setting. ${DOCS}`,
+  ghAliasHidden: `leak-guard: a gh alias definition, a gh command word, or an argument passed to a gh alias holds a word or flag the guard cannot resolve or read, so it cannot tell what the alias runs. Write it out literally. ${DOCS}`,
+  ghAliasUnreadable: `leak-guard: the guard cannot parse gh's config.yml, or a gh alias name holds a quoted or escaped space, so it cannot tell whether this gh command runs an alias. Fix the file so it is plain YAML with an aliases map of strings and names of plain words. ${DOCS}`,
+  ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -187,7 +224,6 @@ const XARGS_LONG_FLAG = new Set([
   '--version',
   '--help',
 ])
-const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 // `NAME=`, `NAME+=`, `NAME[idx]=` and `NAME[idx]+=` all assign: the shell reads the next word as the command.
 // The lexer marks the `[` of a subscript as live, since it is a glob character elsewhere.
@@ -434,6 +470,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
+    checkExtEnablers(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
 }
@@ -446,9 +483,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
-  const at =
-    options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
-  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
+  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, subcommandAt(run, options))
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
   const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
@@ -461,6 +496,21 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
     if (reason !== undefined) return reason
   }
   return extOn
+}
+
+/** Where git's subcommand sits; past an option the guard cannot place, the first word that is not an option. */
+const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): number =>
+  options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
+
+/** A `git config` or `git remote` write that switches on `ext::` or hides a URL a later git may run (TP-2371). */
+function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  const words = { resolved: run.resolved, written: run.args, marked: run.marked, splits: run.cmd.splits }
+  const enabler = extEnablerWrite(words, at)
+  if (enabler === 'protocol') return REASONS.extProtocol
+  if (enabler === 'option') return REASONS.gitOptionUnmatched
+  return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -595,6 +645,7 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   const rest = run.args.slice(call.at + 1)
   // A `!` body passes the include to every git it runs and may write the file before one reads it.
   if (alias.value.startsWith('!') && includesConfig(call.params)) return REASONS.includePath
+  if (alias.value.startsWith('!') && fillsUnsafely(alias.value.slice(1), rest)) return REASONS.aliasQuotedArgs
   if (alias.value.startsWith('!'))
     return checkAt(
       shellAlias(alias.value.slice(1), rest),
@@ -1119,6 +1170,153 @@ function checkGh(
   return found.length === 0 ? undefined : publishes(found)
 }
 
+/**
+ * `gh alias set` stores a body that runs later, wherever and with whatever arguments, so the
+ * directory and `$1` stay unresolved. A plain body runs as another gh command.
+ */
+function checkGhAliasSet(
+  set: GhAliasSet,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  if (set.kind === 'hidden') return REASONS.ghAliasHidden
+  if (set.kind === 'unread') return REASONS.ghAliasUnread
+  if (set.kind === 'spaced') return REASONS.ghAliasUnreadable
+  const { shell, body } = set.alias
+  const reason = checkAt(
+    shell ? body : `gh ${body}`,
+    ctx,
+    { ...scope, cwd: undefined, env: undefined },
+    depth + 1,
+  )
+  // The arguments arrive later, and a positional inside double quotes is one the guard cannot fill.
+  return reason ?? (shell && unfillableAtSet(body) ? REASONS.ghAliasHidden : undefined)
+}
+
+/** gh config writes the guard does not read before an alias in the same line runs. */
+const WRITES_GH_CONFIG = [
+  /\bgh\s+(?:alias\s+(?:set|import|delete)|config\s+set)\b/,
+  /\b(?:config|hosts)\.ya?ml\b/,
+  // The config directory itself (`mv`, `cp -r`, `ln -sfn`, `tar -C`), as `.config/gh` or, once
+  // `$XDG_CONFIG_HOME` is read out of the line, a bare `/gh`.
+  /\.config\/gh(?![\w.-])/,
+  /(?:^|[\s'"=:])\/gh(?![\w.-])/m,
+]
+
+/** The line names gh's config file or directory, the hook's own `GH_CONFIG_DIR`, or reads `$GH_CONFIG_DIR`. */
+function writesGhConfig(ctx: GuardContext, scope: Scope): boolean {
+  const dir = ghConfigDir(ctx.env)
+  return (
+    WRITES_GH_CONFIG.some(pattern => pattern.test(scope.said)) ||
+    /\$\{?GH_CONFIG_DIR\b/.test(scope.line) ||
+    (dir !== undefined && scope.line.includes(dir))
+  )
+}
+
+/**
+ * Whether gh may read its aliases from a config other than the one the hook reads, judged from the
+ * scope's environment as `aliasEnv` judges git's: an environment the guard lost track of (after
+ * `. file`, `source` or `eval`), an earlier export or unset that differs from the hook's value, a
+ * setting it cannot tell, or a use of the name it does not model all count.
+ */
+function changesGhHome(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  if (scope.env === undefined || setsGhHome(assigns, ctx.env)) return true
+  return [...GH_HOME_VARS].some(name =>
+    scope.exports.has(name) ? scope.exports.get(name) !== ctx.env[name] : mentions(scope.said, name),
+  )
+}
+
+/**
+ * gh's alias machinery (TP-2371): a body is checked when `gh alias set` stores it and again when
+ * `gh <alias>` runs it. The command words are found past gh's flags the way cobra finds them.
+ */
+function checkGhAliases(
+  marked: readonly string[],
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const at = ghCommandWords(args, 3)
+  const [verb, sub] = at.map(i => args[i])
+  if (verb !== 'alias' || !(sub === 'set' || sub === 'import' || at[1] === HIDDEN))
+    return checkGhAliasRun(args, at, assigns, ctx, scope, depth)
+  if (at[1] === HIDDEN) return REASONS.ghAliasHidden
+  if (sub === 'import') return REASONS.ghAliasUnread
+  const set = ghAliasSet(args.filter((_, i) => i !== at[0] && i !== at[1]))
+  return set === undefined ? undefined : checkGhAliasSet(set, ctx, scope, depth)
+}
+
+/** The config aliases gh may run for these command words, and which words name the alias; none for a word that may name one in another config. */
+type AliasAt = { aliases: readonly GhAlias[]; words: readonly number[] }
+
+/**
+ * Which aliases gh would run, compared on gh's canonical command path (`gh cs x` runs key
+ * `codespace x`, and `gh repo deploy-key x` runs key `repo deploy-key x`). A deny when the guard
+ * cannot tell, undefined when the words cannot run an alias.
+ */
+function ghAliasAt(
+  args: readonly (string | undefined)[],
+  at: readonly number[],
+  read: ReadGhAliases,
+): AliasAt | string | undefined {
+  if (at[0] === HIDDEN) return REASONS.ghAliasHidden
+  if (at.length === 0) return undefined
+  // A spaced alias name takes over real commands too, so every gh command reads the config.
+  const config = read()
+  if (config.kind === 'unreadable') return REASONS.ghAliasUnreadable
+  const slot = ghAliasSlot(at.map(i => args[i]))
+  if (slot === undefined) return undefined
+  const words = at.slice(0, slot.used)
+  if (slot.word !== undefined) return { aliases: ghAliasesAt(config.aliases, slot.parent, slot.word), words }
+  return ghAliasesUnder(config.aliases, slot.parent) ? REASONS.ghAliasHidden : { aliases: [], words }
+}
+
+/** A shell alias runs its body with the words filled in; a plain one runs as another gh command. */
+function checkGhAliasBody(
+  alias: GhAlias,
+  rest: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  if (alias.shell && fillsUnsafely(alias.body, rest)) return REASONS.ghAliasHidden
+  if (alias.shell) return checkAt(ghShellAlias(alias.body, rest), ctx, scope, depth + 1)
+  const expanded = ghPlainAlias(alias.body, rest)
+  return expanded === undefined
+    ? undefined
+    : checkAt(['gh', ...expanded].map(quoted).join(' '), ctx, scope, depth + 1)
+}
+
+function checkGhAliasRun(
+  args: readonly (string | undefined)[],
+  at: readonly number[],
+  assigns: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  if (ctx.readGhAliases === undefined) return undefined
+  const found = ghAliasAt(args, at, ctx.readGhAliases)
+  if (found === undefined || typeof found === 'string') return found
+  if (writesGhConfig(ctx, scope)) return REASONS.ghAliasWritten
+  if (changesGhHome(assigns, ctx, scope)) return REASONS.ghAliasEnv
+  const { aliases, words } = found
+  if (aliases.length === 0) return undefined
+  if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
+  const rest = args.filter((_, i) => !words.includes(i))
+  if (!rest.every(arg => arg !== undefined)) return REASONS.ghAliasHidden
+  const inner = { ...scope, aliases: scope.aliases + 1 }
+  for (const alias of aliases) {
+    const reason = checkGhAliasBody(alias, rest, ctx, inner, depth)
+    if (reason !== undefined) return reason
+  }
+  return undefined
+}
+
 function checkShell(
   args: readonly string[],
   stdin: string | undefined,
@@ -1132,8 +1330,12 @@ function checkShell(
   return script === undefined && stdin !== undefined ? checkAt(stdin, ctx, scope, depth + 1) : undefined
 }
 
-const ghWriteArgs = (args: readonly string[]): readonly string[] =>
-  args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(1)
+/** The gh args `gh-write <gh-args...>` hands gh: commander drops only the first `--` and keeps the words on both sides. */
+function ghWriteArgs(args: readonly string[]): readonly string[] {
+  const rest = args.slice(1)
+  const end = rest.indexOf('--')
+  return end < 0 ? rest : [...rest.slice(0, end), ...rest.slice(end + 1)]
+}
 
 const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes(ghKind(marked))
 
@@ -1270,10 +1472,17 @@ function checkSimple(
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh')
-    return head === 'gh' ? checkGh(marked, unwrapped.assigns, cmd, ctx, at) : REASONS.ghByPath
+    return head === 'gh'
+      ? (checkGhAliases(marked, unwrapped.assigns, cmd, ctx, at, depth) ??
+          checkGh(marked, unwrapped.assigns, cmd, ctx, at))
+      : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
-    return checkGh(ghWriteArgs(marked), unwrapped.assigns, cmd, ctx, at, defers)
+    const ghArgs = ghWriteArgs(marked)
+    return (
+      checkGhAliases(ghArgs, unwrapped.assigns, cmd, ctx, at, depth) ??
+      checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
+    )
   }
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
@@ -1375,7 +1584,7 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV]
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -1394,15 +1603,114 @@ const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) 
 const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
-/** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
-function plainProgramValue(word: string): string | null | undefined {
+/**
+ * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
+ * protocol list that lets git run `ext::` URLs.
+ */
+const EXT_ON = Symbol('ext-on')
+// A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
+const NAME_HIDDEN = Symbol('name-hidden')
+type EnvEvent = string | null | typeof EXT_ON | typeof NAME_HIDDEN
+
+const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
+const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
+
+/**
+ * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
+ * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * no event at all. undefined when the word is no such assignment.
+ */
+function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const name = ASSIGNMENT.exec(word)?.[1]
-  if (name === undefined || !PROGRAM_ENV.has(name) || !word.startsWith(`${name}=`)) return undefined
+  if (name === undefined || !word.startsWith(`${name}=`)) return undefined
+  const protocol = PROTOCOL_ENV.has(name)
+  if (!protocol && !PROGRAM_ENV.has(name)) return undefined
   const value = word.slice(name.length + 1)
-  return value.includes(LIVE) ? null : value
+  if (value.includes(LIVE)) return null
+  if (!protocol) return value
+  return listsExt(unmark(value)) ? EXT_ON : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
+// env's `-uNAME` and `--unset=NAME`.
+const GLUED_UNSET = /^-(?:u.|-unset=)/
+
+// A word that names its variable literally: NAME, then a subscript, `=`, `+=` or nothing.
+const LITERAL_NAME = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[|\\+?=|$)`)
+
+/** Whether a word in an assignment's place holds an expansion and does not name its variable literally. */
+const hiddenName = (word: string): boolean => word.includes(LIVE) && !LITERAL_NAME.test(word)
+
+// Builtins whose operands are all variable names or may be read as such (`getopts` optstring and
+// args, `read -p` prompt): an expansion in any of them fails closed.
+const NAME_OPERAND_BUILTINS = new Set(['read', 'getopts', 'mapfile', 'readarray', 'unset'])
+// env options whose value is a variable name or a string env splits and expands itself.
+const ENV_NAME_OPTIONS = new Set(['-u', '--unset', '-S', '--split-string'])
+const ENV_VALUE_OPTIONS = new Set([...ENV_NAME_OPTIONS, '-C', '--chdir'])
+
+/**
+ * Whether env's words from `i` hide a variable name: an option the guard cannot read, a `-u` or `-S`
+ * value with an expansion, or, before the command and after any `--`, a word with an expansion
+ * before its first `=`, which env may read as `NAME=value`.
+ */
+function envHidesName(words: readonly string[], i: number): boolean {
+  let options = true
+  for (; i < words.length; i++) {
+    const word = words[i] as string
+    const text = unmark(word)
+    if (options && text === '--') options = false
+    else if (options && text.startsWith('-') && text !== '-') {
+      if (word.includes(LIVE)) return true
+      if (ENV_NAME_OPTIONS.has(text) && (words[i + 1] ?? '').includes(LIVE)) return true
+      if (ENV_VALUE_OPTIONS.has(text)) i++
+    } else if (hiddenName(word)) return true
+    else if (!ASSIGNMENT.test(word)) return false
+  }
+  return false
+}
+
+/** Whether `printf`'s `-v` name holds an expansion, or an operand the shell builds comes before its format and may be `-v`. */
+function printfHidesName(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string
+    const text = unmark(word)
+    if (text === '-v') return (args[i + 1] ?? '').includes(LIVE)
+    if (text.startsWith('-v') || word.includes(LIVE)) return word.includes(LIVE)
+    if (text === '--' || !text.startsWith('-')) return false
+  }
+  return false
+}
+
+/** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
+// The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
+const isProcessSubstitution = (word: string): boolean => word === LIVE
+
+function operandsHideName(name: string, written: readonly string[]): boolean {
+  const args = written.filter(word => !isProcessSubstitution(word))
+  if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
+  if (ENV_DECL.has(name)) return args.some(hiddenName)
+  return name === 'printf' && printfHidesName(args)
+}
+
+/**
+ * Whether a command assigns, reads into or unsets a variable whose name the shell builds (TP-2371),
+ * at any command head along its wrapper chain: env's words before the command (after `--` too),
+ * and the name operands of read, printf -v, mapfile, readarray, getopts, unset and the declare
+ * family. Such a name may be any program var or GIT_ALLOW_PROTOCOL, so it fails closed.
+ */
+function hidesVariableName(words: readonly string[]): boolean {
+  for (let at = 0; at < words.length;) {
+    const head = words[at] as string
+    const name = path.basename(unmark(head))
+    const next = wrapperEnd(words, at, name)
+    if (ASSIGNMENT.test(head)) at++
+    else if (PREFIX_WORDS.has(head)) at = dropOptions(words, at + 1)
+    else if (next !== undefined) at = next
+    else if (name === 'env') return envHidesName(words, at + 1)
+    else return operandsHideName(name, words.slice(at + 1))
+  }
+  return false
+}
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
 
@@ -1413,8 +1721,10 @@ function envRoles(marked: readonly string[], i: number, roles: WordRole[]): void
     if (ENV_UNSET.has(word)) {
       roles[i] = 'removes'
       roles[++i] = 'removes'
-    } else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
-    else return
+    } else if (GLUED_UNSET.test(unmark(word))) roles[i] = 'removes'
+    else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
+    // GNU env reads `NAME=value` words after `--` too.
+    else if (word !== '--') return
   }
 }
 
@@ -1458,11 +1768,13 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
  * `${NAME:=x}`, eval); a read is no event. In the arguments of a command that takes them as data,
  * such as git or gh, only an assigning expansion the shell expands counts.
  */
-function envEvent(word: string, role: WordRole): string | null | undefined {
+function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
-  if (role === 'removes') return undefined
+  // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
+  if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
   if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
+  if (plain === 'none') return undefined
   if (plain !== undefined) return plain
   return namesProgramEnv(text) ? null : undefined
 }
@@ -1483,7 +1795,7 @@ function sharedTail(words: readonly string[], written: readonly string[]): numbe
 
 /** One command's program-env events, and its text for the git scan. */
 interface EnvUse {
-  events: (string | null)[]
+  events: EnvEvent[]
   scan: string[]
 }
 
@@ -1492,7 +1804,7 @@ function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
   return {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
-      .filter((event): event is string | null => event !== undefined),
+      .filter((event): event is EnvEvent => event !== undefined),
     scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
   }
 }
@@ -1523,8 +1835,9 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
+  const hidden: EnvEvent[] = hidesVariableName(functionBody(cmd.marked)) ? [NAME_HIDDEN] : []
   return {
-    events: [...written.events, ...unwrapped.events],
+    events: [...written.events, ...unwrapped.events, ...hidden],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }
@@ -1541,7 +1854,7 @@ function checkProgramEnvLine(
   ctx: GuardContext,
   scope: Scope,
   depth: number,
-): string | undefined {
+): string | typeof NAME_HIDDEN | undefined {
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
@@ -1550,10 +1863,12 @@ function checkProgramEnvLine(
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
+    if (event === EXT_ON) return REASONS.extProtocol
+    if (event === NAME_HIDDEN) continue
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
-  return undefined
+  return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -1564,14 +1879,15 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const said = `${scope.said}\n${unreferenced(command)}`
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
-  if (envReason !== undefined) return envReason
+  if (typeof envReason === 'string') return envReason
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
     at = advance(cmd, ctx, at)
   }
-  return mixesParenAndGuarded(command) ? REASONS.parenMixed : undefined
+  if (mixesParenAndGuarded(command)) return REASONS.parenMixed
+  return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
@@ -1692,6 +2008,7 @@ export function guardContext(
     readFile: readText,
     readAlias: aliasReader(env),
     readIncludedHooksPath: includedHooksPathReader(env),
+    readGhAliases: ghAliasReader(env, readText),
     scansGhWrite: install !== undefined,
     ...(install === undefined ? {} : { install }),
   }

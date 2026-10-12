@@ -59,4 +59,53 @@ describe('a slice PR against its owns', () => {
     expect(outsideOwns(['audit/spawn-doors.json'], [])).toEqual([])
     expect(isProtectedPath('audit/spawn-doors.json')).toBe(true)
   })
+
+  describe('generated api declarations and lockfiles (CC-1150 d)', () => {
+    const SRC_OWNS = ['packages/code-graph/src/a.ts']
+
+    it('allows a generated api d.ts and lockfiles without owns, at any depth and at the root', () => {
+      const files = [
+        'packages/code-graph/api/index.d.ts',
+        'api/index.d.ts',
+        'pnpm-lock.yaml',
+        'packages/x/pnpm-lock.yaml',
+        'package-lock.json',
+        'packages/x/package-lock.json',
+        'yarn.lock',
+        'packages/x/yarn.lock',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual([])
+    })
+
+    it('still reports a source file under api/, a d.ts outside api/, and a nested api d.ts', () => {
+      const files = [
+        'packages/code-graph/api/index.ts',
+        'packages/code-graph/src/types.d.ts',
+        'packages/code-graph/api/nested/deep.d.ts',
+        'packages/code-graph/api/index.d.ts.map',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual(files)
+    })
+
+    it('still reports a path that only looks like a lockfile', () => {
+      const files = [
+        'lockfile.json',
+        'package-lock.json.bak',
+        'my-package-lock.json',
+        'src/pnpm-lock.yaml.ts',
+        'notyarn.lock',
+        'pnpm-lock.yml',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual(files)
+    })
+
+    it('keeps lockfiles and package manifests protected for PR adoption', () => {
+      expect(outsideOwns(['package-lock.json'], [])).toEqual([])
+      expect(isProtectedPath('package-lock.json')).toBe(true)
+      expect(isProtectedPath('packages/x/package-lock.json')).toBe(true)
+    })
+  })
 })

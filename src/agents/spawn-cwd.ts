@@ -90,6 +90,28 @@ export const isAtOrUnder = (real: string, root: string): boolean =>
 
 const isStrictlyUnder = (real: string, root: string): boolean => real.startsWith(root + path.sep)
 
+const sensitiveSegmentOf = (dir: string, foldCase = false): string | undefined => {
+  const segments = (foldCase ? dir.toLowerCase() : dir).split(path.sep)
+  return SENSITIVE_DIRS.find(name => segments.includes(foldCase ? name.toLowerCase() : name))
+}
+
+const protectedRefusal = (sensitive: string, cwd: string): string =>
+  `cwd is inside a protected directory ("${sensitive}"): ${cwd}`
+
+/**
+ * CC-1059: the cwd policy without touching a disk, for a cwd on another host's filesystem. It
+ * holds a path to home on that host (not home itself) and refuses a protected segment in any
+ * case, since a macOS disk is case-insensitive. Lexical only: the launching host repeats it on
+ * the realpath, which is what catches `..` and a symlink out of the tree.
+ */
+export function lexicalCwdRefusal(cwd: string, homeDir: string): string | undefined {
+  if (!path.isAbsolute(cwd)) return `cwd must be an absolute path: ${cwd}`
+  const resolved = path.resolve(cwd)
+  const sensitive = sensitiveSegmentOf(resolved, true)
+  if (sensitive !== undefined) return protectedRefusal(sensitive, cwd)
+  return isStrictlyUnder(resolved, path.resolve(homeDir)) ? undefined : refusal(cwd)
+}
+
 /**
  * Resolved through realpath before anything is compared, so `..` and a symlink
  * pointing out of the tree are both caught rather than passing a string test.
@@ -104,9 +126,8 @@ export function checkSpawnCwd(cwd: string, policy: CwdPolicy): string | undefine
     return `cwd does not exist: ${cwd}`
   }
 
-  const segments = real.split(path.sep)
-  const sensitive = SENSITIVE_DIRS.find(name => segments.includes(name))
-  if (sensitive !== undefined) return `cwd is inside a protected directory ("${sensitive}"): ${cwd}`
+  const sensitive = sensitiveSegmentOf(real)
+  if (sensitive !== undefined) return protectedRefusal(sensitive, cwd)
 
   const inSession = policy.sessionRoots.some(root => {
     const resolved = realOf(root)

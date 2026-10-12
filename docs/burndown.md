@@ -209,8 +209,14 @@ failing cause.
 - **Note-only causes.** `stale build` (serve still merges on an old build; it is a restart
   hint), `tick failing` and `tick stale` (they describe the tick itself, which would otherwise
   block itself). The tick reports them and the line runs.
-- **Fail closed.** A check that exits other than 0 or 1, times out, or prints anything but
-  its JSON is read as cause `unreadable`, which stops.
+- **Fail closed.** A check that exits other than 0 or 1, cannot be spawned (`ENOENT` and
+  other spawn errors), or prints anything but its JSON is read as cause `unreadable`, which
+  stops.
+- **Timeout (CC-1125).** The read waits `SERVICE_CHECK_READ_TIMEOUT_MS` (30 s), above the
+  check's own worst case of 21 s (three 6 s `/health` probes with two 1.5 s gaps). A check
+  killed by that timeout means serve did not answer, so it is read as cause `unresponsive`,
+  which stops, never as `unreadable`. The seat watchdog's read waits the same 30 s
+  (`SERVICE_CHECK_TIMEOUT_MS`) and reports a timeout as `unresponsive: ...`.
 - **Two reads.** One stopping read never stops the line, because one failed `/health` probe
   can read as `stale pid` while serve is healthy (TP-1726). The line stops only when this
   read and the previous persisted read both stop and the previous one is at most two tick
@@ -279,6 +285,20 @@ Tiers 3 (standard) and 4 (intangible) follow score.py's order, so any other reor
 and so does a lower tier dispatched ahead of a higher one. Ready slices are dispatched ahead
 of the scored order by design; they are counted on their own line and left out of the order
 check. The milestone and slack named in a reason are the ones `planOrder` placed the row by.
+
+### The seat journal
+
+A seat writes its own journal lines through the CLI, so the time comes from the machine clock
+and never from a hand-typed stamp (CC-1058):
+
+```
+agent-chat seats log <seat> <text...> [--root <autonomy dir>]
+```
+
+It appends `<HH:MM> <text>` to `<root>/logs/<seat>/<YYYY-MM-DD>.md`, with the time and the
+day both local, and prints the file. Words join with one space. It refuses and writes nothing
+on a seat with neither `seats/<seat>.md` nor `logs/<seat>/`, on text with a line break, and on
+text that opens with a time such as `05:17 tick` or `05:1x`: put the time later in the line.
 
 ### The run meter
 
@@ -376,7 +396,9 @@ lock the timer's tick takes is the single-flight lock: while any tick holds it, 
 defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
 under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
 `burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
-Brokers on a temp-dir home never kick.
+Brokers on a temp-dir home never kick. A kicked tick runs with the timer job's env plus
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when the broker has them; without the user bus
+`systemctl --user` fails and the service check reads `not loaded` (CC-1144).
 
 To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
 prints the median wait from a burndown implementer's exit to the next tick that dispatched.

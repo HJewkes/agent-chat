@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Runner } from '../agents/burndown/exec.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
 import {
+  SERVICE_CHECK_READ_TIMEOUT_MS,
   SERVICE_CHECK_WINDOW_MS,
   lineStopFrom,
+  persisted,
   readServiceCheck,
   serviceCheckLine,
   serviceCheckNote,
@@ -21,10 +23,15 @@ const TICK_MS = SERVICE_CHECK_WINDOW_MS / 2
 const check = (ok: boolean, cause: string | null, message = 'synthetic message') =>
   JSON.stringify({ ok, cause, message, health: null, detail: {} })
 
-function counting(answer: { status: number | null; stdout: string }) {
+function counting(answer: { status: number | null; stdout: string; timedOut?: boolean }) {
   const calls: string[][] = []
-  const exec: Runner = (bin, args) => (calls.push([bin, ...args]), { ...answer, stderr: '' })
-  return { exec, calls }
+  const timeouts: Array<number | undefined> = []
+  const exec: Runner = (bin, args, _cwd, options) => (
+    calls.push([bin, ...args]),
+    timeouts.push(options?.timeoutMs),
+    { ...answer, stderr: '' }
+  )
+  return { exec, calls, timeouts }
 }
 
 describe('readServiceCheck', () => {
@@ -43,8 +50,37 @@ describe('readServiceCheck', () => {
     expect(readServiceCheck(fake.exec)).toEqual({ cause: null, message: 'serve answers' })
   })
 
+  it("waits at least 30 s, longer than the check's 21 s worst case", () => {
+    const fake = counting({ status: 0, stdout: check(true, null) })
+
+    readServiceCheck(fake.exec)
+
+    expect(SERVICE_CHECK_READ_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000)
+    expect(fake.timeouts).toEqual([SERVICE_CHECK_READ_TIMEOUT_MS])
+  })
+
+  it('reads a check killed by its timeout as unresponsive, not unreadable', () => {
+    const fake = counting({ status: null, stdout: '', timedOut: true })
+
+    expect(readServiceCheck(fake.exec)).toEqual({
+      cause: 'unresponsive',
+      message: 'titan-factory service check did not finish within 30 s',
+    })
+  })
+
+  it('stops the line on two timed-out reads inside the window', () => {
+    const timedOut = readServiceCheck(counting({ status: null, stdout: '', timedOut: true }).exec)
+    const previous = { ...persisted(timedOut, NOW), at: ago(TICK_MS) }
+
+    expect(lineStopFrom(timedOut, previous, NOW)).toMatchObject({
+      previous: 'unresponsive',
+      current: 'unresponsive',
+    })
+  })
+
   it.each([
     ['an exec failure', { status: null, stdout: '' }],
+    ['a missing binary (ENOENT)', { status: null, stdout: '', timedOut: false }],
     ['an unexpected exit', { status: 2, stdout: check(false, 'stale pid') }],
     ['bad JSON', { status: 1, stdout: 'not json' }],
     ['JSON that is not the check', { status: 0, stdout: '[]' }],

@@ -41,8 +41,8 @@ export interface ScoredPlan {
   refused: Record<string, number>
   /** `<slug>/<file>` of each malformed open task the reader left out, so a low count from skips is not a real drop. */
   skipped: string[]
-  /** The milestone file's week and its validation errors, when one was read. */
-  milestones?: { week: string; errors: string[] }
+  /** The milestone file's week and its validation errors; `absent` when the week has no file (CC-625). */
+  milestones?: { week: string; errors: string[]; absent?: true }
   /** CC-631: planning-tag errors such as a typo'd `dep:`, which the order otherwise reads as closed. */
   tagErrors?: string[]
   /** CC-720: one line per open `ms-role:criterion` task that no check of its milestone names; set only when milestones were read. */
@@ -191,16 +191,17 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
     defaults:
       opts.readySet === true ? { ...policy.defaults, share_caps: {}, initiative_decay: 1 } : policy.defaults,
     exclusions: { tags: policy.seat.excluded_tags, titlePatterns: policy.seat.excluded_title_patterns },
-    hardStops: policy.charter.hard_stops,
+    hardStops: policy.hardStops,
     today: opts.today,
     top: opts.top,
     dormant: dormantInitiatives(policy.seat),
     knownIds,
   })
-  const withWeek =
+  const milestones =
     read === undefined
-      ? plan
-      : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
+      ? { week: isoWeek(opts.today), errors: [], absent: true as const }
+      : { week: read.week, errors: read.errors.map(describeError) }
+  const withWeek = { ...plan, milestones }
   return { plan: withPriors(withWeek, tasks, opts), tasks, policy }
 }
 
@@ -252,13 +253,16 @@ export function renderScoredRow(row: ScoredRow, rank: number): string {
   )
 }
 
+function milestoneLine({ week, errors, absent }: NonNullable<ScoredPlan['milestones']>): string {
+  if (absent) return `milestones=${week} absent: no milestones/${week}.yml, order by tags alone`
+  return `milestones=${week}, errors: ${errors.join('; ') || 'none'}`
+}
+
 export function renderScored(plan: ScoredPlan): string[] {
   const refused = Object.entries(plan.refused)
     .map(([kind, n]) => `${kind}: ${n}`)
     .join(', ')
-  const milestones = plan.milestones
-    ? [`milestones=${plan.milestones.week}, errors: ${plan.milestones.errors.join('; ') || 'none'}`]
-    : []
+  const milestones = plan.milestones ? [milestoneLine(plan.milestones)] : []
   const table = plan.workflowTable ? [`workflow table: ${plan.workflowTable.join('; ')}`] : []
   const tagErrors = plan.tagErrors?.length ? [`task tags errors: ${plan.tagErrors.join('; ')}`] : []
   const epics = plan.epicsHeld?.length ? [`epics held out of tier 2: ${plan.epicsHeld.join('; ')}`] : []

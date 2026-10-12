@@ -362,6 +362,19 @@ describe('what a caller takes from the broker', () => {
 
     expect(JSON.stringify(written[0])).not.toContain('/evil')
   })
+
+  // CC-1059: the spawn executor reads cwd and account from the spec; a teleport carries neither.
+  it("runs a spec with no cwd or account in this process's own cwd and account", async () => {
+    const broker = fakeBroker(SPEC)
+    const { written, deps } = recordingDeps({
+      local: { cliEntry: '/caller/app/dist/cli.js', cwd, env: { CLAUDE_CONFIG_DIR: '/caller/.claude-x' } },
+    })
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    expect(written[0]?.plan.cwd).toBe(cwd)
+    expect(written[0]?.plan.env.CLAUDE_CONFIG_DIR).toBe('/caller/.claude-x')
+  })
 })
 
 const ANCHOR = 'w0t0p0:6F1A2B3C-0000-4000-8000-000000000001'

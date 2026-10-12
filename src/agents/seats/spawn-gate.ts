@@ -40,8 +40,10 @@ export interface SeatSpawnInput {
   runMeter?: SpendMeter | undefined
   /** The watchdog's saved day meter for the billed pool. */
   dayMeter?: SpendMeter | undefined
-  /** CC-1099: the seat's burndown ledger state, keyed to the billed pool's resolved config dir; absent, the meters stand alone. */
+  /** CC-1099: the seat's burndown ledger state, whose samples count only when read from the billed pool; absent, the meters stand alone. */
   seatState?: SeatState | undefined
+  /** The home the charter's `~/` config dirs expanded against; defaults to the process's. */
+  home?: string | undefined
   /** The spawn profile's model. */
   model: string
   /** The spawn's work role, stated or inferred; a review role passes the sonnet band on any model. */
@@ -88,6 +90,7 @@ function spendHistory(input: SeatSpawnInput, sevenDay: number, own: boolean): Sp
     sevenDay,
     now: input.now,
     ownRun: own,
+    ...(input.home === undefined ? {} : { home: input.home }),
   })
   return {
     history: spend.history,

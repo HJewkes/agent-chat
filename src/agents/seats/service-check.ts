@@ -5,13 +5,16 @@ import { execFile, type ExecFileException } from 'node:child_process'
  * service is healthy, and the attended seats hear of a cause once, not on every pass.
  */
 
-export const SERVICE_CHECK_TIMEOUT_MS = 5_000
+/** CC-1125: above the check's worst case of 21 s, so a slow serve is not read as a check that could not run. */
+export const SERVICE_CHECK_TIMEOUT_MS = 30_000
 
 /** What the check printed and how it ended; `error` is set when it could not run at all. */
 export interface ServiceCheckRun {
   exitCode: number | undefined
   stdout: string
   error?: string
+  /** The check was killed for outliving its timeout: serve did not answer. */
+  timedOut?: boolean
 }
 
 export type ServiceCheckRunner = () => Promise<ServiceCheckRun>
@@ -44,6 +47,7 @@ function exitZeroCause(stdout: string): string | undefined {
 
 /** The one cause line for a failing check; undefined when the service is healthy. */
 export function serviceCause(run: ServiceCheckRun): string | undefined {
+  if (run.timedOut === true) return `unresponsive: no answer within ${SERVICE_CHECK_TIMEOUT_MS} ms`
   if (run.error !== undefined) return `service check could not run: ${run.error}`
   if (run.exitCode === 0) return exitZeroCause(run.stdout)
   try {
@@ -78,15 +82,17 @@ export type ExecFile = (
   callback: (err: ExecFileException | null, stdout: string) => void,
 ) => void
 
-/** CC-693: a timeout, a missing binary and an output overflow each read as their own error. */
+/** CC-693: a missing binary and an output overflow each read as their own error. */
 function execError(err: ExecFileException): string {
   if (err.code === 'ENOENT') return 'titan-factory not found (ENOENT)'
   if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'output overflowed the buffer'
-  if (err.killed === true) return `timed out after ${SERVICE_CHECK_TIMEOUT_MS} ms`
   return err.message
 }
 
-/** A runner over `exec`: a missing binary or a timeout is reported in `error`, never thrown. */
+/** An overflow also kills the child, so only a kill with no string code is the timeout (node leaves `code` null). */
+const isTimeout = (err: ExecFileException): boolean => err.killed === true && typeof err.code !== 'string'
+
+/** A runner over `exec`: a missing binary or a timeout is reported, never thrown. */
 export function serviceCheckRunner(exec: ExecFile): ServiceCheckRunner {
   return () =>
     new Promise(resolve => {
@@ -97,6 +103,7 @@ export function serviceCheckRunner(exec: ExecFile): ServiceCheckRunner {
         (err, stdout) => {
           if (err === null) return resolve({ exitCode: 0, stdout })
           if (typeof err.code === 'number') return resolve({ exitCode: err.code, stdout })
+          if (isTimeout(err)) return resolve({ exitCode: undefined, stdout, timedOut: true })
           resolve({ exitCode: undefined, stdout, error: execError(err) })
         },
       )

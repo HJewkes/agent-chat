@@ -116,8 +116,14 @@ export interface EventStore {
   /** When the newest `kind` row about agent `ref` was written, if any (CC-266). */
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined
 
-  /** Where `name` went dark: its unanswered `deregistered` row, or the log's opening if an older register was never closed. */
+  /**
+   * Where `name` went dark: its unanswered `deregistered` row or, if an older register was never
+   * closed, the episode its first held row recorded, else the log's opening.
+   */
   darkSince(name: string): { id: number; at: number } | undefined
+
+  /** Whether the dark-seat hold wrote a message to `name` after log id `afterId` (CC-345). */
+  hasHeldSince(name: string, afterId: number): boolean
 
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
