@@ -56,17 +56,30 @@ const incident: SeatRelaunchPlan = {
   fresh: 'HANDOFF',
 }
 
+/** CC-1053: teleport 140 is the owner's `claude --resume` of a session a spawned row of the seat ran as. */
+const resumedBySeat: SeatAgent = {
+  ...onServer,
+  agentId: 'g7',
+  sessionId: '7016a7ee',
+  state: 'retired',
+  spawnedAt: 0,
+}
+const rowsOf = (...agents: SeatAgent[]) => ({ t: 'agents_result', agents })
+const lineage = rowsOf(onServer, resumedBySeat)
+const ROWS = { t: 'agents', includeRetired: true }
+
 const retired = (agentId: string) => ({ t: 'spawn_result', ok: true, agentId, name: 'seat-x' })
 const spawned = { t: 'spawn_result', ok: true, agentId: 'new' }
 
 describe('respawnSeat', () => {
   // Catches: the retire sent by name, the configDir dropped, or the latest session not resumed.
   it('retires the stale row by id, then resumes the latest session on the seat file account', async () => {
-    const b = broker([retired('7b1a88f1'), spawned])
+    const b = broker([lineage, retired('7b1a88f1'), spawned])
 
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
     expect(b.frames).toEqual([
+      ROWS,
       { t: 'retire', name: 'seat-x', agentId: '7b1a88f1' },
       {
         t: 'spawn',
@@ -94,28 +107,29 @@ describe('respawnSeat', () => {
       ok: false,
       reason: 'no transcript found at /x for resume_session 7016a7ee. Not spawned',
     }
-    const b = broker([retired('7b1a88f1'), refused, spawned])
+    const b = broker([lineage, retired('7b1a88f1'), refused, spawned])
 
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
-    expect(b.frames[2]).toMatchObject({ t: 'spawn', brief: 'HANDOFF', configDir: PERSONAL })
-    expect(b.frames[2]).not.toHaveProperty('resumeSession')
+    expect(b.frames[3]).toMatchObject({ t: 'spawn', brief: 'HANDOFF', configDir: PERSONAL })
+    expect(b.frames[3]).not.toHaveProperty('resumeSession')
     expect(out.ok).toBe(true)
     expect(out.detail).toMatch(/^relaunched fresh \(no transcript found/)
   })
 
   // Catches: an old broker's retire by name read as success, which would launch past an unchecked lease.
   it('launches nothing when the broker retired by name and echoed no id', async () => {
-    const b = broker([{ t: 'spawn_result', ok: true }])
+    const b = broker([lineage, { t: 'spawn_result', ok: true }])
 
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
-    expect(b.frames).toHaveLength(1)
+    expect(b.frames).toHaveLength(2)
     expect(out).toMatchObject({ ok: false, refused: true })
   })
 
   it('launches nothing when the broker refuses the retire', async () => {
     const b = broker([
+      lineage,
       {
         ...retired('7b1a88f1'),
         ok: false,
@@ -125,7 +139,7 @@ describe('respawnSeat', () => {
 
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
-    expect(b.frames).toHaveLength(1)
+    expect(b.frames).toHaveLength(2)
     expect(out).toEqual({
       ok: false,
       refused: true,
@@ -142,7 +156,7 @@ describe('respawnSeat', () => {
       code: 'machine_memory_floor',
       reason: 'memory below floor',
     }
-    const b = broker([retired('7b1a88f1'), machine])
+    const b = broker([lineage, retired('7b1a88f1'), machine])
 
     const out = await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
@@ -161,6 +175,7 @@ describe('respawnSeat', () => {
     >
     const plan: SeatRelaunchPlan = { ...incident, target: { ...afterRetire, stale: [] } }
     const rows = [
+      { ...resumedBySeat, profile: 'oldest' },
       { ...onServer, agentId: 'g8', profile: 'older', spawnedAt: 1, state: 'retired' },
       { ...onServer, spawnedAt: 2, state: 'retired' },
       { ...handStarted, profile: 'adopted', spawnedAt: 3 },
@@ -205,11 +220,11 @@ describe('respawnSeat', () => {
   // Catches: the profile or cwd read from the seat file again; the unregistered spawn skips the broker's escalation and cwd rules.
   it('ignores a profile and cwd the seat file names, on the resume and on the fresh fallback', async () => {
     const refused = { t: 'spawn_result', ok: false, reason: 'no transcript for resume_session 7016a7ee' }
-    const b = broker([retired('7b1a88f1'), refused, spawned])
+    const b = broker([lineage, retired('7b1a88f1'), refused, spawned])
 
     await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
 
-    expect(b.frames.slice(1).map(f => [f.profile, f.cwd])).toEqual([
+    expect(b.frames.slice(2).map(f => [f.profile, f.cwd])).toEqual([
       ['lead', SEAT_CWD],
       ['lead', SEAT_CWD],
     ])
@@ -250,11 +265,11 @@ describe('respawnSeat', () => {
   // A visible resume launches with no prompt; catches the resume message dropped there.
   it('sends the resume message as a held send after a visible session relaunch', async () => {
     const sent = { t: 'send_result', ok: true, msgId: 'm7', recipients: ['seat-x'] }
-    const b = broker([retired('7b1a88f1'), spawned, sent])
+    const b = broker([lineage, retired('7b1a88f1'), spawned, sent])
 
     const out = await respawnSeat(b.client, 'seat-x', incident, { surface: 'tmux-window', from: 'seat file' })
 
-    expect(b.frames[2]).toEqual({
+    expect(b.frames[3]).toEqual({
       t: 'human_send',
       to: 'seat-x',
       text: 'Watchdog: resume',
@@ -265,6 +280,7 @@ describe('respawnSeat', () => {
 
   it('falls back to headless when the visible launch fails', async () => {
     const b = broker([
+      lineage,
       retired('7b1a88f1'),
       { t: 'spawn_result', ok: false, code: 'surface_refused', reason: 'iTerm2 is down' },
       spawned,
@@ -275,8 +291,8 @@ describe('respawnSeat', () => {
       from: 'seat file',
     })
 
-    expect(b.frames[2]).toMatchObject({ surface: 'headless', resumeSession: '7016a7ee' })
-    expect(b.frames[2]).not.toHaveProperty('remoteControl')
+    expect(b.frames[3]).toMatchObject({ surface: 'headless', resumeSession: '7016a7ee' })
+    expect(b.frames[3]).not.toHaveProperty('remoteControl')
     expect(out.detail).toBe(
       `relaunched session 7016a7ee on ${PERSONAL}, headless (iterm-window refused: iTerm2 is down)`,
     )
@@ -288,11 +304,11 @@ describe('respawnSeat', () => {
       ...incident,
       account: { ...incident.account, configDir: '/home/example/.profiles/workout' },
     }
-    const b = broker([retired('7b1a88f1'), spawned])
+    const b = broker([lineage, retired('7b1a88f1'), spawned])
 
     const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
 
-    expect(b.frames).toEqual([])
+    expect(b.frames).toEqual([ROWS])
     expect(out).toEqual({
       ok: false,
       refused: true,
@@ -306,22 +322,51 @@ describe('respawnSeat', () => {
   it("relaunches on a seat file config_dir that matches the spawned row's recorded dir", async () => {
     const server = '/home/example/.profiles/server'
     const plan: SeatRelaunchPlan = { ...incident, account: { ...incident.account, configDir: server } }
-    const b = broker([retired('7b1a88f1'), spawned])
+    const b = broker([lineage, retired('7b1a88f1'), spawned])
 
     const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
 
-    expect(b.frames[1]).toMatchObject({ t: 'spawn', configDir: server })
+    expect(b.frames[2]).toMatchObject({ t: 'spawn', configDir: server })
     expect(out.ok).toBe(true)
   })
 
   // CC-1053, catches: comparing against the spawned row's dir only, which refuses the pool's own account.
   it("relaunches on the pool's dir when the spawned row recorded another", async () => {
     const plan: SeatRelaunchPlan = { ...incident, account: { configDir: PERSONAL, poolDir: PERSONAL } }
-    const b = broker([retired('7b1a88f1'), spawned])
+    const b = broker([lineage, retired('7b1a88f1'), spawned])
 
     const out = await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
 
-    expect(b.frames[1]).toMatchObject({ t: 'spawn', configDir: PERSONAL })
+    expect(b.frames[2]).toMatchObject({ t: 'spawn', configDir: PERSONAL })
     expect(out.ok).toBe(true)
+  })
+
+  // CC-1053, catches: skipping withoutLineage, or a downgrade that drops the adopted latest's origin
+  // (it would then be retired as a lease holder).
+  it('spawns fresh on the handoff, sending no resume note, when no spawned row ran as the adopted session', async () => {
+    const b = broker([rowsOf(onServer), retired('7b1a88f1'), spawned])
+
+    const out = await respawnSeat(b.client, 'seat-x', incident, { surface: 'tmux-window', from: 'seat file' })
+
+    expect(b.frames.map(f => f.agentId ?? f.t)).toEqual(['agents', '7b1a88f1', 'spawn'])
+    expect(b.frames[2]).toMatchObject({
+      brief: 'HANDOFF',
+      profile: 'lead',
+      cwd: SEAT_CWD,
+      configDir: PERSONAL,
+    })
+    expect(b.frames[2]).not.toHaveProperty('resumeSession')
+    expect(out).toEqual({ ok: true, detail: `relaunched fresh on ${PERSONAL}, tmux-window (seat file)` })
+  })
+
+  // CC-1053, catches: lineage read from every row the broker returns rather than the seat's own.
+  it("spawns fresh when only another seat's spawned row ran as the adopted session", async () => {
+    const otherSeat: SeatAgent = { ...resumedBySeat, name: 'seat-w' }
+    const b = broker([rowsOf(onServer, otherSeat), retired('7b1a88f1'), spawned])
+
+    await respawnSeat(b.client, 'seat-x', incident, HEADLESS)
+
+    expect(b.frames[2]).toMatchObject({ t: 'spawn', brief: 'HANDOFF' })
+    expect(b.frames[2]).not.toHaveProperty('resumeSession')
   })
 })
