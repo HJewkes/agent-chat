@@ -159,6 +159,7 @@ export const REASONS = {
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -482,6 +483,7 @@ function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
   const enabler = extEnablerWrite(run.resolved, run.args, at)
   if (enabler === 'protocol') return REASONS.extProtocol
+  if (enabler === 'option') return REASONS.gitOptionUnmatched
   return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
 }
 

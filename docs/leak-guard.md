@@ -685,6 +685,13 @@ write. `git remote` with a verb the guard cannot read (`git remote "$V" x "$U"`)
 direct edit of `.git/config` or `.gitmodules` is not read here; the `GIT_ALLOW_PROTOCOL` pin
 (CC-1095) is the backstop.
 
+git's parse-options accepts any unique prefix of a long option (`--ren` for `--rename-section`,
+`--fil` for `--file`), its `--no-` form, a value attached by `=`, and clustered short options
+(`-zf file`). The guard reads the options of `git config`, `git remote` and `git submodule` the
+same way, from each command's `-h` list on git 2.53, so it knows which word is the key, URL or
+verb. An option it cannot match to exactly one it knows, because it is ambiguous (`--re`), unknown
+or not literal (`--$O`), denies: spell each option in full.
+
 ### An environment variable git runs as a program (TP-636)
 
 The same keys have environment-variable twins, from the ENVIRONMENT section of `git help git` and

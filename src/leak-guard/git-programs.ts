@@ -1,6 +1,7 @@
 import { quoted } from './git-alias.js'
 import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolved.js'
 import { LIVE, unmark } from './shell-words.js'
+import { isOption, optionSpec, parseOptions, type ParsedArgs, type SubArgs } from './git-parse-options.js'
 
 /**
  * Config keys git never runs as a program or shell command (TP-636). The guard fails closed: every
@@ -246,31 +247,43 @@ function allowsExt(key: string, value: string | null | undefined): boolean {
   return value?.toLowerCase() !== 'never'
 }
 
-// `git config` options that take the next word as their value.
-const CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value'])
-// `git config` modes, legacy flags and subcommands alike, that read or remove rather than set a value.
-const CONFIG_NON_WRITES = new Set(
-  `--get --get-all --get-regexp --get-urlmatch --get-color --get-colorbool -l --list --unset --unset-all
-  --remove-section -e --edit get list unset remove-section edit`.split(/\s+/),
+// `git config`'s options, legacy and subcommand forms together, from `git config -h` on git 2.53.
+const CONFIG_OPTIONS = optionSpec(
+  `[no-]global [no-]system [no-]local [no-]worktree f:[no-]file= [no-]blob= get get-all get-regexp
+  get-urlmatch replace-all add unset unset-all rename-section remove-section l:list e:edit get-color
+  get-colorbool z:[no-]null [no-]name-only [no-]show-origin [no-]show-scope [no-]show-names
+  t:[no-]type= bool int bool-or-int bool-or-str path expiry-date [no-]default= [no-]comment=
+  [no-]fixed-value [no-]includes [no-]all [no-]regexp [no-]value= [no-]url=`,
 )
-const CONFIG_RENAMES = new Set(['--rename-section', 'rename-section'])
+// `git config` modes, legacy options and subcommands alike, that read or remove rather than set a value.
+const CONFIG_NON_WRITES = new Set(
+  `get get-all get-regexp get-urlmatch get-color get-colorbool list unset unset-all remove-section edit`.split(
+    /\s+/,
+  ),
+)
+const CONFIG_SUBCOMMANDS = new Set([...CONFIG_NON_WRITES, 'set', 'rename-section'])
+// `git remote` and `git submodule` options before the verb, and those of `add` and `set-url`.
+const REMOTE_OPTIONS = {
+  lead: optionSpec('v:[no-]verbose'),
+  verb: optionSpec(
+    'f:[no-]fetch [no-]tags t:[no-]track= m:[no-]master= [no-]mirror [no-]push [no-]add [no-]delete',
+  ),
+}
+const SUBMODULE_OPTIONS = {
+  lead: optionSpec('q:[no-]quiet [no-]cached'),
+  verb: optionSpec(
+    `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [no-]reference= [no-]ref-format=
+    [no-]dissociate [no-]name= [no-]depth=`,
+  ),
+}
 // Keys whose value git reads as a remote's or submodule's URL or URL helper; `url.<base>.insteadOf` also takes one in its key.
 const URL_KEY = /^(?:(?:remote|submodule)\..*\.(?:url|pushurl|vcs)|url\..*\.(?:push)?insteadof)$/i
 // Sections a renamed section may land in and so set a protocol policy or a URL git later runs.
 const URL_SECTION = /^(?:remote|url|submodule)(?:[."\s]|$)/i
 const PROTOCOL_SECTION = /^protocol(?:[."\s]|$)/i
 
-type Words = readonly (string | undefined)[]
-
-/** A git command's words after its subcommand: as the shell passes them, and as written. */
-interface SubArgs {
-  resolved: Words
-  written: readonly string[]
-}
-
-/** Whether word `i` is an option, read from what was written when the guard cannot resolve it. */
-const isOption = (args: SubArgs, i: number): boolean =>
-  (args.resolved[i] ?? args.written[i] ?? '').startsWith('-')
+/** What a write enables for `ext::`; `option` when the guard cannot tell which word is the key, URL or verb. */
+export type ExtEnabler = 'protocol' | 'url' | 'option'
 
 /** What a `git config` call does with its words: sets a key, renames a section, or neither. */
 interface ConfigCall {
@@ -278,34 +291,32 @@ interface ConfigCall {
   positionals: (string | undefined)[]
 }
 
-function configCall(args: SubArgs): ConfigCall {
-  const positionals: (string | undefined)[] = []
-  let mode: ConfigCall['mode'] = 'set'
-  for (let i = 0; i < args.resolved.length; i++) {
-    const word = args.resolved[i]
-    const verb = word !== undefined && (isOption(args, i) || positionals.length === 0)
-    if (verb && CONFIG_NON_WRITES.has(word)) return { mode: 'other', positionals }
-    if (verb && CONFIG_RENAMES.has(word)) mode = 'rename'
-    else if (word !== undefined && CONFIG_VALUE_OPTS.has(word)) i++
-    else if (!isOption(args, i)) positionals.push(word)
-  }
-  if (mode === 'set' && positionals[0] === 'set') positionals.shift()
-  return { mode, positionals }
+function configCall(parsed: ParsedArgs): ConfigCall {
+  const { options, positionals } = parsed
+  const sub = positionals[0]
+  const named = sub !== undefined && CONFIG_SUBCOMMANDS.has(sub) ? sub : undefined
+  const rest = named === undefined ? positionals : positionals.slice(1)
+  if (options.some(o => CONFIG_NON_WRITES.has(o)) || (named !== undefined && CONFIG_NON_WRITES.has(named)))
+    return { mode: 'other', positionals: rest }
+  const rename = options.includes('rename-section') || named === 'rename-section'
+  return { mode: rename ? 'rename' : 'set', positionals: rest }
 }
 
 /**
  * A section rename that may land a protocol policy or a URL where git reads one: `protocol` for a
  * target under `protocol`, `url` for one under `remote`, `url` or `submodule`, or a name the guard cannot read.
  */
-function renameEnabler(names: readonly (string | undefined)[]): 'protocol' | 'url' | undefined {
+function renameEnabler(names: readonly (string | undefined)[]): ExtEnabler | undefined {
   const target = names[1]
   if (names.includes(undefined) || target === undefined) return 'url'
   if (PROTOCOL_SECTION.test(target)) return 'protocol'
   return URL_SECTION.test(target) ? 'url' : undefined
 }
 
-function configEnabler(args: SubArgs): 'protocol' | 'url' | undefined {
-  const { mode, positionals } = configCall(args)
+function configEnabler(args: SubArgs): ExtEnabler | undefined {
+  const parsed = parseOptions(args, CONFIG_OPTIONS)
+  if (parsed === undefined) return 'option'
+  const { mode, positionals } = configCall(parsed)
   if (mode === 'rename') return renameEnabler(positionals)
   if (mode === 'other' || positionals.length < 2) return undefined
   const [key, value] = positionals
@@ -315,17 +326,23 @@ function configEnabler(args: SubArgs): 'protocol' | 'url' | undefined {
 }
 
 /**
- * Whether `git remote` or `git submodule` may write a URL the guard cannot read: a verb it cannot
- * read, or `add` or `set-url` with a word it cannot read. `remote set-url --delete` writes none.
+ * Whether `git remote` or `git submodule` may write a URL the guard cannot read: an option before
+ * the verb, or of `add` or `set-url`, it cannot match, a verb it cannot read, or `add` or `set-url`
+ * with any word it cannot read. `remote set-url --delete` writes none.
  */
-function hiddenUrl(args: SubArgs): boolean {
+function urlEnabler(args: SubArgs, spec: typeof REMOTE_OPTIONS): ExtEnabler | undefined {
   const at = args.resolved.findIndex((_, i) => !isOption(args, i))
-  if (at < 0) return false
+  const lead = at < 0 ? args : { resolved: args.resolved.slice(0, at), written: args.written.slice(0, at) }
+  if (parseOptions(lead, spec.lead) === undefined) return 'option'
+  if (at < 0) return undefined
   const verb = args.resolved[at]
-  if (verb === undefined) return true
-  if (verb !== 'add' && verb !== 'set-url') return false
-  const rest = args.resolved.slice(at + 1)
-  return !rest.includes('--delete') && rest.includes(undefined)
+  if (verb === undefined) return 'url'
+  if (verb !== 'add' && verb !== 'set-url') return undefined
+  const rest = { resolved: args.resolved.slice(at + 1), written: args.written.slice(at + 1) }
+  const parsed = parseOptions(rest, spec.verb)
+  if (parsed === undefined) return 'option'
+  if (parsed.options.includes('delete')) return undefined
+  return rest.resolved.includes(undefined) ? 'url' : undefined
 }
 
 /**
@@ -333,15 +350,17 @@ function hiddenUrl(args: SubArgs): boolean {
  * (TP-2371): `protocol` when it sets `protocol.allow` or `protocol.ext.allow` to anything but
  * `never`, or renames a section into `protocol`; `url` when it writes a remote or submodule URL,
  * URL helper or `insteadOf` rewrite, a key or verb, the guard cannot read, or renames a section into
- * one of those, so it may hide an `ext::` URL a later git runs. undefined for neither.
+ * one of those, so it may hide an `ext::` URL a later git runs; `option` when an option is one git
+ * would read but the guard cannot match to exactly one it knows. undefined for none.
  */
 export function extEnablerWrite(
-  resolved: Words,
+  resolved: readonly (string | undefined)[],
   written: readonly string[],
   at: number,
-): 'protocol' | 'url' | undefined {
+): ExtEnabler | undefined {
   const args = { resolved: resolved.slice(at + 1), written: written.slice(at + 1) }
-  if (resolved[at] === 'remote' || resolved[at] === 'submodule') return hiddenUrl(args) ? 'url' : undefined
+  if (resolved[at] === 'remote') return urlEnabler(args, REMOTE_OPTIONS)
+  if (resolved[at] === 'submodule') return urlEnabler(args, SUBMODULE_OPTIONS)
   return resolved[at] === 'config' ? configEnabler(args) : undefined
 }
 

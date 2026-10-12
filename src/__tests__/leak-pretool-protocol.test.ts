@@ -165,3 +165,54 @@ describe('section renames and unreadable verbs at the hook entry point (TP-2371 
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe("abbreviated options, read as git's parse-options reads them (TP-2371 fix round 2)", () => {
+  it.each([
+    'git config foo.allow always && git config --ren foo protocol',
+    'git config --rena foo protocol',
+    'git config --rename foo protocol',
+    'git config --fil .git/config protocol.ext.allow always',
+    'git config --fil=.git/config protocol.ext.allow always',
+    'git config -zf .git/config protocol.ext.allow always',
+    'git config --typ bool protocol.ext.allow true',
+    'git config --com note protocol.ext.allow always',
+    'git config --defa x protocol.ext.allow always',
+    'git config --blo HEAD:c protocol.ext.allow always',
+    'git config set --val x protocol.ext.allow always',
+    'git config --no-fil --typ=bool protocol.allow true',
+  ])('denies a protocol write: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'git config --fil x remote.x.url "$U"',
+    'git remote set-url --pu x "$U"',
+    'git submodule --qui set-url s "$U"',
+  ])('denies a hidden URL write: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git config --re foo protocol',
+    'git config --get-c protocol.ext.allow always',
+    'git config --bogus protocol.ext.allow always',
+    'git config -x protocol.ext.allow always',
+    'git config --$O x protocol.ext.allow always',
+    'git remote --bogus add y https://github.com/o/r',
+    'git submodule add --bogus https://github.com/o/s s',
+  ])('denies an option it cannot match to one git option: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.gitOptionUnmatched)
+  })
+
+  it.each([
+    'git config --ty bool --get protocol.ext.allow',
+    'git config --glob user.name x',
+    'git config --no-includes --get protocol.allow',
+    'git config --fil .git/config protocol.ext.allow never',
+    'git remote set-url --del origin "$OLD"',
+    'git remote --verb',
+    'git submodule --qui update --init',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
