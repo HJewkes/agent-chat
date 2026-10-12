@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { readAccountBudget } from '../budget.js'
-import { loadDoc } from '../seats/io.js'
+import { loadDoc, readTextIfPresent } from '../seats/io.js'
 import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
 import { chargesOn, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
@@ -29,7 +29,10 @@ import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
-import { diskPlanReader } from './seed-slices.js'
+import { parseSeat } from '../seats/charter.js'
+import { dispatchLogPath } from '../seats/dispatch-log.js'
+import { foldDispatch } from '../seats/dispatch-record.js'
+import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
@@ -268,6 +271,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const order = orderInputs(seat, read.tasks, root, today)
   const scope = scopeInputs(seat, deps.scopeTagAliases)
   const prior = priorRouterOf(deps, seat)
+  const runs = sliceRunsOf(seat)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -287,11 +291,13 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
+    sliceRuns: runs.sliceRuns,
     offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
     ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
   if (prior.note !== undefined) planned.notes.push(prior.note)
+  if (runs.note !== undefined) planned.notes.push(runs.note)
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
       initiative: '-',
@@ -300,6 +306,34 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     })),
   )
   return { planned, tasks, skipped: read.skipped }
+}
+
+/**
+ * CC-1121 b: the seat's dispatch log as slice runs. A seat with no log yet ran none; a log that
+ * cannot be read names none either, so seeding fails open with a note.
+ */
+function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } {
+  const { seat: name, prefix } = seat.dispatch
+  const none = { sliceRuns: () => [] }
+  if (seat.autonomyRoot === undefined) return none
+  try {
+    const log = readSeatLog(seat.autonomyRoot, name)
+    if (log === undefined) return none
+    const { records } = foldDispatch(log)
+    return { sliceRuns: taskId => sliceRunsIn(records, taskId, prefix) }
+  } catch (err) {
+    return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }
+  }
+}
+
+/** The seat's dispatch log text, undefined when it does not exist yet; any other fault throws. */
+function readSeatLog(root: string, name: string): string | undefined {
+  const text = readTextIfPresent(path.join(root, 'seats', `${name}.md`))
+  const parsed = text === undefined ? undefined : parseSeat(name, text)
+  if (text === undefined || parsed === undefined) throw new Error(`${name} is not a seat`)
+  const file = dispatchLogPath(root, { seat: parsed, text })
+  if (file === undefined) throw new Error(`${name} dispatch_log resolves outside the root`)
+  return readTextIfPresent(file)
 }
 
 /**
