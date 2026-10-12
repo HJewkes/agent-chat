@@ -21,6 +21,15 @@ import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
+  GH_BUILTINS,
+  ghAliasReader,
+  ghAliasSet,
+  ghPlainAlias,
+  ghShellAlias,
+  type GhAliasSet,
+  type ReadGhAlias,
+} from './gh-runs.js'
+import {
   hasOptionAlternation,
   hasSplittableOption,
   hasUnreadableConfig,
@@ -62,6 +71,8 @@ export interface GuardContext {
   readFile(file: string): string | undefined
   readAlias: ReadAlias
   readIncludedHooksPath: ReadIncludedHooksPath
+  /** gh's aliases from the config the hook's environment points at; without it no gh alias is followed. */
+  readGhAlias?: ReadGhAlias
   /** `realpath` proved that `agent-chat` on the hook's `PATH` is the hook's own entry script, whose `gh-write` scans at run time. */
   scansGhWrite?: boolean
   /** The real path of that install and of the `PATH` directory that holds it, which a body file may not be or share. */
@@ -78,7 +89,7 @@ interface Scope {
   cdpath: boolean
   /** The command line names git or gh, so a script the guard cannot read may run either. */
   namesGit: boolean
-  /** How many git aliases the guard has expanded to reach this command. */
+  /** How many git or gh aliases the guard has expanded to reach this command. */
   aliases: number
   /** Variables earlier commands set, unset (undefined) or changed in a way the guard cannot tell (UNSURE). */
   exports: ReadonlyMap<string, Setting>
@@ -149,6 +160,10 @@ export const REASONS = {
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
+  ghAliasWritten: `leak-guard: this command line writes gh config and runs a gh word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
+  ghAliasEnv: `leak-guard: this command line sets GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME and runs a gh word that may be an alias, so the guard cannot tell which config gh reads it from. Drop the setting. ${DOCS}`,
+  ghAliasHidden: `leak-guard: a gh alias definition, or an argument passed to a gh alias, holds a word the guard cannot resolve, so it cannot tell what the alias runs. Write it out literally. ${DOCS}`,
+  ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1119,6 +1134,80 @@ function checkGh(
   return found.length === 0 ? undefined : publishes(found)
 }
 
+/**
+ * `gh alias set` stores a body that runs later, wherever and with whatever arguments, so the
+ * directory and `$1` stay unresolved. A plain body runs as another gh command.
+ */
+function checkGhAliasSet(
+  set: GhAliasSet,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  if (set.kind === 'hidden') return REASONS.ghAliasHidden
+  if (set.kind === 'unread') return REASONS.ghAliasUnread
+  const { shell, body } = set.alias
+  return checkAt(shell ? body : `gh ${body}`, ctx, { ...scope, cwd: undefined, env: undefined }, depth + 1)
+}
+
+/** gh config writes the guard does not read before an alias in the same line runs. */
+const WRITES_GH_CONFIG = [
+  /\bgh\s+(?:alias\s+(?:set|import|delete)|config\s+set)\b/,
+  /\b(?:config|hosts)\.ya?ml\b/,
+]
+
+/** The line may make gh read its aliases from a config other than the one the hook reads. */
+const changesGhHome = (assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean =>
+  setsGhHome(assigns, ctx.env) || [...GH_HOME_VARS].some(name => mentions(scope.said, name))
+
+/**
+ * gh's alias machinery (TP-2371): a body is checked when `gh alias set` stores it and again when
+ * `gh <alias>` runs it. A top-level word that is not a gh command may be an alias, so a line that
+ * may change which config gh reads denies; under a gh command only a `group word` alias the
+ * hook's config holds is followed.
+ */
+function checkGhAliases(
+  marked: readonly string[],
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const set = ghAliasSet(args)
+  return set === undefined
+    ? checkGhAliasRun(args, assigns, ctx, scope, depth)
+    : checkGhAliasSet(set, ctx, scope, depth)
+}
+
+function checkGhAliasRun(
+  args: readonly (string | undefined)[],
+  assigns: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const [first, second] = args
+  if (first === undefined || first.startsWith('-') || ctx.readGhAlias === undefined) return undefined
+  const builtin = GH_BUILTINS.has(first)
+  if (builtin && second === undefined) return undefined
+  const alias = ctx.readGhAlias(builtin ? `${first} ${second}` : first)
+  if (builtin && alias === undefined) return undefined
+  if (WRITES_GH_CONFIG.some(pattern => pattern.test(scope.said))) return REASONS.ghAliasWritten
+  if (changesGhHome(assigns, ctx, scope)) return REASONS.ghAliasEnv
+  if (alias === undefined) return undefined
+  if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
+  const rest = args.slice(builtin ? 2 : 1)
+  if (!rest.every(arg => arg !== undefined)) return REASONS.ghAliasHidden
+  const inner = { ...scope, aliases: scope.aliases + 1 }
+  if (alias.shell) return checkAt(ghShellAlias(alias.body, rest), ctx, inner, depth + 1)
+  const words = ghPlainAlias(alias.body, rest)
+  return words === undefined
+    ? undefined
+    : checkAt(['gh', ...words].map(quoted).join(' '), ctx, inner, depth + 1)
+}
+
 function checkShell(
   args: readonly string[],
   stdin: string | undefined,
@@ -1270,7 +1359,10 @@ function checkSimple(
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh')
-    return head === 'gh' ? checkGh(marked, unwrapped.assigns, cmd, ctx, at) : REASONS.ghByPath
+    return head === 'gh'
+      ? (checkGhAliases(marked, unwrapped.assigns, cmd, ctx, at, depth) ??
+          checkGh(marked, unwrapped.assigns, cmd, ctx, at))
+      : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
     return checkGh(ghWriteArgs(marked), unwrapped.assigns, cmd, ctx, at, defers)
@@ -1692,6 +1784,7 @@ export function guardContext(
     readFile: readText,
     readAlias: aliasReader(env),
     readIncludedHooksPath: includedHooksPathReader(env),
+    readGhAlias: ghAliasReader(env, readText),
     scansGhWrite: install !== undefined,
     ...(install === undefined ? {} : { install }),
   }

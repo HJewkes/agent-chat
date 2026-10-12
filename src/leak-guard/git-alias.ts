@@ -234,10 +234,15 @@ const POSITIONAL = /\$(?:\{([1-9@*])\}|([1-9@*]))/g
 
 /** The command line a `!` alias runs: git passes the words after it as `$@` and appends `"$@"`. */
 export function shellAlias(body: string, rest: readonly string[]): string {
+  const filled = fillPositionals(body, rest)
+  return rest.length === 0 ? filled : `${filled} ${rest.map(quoted).join(' ')}`
+}
+
+/** A shell body with `$1`, `$@` and their kin replaced by the quoted words they stand for. */
+export function fillPositionals(body: string, rest: readonly string[]): string {
   const all = rest.map(quoted).join(' ')
-  const filled = body.replace(POSITIONAL, (_, braced?: string, bare?: string) => {
+  return body.replace(POSITIONAL, (_, braced?: string, bare?: string) => {
     const n = braced ?? bare ?? ''
     return n === '@' || n === '*' ? all : quoted(rest[Number(n) - 1] ?? '')
   })
-  return rest.length === 0 ? filled : `${filled} ${all}`
 }
