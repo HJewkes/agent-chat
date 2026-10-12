@@ -177,6 +177,14 @@ describe('dispatch gate on declared ops (CC-974)', () => {
     expect(refuse(publish, ['release-through-ci'])).toBeUndefined()
   })
 
+  it.each([
+    'Publish @titan-design/registry 0.3.0 through changesets',
+    'cut a release of 2.0',
+    'the package is published and consumers install it',
+  ])('refuses untagged publish wording %j as ops-unresolved', doneWhen => {
+    expect(refuse(withDoneWhen(doneWhen), ['release-through-ci'])?.kind).toBe('ops-unresolved')
+  })
+
   it('still reads the merge grant off prose', () => {
     const merge = withDoneWhen('PR merged to main')
 
