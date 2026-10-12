@@ -70,7 +70,7 @@ describe('a worker profile cannot edit agent-chat profiles or config (CC-1094)',
   })
 
   it('gives a coordinator profile none of the rules', () => {
-    const profile = load('titan-coord', { ...bdImplementer, role: 'coordinator' })
+    const profile = load('example-coord', { ...bdImplementer, role: 'coordinator' })
 
     expect(profile.disallowedTools).toEqual(bdImplementer.disallowedTools)
     expect(profile.warnings).toBeUndefined()
