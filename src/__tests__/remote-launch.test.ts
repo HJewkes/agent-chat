@@ -202,6 +202,18 @@ describe('building a spawn on the host that launches it', () => {
     expect(JSON.stringify(written[0])).not.toContain('/evil')
   })
 
+  it("passes the spec's model, a teleport's carried one included, as --model (CC-1166)", () => {
+    const carried = fakeHost()
+    const inherited = fakeHost()
+
+    prepareRemoteSpawn(spec({ profile: { ...spec().profile, model: 'sonnet' } }), carried.host)
+    prepareRemoteSpawn(spec({ profile: { ...spec().profile, model: '' } }), inherited.host)
+
+    const args = carried.written[0]?.plan.args ?? []
+    expect(args[args.indexOf('--model') + 1]).toBe('sonnet')
+    expect(inherited.written[0]?.plan.args).not.toContain('--model')
+  })
+
   it('warns, and runs without profile env, when this host has no such profile', () => {
     const { host, written } = fakeHost({ loadProfile: name => ({ error: `no profile named "${name}"` }) })
 

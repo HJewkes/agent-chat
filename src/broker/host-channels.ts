@@ -145,6 +145,8 @@ export interface CarriedFlags {
   channels: string[]
   permissionMode?: CarriedPermissionMode
   effort?: EffortLevel
+  /** CC-1166: an adopted predecessor's model, for when the broker cannot read its transcript. */
+  model?: string
 }
 
 const CHANNEL_TOKEN = /^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/
@@ -153,6 +155,11 @@ const CHANNEL_TOKEN = /^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-
 export const isChannelToken = (token: string): boolean => CHANNEL_TOKEN.test(token)
 
 const isEffort = (level: string): level is EffortLevel => (EFFORT_LEVELS as readonly string[]).includes(level)
+
+const MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,79}$/
+
+/** CC-1166: a model id a launch may pass on, `[1m]`-style suffixes included; never a flag. */
+export const isCarriedModel = (model: string): boolean => MODEL_TOKEN.test(model)
 
 export const isCarriedPermissionMode = (mode: string): mode is CarriedPermissionMode =>
   (CARRIED_PERMISSION_MODES as readonly string[]).includes(mode)
@@ -184,17 +191,21 @@ export function carriedFlagsFromArgv(argv: readonly string[], server = 'agent-ch
   const channels: string[] = []
   let permissionMode: CarriedPermissionMode | undefined
   let effort: EffortLevel | undefined
+  let model: string | undefined
   options.forEach((token, i) => {
     if (token === '--channels') channels.push(...channelTargets(options, i))
     const mode = flagValue(options, i, '--permission-mode')
     if (mode !== undefined && isCarriedPermissionMode(mode)) permissionMode = mode
     const level = flagValue(options, i, '--effort')
     if (level !== undefined && isEffort(level)) effort = level
+    const named = flagValue(options, i, '--model')
+    if (named !== undefined && isCarriedModel(named)) model = named
   })
   return {
     channels: [...new Set(channels)].filter(t => isChannelToken(t) && !namesAgentChat(t, server)),
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(effort === undefined ? {} : { effort }),
+    ...(model === undefined ? {} : { model }),
   }
 }
 
@@ -211,7 +222,7 @@ export function hostCarriedFlags(
 /** CC-951: a caller-reported `launchSeen`, kept only where every value passes the same checks as a local read. */
 export function sanitizeCarried(raw: unknown): CarriedFlags | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
-  const { channels, permissionMode, effort } = raw as Record<string, unknown>
+  const { channels, permissionMode, effort, model } = raw as Record<string, unknown>
   const tokens = Array.isArray(channels) ? channels.filter((t): t is string => typeof t === 'string') : []
   return {
     channels: [...new Set(tokens)].filter(t => isChannelToken(t) && !namesAgentChat(t, 'agent-chat')),
@@ -219,5 +230,6 @@ export function sanitizeCarried(raw: unknown): CarriedFlags | undefined {
       ? { permissionMode }
       : {}),
     ...(typeof effort === 'string' && isEffort(effort) ? { effort } : {}),
+    ...(typeof model === 'string' && isCarriedModel(model) ? { model } : {}),
   }
 }
