@@ -1154,11 +1154,13 @@ Usage: agent-chat teleport [options] [command]
 teleport control
 
 Options:
-  -h, --help      display help for command
+  -h, --help                display help for command
 
 Commands:
-  abort <name>    stop a session ending itself for a successor
-  help [command]  display help for command
+  abort <name>              stop a session ending itself for a successor
+  request [options] <name>  ask a session to teleport itself, optionally to a surface or another
+                            machine
+  help [command]            display help for command
 
 === agent-chat teleport abort
 Usage: agent-chat teleport abort [options] <name>
@@ -1167,6 +1169,17 @@ stop a session ending itself for a successor
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat teleport request
+Usage: agent-chat teleport request [options] <name>
+
+ask a session to teleport itself, optionally to a surface or another machine
+
+Options:
+  --surface <surface>  where the successor runs: headless, iterm-pane, iterm-tab, iterm-window,
+                       tmux-window
+  --to <machine>       the machine it lands on: an alias from config machines, or a hostname
+  -h, --help           display help for command
 
 === agent-chat handoff
 Usage: agent-chat handoff [options] [command]
