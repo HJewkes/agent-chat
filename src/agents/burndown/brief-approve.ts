@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { planPathFor } from './brief.js'
+import { declaredOps, opsLint, opsNoneTag } from './ops.js'
 import { parseTask, readTaskText } from './source.js'
 import type { Report } from '../../cli/command.js'
 
@@ -31,20 +32,44 @@ export const briefAnswered = (tags: readonly string[]): boolean =>
 const refused = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
 
 /**
+ * CC-1154: the ops tag promotion adds so the dispatch gate never meets an untagged done_when.
+ * An unresolved hit is refused, not tagged `ops:none`: whether it is a human step is the approver's call.
+ */
+function opsTagEdits(
+  taskId: string,
+  doneWhen: string | undefined,
+  tags: readonly string[],
+): string[] | Report {
+  if (doneWhen === undefined) return []
+  const hits = opsLint(doneWhen, tags)
+  const none = opsNoneTag(doneWhen)
+  if (hits.length > 0) {
+    const named = hits.map(hit => `${hit.op} ('${hit.text}')`).join(', ')
+    return refused(
+      `${taskId}: done_when mentions ${named}; tag ops:<op> for a human step, or ${none} if it is subject matter, then approve again`,
+    )
+  }
+  return tags.includes(none) || declaredOps(tags).length > 0 ? [] : [none]
+}
+
+/**
  * CC-940: promotes a briefer's `brief:proposed=<day>` to `brief:ready=<today>` and records `brief:src=briefer` (replacing any other src) through `active-work task edit`.
- * Refused when the task is unknown, carries no proposal, or its plan file is missing.
+ * Refused when the task is unknown, carries no proposal, its plan file is missing, or its done_when has an unresolved ops hit.
  */
 export function approveBrief(taskId: string, ports: ApprovePorts, today: string): Report {
   const slug = ports.initiatives().find(s => readTaskText(ports.root, s, taskId) !== undefined)
   if (slug === undefined) return refused(`no task ${taskId} in any initiative`)
-  const tags = parseTask(readTaskText(ports.root, slug, taskId) ?? '', taskId).tags
+  const { tags, doneWhen } = parseTask(readTaskText(ports.root, slug, taskId) ?? '', taskId)
   const proposed = tags.find(t => t.startsWith(PROPOSED))
   if (proposed === undefined) return refused(`${taskId} carries no brief:proposed tag`)
   const plan = planPathFor(path.join(ports.root, slug), taskId)
   if (!ports.planExists(plan)) return refused(`no plan file at ${plan}`)
+  const opsTags = opsTagEdits(taskId, doneWhen, tags)
+  if (!Array.isArray(opsTags)) return opsTags
   try {
     const ready = `brief:ready=${today}`
     // Add first: a failure after it leaves the task with a ready tag, and a rerun finishes the cleanup.
+    for (const tag of opsTags) ports.edit(slug, taskId, ['--add-tag', tag])
     if (!tags.includes(ready)) ports.edit(slug, taskId, ['--add-tag', ready])
     if (!tags.includes(BRIEFER_SRC)) ports.edit(slug, taskId, ['--add-tag', BRIEFER_SRC])
     const stale = (t: string) =>
