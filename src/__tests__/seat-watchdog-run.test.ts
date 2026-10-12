@@ -399,6 +399,23 @@ describe('the watchdog counts spend through seatSpend (CC-1099, CC-271)', () => 
     expect(out[0]).not.toContain('BUDGET-PAUSE')
   })
 
+  // CC-1118: the tick keys the ledger by the charter's raw `~/` string while `parsePools` expands it.
+  const TILDE_POOL = '~/synthetic-pool'
+  const ABSOLUTE_POOL = path.join(os.homedir(), 'synthetic-pool')
+
+  it.each([
+    ['a ~/ charter and a ~/ ledger key', TILDE_POOL, TILDE_POOL],
+    ['a ~/ charter and an absolute ledger key', TILDE_POOL, ABSOLUTE_POOL],
+    ['an absolute charter and a ~/ ledger key', ABSOLUTE_POOL, TILDE_POOL],
+  ])('closes the day gate on the ledger sample with %s', async (_case, charterDir, ledgerKey) => {
+    const h = reviewerCase(ledger(ledgerKey))
+    h.deps.readCharter = () => CHARTER.replace(`config_dir: ${POOL_DIR}`, `config_dir: ${charterDir}`)
+
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+    expect(out[0]).toMatch(/BUDGET-PAUSE pool claude: day spend 15 points since 07:00/)
+  })
+
   it('still saves the advanced day meter after counting from the ledger', async () => {
     const h = reviewerCase(ledger(POOL_DIR))
 
