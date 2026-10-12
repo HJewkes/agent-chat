@@ -76,4 +76,10 @@ describe('seatSpend', () => {
     const result = spend([{ at: at(6, 30), sevenDay: 10 }], { sevenDay: undefined })
     expect(result).toMatchObject({ source: 'ledger', run: undefined, day: undefined })
   })
+
+  it("keeps the meters' history without a reading when the ledger cannot reach the run start", () => {
+    const result = spend([{ at: at(12), sevenDay: 30 }], { sevenDay: undefined })
+    expect(result).toMatchObject({ source: 'meters', run: undefined, day: undefined })
+    expect(result.history.length).toBeGreaterThan(0)
+  })
 })
