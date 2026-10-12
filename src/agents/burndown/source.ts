@@ -56,6 +56,7 @@ export function parseTask(text: string, fallbackId: string): Task {
     status: s.status,
     priority: numberOr(s.priority),
     estimate: numberOr(s.estimate),
+    notes: s.notes === '' ? undefined : s.notes,
     doneWhen: s.done_when === '' || s.done_when === 'null' ? undefined : s.done_when,
   }
   const defined = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined))

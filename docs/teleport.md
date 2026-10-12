@@ -120,23 +120,26 @@ Caller must be a registered connection carrying an `agentId` (see §12 D3 for
 the ordinary-session case, which this design now requires rather than defers
 around). The broker:
 
-1. refuses if `events.openQuestionCount(callerName)` is nonzero. This check
-   used to gate a separate readiness call (see the superseded §4.2 below); it
-   moves here because there is no longer a second call to gate. The reason is
-   unchanged and still mechanical: `BrokerCore.answer` resolves the recipient
-   with `events.authorOf(msgId)` and delivers by **name**. If the predecessor's
-   name stops being held by a live connection while a question is outstanding,
-   the human's eventual answer is appended to the log and delivered to
-   nothing, recoverable only by someone who happens to query an inbox nobody
-   is watching. A predecessor with open questions must answer, dismiss, or
-   restate them in the handoff first — teleport does not get to abandon them
-   by leaving. **Consequence of folding this into the single call:** the
-   refusal now happens at teleport time, not at a later readiness step, so
-   the `reason` on the `teleport_result` has to be actionable, not just
-   accurate — it must name which questions are outstanding, the same way
-   `send_result.reason` names a route failure rather than just reporting
-   "failed." A refusal a model cannot act on is a refusal it will simply
-   retry against the same wall.
+1. refuses if any of `events.openQuestions(callerName)` has an id the handoff
+   text does not contain. This check used to gate a separate readiness call
+   (see the superseded §4.2 below); it moves here because there is no longer
+   a second call to gate. It used to refuse on any open question, for a
+   mechanical reason: `BrokerCore.answer` resolves the recipient with
+   `events.authorOf(msgId)` and delivers by **name**, so an answer landing
+   while no live connection held the name was appended and delivered to
+   nothing. That reason no longer holds (CC-1089): the successor keeps the
+   name, an answer that lands while the name is dark is held and pushed when
+   the successor registers (CC-301), and the broker appendix lists the
+   questions still open (CC-524). What remains is that the successor must
+   know a question exists before its answer arrives, so the predecessor
+   names each open question id in the handoff, or answers it. Matching is an
+   exact substring of the 8-hex msgId, with no prefix or fuzzy match. The
+   restated ids are recorded on the `agent_handoff` row as
+   `meta.questions`. A refusal names only the ids the handoff leaves out,
+   with their text: a refusal a model cannot act on is a refusal it will
+   simply retry against the same wall, which is what CC-1089 recorded when
+   the old text said "restate them in the handoff" and then refused the
+   restatement.
 2. reads the caller's identity, live tags, subscriptions and allocation from
    its own connection and its `agent_spawned` row, for use in step 5;
 3. appends `agent_handoff` — actor the predecessor's name, `ref` its agentId,

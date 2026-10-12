@@ -1,0 +1,92 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import type { Refusal } from '../agents/burndown/eligibility.js'
+import { isOffPlan, readOffPlanIds } from '../agents/burndown/off-plan.js'
+import { offPlanRefusals, planningCandidates } from '../agents/burndown/planning-supply.js'
+import { parseTask } from '../agents/burndown/source.js'
+
+/** CC-1112: one predicate decides which tasks the briefers refuse. */
+
+const dirs: string[] = []
+afterEach(() => {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
+})
+
+const reviewDir = (files: Record<string, string>): string => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'off-plan-'))
+  dirs.push(root)
+  const dir = path.join(root, 'claude-channels', 'sources', 'factory-review')
+  fs.mkdirSync(dir, { recursive: true })
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text)
+  return root
+}
+
+describe('isOffPlan', () => {
+  it('flags the plan note in any case', () => {
+    const notes = 'Triage: Outside Accepted Factory Plan P-list.'
+    expect(isOffPlan({ id: 'X-1', priority: 5, notes })).toBe(true)
+  })
+
+  it.each([
+    [98, false],
+    [99, true],
+    [101, true],
+  ])('treats priority %i as off-plan=%s', (priority, expected) => {
+    expect(isOffPlan({ id: 'X-1', priority })).toBe(expected)
+  })
+
+  it('flags an id the file listed and leaves an unlisted one', () => {
+    expect(isOffPlan({ id: 'X-1', priority: 5 }, new Set(['X-1']))).toBe(true)
+    expect(isOffPlan({ id: 'X-2', priority: 5 }, new Set(['X-1']))).toBe(false)
+  })
+})
+
+describe('readOffPlanIds', () => {
+  it('reads the ids of the newest file only', () => {
+    const root = reviewDir({
+      'off-plan-2026-10-01.md': '- X-1\n- X-2\n',
+      'off-plan-2026-10-09.md': '- X-3 and X-4\n',
+    })
+    expect([...readOffPlanIds(root)].sort()).toEqual(['X-3', 'X-4'])
+  })
+
+  it('returns no ids when the file or directory is missing', () => {
+    expect(readOffPlanIds(reviewDir({})).size).toBe(0)
+    expect(readOffPlanIds(path.join(os.tmpdir(), 'no-such-root-cc1112')).size).toBe(0)
+  })
+})
+
+describe('parseTask', () => {
+  it('reads folded notes', () => {
+    const folded = 'id: X-1\ntitle: t\nnotes: "outside accepted factory\n  plan P-list"\n'
+    expect(isOffPlan(parseTask(folded, 'X-1'))).toBe(true)
+  })
+})
+
+describe('briefer selection', () => {
+  const refusal = (task: string): Refusal => ({ initiative: 'a', task, kind: 'no-brief', reason: 'no brief' })
+  const tasks = new Map([
+    [
+      'a',
+      [
+        { id: 'X-1', tags: [], priority: 99 },
+        { id: 'X-2', tags: [], priority: 5, notes: 'outside accepted factory plan P-list' },
+        { id: 'X-3', tags: [], priority: 5 },
+        { id: 'X-4', tags: [], priority: 5 },
+      ],
+    ],
+  ])
+  const refusals = ['X-1', 'X-2', 'X-3', 'X-4'].map(refusal)
+
+  it('offers only on-plan tasks to briefers', () => {
+    const offered = planningCandidates(refusals, tasks, new Set(['X-4'])).map(r => r.task)
+    expect(offered).toEqual(['X-3'])
+  })
+
+  it('names every off-plan refusal', () => {
+    const named = offPlanRefusals(refusals, tasks, new Set(['X-4'])).map(r => r.task)
+    expect(named).toEqual(['X-1', 'X-2', 'X-4'])
+  })
+})
