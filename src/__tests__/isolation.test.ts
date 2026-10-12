@@ -443,9 +443,9 @@ describe('a sibling tree whose branch extends the name (CC-1082)', () => {
 })
 
 /** Hangs every fetch, then exits within 0.2s of the fetching git being killed so no child outlives the test. */
-const HANG_UNTIL_GIT_DIES = `#!/bin/sh
-git_pid=$(ps -o ppid= -p $PPID)
-while kill -0 $git_pid 2>/dev/null; do sleep 0.2; done
+/** git runs core.sshCommand as its own child; an ext:: remote is refused once GIT_ALLOW_PROTOCOL is pinned (CC-1095). */
+const HANG_UNTIL_PARENT_GIT_DIES = `#!/bin/sh
+while kill -0 $PPID 2>/dev/null; do sleep 0.2; done
 `
 
 describe('worktree branch base (CC-151)', () => {
@@ -552,9 +552,9 @@ describe('worktree branch base (CC-151)', () => {
   it('spends one timeout across every default-branch candidate, not one each', async () => {
     const local = makeRepo()
     const hang = path.join(tmp('iso-hang-'), 'hang.sh')
-    fs.writeFileSync(hang, HANG_UNTIL_GIT_DIES, { mode: 0o755 })
-    git(['config', 'protocol.ext.allow', 'always'], local)
-    git(['remote', 'add', 'origin', `ext::${hang}`], local)
+    fs.writeFileSync(hang, HANG_UNTIL_PARENT_GIT_DIES, { mode: 0o755 })
+    git(['config', 'core.sshCommand', hang], local)
+    git(['remote', 'add', 'origin', 'ssh://hang.invalid/r'], local)
     const strategy = createWorktreeStrategy({ fetchTimeoutMs: 1_500 })
 
     const started = Date.now()
