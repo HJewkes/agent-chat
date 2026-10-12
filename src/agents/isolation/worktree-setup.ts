@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs'
 import { lstat } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { gitChildEnv } from '../../git.js'
+import { gitChildEnv, pinGitProtocols } from '../../git.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -101,6 +101,8 @@ export function setupEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
     out[`NPM_CONFIG_${key.toUpperCase()}`] = value
   }
   Object.assign(out, PINNED_ENV)
+  // CC-1095: an install that fetches a git dependency must not reach an `ext::` remote.
+  out.GIT_ALLOW_PROTOCOL = pinGitProtocols(env.GIT_ALLOW_PROTOCOL)
   return out
 }
 

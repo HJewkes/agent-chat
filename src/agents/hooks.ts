@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { hooksPath } from '../paths.js'
+import { withPinnedGitProtocols } from '../git.js'
 import { logEvent } from '../broker/log.js'
 
 /**
@@ -65,7 +66,11 @@ export interface HookProcess {
 export type HookSpawnFn = (command: string) => HookProcess
 
 function defaultSpawn(command: string): HookProcess {
-  return spawn(command, { shell: true, stdio: ['pipe', 'ignore', 'pipe'] }) as unknown as HookProcess
+  return spawn(command, {
+    shell: true,
+    env: withPinnedGitProtocols(),
+    stdio: ['pipe', 'ignore', 'pipe'],
+  }) as unknown as HookProcess
 }
 
 /**
