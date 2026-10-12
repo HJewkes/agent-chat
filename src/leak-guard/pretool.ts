@@ -9,6 +9,7 @@ import {
   gitCall,
   gitGlobals,
   gitOptions,
+  GIT_VALUE_OPTS,
   quoted,
   UNSURE_CALL,
   shellAlias,
@@ -19,7 +20,15 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './git-programs.js'
+import {
+  configPrograms,
+  extEnablerWrite,
+  extPrograms,
+  listsExt,
+  OPAQUE_PROGRAM_ENV,
+  PROGRAM_ENV,
+  PROTOCOL_ENV,
+} from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
@@ -180,6 +189,9 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone or gh repo fork hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -218,7 +230,6 @@ const XARGS_LONG_FLAG = new Set([
   '--version',
   '--help',
 ])
-const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 // `NAME=`, `NAME+=`, `NAME[idx]=` and `NAME[idx]+=` all assign: the shell reads the next word as the command.
 // The lexer marks the `[` of a subscript as live, since it is a glob character elsewhere.
@@ -465,6 +476,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
+    checkExtEnablers(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
 }
@@ -477,9 +489,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
-  const at =
-    options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
-  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
+  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, subcommandAt(run, options))
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
   const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
@@ -492,6 +502,21 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
     if (reason !== undefined) return reason
   }
   return extOn
+}
+
+/** Where git's subcommand sits; past an option the guard cannot place, the first word that is not an option. */
+const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): number =>
+  options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
+
+/** A `git config` or `git remote` write that switches on `ext::` or hides a URL a later git may run (TP-2371). */
+function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  const words = { resolved: run.resolved, written: run.args, marked: run.marked, splits: run.cmd.splits }
+  const enabler = extEnablerWrite(words, at)
+  if (enabler === 'protocol') return REASONS.extProtocol
+  if (enabler === 'option') return REASONS.gitOptionUnmatched
+  return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -1628,7 +1653,7 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV]
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -1647,15 +1672,114 @@ const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) 
 const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
-/** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
-function plainProgramValue(word: string): string | null | undefined {
+/**
+ * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
+ * protocol list that lets git run `ext::` URLs.
+ */
+const EXT_ON = Symbol('ext-on')
+// A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
+const NAME_HIDDEN = Symbol('name-hidden')
+type EnvEvent = string | null | typeof EXT_ON | typeof NAME_HIDDEN
+
+const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
+const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
+
+/**
+ * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
+ * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * no event at all. undefined when the word is no such assignment.
+ */
+function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const name = ASSIGNMENT.exec(word)?.[1]
-  if (name === undefined || !PROGRAM_ENV.has(name) || !word.startsWith(`${name}=`)) return undefined
+  if (name === undefined || !word.startsWith(`${name}=`)) return undefined
+  const protocol = PROTOCOL_ENV.has(name)
+  if (!protocol && !PROGRAM_ENV.has(name)) return undefined
   const value = word.slice(name.length + 1)
-  return value.includes(LIVE) ? null : value
+  if (value.includes(LIVE)) return null
+  if (!protocol) return value
+  return listsExt(unmark(value)) ? EXT_ON : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
+// env's `-uNAME` and `--unset=NAME`.
+const GLUED_UNSET = /^-(?:u.|-unset=)/
+
+// A word that names its variable literally: NAME, then a subscript, `=`, `+=` or nothing.
+const LITERAL_NAME = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[|\\+?=|$)`)
+
+/** Whether a word in an assignment's place holds an expansion and does not name its variable literally. */
+const hiddenName = (word: string): boolean => word.includes(LIVE) && !LITERAL_NAME.test(word)
+
+// Builtins whose operands are all variable names or may be read as such (`getopts` optstring and
+// args, `read -p` prompt): an expansion in any of them fails closed.
+const NAME_OPERAND_BUILTINS = new Set(['read', 'getopts', 'mapfile', 'readarray', 'unset'])
+// env options whose value is a variable name or a string env splits and expands itself.
+const ENV_NAME_OPTIONS = new Set(['-u', '--unset', '-S', '--split-string'])
+const ENV_VALUE_OPTIONS = new Set([...ENV_NAME_OPTIONS, '-C', '--chdir'])
+
+/**
+ * Whether env's words from `i` hide a variable name: an option the guard cannot read, a `-u` or `-S`
+ * value with an expansion, or, before the command and after any `--`, a word with an expansion
+ * before its first `=`, which env may read as `NAME=value`.
+ */
+function envHidesName(words: readonly string[], i: number): boolean {
+  let options = true
+  for (; i < words.length; i++) {
+    const word = words[i] as string
+    const text = unmark(word)
+    if (options && text === '--') options = false
+    else if (options && text.startsWith('-') && text !== '-') {
+      if (word.includes(LIVE)) return true
+      if (ENV_NAME_OPTIONS.has(text) && (words[i + 1] ?? '').includes(LIVE)) return true
+      if (ENV_VALUE_OPTIONS.has(text)) i++
+    } else if (hiddenName(word)) return true
+    else if (!ASSIGNMENT.test(word)) return false
+  }
+  return false
+}
+
+/** Whether `printf`'s `-v` name holds an expansion, or an operand the shell builds comes before its format and may be `-v`. */
+function printfHidesName(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string
+    const text = unmark(word)
+    if (text === '-v') return (args[i + 1] ?? '').includes(LIVE)
+    if (text.startsWith('-v') || word.includes(LIVE)) return word.includes(LIVE)
+    if (text === '--' || !text.startsWith('-')) return false
+  }
+  return false
+}
+
+/** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
+// The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
+const isProcessSubstitution = (word: string): boolean => word === LIVE
+
+function operandsHideName(name: string, written: readonly string[]): boolean {
+  const args = written.filter(word => !isProcessSubstitution(word))
+  if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
+  if (ENV_DECL.has(name)) return args.some(hiddenName)
+  return name === 'printf' && printfHidesName(args)
+}
+
+/**
+ * Whether a command assigns, reads into or unsets a variable whose name the shell builds (TP-2371),
+ * at any command head along its wrapper chain: env's words before the command (after `--` too),
+ * and the name operands of read, printf -v, mapfile, readarray, getopts, unset and the declare
+ * family. Such a name may be any program var or GIT_ALLOW_PROTOCOL, so it fails closed.
+ */
+function hidesVariableName(words: readonly string[]): boolean {
+  for (let at = 0; at < words.length;) {
+    const head = words[at] as string
+    const name = path.basename(unmark(head))
+    const next = wrapperEnd(words, at, name)
+    if (ASSIGNMENT.test(head)) at++
+    else if (PREFIX_WORDS.has(head)) at = dropOptions(words, at + 1)
+    else if (next !== undefined) at = next
+    else if (name === 'env') return envHidesName(words, at + 1)
+    else return operandsHideName(name, words.slice(at + 1))
+  }
+  return false
+}
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
 
@@ -1666,8 +1790,10 @@ function envRoles(marked: readonly string[], i: number, roles: WordRole[]): void
     if (ENV_UNSET.has(word)) {
       roles[i] = 'removes'
       roles[++i] = 'removes'
-    } else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
-    else return
+    } else if (GLUED_UNSET.test(unmark(word))) roles[i] = 'removes'
+    else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
+    // GNU env reads `NAME=value` words after `--` too.
+    else if (word !== '--') return
   }
 }
 
@@ -1711,11 +1837,13 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
  * `${NAME:=x}`, eval); a read is no event. In the arguments of a command that takes them as data,
  * such as git or gh, only an assigning expansion the shell expands counts.
  */
-function envEvent(word: string, role: WordRole): string | null | undefined {
+function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
-  if (role === 'removes') return undefined
+  // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
+  if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
   if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
+  if (plain === 'none') return undefined
   if (plain !== undefined) return plain
   return namesProgramEnv(text) ? null : undefined
 }
@@ -1736,7 +1864,7 @@ function sharedTail(words: readonly string[], written: readonly string[]): numbe
 
 /** One command's program-env events, and its text for the git scan. */
 interface EnvUse {
-  events: (string | null)[]
+  events: EnvEvent[]
   scan: string[]
 }
 
@@ -1745,7 +1873,7 @@ function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
   return {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
-      .filter((event): event is string | null => event !== undefined),
+      .filter((event): event is EnvEvent => event !== undefined),
     scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
   }
 }
@@ -1776,8 +1904,9 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
+  const hidden: EnvEvent[] = hidesVariableName(functionBody(cmd.marked)) ? [NAME_HIDDEN] : []
   return {
-    events: [...written.events, ...unwrapped.events],
+    events: [...written.events, ...unwrapped.events, ...hidden],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }
@@ -1794,7 +1923,7 @@ function checkProgramEnvLine(
   ctx: GuardContext,
   scope: Scope,
   depth: number,
-): string | undefined {
+): string | typeof NAME_HIDDEN | undefined {
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
@@ -1803,10 +1932,12 @@ function checkProgramEnvLine(
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
+    if (event === EXT_ON) return REASONS.extProtocol
+    if (event === NAME_HIDDEN) continue
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
-  return undefined
+  return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -1817,14 +1948,15 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const said = `${scope.said}\n${unreferenced(command)}`
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
-  if (envReason !== undefined) return envReason
+  if (typeof envReason === 'string') return envReason
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
     at = advance(cmd, ctx, at)
   }
-  return mixesParenAndGuarded(command) ? REASONS.parenMixed : undefined
+  if (mixesParenAndGuarded(command)) return REASONS.parenMixed
+  return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {

@@ -359,6 +359,7 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a program-running env var (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `MANPAGER` and kin, below) on a line that runs git: a plain literal assignment whose value a row above denies, or any other use but a read            | git runs the value as a pager, editor or ssh command        |
 | an `ext::` transport in any git word or config value whose decoded shell command a row above denies (below)                                                                                                                    | `protocol.ext.allow` lets `ext::` run a shell command       |
 | a gh alias whose body a row above denies, when `gh alias set` stores it or `gh <alias>` runs it; `gh alias import`, a body or argument the guard cannot read, or a line that writes gh config or moves its home (below)        | `gh alias set x '!git push --no-verify'` runs git unseen    |
+| `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                              | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone` or `gh repo fork --clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
 
 A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
@@ -663,6 +664,65 @@ cannot know. The decoded argv is checked as a top-level Bash line, so
 `git push --no-verify` as one argument to `sh -c`. The round-1 example `ext::sh -c 'git push …'`
 was wrong, because git splits that on its spaces into separate arguments and never runs the push. A
 value the guard cannot read (`ext::$C`) or cannot decode (a trailing or unknown `%` escape) denies.
+
+What switches the transport on, or hides an `ext::` URL for a later git, is closed too (TP-2371).
+`GIT_ALLOW_PROTOCOL`, a colon list git honours over `protocol.*.allow`, follows the program env
+rule below on a line that may reach git: a plain literal assignment (prefix, `export` or `env`)
+whose list names `ext`, in any case, denies, and any other use but a read denies, as in
+`GIT_ALLOW_PROTOCOL="$P" git fetch`. Unsetting it there (`unset`, `env -u`, `env --unset`) also
+denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh git fetch` stays
+allowed. A `git config` write, legacy or `git config set`, of `protocol.allow` or
+`protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
+stay allowed. `git remote add` or `set-url` with a word the guard cannot read, and a `git config`
+write of `remote.<name>.url`, `.pushurl`, `.vcs` or `url.<base>.insteadOf` or `.pushInsteadOf` with
+a value it cannot read, or of any key it cannot read, denies: the value may be an `ext::` URL a
+later `git fetch` runs. So of the chain `git remote set-url x "$U"` then
+`GIT_ALLOW_PROTOCOL=ext git fetch x`, each half denies on its own. A literal URL, as in
+`git remote set-url origin https://github.com/o/r`, is allowed and read as before. A section rename
+(`--rename-section` or `rename-section`) can move an innocent `foo.allow always` or `foo.url "$U"`
+into place, so a rename whose target is under `protocol` denies as a protocol write, and one whose
+target is under `remote`, `url` or `submodule`, or that the guard cannot read, denies as a URL
+write. `git remote` with a verb the guard cannot read (`git remote "$V" x "$U"`) denies, and
+`git submodule add` or `set-url` and `submodule.<name>.url` writes follow the remote rules. A
+direct edit of `.git/config` or `.gitmodules` is not read here; the `GIT_ALLOW_PROTOCOL` pin
+(CC-1095) is the backstop.
+
+git's parse-options accepts any unique prefix of a long option (`--ren` for `--rename-section`,
+`--fil` for `--file`), its `--no-` form, a value attached by `=`, and clustered short options
+(`-zf file`). The guard reads the options of `git config`, `git remote` and `git submodule` the
+same way, from each command's `-h` list on git 2.53, so it knows which word is the key, URL or
+verb. An option it cannot match to exactly one it knows, because it is ambiguous (`--re`), unknown
+or not literal (`--$O`), denies: spell each option in full. Where git stops reading options
+differs by form, and the guard copies it. Legacy `git config`, whose first word names no
+subcommand, stops at its first positional word: in `git config protocol.ext.allow always --get`
+the `--get` is a value pattern, and git writes the key, so the guard reads that call as a write. A
+leading `--` does not stop it, as in `git config -- --rename-section foo protocol`; the guard reads
+past any `--` there, which only over-denies. `git config <subcommand>` (only as the first word:
+`--file f set k v` is legacy), and the `git remote` and `git submodule` verbs, read options anywhere
+up to `--`, so in `git config set -- "$K" --get` the `--get` is the value and the unread key denies.
+Each option ends in its final state, the last spelling winning as in git, so
+`git remote set-url --delete --no-delete x "$U"` stores the URL and denies. The builtins that store
+a remote or submodule URL (`remote`, `submodule` and the internal `submodule--helper`) are read
+from one table of verbs: a verb that stores a URL, or one outside the table, with a word the guard
+cannot read denies, and only `remote set-url --delete` and the verbs listed as storing none are
+exempt. `git clone "$URL"` stays allowed as before (TP-636); the protocol-list rules and the
+CC-1095 pin cover a later `ext::` run of the URL it stores.
+These rules read one shell word as one argument, so for `git config` and the URL-storing
+builtins a word after the subcommand that the shell may expand to none or several denies as an
+unreadable write: an unquoted `$X` or `$(...)`, `"$@"`, `"${A[@]}"`, a glob or a brace, as in
+`git config {protocol.ext.allow,always}` or `git config $X`. `-h` and `--help` write nothing and
+stay allowed. On the env side, one predicate decides where a variable name is read, at each
+command head along the wrapper chain, and fails closed on any expansion there (TP-2371): every
+`env` word before the command, `--` included, with an expansion before its first `=` (`env $A`,
+`env G$X=ext`, `env -- $A`), a `-u` or `-S` value or an option the guard cannot read; any operand
+of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion; the `printf -v`
+name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
+`local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
+line that may reach git it denies as `programEnv`, after the line's other checks so a more
+specific reason wins. Words that `xargs` or `find -exec` add are not read here.
+The guard skips
+git's own value-taking options before the subcommand from one list, which includes
+`--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
 
 ### An environment variable git runs as a program (TP-636)
 
