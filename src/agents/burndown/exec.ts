@@ -34,7 +34,7 @@ export interface RunOptions {
 export type Runner = (bin: string, args: string[], cwd?: string, options?: RunOptions) => RunResult
 
 const TIMEOUT_MS = 15_000
-/** `shepherd status --json` lists finished runs too and passed Node's 1 MiB default (CC-1149); same bound as egress-runner. */
+/** `shepherd status --json --all` lists finished runs too and passed Node's 1 MiB default (CC-1149); same bound as egress-runner. */
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 
 /** A spawn failure (missing binary, timeout) is a non-zero result, never a throw: callers treat it as "could not tell". */
