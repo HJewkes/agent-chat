@@ -47,6 +47,10 @@ export interface HostProbe {
   surface: PackageSurfaceName
 }
 
+/** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
+export const JOB_KICK_NAMES = ['burndown_tick', 'seats_watchdog', 'seats_heartbeat_check'] as const
+export type JobKickName = (typeof JOB_KICK_NAMES)[number]
+
 /** CC-951: a connected host launcher, as `hosts` lists it. */
 export interface HostLauncherInfo {
   host: string
@@ -1192,6 +1196,11 @@ export type ClientMessage =
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
   | { t: 'hosts' }
+  /**
+   * CC-1151: run one of the broker's jobs now, in the broker's own env. The frame names the job and,
+   * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
+   */
+  | { t: 'job_kick'; job: JobKickName; seat?: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */
@@ -1356,6 +1365,7 @@ export type ServerMessage =
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
   | { t: 'host_launch'; id: string; launch: RemoteLaunch }
   | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
+  | { t: 'job_kick_result'; ok: boolean; detail: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the
