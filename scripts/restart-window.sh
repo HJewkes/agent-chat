@@ -6,7 +6,9 @@
 #   0  restart-window OK
 #   1  a pre-check refused, or the restart's own guard refused; the broker was not touched, and
 #      after a guard refusal the checkout is rolled back to the old commit and build
-#   2  a post-check failed; the new build is live and the old one is kept as node_modules.prev
+#   2  a post-check failed, including `agent-chat agent ls --json` not answering within 30 s of
+#      the restart (retried each second; the seconds taken are printed on every run, so each
+#      bounce leaves a timed log, CC-476); the new build is live and the old one is kept as node_modules.prev
 #      and dist.prev (the message names the rollback command)
 #   3  the restart failed; the checkout was rolled back to the old commit and build and the
 #      broker restarted on it, and if that restart failed too the broker may be down
@@ -37,6 +39,11 @@ if [ -n "${RESTART_WINDOW_PROCS:-}" ] && [ "${RESTART_WINDOW_TEST:-}" != 1 ]; th
   echo "restart-window: refusing: RESTART_WINDOW_PROCS is set outside a test (RESTART_WINDOW_TEST=1); unset it" >&2
   exit 1
 fi
+if [ -n "${RESTART_WINDOW_LS_DEADLINE_S:-}" ] && [ "${RESTART_WINDOW_TEST:-}" != 1 ]; then
+  echo "restart-window: refusing: RESTART_WINDOW_LS_DEADLINE_S is set outside a test (RESTART_WINDOW_TEST=1); unset it" >&2
+  exit 1
+fi
+ls_deadline="${RESTART_WINDOW_LS_DEADLINE_S:-30}"
 
 # Under RESTART_WINDOW_TEST=1, RESTART_WINDOW_PROCS names a file of "pid argv" lines to match
 # instead of the live process table.
@@ -154,6 +161,7 @@ rm -rf "$stage"
 
 # Floored to the second, which can only widen the window by under a second.
 started_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+restart_epoch="$(date +%s)"
 set +e
 restart_out="$(agent-chat service restart 2>&1)"
 restart_code=$?
@@ -201,10 +209,25 @@ n="$(count broker_started)"
 check "exactly one broker_started since restart (found $n)" "$([ "$n" = 1 ] && echo 0 || echo 1)"
 n="$(count ledger_shadow_error)"
 check "no ledger_shadow_error since restart (found $n)" "$([ "$n" = 0 ] && echo 0 || echo 1)"
-if agent-chat agent ls --json | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' 2>/dev/null; then
-  check "agent ls --json parses" 0
+# Retries agent ls each second until its output parses or the deadline after the restart passes.
+# Prints the seconds since the restart either way; the deadline is checked after every attempt,
+# since one attempt against a hung broker can take the client's whole request timeout.
+ls_within_deadline() {
+  local waited
+  while :; do
+    if agent-chat agent ls --json 2>/dev/null | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' 2>/dev/null; then
+      echo $(($(date +%s) - restart_epoch))
+      return 0
+    fi
+    waited=$(($(date +%s) - restart_epoch))
+    [ "$waited" -lt "$ls_deadline" ] || { echo "$waited"; return 1; }
+    sleep 1
+  done
+}
+if took="$(ls_within_deadline)"; then
+  check "agent ls --json answers within ${ls_deadline}s of the restart (took ${took}s)" 0
 else
-  check "agent ls --json parses" 1
+  check "agent ls --json answers within ${ls_deadline}s of the restart (no answer after ${took}s)" 1
 fi
 
 if [ "$failed" -ne 0 ]; then
