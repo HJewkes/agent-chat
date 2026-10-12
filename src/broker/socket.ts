@@ -12,6 +12,7 @@ import {
   type ItemShape,
   type PermissionBehavior,
   type ServerMessage,
+  type SpawnResultFields,
   type WakeSource,
   wakeSource,
 } from '../protocol.js'
@@ -32,7 +33,12 @@ import {
 } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
-import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import {
+  Supervisor,
+  type SpawnOutcome,
+  type SpawnRequest,
+  type SupervisorOptions,
+} from '../agents/supervisor.js'
 import { asPlatform } from '../agents/teleport-config.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
@@ -197,6 +203,13 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
+  callerHost === undefined ? {} : { callerHost }
+/** CC-1059: a launch report's verdict, with only a string reason kept. */
+const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
+  ok: msg.ok === true,
+  ...(typeof msg.reason === 'string' ? { reason: msg.reason } : {}),
+})
 const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
   launchSeen === undefined ? {} : { launchSeen }
 
@@ -219,6 +232,39 @@ function launcherHello(
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
+const nonBlank = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+
+/** CC-1059: the spawn frame's launch-site fields, each dropped unless well formed. */
+const spawnSiteFields = (
+  msg: Extract<ClientMessage, { t: 'spawn' }>,
+): Pick<SpawnRequest, 'hostPlatform' | 'launchesHere' | 'host' | 'callerHome'> => {
+  const host = nonBlank(msg.host)
+  const callerHome = nonBlank(msg.callerHome)
+  return {
+    ...optionalPlatform(asPlatform(msg.hostPlatform)),
+    ...(msg.launchesHere === true ? { launchesHere: true } : {}),
+    ...(host === undefined ? {} : { host }),
+    ...(callerHome === undefined ? {} : { callerHome }),
+  }
+}
+
+/** A spawn outcome on the wire, for `spawn_result` and a remote spawn's `spawn_placed_result` alike. */
+const spawnResultFields = (outcome: SpawnOutcome, warnings: readonly string[] = []): SpawnResultFields => ({
+  ok: outcome.ok,
+  ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+  ...(outcome.name === undefined ? {} : { name: outcome.name }),
+  ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+  ...(outcome.code === undefined ? {} : { code: outcome.code }),
+  ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
+  ...(warnings.length === 0 ? {} : { warnings: [...warnings] }),
+  ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
+  ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
+  ...(outcome.base === undefined ? {} : { base: outcome.base }),
+  ...(outcome.launch === undefined ? {} : { launch: outcome.launch }),
+  ...(outcome.host === undefined ? {} : { host: outcome.host }),
+})
+
 /**
  * The socket transport. Everything here is about turning bytes into `core`
  * calls and results back into bytes; all state and every write to the log lives
@@ -235,6 +281,8 @@ export class SocketServer {
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
   /** CC-951: connected host launchers, each dropped with its connection. */
   private readonly hosts = new HostDirectory<Conn>()
+  /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
+  private readonly remoteSpawners = new Map<string, Conn>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -366,6 +414,8 @@ export class SocketServer {
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
+      ...optionalCallerHost(this.callerHostOf(conn, msg)),
+      ...spawnSiteFields(msg),
     })
     // Auto-subscribe the requester to its own spawn's lifecycle, so it learns
     // when the agent actually attaches without having to name it or poll
@@ -384,19 +434,44 @@ export class SocketServer {
     const stale = stalenessWarning(readMeta()?.buildMtime, newestBuildMtime())
     const warnings = [...(outcome.warnings ?? []), ...(stale === null ? [] : [stale])]
 
-    reply(conn, {
-      t: 'spawn_result',
-      ok: outcome.ok,
-      ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
-      ...(outcome.name === undefined ? {} : { name: outcome.name }),
-      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      ...(outcome.code === undefined ? {} : { code: outcome.code }),
-      ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
-      ...(warnings.length === 0 ? {} : { warnings }),
-      ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
-      ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
-      ...(outcome.base === undefined ? {} : { base: outcome.base }),
-    })
+    // CC-1059: only the connection handed the launch may report on it.
+    if (outcome.launch !== undefined && outcome.agentId !== undefined)
+      this.remoteSpawners.set(outcome.agentId, conn)
+    reply(conn, { t: 'spawn_result', ...spawnResultFields(outcome, warnings) })
+  }
+
+  /**
+   * CC-1059: the host a spawn's requester runs on. A session's comes from its registration, never
+   * its frame; only the CLI, which holds no registration, names its own.
+   */
+  private callerHostOf(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn' }>): string | undefined {
+    const entry = this.core.registry.entryFor(conn)
+    return entry === undefined ? nonBlank(msg.callerHost) : this.hostOf(conn, entry)
+  }
+
+  /** CC-1059: why `conn` may not report on `agentId`'s launch, or nothing when it is the requester. */
+  private remoteReportRefusal(conn: Conn, agentId: unknown): string | undefined {
+    if (typeof agentId === 'string' && this.remoteSpawners.get(agentId) === conn) return undefined
+    return `this connection was not handed the launch of ${String(agentId)}, so it cannot report on it`
+  }
+
+  private handleSpawnLaunched(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn_launched' }>): void {
+    const refusal = this.remoteReportRefusal(conn, msg.agentId)
+    if (refusal !== undefined) return reply(conn, { t: 'spawn_launched_result', ok: false, reason: refusal })
+    const result = this.supervisor.remoteSpawnReady(msg.agentId, reportOf(msg))
+    if (!result.ok) this.remoteSpawners.delete(msg.agentId)
+    reply(conn, { t: 'spawn_launched_result', ...result })
+  }
+
+  private async handleSpawnPlaced(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'spawn_placed' }>,
+  ): Promise<void> {
+    const refusal = this.remoteReportRefusal(conn, msg.agentId)
+    if (refusal !== undefined) return reply(conn, { t: 'spawn_placed_result', ok: false, reason: refusal })
+    this.remoteSpawners.delete(msg.agentId)
+    const outcome = await this.supervisor.remoteSpawnPlaced(msg.agentId, reportOf(msg))
+    reply(conn, { t: 'spawn_placed_result', ...spawnResultFields(outcome, outcome.warnings) })
   }
 
   /**
@@ -1778,6 +1853,11 @@ export class SocketServer {
         return
       case 'teleport_launched':
         return this.handleTeleportLaunched(conn, msg)
+      case 'spawn_launched':
+        return this.handleSpawnLaunched(conn, msg)
+      case 'spawn_placed':
+        void this.handleSpawnPlaced(conn, msg)
+        return
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
       case 'host_hello':
@@ -1853,6 +1933,12 @@ export class SocketServer {
     }
   }
 
+  /** CC-1059: a closed requester reports nothing more; its pending spawns expire on their own timers. */
+  private dropRemoteSpawners(conn: Conn): void {
+    for (const [agentId, owner] of this.remoteSpawners)
+      if (owner === conn) this.remoteSpawners.delete(agentId)
+  }
+
   onConnection(conn: Conn): void {
     const { core } = this
     const read = lineReader<ClientMessage>(
@@ -1864,6 +1950,7 @@ export class SocketServer {
     const drop = (): void => {
       this.dropHooks(conn)
       this.hosts.drop(conn)
+      this.dropRemoteSpawners(conn)
       core.drop(conn)
     }
     conn.on('close', drop)
