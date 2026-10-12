@@ -12,8 +12,20 @@ export const DARK_AFTER_MS = 5 * 60_000
 /** A seat dark for longer than this is never resumed (CC-326). */
 export const JOURNAL_LOOKBACK_DAYS = 7
 
-/** Resume attempts per dark episode (CC-326): a refusal, or a run that died mid-call, earns the next one. */
+/**
+ * Resume attempts per dark episode (CC-326): a refusal, or a run that died mid-call, earns the next one.
+ * CC-344: a refusal saying the seat is or may be live is not a try (see `seatIsLiveRefusal`).
+ */
 export const RESUME_TRY_CAP = 8
+
+/**
+ * CC-344: the broker refused because the seat is, or may be, live (`staleLiveRefusal` in
+ * supervisor.ts, `resume-session.ts`). Retrying cannot fix that, so it must not spend a try.
+ * Matches broker wording: a change there must change this.
+ */
+export function seatIsLiveRefusal(reason: string): boolean {
+  return / is already live[;:] | is marked live and the process table could not be read/.test(reason)
+}
 
 export const RESUME_MESSAGE =
   'Watchdog: your session deregistered with no teleport, so you were resumed. ' +

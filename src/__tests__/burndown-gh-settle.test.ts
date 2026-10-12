@@ -206,3 +206,58 @@ describe('the tick finishes a shepherding claim on a merged PR (CC-1074)', () =>
     fs.rmSync(repo, { recursive: true })
   })
 })
+
+/** CC-1150: Shepherd unreadable must not pin a claim whose PR GitHub reports merged. */
+describe('the tick settles a shepherding claim while Shepherd is unreadable (CC-1150)', () => {
+  const shepherding = (): Claim =>
+    claim({ phase: 'shepherding', pr: 'o/r#9', stalledReason: undefined, stallCode: undefined })
+  const observeWith = (prState: ReturnType<typeof claimPrReader>) =>
+    observe([shepherding()], exited, {
+      inboxSince: async () => [],
+      root: '/nowhere',
+      shepherdRows: () => undefined,
+      finalText: () => undefined,
+      spendCap: () => undefined,
+      prState,
+    })
+
+  it('records the merged PR state and finishes the claim', async () => {
+    const { observations, unread } = await observeWith(claimPrReader(fakeGh([pull()]).exec))
+
+    expect(unread).toEqual([])
+    const obs = [...observations.values()]
+    expect(obs).toEqual([{ prState: { kind: 'merged', pr: 'o/r#9', head: 'h9' } }])
+    expect(advance([shepherding()], observations, NOW)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'update', patch: expect.objectContaining({ phase: 'done' }) }),
+        expect.objectContaining({ kind: 'retire' }),
+      ]),
+    )
+  })
+
+  it.each([
+    ['an open PR', fakeGh([pull({ state: 'open', mergedAt: null })])],
+    ['a failed GitHub read', fakeGh(undefined)],
+  ])('keeps the claim unread on %s', async (_name, gh) => {
+    const { observations, unread } = await observeWith(claimPrReader(gh.exec))
+
+    expect(observations.size).toBe(0)
+    expect(unread).toEqual([expect.stringContaining("could not read Shepherd's status")])
+  })
+})
+
+describe('claimPrState tells a closed PR from none (CC-1150)', () => {
+  const closed = pull({ state: 'closed', mergedAt: null })
+
+  it('reports a recorded PR closed unmerged as closed', () => {
+    const found = claimPrState(claim({ pr: 'o/r#9' }), 'o/r', { pulls: [closed], complete: true })
+
+    expect(found).toEqual({ kind: 'closed', pr: 'o/r#9' })
+  })
+
+  it('reports a branch-only closed pull as none', () => {
+    const found = claimPrState(claim({ pr: undefined }), 'o/r', { pulls: [closed], complete: true })
+
+    expect(found).toEqual({ kind: 'none' })
+  })
+})

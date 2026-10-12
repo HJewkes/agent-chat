@@ -27,6 +27,10 @@ export const IMPLICIT_OWNS: readonly string[] = [
   'audit/spawn-doors.json',
   'README.md',
   '**/README.md',
+  '**/api/*.d.ts',
+  '**/package-lock.json',
+  '**/pnpm-lock.yaml',
+  '**/yarn.lock',
 ]
 
 export function outsideOwns(files: readonly string[], owns: readonly string[]): string[] {
