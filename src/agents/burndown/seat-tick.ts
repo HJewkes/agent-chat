@@ -32,6 +32,7 @@ import { diskPathExists } from './slice-repo.js'
 import { diskPlanReader } from './seed-slices.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
+import { readOffPlanIds } from './off-plan.js'
 import { readTasks, type TickConfig } from './source.js'
 
 /**
@@ -294,6 +295,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
+    offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
   })
   planned.refusals.push(
