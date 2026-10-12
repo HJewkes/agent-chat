@@ -1,0 +1,3 @@
+minimumReleaseAgeExclude:
+  - '@titan-design/agent-dispatch@0.7.0'
+  - '@titan-design/coordinator@0.4.2'

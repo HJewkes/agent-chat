@@ -10,7 +10,7 @@ import {
   type JobControl,
   type JobState,
 } from '../../mirror/launchd.js'
-import { stableNodePath } from '../../mirror/node-path.js'
+import { jobNodePath } from '../../mirror/node-path.js'
 import { mirrorJobEnv, renderMirrorPlist } from '../../mirror/plist.js'
 import { describeMirror, readMirrorFacts } from '../../mirror/status.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -36,7 +36,7 @@ function preflight(): string | null {
 export const renderPlist = (): string =>
   renderMirrorPlist({
     label: MIRROR_LABEL,
-    nodePath: stableNodePath(process.execPath),
+    nodePath: jobNodePath(),
     cliEntry: cliEntry(),
     logDir: mirrorLogDir(),
     env: mirrorJobEnv(process.env),

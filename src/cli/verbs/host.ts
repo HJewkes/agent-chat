@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
+import { jobNodePath } from '../../mirror/node-path.js'
 import { jobEnv, launchdJobRefusals, renderPlist, type JobSpec } from '../../mirror/plist.js'
 import { renderUnits, unitName } from '../../mirror/systemd-unit.js'
 import { shellQuote } from '@titan-design/agent-surface'
@@ -147,7 +148,7 @@ export const hostInstallVerb = defineVerb({
     return hostInstallReport({
       platform: process.platform,
       uid: process.getuid?.() ?? 0,
-      nodePath: process.execPath,
+      nodePath: jobNodePath(),
       cliEntry: cliEntry(),
       env: jobEnv(process.env),
       host,

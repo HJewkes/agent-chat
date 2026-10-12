@@ -23,3 +23,6 @@ export function stableNodePath(execPath: string, ops: NodePathFs = realFs): stri
     ops.exists(candidate) && ops.realpath(candidate) === target
   return candidates.find(sameBinary) ?? execPath
 }
+
+/** The node path every installed job (launchd plist, systemd unit) bakes in; one helper so no install verb misses it. */
+export const jobNodePath = (): string => stableNodePath(process.execPath)
