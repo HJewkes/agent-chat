@@ -392,6 +392,20 @@ export function parseProfile(
   }
 }
 
+const PROFILE_NAME_MAX = 128
+const CONTROL = /[\u0000-\u001f\u007f]/
+
+/** CC-1059: a name becomes a path under the profiles dir, so one that could leave it is refused. */
+export function profileNameRefusal(name: string): string | undefined {
+  const plain =
+    name !== '' &&
+    name.length <= PROFILE_NAME_MAX &&
+    !/[/\\]/.test(name) &&
+    !name.includes('..') &&
+    !CONTROL.test(name)
+  return plain ? undefined : `the profile name ${JSON.stringify(name)} is not a plain name`
+}
+
 /**
  * Resolve a profile BY NAME ONLY. A spawn request names a profile; it never
  * carries a profile body. That single rule is what keeps a spawn request from
@@ -399,6 +413,8 @@ export function parseProfile(
  * variant of this function that takes a profile object.
  */
 export function loadProfile(name: string, dir: string = profilesDir()): AgentProfile | { error: string } {
+  const refused = profileNameRefusal(name)
+  if (refused !== undefined) return { error: refused }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
     let parsed: unknown

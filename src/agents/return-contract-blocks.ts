@@ -52,6 +52,15 @@ export const MUTANT_RULE =
   '`git checkout -- <literal path>`. Never put `$VAR`, a glob on a variable or `$(...)` in a write ' +
   'target: it raises a permission prompt nobody answers.'
 
+/**
+ * CC-713: a reviewer piped a bypass probe to bash from a shared main checkout, and it ran a real
+ * `git push origin HEAD:main`. The burndown reviewer brief and the bd-reviewer prelude carry it too.
+ */
+export const PROBE_SANDBOX_RULE =
+  'Run a probe that may use git, network or destructive commands only in a scratch repo under ' +
+  '$TMPDIR/<your name> whose origin is a local bare repo (git init --bare); never in a real ' +
+  'checkout, never against a real remote, never piped to a shell from a real checkout.'
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
@@ -129,7 +138,7 @@ const REVIEWER = [
   '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
   '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
   '`Earlier findings: none found`.',
-  'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
+  PROBE_SANDBOX_RULE,
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
   MUTANT_RULE,
   SHIM_RULE,

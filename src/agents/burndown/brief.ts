@@ -5,6 +5,7 @@
  * (relay R-63) so a task cannot steer its own review.
  */
 
+import { PROBE_SANDBOX_RULE } from '../return-contract-blocks.js'
 import { MAX_SLICE_POINTS } from './slice-lint.js'
 import type { StallCode } from './stall-code.js'
 
@@ -198,12 +199,13 @@ function workerScope(t: TaskBrief): string {
 
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
- * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.4 kB),
- * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence.
+ * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.6 kB),
+ * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence, and
+ * CC-713 the reviewer budget by the 264-byte probe-sandbox rule.
  */
 export const WORKER_BRIEF_MAX_BYTES = 12_000
 export const PLANNER_BRIEF_MAX_BYTES = 11_300
-export const REVIEWER_BRIEF_MAX_BYTES = 2_500
+export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
   return [
@@ -401,7 +403,7 @@ export function reviewerBrief(r: ReviewerBrief): string {
       'Report what changed, whether it does what the branch appears to intend, correctness and security ' +
       'concerns, and anything a human must decide before merge.',
     '## Constraints',
-    'Do not modify the code. You are unattended: never wait for an answer.',
+    `Do not modify the code. You are unattended: never wait for an answer. ${PROBE_SANDBOX_RULE}`,
     ...verifyBlock(r.verifySteps),
     '## Report',
     reportContract(r.reportTo, '`Verdict: APPROVE | CHANGES`'),
