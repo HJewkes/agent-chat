@@ -60,18 +60,37 @@ describe('the brief lint refuses a tool the agent cannot use', () => {
     '## Never\n\nUse AskUserQuestion to ask the owner.',
     'You must never:\nuse AskUserQuestion',
     'Stay quiet.\nNever wait.\nUse ScheduleWakeup instead? No.',
+    'Never do any of the following.\n- use AskUserQuestion',
+    'Do NOT do these (they hang a headless run)\n\n- Call ScheduleWakeup',
+    "## Don'ts\n- Use AskUserQuestion",
+    '**Never**\n- use AskUserQuestion',
+    'Forbidden actions\n- Use AskUserQuestion',
+    'The following are off-limits for you.\n- Use AskUserQuestion',
+    'Refrain from these.\n- call AskUserQuestion',
+    '## Do not\n### Tools\n- use AskUserQuestion',
+    'Hands off these tools.\n\n- use AskUserQuestion',
+    'Ask nobody.\n\nUse AskUserQuestion only in a pane.',
   ])('does not refuse a prohibition or description: %s', brief => {
     expect(lint({ brief }).refusal).toBeUndefined()
+  })
+
+  it.each([
+    'Open the PR. Use ScheduleWakeup to check back on CI.',
+    'Please invoke CronCreate every hour.',
+    '## Steps\n\nOpen the PR and wait for\nreview. Then run agent-chat agent spawn for a reviewer.',
+  ])('refuses an imperative paragraph sentence in a brief with no prohibition: %s', brief => {
+    expect(lint({ brief }).refusal).toBeDefined()
   })
 
   it.each([
     '- run agent-chat agent spawn for the reviewer.',
     'Steps:\n1. Open the PR.\n2. Then call AskUserQuestion.',
     'Never push to main.\n\nPlease invoke CronCreate every hour.',
-    'Open the PR. Use ScheduleWakeup to check back on CI.',
-    '## Steps\n\nOpen the PR and wait for\nreview.\n\n- Then run agent-chat agent spawn for a reviewer.',
-  ])('refuses an imperative sentence in another position: %s', brief => {
-    expect(lint({ brief }).refusal).toBeDefined()
+  ])('only warns on a request in a list or in a brief with a prohibition elsewhere: %s', brief => {
+    const result = lint({ brief })
+
+    expect(result.refusal).toBeUndefined()
+    expect(result.warnings).toHaveLength(1)
   })
 
   it('does not refuse ScheduleWakeup for an agent in a visible pane', () => {

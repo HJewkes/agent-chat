@@ -30,9 +30,9 @@ export interface BriefLint {
 /** A headless agent exits at turn end, so a wakeup it schedules never fires. */
 const HEADLESS_UNUSABLE = ['ScheduleWakeup', 'CronCreate']
 
-/** Any of these anywhere in a sentence, or in a heading over it, keeps it from being refused. */
+/** Prohibition language. Anywhere in a brief, it rules out every refusal; in a block, it quiets the warning. */
 const NEGATION =
-  /\b(?:never|not|cannot|dont|no|nobody|nothing|without|avoid\w*|instead|rather|forbid\w*|prohibit\w*|den(?:y|ies|ied)|disallow\w*)\b|n't\b/i
+  /\b(?:never|not|cannot|dont|donts|no|none|nobody|nothing|without|avoid\w*|instead|rather|forbid\w*|prohibit\w*|den(?:y|ies|ied)|disallow\w*|refrain\w*|off-limits|banned)\b|n['\u2019]t/i
 
 const SYNTHETIC_LINE = /synthetic/i
 
@@ -56,10 +56,10 @@ interface Unusable {
   why: string
 }
 
-/** A paragraph or list item, its wrapped lines joined, and whether a heading over it negates it. */
+/** A paragraph or list item, with its wrapped lines joined. */
 interface Block {
   text: string
-  governed: boolean
+  listItem: boolean
 }
 
 /** A Markdown heading, or a line ending in a colon that introduces what follows. */
@@ -67,23 +67,17 @@ const HEADING = /^#+\s|:$/
 
 const LIST_ITEM = /^(?:[-*+>]|\d+[.)])\s+/
 
-/**
- * The unit a refusal is decided on. A newline ends a block only at a blank
- * line, a heading or a new list item, so a hard-wrapped sentence or list item
- * stays whole. A negating heading governs every block until the next heading.
- */
+/** A newline ends a block only at a blank line, a heading or a new list item, so a hard-wrapped sentence stays whole. */
 function blocksOf(brief: string): Block[] {
   const blocks: Block[] = []
-  let governed = false
   let current: Block | undefined
   for (const line of brief.split('\n').map(l => l.trim())) {
     if (line === '') current = undefined
     else if (HEADING.test(line)) {
-      governed = NEGATION.test(line)
       current = undefined
-      blocks.push({ text: line, governed: false })
+      blocks.push({ text: line, listItem: false })
     } else if (current !== undefined && !LIST_ITEM.test(line)) current.text += ` ${line}`
-    else blocks.push((current = { text: line.replace(LIST_ITEM, ''), governed }))
+    else blocks.push((current = { text: line.replace(LIST_ITEM, ''), listItem: LIST_ITEM.test(line) }))
   }
   return blocks
 }
@@ -92,12 +86,12 @@ function blocksOf(brief: string): Block[] {
 const SENTENCE_END = /(?<!\b(?:e\.g|i\.e|etc|vs|cf))[.!]+(?=\s+[A-Z]|\s*$)/
 
 /**
- * How a brief names a term. A refusal blocks a spawn, so `directive` is kept
- * narrow: a sentence that opens with "use", "run", "call" or "invoke" on the
- * term, in a block with no negation anywhere in it or in a heading over it.
- * Splitting a block into sentences can then only miss a request, never turn a
- * prohibition into one. Any other un-negated naming is a `mention`, which only
- * warns.
+ * How a brief names a term. A refusal blocks a spawn, and no parse of free
+ * English can say which intro, heading or aside governs a verb, so `directive`
+ * needs positive evidence instead: the brief has no prohibition language
+ * anywhere, and a plain paragraph sentence (never a list item, whose meaning
+ * rests on an intro line) opens with "use", "run", "call" or "invoke" on the
+ * term. Every other un-negated naming is a `mention`, which only warns.
  */
 type Ask = 'directive' | 'mention' | undefined
 
@@ -108,10 +102,12 @@ function askOf(brief: string, term: string): Ask {
   const name = `${escape(term)}(?![\\w-])`
   const mention = new RegExp(`(?<![\\w-])${name}`, 'i')
   const directive = new RegExp(`^${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
+  const refusable = !NEGATION.test(brief)
   let ask: Ask
-  for (const { text, governed } of blocksOf(brief)) {
-    if (governed || NEGATION.test(text) || !mention.test(text)) continue
-    if (text.split(SENTENCE_END).some(sentence => directive.test(sentence.trim()))) return 'directive'
+  for (const { text, listItem } of blocksOf(brief)) {
+    if (NEGATION.test(text) || !mention.test(text)) continue
+    const asked = refusable && !listItem && text.split(SENTENCE_END).some(s => directive.test(s.trim()))
+    if (asked) return 'directive'
     ask = 'mention'
   }
   return ask
