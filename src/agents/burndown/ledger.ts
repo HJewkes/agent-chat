@@ -34,6 +34,10 @@ export type Phase = (typeof PHASES)[number]
 export const AGENT_PHASES = ['planning', 'implementing', 'reviewing'] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
+/** CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. */
+const StackedOn = z.object({ taskId: z.string(), slice: z.string(), pr: z.string(), branch: z.string() })
+export type StackedOn = z.infer<typeof StackedOn>
+
 const Claim = z.object({
   taskId: z.string(),
   initiative: z.string(),
@@ -47,6 +51,8 @@ const Claim = z.object({
   slice: z.string().optional(),
   /** Slices of the same task that must reach `done` first. */
   dependsOn: z.array(z.string()).optional(),
+  /** CC-1158: set when the slice was admitted before its one unmet `dependsOn` merged, stacked on that parent. */
+  stackedOn: StackedOn.optional(),
   /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
   owns: z.array(z.string()).optional(),
   /** The repo the slice's plan names; it outranks the task's tags (CC-946). */
@@ -383,21 +389,29 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
+/** CC-1158: the parent a queued slice may stack on for its one unmet dependency `dep`, else undefined. */
+export type StackPredicate = (child: Claim, dep: string) => StackedOn | undefined
+
 /**
  * Queued slices whose dependencies are all done or released, whose task is not in `held`, and that no
- * hand-dispatched PR is linked to (CC-978), in ledger order.
+ * hand-dispatched PR is linked to (CC-978), in ledger order. With `stack` (CC-1158), a slice with exactly
+ * one unmet dependency is ready too when `stack` admits it, and comes back carrying `stackedOn`.
  */
-export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
+export function readySlices(
+  ledger: Ledger,
+  held: ReadonlyMap<string, unknown> = new Map(),
+  stack?: StackPredicate,
+): Claim[] {
   const met = (taskId: string, slice: string): boolean =>
     ledger.slicesReleased?.[taskId]?.includes(slice) === true ||
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
-  return ledger.claims.filter(
-    c =>
-      c.phase === 'queued' &&
-      c.pr === undefined &&
-      !held.has(c.taskId) &&
-      (c.dependsOn ?? []).every(dep => met(c.taskId, dep)),
-  )
+  return ledger.claims.flatMap(c => {
+    if (c.phase !== 'queued' || c.pr !== undefined || held.has(c.taskId)) return []
+    const unmet = (c.dependsOn ?? []).filter(dep => !met(c.taskId, dep))
+    if (unmet.length === 0) return [c]
+    const parent = unmet.length === 1 && stack !== undefined ? stack(c, unmet[0] as string) : undefined
+    return parent === undefined ? [] : [{ ...c, stackedOn: parent }]
+  })
 }
 
 export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number }
