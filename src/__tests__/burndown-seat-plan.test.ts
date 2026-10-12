@@ -297,7 +297,7 @@ describe('planSeat refusals', () => {
     expect(one('A-1', {}, {}, { ledger }).dispatch).toHaveLength(1)
   })
 
-  describe('implementing claims with no live agent and no PR (CC-978)', () => {
+  describe('held claims with no live agent (CC-978, CC-1098)', () => {
     const ledger: Ledger = {
       ...EMPTY_LEDGER,
       claims: [
@@ -308,12 +308,66 @@ describe('planSeat refusals', () => {
     }
     const liveAgent = (name: string | undefined) => name === 'sa-a-7'
 
-    it('leaves a dead claim with no PR out of the cap, and counts a live one and one with a PR', () => {
+    it('leaves a dead claim out of the cap even with its PR open, and counts the live one', () => {
       const plan = one('A-1', {}, {}, { ledger, liveAgent })
 
+      expect(plan.dispatch).toHaveLength(1)
+      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 4)')
+    })
+
+    it("refuses at the cap with the ledger's count beside the live one", () => {
+      const full = { ...ledger, claims: [...ledger.claims, claim('A-6', { agentName: 'sa-a-6' })] }
+      const plan = one(
+        'A-1',
+        {},
+        {},
+        { ledger: full, liveAgent: name => name === 'sa-a-7' || name === 'sa-a-6' },
+      )
+
       expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
-      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 3)')
-      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 3)')
+      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 4)')
+    })
+
+    it("keeps a dead claim's task claimed, so the tick does not re-pick it", () => {
+      expect(one('A-9', {}, {}, { ledger, liveAgent }).dispatch).toEqual([])
+    })
+
+    it('counts a spawning claim whose agent has no row yet', () => {
+      const spawning = claim('A-6', { phase: 'spawning', nextPhase: 'implementing', agentName: 'sa-a-6' })
+      const plan = one(
+        'A-1',
+        {},
+        {},
+        { ledger: { ...ledger, claims: [...ledger.claims, spawning] }, liveAgent },
+      )
+
+      expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    })
+
+    it('leaves a dead planning claim out of the planner cap', () => {
+      const planning = {
+        ...EMPTY_LEDGER,
+        claims: [claim('A-7', { phase: 'planning', agentName: 'sa-a-7p' })],
+      }
+      const plan = one('A-1', {}, {}, { ledger: planning, liveAgent })
+
+      expect(plan.notes).toContain('seat seat-a planners used 0 (ledger 1)')
+    })
+
+    it('flags a ledger more than 3 ahead of the live agents', () => {
+      const dead = (n: number) => claim(`A-${n}`, { agentName: `sa-a-${n}` })
+      const stale = { ...EMPTY_LEDGER, claims: [dead(2), dead(3), dead(4), dead(5)] }
+
+      const plan = one('A-1', {}, {}, { ledger: stale, liveAgent: () => false })
+      const within = one(
+        'A-1',
+        {},
+        {},
+        { ledger: { ...stale, claims: stale.claims.slice(1) }, liveAgent: () => false },
+      )
+
+      expect(plan.notes).toContain('seat seat-a implementers used 1 (ledger 5) MISMATCH ledger 5 vs 1 live')
+      expect(within.notes).toContain('seat seat-a implementers used 1 (ledger 4)')
     })
 
     it('dispatches into the slot a dead claim no longer holds', () => {

@@ -116,6 +116,14 @@ describe('brief writer brief (CC-939)', () => {
     expect(brief).toContain('Tagged: brief:proposed=<date>')
   })
 
+  it('states the security slice cap and the parser-versus-wiring split in both plan briefs (TP-2395)', () => {
+    for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
+      expect(brief).toContain('kind security or a guard area')
+      expect(brief).toContain('400 non-generated lines')
+      expect(brief).toContain('apart from its wiring')
+    }
+  })
+
   it('fits PLANNER_BRIEF_MAX_BYTES for an oversized task', () => {
     expect(bytes(briefWriterBrief(largest()))).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)
   })

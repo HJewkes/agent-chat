@@ -198,10 +198,11 @@ function workerScope(t: TaskBrief): string {
 
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
- * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.2 kB, reviewer 2.4 kB), plus headroom.
+ * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.4 kB),
+ * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence.
  */
 export const WORKER_BRIEF_MAX_BYTES = 12_000
-export const PLANNER_BRIEF_MAX_BYTES = 11_000
+export const PLANNER_BRIEF_MAX_BYTES = 11_300
 export const REVIEWER_BRIEF_MAX_BYTES = 2_500
 
 export function workerBrief(t: TaskBrief): string {
@@ -235,7 +236,9 @@ function slicesRequirement(): string {
     'and depends only on slices in the block, without cycles. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
-    'The tick lints this block; a plan without it, or failing the lint, stalls.'
+    'The tick lints this block; a plan without it, or failing the lint, stalls. ' +
+    'For kind security or a guard area (tool-guard, egress-scan, auth, credentials, allow/deny lists), keep each slice under about 400 non-generated lines ' +
+    'and put a parser, matcher or list change in its own slice, apart from its wiring; Shepherd flags a larger one at open.'
   )
 }
 

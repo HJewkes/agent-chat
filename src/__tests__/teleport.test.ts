@@ -267,6 +267,34 @@ describe('what teleport refuses before it commits to anything', () => {
     expect((await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })).ok).toBe(true)
   })
 
+  /** CC-1089: the successor keeps the name, so a question it is told about is not abandoned. */
+  it('teleports with two open questions when the handoff names both ids', async () => {
+    const agentId = await spawnAgent()
+    const first = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+    const second = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'tag v2?' })
+    const handoff = `Open asks: ${first.msgId} (merge #12?) and ${second.msgId} (tag v2?)`
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff })
+
+    expect(result.ok).toBe(true)
+    const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
+    expect(row?.meta.questions).toBe(`${first.msgId},${second.msgId}`)
+  })
+
+  it('refuses naming only the question id the handoff leaves out', async () => {
+    const agentId = await spawnAgent()
+    const named = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+    const missing = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'tag v2?' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: `asked ${named.msgId}` })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(missing.msgId)
+    expect(result.reason).toContain('tag v2?')
+    expect(result.reason).not.toContain(named.msgId)
+    expect(kinds()).not.toContain('agent_handoff')
+  })
+
   /** Truncation would drop the tail, and the tail is what was already tried. */
   it('refuses an oversized handoff rather than truncating it', async () => {
     const agentId = await spawnAgent()
@@ -441,6 +469,23 @@ describe('the descendant', () => {
     expect(stdin.startsWith('the handoff\n\n---\n\n## Broker appendix')).toBe(true)
     expect(stdin).toContain('- scout-helper (profile explorer, live)')
     expect(stdin).toContain('Inbox: 1 message(s) arrived for scout')
+    expect(stdin).toContain('Open chat_ask questions: none.')
+  })
+
+  it('shows the successor a restated question answered while it was starting (CC-1089)', async () => {
+    const agentId = await spawnAgent()
+    const { msgId } = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+
+    const stop = core.onAppend(row => {
+      if (row.kind === 'agent_handoff') core.answer(msgId, 'yes, merge it', 'cli')
+    })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: `open ask ${msgId}` })
+    stop()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(stdin).toContain(`Answered while you were starting: ${msgId}: yes, merge it`)
     expect(stdin).toContain('Open chat_ask questions: none.')
   })
 

@@ -143,6 +143,9 @@ export interface EventStore {
   /** The questions this session still has outstanding, not just how many. */
   openQuestions(actor: string): QueueItem[]
 
+  /** CC-1089: answers and decisions to `refs` written after row `afterId`, oldest first. */
+  answersTo(refs: string[], afterId: number): DeliveredMessage[]
+
   /** Peer traffic that landed in `name`'s inbox since `since`. */
   inboxCountSince(name: string, since: number): number
 

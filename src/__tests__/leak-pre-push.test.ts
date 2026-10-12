@@ -16,6 +16,7 @@ import {
   termsFileFor,
   writeGitHooks,
 } from '../leak-guard/hooks-dir.js'
+import { ownToolDirs, withOwnTools } from '../leak-guard/scan-path.js'
 
 const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-prepush-')))
 
@@ -96,14 +97,14 @@ describe('hookScripts', () => {
     expect(shim).toContain('titan-egress-scan pre-push "$1" "$push_url"')
   })
 
-  it('bakes in the passwd home and only the absolute entries of the broker PATH', () => {
+  it("bakes in the passwd home and only the absolute entries of the broker PATH, then agent-chat's own tool dirs", () => {
     vi.stubEnv('HOME', HOME)
     vi.stubEnv('PATH', `/opt/zq7/bin:relative/bin:.:${SYSTEM_PATH}`)
 
     const inputs = defaultScanInputs()
 
     expect(inputs.home).toBe(os.userInfo().homedir)
-    expect(inputs.path).toBe(`/opt/zq7/bin:${SYSTEM_PATH}`)
+    expect(inputs.path).toBe(withOwnTools(`/opt/zq7/bin:${SYSTEM_PATH}`, ownToolDirs()))
   })
 
   it('writes executable shims for pre-push and the gating commit hooks only', () => {

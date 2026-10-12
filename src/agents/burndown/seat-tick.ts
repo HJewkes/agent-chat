@@ -3,9 +3,9 @@ import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
-import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
+import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
-import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import { chargesOn, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
@@ -30,9 +30,12 @@ import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
 import { diskPlanReader } from './seed-slices.js'
+import { readPriorRouter } from './prior-route.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
+import { readOffPlanIds } from './off-plan.js'
 import { readTasks, type TickConfig } from './source.js'
+import { poolSamples, seatSpend } from './spend-meter.js'
 
 /**
  * CC-205 slice 4: seats mode for one tick. Loads the policy once, samples each
@@ -40,9 +43,6 @@ import { readTasks, type TickConfig } from './source.js'
  * cannot be loaded or planned is skipped with a reason; the others still run.
  * CLI-only.
  */
-
-/** Covers the 07:00 day start and the 12-hour run, with slack for a late tick. */
-export const SAMPLE_KEEP_MS = 26 * 3_600_000
 
 export interface SeatTickDeps {
   autonomyRoot: string
@@ -90,16 +90,18 @@ function sampled(
 ) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
-  // CC-1080: a drop across pools is a different account's reading, not a seven_day reset; an unkeyed ledger's samples are unknowable, so dropped.
-  const samePool = previous?.configDir === dispatch.configDir
-  const kept = (samePool ? (previous?.samples ?? []) : []).filter(
-    s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs,
-  )
+  const kept = poolSamples(previous, dispatch.configDir, nowMs)
   const sample: SevenDaySample[] =
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
+  const { history, runStart } = seatSpend({
+    seatState: previous,
+    configDir: dispatch.configDir,
+    saved,
+    sevenDay: reading?.sevenDay,
+    now: deps.now,
+  })
   const marks = {
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
     ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
@@ -108,32 +110,16 @@ function sampled(
     reading,
     resetsAt,
     history,
+    runStart,
     state: { samples: [...kept, ...sample], configDir: dispatch.configDir, ...marks },
   }
-}
-
-/**
- * The ledger's samples when they hold a reading at or before the run start, as before CC-782, else the
- * watchdog meters alone. Never both: a meter's samples are estimates that never drop, so sorted among
- * real readings across a seven_day reset, `pointsSpent` would count the pre-reset readings again.
- */
-function oneSource(
-  kept: SevenDaySample[],
-  saved: SavedMeters,
-  sevenDay: number,
-  now: Date,
-): SevenDaySample[] {
-  const { history, runStart } = meterSpend(saved, sevenDay, now)
-  if (kept.some(s => s.at <= runStart)) return kept
-  return history.length === 0 ? kept : history
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
   const saved = usableMeters(deps.meters(name, dispatch.pool.name))
-  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
-  const recordedAt = saved.run?.since
+  const { reading, resetsAt, history, runStart, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
   const { pool, spend } = pacedCaps({
     pacing: seat.pacing,
     ...seatBudget(policy.charter, seat),
@@ -150,7 +136,7 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
       spend,
       reading,
       history,
-      runStartAt: runStartAt(deps.now, recordedAt === undefined ? {} : { recordedAt }),
+      runStartAt: runStart,
       ctx: { now: deps.now },
     },
     state,
@@ -173,6 +159,9 @@ export function loadSeats(names: readonly string[], ledger: Ledger, deps: SeatTi
   return result
 }
 
+type BriefDeps = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'> &
+  Partial<Pick<TickConfig, 'priorRouting'>>
+
 export interface SeatPlanDeps {
   ledger: Ledger
   initiatives: readonly Initiative[]
@@ -186,8 +175,11 @@ export interface SeatPlanDeps {
   lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
-  /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /**
+   * The config's per-seat brief gates (CC-925), hand reserves (CC-936) and prior routing (CC-638); absent, every
+   * gate is off, no slot is reserved and no workflow table is read.
+   */
+  brief?: BriefDeps
   /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
   scopeTagAliases: TickConfig['scopeTagAliases']
 }
@@ -275,6 +267,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
   const scope = scopeInputs(seat, deps.scopeTagAliases)
+  const prior = priorRouterOf(deps, seat)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -294,8 +287,11 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
+    offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
+    ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
+  if (prior.note !== undefined) planned.notes.push(prior.note)
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
       initiative: '-',
@@ -369,12 +365,23 @@ function orderInputs(
   }
 }
 
-/** The config fields the brief gate and hand reserve read; the tick and `plan --seat` both pass these. */
+/** The config fields the brief gate, hand reserve and prior routing read; the tick and `plan --seat` both pass these. */
 export function briefDepsOf(
-  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>,
-): NonNullable<SeatPlanDeps['brief']> {
-  const { briefGate, briefMaxAgeDays, maxAgents, handReserve } = config
-  return { briefGate, briefMaxAgeDays, maxAgents, handReserve }
+  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'priorRouting'>,
+): BriefDeps {
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting }
+}
+
+/** CC-638: the seat's prior router from its autonomy root's workflow table; `off` or absent reads nothing. */
+function priorRouterOf({ brief }: SeatPlanDeps, seat: LoadedSeat): ReturnType<typeof readPriorRouter> {
+  const mode = brief?.priorRouting ?? 'off'
+  if (mode === 'off') return {}
+  if (seat.autonomyRoot === undefined)
+    return {
+      note: `prior routing ${mode}: seat ${seat.dispatch.seat} has no autonomy root; routing as today`,
+    }
+  return readPriorRouter(mode, seat.autonomyRoot)
 }
 
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */

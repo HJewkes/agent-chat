@@ -64,6 +64,24 @@ dispatches. It is shadow only: `route` and the tick's dispatch do not change. A 
 (an unknown class, prior, profile or ladder value, a misspelt key, or no fallback prior) is not used, and a
 `workflow table: <problems>` line says why. With no table file the output is unchanged.
 
+### Prior routing (CC-638)
+
+The tick config key `priorRouting` (`off`, `shadow` or `on`; default `off`) lets the same prior pick the
+implementer profile a seat's tick dispatches. It applies to implementer-routed task rows (classified by the
+task's tags, estimate, `done_when` and the union of its plan's slice `owns`) and to queued slices (by the
+slice's own `owns` and points). Planner, briefer and triage rows, fix rounds and resumes are unchanged, and a
+prior whose class names a profile other than `bd-implementer` or `bd-implementer-lite` keeps today's.
+
+- `off`: the workflow table is not read and the plan is today's.
+- `shadow`: dispatches as today and notes `would-route <initiative> <id>[ slice <n>] (seat <s>): <today> ->
+<profile> (prior <prior>: <reason>)` for each dispatch `on` would change.
+- `on`: dispatches with the prior's profile and notes the same line as `route-change ...`. The pool gate sees the
+  routed profile, so a row routed to `bd-implementer` waits under a sonnet-only pool.
+
+Under `shadow` or `on` with no table at `<autonomy-root>/workflow/shape-v1.yml`, or one that fails its lint,
+the seat routes as today and notes `prior routing <mode>: no workflow table at <path>; routing as today` or
+`prior routing <mode>: workflow table: <problems>; routing as today`.
+
 `agent-chat seats tick <seat> --dry-run` prints the same plan under a `seat <seat> tick at <time>
 (dry run)` header (CC-889). It runs only with `--dry-run`. The timer's tick advances every held
 claim, and the respawn ladder's first rung spans two ticks, so a live tick between timer ticks
@@ -348,6 +366,25 @@ and `enable --now` on the timer; the timer's elapsed `OnBootSec` starts one tick
 launchd's kickstart does. `uninstall` runs `disable --now`, removes the units and reloads;
 `job-status` reads `systemctl --user show`. The units only fire while the user manager runs, so
 a server needs `loginctl enable-linger`.
+
+## Event-driven ticks (CC-1111)
+
+The timer is the backstop, not the only trigger. When an agent the tick spawned exits, or is
+retired because `burndown release` dropped its claim, the broker starts one detached
+`burndown tick --once` 30 seconds later. Exits inside that window share the tick. The ledger
+lock the timer's tick takes is the single-flight lock: while any tick holds it, the broker
+defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
+under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
+`burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
+Brokers on a temp-dir home never kick.
+
+To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
+prints the median wait from a burndown implementer's exit to the next tick that dispatched.
+It reads `events.db` and `burndown-ticks.jsonl` and writes nothing. Each exit takes one
+dispatch from the first tick at or after it. A tick row's time is the tick's start, so the
+wait leaves out planning time. An exit with no dispatch within `--max-wait-min` (default 30)
+is reported as unmatched and left out of the median, since that slot waited for ready work,
+not for a tick.
 
 ## What each ledger phase means
 

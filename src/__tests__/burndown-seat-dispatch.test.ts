@@ -60,7 +60,7 @@ describe('resolveSeatDispatch', () => {
       repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
       nonGitRepos: [],
       caps: { implementers: 4, reviewers: 2, planners: 1 },
-      worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
+      worktrees: { perRepoPerSeat: 4, capName: 'concurrency.implementers', leftFreePerRepo: 2 },
       excludedTags: ['human-only', 'blocked'],
       grants: ['grant-merge-alpha'],
     })
@@ -181,11 +181,8 @@ describe('resolveSeatDispatch', () => {
     expect(() => resolveSeatDispatch(policy, 'seat-a', HOME)).toThrow(/worktreeOwnerReserve/)
   })
 
-  it("caps active trees at the seat's implementers when worktrees_per_repo_per_seat is absent", () => {
-    const { worktrees_per_repo_per_seat: _cap, ...defaults } = policy.charter.defaults
-    const uncapped = { ...policy, charter: { ...policy.charter, defaults } }
-
-    const dispatch = resolveSeatDispatch(uncapped, 'seat-a', HOME)
+  it("caps active trees at the seat's implementers even when the charter sets a lower worktree ceiling", () => {
+    const dispatch = resolveSeatDispatch(policy, 'seat-a', HOME)
 
     expect(dispatch.worktrees).toEqual({
       perRepoPerSeat: 4,
@@ -194,29 +191,11 @@ describe('resolveSeatDispatch', () => {
     })
   })
 
-  it('keeps implementers as the cap when worktrees_per_repo_per_seat is above them', () => {
-    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 12 }
-    const loose = { ...policy, charter: { ...policy.charter, defaults } }
+  it.each([0, 12])('ignores a charter worktrees_per_repo_per_seat of %d', ceiling => {
+    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: ceiling }
+    const withKey = { ...policy, charter: { ...policy.charter, defaults } }
 
-    const dispatch = resolveSeatDispatch(loose, 'seat-a', HOME)
-
-    expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 4, capName: 'concurrency.implementers' })
-  })
-
-  it('honours a worktrees_per_repo_per_seat ceiling of 0 over the implementers', () => {
-    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 0 }
-    const closed = { ...policy, charter: { ...policy.charter, defaults } }
-
-    const dispatch = resolveSeatDispatch(closed, 'seat-a', HOME)
-
-    expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 0, capName: 'worktrees_per_repo_per_seat' })
-  })
-
-  it('names implementers as the cap when the ceiling equals them', () => {
-    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 4 }
-    const level = { ...policy, charter: { ...policy.charter, defaults } }
-
-    const dispatch = resolveSeatDispatch(level, 'seat-a', HOME)
+    const dispatch = resolveSeatDispatch(withKey, 'seat-a', HOME)
 
     expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 4, capName: 'concurrency.implementers' })
   })

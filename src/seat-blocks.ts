@@ -4,6 +4,9 @@ import type { LoggedEventRow } from './broker/event-store.js'
 /** CC-1056: the tool that stops a seat until a human answers. */
 export const BLOCKING_TOOL = 'AskUserQuestion'
 
+/** CC-1092: why a seat's pane question is denied, naming what to do instead. */
+export const PANE_QUESTION_DENIAL = 'use chat_ask with door and default'
+
 /** One activity row per session per this long, so a busy seat does not flood the log. */
 export const ACTIVITY_INTERVAL_MS = 60_000
 
@@ -36,16 +39,27 @@ export function parseToolHook(raw: string): HookInput | undefined {
   }
 }
 
+/** CC-1092: a seat never opens a pane question, attended or not; every other session keeps it. */
+export function paneQuestionVerdict(
+  name: string,
+  toolName: string,
+  isSeat: (name: string) => boolean,
+): 'deny' | 'allow' {
+  return toolName === BLOCKING_TOOL && isSeat(name) ? 'deny' : 'allow'
+}
+
 /**
  * Writes the row a tool call earns. `seat` is the registered seat's name; a session with none
  * writes nothing. A blocking tool writes blocked/unblocked; any other call writes at most one
- * activity row per session per minute.
+ * activity row per session per minute. A `denied` question never opens, so it writes
+ * `seat_ask_denied` and no block.
  */
 export function recordToolCall(
   log: Pick<EventLog, 'append' | 'lastAgentEventAt' | 'lastSeatBlockKind'>,
   seat: string | undefined,
   phase: HookPhase,
   input: HookInput,
+  denied = false,
 ): void {
   if (seat === undefined || seat === '') return
   const { sessionId, toolName } = input
@@ -60,6 +74,10 @@ export function recordToolCall(
     return
   }
   if (toolName === BLOCKING_TOOL) {
+    if (denied && phase === 'pre') {
+      log.append({ kind: 'seat_ask_denied', actor: seat, ref: sessionId })
+      return
+    }
     log.append({
       kind: phase === 'pre' ? 'seat_blocked' : 'seat_unblocked',
       actor: seat,

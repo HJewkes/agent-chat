@@ -323,6 +323,8 @@ export const EVENT_KINDS = [
   'seat_blocked',
   'seat_unblocked',
   'seat_activity',
+  // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
+  'seat_ask_denied',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -1252,6 +1254,7 @@ export type ServerMessage =
         | 'seat_budget_stop'
         | 'seat_spawn_overlap'
         | 'seat_hand_reserve'
+        | 'reviewer_account_limit'
       /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
       retryable?: boolean
       warnings?: string[]

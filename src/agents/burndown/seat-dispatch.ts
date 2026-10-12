@@ -16,7 +16,7 @@ export interface SeatDispatch {
   /** Checkouts marked `git: false` (CC-834): dispatch still uses them, the landed check never reads them. */
   nonGitRepos?: string[]
   caps: { implementers: number; reviewers: number; planners: number }
-  /** `perRepoPerSeat` caps active trees (CC-279); `capName` says which setting set it, for the refusal. */
+  /** `perRepoPerSeat` caps active trees (CC-279); `capName` names the setting for the refusal, `concurrency.implementers` today. */
   worktrees: { perRepoPerSeat: number; capName: string; leftFreePerRepo: number }
   excludedTags: string[]
   grants: string[]
@@ -34,15 +34,15 @@ function repoMap(seat: SeatPolicy, home: string): Record<string, string[]> {
 }
 
 /**
- * The seat's implementers cap its active trees per repo; worktrees_per_repo_per_seat, when set, is a ceiling over that.
+ * The seat's implementers cap its active trees per repo; the charter carries no ceiling over that (CC-1109).
  * The owner reserve comes from agent-chat config; the charter's worktrees_left_free_per_repo is ignored (CC-872).
  */
-function worktreeCaps(charter: CharterPolicy, implementers: number): SeatDispatch['worktrees'] {
-  const ceiling = charter.defaults.worktrees_per_repo_per_seat
-  const leftFreePerRepo = resolveWorktreeOwnerReserve()
-  if (ceiling !== undefined && ceiling < implementers)
-    return { perRepoPerSeat: ceiling, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo }
-  return { perRepoPerSeat: implementers, capName: 'concurrency.implementers', leftFreePerRepo }
+function worktreeCaps(implementers: number): SeatDispatch['worktrees'] {
+  return {
+    perRepoPerSeat: implementers,
+    capName: 'concurrency.implementers',
+    leftFreePerRepo: resolveWorktreeOwnerReserve(),
+  }
 }
 
 function seatPool(
@@ -83,7 +83,7 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
       reviewers: seat.concurrency.reviewers,
       planners: seat.concurrency.planners,
     },
-    worktrees: worktreeCaps(charter, seat.concurrency.implementers),
+    worktrees: worktreeCaps(seat.concurrency.implementers),
     excludedTags: seat.excluded_tags,
     grants: seat.grants_extra,
   }

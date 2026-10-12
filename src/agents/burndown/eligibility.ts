@@ -1,5 +1,6 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
+import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag } from './ops.js'
 import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
@@ -8,10 +9,9 @@ import { parseTaskTags } from './task-tags.js'
  *
  * Pure over what `source.ts` read off disk. A task is eligible only when it
  * says how it ends (`done_when`), how big it is (`estimate`), carries no tag
- * that reserves it for a person, is not already claimed, and does not name an
- * action the initiative holds no grant for. The grant check is a keyword match
- * and deliberately over-matches: a false hit costs a line in the backlog, a
- * miss costs an agent doing something nobody allowed.
+ * that reserves it for a person, is not already claimed, and declares no op a
+ * person must do or the initiative holds no grant for. A done_when whose prose
+ * names such an op without a tag resolving it is refused until the brief does.
  */
 
 export interface Initiative {
@@ -29,6 +29,8 @@ export interface Task {
   priority?: number
   estimate?: number
   doneWhen?: string
+  /** Free text a triager left on the task (CC-1112); read only by the off-plan check. */
+  notes?: string
   tags: string[]
 }
 
@@ -39,6 +41,9 @@ export type RefusalKind =
   | 'reserved-tag'
   | 'claimed'
   | 'needs-grant'
+  | 'needs-human'
+  | 'human-step'
+  | 'ops-unresolved'
   | 'lanes-full'
   | 'no-account'
   | 'budget'
@@ -59,6 +64,7 @@ export type RefusalKind =
   | 'stop-line'
   | 'out-of-scope'
   | 'no-brief'
+  | 'off-plan'
   | 'brief-stale'
   | 'blocked'
   | 'repo-ambiguous'
@@ -74,31 +80,44 @@ export interface Refusal {
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']
 
-/** Actions a brief grant can unlock for the tick (design section 5). */
-const GRANTABLE: { grant: string; pattern: RegExp }[] = [
-  { grant: 'merge-on-green-approve', pattern: /\bmerg(e|ed|es|ing)\b/i },
-  { grant: 'release-through-ci', pattern: /\b(publish(es|ed|ing)?|tag push|cut a release)\b/i },
-]
+const MERGE_GRANT = { grant: 'merge-on-green-approve', pattern: /\bmerg(e|ed|es|ing)\b/i }
+const RELEASE_GRANT = 'release-through-ci'
 
-/** Actions no brief grant unlocks: a person does them, so the task waits for one. */
-const HUMAN_ONLY: { action: string; pattern: RegExp }[] = [
-  {
-    action: 'broker restart',
-    pattern: /\brestart(s|ed|ing)? (the )?broker\b|\bbroker restart\b|restart window/i,
-  },
-  { action: 'deploy', pattern: /\bdeploy(s|ed|ing)?\b|\bwrangler\b|launchd install/i },
-  { action: 'force-push or hard reset', pattern: /force-push|reset --hard/i },
-  { action: 'config edit', pattern: /CLAUDE\.md|settings\.json|~\/\.agent-chat\//i },
-  { action: 'spend money', pattern: /\b(purchase|pay for|spend money)\b/i },
-]
+type Gap = { kind: RefusalKind; reason: string }
 
-/** Why `doneWhen` cannot be reached under `grants`, or undefined when it can. */
-export function grantGap(doneWhen: string, grants: string[]): string | undefined {
-  const human = HUMAN_ONLY.filter(h => h.pattern.test(doneWhen)).map(h => h.action)
-  if (human.length > 0) return `done_when names a human-only action (${human.join(', ')})`
-  const missing = GRANTABLE.filter(g => g.pattern.test(doneWhen) && !grants.includes(g.grant))
+/** A declared human op, or an op the release grant must unlock; the merge grant is still read off prose. */
+function declaredGap(tags: readonly string[], doneWhen: string, grants: string[]): Gap | undefined {
+  const declared = declaredOps(tags)
+  const human = declared.filter(op => HUMAN_OPS.includes(op))
+  if (human.length > 0)
+    return { kind: 'needs-human', reason: `declares ${human.map(op => `ops:${op}`).join(', ')}` }
+  const missing = [
+    ...(declared.includes('publish') ? [RELEASE_GRANT] : []),
+    ...(MERGE_GRANT.pattern.test(doneWhen) ? [MERGE_GRANT.grant] : []),
+  ].filter(grant => !grants.includes(grant))
   if (missing.length === 0) return undefined
-  return `done_when needs grant ${missing.map(g => g.grant).join(', ')}, which the brief does not hold`
+  return { kind: 'needs-grant', reason: `needs grant ${missing.join(', ')}, which the brief does not hold` }
+}
+
+/**
+ * CC-974: why `task` cannot be dispatched under `grants`, judged on the ops it declares. Prose
+ * never decides: a pattern hit the tags leave unresolved is a brief problem with its fix named.
+ */
+export function opsGap(task: Pick<Task, 'doneWhen' | 'tags'>, grants: string[]): Gap | undefined {
+  const doneWhen = task.doneWhen ?? ''
+  if (isHumanStep(task.tags)) {
+    const queue = task.tags.includes('kind:owner') ? 'owner' : 'operator'
+    return { kind: 'human-step', reason: `routed to the ${queue}, never dispatched` }
+  }
+  const declared = declaredGap(task.tags, doneWhen, grants)
+  if (declared !== undefined) return declared
+  const hits = opsLint(doneWhen, task.tags)
+  if (hits.length === 0) return undefined
+  const named = hits.map(hit => `${hit.op} ('${hit.text}')`).join(', ')
+  return {
+    kind: 'ops-unresolved',
+    reason: `done_when mentions ${named}; split the step out or tag ${opsNoneTag(doneWhen)}`,
+  }
 }
 
 /** CC-925: a seat's brief gate. `shadow` refuses nothing; the caller notes what `on` would refuse. */
@@ -148,8 +167,8 @@ export function taskRefusal(
   const hold = held.get(task.id)
   if (hold !== undefined)
     return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
-  const gap = grantGap(task.doneWhen, grants)
-  if (gap !== undefined) return { kind: 'needs-grant', reason: gap }
+  const gap = opsGap(task, grants)
+  if (gap !== undefined) return gap
   return brief?.gate === 'on' && !wanted ? briefRefusal(task, brief) : undefined
 }
 

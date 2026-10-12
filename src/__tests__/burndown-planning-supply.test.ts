@@ -205,3 +205,33 @@ describe('planSeat ready depth counts only what the tick dispatches (CC-1055)', 
     expect(planned.notes.some(n => n.includes('below floor'))).toBe(false)
   })
 })
+
+describe('planSeat off-plan tasks (CC-1112)', () => {
+  it('sends no briefer to an off-plan task and refuses it as off-plan', () => {
+    const tasks = [
+      { ...task('A-1'), priority: 99 },
+      { ...task('A-2'), notes: 'outside accepted factory plan P-list' },
+      task('A-3'),
+      task('A-4'),
+      task('A-5'),
+    ]
+    const planned = planSeat({
+      seat: SEAT,
+      rows: ROWS,
+      defaults: { initiative_decay: 0.5, share_caps: {} } as unknown as ScoringDefaults,
+      tasks: new Map([['alpha', tasks]]),
+      ledger: EMPTY_LEDGER,
+      budget: POOL,
+      brief: GATE,
+      offPlanIds: new Set(['A-3']),
+      readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
+    })
+
+    expect(briefers(planned)).toEqual(['A-4', 'A-5'])
+    expect(planned.refusals.filter(r => r.kind === 'off-plan').map(r => [r.task, r.reason])).toEqual([
+      ['A-1', 'off-plan'],
+      ['A-2', 'off-plan'],
+      ['A-3', 'off-plan'],
+    ])
+  })
+})

@@ -363,10 +363,29 @@ t_bytes() {
   reset; run "$name" 1 done ZZ-99
   case "$err" in *"of 5000 bytes"*) report "$name" "stderr: $err" ;; *) report "$name" ok ;; esac
 }
+# backlog pointer ids (CC-760) are lowercase, may carry a dotted sub-id, and live in Morning
+t_backlog_id() {
+  name="done tc-131 removes the Morning pointer and leaves ZZ-9"
+  reset; run "$name" 0 done tc-131 || return
+  lacks "$name" "tc-131" || return
+  has "$name" "3. ZZ-9 owner task" && report "$name" ok
+  name="done tc-130.2 removes only that item, not tc-130"
+  reset; run "$name" 0 done tc-130.2 || return
+  lacks "$name" "sub-question pointer" || return
+  has "$name" "4. tc-130 (two-way): parent question pointer" && report "$name" ok
+  name="done tc-130 removes only that item, not tc-130.2"
+  reset; run "$name" 0 done tc-130 || return
+  lacks "$name" "parent question pointer" || return
+  has "$name" "2. tc-130.2 (two-way)" && report "$name" ok
+  reset; expect_fail "done on a task id in Morning still searches In flight and Next only" \
+    "in In flight or Next" done ZZ-9
+  reset; expect_fail "a backlog id with no item fails loudly" "no item anywhere names tc-999" done tc-999
+  reset; expect_fail "a four-letter lowercase prefix is not a backlog id" "task id" done abcd-1
+}
 t_done; t_done_all; t_done_next; t_done_pr; t_park; t_add; t_move
 t_leading; t_blank; t_lock; t_race
 t_size; t_failures; t_missing; t_atomic; t_roots
 t_replace; t_replace_stdin; t_replace_usage; t_replace_size
-t_set; t_number; t_top; t_bytes
+t_set; t_number; t_top; t_bytes; t_backlog_id
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

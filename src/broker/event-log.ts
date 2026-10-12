@@ -660,6 +660,25 @@ export class EventLog implements EventStore {
   }
 
   /**
+   * CC-1089: answers and decisions to `refs` written after row `afterId`, oldest first.
+   *
+   * A teleport successor reads this for the questions its predecessor restated: an
+   * answer pushed to the dying predecessor closes the question, so `openQuestions`
+   * drops it and only this says what the answer was.
+   */
+  answersTo(refs: string[], afterId: number): DeliveredMessage[] {
+    if (refs.length === 0) return []
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE kind IN ('answer','decided') AND id > ? AND ref IN (${refs.map(() => '?').join(',')})
+         ORDER BY id ASC`,
+      )
+      .all(afterId, ...refs) as unknown as Row[]
+    return rows.map(toMessage)
+  }
+
+  /**
    * Peer traffic that landed in `name`'s inbox since `since`.
    *
    * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so

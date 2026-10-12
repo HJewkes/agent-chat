@@ -19,7 +19,7 @@ import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
-import { parkUpdate, type StallCode } from './stall-code.js'
+import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -38,7 +38,7 @@ export interface Observation {
   report?: Report
   /** Messages to the parked worker since the claim's inbox cursor. */
   inbox?: InboxMessage[]
-  /** CC-939: whether a finished briefer's task now carries `brief:proposed`. */
+  /** CC-939: whether a finished briefer's task now carries `brief:proposed`, or (CC-1076) its approval. */
   proposed?: boolean
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
@@ -145,6 +145,8 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   const settled = settledOnGitHub(claim, obs)
   if (settled !== undefined) return settled
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
+  const shepherds = exitedToShepherd(claim, obs)
+  if (shepherds !== undefined) return shepherds
   if (claim.stalledReason !== undefined) return relink(claim, obs) ?? linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
@@ -267,6 +269,35 @@ function relink(claim: Claim, obs: Observation): Action[] | undefined {
   return fenced(claim, obs.owned) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
 }
 
+/**
+ * CC-1098: an implementer whose agent exited, or left a complete roster, while Shepherd holds an open run for its
+ * PR is Shepherd's, so its claim stops counting as an implementer. A question, a deliberate hold or a pending
+ * respawn stays where it is; undefined falls through to the phase's own step.
+ */
+function exitedToShepherd(claim: Claim, obs: Observation): Action[] | undefined {
+  if (claim.phase !== 'implementing' || claim.respawn !== undefined || !agentGone(claim, obs))
+    return undefined
+  if (claim.stallCode !== undefined && !LADDER_CODES.includes(claim.stallCode)) return undefined
+  const { report, shepherd } = obs
+  if (report?.parked !== undefined || report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
+    return undefined
+  const run = shepherd?.row !== undefined && !ENDED.has(shepherd.row.phase) ? shepherd.row : undefined
+  const reported = handsOffPr(report) ? report?.pr : undefined
+  const pr = run === undefined ? undefined : (reported ?? claim.pr ?? prRef(run))
+  if (pr === undefined) return undefined
+  const cleared: ClaimPatch = {
+    stalledReason: undefined,
+    stalledClass: undefined,
+    stallCode: undefined,
+    ...(report === undefined ? {} : { lastReport: report.firstLine }),
+  }
+  return fenced(claim, obs.owned) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+}
+
+/** An agent with no roster row was retired and pruned; `observe` reports a missing row on a partial roster as unread. */
+const agentGone = (claim: Claim, obs: Observation): boolean =>
+  finished(obs) || (obs.agent === undefined && claim.agentName !== undefined)
+
 /** CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits. */
 function fenced(claim: Claim, owned: Observation['owned']): Action[] | undefined {
   if (owned === undefined) return undefined
@@ -323,6 +354,7 @@ const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'can
 const MERGES: ReadonlySet<Claim['phase']> = new Set([
   'queued',
   'implementing',
+  'reviewing',
   'awaiting-merge',
   'shepherding',
 ])

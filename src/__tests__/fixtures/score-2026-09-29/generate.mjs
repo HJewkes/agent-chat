@@ -45,9 +45,9 @@ const CASES = [
   // A dependency on a closed task does not block.
   task('alpha', 5, { title: 'Refresh the pricing table', priority: 4, severity: 'medium', notes: 'Blocked by AL-99; that one is closed.' }),
   task('alpha', 99, { title: 'Closed prerequisite', priority: 9, status: 'done' }),
-  // Stop-short: hard-stop words in done_when.
-  task('alpha', 6, { title: 'Roll out the billing service', priority: 2, severity: 'high', done_when: 'The service deploys to production and answers a probe.' }),
-  task('beta', 1, { title: 'Guard the upload path against leaks', priority: 1, severity: 'critical', estimate: 2, done_when: 'A release tag push follows the fix.' }),
+  // Stop-short: done_when names a hard stop and the task declares its op (CC-974).
+  task('alpha', 6, { title: 'Roll out the billing service', priority: 2, severity: 'high', done_when: 'The service deploys to production and answers a probe.', tags: ['ops:deploy'] }),
+  task('beta', 1, { title: 'Guard the upload path against leaks', priority: 1, severity: 'critical', estimate: 2, done_when: 'A release tag push follows the fix.', tags: ['ops:publish'] }),
   // Within-initiative tie: identical rows, broken by ID number (BE-9 before BE-10).
   task('beta', 9, { title: 'Stabilize the parser output', priority: 2, severity: 'high', tags: ['kind:product'] }),
   task('beta', 10, { title: 'Stabilize the parser output', priority: 2, severity: 'high', tags: ['kind:product'] }),

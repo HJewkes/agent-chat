@@ -1,4 +1,5 @@
 import { RESERVED_TAGS } from './eligibility.js'
+import { declaredOps, HARD_STOP_OPS } from './ops.js'
 
 /**
  * The autonomy scorer (CC-201), ported from `sources/autonomy/score.py`.
@@ -84,18 +85,6 @@ export interface ScoreRow {
 export const ID = /\b([A-Z]{1,5}-\d+)\b/g
 export const DEP =
   /(depend|prereq|blocked (by|on)|waits? (on|for)|requires? [A-Z]{1,5}-\d|after [A-Z]{1,5}-\d)/i
-
-export const HARD_STOP_PATTERNS: Record<string, RegExp> = {
-  'broker-restart': /\brestart(s|ed|ing)? (the )?broker\b|\bbroker restart\b|restart window/i,
-  deploy: /\bdeploy(s|ed|ing)?\b|\bwrangler\b/i,
-  'launchd-install': /launchd install|burndown install/i,
-  'force-push': /force-push|reset --hard/i,
-  'config-edit': /CLAUDE\.md|settings\.json|~\/\.agent-chat\//i,
-  'spend-money': /\b(purchase|pay for|spend money|submit (the )?order)\b/i,
-  'npm-publish': /\bnpm publish|first publish|publish(es|ed)? to npm|version packages/i,
-  'ruleset-write': /ruleset|branch protection/i,
-  'tag-move': /\bmove (the )?v1\b|cut a (release )?tag|tag push/i,
-}
 
 export const KIND_FALLBACK: [kind: string, pattern: RegExp][] = [
   ['security', /security|inject|secret|leak|oauth|vulnerab|audit advis|confidential/],
@@ -239,14 +228,11 @@ export function sizeTerm(estimate: number | null | undefined, defaults: ScoringD
   return estimate <= 8 ? defaults.size.le8 : defaults.size.gt8
 }
 
-/** The charter's hard stops whose pattern matches the task's `done_when`, in pattern order. */
-export function stopShortNames(
-  doneWhen: string | null | undefined,
-  hardStops: ReadonlySet<string>,
-): string[] {
-  const body = text(doneWhen)
-  return Object.entries(HARD_STOP_PATTERNS)
-    .filter(([name, pattern]) => hardStops.has(name) && pattern.test(body))
+/** CC-974: the charter's hard stops the task's declared `ops:` tags name, in HARD_STOP_OPS order. */
+export function stopShortNames(tags: readonly string[], hardStops: ReadonlySet<string>): string[] {
+  const declared = new Set(declaredOps(tags))
+  return Object.entries(HARD_STOP_OPS)
+    .filter(([name, op]) => hardStops.has(name) && declared.has(op))
     .map(([name]) => name)
 }
 
@@ -404,7 +390,7 @@ function scoreTask(task: ScoredTask, ctx: ScoringContext): ScoreRow {
   const blocked = ctx.graph.blocked.get(task.id) ?? []
   const unblocks = ctx.graph.unblocks.get(task.id) ?? 0
   const age = ageDays(task, ctx.today)
-  const stopShort = stopShortNames(task.done_when, ctx.hardStops)
+  const stopShort = stopShortNames(tagsOf(task), ctx.hardStops)
   const { kind, source } = kindOf(task)
   const components: Components = {
     S: severityTerm(task.severity, defaults),

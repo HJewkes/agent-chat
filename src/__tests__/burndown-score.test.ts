@@ -234,15 +234,38 @@ describe('stop-short H', () => {
   const charterStops = new Set(['deploy', 'config-edit', 'broker-restart', 'dotfiles-merge'])
 
   it.each([
-    ['a deploy', 'Deploy the worker.', ['deploy']],
-    ['two stops in pattern order', 'Edit CLAUDE.md, then deploy.', ['deploy', 'config-edit']],
-    ['a restart window', 'ships in a restart window', ['broker-restart']],
-    ['a stop the charter does not list', 'npm publish the package', []],
-    ['a stop with no pattern', 'merge the dotfiles', []],
-    ['a word-boundary miss', 'redeployment notes', []],
-    ['no done_when', null, []],
-  ])('%s', (_scenario, doneWhen, expected) => {
-    expect(stopShortNames(doneWhen, charterStops)).toEqual(expected)
+    ['a declared deploy', ['ops:deploy'], ['deploy']],
+    [
+      'two declared ops in hard-stop order',
+      ['ops:config-edit', 'ops:restart'],
+      ['broker-restart', 'config-edit'],
+    ],
+    ['an op the charter lists no stop for', ['ops:publish'], []],
+    ['an unknown op', ['ops:dotfiles-merge'], []],
+    ['a subject-matter tag', ['ops:none=0123abcd'], []],
+    ['no tags', [], []],
+  ])('%s', (_scenario, tags, expected) => {
+    expect(stopShortNames(tags, charterStops)).toEqual(expected)
+  })
+
+  it('reads a ruleset stop from ops:ruleset-write, not from branch protection in prose', () => {
+    const stops = new Set(['ruleset-write'])
+    const prose = task({ id: 'R-1', done_when: 'Reads the branch protection ruleset and reports it.' })
+    const declared = { ...prose, id: 'R-2', tags: ['ops:ruleset-write'] }
+
+    const rows = scoreAll(
+      [prose, declared],
+      { a: 1 },
+      DEFAULTS,
+      { tags: [], titlePatterns: [] },
+      [...stops],
+      TODAY,
+    ).rows
+
+    expect(Object.fromEntries(rows.map(r => [r.id, r.stopShort]))).toEqual({
+      'R-1': [],
+      'R-2': ['ruleset-write'],
+    })
   })
 
   it.each([
@@ -582,7 +605,7 @@ describe('scoreAll', () => {
       done_when: 'Depends on A-1. Then deploy the thing.',
       updated: '2026-09-19',
       created: '2026-01-01',
-      tags: [],
+      tags: ['ops:deploy'],
     }),
     task({ id: 'A-3', title: 'Fix typo in docs', priority: 20, created: '2026-09-29' }),
     task({ id: 'A-4', title: 'Owner call', priority: 30, tags: ['human-only'], notes: 'Blocked by A-3.' }),

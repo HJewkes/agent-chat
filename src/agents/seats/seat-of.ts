@@ -57,6 +57,18 @@ export function seatOf(
   return { kind: 'ambiguous', prefix: first.seat.prefix, seats }
 }
 
+/**
+ * CC-1092: whether `name` is a seat (its own file parses, any role) or a seat's worker by prefix.
+ * Throws when `seats/` is unreadable, so the caller decides how to fail.
+ */
+export function isSeatOrSeatWorker(root: string, name: string): boolean {
+  if (isSeatName(name)) {
+    const text = readText(path.join(root, 'seats', `${name}.md`))
+    if (text !== undefined && parseSeat(name, text) !== undefined) return true
+  }
+  return seatOf(root, name).kind !== 'none'
+}
+
 /** The owner runs an attended seat, so the charter's watchdog list never names it. */
 export const isAttended = (seatFile: string): boolean => frontmatterField(seatFile, 'role') === 'attended'
 
