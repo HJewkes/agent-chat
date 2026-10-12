@@ -367,6 +367,25 @@ launchd's kickstart does. `uninstall` runs `disable --now`, removes the units an
 `job-status` reads `systemctl --user show`. The units only fire while the user manager runs, so
 a server needs `loginctl enable-linger`.
 
+## Event-driven ticks (CC-1111)
+
+The timer is the backstop, not the only trigger. When an agent the tick spawned exits, or is
+retired because `burndown release` dropped its claim, the broker starts one detached
+`burndown tick --once` 30 seconds later. Exits inside that window share the tick. The ledger
+lock the timer's tick takes is the single-flight lock: while any tick holds it, the broker
+defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
+under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
+`burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
+Brokers on a temp-dir home never kick.
+
+To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
+prints the median wait from a burndown implementer's exit to the next tick that dispatched.
+It reads `events.db` and `burndown-ticks.jsonl` and writes nothing. Each exit takes one
+dispatch from the first tick at or after it. A tick row's time is the tick's start, so the
+wait leaves out planning time. An exit with no dispatch within `--max-wait-min` (default 30)
+is reported as unmatched and left out of the median, since that slot waited for ready work,
+not for a tick.
+
 ## What each ledger phase means
 
 `agent-chat burndown status` prints every held claim's phase.
