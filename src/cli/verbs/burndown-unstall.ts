@@ -1,0 +1,77 @@
+import { burndownLedgerPath } from '../../paths.js'
+import { readLedger, withLedgerLock, writeLedger, type Claim } from '../../agents/burndown/ledger.js'
+import { outsideOwns } from '../../agents/burndown/owns-fence.js'
+import { readSlices } from '../../agents/burndown/report.js'
+import type { PlanReader } from '../../agents/burndown/seed-slices.js'
+import type { Report } from '../command.js'
+
+/**
+ * CC-1141: a claim parked `outside-owns` holds the owns its plan had at seeding. Once the plan's owns are fixed,
+ * unstall reloads them and clears the stall in place, so the claim keeps its PR, phase and agents and the next
+ * tick hands the PR to Shepherd with the implementer as fixer. Unlike `release`, it retires nobody.
+ */
+
+export interface UnstallPorts {
+  plan: PlanReader
+  /** The files the worktree's branch changed against its base; undefined when git could not tell. */
+  changedFiles: (cwd: string) => string[] | undefined
+}
+
+type Verdict = { refused: string } | { claim: Claim; owns: string[] }
+
+const refusedReport = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
+
+export async function unstallSlice(task: string, slice: string, ports: UnstallPorts): Promise<Report> {
+  const file = burndownLedgerPath()
+  const locked = await withLedgerLock(file, (): Verdict => {
+    const ledger = readLedger(file)
+    const held = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
+    const verdict = unstallVerdict(held, `${task} slice ${slice}`, ports)
+    if ('refused' in verdict) return verdict
+    const cleared = unstalled(verdict.claim, verdict.owns)
+    writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === verdict.claim ? cleared : c)) })
+    return verdict
+  })
+  if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
+  const verdict = locked.value
+  if ('refused' in verdict) return refusedReport(verdict.refused)
+  return {
+    ok: true,
+    lines: [
+      `unstalled ${task} slice ${slice} (${verdict.claim.phase}); owns now ${verdict.owns.join(', ')}`,
+      'the next tick moves it on; nothing was retired',
+    ],
+  }
+}
+
+function unstallVerdict(claim: Claim | undefined, what: string, ports: UnstallPorts): Verdict {
+  if (claim === undefined) return { refused: `no held claim on ${what}` }
+  if (claim.stallCode !== 'outside-owns')
+    return { refused: `${what} is not stalled outside-owns (${claim.stallCode ?? 'not stalled'})` }
+  const owns = planOwns(claim, ports.plan)
+  if (typeof owns === 'string') return { refused: `${what}: ${owns}` }
+  const files = claim.worktree === undefined ? undefined : ports.changedFiles(claim.worktree)
+  if (files === undefined)
+    return {
+      refused: `${what}: cannot read its worktree's changes; unstall needs the worktree, release instead`,
+    }
+  const outside = outsideOwns(files, owns)
+  if (outside.length > 0)
+    return { refused: `${what} still touches ${outside.join(', ')} outside the plan's owns` }
+  return { claim, owns }
+}
+
+/** The slice's owns as its plan now has them, or why they cannot be read. */
+function planOwns(claim: Claim, plan: PlanReader): string[] | string {
+  const { path, text } = plan(claim.initiative, claim.taskId)
+  if (text === undefined) return `no plan at ${path}`
+  const read = readSlices(text)
+  if (read.slices === undefined) return `plan unreadable: ${read.problems.join('; ')}`
+  const planned = read.slices.find(s => s.n === claim.slice)
+  return planned === undefined ? `slice ${claim.slice ?? '?'} is not in ${path}` : planned.owns
+}
+
+function unstalled(claim: Claim, owns: string[]): Claim {
+  const { stalledReason: _reason, stalledClass: _class, stallCode: _code, ...kept } = claim
+  return { ...kept, owns }
+}
