@@ -46,6 +46,7 @@ function deps(autonomyRoot: string, sevenDay: number, resetDays: number): SeatTi
 const ledger = {
   seats: {
     'seat-a': {
+      configDir: '/tmp/pool-x',
       samples: [
         { at: DAY_START - 3_600_000, sevenDay: 40 },
         { at: RUN_START, sevenDay: 50 },

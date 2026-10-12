@@ -981,7 +981,9 @@ describe('burndown tick in seats mode', () => {
       ['DM-1', 'seat-t', 'st'],
       ['DM-2', 'seat-t', 'st'],
     ])
-    expect(ledger.seats).toEqual({ 'seat-t': { samples: [{ at: NOON.getTime(), sevenDay: 40 }] } })
+    expect(ledger.seats).toEqual({
+      'seat-t': { samples: [{ at: NOON.getTime(), sevenDay: 40 }], configDir: accountPath() },
+    })
   })
 
   it('one tick reads Shepherd status once for observe and planning', async () => {
@@ -1044,7 +1046,7 @@ describe('burndown tick in seats mode', () => {
     writeLedger(burndownLedgerPath(), {
       version: 1,
       claims: [],
-      seats: { 'seat-t': { samples: [old, recent] } },
+      seats: { 'seat-t': { samples: [old, recent], configDir: accountPath() } },
     })
 
     await tick(fakeBroker())
@@ -1385,7 +1387,10 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
     writeLedger(burndownLedgerPath(), {
       version: 1,
       claims: [],
-      seats: { 'seat-t': { samples: [before7] }, 'seat-u': { samples: [before7] } },
+      seats: {
+        'seat-t': { samples: [before7], configDir: accountPath() },
+        'seat-u': { samples: [before7], configDir: accountPath() },
+      },
     })
     const fake = fakeBroker()
 
@@ -1804,7 +1809,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
     writeLedger(burndownLedgerPath(), {
       version: 1,
       claims: [due.claim],
-      seats: { 'seat-t': { samples: [before7] } },
+      seats: { 'seat-t': { samples: [before7], configDir: accountPath() } },
     })
     const fake = fakeBroker({ agents: [row(due.name, 'exited', due.worktree)] })
 
@@ -1825,7 +1830,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
     writeLedger(burndownLedgerPath(), {
       version: 1,
       claims: [first.claim, second.claim],
-      seats: { 'seat-t': { samples: [before7] } },
+      seats: { 'seat-t': { samples: [before7], configDir: accountPath() } },
     })
     const agents = [row(first.name, 'exited', first.worktree), row(second.name, 'exited', second.worktree)]
     const fake = fakeBroker({ agents })
@@ -1862,7 +1867,10 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
     writeLedger(burndownLedgerPath(), {
       version: 1,
       claims: [due.claim],
-      seats: { 'seat-t': { samples: [before7] }, 'seat-u': { samples: [before7] } },
+      seats: {
+        'seat-t': { samples: [before7], configDir: accountPath() },
+        'seat-u': { samples: [before7], configDir: path.join(world, 'profiles', 'other') },
+      },
     })
     const fake = fakeBroker({ agents: [row(due.name, 'exited', due.worktree)] })
 
