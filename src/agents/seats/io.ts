@@ -126,6 +126,8 @@ export interface WatchdogDoc {
   attended?: string[]
   /** CC-598, CC-693: the service cause each attended seat was last told; a seat absent was told of none. */
   serviceHeard?: Record<string, string>
+  /** CC-1057: the open seat blocks tp-operator was paged for, as `<session>@<since>`; pruned when a block closes. */
+  blockPaged?: string[]
 }
 
 const isCauseMap = (value: unknown): value is Record<string, string> =>
@@ -133,6 +135,9 @@ const isCauseMap = (value: unknown): value is Record<string, string> =>
   value !== null &&
   !Array.isArray(value) &&
   Object.values(value).every(cause => typeof cause === 'string')
+
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(item => typeof item === 'string')
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
@@ -169,6 +174,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
     ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
+    ...(isStringList(doc.blockPaged) ? { blockPaged: doc.blockPaged } : {}),
   }
 }
 
@@ -207,6 +213,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
     ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
+    ...(isStringList(doc.blockPaged) ? { blockPaged: doc.blockPaged } : {}),
   }
 }
 
