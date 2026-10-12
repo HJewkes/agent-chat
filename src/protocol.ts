@@ -55,6 +55,42 @@ export interface HostLauncherInfo {
   connectedAt: number
 }
 
+/** What a spawn, resume or retire answers with, and a remote spawn's placement (CC-1059) too. */
+export interface SpawnResultFields {
+  ok: boolean
+  agentId?: string
+  name?: string
+  reason?: string
+  /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
+  code?:
+    | 'surface_refused'
+    | 'spawn_rate_limit'
+    | 'machine_headless_limit'
+    | 'machine_memory_floor'
+    | 'seat_budget_stop'
+    | 'seat_spawn_overlap'
+    | 'seat_hand_reserve'
+    | 'reviewer_account_limit'
+  /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
+  retryable?: boolean
+  warnings?: string[]
+  /**
+   * The profile's own deny list, echoed back on success. CC-29's finding:
+   * a toolset-confined agent cannot report being stuck — the tool is absent
+   * from its schema, not refused — so the only place this is knowable with
+   * certainty is here, at spawn time, before the agent can fail silently.
+   */
+  disallowedTools?: string[]
+  /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
+  transcript?: { path: string; found: boolean }
+  /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
+  base?: { ref: string; sha: string }
+  /** CC-1059: recorded, not launched: the requester launches this on `host`, then reports `spawn_launched`. */
+  launch?: RemoteLaunch
+  /** CC-1059: the host the agent launches on, when that is not the broker's. */
+  host?: string
+}
+
 /** A profile without the fields that run something or set the environment on the caller's host. */
 export type RemoteProfile = Omit<AgentProfile, 'env' | 'mcpServers' | 'warnings'>
 
@@ -1029,8 +1065,26 @@ export type ClientMessage =
       workRole?: string
       /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
       override?: 'fix-round'
+      /** CC-1059: the requester's own OS, sent by its process and never by the model; picks a remote surface. */
+      hostPlatform?: string
+      /** CC-1059: the requester can launch a spawn on its own host; absent is an older client, launched here. */
+      launchesHere?: true
+      /** CC-1059: the machine to launch on, a config `machines` alias or a hostname. */
+      host?: string
+      /** CC-1059: the CLI's own hostname. Read only from an unregistered connection; a session's comes from its registration. */
+      callerHost?: string
+      /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
+      callerHome?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
+  /**
+   * CC-1059: the requester checked and wrote a remote spawn's `launch` on its host (`ok`), or refused
+   * it there. Accepted only from the connection that received the launch; an ok ack lets it open the
+   * surface, anything else retires the identity.
+   */
+  | { t: 'spawn_launched'; agentId: string; ok: boolean; reason?: string }
+  /** CC-1059: the requester opened the surface, or could not. Answered once the agent registers or the attach window passes. */
+  | { t: 'spawn_placed'; agentId: string; ok: boolean; reason?: string }
   /**
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
@@ -1255,37 +1309,11 @@ export type ServerMessage =
    * requesting model — "you are sharing a checkout with bob" is something it
    * should be told even though the spawn succeeded.
    */
-  | {
-      t: 'spawn_result'
-      ok: boolean
-      agentId?: string
-      name?: string
-      reason?: string
-      /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
-      code?:
-        | 'surface_refused'
-        | 'spawn_rate_limit'
-        | 'machine_headless_limit'
-        | 'machine_memory_floor'
-        | 'seat_budget_stop'
-        | 'seat_spawn_overlap'
-        | 'seat_hand_reserve'
-        | 'reviewer_account_limit'
-      /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
-      retryable?: boolean
-      warnings?: string[]
-      /**
-       * The profile's own deny list, echoed back on success. CC-29's finding:
-       * a toolset-confined agent cannot report being stuck — the tool is absent
-       * from its schema, not refused — so the only place this is knowable with
-       * certainty is here, at spawn time, before the agent can fail silently.
-       */
-      disallowedTools?: string[]
-      /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
-      transcript?: { path: string; found: boolean }
-      /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
-      base?: { ref: string; sha: string }
-    }
+  | ({ t: 'spawn_result' } & SpawnResultFields)
+  /** CC-1059: an ok ack to `spawn_launched` is the requester's go to open the surface; nothing else is. */
+  | { t: 'spawn_launched_result'; ok: boolean; reason?: string }
+  /** CC-1059: the remote spawn's final verdict, sent once it registers, fails, or the attach window passes. */
+  | ({ t: 'spawn_placed_result' } & SpawnResultFields)
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
   | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
   /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
