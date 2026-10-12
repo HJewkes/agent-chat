@@ -59,7 +59,7 @@ function writeTask(tags: string[]): void {
   fs.writeFileSync(
     path.join(root, 'init-alpha', 'tasks', 'AA-1.yml'),
     'id: AA-1\ntitle: task AA-1\npriority: 1\nseverity: high\nestimate: 2\n' +
-      `done_when: The widget renders.\nstatus: open\ntags: [${tags.join(', ')}]\nnotes: ""\n` +
+      `done_when: Publish @t/widget at 1.0.0.\nstatus: open\ntags: [${tags.join(', ')}]\nnotes: ""\n` +
       'created: 2026-09-01\nupdated: 2026-09-20\ndone_at: null\n',
   )
 }
