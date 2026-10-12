@@ -682,7 +682,10 @@ describe('seat liveness (CC-320)', () => {
     const h = incident(PERSONAL)
     const raised: string[] = []
     h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    // CC-1053: g9 ran as s-h2, so the hand-started h2 is the owner resuming the seat's own session.
+    const lineage = { name: 'seat-a', agentId: 'g9', origin: 'spawned', sessionId: 's-h2', spawnedAt: 0 }
     const replies = [
+      { t: 'agents_result', agents: [lineage] },
       { t: 'spawn_result', ok: true, agentId: 'g9', name: 'seat-a' },
       { t: 'spawn_result', ok: false, code: 'machine_headless_limit', reason: 'headless limit reached' },
     ]

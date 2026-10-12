@@ -346,6 +346,17 @@ stale-session guard blocks its prompts, and the broker refuses the retired
 identity's registration, so it never holds the name. Its window stays open for
 the human to close.
 
+**`agent-chat teleport request <name> [--surface <s>] [--to <m>]` (CC-951 c).**
+The owner's way to move a seat, and a request, not a force: the broker resolves a
+teleport's subject from the caller's own connection, so the CLI sends no
+`teleport` frame. It checks the surface against the five names and `--to`
+against the `machines` aliases or a hostname's characters, and sends nothing
+when either fails. Otherwise it sends the session one message as the human
+(`human_send`) asking it to write its State at teleport section and call
+`agent_teleport` with those arguments. The destination, surface and path checks
+above then run as for any teleport. A wedged seat that cannot take a turn
+needs the owner's own hand, not this verb.
+
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
 returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same

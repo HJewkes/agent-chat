@@ -73,6 +73,24 @@ export function seatTarget(agents: SeatAgent[], seat: string, account: SeatAccou
   return { kind: 'fresh', latest, stale, ...launched }
 }
 
+/**
+ * CC-1053: an adopted row is minted for any session that registers the seat's name, so its session
+ * counts as the seat's only when a spawned row of the seat (retired ones too) ran as that session id,
+ * as a hand `claude --resume <seat session>` does.
+ */
+export function spawnLineage(latest: SeatAgent, rows: SeatAgent[]): boolean {
+  const { sessionId } = latest
+  if (sessionId === undefined || sessionId === '') return false
+  return rows.some(row => row.name === latest.name && row.origin !== 'adopted' && row.sessionId === sessionId)
+}
+
+/** CC-1053: a session with no spawn lineage is not resumed; the seat starts fresh on its handoff. */
+export function withoutLineage(target: RelaunchTarget, rows: SeatAgent[]): RelaunchTarget {
+  if (target.kind !== 'resume-session' || spawnLineage(target.latest, rows)) return target
+  const { latest, stale, spawned } = target
+  return { kind: 'fresh', latest, stale, ...(spawned === undefined ? {} : { spawned }) }
+}
+
 /** CC-959: how soon after the seat went dark a new session in its cwd reads as its pane carrying on. */
 export const PANE_WINDOW_MS = 60_000
 
