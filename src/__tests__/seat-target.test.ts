@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Pool } from '../agents/seats/charter.js'
 import { accountRefusal, seatAccount } from '../agents/seats/seat-account.js'
-import { seatTarget, spawnLineage, withoutLineage } from '../agents/seats/seat-target.js'
+import { type RelaunchTarget, seatTarget, spawnLineage, withoutLineage } from '../agents/seats/seat-target.js'
 import type { SeatAgent } from '../agents/seats/watchdog.js'
 
 const SERVER = '/home/example/.profiles/server'
@@ -168,7 +168,7 @@ describe('spawnLineage (CC-1053)', () => {
 })
 
 describe('withoutLineage (CC-1053)', () => {
-  const target = seatTarget(INCIDENT, 'lead-seat', { configDir: PERSONAL })
+  const target = seatTarget(INCIDENT, 'lead-seat', { configDir: PERSONAL }) as RelaunchTarget
 
   it('turns a resume of a session with no lineage into a fresh launch that keeps the adopted latest', () => {
     expect(withoutLineage(target, INCIDENT)).toEqual({
