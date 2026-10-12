@@ -169,7 +169,9 @@ describe('a merged PR finishes its claim (CC-978)', () => {
   it('leaves a claim whose recorded PR has not merged, though another run under its name has', async () => {
     const rows = [run({ pr: 8, runId: 'run-8' }), run({ phase: 'ci' })]
 
-    const after = await tick({ ...EMPTY_LEDGER, claims: [claim({ pr: 'o/r#9' })] }, rows)
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim({ pr: 'o/r#9' })] }, rows, {
+      agents: [agent('bd-cc-1', 'live')],
+    })
 
     expect(after.claims[0]?.phase).toBe('implementing')
   })
@@ -333,5 +335,90 @@ describe('a stalled worker that finished with a PR goes to Shepherd (CC-1074)', 
     )
 
     expect(ledger.claims[0]).toMatchObject({ phase: 'implementing', stalledReason: 'Status: BLOCKED' })
+  })
+})
+
+describe("an exited implementer's claim with an open Shepherd run (CC-1098)", () => {
+  const open = (patch: Partial<ShepherdRow> = {}): ShepherdRow => run({ phase: 'ci', ...patch })
+  const timedOut = {
+    stalledReason: 'implementing past its timeout',
+    stalledClass: 'stalled',
+    stallCode: 'phase-timeout',
+  } as const
+
+  it('moves to shepherding under a phase-timeout stall, registering nothing again', async () => {
+    const { ledger, actions } = await tickActions({ ...EMPTY_LEDGER, claims: [claim(timedOut)] }, [open()], {
+      agents: [agent('bd-cc-1', 'exited')],
+    })
+
+    expect(ledger.claims).toEqual([expect.objectContaining({ phase: 'shepherding', pr: 'o/r#9' })])
+    expect(ledger.claims[0]?.stallCode).toBeUndefined()
+    expect(registers(actions)).toEqual([])
+  })
+
+  it('moves to shepherding when its agent has left a complete roster', async () => {
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim({ pr: 'o/r#9' })] }, [open()])
+
+    expect(after.claims).toEqual([expect.objectContaining({ phase: 'shepherding', pr: 'o/r#9' })])
+  })
+
+  it('stays implementing while its agent runs', async () => {
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim()] }, [open()], {
+      agents: [agent('bd-cc-1', 'live')],
+    })
+
+    expect(after.claims[0]?.phase).toBe('implementing')
+  })
+
+  it('stays implementing when the worker asked a question', async () => {
+    const { ledger } = await tickActions(
+      { ...EMPTY_LEDGER, claims: [claim()] },
+      [open()],
+      { agents: [agent('bd-cc-1', 'exited')] },
+      'Status: BLOCKED\nneeds the owner',
+    )
+
+    expect(ledger.claims[0]?.phase).toBe('implementing')
+  })
+
+  it('stays implementing under a deliberate budget hold', async () => {
+    const held = claim({ stalledReason: 'budget: over', stalledClass: 'failed', stallCode: 'budget' })
+
+    const after = await tick({ ...EMPTY_LEDGER, claims: [held] }, [open()])
+
+    expect(after.claims[0]).toMatchObject({ phase: 'implementing', stallCode: 'budget' })
+  })
+
+  it('stays implementing when the run under its name has ended', async () => {
+    const after = await tick({ ...EMPTY_LEDGER, claims: [claim({ pr: 'o/r#9' })] }, [
+      open({ phase: 'failed' }),
+    ])
+
+    expect(after.claims[0]?.phase).toBe('implementing')
+  })
+})
+
+describe('a reviewing claim whose PR merged (CC-1098)', () => {
+  it('finishes in the tick that reads the merge on GitHub', async () => {
+    const reviewing = claim({ phase: 'reviewing', pr: 'o/r#9', agentName: 'bd-cc-1-r0' })
+    const { observations } = await observe(
+      [reviewing],
+      { agents: [agent('bd-cc-1-r0', 'live')] },
+      {
+        inboxSince: async () => [],
+        root: '/nowhere',
+        shepherdRows: () => [],
+        spendCap: () => undefined,
+        activity: () => ({ ok: false, reason: 'stub' }) as never,
+        prState: () => ({ kind: 'merged', pr: 'o/r#9', head: 'h9' }),
+      },
+    )
+
+    const actions = advance([reviewing], observations, NOW)
+
+    expect(applyActions({ ...EMPTY_LEDGER, claims: [reviewing] }, actions, NOW).claims).toEqual([
+      expect.objectContaining({ phase: 'done', prHead: 'h9' }),
+    ])
+    expect(retires(actions)).toHaveLength(1)
   })
 })
