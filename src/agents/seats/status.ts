@@ -350,7 +350,8 @@ function seatHistory(
   reading: AccountReading | undefined,
   now: Date,
 ): SeatSpend {
-  return seatSpend({ seatState: seatState(deps, seat), configDir, saved, sevenDay: reading?.sevenDay, now })
+  const sevenDay = reading?.sevenDay
+  return seatSpend({ seatState: seatState(deps, seat), configDir, saved, sevenDay, now, home: deps.homeDir })
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
