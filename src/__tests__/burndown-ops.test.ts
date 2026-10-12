@@ -1,5 +1,7 @@
+import { HARD_STOP_CLASSES } from '@titan-design/coordinator'
 import { describe, expect, it } from 'vitest'
 import {
+  HARD_STOP_OPS,
   HUMAN_OPS,
   OPS,
   type Op,
@@ -10,6 +12,7 @@ import {
   opsLint,
   opsNoneTag,
 } from '../agents/burndown/ops.js'
+import { stopShortNames } from '../agents/burndown/score.js'
 
 const FIXTURES: Record<Op, string> = {
   deploy: 'the service deploys the build',
@@ -19,6 +22,9 @@ const FIXTURES: Record<Op, string> = {
   spend: 'purchase a larger plan',
   'force-push': 'force-push the branch',
   'ruleset-write': 'turn on branch protection for main',
+  'dotfiles-merge': 'merge the dotfiles PR',
+  message: 'email the vendor about the invoice',
+  'personal-data': 'read the lab results',
 }
 
 const FILENAME = 'deploy-ports.ts isAlive is deleted'
@@ -26,6 +32,41 @@ const FILENAME = 'deploy-ports.ts isAlive is deleted'
 describe('burndown ops vocabulary (CC-974)', () => {
   it.each(OPS)('spots the op %s in a done_when that names it', op => {
     expect(opsHits(FIXTURES[op]).map(hit => hit.op)).toContain(op)
+  })
+
+  it.each(HARD_STOP_CLASSES)('maps the hard-stop class %s to an op', name => {
+    expect(OPS).toContain(HARD_STOP_OPS[name])
+  })
+
+  it.each([
+    ['merge the dotfiles PR', 'dotfiles-merge'],
+    ['email the vendor', 'message'],
+    ['read the lab results', 'personal-data'],
+  ])('flags "%s" as the human op %s', (doneWhen, op) => {
+    expect(opsLint(doneWhen, []).map(hit => hit.op)).toEqual([op])
+  })
+
+  it.each([
+    ['the service deploys the build', ['deploy']],
+    ['launchd install of the tick', ['deploy']],
+    ['live after a broker restart', ['restart']],
+    ['add the flag to settings.json', ['config-edit']],
+    ['run npm publish for the package', ['publish']],
+    ['cut a release tag', ['publish']],
+    ['publishes the docs site', ['publish']],
+    ['submit the order', ['spend']],
+    ['purchase a larger plan', ['spend']],
+    ['git reset --hard origin/main', ['force-push']],
+    ['update the ruleset', ['ruleset-write']],
+  ])('keeps the ops a pre-existing pattern found in "%s"', (doneWhen, ops) => {
+    expect([...new Set(opsHits(doneWhen).map(hit => hit.op))]).toEqual(ops)
+  })
+
+  it('stops a task declaring ops:message short at third-party-message', () => {
+    const hardStops = new Set(['third-party-message', 'deploy'])
+
+    expect(opsLint('contact the landlord about the lease', ['ops:message'])).toEqual([])
+    expect(stopShortNames(['ops:message'], hardStops)).toEqual(['third-party-message'])
   })
 
   it('keeps publish out of the human ops, as a grant unlocks it', () => {
