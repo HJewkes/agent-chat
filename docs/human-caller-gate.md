@@ -48,6 +48,12 @@ These frames are guarded by `isHuman`, and they mean "the human decided".
 vouches for. Profiles already deny agents `agent-chat ask` (CC-169, landed), and leaving
 the frame open would get around that deny.
 
+`dismiss` has two branches. The non-author branch is Class 1: dismissing another
+session's item is the human's call. The author branch lets a session withdraw its own
+item. With a declared id, the broker uses the declared agent's name as the caller in
+`handleDismiss`, so the frame is accepted only when that agent is the item's author and
+refused otherwise. That is what the agent's own registered connection gets today.
+
 ### Class 2: requester mapped to the declared agent
 
 These frames take the requester from the connection and fall back to the human when the
@@ -189,21 +195,59 @@ that agent. The same `env -u` also gets past the root rule for the tick and seat
 sites (see "Tick and seat callers" below), because the rule applies only when an id is
 set.
 
-The root rule trusts the broker's own environment, which is fixed when the broker
-starts. What it does and does not stop:
+**The root rule narrows the opt-out sites; it does not close them.** It compares three
+values with the broker's: `currentAutonomyRoot()`, `activeWorkRoot()` and `home()`. That
+does stop one route. Moving `HOME` or `AGENT_CHAT_HOME` to a directory of your own and
+planting a `chat.sock` symlink to the live socket makes the site's `home()` differ from
+the broker's, so the site refuses, even if the planted `config.json` is a copy of the
+real one. But the tick and the watchdog still run in the calling agent's process, and
+read other inputs from it that the rule never compares. Each of these is open today to
+an agent that calls an opt-out site from its own shell. Citations are at origin/main
+`6031c17`:
 
-- **Stopped:** moving `HOME` or `AGENT_CHAT_HOME` to a directory of your own and planting
-  a `chat.sock` symlink to the live socket there, so that a different `config.json` is
-  read. The site's `home()` is the planted directory and the broker's is the real one.
-  They differ, so the site refuses. This holds even when the planted `config.json` is a
-  copy of the real one and every policy root matches.
-- **Not stopped:** a broker started from an agent's environment. That includes one
-  autostarted from an agent shell, which inherits that shell's `HOME`, `ACTIVE_ROOT` and
-  `AGENT_CHAT_HOME`, and one an agent started on purpose with planted values. The
-  broker's roots and `home()` are then the agent's. This is adversarial, so it falls
-  under the OS-account limit.
-- **Not stopped:** editing the owner's real charter, seat files or `config.json`. That
-  changes the broker's roots too, and it is the same limit.
+- **`PATH`.** The tick runs programs by bare name, through `childEnv`
+  (`src/agents/burndown/exec.ts:14-17`), which copies the whole environment and strips
+  only `AGENT_CHAT_NAME` and `AGENT_CHAT_AGENT_ID`. So the calling agent's `PATH` picks
+  which binary answers:
+  - `gh`, for PR state (`src/agents/burndown/pr-state.ts:68`, and the collision,
+    leak-check, exited-adopt and pr-adopt ports);
+  - `titan-factory`, for Shepherd's status (`SHEPHERD_BIN`,
+    `src/agents/burndown/shepherd.ts:14`, run at `:89`);
+  - `active-work`, for task edits (`src/agents/burndown/brief-approve.ts:67`);
+  - `git` (for example `src/agents/burndown/pr-adopt-ports.ts:61`).
+
+  Those answers decide which agents are spawned, handed off or retired.
+
+- **`GH_*` and `GH_CONFIG_DIR`.** These pass through `childEnv` unchanged
+  (`exec.ts:15`), so the caller picks the `gh` host, token and config that answer
+  `pr-state.ts:68`.
+- **Git config variables.** `GIT_CONFIG_*`, `GIT_DIR` and the like also pass through
+  `childEnv` unchanged. Only `GIT_ALLOW_PROTOCOL` is pinned (`exec.ts:15`).
+- **`lastReport`.** `afterWorker` copies a worker report's first line into the claim
+  (`src/agents/burndown/advance.ts:222`). The claim carries it into a reviewer spawn's
+  patch (`:238`), a hand-off (`:232`), and the done update next to `retireAll` (`:240`).
+  A planted report shapes what the tick spawns and records.
+
+So `PATH=/tmp/fake:$PATH agent-chat burndown tick --once` from an agent shell passes the
+root rule and acts as `HUMAN` on output the agent planted.
+
+**The boundary that closes the class.** An opted-out tick or watchdog never runs in the
+agent's process. When `AGENT_CHAT_AGENT_ID` is set, each opt-out site sends the broker a
+new Class 4 kick frame that takes no arguments, and runs nothing itself. The broker then
+runs the job in its own environment, the way it already launches ticks: `launchTick` in
+`src/broker/burndown-kick.ts:111`, with `jobEnv` (`src/mirror/plist.ts:7`, used at
+`burndown-kick.ts:102`). The launchd and systemd units run jobs the same way. The root,
+`home()`, `PATH`, `GH_*`, git config and planted-input questions then all go away
+together, and the root-compare frame is no longer needed. This is tracked as **CC-1151**
+and is not built in this PR. Once it lands, hand-run `burndown tick` and `seats watchdog`
+/ `heartbeat-check` calls from an agent shell go through the kick frame.
+
+What stays open after that is the §11.4 OS-account limit:
+
+- a broker started from an agent's environment, whether autostarted from an agent shell
+  (it inherits that shell's `HOME`, `ACTIVE_ROOT`, `AGENT_CHAT_HOME` and `PATH`) or
+  started on purpose with planted values;
+- edits to the owner's real charter, seat files or `config.json`.
 
 This meets the bar in `agent-teams.md` §11.4, which stops a confused agent but not an
 adversarial one. It does not raise that bar. The OS account remains the trust boundary.
@@ -264,8 +308,9 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   - It asks the broker, over the connection it already opens, for the roots the broker
     resolves in its own process: `currentAutonomyRoot()`, `activeWorkRoot()` and
     `home()`. `home()` is the `AGENT_CHAT_HOME` the broker runs on (`src/paths.ts`).
-  - It refuses unless no `--root` is given and every one of those it resolved for itself
-    equals the broker's.
+  - It refuses unless every one of those it resolved for itself equals the broker's. The
+    two seats sites also refuse when `--root` is given. `burndown tick` has no `--root`
+    flag (it takes only `--once` and `--dry-run`), so that part does not apply to it.
 
   `home()` is on the list because the policy roots are not the tick's only inputs. The
   tick and the watchdog also read state relative to `home()`: the burndown ledger
@@ -299,9 +344,12 @@ watchdog` picks a policy the caller wrote, with no `--root`. With that policy, a
   agent name, past the new ownership check.
 
   Earlier drafts of this rule stripped these variables one at a time, and each review
-  found another. Any rule that compares against a client-side resolution stays a list of
-  routes. The broker's environment is the one input the calling agent cannot set at call
-  time, so comparing against it closes the class rather than the instances.
+  found another. Comparing with the broker's values covers the root and `home()` inputs,
+  but not the others the opt-out sites read from the calling process (`PATH`, `GH_*`,
+  git config, planted reports). It is a stopgap, not a closure. See the Limits section:
+  the boundary that closes the class is the broker kick frame (CC-1151). Once that
+  lands, an opted-out site runs nothing in the agent's process, and this frame is no
+  longer needed.
 
   Option 2 was rejected because the broker would have to trust a self-declared source,
   which an agent can set as easily as it can omit the id. That adds broker surface for no
