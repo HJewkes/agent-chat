@@ -9,17 +9,24 @@ const LIVE_STATES = ['spawning', 'live', 'detached']
 
 export const blockKey = (block: OpenBlock): string => `${block.sessionId}@${block.since}`
 
+const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/
+
+/** The hook writes seat and session unchecked, so only plain tokens may reach the page text. */
+export const safeBlock = (block: OpenBlock): boolean =>
+  SAFE_TOKEN.test(block.seat) && SAFE_TOKEN.test(block.sessionId)
+
 /**
- * A block counts while its seat's roster row is live on the same session. An unreadable roster
- * counts every block: a missed page costs more than one stale page, which the dedupe caps at once.
+ * A block counts only while its seat's roster row is live on exactly the same session. An unreadable
+ * roster, or a row with no sessionId, pages nothing: the block row is agent-written and unverifiable.
  */
 export function blockLive(roster: Roster, block: OpenBlock): boolean {
-  if (roster.unknown !== undefined) return true
+  if (roster.unknown !== undefined) return false
   return roster.agents.some(
     agent =>
       agent.name === block.seat &&
       LIVE_STATES.includes(agent.state) &&
-      (agent.sessionId === undefined || agent.sessionId === block.sessionId),
+      agent.sessionId !== undefined &&
+      agent.sessionId === block.sessionId,
   )
 }
 
@@ -75,6 +82,12 @@ export async function blockPageChange(input: BlockPageInput): Promise<{ lines: s
   const { page, keep } = pickPages(input.open, input.paged, input.isLive, input.nowMs, input.seats)
   const lines: string[] = []
   for (const block of page) {
+    if (!safeBlock(block)) {
+      lines.push(
+        `refused to page: block row with an unsafe seat or session (${JSON.stringify(block.seat).slice(0, 60)})`,
+      )
+      continue
+    }
     const text = pageText(block, input.nowMs)
     if (input.dryRun) {
       lines.push(`would page ${BLOCK_PAGE_TO}: ${text}`)

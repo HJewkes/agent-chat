@@ -101,7 +101,13 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import {
+  notifyAsWatchdog,
+  sendAsOwner,
+  sendAsWatchdog,
+  withRunningBroker,
+  type Reply,
+} from './seat-broker.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
 import { respawnSeat } from './seat-respawn.js'
@@ -325,7 +331,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     relaunchSeat: async (seat, plan) =>
       respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
     openBlocks: readOpenBlocks,
-    page: (to, text) => sendAsOwner(client, to, text),
+    page: sendAsWatchdog,
   }
 }
 
