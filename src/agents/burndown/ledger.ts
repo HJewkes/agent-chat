@@ -423,6 +423,12 @@ export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>):
   }
 }
 
+/** CC-1111: the live pid holding `<file>.lock`, or undefined when no live process does; takes nothing. */
+export function ledgerLockHolder(file: string): number | undefined {
+  const holder = readHolder(`${file}.lock`)
+  return holder !== undefined && isAlive(holder) ? holder : undefined
+}
+
 /** Link-in a complete pid file, which fails atomically when the lock exists; returns the holder then. */
 function tryLock(lock: string): number | undefined {
   const tmp = `${lock}.${process.pid}.tmp`
