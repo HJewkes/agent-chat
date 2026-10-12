@@ -109,8 +109,10 @@ const teleportToLaptop = (agentId: string) =>
     subject: {
       agentId,
       name: 'scout',
-      // Under home, so the broker's own path check passes and the launcher's probe decides.
+      // Both under home, so the broker's own path check passes and the launcher's probe decides;
+      // an explicit config dir keeps the runner's own (often outside home on CI) out of it.
       cwd: path.join(os.homedir(), 'projects', 'untrusted-x'),
+      configDir: path.join(os.homedir(), '.claude-profiles', 'agents'),
       hostPid: 9999,
       host: os.hostname(),
       tags: [],
