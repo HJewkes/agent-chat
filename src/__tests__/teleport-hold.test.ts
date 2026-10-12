@@ -133,6 +133,30 @@ describe('a send to a non-seat name mid-teleport', () => {
     expect(result).toMatchObject({ ok: false, reason: `no active session named "${WORKER}"` })
   })
 
+  /** CC-1089: a handoff that restates an open ask lets it teleport, so its answers must follow the name. */
+  it('pushes an answer given in the teleport gap to the successor on register', () => {
+    const predecessor = join(WORKER)
+    const { msgId: ask } = core.append({ kind: 'question', actor: WORKER, target: 'human', body: 'merge?' })
+    const successorId = teleports(predecessor)
+    at(T0 + MINUTE)
+
+    core.answer(ask, 'yes, merge', 'cli')
+    const successor = join(WORKER, successorId)
+
+    expect(pushed(successor).map(m => [m.inReplyTo, m.text])).toEqual([[ask, 'yes, merge']])
+  })
+
+  it('an answer given after the successor registers goes straight to it', () => {
+    const predecessor = join(WORKER)
+    const { msgId: ask } = core.append({ kind: 'question', actor: WORKER, target: 'human', body: 'tag?' })
+    const successor = join(WORKER, teleports(predecessor))
+    at(T0 + 2 * MINUTE)
+
+    core.answer(ask, 'tag it', 'cli')
+
+    expect(pushed(successor).map(m => [m.inReplyTo, m.text])).toEqual([[ask, 'tag it']])
+  })
+
   it('still fails a send to a dark non-seat name that wrote no handoff', () => {
     const worker = join(WORKER)
     at(T0)
