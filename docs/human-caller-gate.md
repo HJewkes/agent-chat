@@ -190,14 +190,64 @@ that agent. This meets the bar in
 not raise that bar. The OS account remains the trust boundary. Every agent runs as the
 human's user and can do anything the human's CLI can do.
 
+## Client-side callers
+
+The frame inventory covers what the broker receives. This table covers who sends those
+frames. It lists every sender of a Class 1, 2 or 3 frame under `src/` at origin/main
+`d173e6c`, found by grepping for each frame's `t: '<frame>'` literal outside
+`src/broker`. The MCP server's own commands (`src/server/commands/*`) are left out,
+because they go over the session's registered connection, which the gate does not
+change. Internal `Supervisor` calls are left out too: they never cross the socket.
+
+| Sender                                                                                                                          | Frames                                                                                                  | Usual runner                                                     | Can run with the id set?                                                                                                                                                        | Under the gate as recommended                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| burndown tick: `cli/verbs/burndown.ts`, `burndown/execute.ts`, `burndown/triage.ts`, `cli/burndown-broker.ts`                   | `spawn`, `resume`, `retire` (Class 2)                                                                   | the launchd job or systemd timer (`agent-chat burndown install`) | **yes**. `burndown/exec.ts` says "a tick run from an agent's shell carries both" identity variables. `docs/burndown.md` asks for supervised `burndown tick --once` runs by hand | checked as the shell's agent: escalation, coordinator depth, worker-spawn ban, rate limit. The new retire ownership check refuses its retires. **Breaks** |
+| seat watchdog: `cli/verbs/seat-respawn.ts`, `cli/verbs/seats.ts`                                                                | `spawn`, `retire`, `resume` (Class 2)                                                                   | launchd or systemd units (`src/mirror/plist.ts`)                 | yes, if a seat or coordinator runs `seats watchdog` by hand from its shell                                                                                                      | same as the tick. The seat's relaunch is refused or checked as that agent. **Breaks**                                                                     |
+| seat watchdog: `cli/verbs/seat-broker.ts` (`sendAsOwner`)                                                                       | `human_send` (Class 1)                                                                                  | same units                                                       | same                                                                                                                                                                            | refused. **Breaks**                                                                                                                                       |
+| `agent-chat agent …`: `cli/agents.ts`, `cli/verbs/agent-{park,resume,retire}.ts`                                                | `spawn`, `surface`, `park`, `resume`, `retire`, `retire_finished` (Class 2); `teleport_abort` (Class 1) | the owner, or a coordinator's shell                              | yes, from a coordinator's shell (`WORKER_CLI_DENY` keeps workers off the literal spelling)                                                                                      | mapped to the coordinator, the same as its MCP tools. That is intended. `teleport_abort` is refused, which is also intended                               |
+| `cli/human.ts`, `cli/verbs/{dismiss,endorse,approve,ask}.ts`, `inbox/apply.ts`, `cli/debug.ts`, `cli/verbs/teleport-request.ts` | Class 1 frames                                                                                          | the owner's terminal                                             | only when the owner types them into an agent's pane                                                                                                                             | refused. Intended; see the `!` commands question below                                                                                                    |
+| `mirror/source.ts`                                                                                                              | `answer`, `dismiss`, `endorse_approve`, `approve_permission` (Class 1)                                  | the mirror daemon's launchd or systemd unit                      | no, the unit does not carry the id                                                                                                                                              | unchanged                                                                                                                                                 |
+| `cli/verbs/permission-hook.ts`                                                                                                  | `permission_hook`, `permission_self_granted` (Class 3), `permission_hook_withdrawn` (Class 4)           | the PermissionRequest hook inside the agent's tree               | always                                                                                                                                                                          | accepted for the agent's own session. Intended                                                                                                            |
+
 ## Open questions for CC-1138
+
+- **Tick and seat callers run from an agent's shell.** This covers the burndown tick and
+  the seat watchdog rows in the caller table. They are the factory's own programs: the
+  task board, the charter and the seat files decide what they spawn, resume and retire,
+  not the agent whose shell started them. Under the hello as written, a hand-run tick or
+  watchdog would be checked as that agent and would break.
+
+  Options:
+  1. Strip the id for these callers, the way `childEnv` (`burndown/exec.ts`) already
+     strips it for the tick's subprocesses.
+  2. Give them an exempt frame or source.
+  3. Accept the refusal and document it.
+
+  **Recommendation: option 1, done in the client.** These callers build their
+  `BrokerClient` with the hello turned off: the tick's unregistered clients in
+  `cli/verbs/burndown.ts` and `withRunningBroker` in `cli/verbs/seat-broker.ts`. The
+  tick's registered `burndown` sender (`connectBroker` in `cli/burndown-broker.ts`) only
+  sends Class 4 frames, so it does not need the change. The tick and the watchdog then reach the broker exactly
+  as they do from launchd today. A test pins the list of callers that turn the hello off,
+  so adding one is a reviewed change.
+
+  Option 2 was rejected because the broker would have to trust a self-declared source,
+  which an agent can set as easily as it can omit the id. That adds broker surface for no
+  extra assurance. Option 3 was rejected because it breaks the supervised ticks
+  `docs/burndown.md` asks for, and a seat relaunching its peers.
+
+  Limit: an agent that runs `agent-chat burndown tick` or `seats watchdog` acts with the
+  tick's authority. That authority is bounded by the tick's own policy (charter caps, the
+  spawn gate, the task board), not by the caller's brief. Today the shipped bd-* profiles
+  deny `Bash(agent-chat burndown:*)` by literal spelling (landed), and no profile denies
+  `seats`. Whether to add a `seats` deny is part of CC-1138.
 
 - **Seat verbs.** `seats watchdog` and `heartbeat-check` send `human_send` with
   `source: 'watchdog'` through `sendAsOwner` (`src/cli/verbs/seat-broker.ts`). They run
   from launchd or systemd units (`src/mirror/plist.ts`), which do not carry the id. Before
   the gate lands, confirm that no seat session runs these verbs from its own shell, where
-  the id would be set. If one does, give them a frame of their own, or a source the
-  broker accepts from a declared agent, rather than exempting `human_send`.
+  the id would be set. If one does, the next entry's recommendation covers it: the
+  watchdog's client turns the hello off.
 - **`teleport request`** (`src/cli/verbs/teleport-request.ts`) is a human verb that sends
   `human_send`. When the owner types it into a teleported agent's terminal pane, the
   shell carries the agent's id and the gate would refuse it. Decide whether that is
