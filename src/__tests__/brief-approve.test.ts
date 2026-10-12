@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { approveBrief, approvePortsOn } from '../agents/burndown/brief-approve.js'
+import { opsNoneTag } from '../agents/burndown/ops.js'
 
 const TASK = `id: CC-1
 title: "t"
@@ -107,5 +108,62 @@ describe('burndown brief approve', () => {
   it('refuses a task with no proposal', () => {
     fs.writeFileSync(path.join(root, 'init', 'tasks', 'CC-1.yml'), 'id: CC-1\ntags:\n  - kind:x\n')
     expect(approveBrief('CC-1', ports(), '2026-10-10').ok).toBe(false)
+  })
+
+  describe('ops tag on promotion (CC-1154)', () => {
+    const RULESET = 'the tick no longer refuses; update the ruleset docs page'
+    const withDoneWhen = (doneWhen: string, extraTags: string[] = []) => {
+      fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+      const tags = ['brief:proposed=2026-10-09', ...extraTags].map(t => `  - ${t}\n`).join('')
+      fs.writeFileSync(
+        path.join(root, 'init', 'tasks', 'CC-1.yml'),
+        `id: CC-1\ndone_when: "${doneWhen}"\ntags:\n${tags}`,
+      )
+    }
+
+    it('adds ops:none for the done_when when it mentions no op', () => {
+      withDoneWhen('unit tests cover it')
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(report.ok).toBe(true)
+      expect(edits[0]).toEqual(['--add-tag', opsNoneTag('unit tests cover it')])
+      expect(edits).toContainEqual(['--add-tag', 'brief:ready=2026-10-10'])
+    })
+
+    it('hashes a folded multi-line done_when as the tick reads it', () => {
+      fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+      fs.writeFileSync(
+        path.join(root, 'init', 'tasks', 'CC-1.yml'),
+        'id: CC-1\ndone_when: "unit tests\n  cover it"\ntags:\n  - brief:proposed=2026-10-09\n',
+      )
+
+      approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(edits[0]).toEqual(['--add-tag', opsNoneTag('unit tests cover it')])
+    })
+
+    it('refuses an untagged ruleset done_when, naming the op and the exact tag, and edits nothing', () => {
+      withDoneWhen(RULESET)
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(report.ok).toBe(false)
+      expect(report.errors?.[0]).toContain('ruleset-write')
+      expect(report.errors?.[0]).toContain(opsNoneTag(RULESET))
+      expect(edits).toEqual([])
+    })
+
+    it.each([
+      ['a declared op', 'ops:ruleset-write'],
+      ['the matching ops:none tag', opsNoneTag(RULESET)],
+    ])('promotes a ruleset done_when carrying %s with no second ops tag', (_scenario, tag) => {
+      withDoneWhen(RULESET, [tag])
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(report.ok).toBe(true)
+      expect(edits.filter(([, t]) => t?.startsWith('ops:'))).toEqual([])
+    })
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseFunds, seatInitiatives, seatPools, type FundsMap, type Pool } from '../agents/seats/charter.js'
 import { parsePace, readPace, type PaceRead } from '../agents/seats/pace-file.js'
-import { pickPool, type PoolPickInput } from '../agents/seats/pool-pick.js'
+import { pickPool, poolFunds, type PoolPickInput } from '../agents/seats/pool-pick.js'
 
 const NOW = Date.parse('2026-01-05T12:00:00Z')
 const MINUTE = 60_000
@@ -192,6 +192,46 @@ describe('the funds map in the pool pick', () => {
     const pick = pickPool(input(rows, { funds, initiatives: ['family'] }))
 
     expect(pick).toEqual({ order: [], reason: 'initiative family is human-only', candidates: [] })
+  })
+
+  it('lets every pool fund an unnamed initiative when the map has no default', () => {
+    const noDefault: FundsMap = { only: new Map([['private-work', ['gamma']]]), never: [] }
+
+    const pick = pickPool(input(rows, { funds: noDefault, initiatives: ['open-work'] }))
+
+    expect(pick.order).toEqual(['beta', 'gamma', 'alpha'])
+  })
+})
+
+describe('poolFunds, the one funds rule', () => {
+  const named = new Map([['private-work', ['gamma']]])
+
+  it('holds an initiative to its own entry', () => {
+    const funds: FundsMap = { only: named, fallback: ['alpha'], never: [] }
+
+    expect(poolFunds(funds, 'gamma', 'private-work')).toBe(true)
+    expect(poolFunds(funds, 'alpha', 'private-work')).toBe(false)
+  })
+
+  it('holds an unnamed initiative to default when there is one', () => {
+    const funds: FundsMap = { only: named, fallback: ['alpha'], never: [] }
+
+    expect(poolFunds(funds, 'alpha', 'open-work')).toBe(true)
+    expect(poolFunds(funds, 'beta', 'open-work')).toBe(false)
+    expect(poolFunds(funds, 'beta', undefined)).toBe(false)
+  })
+
+  it('lets any pool fund an unnamed initiative when there is no default', () => {
+    const funds: FundsMap = { only: named, never: [] }
+
+    expect(poolFunds(funds, 'beta', 'open-work')).toBe(true)
+    expect(poolFunds(funds, 'beta', undefined)).toBe(true)
+  })
+
+  it('funds a human-only initiative from no pool', () => {
+    const funds: FundsMap = { only: named, never: ['family'] }
+
+    expect(poolFunds(funds, 'alpha', 'family')).toBe(false)
   })
 })
 
