@@ -23,6 +23,8 @@ import {
 import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
 import { machineStop, type MachineStop, type MachineStopReadings } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
+import { EventLog } from '../../broker/event-log.js'
+import { seatBlockReport, type OpenBlock } from '../../seat-blocks.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
@@ -269,6 +271,19 @@ function presence(seat: string): Presence | undefined {
   }
 }
 
+/** CC-1057: undefined when events.db cannot be read, so the pass pages nothing and keeps its dedupe. */
+function readOpenBlocks(nowMs: number): OpenBlock[] | undefined {
+  let log: EventLog | undefined
+  try {
+    log = new EventLog()
+    return seatBlockReport(log, nowMs, nowMs).open
+  } catch {
+    return undefined
+  } finally {
+    log?.close()
+  }
+}
+
 function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
   const identities = new Map<string, AgentIdentity>()
   return {
@@ -309,6 +324,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     notifyHuman: notifyAsWatchdog,
     relaunchSeat: async (seat, plan) =>
       respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
+    openBlocks: readOpenBlocks,
+    page: (to, text) => sendAsOwner(client, to, text),
   }
 }
 
@@ -366,7 +383,8 @@ export const seatsWatchdogVerb = defineVerb({
     '`stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>": "<reason>"}}; ' +
     'delete the entry to re-enable), a seat at its spend stop, or any seat while the owner seat has ' +
     'announced a broker restart without "restart done". A latest journal line starting WRAP, PARKED ' +
-    'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. An ' +
+    'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. Pages ' +
+    'tp-operator once per live seat blocked on AskUserQuestion over 5 min (CC-1057). An ' +
     'unparsable seat-watchdog.json is an error and the run does nothing',
   args: z.object({
     dryRun: z.boolean().optional(),

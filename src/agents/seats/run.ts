@@ -26,6 +26,8 @@ import {
 import type { RunLock } from './lock.js'
 import { HANDOFF_GRACE_MS, RELAUNCH_QUIET_MS, judgeRelaunch, type RelaunchVerdict } from './relaunch.js'
 import { checkAttended } from './attended.js'
+import { blockLive, blockPageChange } from './block-page.js'
+import type { OpenBlock } from '../../seat-blocks.js'
 import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
 import { seatAccount, type SeatAccount } from './seat-account.js'
 import {
@@ -134,6 +136,10 @@ export interface WatchdogDeps {
   relaunchSeat?: (seat: string, plan: SeatRelaunchPlan) => Promise<RelaunchSeatResult>
   /** CC-391: records each delivered heartbeat as a `heartbeat_watchdog` row; absent, nothing is recorded. */
   logEvent?: (event: string, detail: Record<string, unknown>) => void
+  /** CC-1057: the seat blocks still open at `nowMs`; undefined when events.db cannot be read, which pages nothing. */
+  openBlocks?: (nowMs: number) => OpenBlock[] | undefined
+  /** CC-1057: sends one page; absent with `openBlocks`, the pass pages nothing. */
+  page?: (to: string, text: string) => Promise<WakeResult>
 }
 
 export interface WatchdogOptions {
@@ -156,6 +162,8 @@ interface Pass {
   resets: Map<string, number | undefined>
   fireCap: number | undefined
   dryRun: boolean
+  /** The seats `--seat` named; undefined means every charter seat. */
+  seats: string[] | undefined
   /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
   gaps: string[]
   /** Probes that failed in this pass, one line each. */
@@ -666,6 +674,7 @@ function save(pass: Pass): void {
     ...(pass.doc.probeFailed === undefined ? {} : { probeFailed: pass.doc.probeFailed }),
     ...(pass.doc.attended === undefined ? {} : { attended: pass.doc.attended }),
     ...(pass.doc.serviceHeard === undefined ? {} : { serviceHeard: pass.doc.serviceHeard }),
+    ...(pass.doc.blockPaged === undefined ? {} : { blockPaged: pass.doc.blockPaged }),
   })
 }
 
@@ -969,6 +978,25 @@ async function serviceChange(pass: Pass): Promise<string[]> {
   return lines
 }
 
+/** CC-1057: tp-operator hears once of each live seat blocked on AskUserQuestion over 5 min. */
+async function blockPages(pass: Pass): Promise<string[]> {
+  const { openBlocks, page } = pass.deps
+  if (openBlocks === undefined || page === undefined) return []
+  const nowMs = pass.now.getTime()
+  const { lines, paged } = await blockPageChange({
+    open: openBlocks(nowMs),
+    paged: pass.doc.blockPaged ?? [],
+    isLive: block => blockLive(pass.roster, block),
+    nowMs,
+    ...(pass.seats === undefined ? {} : { seats: pass.seats }),
+    dryRun: pass.dryRun,
+    page,
+  })
+  if (paged.length === 0) delete pass.doc.blockPaged
+  else pass.doc.blockPaged = paged
+  return lines
+}
+
 async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<[Pass, string]> {
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
@@ -985,6 +1013,7 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     resets: new Map(),
     fireCap: options.fireCap,
     dryRun: options.dryRun,
+    seats: options.seats,
     gaps: [],
     probeFaults: [],
   }
@@ -1024,6 +1053,7 @@ function passHead(pass: Pass, charter: string): string[] {
 
 async function passTail(pass: Pass): Promise<string[]> {
   const lines = pass.dryRun ? [] : await serviceChange(pass)
+  lines.push(...(await blockPages(pass)))
   const paceFault = pass.dryRun ? undefined : publishPoolPace(pass)
   if (paceFault !== undefined) lines.push(paceFault)
   lines.push(...pass.probeFaults)
