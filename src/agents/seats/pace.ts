@@ -8,7 +8,7 @@ import { MAX_READING_AGE_SECONDS, type AccountReading } from '../burndown/budget
 const DAY_MS = 86_400_000
 const WINDOW_MS = 7 * DAY_MS
 /** The glide ends this long before the reset, so the last day is slack. */
-const FINISH_EARLY_MS = DAY_MS
+export const FINISH_EARLY_MS = DAY_MS
 const MIN_DAYS_LEFT = 1 / 24
 
 export const BEHIND_AT = 5
@@ -57,6 +57,59 @@ export function paceOf(reading: PaceInput, reserve: number, nowMs: number): Pace
   const needs = Math.max(0, final - sevenDay) / Math.max(daysLeft, MIN_DAYS_LEFT)
   const behind = target - sevenDay
   return { sevenDay, target, behind, needs, level: levelOf(behind, needs), resetsAt, rolled }
+}
+
+/** CC-1104: points a pool may run ahead of its glide target before the pace controller refuses new work. */
+export const PACE_BUFFER_POINTS = 3
+
+export const PACE_CONTROLLER_MODES = ['off', 'shadow', 'on'] as const
+export type PaceControllerMode = (typeof PACE_CONTROLLER_MODES)[number]
+
+export interface PaceVerdict {
+  open: boolean
+  lever: 'pace'
+  /** The glide target plus the buffer: the charged reading must stay below it. Null with no reset time. */
+  value: number | null
+  /** The charged seven_day reading the verdict judged: 0 for a rolled window, plus this tick's charge. */
+  reading: number
+  headroom: number | null
+  needs: number | null
+  /** `no-reset` never refuses: an unknown reset is no evidence the pool is ahead. */
+  source: 'glide' | 'rolled' | 'no-reset'
+}
+
+/**
+ * CC-1104: whether a pool may take new work under the pace controller. It admits while the charged
+ * seven_day reading is below the straight glide to the R line at reset minus 24 h, plus a buffer.
+ */
+export function paceVerdict(
+  reading: { sevenDay: number; resetsAt: number | undefined },
+  reserve: number,
+  nowMs: number,
+  charged = 0,
+): PaceVerdict {
+  if (reading.resetsAt === undefined)
+    return {
+      open: true,
+      lever: 'pace',
+      value: null,
+      reading: reading.sevenDay + charged,
+      headroom: null,
+      needs: null,
+      source: 'no-reset',
+    }
+  const pace = paceOf({ sevenDay: reading.sevenDay, resetsAt: reading.resetsAt }, reserve, nowMs)
+  const value = pace.target + PACE_BUFFER_POINTS
+  const used = pace.sevenDay + charged
+  return {
+    open: used < value,
+    lever: 'pace',
+    value,
+    reading: used,
+    headroom: Math.max(0, value - used),
+    needs: pace.needs,
+    source: pace.rolled ? 'rolled' : 'glide',
+  }
 }
 
 /** One pool's row in `pace.json` and in the `pace` block of `seats status`. */
