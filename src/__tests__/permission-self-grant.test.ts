@@ -11,6 +11,8 @@ import { SocketServer } from '../broker/socket.js'
 import { loggedCount } from '../broker/log.js'
 import { HUMAN, type ClientMessage, type ServerMessage } from '../protocol.js'
 import { recordSelfGrant } from '../cli/verbs/permission-hook.js'
+import { readLedgerFacts } from '../digest/ledger.js'
+import { toSourceEvent } from '../mirror/source.js'
 
 /**
  * CC-694 slice d: every call the permission hook allows itself leaves an audit row,
@@ -41,9 +43,13 @@ function tmpDir(): string {
   return dir
 }
 
-function setup(): { core: BrokerCore; server: SocketServer; wire: () => Wire } {
+function setup(dbPath = path.join(tmpDir(), 'events.db')): {
+  core: BrokerCore
+  server: SocketServer
+  wire: () => Wire
+} {
   const core = new BrokerCore(() => undefined, {
-    events: new EventLog(path.join(tmpDir(), 'events.db')),
+    events: new EventLog(dbPath),
     registry: new Registry<Conn>(),
   })
   const server = new SocketServer(core)
@@ -96,6 +102,27 @@ describe('a self-grant record from the hook', () => {
     wire().send(GRANT)
 
     expect(core.events.humanQueue()).toHaveLength(0)
+  })
+
+  it('is invisible to every human-facing surface even before its resolution lands', () => {
+    const dbPath = path.join(tmpDir(), 'events.db')
+    const { core, wire } = setup(dbPath)
+    const seen: { mirror: unknown; queue: string[]; digest: string[] }[] = []
+    core.onAppend(appended => {
+      if (appended.kind !== 'approval_request') return
+      const row = rows(core).at(-1)!
+      const facts = readLedgerFacts(dbPath, 0, Date.now())
+      seen.push({
+        mirror: toSourceEvent(row, 'test-machine'),
+        queue: core.events.humanQueue().map(item => item.msgId),
+        digest: facts.escalations.map(entry => entry.msgId),
+      })
+    })
+
+    wire().send(GRANT)
+
+    expect(seen).toEqual([{ mirror: null, queue: [], digest: [] }])
+    expect(rows(core).find(row => row.kind === 'approval_request')?.target).not.toBe(HUMAN)
   })
 
   it('is refused from a registered session, which cannot vouch for its own grants', () => {

@@ -1284,7 +1284,9 @@ export class SocketServer {
   /**
    * The audit row for a call the hook allowed itself (CC-694). Nobody waits on it,
    * so the request is closed by an `allow` resolution in the same breath; the
-   * resolution's actor is the agent, never HUMAN, because no human decided.
+   * resolution's actor is the agent, never HUMAN, because no human decided. It has
+   * no target: the mirror, the queue view and the digest all key on target human,
+   * and an open-then-close pair there would post an ask the owner never had.
    */
   private handlePermissionSelfGranted(
     conn: Conn,
@@ -1307,7 +1309,6 @@ export class SocketServer {
     const { msgId } = core.append({
       kind: 'approval_request',
       actor: msg.session,
-      target: HUMAN,
       body: `${msg.toolName}: self-granted (${msg.grant})`,
       meta: {
         source: 'self-grant',
