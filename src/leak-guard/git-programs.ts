@@ -3,8 +3,10 @@ import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolve
 import { LIVE, unmark } from './shell-words.js'
 import {
   isOption,
+  isSet,
   optionSpec,
   parseOptions,
+  type OptionSpec,
   type OptionsEnd,
   type ParsedArgs,
   type SubArgs,
@@ -269,20 +271,54 @@ const CONFIG_NON_WRITES = new Set(
   ),
 )
 const CONFIG_SUBCOMMANDS = new Set([...CONFIG_NON_WRITES, 'set', 'rename-section'])
-// `git remote` and `git submodule` options before the verb, and those of `add` and `set-url`.
-const REMOTE_OPTIONS = {
-  lead: optionSpec('v:[no-]verbose'),
-  verb: optionSpec(
-    'f:[no-]fetch [no-]tags t:[no-]track= m:[no-]master= [no-]mirror [no-]push [no-]add [no-]delete',
-  ),
+const SUBMODULE_ADD = `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [no-]reference= [no-]ref-format=
+  [no-]dissociate [no-]name= [no-]depth=`
+
+/**
+ * How a builtin that stores a remote or submodule URL reads its words, from its `-h` lists on git
+ * 2.53 (TP-2371). `lead` holds the options before the verb; `writes` the verbs that store a URL,
+ * each with its options and, for `remote set-url --delete`, the option state that stores none;
+ * `safe` the verbs that store none. A verb in neither is treated as one that may store any word it
+ * is given. `git clone` also stores its repository as `remote.origin.url` but is left out: an
+ * unread clone URL is an allowed form (TP-636), and a later `ext::` run of it needs the protocol
+ * list this slice denies or the CC-1095 pin lifted.
+ */
+interface UrlCommand {
+  lead: OptionSpec
+  writes: Readonly<Record<string, { options: OptionSpec; storesNone?: (parsed: ParsedArgs) => boolean }>>
+  safe: ReadonlySet<string>
 }
-const SUBMODULE_OPTIONS = {
-  lead: optionSpec('q:[no-]quiet [no-]cached'),
-  verb: optionSpec(
-    `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [no-]reference= [no-]ref-format=
-    [no-]dissociate [no-]name= [no-]depth=`,
-  ),
+
+const URL_COMMANDS: Readonly<Record<string, UrlCommand>> = {
+  remote: {
+    lead: optionSpec('v:[no-]verbose'),
+    writes: {
+      add: { options: optionSpec('f:[no-]fetch [no-]tags t:[no-]track= m:[no-]master= [no-]mirror') },
+      'set-url': {
+        options: optionSpec('[no-]push [no-]add [no-]delete'),
+        storesNone: parsed => isSet(parsed, 'delete') && !isSet(parsed, 'add'),
+      },
+    },
+    safe: new Set('rename remove rm show prune update get-url set-head set-branches'.split(' ')),
+  },
+  submodule: {
+    lead: optionSpec('q:[no-]quiet [no-]cached'),
+    writes: {
+      add: { options: optionSpec(SUBMODULE_ADD) },
+      'set-url': { options: optionSpec('q:[no-]quiet') },
+    },
+    safe: new Set('init deinit update status summary foreach sync absorbgitdirs set-branch'.split(' ')),
+  },
+  'submodule--helper': {
+    lead: optionSpec(''),
+    writes: {
+      add: { options: optionSpec(SUBMODULE_ADD) },
+      'set-url': { options: optionSpec('q:[no-]quiet') },
+    },
+    safe: new Set(),
+  },
 }
+
 // Keys whose value git reads as a remote's or submodule's URL or URL helper; `url.<base>.insteadOf` also takes one in its key.
 const URL_KEY = /^(?:(?:remote|submodule)\..*\.(?:url|pushurl|vcs)|url\..*\.(?:push)?insteadof)$/i
 // Sections a renamed section may land in and so set a protocol policy or a URL git later runs.
@@ -298,10 +334,11 @@ interface ConfigCall {
   positionals: (string | undefined)[]
 }
 
-function configCall({ options, positionals }: ParsedArgs, named: string | undefined): ConfigCall {
-  if (options.some(o => CONFIG_NON_WRITES.has(o)) || (named !== undefined && CONFIG_NON_WRITES.has(named)))
-    return { mode: 'other', positionals }
-  const rename = options.includes('rename-section') || named === 'rename-section'
+function configCall(parsed: ParsedArgs, named: string | undefined): ConfigCall {
+  const { positionals } = parsed
+  const reads = [...CONFIG_NON_WRITES].some(mode => isSet(parsed, mode))
+  if (reads || (named !== undefined && CONFIG_NON_WRITES.has(named))) return { mode: 'other', positionals }
+  const rename = isSet(parsed, 'rename-section') || named === 'rename-section'
   return { mode: rename ? 'rename' : 'set', positionals }
 }
 
@@ -343,28 +380,35 @@ function configEnabler(args: SubArgs): ExtEnabler | undefined {
   return URL_KEY.test(key) && value === undefined ? 'url' : undefined
 }
 
+const tail = (args: SubArgs, from: number): SubArgs => ({
+  resolved: args.resolved.slice(from),
+  written: args.written.slice(from),
+})
+
 /**
- * Whether `git remote` or `git submodule` may write a URL the guard cannot read: an option before
- * the verb, or of `add` or `set-url`, it cannot match, a verb it cannot read, or `add` or `set-url`
- * with any word it cannot read. `remote set-url --delete` writes none.
+ * Whether a URL-storing builtin may store a URL the guard cannot read: `url` for any word it cannot
+ * read after a verb that stores one or after a verb outside the table, unless the options leave a
+ * state the table says stores none; `option` for an option it
+ * cannot match. A verb in `safe`, and a call with no verb, store none.
  */
-function urlEnabler(args: SubArgs, spec: typeof REMOTE_OPTIONS): ExtEnabler | undefined {
+function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined {
   const at = args.resolved.findIndex((_, i) => !isOption(args, i))
   const lead = at < 0 ? args : { resolved: args.resolved.slice(0, at), written: args.written.slice(0, at) }
-  if (parseOptions(lead, spec.lead) === undefined) return 'option'
+  if (parseOptions(lead, command.lead) === undefined) return 'option'
   if (at < 0) return undefined
   const verb = args.resolved[at]
-  if (verb === undefined) return 'url'
-  if (verb !== 'add' && verb !== 'set-url') return undefined
-  const rest = { resolved: args.resolved.slice(at + 1), written: args.written.slice(at + 1) }
-  const parsed = parseOptions(rest, spec.verb)
+  if (verb !== undefined && command.safe.has(verb)) return undefined
+  const rest = tail(args, at + 1)
+  const write = verb === undefined ? undefined : command.writes[verb]
+  if (write === undefined) return args.resolved.slice(at).includes(undefined) ? 'url' : undefined
+  const parsed = parseOptions(rest, write.options)
   if (parsed === undefined) return 'option'
-  if (parsed.options.includes('delete')) return undefined
+  if (write.storesNone?.(parsed)) return undefined
   return rest.resolved.includes(undefined) ? 'url' : undefined
 }
 
 /**
- * What a `git config`, `git remote` or `git submodule` write at `at` would enable for `ext::`
+ * What a `git config` write, or a write by a builtin in URL_COMMANDS, at `at` would enable for `ext::`
  * (TP-2371): `protocol` when it sets `protocol.allow` or `protocol.ext.allow` to anything but
  * `never`, or renames a section into `protocol`; `url` when it writes a remote or submodule URL,
  * URL helper or `insteadOf` rewrite, a key or verb, the guard cannot read, or renames a section into
@@ -377,9 +421,10 @@ export function extEnablerWrite(
   at: number,
 ): ExtEnabler | undefined {
   const args = { resolved: resolved.slice(at + 1), written: written.slice(at + 1) }
-  if (resolved[at] === 'remote') return urlEnabler(args, REMOTE_OPTIONS)
-  if (resolved[at] === 'submodule') return urlEnabler(args, SUBMODULE_OPTIONS)
-  return resolved[at] === 'config' ? configEnabler(args) : undefined
+  const sub = resolved[at]
+  if (sub === 'config') return configEnabler(args)
+  const command = sub === undefined ? undefined : URL_COMMANDS[sub]
+  return command === undefined ? undefined : urlEnabler(args, command)
 }
 
 /**

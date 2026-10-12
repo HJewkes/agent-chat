@@ -57,10 +57,23 @@ export interface SubArgs {
   written: readonly string[]
 }
 
-/** The options a call sets, by full name (`no-` for a negated one), and its other words in order. */
+/**
+ * An option's final state, the last spelling winning as in git: true or false for a flag (`--no-x`
+ * after `--x` leaves it false), its value for one that takes a value, undefined for a value the
+ * guard cannot read, false after its `--no-` form.
+ */
+export type OptionValue = boolean | string | undefined
+
+/** The final state of each option a call names, and its other words in order. */
 export interface ParsedArgs {
-  options: string[]
+  options: Map<string, OptionValue>
   positionals: (string | undefined)[]
+}
+
+/** Whether an option ends set: given, not cancelled by a later `--no-` form. */
+export const isSet = (parsed: ParsedArgs, name: string): boolean => {
+  const value = parsed.options.get(name)
+  return parsed.options.has(name) && value !== false
 }
 
 /** Whether word `i` is an option, read from what was written when the guard cannot resolve it. */
@@ -70,22 +83,41 @@ export const isOption = (args: SubArgs, i: number): boolean =>
 // A long option's name as written, before any `=value`; only literal names are read.
 const LITERAL_LONG = /^--([a-z0-9-]*)(=|$)/
 
-/** Reads one `--name[=value]` word; returns how many words it took, or undefined when it cannot. */
-function readLong(text: string, spec: OptionSpec, out: string[]): number | undefined {
-  const match = LITERAL_LONG.exec(text)
-  const found = match && longOption(match[1] as string, spec)
-  if (!match || !found) return undefined
-  out.push(found.negated ? `no-${found.option.name}` : found.option.name)
-  return found.option.value && !found.negated && match[2] === '' ? 2 : 1
+/** One option word where the parser stands: its text, whether the shell's value is known, and the next word. */
+interface At {
+  text: string
+  readable: boolean
+  next: string | undefined
 }
 
-/** Reads one `-abc` cluster; a short option that takes a value takes the rest of the word or the next one. */
-function readShort(text: string, spec: OptionSpec, out: string[]): number | undefined {
+/** Reads one `--name[=value]` word into `out`; returns how many words it took, or undefined when it cannot. */
+function readLong(at: At, spec: OptionSpec, out: Map<string, OptionValue>): number | undefined {
+  const match = LITERAL_LONG.exec(at.text)
+  const found = match && longOption(match[1] as string, spec)
+  if (!match || !found) return undefined
+  const { option, negated } = found
+  const attached = match[2] === '='
+  if (negated || !option.value) {
+    out.set(option.name, !negated)
+    return 1
+  }
+  out.set(option.name, attached ? (at.readable ? at.text.slice(match[0].length) : undefined) : at.next)
+  return attached ? 1 : 2
+}
+
+/** Reads one `-abc` cluster into `out`; a short option that takes a value takes the rest of the word or the next one. */
+function readShort(at: At, spec: OptionSpec, out: Map<string, OptionValue>): number | undefined {
+  const { text } = at
   for (let j = 1; j < text.length; j++) {
     const option = spec.find(o => o.short === text[j])
     if (option === undefined) return undefined
-    out.push(option.name)
-    if (option.value) return j === text.length - 1 ? 2 : 1
+    if (!option.value) {
+      out.set(option.name, true)
+      continue
+    }
+    const rest = j < text.length - 1
+    out.set(option.name, rest ? (at.readable ? text.slice(j + 1) : undefined) : at.next)
+    return rest ? 1 : 2
   }
   return 1
 }
@@ -108,7 +140,7 @@ export function parseOptions(
   spec: OptionSpec,
   end: OptionsEnd = ANYWHERE,
 ): ParsedArgs | undefined {
-  const parsed: ParsedArgs = { options: [], positionals: [] }
+  const parsed: ParsedArgs = { options: new Map(), positionals: [] }
   let ended = false
   for (let i = 0; i < args.resolved.length;) {
     const word = args.resolved[i]
@@ -124,9 +156,10 @@ export function parseOptions(
       i++
       continue
     }
+    const at = { text, readable: word !== undefined, next: args.resolved[i + 1] }
     const taken = text.startsWith('--')
-      ? readLong(text, spec, parsed.options)
-      : readShort(text, spec, parsed.options)
+      ? readLong(at, spec, parsed.options)
+      : readShort(at, spec, parsed.options)
     if (taken === undefined) return undefined
     i += taken
   }

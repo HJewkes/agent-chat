@@ -442,10 +442,10 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   return (
     checkGit(run.args) ??
     checkUnresolvedConfig(run) ??
-    checkExtEnablers(run, scope) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
+    checkExtEnablers(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
 }

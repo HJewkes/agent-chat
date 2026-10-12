@@ -307,3 +307,40 @@ describe('git config <subcommand> stops reading options at -- (TP-2371 fix round
     },
   )
 })
+
+describe('final option state and one table of URL-storing builtins (TP-2371 fix round 6)', () => {
+  it.each([
+    'git remote set-url --delete --no-delete x "$U"',
+    'git remote set-url --del --no-del x "$U"',
+    'git remote set-url --delete --add x "$U"',
+    'git submodule--helper set-url p "$U"',
+    'git submodule--helper set-url -q p "$U"',
+    'git submodule--helper set-url --no-quiet p "$U"',
+    'git submodule--helper add "$U" p',
+    'git submodule--helper add -q "$U" p',
+    'git submodule--helper add --no-quiet "$U" p',
+    'git submodule--helper clone --path p --name n --url "$U"',
+    'git submodule--helper "$V" p "$U"',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it('denies a submodule--helper option it cannot match', () => {
+    expect(hookReason('git submodule--helper set-url --bogus p https://github.com/o/s')).toBe(
+      REASONS.gitOptionUnmatched,
+    )
+  })
+
+  it.each([
+    'git remote set-url --delete x https://github.com/o/r',
+    'git remote set-url --no-add --delete x "$OLD"',
+    'git remote set-url --delete origin "$OLD"',
+    'git submodule--helper set-url p https://github.com/o/s',
+    'git submodule--helper add https://github.com/o/s p',
+    'git submodule--helper status',
+    'git remote remove "$R"',
+    'git submodule update --init "$P"',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})

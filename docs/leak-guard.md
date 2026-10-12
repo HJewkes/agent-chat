@@ -698,6 +698,13 @@ leading `--` does not stop it, as in `git config -- --rename-section foo protoco
 past any `--` there, which only over-denies. `git config <subcommand>` (only as the first word:
 `--file f set k v` is legacy), and the `git remote` and `git submodule` verbs, read options anywhere
 up to `--`, so in `git config set -- "$K" --get` the `--get` is the value and the unread key denies.
+Each option ends in its final state, the last spelling winning as in git, so
+`git remote set-url --delete --no-delete x "$U"` stores the URL and denies. The builtins that store
+a remote or submodule URL (`remote`, `submodule` and the internal `submodule--helper`) are read
+from one table of verbs: a verb that stores a URL, or one outside the table, with a word the guard
+cannot read denies, and only `remote set-url --delete` and the verbs listed as storing none are
+exempt. `git clone "$URL"` stays allowed as before (TP-636); the protocol-list rules and the
+CC-1095 pin cover a later `ext::` run of the URL it stores.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
