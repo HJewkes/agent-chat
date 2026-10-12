@@ -709,10 +709,15 @@ These rules read one shell word as one argument, so for `git config` and the URL
 builtins a word after the subcommand that the shell may expand to none or several denies as an
 unreadable write: an unquoted `$X` or `$(...)`, `"$@"`, `"${A[@]}"`, a glob or a brace, as in
 `git config {protocol.ext.allow,always}` or `git config $X`. `-h` and `--help` write nothing and
-stay allowed. On the env side, an assignment or unset whose variable name the shell builds
-(`export $A`, `env $A`, `env "$A"`, `unset $V`, `env -u $V`) may set or lift any program var or
-`GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the
-line's other checks so a more specific reason wins.
+stay allowed. On the env side, one predicate decides where a variable name is read, at each
+command head along the wrapper chain, and fails closed on any expansion there (TP-2371): every
+`env` word before the command, `--` included, with an expansion before its first `=` (`env $A`,
+`env G$X=ext`, `env -- $A`), a `-u` or `-S` value or an option the guard cannot read; any operand
+of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion; the `printf -v`
+name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
+`local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
+line that may reach git it denies as `programEnv`, after the line's other checks so a more
+specific reason wins. Words that `xargs` or `find -exec` add are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.

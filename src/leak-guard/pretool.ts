@@ -1456,6 +1456,73 @@ const LITERAL_NAME = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[|\\+?=|$)`
 
 /** Whether a word in an assignment's place holds an expansion and does not name its variable literally. */
 const hiddenName = (word: string): boolean => word.includes(LIVE) && !LITERAL_NAME.test(word)
+
+// Builtins whose operands are all variable names or may be read as such (`getopts` optstring and
+// args, `read -p` prompt): an expansion in any of them fails closed.
+const NAME_OPERAND_BUILTINS = new Set(['read', 'getopts', 'mapfile', 'readarray', 'unset'])
+// env options whose value is a variable name or a string env splits and expands itself.
+const ENV_NAME_OPTIONS = new Set(['-u', '--unset', '-S', '--split-string'])
+const ENV_VALUE_OPTIONS = new Set([...ENV_NAME_OPTIONS, '-C', '--chdir'])
+
+/**
+ * Whether env's words from `i` hide a variable name: an option the guard cannot read, a `-u` or `-S`
+ * value with an expansion, or, before the command and after any `--`, a word with an expansion
+ * before its first `=`, which env may read as `NAME=value`.
+ */
+function envHidesName(words: readonly string[], i: number): boolean {
+  let options = true
+  for (; i < words.length; i++) {
+    const word = words[i] as string
+    const text = unmark(word)
+    if (options && text === '--') options = false
+    else if (options && text.startsWith('-') && text !== '-') {
+      if (word.includes(LIVE)) return true
+      if (ENV_NAME_OPTIONS.has(text) && (words[i + 1] ?? '').includes(LIVE)) return true
+      if (ENV_VALUE_OPTIONS.has(text)) i++
+    } else if (hiddenName(word)) return true
+    else if (!ASSIGNMENT.test(word)) return false
+  }
+  return false
+}
+
+/** Whether `printf`'s `-v` name holds an expansion, or an operand the shell builds comes before its format and may be `-v`. */
+function printfHidesName(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string
+    const text = unmark(word)
+    if (text === '-v') return (args[i + 1] ?? '').includes(LIVE)
+    if (text.startsWith('-v') || word.includes(LIVE)) return word.includes(LIVE)
+    if (text === '--' || !text.startsWith('-')) return false
+  }
+  return false
+}
+
+/** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
+function operandsHideName(name: string, args: readonly string[]): boolean {
+  if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
+  if (ENV_DECL.has(name)) return args.some(hiddenName)
+  return name === 'printf' && printfHidesName(args)
+}
+
+/**
+ * Whether a command assigns, reads into or unsets a variable whose name the shell builds (TP-2371),
+ * at any command head along its wrapper chain: env's words before the command (after `--` too),
+ * and the name operands of read, printf -v, mapfile, readarray, getopts, unset and the declare
+ * family. Such a name may be any program var or GIT_ALLOW_PROTOCOL, so it fails closed.
+ */
+function hidesVariableName(words: readonly string[]): boolean {
+  for (let at = 0; at < words.length;) {
+    const head = words[at] as string
+    const name = path.basename(unmark(head))
+    const next = wrapperEnd(words, at, name)
+    if (ASSIGNMENT.test(head)) at++
+    else if (PREFIX_WORDS.has(head)) at = dropOptions(words, at + 1)
+    else if (next !== undefined) at = next
+    else if (name === 'env') return envHidesName(words, at + 1)
+    else return operandsHideName(name, words.slice(at + 1))
+  }
+  return false
+}
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
 
@@ -1467,9 +1534,9 @@ function envRoles(marked: readonly string[], i: number, roles: WordRole[]): void
       roles[i] = 'removes'
       roles[++i] = 'removes'
     } else if (GLUED_UNSET.test(unmark(word))) roles[i] = 'removes'
-    // A word that starts with an expansion may become `NAME=value`, which env reads as an assignment.
-    else if (ASSIGNMENT.test(word) || word.startsWith(LIVE)) roles[i] = 'assign'
-    else return
+    else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
+    // GNU env reads `NAME=value` words after `--` too.
+    else if (word !== '--') return
   }
 }
 
@@ -1515,9 +1582,6 @@ function wordRoles(cmd: SimpleCommand): WordRole[] {
  */
 function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
-  // A name the shell builds may be any program var or the protocol list.
-  if ((role === 'removes' && word.includes(LIVE)) || (role === 'assign' && hiddenName(word)))
-    return NAME_HIDDEN
   // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
   if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
   if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
@@ -1583,8 +1647,9 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
+  const hidden: EnvEvent[] = hidesVariableName(functionBody(cmd.marked)) ? [NAME_HIDDEN] : []
   return {
-    events: [...written.events, ...unwrapped.events],
+    events: [...written.events, ...unwrapped.events, ...hidden],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }

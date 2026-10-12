@@ -410,3 +410,37 @@ describe('a variable name the shell builds, on a line that runs git (TP-2371 fix
     },
   )
 })
+
+describe('every place a variable name is read, failing closed on an expansion (TP-2371 fix round 8)', () => {
+  it.each([
+    `A=$(printf 'GIT_ALLOW_%s' PROTOCOL); printf -v "$A" ext; git fetch o`,
+    `A=$(printf 'GIT_ALLOW_%s' PROTOCOL); read -r "$A" <<< ext; git fetch o`,
+    'getopts ab "$A"; git fetch o',
+    'X=IT_ALLOW_PROTOCOL; env G$X=ext git fetch o',
+    `A=$(printf 'GIT_ALLOW_%s=ext' PROTOCOL); env -- $A git fetch o`,
+    `A=$(printf 'GIT_SSH_%s' COMMAND); printf -v "$A" 'sh -c x'; git fetch o`,
+    'X=IT_SSH_COMMAND; env G$X=x git fetch o',
+    'X=IT_PAGER; env -- G$X=x git log',
+    'mapfile "$A" < f; git fetch o',
+    'readarray -t "$A" < f; git fetch o',
+    'command read "$A"; git fetch o',
+    'printf -v"$A" x; git fetch o',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('reads env assignments after -- as env does', () => {
+    expect(hookReason('env -- GIT_ALLOW_PROTOCOL=ext git fetch o')).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'env -- FOO=1 git fetch o',
+    'env -C "$D" git fetch o',
+    `printf '%s\\n' "$x" | git hash-object --stdin`,
+    `printf -v line '%s' "$x"; git fetch o`,
+    'read -r line; git fetch o',
+    'git log | while read -r line; do echo "$line"; done',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
