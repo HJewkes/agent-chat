@@ -24,7 +24,15 @@ function fakeFs(existing: Record<string, TmpStat> = {}) {
   return { fs, made, chmods }
 }
 
-const plan = (args: string[]): LaunchPlan => ({ agentId: 'a1', bin: 'claude', args, cwd: '/repo', env: {} })
+const plan = (args: string[]): LaunchPlan => ({
+  agentId: 'a1',
+  title: 'x',
+  surface: 'headless',
+  bin: 'claude',
+  args,
+  cwd: '/repo',
+  env: {},
+})
 
 const env = (profile: string, name = 'x', TMPDIR = '/tmp/ac-x-1') => ({
   TMPDIR,
