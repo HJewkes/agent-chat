@@ -444,3 +444,20 @@ describe('every place a variable name is read, failing closed on an expansion (T
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe('a process substitution is no variable name (TP-2371 final round)', () => {
+  it.each([
+    'mapfile -t f < <(git ls-files)',
+    `readarray -t a < <(git branch --format='%(refname:short)')`,
+    'read -r sha < <(git rev-parse HEAD)',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it.each(['read -r "$A" < <(git rev-parse HEAD)', 'mapfile -t "$A" < <(git ls-files)'])(
+    'still denies a hidden name beside one: %s',
+    command => {
+      expect(hookReason(command)).toBe(REASONS.programEnv)
+    },
+  )
+})

@@ -1498,7 +1498,11 @@ function printfHidesName(args: readonly string[]): boolean {
 }
 
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
-function operandsHideName(name: string, args: readonly string[]): boolean {
+// The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
+const isProcessSubstitution = (word: string): boolean => word === LIVE
+
+function operandsHideName(name: string, written: readonly string[]): boolean {
+  const args = written.filter(word => !isProcessSubstitution(word))
   if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
   if (ENV_DECL.has(name)) return args.some(hiddenName)
   return name === 'printf' && printfHidesName(args)
