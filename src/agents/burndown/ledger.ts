@@ -358,6 +358,13 @@ export const ledgerImplementers = (ledger: Ledger, seat: string): number =>
       (c.phase === 'implementing' || (c.phase === 'spawning' && c.nextPhase === 'implementing')),
   ).length
 
+/** CC-1098: how many claims the ledger may hold beyond the agents actually running before the count is flagged. */
+export const SLOT_MISMATCH_TOLERANCE = 3
+
+/** CC-1098: the flag shown beside a role count whose ledger runs more than the tolerance ahead of its live agents. */
+export const slotMismatch = (ledger: number, live: number): string | undefined =>
+  ledger - live > SLOT_MISMATCH_TOLERANCE ? `MISMATCH ledger ${ledger} vs ${live} live` : undefined
+
 export function isStalled(claim: Claim, now: Date): boolean {
   if (claim.stalledReason !== undefined) return true
   const timeout = PHASE_TIMEOUT_MS[claim.phase]
@@ -414,6 +421,12 @@ export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>):
   } finally {
     if (readHolder(lock) === process.pid) fs.rmSync(lock, { force: true })
   }
+}
+
+/** CC-1111: the live pid holding `<file>.lock`, or undefined when no live process does; takes nothing. */
+export function ledgerLockHolder(file: string): number | undefined {
+  const holder = readHolder(`${file}.lock`)
+  return holder !== undefined && isAlive(holder) ? holder : undefined
 }
 
 /** Link-in a complete pid file, which fails atomically when the lock exists; returns the holder then. */

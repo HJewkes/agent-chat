@@ -29,6 +29,8 @@ export interface Task {
   priority?: number
   estimate?: number
   doneWhen?: string
+  /** Free text a triager left on the task (CC-1112); read only by the off-plan check. */
+  notes?: string
   tags: string[]
 }
 
@@ -62,6 +64,7 @@ export type RefusalKind =
   | 'stop-line'
   | 'out-of-scope'
   | 'no-brief'
+  | 'off-plan'
   | 'brief-stale'
   | 'blocked'
   | 'repo-ambiguous'
