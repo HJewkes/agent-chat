@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { retireThresholdK } from '../../config.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { BudgetRead } from '../budget.js'
 import {
@@ -35,7 +36,14 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
-import { agentRows, selfContext, type AgentRole, type SeatAgentRow, type SelfContext } from './agent-rows.js'
+import {
+  agentRows,
+  roleOfProfile,
+  selfContext,
+  type AgentRole,
+  type SeatAgentRow,
+  type SelfContext,
+} from './agent-rows.js'
 
 export type { SeatAgentRow, SelfContext } from './agent-rows.js'
 
@@ -156,7 +164,7 @@ export interface SeatStatus {
   machineStop: MachineStop | null
   /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
   waitingPermission: WaitingPermission[]
-  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against `retire_k`. */
+  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against its role's `retireThresholdK` (CC-290). */
   agents: SeatAgentRow[]
   /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
   self: SelfContext | null
@@ -235,11 +243,9 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
-const ROLES = ['implementer', 'reviewer', 'planner'] as const
 type Role = AgentRole
 
-/** The first role word in the profile, so a profile holding two counts once. */
-const roleOf = (agent: AgentIdentity): Role => ROLES.find(role => agent.profile.includes(role)) ?? 'other'
+const roleOf = (agent: AgentIdentity): Role => roleOfProfile(agent.profile)
 
 function agentLoad(agents: AgentIdentity[], role: Role): AgentLoad {
   const active = agents.filter(a => roleOf(a) === role && running(a))
@@ -551,7 +557,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     stop: machineStop === null ? null : 'machine',
     machineStop,
     waitingPermission: waitingPermission(deps, mine, now.getTime()),
-    agents: agentRows(mine, roleOf, deps.contextOf, policy.charter.defaults.retire_k),
+    agents: agentRows(mine, roleOf, deps.contextOf, a => retireThresholdK(a.profile)),
     self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
   }
 }
@@ -658,7 +664,7 @@ function waitingPermissionLines(status: SeatStatus): string[] {
   return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
 }
 
-/** No line while no agent is past `retire_k`, so the page reads as before. */
+/** No line while no agent is past its retire threshold, so the page reads as before. */
 function retireDueLines(agents: SeatAgentRow[]): string[] {
   const due = agents.filter(a => a.retireDue).map(a => `${a.name} (${a.contextK}k)`)
   return due.length === 0 ? [] : [line('retire-due', due.join(', '))]
