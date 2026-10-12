@@ -323,6 +323,8 @@ export const EVENT_KINDS = [
   'seat_blocked',
   'seat_unblocked',
   'seat_activity',
+  // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
+  'seat_ask_denied',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
