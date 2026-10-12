@@ -172,9 +172,9 @@ describe('burndown lints planner slices (CC-631)', () => {
   it('fails a slice whose ops field leaves out an op its doneWhen names', () => {
     const slice = { ...good, doneWhen: 'live after a broker restart', ops: ['publish'] }
 
-    expect(readSlices(planOf(slice)).problems).toEqual([
+    expect(readSlices(planOf(slice)).problems).toContain(
       `slice a: doneWhen mentions restart ('broker restart'), which "ops" does not declare`,
-    ])
+    )
   })
 
   it('passes a slice whose doneWhen names an op as subject matter with an empty ops field', () => {
@@ -190,8 +190,8 @@ describe('burndown lints planner slices (CC-631)', () => {
     ])
   })
 
-  it('passes a slice that declares publish, which a grant unlocks', () => {
-    expect(readSlices(planOf({ ...good, ops: ['publish'] })).problems).toBeUndefined()
+  it('fails a slice that declares publish, as a publish is its own task (CC-987)', () => {
+    expect(readSlices(planOf({ ...good, ops: ['publish'] })).problems?.[0]).toContain('own task')
   })
 
   it('gives one lint line for a scope repeated in one slice', () => {
