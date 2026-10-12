@@ -38,10 +38,15 @@ const picked = (order: string[], reason = 'beta is most behind pace (12)'): Pool
   candidates: order.map(name => ({ pool: name, behind: name === 'beta' ? 12 : 2 })),
 })
 
-const read = (order: string[], reason?: string): Extract<PoolPickRead, { kind: 'pick' }> => ({
+const read = (
+  order: string[],
+  reason?: string,
+  billed = 'alpha',
+): Extract<PoolPickRead, { kind: 'pick' }> => ({
   kind: 'pick',
   seat: 'alpha-coord',
   home: 'alpha',
+  billed,
   pools: [ALPHA, BETA, GAMMA],
   pick: picked(order, reason),
 })
@@ -78,6 +83,39 @@ describe('routing a pick past the budget gate', () => {
     const route = routePool(read(['alpha', 'beta']), 'enforce', closedAt())
 
     expect(route).toEqual({ record: expect.objectContaining({ chosen: 'alpha', would: false }) })
+  })
+
+  it('redirects to the seat’s home pool when the pick keeps it and the spawn resolved elsewhere', () => {
+    const route = routePool(read(['alpha', 'beta'], undefined, 'gamma'), 'enforce', closedAt())
+
+    expect(route.redirect).toEqual(ALPHA)
+    expect(route.record).toMatchObject({ chosen: 'alpha', home: 'alpha' })
+  })
+
+  it('redirects nowhere when the chosen pool is the one the spawn already bills', () => {
+    const route = routePool(read(['beta', 'alpha'], undefined, 'beta'), 'enforce', closedAt())
+
+    expect(route.redirect).toBeUndefined()
+    expect(route.record.chosen).toBe('beta')
+  })
+
+  it('refuses without redirecting when every pool is closed and the spawn bills off home', () => {
+    const route = routePool(
+      read(['alpha', 'beta'], undefined, 'gamma'),
+      'enforce',
+      closedAt(ALPHA.configDir, BETA.configDir),
+    )
+
+    expect(route.redirect).toBeUndefined()
+    expect(route.refusal).toContain('every eligible pool is closed: alpha: ')
+  })
+
+  it('neither redirects nor refuses in shadow mode when the spawn bills off home', () => {
+    const route = routePool(read(['alpha', 'beta'], undefined, 'gamma'), 'shadow', closedAt())
+
+    expect(route).toEqual({
+      record: expect.objectContaining({ chosen: 'alpha', home: 'alpha', would: true }),
+    })
   })
 
   it('records the choice in shadow mode and neither redirects nor refuses', () => {
@@ -160,6 +198,35 @@ describe('reading the pool pick for a spawn', () => {
 
     expect(got).toMatchObject({ kind: 'pick', seat: 'alpha-coord', home: 'alpha' })
     expect(got.kind === 'pick' && got.pick.order).toEqual(['beta', 'gamma', 'alpha'])
+  })
+
+  it('takes home from the seat file and billed from the spawn’s config dir', () => {
+    const got = readPoolPick(root(), spawn({ homeDir: '/synthetic/gamma' }), deps())
+
+    expect(got).toMatchObject({ kind: 'pick', home: 'alpha', billed: 'gamma' })
+  })
+
+  it('reads a seat file that names no pool as none, so the spawn bills as today', () => {
+    const seat = ['---', 'prefix: ac', '---', '# Seat'].join('\n')
+
+    expect(readPoolPick(root(seat), spawn({ homeDir: '/synthetic/gamma' }), deps())).toEqual({ kind: 'none' })
+  })
+
+  it('ignores a seat file pool the charter does not define', () => {
+    const seat = ['---', 'prefix: ac', 'pool: omega', '---', '# Seat'].join('\n')
+
+    const got = readPoolPick(root(seat), spawn({ homeDir: '/synthetic/gamma' }), deps())
+
+    expect(got).toMatchObject({ kind: 'pick', home: 'gamma', billed: 'gamma' })
+  })
+
+  it('routes a pinned spawn nowhere though its seat’s home differs from its config dir', () => {
+    const got = readPoolPick(root(), spawn({ homeDir: '/synthetic/gamma', pinned: true }), deps())
+
+    expect(got.kind === 'pick' && got.pick.order).toEqual([])
+    expect(got.kind === 'pick' && routePool(got, 'enforce', closedAt())).toEqual({
+      record: expect.objectContaining({ chosen: null, reason: 'the spawn pins config_dir' }),
+    })
   })
 
   it('reads a spawn no charter seat owns as none', () => {
