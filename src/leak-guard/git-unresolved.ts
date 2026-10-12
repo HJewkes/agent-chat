@@ -1,4 +1,4 @@
-import { GIT_BUILTINS } from './git-alias.js'
+import { GIT_BUILTINS, GIT_VALUE_OPTS } from './git-alias.js'
 import { CLONE_CONFIG, optionSpans } from './git-scripts.js'
 import { LIVE, NAME, unmark } from './shell-words.js'
 
@@ -12,7 +12,6 @@ const HOOK_RUNNING = new Set(
   `am bisect checkout cherry-pick clone commit fetch gc hook maintenance merge pull push rebase
   receive-pack revert stash switch worktree`.split(/\s+/),
 )
-const VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 // A glob or brace word may expand to several words, one of them an option; a bare `$VAR` is one word.
 const GLOBBED = new RegExp(`${LIVE}[*?[{(]`)
 // What one word may expand to without becoming several: a plain scalar, a tilde, or a substitution inside quotes.
@@ -113,7 +112,7 @@ function scanOptions(
     }
     if (splittable(i)) words.push(UNKNOWN)
     const config = configWord(resolved, marked, i)
-    const takesValue = config?.width === 2 || VALUE_OPTS.has(raw)
+    const takesValue = config?.width === 2 || GIT_VALUE_OPTS.has(raw)
     if (takesValue && splittable(i + 1)) words.push(UNKNOWN)
     if (config) words.push(config.word)
     if (takesValue) i++
