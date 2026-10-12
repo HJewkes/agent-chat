@@ -590,75 +590,81 @@ Usage: agent-chat seats [options] [command]
 autonomy seats: the idle watchdog
 
 Options:
-  -h, --help                    display help for command
+  -h, --help                      display help for command
 
 Commands:
-  watchdog [options]            wake an autonomy seat idle with budget and eligible work (CC-203),
-                                and resume a seat that went dark with no teleport (CC-320); silent
-                                otherwise. Never wakes or resumes a seat named in the `stopped` map
-                                of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>":
-                                "<reason>"}}; delete the entry to re-enable), a seat at its spend
-                                stop, or any seat while the owner seat has announced a broker
-                                restart without "restart done". A latest journal line starting WRAP,
-                                PARKED or BUDGET-PAUSE stops both the wake and the resume until the
-                                seat logs an ordinary line. Pages tp-operator once per live seat
-                                blocked on AskUserQuestion over 5 min (CC-1057). An unparsable
-                                seat-watchdog.json is an error and the run does nothing
-  status [options] <seat>       what a seat reads before it dispatches (CC-317), read-only:
-                                implementers, reviewers and planners against their caps, its other
-                                running agents, parked implementers, the pool reading with its age
-                                and the charter stop that applies, the pace of every pool against
-                                its glide path, unread inbox messages since the seat last sent one,
-                                the machine-wide headless agents, free memory and full-suite slots
-                                against their limits, swap used, and the top eligible tasks. A spend
-                                cap with no saved meter to count it is a stop
-  tick [options] <seat>         one seat's burndown decision on demand (CC-889): the dispatches the
-                                tick would make for it under its service-check stop line, trust
-                                gate, role and worktree caps and pool gate, and why every other task
-                                was refused. Dry run only: it spawns nothing and writes no ledger
-  dispatches [options] <seat>   one folded record per agent run from a seat's dispatch log (CC-332),
-                                read-only: the broker's spawn and retire rows and the seat's own
-                                rows merged, with the spend. Lines that are not a JSON object with
-                                an agent and seat outcomes outside the end states are counted, not
-                                fatal
-  boot [options] <seat>         one boot digest for a coordinator seat (CC-318), read-only: the seat
-                                file's frontmatter, the In flight derived from burndown claims,
-                                Shepherd rows, the roster and verdicts, the top in-scope, fresh
-                                brief:ready tasks in the gate's ready order with their age, the
-                                queue's Next section, the newest State at teleport section of
-                                today's log, inbox messages after a cutoff and the seat status, in
-                                6,000 characters. Over that the oldest inbox lines go first, then
-                                the log section, then the queue, In flight, Next, seat and status
-                                sections
-  run-start [options] <seat>    start a new run for a seat when the owner messages it (CC-472): sets
-                                the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json to
-                                {since: now, last: <pool seven_day now>, spent: 0, before: <old
-                                last>} under the watchdog run lock, leaving every other entry as it
-                                was. Refuses and writes nothing on unknown_seat, no_reading (no
-                                seven_day reading, or one over 15 min old) or lock_held (a watchdog
-                                run held the lock for 90 s)
-  watchdog-install [options]    install the launchd job (systemd --user units on Linux) that runs
-                                `seats watchdog` four times an hour; the first run waits for the
-                                next scheduled minute
-  watchdog-uninstall [options]  stop the watchdog job and keep it from starting at login; on Linux,
-                                also remove its units
-  watchdog-status [options]     launchd state of the watchdog job, or its systemd units on Linux
-  heartbeat-install [options]   render one systemd --user service and timer per seat (CC-947) that
-                                fires on the seat file's heartbeat_cron minutes and sends the
-                                charter heartbeat when the seat logged no tick line for its cron's
-                                widest gap plus 5 min. Writes the unit files only: it never runs
-                                systemctl, so enabling the timers stays the owner's call
-  heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the watchdog would
-                                neither hold the seat nor resume it (connected, no owner stop,
-                                restart window, machine stop or stop line) and its logs have no tick
-                                line for its cron's widest gap plus 5 min, send the charter
-                                heartbeat through the broker and log heartbeat_external
-  heartbeat-gaps [options]      report where a seat's heartbeat deliveries (heartbeat_watchdog and
-                                heartbeat_external rows in broker.log) stopped for longer than its
-                                heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
-                                stretches, and each slot that got two deliveries (CC-391). Exits
-                                non-zero when it finds either
-  help [command]                display help for command
+  watchdog [options]              wake an autonomy seat idle with budget and eligible work (CC-203),
+                                  and resume a seat that went dark with no teleport (CC-320); silent
+                                  otherwise. Never wakes or resumes a seat named in the `stopped`
+                                  map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>":
+                                  "<reason>"}}; delete the entry to re-enable), a seat at its spend
+                                  stop, or any seat while the owner seat has announced a broker
+                                  restart without "restart done". A latest journal line starting
+                                  WRAP, PARKED or BUDGET-PAUSE stops both the wake and the resume
+                                  until the seat logs an ordinary line. Pages tp-operator once per
+                                  live seat blocked on AskUserQuestion over 5 min (CC-1057). An
+                                  unparsable seat-watchdog.json is an error and the run does nothing
+  status [options] <seat>         what a seat reads before it dispatches (CC-317), read-only:
+                                  implementers, reviewers and planners against their caps, its other
+                                  running agents, parked implementers, the pool reading with its age
+                                  and the charter stop that applies, the pace of every pool against
+                                  its glide path, unread inbox messages since the seat last sent
+                                  one, the machine-wide headless agents, free memory and full-suite
+                                  slots against their limits, swap used, and the top eligible tasks.
+                                  A spend cap with no saved meter to count it is a stop
+  tick [options] <seat>           one seat's burndown decision on demand (CC-889): the dispatches
+                                  the tick would make for it under its service-check stop line,
+                                  trust gate, role and worktree caps and pool gate, and why every
+                                  other task was refused. Dry run only: it spawns nothing and writes
+                                  no ledger
+  dispatches [options] <seat>     one folded record per agent run from a seat's dispatch log
+                                  (CC-332), read-only: the broker's spawn and retire rows and the
+                                  seat's own rows merged, with the spend. Lines that are not a JSON
+                                  object with an agent and seat outcomes outside the end states are
+                                  counted, not fatal
+  log [options] <seat> <text...>  append one line to a seat's journal (CC-1058): '<HH:MM> <text>' in
+                                  <root>/logs/<seat>/<YYYY-MM-DD>.md, stamped from the machine clock
+                                  in local time, and print the file. Refuses and writes nothing on
+                                  an unknown seat, a line break in the text, or text that opens with
+                                  a time ('10:00 standup moved' becomes 'standup moved to 10:00')
+  boot [options] <seat>           one boot digest for a coordinator seat (CC-318), read-only: the
+                                  seat file's frontmatter, the In flight derived from burndown
+                                  claims, Shepherd rows, the roster and verdicts, the top in-scope,
+                                  fresh brief:ready tasks in the gate's ready order with their age,
+                                  the queue's Next section, the newest State at teleport section of
+                                  today's log, inbox messages after a cutoff and the seat status, in
+                                  6,000 characters. Over that the oldest inbox lines go first, then
+                                  the log section, then the queue, In flight, Next, seat and status
+                                  sections
+  run-start [options] <seat>      start a new run for a seat when the owner messages it (CC-472):
+                                  sets the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json
+                                  to {since: now, last: <pool seven_day now>, spent: 0, before: <old
+                                  last>} under the watchdog run lock, leaving every other entry as
+                                  it was. Refuses and writes nothing on unknown_seat, no_reading (no
+                                  seven_day reading, or one over 15 min old) or lock_held (a
+                                  watchdog run held the lock for 90 s)
+  watchdog-install [options]      install the launchd job (systemd --user units on Linux) that runs
+                                  `seats watchdog` four times an hour; the first run waits for the
+                                  next scheduled minute
+  watchdog-uninstall [options]    stop the watchdog job and keep it from starting at login; on
+                                  Linux, also remove its units
+  watchdog-status [options]       launchd state of the watchdog job, or its systemd units on Linux
+  heartbeat-install [options]     render one systemd --user service and timer per seat (CC-947) that
+                                  fires on the seat file's heartbeat_cron minutes and sends the
+                                  charter heartbeat when the seat logged no tick line for its cron's
+                                  widest gap plus 5 min. Writes the unit files only: it never runs
+                                  systemctl, so enabling the timers stays the owner's call
+  heartbeat-check [options]       what a seat's heartbeat timer runs (CC-947): when the watchdog
+                                  would neither hold the seat nor resume it (connected, no owner
+                                  stop, restart window, machine stop or stop line) and its logs have
+                                  no tick line for its cron's widest gap plus 5 min, send the
+                                  charter heartbeat through the broker and log heartbeat_external
+  heartbeat-gaps [options]        report where a seat's heartbeat deliveries (heartbeat_watchdog and
+                                  heartbeat_external rows in broker.log) stopped for longer than its
+                                  heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
+                                  stretches, and each slot that got two deliveries (CC-391). Exits
+                                  non-zero when it finds either
+  help [command]                  display help for command
 
 === agent-chat seats watchdog
 Usage: agent-chat seats watchdog [options]
@@ -723,6 +729,18 @@ Options:
                    {"seat", "error"}
   --root <value>   autonomy directory holding charter.md, seats/ and logs/
   -h, --help       display help for command
+
+=== agent-chat seats log
+Usage: agent-chat seats log [options] <seat> <text...>
+
+append one line to a seat's journal (CC-1058): '<HH:MM> <text>' in
+<root>/logs/<seat>/<YYYY-MM-DD>.md, stamped from the machine clock in local time, and print the
+file. Refuses and writes nothing on an unknown seat, a line break in the text, or text that opens
+with a time ('10:00 standup moved' becomes 'standup moved to 10:00')
+
+Options:
+  --root <value>  autonomy directory holding seats/ and logs/
+  -h, --help      display help for command
 
 === agent-chat seats boot
 Usage: agent-chat seats boot [options] <seat>

@@ -280,6 +280,20 @@ and so does a lower tier dispatched ahead of a higher one. Ready slices are disp
 of the scored order by design; they are counted on their own line and left out of the order
 check. The milestone and slack named in a reason are the ones `planOrder` placed the row by.
 
+### The seat journal
+
+A seat writes its own journal lines through the CLI, so the time comes from the machine clock
+and never from a hand-typed stamp (CC-1058):
+
+```
+agent-chat seats log <seat> <text...> [--root <autonomy dir>]
+```
+
+It appends `<HH:MM> <text>` to `<root>/logs/<seat>/<YYYY-MM-DD>.md`, with the time and the
+day both local, and prints the file. Words join with one space. It refuses and writes nothing
+on a seat with neither `seats/<seat>.md` nor `logs/<seat>/`, on text with a line break, and on
+text that opens with a time such as `05:17 tick` or `05:1x`: put the time later in the line.
+
 ### The run meter
 
 The seat watchdog keeps each seat's run meter in `$AGENT_CHAT_HOME/seat-watchdog.json` at
