@@ -32,6 +32,17 @@ describe('plan section 2 ids pass the seat scope filter (CC-1128)', () => {
     expect(refusal('CC-2', [])).toMatch(/none of scope_tags/)
   })
 
+  it('refuses an id that only extends a plan id', () => {
+    expect(refusal('CC-11', [])).toMatch(/none of scope_tags/)
+    expect(refusal('CC-1128', [])).toMatch(/none of scope_tags/)
+  })
+
+  it('refuses a link tag naming an id that only extends a plan id', () => {
+    for (const link of ['dep:', 'parent:', 'delivered-by:', 'blocked-by:']) {
+      expect(refusal('CC-2', [`${link}CC-11`])).toMatch(/none of scope_tags/)
+    }
+  })
+
   it('refuses a task whose only plan mention is under a non-link prefix', () => {
     expect(refusal('CC-2', ['milestone:CC-1'])).toMatch(/none of scope_tags/)
   })
@@ -45,6 +56,11 @@ describe('plan section 2 ids pass the seat scope filter (CC-1128)', () => {
   it('reads ids from section 2 only, and nothing without a section 2', () => {
     expect(planSectionIds(PLAN)).toEqual(new Set(['CC-1', 'TP-2', 'TD-3']))
     expect(planSectionIds('# Plan\n## 1. Context\nCC-1\n## 3. Later\nCC-2')).toBeUndefined()
+  })
+
+  it('does not take ## 20. or ### 2. for section 2', () => {
+    expect(planSectionIds('## 20. Later\nCC-1')).toBeUndefined()
+    expect(planSectionIds('### 2. Sub\nCC-2')).toBeUndefined()
   })
 
   it('parses plan_file in the seat file and copies it into the scope with the plan set', () => {
