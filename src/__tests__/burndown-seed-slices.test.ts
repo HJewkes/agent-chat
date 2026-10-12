@@ -255,21 +255,21 @@ describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b)',
 })
 
 describe('sliceRunsIn', () => {
-  const run = (agent: string, task: string | null = 'TP-408'): DispatchRecord =>
+  const run = (agent: string, task: string | null = 'AB-408'): DispatchRecord =>
     ({ agent, task, outcome: 'abandoned' }) as DispatchRecord
 
   it("names only the task's own slice agents under the seat prefix, once each", () => {
     const records = [
-      run('tc-tp-408-a'),
-      run('tc-tp-408-a'),
-      run('tc-tp-408'),
-      run('tc-tp-408-a-s1'),
-      run('xx-tp-408-b'),
-      run('tc-tp-4080-a'),
-      run('tc-tp-408-c', 'TP-409'),
+      run('zz-ab-408-a'),
+      run('zz-ab-408-a'),
+      run('zz-ab-408'),
+      run('zz-ab-408-a-s1'),
+      run('xx-ab-408-b'),
+      run('zz-ab-4080-a'),
+      run('zz-ab-408-c', 'AB-409'),
     ]
 
-    expect(sliceRunsIn(records, 'TP-408', 'tc')).toEqual(['tc-tp-408-a'])
+    expect(sliceRunsIn(records, 'AB-408', 'zz')).toEqual(['zz-ab-408-a'])
   })
 })
 
