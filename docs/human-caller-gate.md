@@ -1,7 +1,8 @@
 # Human caller gate: who may send the human's frames
 
 Decision record for CC-1083 (slice b), 2026-10-12. Follow-up implementation:
-**CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`).
+**CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`),
+filed and open; nothing in it has landed.
 
 ## The problem
 
@@ -12,9 +13,11 @@ process that runs `agent-chat` counts as the human. That includes a spawned agen
 `Bash` tool.
 
 `agent-chat debug send <to> <text>` (`src/cli/debug.ts`) sends a `human_send` frame, so
-an agent that runs it delivers free text with `from="human"`. Slice a of CC-1083 denies
-that verb in the profile deny lists. A deny list only matches the literal spelling,
-though. `node dist/cli.js debug send`, `npx agent-chat …`, an absolute path or a raw
+an agent that runs it delivers free text with `from="human"`. As of origin/main
+`a162351` (2026-10-12), no profile denies it: `HUMAN_ONLY_CLI_DENY` has no `debug` entry,
+so any agent with `Bash` can run it today. CC-1083 slice a is planned, not landed. It will
+add `Bash(agent-chat debug send:*)` to `HUMAN_ONLY_CLI_DENY` and to the load-time derived
+denies. Even then, a deny list only matches the literal spelling. `node dist/cli.js debug send`, `npx agent-chat …`, an absolute path or a raw
 socket write all pass it (`src/agents/profiles.ts`, the comment on
 `HUMAN_ONLY_CLI_DENY`). This note decides whether the broker should also gate these
 frames by caller.
@@ -143,8 +146,8 @@ human's user and can do anything the human's CLI can do.
 
 ## Relationship to the deny list
 
-Keep both. The deny lists (`HUMAN_ONLY_CLI_DENY` with CC-1083 slice a, and CC-216's
-`WORKER_CLI_DENY`) stop the common spelling before the command
-runs, and the denial shows up in the agent's transcript. The broker gate catches the
+Keep both. The deny lists stop the common spelling: `HUMAN_ONLY_CLI_DENY` (landed;
+the `debug send` entry is planned in CC-1083 slice a, not landed) and CC-216's
+`WORKER_CLI_DENY` (landed). They stop it before the command runs, and the denial shows up in the agent's transcript. The broker gate catches the
 other spellings at the point of authority. Neither replaces the OS account as the
 boundary.
