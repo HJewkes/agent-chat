@@ -133,6 +133,32 @@ describe('collision', () => {
   })
 })
 
+describe('file-overlap exempts the Version Packages PR and .changeset/ paths (CC-975)', () => {
+  it('skips an open changeset-release PR without reading its files', () => {
+    const read: number[] = []
+    const prFiles = (n: number) => {
+      read.push(n)
+      return undefined
+    }
+    const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
+    const result = collision(w, facts({ prs: [pr(1053, { branch: 'changeset-release/main' })], prFiles }))
+    expect(result).toBeUndefined()
+    expect(read).toEqual([])
+  })
+
+  it('does not refuse a changeset glob against a feature PR adding a changeset', () => {
+    const w = work('TP-1', { owns: ['.changeset/*.md'] })
+    const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/other.md'] }))
+    expect(result).toBeUndefined()
+  })
+
+  it('still refuses a source file an ordinary open PR touches', () => {
+    const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
+    const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/tp-x.md', 'src/a.ts'] }))
+    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts' })
+  })
+})
+
 describe('readSubjects over a real repository', () => {
   let repo: string
   const git = (...args: string[]): string =>

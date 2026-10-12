@@ -18,6 +18,7 @@ import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
+import { SEAT_HOLD_MARK } from './seat-hold.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -498,7 +499,31 @@ export class EventLog implements EventStore {
       .get(name) as { id: number; ts: number; kind: string } | undefined
     if (row?.kind === 'deregistered') return { id: row.id, at: row.ts }
     // CC-326: a register from before this log was opened was never closed, so the name is dark since then.
-    return row !== undefined && row.id <= this.opened.id ? this.opened : undefined
+    if (row === undefined || row.id > this.opened.id) return undefined
+    return this.heldEpisode(name, row.id) ?? this.opened
+  }
+
+  /** CC-345: the episode the first held row after `afterId` recorded, so a later boot does not move it. */
+  private heldEpisode(name: string, afterId: number): { id: number; at: number } | undefined {
+    const held = this.db
+      .prepare(
+        `SELECT json_extract(meta, '$.dark_id') AS darkId, json_extract(meta, '$.dark_at') AS darkAt
+         FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? ORDER BY id ASC LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK) as { darkId: string | null; darkAt: string | null } | undefined
+    if (held === undefined || held.darkId === null || held.darkAt === null) return undefined
+    return { id: Number(held.darkId), at: Number(held.darkAt) }
+  }
+
+  hasHeldSince(name: string, afterId: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK)
+    return row !== undefined
   }
 
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
