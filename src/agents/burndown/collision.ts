@@ -129,7 +129,9 @@ function openPr(work: CollisionWork, facts: CollisionFacts): Collision | undefin
   const ourBranches = new Set([...facts.ours].map(name => `${BRANCH_PREFIX}${name}`))
   const hit = facts.prs.find(
     pr =>
-      !ourBranches.has(pr.branch) && [pr.title, pr.branch, pr.body].some(text => namesId(text, work.taskId)),
+      !isReleasePr(pr) &&
+      !ourBranches.has(pr.branch) &&
+      [pr.title, pr.branch, pr.body].some(text => namesId(text, work.taskId)),
   )
   if (hit === undefined) return undefined
   return { kind: 'open-pr', reason: `#${hit.number} (${hit.branch}) names ${work.taskId}: ${hit.title}` }
@@ -155,13 +157,16 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
 /** The changesets Version Packages PR's head; it is nearly always open and deletes every pending changeset. */
 const RELEASE_BRANCH = 'changeset-release/'
 
+/** Its body copies every pending changeset, so it names tasks it never delivers. */
+export const isReleasePr = (pr: Pick<OpenPr, 'branch'>): boolean => pr.branch.startsWith(RELEASE_BRANCH)
+
 /** One changeset file per change, never edited together, so two of them cannot conflict. */
 const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
 
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   const owns = work.owns.filter(path => !isChangeset(path))
   if (owns.length === 0 || facts.prs === undefined) return undefined
-  for (const pr of facts.prs.filter(pr => !pr.branch.startsWith(RELEASE_BRANCH))) {
+  for (const pr of facts.prs.filter(pr => !isReleasePr(pr))) {
     const files = facts.prFiles(pr.number)
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
