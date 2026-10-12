@@ -3,13 +3,16 @@ import { contextTokens, type BudgetRead } from '../budget.js'
 
 /**
  * CC-317 b: each of a seat's agents with its context fill, and the seat's own, so a tick
- * answers "finished?", "past retire_k?" and "past teleport_k?" from `seats status` alone.
+ * answers "finished?", "past its retire threshold?" and "past teleport_k?" from `seats status` alone.
  */
 
 export type AgentRole = 'implementer' | 'reviewer' | 'planner' | 'other'
 
-/** Thousands of context tokens per role; a role without a number is never due. */
-export type RetireK = { [role in Exclude<AgentRole, 'other'>]?: number | undefined }
+const ROLES = ['implementer', 'reviewer', 'planner'] as const
+
+/** The first role word in the profile, so a profile holding two counts once. */
+export const roleOfProfile = (profile: string): AgentRole =>
+  ROLES.find(role => profile.includes(role)) ?? 'other'
 
 export interface SeatAgentRow {
   name: string
@@ -48,7 +51,7 @@ export function agentRows(
   agents: readonly AgentIdentity[],
   roleOf: (agent: AgentIdentity) => AgentRole,
   contextOf: ((agent: AgentIdentity) => BudgetRead) | undefined,
-  retireK: RetireK | undefined,
+  thresholdK: (agent: AgentIdentity) => number | undefined,
 ): SeatAgentRow[] {
   return [...agents]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -56,7 +59,7 @@ export function agentRows(
       const role = roleOf(agent)
       const fill = contextOf === undefined || !live(agent) ? null : fillOf(contextOf(agent))
       const { contextK, stale } = fill ?? { contextK: null, stale: false }
-      const limit = role === 'other' ? undefined : retireK?.[role]
+      const limit = role === 'other' ? undefined : thresholdK(agent)
       return { name: agent.name, role, state: agent.state, contextK, stale, retireDue: past(contextK, limit) }
     })
 }
