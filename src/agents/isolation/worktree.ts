@@ -319,11 +319,15 @@ export class WorktreeInUseError extends Error {
   }
 }
 
-/** The worktree currently holding `branch`, or null. Prune first, or this lies. */
+/**
+ * The worktree currently holding `branch`, or null. Prune first, or this lies. The branch line
+ * must match whole: `<name>-review` shares the `<name>` prefix and is not its holder (CC-1082).
+ */
 async function checkoutOf(gitRoot: string, branch: string): Promise<string | null> {
   const out = (await gitOrNull(['worktree', 'list', '--porcelain'], gitRoot)) ?? ''
   const blocks = out.split('\n\n')
-  const holder = blocks.find(block => block.includes(`branch refs/heads/${branch}`))
+  const branchLine = `branch refs/heads/${branch}`
+  const holder = blocks.find(block => block.split('\n').some(l => l.trim() === branchLine))
   const line = holder?.split('\n').find(l => l.startsWith('worktree '))
   return line ? path.resolve(line.slice('worktree '.length).trim()) : null
 }
