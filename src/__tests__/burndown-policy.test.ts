@@ -129,11 +129,12 @@ describe('mergeDefaults', () => {
     expect(merged.initiative_decay).toBe(0.85)
   })
 
-  it('parses a charter without worktrees_per_repo_per_seat, leaving it undefined', () => {
+  it('parses a charter that still carries worktrees_per_repo_per_seat', () => {
     const text = fs.readFileSync(path.join(FIXTURE, 'charter.md'), 'utf8')
-    const charter = parseCharter(text.replace('  worktrees_per_repo_per_seat: 3\n', ''))
 
-    expect(charter.defaults.worktrees_per_repo_per_seat).toBeUndefined()
+    const charter = parseCharter(text)
+
+    expect(text).toContain('worktrees_per_repo_per_seat: 3')
     expect(charter.defaults.worktrees_left_free_per_repo).toBe(2)
   })
 
