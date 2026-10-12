@@ -372,3 +372,35 @@ describe('renderSeatEvents', () => {
     ])
   })
 })
+
+describe('the stale notice (CC-1150 b)', () => {
+  const stale: NonNullable<Claim['stale']> = {
+    class: 'blocked',
+    proposed: 'answer the question or release by hand',
+    since: '2026-01-01T01:00:00.000Z',
+  }
+
+  it('tells a claim that gains a stale class once, and not again while it holds', () => {
+    const before = ledger(claim({ stalledReason: 'Status: BLOCKED', notified: ['stalled'] }))
+    const after = ledger(claim({ stalledReason: 'Status: BLOCKED', notified: ['stalled'], stale }))
+
+    const sent = seatEvents(before, after, []).alpha ?? []
+    const marked = markNotified(after, 'alpha', sent)
+    const next = settleNotified(marked)
+
+    expect(sent).toEqual([
+      { kind: 'stale', taskId: 'T-1', detail: 'blocked: proposed answer the question or release by hand' },
+    ])
+    expect(next.claims[0]?.notified).toEqual(['stalled', 'stale'])
+    expect(seatEvents(marked, next, []).alpha).toBeUndefined()
+  })
+
+  it('tells it again once the class cleared and a later stall gains one', () => {
+    const told = ledger(claim({ stalledReason: 'x', stale, notified: ['stale'] }))
+    const cleared = settleNotified(ledger(claim({ notified: ['stale'] })))
+    const again = ledger(claim({ ...cleared.claims[0], stalledReason: 'y', stale }))
+
+    expect(cleared.claims[0]?.notified).toBeUndefined()
+    expect(kinds(again, told)).toEqual(['stalled', 'stale'])
+  })
+})
