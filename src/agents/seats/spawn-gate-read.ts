@@ -3,8 +3,9 @@ import path from 'node:path'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
-import { readLedger, heldClaims, type Claim } from '../burndown/ledger.js'
-import { burndownOverridePath, burndownSettingsPath } from '../../paths.js'
+import { readLedger, heldClaims, type Claim, type SeatState } from '../burndown/ledger.js'
+import { expandHome } from '../burndown/seat-dispatch.js'
+import { burndownLedgerPath, burndownOverridePath, burndownSettingsPath } from '../../paths.js'
 import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-store.js'
 import { readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
@@ -21,6 +22,8 @@ export type SeatSpawnRead =
 export interface SeatSpawnReadDeps {
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   loadDoc: () => WatchdogDoc
+  /** CC-1099: the seat's burndown ledger state, whose samples `seatSpend` prefers to the watchdog meters; absent, the meters stand alone. */
+  seatState?: (seat: string) => SeatState | undefined
   home: string
 }
 
@@ -35,6 +38,7 @@ export interface SeatSpawnRequest {
 const defaultDeps: SeatSpawnReadDeps = {
   readBudget: readAccountBudget,
   loadDoc: () => loadDoc(),
+  seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
   home: os.homedir(),
 }
 
@@ -49,6 +53,23 @@ function savedDoc(load: () => WatchdogDoc): WatchdogDoc | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * The seat's ledger state when its samples were read from `pool`. The tick keys them by the charter's
+ * unexpanded `config_dir`, so the key is resolved here to the pool's. An unreadable ledger, or samples
+ * of another pool, leave the meters to stand alone rather than refusing the spawn.
+ */
+function poolSeatState(deps: SeatSpawnReadDeps, seat: string, pool: Pool): SeatState | undefined {
+  let state: SeatState | undefined
+  try {
+    state = deps.seatState?.(seat)
+  } catch {
+    return undefined
+  }
+  if (state?.configDir === undefined) return undefined
+  const keyed = path.resolve(expandHome(state.configDir, deps.home))
+  return keyed === path.resolve(pool.configDir) ? { ...state, configDir: pool.configDir } : undefined
 }
 
 /** Throws when the seats directory cannot be read; the broker logs that and lets the spawn through. */
@@ -80,6 +101,7 @@ export function readSeatSpawn(
     resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
     runMeter: meters.run,
     dayMeter: meters.day,
+    seatState: poolSeatState(deps, seat.name, pool),
     now: spawn.now,
   }
   return { kind: 'gate', input }

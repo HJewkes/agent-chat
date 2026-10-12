@@ -8,13 +8,15 @@ import {
   type SevenDaySample,
   type SpendCaps,
 } from '../burndown/budget-gate.js'
+import type { SeatState } from '../burndown/ledger.js'
+import { seatSpend } from '../burndown/spend-meter.js'
 import type { Pool, Seat } from './charter.js'
-import { meterSpend, pacedCaps, type SpendMeter } from './stops.js'
+import { pacedCaps, type SpendMeter } from './stops.js'
 import { poolRule } from './watchdog.js'
 
 /**
  * CC-288: charter section 4's budget stops for a seat-prefixed spawn, run on the pool the spawn bills.
- * Pure: the broker reads the charter, the status file and the watchdog's meters and passes them in.
+ * Pure: the broker reads the charter, the status file, the burndown ledger and the watchdog's meters and passes them in.
  */
 
 export const SEAT_BUDGET_STOP = 'seat_budget_stop'
@@ -38,6 +40,8 @@ export interface SeatSpawnInput {
   runMeter?: SpendMeter | undefined
   /** The watchdog's saved day meter for the billed pool. */
   dayMeter?: SpendMeter | undefined
+  /** CC-1099: the seat's burndown ledger state, keyed to the billed pool's resolved config dir; absent, the meters stand alone. */
+  seatState?: SeatState | undefined
   /** The spawn profile's model. */
   model: string
   /** The spawn's work role, stated or inferred; a review role passes the sonnet band on any model. */
@@ -75,10 +79,16 @@ interface SpendHistory {
   hasDay: boolean
 }
 
-/** The saved meters advanced to this reading, as `seats status` advances them, so both count the same spend. */
+/** CC-1099: the seat's spend through `seatSpend`, so the tick, `seats status` and the watchdog count the same figure. */
 function spendHistory(input: SeatSpawnInput, sevenDay: number, own: boolean): SpendHistory {
-  const { now, runMeter, dayMeter } = input
-  const spend = meterSpend({ run: runMeter, day: dayMeter }, sevenDay, now, own)
+  const spend = seatSpend({
+    seatState: input.seatState,
+    configDir: input.pool.configDir,
+    saved: { run: input.runMeter, day: input.dayMeter },
+    sevenDay,
+    now: input.now,
+    ownRun: own,
+  })
   return {
     history: spend.history,
     runStart: spend.runStart,
