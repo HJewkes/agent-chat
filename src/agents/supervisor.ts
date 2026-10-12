@@ -7,6 +7,7 @@ import type { BrokerCore } from '../broker/core.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
+  encode,
   HUMAN,
   RESERVED_NAMES,
   type AgentIdentity,
@@ -46,6 +47,7 @@ import {
   hostProbe,
   isStaleLive,
   launcherPid,
+  remoteHostOf,
   staleAtStart,
   type DeadLiveness,
   type ProcessProbe,
@@ -138,6 +140,7 @@ import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { DrainState } from '../broker/drain.js'
 import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
@@ -632,6 +635,7 @@ export interface SpawnRequest {
 export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
+  | 'broker_draining'
   | MachineRefusalCode
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
@@ -682,6 +686,8 @@ export interface SpawnOutcome {
   code?: SpawnRefusalCode
   /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard or seat budget `code`. */
   retryable?: boolean
+  /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
+  retryAfterMs?: number
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
@@ -962,6 +968,10 @@ export interface MachineGuardReaders {
   limits: () => MachineLimits
 }
 
+/** What retire did to an agent's process; the `reaped` meta on its `agent_retired` row. */
+type Reaped =
+  'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' | 'remote_end_requested'
+
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   /** CC-881: a remote successor's session id, held between its plan and its host's report. */
@@ -971,6 +981,7 @@ export class Supervisor implements TeleportHost {
   private readonly parking = new Map<string, string>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
+  private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
   private readonly attachCeilingMs: number
@@ -1116,6 +1127,7 @@ export class Supervisor implements TeleportHost {
     if (kind === 'agent_detached') this.reaper.schedule(agentId)
     else this.reaper.cancel(agentId)
     if (kind === 'agent_attached') return this.countReattach(agentId)
+    if (kind === 'agent_exited' && !this.reattached.has(agentId)) this.releaseRemoteSlot(agentId)
     if (!this.reattached.has(agentId)) return
     if (kind === 'agent_detached') this.scheduleReattachRelease(agentId)
     if (kind === 'agent_exited' || kind === 'agent_retired') this.releaseReattach(agentId)
@@ -1141,6 +1153,13 @@ export class Supervisor implements TeleportHost {
     const timer = setTimeout(() => this.releaseReattach(agentId), this.settleMs)
     timer.unref?.()
     this.reattached.set(agentId, timer)
+  }
+
+  /** CC-1059: a remote spawn holds the slot it took at spawn, never counted as a reattach, until it exits. */
+  private releaseRemoteSlot(agentId: string): void {
+    const identity = this.core.agents.get(agentId)
+    if (identity === undefined || remoteHostOf(identity) === undefined) return
+    this.semaphore.release(agentId)
   }
 
   private releaseReattach(agentId: string): void {
@@ -1434,6 +1453,7 @@ export class Supervisor implements TeleportHost {
             'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | typeof REVIEWER_ACCOUNT_LIMIT
           retryable: boolean
         }
+      | { code: 'broker_draining'; retryable: true; retryAfterMs: number }
       | { code: 'surface_refused' }
       | {} = {},
   ): SpawnOutcome {
@@ -1929,6 +1949,11 @@ export class Supervisor implements TeleportHost {
     const requester = this.requesterOf(req.parentAgentId)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
+    const drained = this.drainRefusal()
+    if (drained) {
+      const { reason, ...cause } = drained
+      return this.refuse(req, reason, cause)
+    }
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
@@ -3022,7 +3047,10 @@ export class Supervisor implements TeleportHost {
     this.finishRetired(identity.agentId, held)
     this.seatJournal?.({ event: 'retire', agent: name })
     this.writeRetiredRow(identity, transcript.path)
-    return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
+    const remote = remoteHostOf(identity)
+    const hadHandle = entry !== undefined || remote !== undefined
+    const caveat = this.retireCaveat(name, hadHandle, reaped, tenancy?.warning, remote)
+    return { ok: true, ...(caveat ?? {}) }
   }
 
   /** CC-331: the spend read streams the whole transcript, so the row is written after retire has answered. */
@@ -3323,16 +3351,30 @@ export class Supervisor implements TeleportHost {
    * `not_registered` is the ordinary, quiet case: the agent already exited, or
    * its pane close above ended it, and there is nothing left to signal.
    */
-  private reap(
-    identity: AgentIdentity,
-  ): 'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' {
+  private reap(identity: AgentIdentity): Reaped {
     const name = identity.name
     const presence = this.namePresence(identity)
     if (presence === 'none') return 'not_registered'
     if (presence === 'other') return 'another_agent'
+    const remote = remoteHostOf(identity)
+    if (remote !== undefined) return this.requestRemoteEnd(identity, remote)
     const hostPid = this.core.registry.hostPidFor(name)
     if (hostPid === undefined) return 'no_host_pid'
     return this.endSession(name, hostPid, this.core.registry.hostFor(name)).ok ? 'true' : 'already_gone'
+  }
+
+  /**
+   * CC-1059: the broker cannot signal a pid on another host, so it asks the agent's own MCP
+   * process, which ends its Claude Code when the id is its own. Nothing confirms it: retired is
+   * terminal, so the detach that follows changes no row.
+   */
+  private requestRemoteEnd(identity: AgentIdentity, host: string): Reaped {
+    const conn = this.core.registry.connFor(identity.name)
+    if (conn === undefined) return 'not_registered'
+    const reason = `retired; ending ${identity.name} on ${host}`
+    conn.write(encode({ t: 'end_self', agentId: identity.agentId, reason }))
+    logEvent('remote_end_requested', { agentId: identity.agentId, name: identity.name, host })
+    return 'remote_end_requested'
   }
 
   /** CC-408: an unbound connection counts as this agent's, so the doubt falls on not retiring. */
@@ -3353,8 +3395,15 @@ export class Supervisor implements TeleportHost {
     hadHandle: boolean,
     reaped: string,
     tenancyWarning: string | undefined,
+    remoteHost?: string,
   ): { reason: string } | undefined {
     const notes: string[] = tenancyWarning === undefined ? [] : [tenancyWarning]
+    if (reaped === 'remote_end_requested')
+      notes.push(
+        `${name} runs on ${remoteHost ?? 'another host'}, so the broker asked its own process to end ` +
+          'rather than signalling it. Nothing confirms that it ended, and an older agent-chat there ' +
+          'ignores the request; check its terminal on that host',
+      )
     if (!hadHandle)
       notes.push(
         `the broker has no record of what ${name} held, in memory or on disk (spawned before ` +
@@ -3412,6 +3461,8 @@ export class Supervisor implements TeleportHost {
    * outcome carries the verdict either way so the caller never has to guess.
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
+    const drained = this.drainRefusal()
+    if (drained) return { ok: false, ...drained }
     let identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
     const refused =
@@ -4222,6 +4273,23 @@ export class Supervisor implements TeleportHost {
   /** Held/cap, for the roster header and `/health` — see `slots()` for the rendered form. */
   slotUsage(): SlotUsage {
     return { held: this.semaphore.inUse, cap: this.semaphore.slots }
+  }
+
+  /** CC-1179: refuse new spawns and resumes until `ttlMs` from now, or lift the drain. */
+  drain(on: boolean, ttlMs = 0, now = Date.now()): { until: number } | undefined {
+    if (on) this.drainState.enter(now + ttlMs)
+    else this.drainState.leave()
+    return this.drainState.active(now)
+  }
+
+  draining(now = Date.now()): { until: number } | undefined {
+    return this.drainState.active(now)
+  }
+
+  private drainRefusal():
+    { reason: string; code: 'broker_draining'; retryable: true; retryAfterMs: number } | undefined {
+    const refusal = this.drainState.refusal(Date.now())
+    return refusal && { ...refusal, code: 'broker_draining', retryable: true }
   }
 
   paneRefFor(name: string): string | undefined {

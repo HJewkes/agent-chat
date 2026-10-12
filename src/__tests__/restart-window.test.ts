@@ -47,6 +47,9 @@ case "$1 $2" in
     done ;;
   "agent ls")
     [ -z "\${FAKE_LS_FAIL:-}" ] || exit 1
+    calls=$(($(cat "$AGENT_CHAT_HOME/ls-calls" 2>/dev/null || echo 0) + 1))
+    echo "$calls" > "$AGENT_CHAT_HOME/ls-calls"
+    [ "$calls" -gt "\${FAKE_LS_FAIL_TIMES:-0}" ] || exit 1
     echo "\${FAKE_LS_OUT:-[]}" ;;
 esac`),
 }
@@ -370,10 +373,13 @@ describe('restart-window update and restart', () => {
 })
 
 describe('restart-window post-checks', () => {
-  it('prints OK after a clean restart', () => {
+  const shortDeadline = { RESTART_WINDOW_TEST: '1', RESTART_WINDOW_LS_DEADLINE_S: '2' }
+
+  it('prints OK after a clean restart with the seconds agent ls took', () => {
     const r = run()
 
     expect(r.code).toBe(0)
+    expect(r.out).toMatch(/ok: agent ls --json answers within 30s of the restart \(took \d+s\)/)
     expect(r.out).toContain('restart-window OK')
   })
 
@@ -381,14 +387,52 @@ describe('restart-window post-checks', () => {
     ['no broker_started line', { FAKE_STARTED: '0' }, 'exactly one broker_started'],
     ['two broker_started lines', { FAKE_STARTED: '2' }, 'exactly one broker_started'],
     ['a ledger_shadow_error line', { FAKE_SHADOW_ERRORS: '1' }, 'no ledger_shadow_error'],
-    ['agent ls exiting non-zero', { FAKE_LS_FAIL: '1' }, 'agent ls --json parses'],
-    ['agent ls printing non-JSON', { FAKE_LS_OUT: 'not json' }, 'agent ls --json parses'],
-  ])('exits 2 on %s', (_name, env, line) => {
-    const r = run(env)
+    [
+      'agent ls exiting non-zero',
+      { FAKE_LS_FAIL: '1', ...shortDeadline },
+      'agent ls --json answers within 2s',
+    ],
+    [
+      'agent ls printing non-JSON',
+      { FAKE_LS_OUT: 'not json', ...shortDeadline },
+      'agent ls --json answers within 2s',
+    ],
+  ])(
+    'exits 2 on %s',
+    (_name, env, line) => {
+      const r = run(env)
+
+      expect(r.code).toBe(2)
+      expect(r.out).toContain(`FAIL: ${line}`)
+      expect(r.out).not.toContain('restart-window OK')
+    },
+    15000,
+  )
+
+  it('retries agent ls until the broker answers', () => {
+    const r = run({ FAKE_LS_FAIL_TIMES: '2', RESTART_WINDOW_TEST: '1', RESTART_WINDOW_LS_DEADLINE_S: '10' })
+
+    expect(r.code).toBe(0)
+    expect(r.calls.split('\n').filter(line => line === 'agent-chat agent ls --json')).toHaveLength(3)
+    expect(r.out).toMatch(/ok: agent ls --json answers within 10s of the restart \(took \d+s\)/)
+  }, 15000)
+
+  it('exits 2 and keeps the old build when agent ls has not answered by the deadline', () => {
+    const started = Date.now()
+    const r = run({ FAKE_LS_FAIL: '1', ...shortDeadline })
 
     expect(r.code).toBe(2)
-    expect(r.out).toContain(`FAIL: ${line}`)
-    expect(r.out).not.toContain('restart-window OK')
+    expect(r.out).toMatch(/FAIL: agent ls --json answers within 2s of the restart \(no answer after \d+s\)/)
+    expect(fs.readFileSync(path.join(repo, 'dist.prev', 'marker'), 'utf8')).toBe('old')
+    expect(Date.now() - started).toBeLessThan(10000)
+  }, 15000)
+
+  it('refuses RESTART_WINDOW_LS_DEADLINE_S outside a test before touching anything', () => {
+    const r = run({ RESTART_WINDOW_LS_DEADLINE_S: '0' })
+
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('RESTART_WINDOW_LS_DEADLINE_S is set outside a test')
+    expect(r.calls).toBe('')
   })
 
   it('keeps the old build as .prev and names the rollback when a post-check fails', () => {

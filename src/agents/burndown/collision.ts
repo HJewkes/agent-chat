@@ -5,6 +5,7 @@ import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { defaultBranch } from './observe.js'
+import { exemptFromOverlap, overlapExemptFor } from './overlap-exempt.js'
 import { DESTRUCTIVE_OPS, type Contract } from './report.js'
 import { GIT_BIN } from './review-diff.js'
 
@@ -81,6 +82,8 @@ export interface CollisionFacts {
   held: readonly HeldContracts[]
   /** Owns on dispatched, undone claims other than the work's own: their PRs may not be open yet (CC-952). */
   heldOwns: readonly HeldOwns[]
+  /** Index and generated files that merge-up resolves at land, so overlap on them alone never refuses (charter 6.2, CC-1153). */
+  overlapExempt?: readonly string[]
 }
 
 export interface HeldContracts {
@@ -99,12 +102,14 @@ export const namesId = (text: string, id: string): boolean =>
   new RegExp(`(?<![A-Za-z0-9])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9])`, 'i').test(text)
 
 export function collision(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
+  // A file claim is an explicit hold, not a merge-up conflict, so `claimed` keeps the full owns.
+  const gated = { ...work, owns: exemptFromOverlap(work.owns, facts.overlapExempt ?? []) }
   return (
     landed(work, facts) ??
     openPr(work, facts) ??
     claimed(work, facts) ??
-    fileOverlap(work, facts) ??
-    liveOverlap(work, facts.repo, facts.heldOwns) ??
+    fileOverlap(gated, facts) ??
+    liveOverlap(gated, facts.repo, facts.heldOwns) ??
     contractOverlap(work, facts.held)
   )
 }
@@ -129,7 +134,9 @@ function openPr(work: CollisionWork, facts: CollisionFacts): Collision | undefin
   const ourBranches = new Set([...facts.ours].map(name => `${BRANCH_PREFIX}${name}`))
   const hit = facts.prs.find(
     pr =>
-      !ourBranches.has(pr.branch) && [pr.title, pr.branch, pr.body].some(text => namesId(text, work.taskId)),
+      !isReleasePr(pr) &&
+      !ourBranches.has(pr.branch) &&
+      [pr.title, pr.branch, pr.body].some(text => namesId(text, work.taskId)),
   )
   if (hit === undefined) return undefined
   return { kind: 'open-pr', reason: `#${hit.number} (${hit.branch}) names ${work.taskId}: ${hit.title}` }
@@ -155,13 +162,16 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
 /** The changesets Version Packages PR's head; it is nearly always open and deletes every pending changeset. */
 const RELEASE_BRANCH = 'changeset-release/'
 
+/** Its body copies every pending changeset, so it names tasks it never delivers. */
+export const isReleasePr = (pr: Pick<OpenPr, 'branch'>): boolean => pr.branch.startsWith(RELEASE_BRANCH)
+
 /** One changeset file per change, never edited together, so two of them cannot conflict. */
 const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
 
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   const owns = work.owns.filter(path => !isChangeset(path))
   if (owns.length === 0 || facts.prs === undefined) return undefined
-  for (const pr of facts.prs.filter(pr => !pr.branch.startsWith(RELEASE_BRANCH))) {
+  for (const pr of facts.prs.filter(pr => !isReleasePr(pr))) {
     const files = facts.prFiles(pr.number)
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
@@ -348,6 +358,7 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
   failed: ReaderFailed = () => {},
+  exemptFor: (repo: string) => string[] = overlapExemptFor,
 ): (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
   const perSubjects = new Map<string, string[] | undefined>()
@@ -359,7 +370,8 @@ export function collisionCheck(
     return read
   }
   return (repo, work, landedRepos = []) => {
-    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo))
+    const facts =
+      perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo), exemptFor(repo))
     perRepo.set(repo, facts)
     return collision(work, {
       ...facts,
@@ -381,6 +393,7 @@ function readFacts(
   exec: Runner,
   failed: ReaderFailed,
   subjects: string[] | undefined,
+  overlapExempt: string[],
 ): CollisionFacts {
   const prs = readOpenPrs(repo, exec)
   if (prs === undefined) failed('gh-pulls', repo)
@@ -404,6 +417,7 @@ function readFacts(
     ours: new Set(),
     held: [],
     heldOwns: [],
+    overlapExempt,
   }
 }
 

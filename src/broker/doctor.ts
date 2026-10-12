@@ -66,19 +66,62 @@ export const managedSettingsPath = (platform: NodeJS.Platform): string | undefin
   MANAGED_SETTINGS_BY_PLATFORM[platform]
 
 /**
- * `GET /health` with a hard timeout, returning null for every failure mode.
+ * Long enough for a broker that is busy building a large reply to still answer
+ * `/health`; the 500 ms default reported a bound, busy port as unbound (CC-1182).
+ */
+export const DOCTOR_HEALTH_TIMEOUT_MS = 3_000
+
+export type HealthFailure = 'timeout' | 'refused' | 'http'
+
+export type HealthOutcome = { health: HealthPayload } | { failure: HealthFailure }
+
+/**
+ * `GET /health` with a hard timeout, naming why it failed.
  *
  * Lives here rather than in the HTTP layer so that nothing which merely *asks*
- * about health has to import a server. Null covers "not answering" and "this
- * build has no HTTP surface" alike — the port bind is best-effort by design.
+ * about health has to import a server. A timeout means something holds the port
+ * but did not answer in time; any other transport error means nothing answered.
  */
-export async function probeHealth(port: number, timeoutMs = 500): Promise<HealthPayload | null> {
+export async function probeHealthOutcome(port: number, timeoutMs: number): Promise<HealthOutcome> {
+  let res: Response
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(timeoutMs) })
-    return res.ok ? ((await res.json()) as HealthPayload) : null
-  } catch {
-    return null
+    res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+  } catch (err) {
+    return { failure: (err as Error).name === 'TimeoutError' ? 'timeout' : 'refused' }
   }
+  if (!res.ok) return { failure: 'http' }
+  try {
+    return { health: (await res.json()) as HealthPayload }
+  } catch (err) {
+    return { failure: (err as Error).name === 'TimeoutError' ? 'timeout' : 'http' }
+  }
+}
+
+/** Null for every failure mode: "not answering" and "no HTTP surface" alike. */
+export async function probeHealth(port: number, timeoutMs = 500): Promise<HealthPayload | null> {
+  const outcome = await probeHealthOutcome(port, timeoutMs)
+  return 'health' in outcome ? outcome.health : null
+}
+
+/**
+ * Always a warn, never a fail, when /health does not answer: the port bind is
+ * best-effort and a broker with no HTTP surface at all is a working broker.
+ * The socket is what matters.
+ */
+export function describeHealth(port: number, outcome: HealthOutcome, timeoutMs: number): Check {
+  if ('health' in outcome) {
+    return {
+      name: 'broker http',
+      status: 'ok',
+      detail: `/health ok on ${port}, ${outcome.health.sessions} sessions`,
+    }
+  }
+  const detail: Record<HealthFailure, string> = {
+    timeout: `/health on ${port} did not answer within ${timeoutMs / 1000}s — the broker is busy (the socket answers)`,
+    refused: `no /health on ${port} — the HTTP surface may not be bound or not built`,
+    http: `/health on ${port} answered with an error — the HTTP surface is bound but unhealthy`,
+  }
+  return { name: 'broker http', status: 'warn', detail: detail[outcome.failure] }
 }
 
 function checkNode(): Check {
@@ -141,19 +184,8 @@ async function checkBroker(live: boolean): Promise<Check[]> {
   if (!live) return [socket]
 
   const port = readMeta()?.port ?? defaultPort()
-  const health = await probeHealth(port)
-  return [
-    socket,
-    {
-      name: 'broker http',
-      // A warn, never a fail: the port bind is best-effort and a broker with no
-      // HTTP surface at all is a working broker. The socket is what matters.
-      status: health ? 'ok' : 'warn',
-      detail: health
-        ? `/health ok on ${port}, ${health.sessions} sessions`
-        : `no /health on ${port} — the HTTP surface may not be bound or not built`,
-    },
-  ]
+  const outcome = await probeHealthOutcome(port, DOCTOR_HEALTH_TIMEOUT_MS)
+  return [socket, describeHealth(port, outcome, DOCTOR_HEALTH_TIMEOUT_MS)]
 }
 
 /** Walks PATH directly rather than shelling out: no subprocess, no quoting question. */
@@ -424,7 +456,7 @@ function checkDashboard(): Check {
 
 /** A second /health probe, kept apart from `checkBroker` so this check stays self-contained. */
 async function checkStatusline(live: boolean): Promise<Check[]> {
-  const health = live ? await probeHealth(readMeta()?.port ?? defaultPort()) : null
+  const health = live ? await probeHealth(readMeta()?.port ?? defaultPort(), DOCTOR_HEALTH_TIMEOUT_MS) : null
   return [
     checkStatuslineCache({ cacheDir: budgetDir(), now: Date.now(), registeredSessions: health?.sessions }),
     checkStatuslineHook(path.join(configDir(), 'settings.json')),

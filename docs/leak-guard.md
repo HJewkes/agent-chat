@@ -705,8 +705,11 @@ Each option ends in its final state, the last spelling winning as in git, so
 a remote or submodule URL (`remote`, `submodule` and the internal `submodule--helper`) are read
 from one table of verbs: a verb that stores a URL, or one outside the table, with a word the guard
 cannot read denies, and only `remote set-url --delete` and the verbs listed as storing none are
-exempt. `git clone "$URL"` stays allowed as before (TP-636); the protocol-list rules and the
-CC-1095 pin cover a later `ext::` run of the URL it stores.
+exempt. `git clone` stores its repository as `remote.origin.url`, so a clone whose repository
+argument (its first positional, read with clone's own options) the guard cannot read denies too,
+as in `git clone "$URL"`, `git clone -b main "$(cat u)" d` or `U=https://github.com/o/r; git clone
+"$U"` (TP-2444, reversing the TP-636 allowance). An unread directory argument, a literal URL, `-h`,
+an unknown literal flag and `gh repo clone "$R"` stay allowed; the CC-1095 pin stays as a backstop.
 These rules read one shell word as one argument, so for `git config` and the URL-storing
 builtins a word after the subcommand that the shell may expand to none or several denies as an
 unreadable write: an unquoted `$X` or `$(...)`, `"$@"`, `"${A[@]}"`, a glob or a brace, as in
@@ -1372,6 +1375,22 @@ Every other command, and a push that passes,
 A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
 that is no alias up to two more for `help.autocorrect`.
 
+Before any of that, the shim pins `GIT_ALLOW_PROTOCOL` (CC-1095), so every git it runs, a `!`
+alias body included, gets the caller's list cut down to `file:git:http:https:ssh`. An unset
+variable gets that whole list, and an empty one stays empty, which git reads as no transport.
+git reads this list over `protocol.*.allow` in every config scope, so a repository with
+`protocol.ext.allow=always` and an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
+`transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
+GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
+The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
+`agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
+burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
+alias that expands to it, with exit 2 and `git-shim: refused (ext-transport)`, because that
+helper runs its argument as a shell command without the transport check. The list keeps `file`,
+so local clones, test fixtures and a `file` submodule still work; leaving it out would break
+local-path clones. A remote helper outside the list, such as `persistent-https::` or
+`gcrypt::`, is refused for agents.
+
 Not covered:
 
 - an absolute git path (`/usr/bin/git push`), or `env -i`, which drops the shim from PATH;
@@ -1392,4 +1411,5 @@ Not covered:
 - pushing without git.
 
 The shim is live for an agent only after a broker restart picks up the
-build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote.
+build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote;
+`src/__tests__/leak-git-shim-protocol.test.ts` runs the protocol pin and the `remote-ext` refusal.

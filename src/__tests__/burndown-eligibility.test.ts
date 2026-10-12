@@ -146,6 +146,13 @@ describe('dispatch gate on declared ops (CC-974)', () => {
     },
   )
 
+  it('dispatches a ruleset done_when tagged ops:none and refuses it untagged (CC-1154)', () => {
+    const doneWhen = 'the tick no longer refuses; update the ruleset docs page'
+
+    expect(refuse(withDoneWhen(doneWhen, [opsNoneTag(doneWhen)]))).toBeUndefined()
+    expect(refuse(withDoneWhen(doneWhen))?.kind).toBe('ops-unresolved')
+  })
+
   it('refuses an ops:none tag minted for different text', () => {
     const tag = opsNoneTag('the deploy checkout path is read')
 
@@ -170,7 +177,7 @@ describe('dispatch gate on declared ops (CC-974)', () => {
   })
 
   it('needs the release grant for a declared publish, and dispatches it with the grant', () => {
-    const publish = withDoneWhen('npm publish ships 1.2.0', ['ops:publish'])
+    const publish = withDoneWhen('publish @t/x at 1.2.0', ['ops:publish'])
 
     expect(refuse(publish)?.kind).toBe('needs-grant')
     expect(refuse(publish)?.reason).toContain('release-through-ci')

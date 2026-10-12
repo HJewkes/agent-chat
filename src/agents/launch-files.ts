@@ -287,25 +287,41 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 /**
  * The worktree whose repo skills the hook may allow writes to: the plan's cwd, only when
- * the profile opted in with the owner-approved rule and git has the cwd registered as a
- * linked worktree, so a shared or main checkout stays behind the owner prompt (CC-694).
+ * the profile opted in with the owner-approved rule, the cwd is the worktree the broker
+ * recorded agent-chat creating for this launch, and git still has that registered as a
+ * linked worktree. A shared or main checkout stays behind the owner prompt (CC-694), and
+ * so does a hand-written common dir at the cwd: git checks its layout, not who made it (CC-1110).
  */
-export function selfGrantRootOf(plan: LaunchPlan): string | undefined {
+export function selfGrantRootOf(plan: LaunchPlan, createdWorktree?: string): string | undefined {
   const end = plan.args.indexOf('--')
   const options = end === -1 ? plan.args : plan.args.slice(0, end)
   const at = options.indexOf('--allowed-tools')
   if (at === -1 || !(options[at + 1] ?? '').split(',').includes(REPO_SKILLS_RULE)) return undefined
-  return linkedWorktreeRoot(plan.cwd)
+  const created = createdWorktree === undefined ? undefined : realpathOrUndefined(createdWorktree)
+  if (created === undefined || realpathOrUndefined(plan.cwd) !== created) return undefined
+  return linkedWorktreeRoot(created)
 }
 
-export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
+function realpathOrUndefined(dir: string): string | undefined {
+  try {
+    return fs.realpathSync(dir)
+  } catch {
+    return undefined
+  }
+}
+
+export function writeLaunchFiles(
+  plan: LaunchPlan,
+  config: Record<string, unknown>,
+  createdWorktree?: string,
+): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
   const settings = buildHookSettings(
     cliEntry(),
     permissionTimeout,
     carriedUserSettings(plan),
     plan.agentId,
-    selfGrantRootOf(plan),
+    selfGrantRootOf(plan, createdWorktree),
   )
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))

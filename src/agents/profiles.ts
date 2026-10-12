@@ -423,12 +423,46 @@ export function loadProfile(name: string, dir: string = profilesDir()): AgentPro
     } catch (err) {
       return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
     }
-    return parseProfile(name, parsed, file)
+    const profile = parseProfile(name, parsed, file)
+    return 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir))
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
-  if (builtin) return builtin
+  if (builtin) return withWorkerConfigDenies(builtin, path.dirname(dir))
   return { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` }
+}
+
+const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']
+
+/**
+ * CC-1094: the edit-tool rules that keep a worker out of `<agentHome>/profiles`
+ * and the top-level config json. A worker that rewrote either could drop every
+ * other deny it carries. Empty for a home holding a comma, because deny lists
+ * travel comma-joined and a split rule would deny the wrong thing.
+ */
+export function workerConfigDenies(agentHome: string): string[] {
+  if (agentHome.includes(',')) return []
+  const root = `/${path.resolve(agentHome)}`
+  return [`${root}/profiles/**`, `${root}/*.json`].flatMap(target =>
+    CONFIG_EDIT_TOOLS.map(tool => `${tool}(${target})`),
+  )
+}
+
+/**
+ * Every non-coordinator gets the rules, builtins included, and `allowedTools`
+ * cannot opt out. Silent, unlike `DERIVED_DENIES`: no file can avoid them, so a
+ * warning on every worker spawn would only be noise.
+ */
+function withWorkerConfigDenies(profile: AgentProfile, agentHome: string): AgentProfile {
+  if (roleOf(profile) === 'coordinator') return profile
+  const denied = profile.disallowedTools ?? []
+  const rules = workerConfigDenies(agentHome)
+  if (rules.length === 0) {
+    const warning = `${profile.name}: agent-chat home ${agentHome} contains a comma, so no edit deny guards its profiles or config`
+    return { ...profile, warnings: [...(profile.warnings ?? []), warning] }
+  }
+  const added = rules.filter(rule => !denied.includes(rule))
+  return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
 }
 
 export function listProfileNames(dir: string = profilesDir()): string[] {

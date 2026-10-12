@@ -800,6 +800,36 @@ an assigned worktree, `owns`, `claim_paths`, `inherit: context` and
 `host: <broker host>` launches on the broker as before. A requester without
 `launchesHere` (an older build) keeps today's broker launch.
 
+On the wire, `spawn_result` carries `launch` and `host` for a caller-site spawn.
+The requester answers with `spawn_launched {agentId, ok, reason?}` (ready, or
+refused on its host), and an ok `spawn_launched_result` is its only go to open the
+surface. Then it sends `spawn_placed`, whose `spawn_placed_result` (the
+`spawn_result` shape) comes once the agent registers, fails, or the attach window
+passes. The socket accepts both reports only from the connection that received the
+launch. A session's host comes from its registration and never its frame. Only the
+CLI, which holds no registration, names its own with `callerHost`.
+
+Both clients run that half (`src/server/caller-spawn.ts`): the `agent_spawn` tool,
+whose `host` argument picks the machine, and `agent-chat agent spawn --host
+<machine>`. Each sends `launchesHere`, its OS and home, and returns the
+`spawn_placed_result` verdict in place of the pending `spawn_result`, naming the
+host (`Spawned "x" (id) on mac`). A lost `spawn_placed_result` is reported as
+placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
+exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
+the old placement.
+
+Once registered, an agent on another host is known by its spawn row's `host`, which
+`agent_list` shows. The broker can read neither its pids nor its Claude Code session
+records, so a detach that outlasts the settle window is the exit: `agent_exited` is
+inferred with a body naming the host, and the slot taken at spawn is released. A
+reattach after that reopens the row and takes a slot again. Retire cannot signal a
+pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
+connection, and that MCP process ends its own Claude Code when the id is its own
+(`src/server/end-self.ts`). The `agent_retired` row says `reaped:
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
+
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
 A spawned agent starts from its brief and nothing else, so in practice every
