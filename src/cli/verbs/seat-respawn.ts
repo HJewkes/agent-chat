@@ -1,6 +1,6 @@
 import type { RelaunchSeatResult } from '../../agents/seats/run.js'
 import { accountRefusal } from '../../agents/seats/seat-account.js'
-import type { SeatRelaunchPlan } from '../../agents/seats/seat-target.js'
+import { type SeatRelaunchPlan, withoutLineage } from '../../agents/seats/seat-target.js'
 import type { SeatAgent } from '../../agents/seats/watchdog.js'
 import type { BrokerClient } from '../../client/broker-client.js'
 import type { ClientMessage, SurfaceName } from '../../protocol.js'
@@ -38,20 +38,29 @@ function launchedAs({ target }: SeatRelaunchPlan, session: boolean): LaunchedAs 
 }
 
 /**
- * CC-959: the roster the watchdog reads leaves retired rows out, so a relaunch refused after its retire
- * would find no granted profile on the next run. The newest spawned row, retired or not, still has it.
+ * The roster the watchdog reads leaves retired rows out, so they are fetched when the plan needs one:
+ * a granted profile (CC-959) or the spawn lineage of a session to resume (CC-1053).
  */
-async function withGrant(
+async function seatRows(
   client: BrokerClient,
   seat: string,
-  plan: SeatRelaunchPlan,
-): Promise<SeatRelaunchPlan> {
-  if (plan.target.spawned !== undefined) return plan
+  { target }: SeatRelaunchPlan,
+): Promise<SeatAgent[]> {
+  if (target.spawned !== undefined && target.kind !== 'resume-session') return []
   const frame = { t: 'agents' as const, includeRetired: true }
   const all = (await client.request(frame, 'agents_result')) as Reply<'agents_result'>
-  const spawned: SeatAgent | undefined = all.agents
-    .filter(agent => agent.name === seat && agent.origin !== 'adopted')
-    .sort((a, b) => b.spawnedAt - a.spawnedAt)[0]
+  return all.agents.filter(agent => agent.name === seat)
+}
+
+/**
+ * CC-959: a relaunch refused after its retire would find no granted profile on the next run.
+ * The newest spawned row, retired or not, still has it.
+ */
+function withGrant(plan: SeatRelaunchPlan, rows: SeatAgent[]): SeatRelaunchPlan {
+  if (plan.target.spawned !== undefined) return plan
+  const spawned: SeatAgent | undefined = rows
+    .filter(agent => agent.origin !== 'adopted')
+    .sort((a, b) => (b.spawnedAt ?? 0) - (a.spawnedAt ?? 0))[0]
   return spawned === undefined ? plan : { ...plan, target: { ...plan.target, spawned } }
 }
 
@@ -161,7 +170,8 @@ async function spawnSeat(
 
 /**
  * CC-959: a dark seat whose latest session the broker cannot resume by name comes back on the
- * seat file's account: stale rows retired by id, then its latest session, else a fresh launch.
+ * seat file's account: stale rows retired by id, then its latest session if a spawned row of the seat
+ * ran as it (CC-1053), else a fresh launch.
  * The retire cannot be undone, so a launch refused after it is raised to the human, not just retried.
  */
 export async function respawnSeat(
@@ -170,7 +180,9 @@ export async function respawnSeat(
   given: SeatRelaunchPlan,
   declared: RespawnSurface,
 ): Promise<RelaunchSeatResult> {
-  const plan = await withGrant(client, seat, given)
+  const rows = await seatRows(client, seat, given)
+  const granted = withGrant(given, rows)
+  const plan = { ...granted, target: withoutLineage(granted.target, rows) }
   const as = launchedAs(plan, true)
   if ('refusal' in as) return { ok: false, refused: true, detail: `not relaunched: ${as.refusal}` }
   const foreign = plan.target.spawned && accountRefusal(plan.account, plan.target.spawned)
