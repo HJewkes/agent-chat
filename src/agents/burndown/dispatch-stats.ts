@@ -5,6 +5,7 @@ import { BRIEF_SOURCES, type BriefSource } from './task-tags.js'
 import type { VerdictObservation } from './waste.js'
 import {
   TICK_SUMMARY_VERSION,
+  type NamedRefusal,
   type RegisterCounts,
   type SeatSummary,
   type TickSummaryRow,
@@ -58,6 +59,7 @@ export interface SeatDispatchStats {
   readyFloor: ReadyFloor
   caps: SeatSummary['roles'] | null
   refusals: RefusalMix | null
+  trust: NamedRefusal[] | null
   registrations: RegisterCounts
   tick: {
     lastAt: string | null
@@ -263,6 +265,7 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
     readyFloor: readyFloor(w.rows, seat, w.floor),
     caps: summary?.roles ?? null,
     refusals: fromRow ?? latestJournalRefusals(ports, seat, w.sinceMs),
+    trust: summary === undefined ? null : (summary.trust ?? []),
     registrations: sumRegistrations(w.rows, seat),
     tick: tickHealth(ports, last, seat),
   }
@@ -304,6 +307,9 @@ function refusalsLine(mix: RefusalMix | null): string {
   return `${listed} (${mix.source} ${mix.at})`
 }
 
+const trustLine = (t: NamedRefusal): string =>
+  `${t.initiative}${t.task === undefined ? '' : ` ${t.task}`}: ${t.reason}`
+
 function floorLine(f: ReadyFloor): string {
   return `${f.below} of ${f.ticks} ticks below ${f.floor}, min ${dash(f.min)}, p50 ${dash(f.p50)}, longest ${f.longestBelowMinutes}m`
 }
@@ -327,6 +333,7 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
       `  ready floor    ${floorLine(s.readyFloor)}`,
       `  cap use        ${capsLine(s.caps)}`,
       `  refusals       ${refusalsLine(s.refusals)}`,
+      ...(s.trust ?? []).map(t => `  trust          ${trustLine(t)}`),
       `  registrations  ok ${reg.ok}, refused ${reg.refused}, failed ${reg.failed}`,
       `  tick           ${tickLine(s)}`,
     ]
