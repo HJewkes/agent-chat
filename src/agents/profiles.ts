@@ -291,6 +291,12 @@ const DERIVED_DENIES: DerivedDeny[] = [
     when: [APPROVE_DENY],
     why: 'the file denies approve, and ask puts a question to the human under a service label',
   },
+  {
+    // CC-951: `teleport request` sends a from="human" message, the same door `send` closes.
+    deny: 'Bash(agent-chat teleport:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and teleport request sends a message as the human',
+  },
 ]
 
 const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
