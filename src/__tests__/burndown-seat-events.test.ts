@@ -92,6 +92,7 @@ describe('seatEvents', () => {
     stalled: { stalledReason: 'timed out' },
     'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
+    stale: { stale: { class: 'other', proposed: 'settle by hand', since: '2026-01-01T01:00:00.000Z' } },
     // These two are told from a ledger diff, never from claim state.
     released: {},
     brake: {},
