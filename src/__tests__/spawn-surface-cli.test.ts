@@ -1,3 +1,4 @@
+import os from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientMessage } from '../protocol.js'
 
@@ -60,5 +61,34 @@ describe('agent spawn --surface', () => {
 
     expect(frame).toBeDefined()
     expect(frame).not.toHaveProperty('surface')
+  })
+})
+
+describe('agent spawn --host (CC-1059)', () => {
+  beforeEach(() => {
+    sent.length = 0
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Exited()
+    }) as never)
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it('says it can launch here, from which host and OS, so a remote broker hands the launch back', async () => {
+    const frame = await spawnWith()
+
+    expect(frame).toMatchObject({
+      launchesHere: true,
+      callerHost: os.hostname(),
+      hostPlatform: process.platform,
+      callerHome: os.homedir(),
+    })
+    expect(frame).not.toHaveProperty('host')
+  })
+
+  it('sends the machine --host names', async () => {
+    const frame = await spawnWith('--host', 'basement')
+
+    expect(frame).toMatchObject({ host: 'basement', launchesHere: true })
   })
 })
