@@ -101,7 +101,7 @@ const PLAN_TEXT = [
 ].join('\n')
 const readPlan: PlanReader = (_, taskId) => ({
   path: `/plans/${taskId}.md`,
-  ...(taskId === 'P-1' ? { text: PLAN_TEXT } : {}),
+  text: taskId === 'P-1' ? PLAN_TEXT : undefined,
 })
 
 function inputs(rows: ScoreRow[], tasks: Task[], patch: Partial<SeatPlanInputs> = {}): SeatPlanInputs {
