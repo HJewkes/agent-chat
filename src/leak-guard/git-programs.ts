@@ -273,15 +273,25 @@ const CONFIG_NON_WRITES = new Set(
 const CONFIG_SUBCOMMANDS = new Set([...CONFIG_NON_WRITES, 'set', 'rename-section'])
 const SUBMODULE_ADD = `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [no-]reference= [no-]ref-format=
   [no-]dissociate [no-]name= [no-]depth=`
+// `git clone`'s options, from `git clone -h` on git 2.53. `--recurse-submodules[=<pathspec>]` takes
+// its value only attached, so it reads as a flag.
+const CLONE_OPTIONS = optionSpec(
+  `v:[no-]verbose q:[no-]quiet [no-]progress [no-]reject-shallow n:no-checkout checkout [no-]bare
+  [no-]mirror l:[no-]local no-hardlinks hardlinks s:[no-]shared [no-]recurse-submodules [no-]recursive
+  j:[no-]jobs= [no-]template= [no-]reference= [no-]reference-if-able= [no-]dissociate o:[no-]origin=
+  b:[no-]branch= [no-]revision= u:[no-]upload-pack= [no-]depth= [no-]shallow-since= [no-]shallow-exclude=
+  [no-]single-branch [no-]tags [no-]shallow-submodules [no-]separate-git-dir= [no-]ref-format=
+  c:[no-]config= [no-]server-option= 4:ipv4 6:ipv6 [no-]filter= [no-]also-filter-submodules
+  [no-]remote-submodules [no-]sparse [no-]bundle-uri=`,
+)
 
 /**
  * How a builtin that stores a remote or submodule URL reads its words, from its `-h` lists on git
  * 2.53 (TP-2371). `lead` holds the options before the verb; `writes` the verbs that store a URL,
  * each with its options and, for `remote set-url --delete`, the option state that stores none;
  * `safe` the verbs that store none. A verb in neither is treated as one that may store any word it
- * is given. `git clone` also stores its repository as `remote.origin.url` but is left out: an
- * unread clone URL is an allowed form (TP-636), and a later `ext::` run of it needs the protocol
- * list this slice denies or the CC-1095 pin lifted.
+ * is given. `git clone` has no verb and stores only its repository, as `remote.origin.url`, so
+ * `cloneUrlEnabler` reads it instead (TP-2444).
  */
 interface UrlCommand {
   lead: OptionSpec
@@ -409,6 +419,19 @@ function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined 
 }
 
 /**
+ * Whether `git clone` stores a repository URL the guard cannot read as `remote.origin.url` (TP-2444):
+ * `url` when its first positional is unread. Past an option the guard cannot match it is `url` for
+ * any unread word and otherwise none, so an unknown literal flag stays allowed. An unread directory
+ * and `-h` store none.
+ */
+function cloneUrlEnabler(args: SubArgs): ExtEnabler | undefined {
+  const parsed = parseOptions(args, CLONE_OPTIONS)
+  if (parsed === undefined) return args.resolved.includes(undefined) ? 'url' : undefined
+  if (isSet(parsed, 'help') || parsed.positionals.length === 0) return undefined
+  return parsed.positionals[0] === undefined ? 'url' : undefined
+}
+
+/**
  * What a `git config` write, or a write by a builtin in URL_COMMANDS, at `at` would enable for `ext::`
  * (TP-2371): `protocol` when it sets `protocol.allow` or `protocol.ext.allow` to anything but
  * `never`, or renames a section into `protocol`; `url` when it writes a remote or submodule URL,
@@ -417,10 +440,12 @@ function urlEnabler(args: SubArgs, command: UrlCommand): ExtEnabler | undefined 
  * would read but the guard cannot match to exactly one it knows. undefined for none.
  * The words are read one shell word to one argument, so for these builtins a word after the
  * subcommand that may expand to none or several (an unquoted expansion, `"$@"`, `"${A[@]}"`, a
- * glob or a brace) leaves the argument list unknown, which is `url`.
+ * glob or a brace) leaves the argument list unknown, which is `url`. `git clone` is read by
+ * `cloneUrlEnabler`; its splitting words are already `gitConfigUnresolved`.
  */
 export function extEnablerWrite(run: GitWords, at: number): ExtEnabler | undefined {
   const sub = run.resolved[at]
+  if (sub === 'clone') return cloneUrlEnabler(tail(run, at + 1))
   const command = sub === undefined ? undefined : URL_COMMANDS[sub]
   if (sub !== 'config' && command === undefined) return undefined
   if (run.marked.slice(at + 1).some(word => expandsToWords(word, run.splits))) return 'url'

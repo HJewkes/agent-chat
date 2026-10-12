@@ -461,3 +461,46 @@ describe('a process substitution is no variable name (TP-2371 final round)', () 
     },
   )
 })
+
+describe('git clone of a repository the guard cannot read (TP-2444)', () => {
+  it.each([
+    'git clone "$U"',
+    'git clone "$U" d',
+    'git clone "${U}" d',
+    'git clone "$(cat u)" d',
+    'git clone x"$U" d',
+    'git clone --bare "$U"',
+    'git clone --mirror "$U"',
+    'git clone -o up -b main "$U" d',
+    'git clone --origin=up --depth 1 "$U"',
+    'git clone -- "$U" d',
+    'git -C /tmp clone "$U"',
+    'git clone --template=t --reference /r "$U" d',
+    'git clone -qb main "$U"',
+    'git clone --frobnicate "$U" d',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git clone https://github.com/o/r "$DIR"',
+    'git clone -b main https://github.com/o/r',
+    'git clone --reference "$R" https://github.com/o/r d',
+    'git clone -o "$O" https://github.com/o/r',
+    'git clone -h',
+    'git clone --frobnicate https://github.com/o/r d',
+    'git clone --recurse-submodules=p https://github.com/o/r d',
+    'gh repo clone "$R"',
+    'gh repo clone o/r "$DIR"',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it('keeps gitConfigUnresolved for a word the shell may split', () => {
+    expect(hookReason('git clone $U d')).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it('reads a same-line literal assignment', () => {
+    expect(hookReason('U=https://github.com/o/r; git clone "$U"')).toBe(REASONS.remoteUrlUnresolved)
+  })
+})
