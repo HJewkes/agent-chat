@@ -2,6 +2,7 @@ import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
+import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
@@ -127,6 +128,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // The role the child's context hint is tuned to (CC-128); absent means a human-started session.
   AGENT_CHAT_PROFILE: input.profile.name,
+  // The leak guard keys its agent-chat config guard on this (CC-1094); AGENT_CHAT_ keeps a profile from setting it.
+  AGENT_CHAT_ROLE: roleOf(input.profile),
   // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // Defaults chosen by whoever spawned it, applied on that first registration —
