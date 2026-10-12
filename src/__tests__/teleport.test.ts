@@ -472,6 +472,23 @@ describe('the descendant', () => {
     expect(stdin).toContain('Open chat_ask questions: none.')
   })
 
+  it('shows the successor a restated question answered while it was starting (CC-1089)', async () => {
+    const agentId = await spawnAgent()
+    const { msgId } = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+
+    const stop = core.onAppend(row => {
+      if (row.kind === 'agent_handoff') core.answer(msgId, 'yes, merge it', 'cli')
+    })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: `open ask ${msgId}` })
+    stop()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(stdin).toContain(`Answered while you were starting: ${msgId}: yes, merge it`)
+    expect(stdin).toContain('Open chat_ask questions: none.')
+  })
+
   it('warns the predecessor when an agent report arrived after its last wrap (CC-524)', async () => {
     const agentId = await spawnAgent()
     const sessions = path.join(process.env.AGENT_CHAT_ACTIVE_WORK_ROOT as string, 'init-a', 'sessions')
