@@ -1,6 +1,7 @@
-import { signalSessionPid } from '../broker/host-guard.js'
+import { brokerHost, signalSessionPid } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import type { ArgvReader } from '../broker/host-channels.js'
@@ -24,7 +25,7 @@ import {
   SURFACED_NOTICE,
   type SwitchOutcome,
 } from './mode-switch.js'
-import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
+import { AGENT_CHAT_TOOLS, buildLaunchPlan, PEER_PREAMBLE, permModeFor } from './launch-plan.js'
 import { cwdHoldsUserSettings } from './launch-policy.js'
 import { lintBrief, mentionsSyntheticData, type BriefLint, type RepoVisibility } from './brief-lint.js'
 import {
@@ -76,7 +77,18 @@ import {
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
-import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
+import { canonicalPath, checkSpawnCwd, isAtOrUnder, lexicalCwdRefusal } from './spawn-cwd.js'
+import {
+  callerHomeFor,
+  remoteScopeRefusal,
+  remoteSurface,
+  RemoteSpawns,
+  REPORT_WINDOW_MS,
+  spawnSiteFor,
+  type ReportReply,
+  type RemoteSpawnRecord,
+  type SpawnSite,
+} from './remote-spawn.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import {
   REVIEWER_ACCOUNT_LIMIT,
@@ -126,7 +138,7 @@ import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
-import { resolveCoordinatorGrantableTools } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -146,7 +158,13 @@ import {
 import type { HandReserveFacts, OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
-import { assignmentRefusal, inferWorkRole, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
+import {
+  assignmentMeta,
+  assignmentRefusal,
+  inferWorkRole,
+  spawnProvenance,
+  worktreeProvenance,
+} from './spawn-provenance.js'
 import {
   poolPickText,
   routePool,
@@ -372,6 +390,123 @@ interface Resolved {
   exempted?: string[]
 }
 
+/** CC-1059: a spawn the requester launches on its own host. */
+type RemoteSite = Extract<SpawnSite, { site: 'caller' }>
+
+type SeatRefusalCause = { code: typeof SEAT_BUDGET_STOP | typeof REVIEWER_ACCOUNT_LIMIT; retryable: boolean }
+
+/** What a remote spawn's gates settled: everything but its account and id. */
+interface RemoteGated {
+  site: RemoteSite
+  surface: SurfaceName
+  isolation: IsolationName
+  cwd: string
+  /** The requester's home, which its cwd and account are held under. */
+  home: string
+  /** The caller's brief with its return contract and isolation note, before any briefing. */
+  brief: string
+  warnings: string[]
+  exempted: string[]
+}
+
+interface RemoteDraft extends RemoteGated {
+  agentId: string
+  account: Account
+  injected: { slug: string; text: string } | undefined
+}
+
+const toolsetOf = (profile: AgentProfile): NonNullable<IsolationContext['toolset']> => ({
+  allowedTools: [...profile.allowedTools],
+  ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
+})
+
+/**
+ * A remote spawn's brief with its return contract and isolation note. Only the host-neutral
+ * isolations reach here, and neither touches a disk to allocate.
+ */
+async function remoteBrief(
+  req: SpawnRequest,
+  profile: AgentProfile,
+  isolation: IsolationName,
+  lintWarnings: string[],
+): Promise<{ brief: string; warnings: string[] }> {
+  const ctx: IsolationContext = {
+    agentId: '',
+    agentName: req.name,
+    baseCwd: req.cwd ?? '',
+    toolset: toolsetOf(profile),
+  }
+  const strategy = resolveIsolation([isolation])
+  const allocation = await strategy.allocate(ctx)
+  const contracted = withReturnContract({
+    brief: req.brief,
+    profile,
+    spawner: req.requestedBy,
+    resumed: false,
+    ...(req.returnContract === undefined ? {} : { requested: req.returnContract }),
+  })
+  const floor = floorWarning(isolation, profile.isolation)
+  const warnings = [
+    ...(profile.warnings ?? []),
+    ...lintWarnings,
+    ...(floor ? [floor] : []),
+    ...(await strategy.check(ctx)),
+    ...contracted.warnings,
+  ]
+  return { brief: [contracted.brief, allocation.note].filter(Boolean).join('\n\n'), warnings }
+}
+
+/** The remote spawn's `agent_spawned` meta: the local row's facts, with `host` and `site` naming where it runs. */
+function remoteSpawnMeta(
+  req: SpawnRequest,
+  profile: AgentProfile,
+  lineage: Lineage,
+  draft: RemoteDraft,
+  sessionId: string,
+): Record<string, string> {
+  const { account, injected } = draft
+  return {
+    name: req.name,
+    ...(injected ? { briefing: injected.slug, briefing_chars: String(injected.text.length) } : {}),
+    parent: req.parentAgentId ?? '',
+    profile: profile.name,
+    model: profile.model,
+    surface: draft.surface,
+    isolation: draft.isolation,
+    cwd: draft.cwd,
+    session_id: sessionId,
+    config_dir: account.dir,
+    config_dir_source: account.source,
+    ...(account.unset ? { config_dir_unset: 'true' } : {}),
+    allowed_tools: profile.allowedTools.join(','),
+    disallowed_tools: (profile.disallowedTools ?? []).join(','),
+    ...(draft.exempted.length > 0 ? { granted_by_exemption: draft.exempted.join(',') } : {}),
+    perm_mode: permModeFor(draft.surface),
+    surface_lifetime: lifetimeOf(profile),
+    depth: String(lineage.depth),
+    role: roleOf(profile),
+    coordinator_depth: String(lineage.coordinatorDepth),
+    ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
+    ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+    // The worktree half of provenance reads git on this host, which holds no copy of that cwd.
+    ...assignmentMeta(req, profile.name),
+    host: draft.site.host,
+    site: 'caller',
+  }
+}
+
+/** The dispatched row's facts for a spawn, local or remote. */
+const spawnFactsOf = (req: SpawnRequest, profile: AgentProfile, agentId: string): SpawnFacts => ({
+  agent: req.name,
+  agent_id: agentId,
+  spawner: req.requestedBy,
+  profile: profile.name,
+  model: profile.model,
+  predecessor: req.predecessor ?? null,
+  ...(req.tier === undefined ? {} : { tier: req.tier }),
+  ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
+})
+
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
 const span = (ms: number): string =>
   ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`
@@ -482,6 +617,16 @@ export interface SpawnRequest {
    * connection — which is also what stops a request naming someone else's pane.
    */
   anchor?: string
+  /** CC-1059: the requester's host, from its registration; the CLI's own frame only when unregistered. */
+  callerHost?: string
+  /** CC-1059: the requester's OS, which picks the surface when it launches on its own host. */
+  hostPlatform?: NodeJS.Platform
+  /** CC-1059: the requester can launch on its own host. Absent is an older client, launched here. */
+  launchesHere?: true
+  /** CC-1059: the machine to launch on, an alias from config `machines` or a hostname. */
+  host?: string
+  /** CC-1059: the requester's home, which a cwd on its host must sit under. */
+  callerHome?: string
 }
 
 export type SpawnRefusalCode =
@@ -544,6 +689,10 @@ export interface SpawnOutcome {
   transcript?: TranscriptVerdict
   /** CC-151: where a freshly allocated worktree branch was cut from. */
   base?: { ref: string; sha: string }
+  /** CC-1059: recorded, not launched: the requester launches this on `host`, then reports. */
+  launch?: RemoteLaunch
+  /** CC-1059: the host the agent launches on, when that is not the broker's. */
+  host?: string
 }
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
@@ -601,6 +750,8 @@ export interface SupervisorOptions {
   attachMs?: number
   /** CC-124's ceiling for a visible spawn still starting. Shortened in tests. */
   attachCeilingMs?: number
+  /** CC-1059: how long a remote spawn's ready report may take. Shortened in tests. */
+  remoteReportMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
    * reaches the real AppleScript and opens a real window on any machine that
@@ -848,6 +999,9 @@ export class Supervisor implements TeleportHost {
   private readonly processProbe: ProcessProbe
   private readonly repoVisibility: ((cwd: string) => Promise<RepoVisibility>) | undefined
   private readonly reaper: DetachedReaper
+  /** CC-1059: spawns recorded here for a requester on another host to launch. */
+  private readonly remoteSpawns: RemoteSpawns
+  private readonly hosts: LauncherSite | undefined
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
 
@@ -878,6 +1032,13 @@ export class Supervisor implements TeleportHost {
     this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
+    this.hosts = options.hosts
+    this.remoteSpawns = new RemoteSpawns({
+      reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
+      attachMs: this.attachMs,
+      ceilingMs: this.attachCeilingMs,
+      retire: (record, reason) => this.retireRemoteSpawn(record, reason),
+    })
     this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
       this.reapIfDead(agentId, probe),
     )
@@ -917,6 +1078,7 @@ export class Supervisor implements TeleportHost {
   private onRow(row: { kind: string; ref?: string }): void {
     const agentId = row.ref
     if (agentId === undefined) return
+    if (row.kind === 'agent_attached') this.remoteSpawns.attached(agentId)
     const entry = this.live.get(agentId)
     if (!entry) return this.onUnwatchedRow(row.kind, agentId)
 
@@ -1782,6 +1944,9 @@ export class Supervisor implements TeleportHost {
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const reserve = this.handReserveRefusal(req, profile.name)
     if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
+    const site = this.siteFor(req)
+    if ('refusal' in site) return this.refuse(req, site.refusal)
+    if (site.site === 'caller') return this.spawnRemote(req, profile, lineage, site)
     const machine = this.machineRefusal(this.spawnSurface(req, profile))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
@@ -1905,12 +2070,246 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /** CC-1059: where a spawn launches, from the requester's host, its capability and any `host` it named. */
+  private siteFor(req: SpawnRequest): SpawnSite {
+    return spawnSiteFor({
+      host: req.host,
+      callerHost: req.callerHost,
+      hostPlatform: req.hostPlatform,
+      launchesHere: req.launchesHere,
+      brokerHost: brokerHost(),
+      launchers: this.hosts?.launchers() ?? [],
+      aliases: resolveMachines(),
+    })
+  }
+
+  /**
+   * CC-1059: a spawn the requester launches on its own host. Only host-neutral gates run here,
+   * plus the lexical cwd policy: that host's disk, account and terminal are its own to check.
+   */
+  private async spawnRemote(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    lineage: Lineage,
+    site: RemoteSite,
+  ): Promise<SpawnOutcome> {
+    const gated = await this.remoteGates(req, profile, site)
+    if ('refusal' in gated) return this.refuse(req, gated.refusal, gated.cause ?? {})
+    const briefing = await this.briefingFor(req, gated.cwd)
+    const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
+    if (briefing?.warning !== undefined) gated.warnings.push(briefing.warning)
+    const account = this.remoteAccount(req, profile, gated, injected)
+    if ('refusal' in account) return this.refuse(req, account.refusal, account.cause ?? {})
+    if (account.warning !== undefined) gated.warnings.push(account.warning)
+    const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
+    if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
+    if (predecessor?.warning !== undefined) gated.warnings.push(predecessor.warning)
+    const agentId = newMsgId()
+    if (!this.semaphore.acquire(agentId))
+      return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
+    const brief = [injected?.text, predecessor?.text, gated.brief].filter(Boolean).join('\n\n')
+    const launch = this.recordRemoteSpawn(req, profile, lineage, {
+      ...gated,
+      agentId,
+      brief,
+      account,
+      injected,
+    })
+    return {
+      ok: true,
+      agentId,
+      name: req.name,
+      host: site.host,
+      launch,
+      ...(gated.warnings.length > 0 ? { warnings: gated.warnings } : {}),
+      ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
+    }
+  }
+
+  /** The surface, scope, escalation, brief and cwd gates, in the order a local spawn runs them. */
+  private async remoteGates(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    site: RemoteSite,
+  ): Promise<RemoteGated | { refusal: string; cause?: { code: 'surface_refused' } }> {
+    const seatSpawn = req.surface === undefined && this.isSeatSpawn(req)
+    const role = roleOf(profile)
+    const chosen = remoteSurface(
+      { requested: req.surface, profileSurface: profile.surface, role, seatSpawn },
+      site.platform,
+      site.host,
+    )
+    if ('refusal' in chosen) return { refusal: chosen.refusal, cause: { code: 'surface_refused' } }
+    const isolation = isolationFor(req, profile)
+    const scope = remoteScopeRefusal({ ...req, isolation }, site.host, brokerHost())
+    if (scope !== undefined) return { refusal: scope }
+    const escalation = this.checkEscalation(req, profile)
+    if ('refusal' in escalation) return { refusal: escalation.refusal }
+    const lint = await this.lintBrief(req, profile, chosen.surface)
+    if (lint.refusal !== undefined) return { refusal: lint.refusal }
+    if (req.cwd === undefined) return { refusal: `a spawn launched on ${site.host} needs a cwd` }
+    const home = callerHomeFor(site.platform, os.userInfo().username, req.callerHome)
+    const cwdRefusal = lexicalCwdRefusal(req.cwd, home)
+    if (cwdRefusal !== undefined) return { refusal: cwdRefusal }
+    const { brief, warnings } = await remoteBrief(req, profile, isolation, lint.warnings)
+    return {
+      site,
+      surface: chosen.surface,
+      isolation,
+      cwd: req.cwd,
+      home,
+      brief,
+      warnings,
+      exempted: escalation.exempted,
+    }
+  }
+
+  /**
+   * The account a remote spawn bills, resolved against the requester's home. Whether it exists
+   * is the launching host's check, so nothing here reads this host's disk or environment.
+   */
+  private remoteAccount(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    gated: RemoteGated,
+    injected: { slug: string; profile?: string } | undefined,
+  ): (Account & { warning?: string }) | { refusal: string; cause?: SeatRefusalCause } {
+    const resolved = resolveConfigDir({
+      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
+      ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
+      ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
+      home: gated.home,
+      env: {},
+      isDirectory: () => true,
+    })
+    if ('error' in resolved) return { refusal: resolved.error }
+    const billed = this.billedAccount(req, profile, resolved, {
+      cwd: gated.cwd,
+      ...(injected === undefined ? {} : { initiative: injected.slug }),
+      keepsAccount: false,
+    })
+    if ('refusal' in billed)
+      return { refusal: billed.refusal, cause: { code: SEAT_BUDGET_STOP, retryable: true } }
+    const limited = this.reviewerAccountRefusal(req, profile, billed.account.dir)
+    if (limited) return { refusal: limited, cause: { code: REVIEWER_ACCOUNT_LIMIT, retryable: true } }
+    const unset = path.resolve(billed.account.dir) === defaultConfigDir(gated.home)
+    return {
+      ...billed.account,
+      ...(unset ? { unset: true as const } : {}),
+      ...(resolved.warning ? { warning: resolved.warning } : {}),
+    }
+  }
+
+  /** Writes the `agent_spawned` row, holds the spawn for its reports, and returns what the requester launches. */
+  private recordRemoteSpawn(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    lineage: Lineage,
+    draft: RemoteDraft,
+  ): RemoteLaunch {
+    const { agentId, site, surface, account } = draft
+    const sessionId = randomUUID()
+    this.core.append({
+      kind: 'agent_spawned',
+      actor: req.requestedBy,
+      target: req.name,
+      msgId: agentId,
+      body: req.brief,
+      meta: remoteSpawnMeta(req, profile, lineage, draft, sessionId),
+    })
+    logEvent('agent_spawned', { agentId, name: req.name, surface, cwd: draft.cwd, host: site.host })
+    this.remoteSpawns.open({
+      agentId,
+      name: req.name,
+      host: site.host,
+      announce: () => this.announceRemote(req, profile, agentId, sessionId, draft),
+    })
+    const { env: _env, mcpServers: _servers, warnings: _warnings, ...remoteProfile } = profile
+    return {
+      agentId,
+      sessionId,
+      name: req.name,
+      profile: remoteProfile,
+      brief: draft.brief,
+      preamble: PEER_PREAMBLE,
+      surface,
+      ...(req.tags?.length ? { tags: req.tags } : {}),
+      ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
+      ...((req.remoteControl ?? profile.remoteControl) ? { remoteControl: true } : {}),
+      ...(req.anchor === undefined ? {} : { anchor: req.anchor }),
+      cwd: draft.cwd,
+      ...(account.unset ? { configDirUnset: true as const } : { configDir: account.dir }),
+    }
+  }
+
+  /** The hooks, journal and dispatch row a local spawn writes once its agent attaches. */
+  private announceRemote(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    agentId: string,
+    sessionId: string,
+    draft: RemoteDraft,
+  ): void {
+    this.fireHook('on_spawn', {
+      agentId,
+      name: req.name,
+      session_id: sessionId,
+      cwd: draft.cwd,
+      parent: req.parentAgentId ?? null,
+      profile: profile.name,
+      briefing: draft.injected?.slug ?? null,
+    })
+    this.seatJournal?.({ event: 'spawn', agent: req.name })
+    writeDispatch(() => this.seatDispatch?.dispatched(spawnFactsOf(req, profile, agentId)))
+  }
+
+  /** CC-1059: a remote spawn that was refused, failed or lost before it registered. */
+  private retireRemoteSpawn(record: RemoteSpawnRecord, reason: string): void {
+    this.semaphore.release(record.agentId)
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: record.name,
+      ref: record.agentId,
+      body: `spawn not launched on ${record.host}: ${reason}`,
+    })
+    logEvent('remote_spawn_retired', {
+      agentId: record.agentId,
+      name: record.name,
+      host: record.host,
+      reason,
+    })
+  }
+
+  /** CC-1059: the requester checked and wrote a remote spawn; an ok reply lets it open the surface. */
+  remoteSpawnReady(agentId: string, report: ReportReply): ReportReply {
+    return this.remoteSpawns.ready(agentId, report)
+  }
+
+  /** CC-1059: the requester opened the surface, or could not; answers once the agent registers or the attach window passes. */
+  async remoteSpawnPlaced(agentId: string, report: ReportReply): Promise<SpawnOutcome> {
+    const verdict = await this.remoteSpawns.placed(agentId, report)
+    const name = this.core.agents.get(agentId)?.name
+    const named = name === undefined ? {} : { name }
+    if (verdict.kind === 'failed') return { ok: false, agentId, ...named, reason: verdict.reason }
+    if (verdict.kind === 'attached') return { ok: true, agentId, ...named }
+    const warning =
+      `still starting ${span(this.attachMs)} after it was placed; it attaches when it registers, and is ` +
+      `retired if it has not within ${span(this.attachCeilingMs)} of the ready report`
+    return { ok: true, agentId, ...named, warnings: [warning] }
+  }
+
   /** CC-398: lints the caller's brief alone, before the return contract is appended to it. */
-  private async lintBrief(req: SpawnRequest, profile: AgentProfile): Promise<BriefLint> {
+  private async lintBrief(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    surface: SurfaceName = this.spawnSurface(req, profile),
+  ): Promise<BriefLint> {
     const read = mentionsSyntheticData(req.brief) ? undefined : this.repoVisibility
     const repoVisibility =
       read === undefined ? 'unknown' : await read(req.worktree ?? req.cwd ?? process.cwd())
-    return lintBrief({ brief: req.brief, profile, surface: this.spawnSurface(req, profile), repoVisibility })
+    return lintBrief({ brief: req.brief, profile, surface, repoVisibility })
   }
 
   /** CC-916: the primary checkout a reviewer spawn would run in, which it must not touch; an assigned worktree is the caller's own. */
@@ -2045,6 +2444,9 @@ export class Supervisor implements TeleportHost {
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
+        // CC-1059: where it launched, so a later reader can tell a remote agent from a local one.
+        host: brokerHost(),
+        site: 'broker',
       },
     })
 
@@ -2073,16 +2475,7 @@ export class Supervisor implements TeleportHost {
     const site = { cwd: allocation.cwd, configDir: childConfigDir(account) }
     const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
-    const facts: SpawnFacts = {
-      agent: req.name,
-      agent_id: agentId,
-      spawner: req.requestedBy,
-      profile: profile.name,
-      model: profile.model,
-      predecessor: req.predecessor ?? null,
-      ...(req.tier === undefined ? {} : { tier: req.tier }),
-      ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
-    }
+    const facts = spawnFactsOf(req, profile, agentId)
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
       warnings.push(verdict.warning)
@@ -3845,6 +4238,7 @@ export class Supervisor implements TeleportHost {
     this.teleporter.close()
     this.attachWaiters.clear()
     this.reaper.close()
+    this.remoteSpawns.close()
     for (const timer of this.reattached.values()) clearTimeout(timer)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
