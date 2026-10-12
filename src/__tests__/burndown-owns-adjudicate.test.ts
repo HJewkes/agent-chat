@@ -281,6 +281,29 @@ describe("the tick's open-PR reader", () => {
     expect(checkoutPrs('/repo', facts({ complete: false }), origin)).toBeUndefined()
     expect(checkoutPrs('/repo', facts(), noOrigin)).toBeUndefined()
   })
+
+  const withFiles =
+    (stdout: string, status = 0): Runner =>
+    bin =>
+      bin === 'gh' ? { status, stdout, stderr: '' } : origin(bin, [])
+
+  it("blocks a file another open PR moves away, by the move's old path", () => {
+    const moved = `${JSON.stringify({ filename: 'docs/y.md', previous: DOC })}\n`
+    const prs = checkoutPrs('/repo', facts(), withFiles(moved)) ?? []
+
+    const verdict = adjudicateOutside([DOC], { held: [], openPrs: () => prs })
+
+    expect(prs[0]?.files()).toEqual([DOC, 'docs/y.md'])
+    expect(verdict).toEqual({ kind: 'escalate', reason: `#12 touches ${DOC}` })
+  })
+
+  it('reads a PR file list it cannot parse, or a failed read, as unreadable', () => {
+    const [garbled] = checkoutPrs('/repo', facts(), withFiles('{"filename": 3}\n')) ?? []
+    const [failed] = checkoutPrs('/repo', facts(), withFiles('', 1)) ?? []
+
+    expect(garbled?.files()).toBeUndefined()
+    expect(failed?.files()).toBeUndefined()
+  })
 })
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
