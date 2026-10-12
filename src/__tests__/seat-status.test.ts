@@ -984,6 +984,20 @@ describe("the seat's spend through the tick's meter (CC-1099)", () => {
     expect(budget.stop).toBe(RUN_STOP)
   })
 
+  it("stops on the ledger's run spend when the charter writes ~/ and the ledger key is absolute (CC-1118)", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState(path.join(tmp, 'pool')) })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it("stops on the ledger's run spend when the charter is absolute and the ledger key is ~/ (CC-1118)", async () => {
+    writeAutonomy({ spend: { per_run_points: 20, per_day_points: 100 }, configDir: path.join(tmp, 'pool') })
+
+    const { budget } = await status({ seatSamples: () => ledgerState('~/pool') })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
   it('keeps the watchdog meter figure when no ledger samples are wired', async () => {
     const { budget } = await status()
 
