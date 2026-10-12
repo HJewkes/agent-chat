@@ -66,12 +66,12 @@ describe('closed pool gate readings', () => {
 
   it('takes the source from the seat caps when the caller sets one', () => {
     const result = gate({
-      spend: { per_run_points: 60, source: 'seats/titan-coord.md' },
+      spend: { per_run_points: 60, source: 'seats/seat-a.md' },
       sevenDay: 19,
       history: RUN_107,
     })
 
-    expect(!result.open && result.gate.source).toBe('seats/titan-coord.md')
+    expect(!result.open && result.gate.source).toBe('seats/seat-a.md')
   })
 
   it('names the lower of the pool and seat day caps when both are hit', () => {
