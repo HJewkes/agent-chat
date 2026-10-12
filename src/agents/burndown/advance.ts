@@ -19,6 +19,7 @@ import type { PlannedSlice, Report } from './report.js'
 import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
+import { classifyStale } from './stale-claim.js'
 import type { ActivityRead } from './stall.js'
 import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 
@@ -126,8 +127,31 @@ export function advance(
   observations: ReadonlyMap<string, Observation>,
   now: Date,
 ): Action[] {
-  return claims.flatMap(claim => advanceClaim(claim, observations.get(claimKey(claim)) ?? {}, now))
+  return claims.flatMap(claim => {
+    const obs = observations.get(claimKey(claim)) ?? {}
+    return withStale(claim, obs, now, advanceClaim(claim, obs, now))
+  })
 }
+
+/**
+ * CC-1150 b: a claim left stalled with its agent gone and no respawn pending is classified on the first tick that
+ * sees it, with no age gate, so the seat hears what it waits on. It never releases or finishes the claim.
+ */
+function withStale(claim: Claim, obs: Observation, now: Date, actions: Action[]): Action[] {
+  if (claim.respawn !== undefined || !agentGone(claim, obs)) return actions
+  if (actions.some(a => a.kind !== 'update')) return actions
+  const at = now.toISOString()
+  const after = actions.reduce<Claim>((c, a) => (a.kind === 'update' ? patched(c, a.patch, at) : c), claim)
+  if (after.phase === 'done' || after.stalledReason === undefined || after.stale !== undefined) return actions
+  if (ladderFirst(claim, after)) return actions
+  const { class: cls, proposed, until } = classifyStale(after, obs)
+  const stale = { class: cls, proposed, since: at, ...(until === undefined ? {} : { until }) }
+  return [...actions, update(claim, { stale })]
+}
+
+/** A stall this tick opened with a ladder code is the ladder's to respawn or release first; it is classified next tick. */
+const ladderFirst = (claim: Claim, after: Claim): boolean =>
+  claim.stalledReason === undefined && after.stallCode !== undefined && LADDER_CODES.includes(after.stallCode)
 
 type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
@@ -609,8 +633,15 @@ const restarts = (claim: Claim, patch: ClaimPatch): boolean =>
   (patch.phase !== undefined && patch.phase !== claim.phase) ||
   (patch.agentName !== undefined && patch.agentName !== claim.agentName)
 
-const patched = (claim: Claim, patch: ClaimPatch, at: string): Claim => ({
-  ...claim,
-  ...patch,
-  phaseAt: restarts(claim, patch) ? at : claim.phaseAt,
-})
+/** CC-1150 b: a new stall stamps `stalledAt` once; clearing the stall, or a new phase or agent, drops it and `stale`. */
+function patched(claim: Claim, patch: ClaimPatch, at: string): Claim {
+  const restart = restarts(claim, patch)
+  const { stalledAt, stale, ...next } = { ...claim, ...patch, phaseAt: restart ? at : claim.phaseAt }
+  if (next.stalledReason === undefined) return next
+  const since = claim.stalledReason === undefined ? at : stalledAt
+  return {
+    ...next,
+    ...(since === undefined ? {} : { stalledAt: since }),
+    ...(stale === undefined || restart ? {} : { stale }),
+  }
+}

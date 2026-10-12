@@ -100,9 +100,13 @@ describe('exited-agent adoption', () => {
       silentExit({ openPr: null, ahead: 0 }, { reviewable: false, reason: 'clean and level' }),
     )
 
-    expect(kinds(actions)).toEqual(['update'])
+    expect(kinds(actions)).toEqual(['update', 'update'])
     expect(after).toEqual([
-      expect.objectContaining({ phase: 'implementing', stalledReason: 'no final report' }),
+      expect.objectContaining({
+        phase: 'implementing',
+        stalledReason: 'no final report',
+        stale: expect.objectContaining({ class: 'other' }),
+      }),
     ])
   })
 

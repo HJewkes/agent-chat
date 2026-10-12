@@ -5,6 +5,7 @@ import { logEvent } from '../../broker/log.js'
 import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
 import { Contract } from './report.js'
+import { STALE_CLASSES } from './stale-claim.js'
 import { STALL_CODES } from './stall-code.js'
 
 /**
@@ -85,6 +86,17 @@ const Claim = z.object({
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
   /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
   stallCode: z.enum(STALL_CODES).optional(),
+  /** CC-1150 b: when `stalledReason` was set, for the reported stall age only; absent on a stall from before it. */
+  stalledAt: z.string().optional(),
+  /** CC-1150 b: the class of a stall whose agent is gone and the action proposed for it, told to the seat once. */
+  stale: z
+    .object({
+      class: z.enum(STALE_CLASSES),
+      proposed: z.string(),
+      since: z.string(),
+      until: z.string().optional(),
+    })
+    .optional(),
   /** A ladder rung-1 respawn under way (CC-660): set as its agents are retired and cleared by the successor's spawn intent, so a refused spawn is undone back to it. */
   respawn: z.object({ code: z.enum(STALL_CODES), occurrence: z.string() }).optional(),
   /**
