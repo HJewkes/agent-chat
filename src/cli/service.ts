@@ -10,7 +10,7 @@ import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
 import { withoutLaunchIdentity } from '../launch-identity.js'
 import { fail, withBroker } from './client.js'
-import { brokerSource, guardRestart } from './restart-guard.js'
+import { brokerSource, guardRestart, unreachableMessage } from './restart-guard.js'
 
 /** How long `stop` waits for a polite exit before it stops being polite. */
 const TERM_GRACE_MS = 3_000
@@ -119,7 +119,9 @@ function refusedStart(): string {
 /** Refuse before signalling, and only ask a broker that is already up: connecting would start one. */
 async function refuseIfBusy(verb: string, force: boolean | undefined): Promise<void> {
   if (force || !(await probeSocket())) return
-  const refusal = await withBroker(b => guardRestart(verb, brokerSource(b)))
+  const refusal = await withBroker(b => guardRestart(verb, brokerSource(b))).catch((err: unknown) =>
+    unreachableMessage(verb, err instanceof Error ? err.message : String(err)),
+  )
   if (refusal !== null) fail(refusal)
 }
 
