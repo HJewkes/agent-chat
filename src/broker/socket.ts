@@ -737,10 +737,12 @@ export class SocketServer {
     if (this.core.registry.connFor(known.name) !== undefined)
       return reply(conn, { t: 'register_result', ok: false, reason: `${known.name} is already connected` })
 
+    const dark = this.core.darkSeat(known.name)
     const result = this.core.register(conn, readoptRegistration(known, msg))
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
     reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
     if (result.ok) this.core.deliverStranded(known.name)
+    if (result.ok && dark !== undefined) this.core.deliverHeld(known.name, dark)
   }
 
   /**

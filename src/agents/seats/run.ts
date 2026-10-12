@@ -16,6 +16,7 @@ import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
   RESUME_TRY_CAP,
+  seatIsLiveRefusal,
   judgeLiveness,
   type LivenessVerdict,
   type Presence,
@@ -510,7 +511,13 @@ const relaunchHold = (relaunch: SeatRelaunch | undefined): string | undefined =>
 
 type CarriedMarks = Pick<
   SeatRecord,
-  'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'staleRefused' | 'paneHeld' | 'heartbeat'
+  | 'relaunchedAt'
+  | 'relaunchTries'
+  | 'teleportFailed'
+  | 'staleRefused'
+  | 'paneHeld'
+  | 'liveRefused'
+  | 'heartbeat'
 >
 
 /** The marks a pass keeps from the seat's last record unless an action this pass replaces them. */
@@ -520,6 +527,7 @@ const carriedMarks = (previous: SeatRecord | undefined): CarriedMarks => ({
   ...(previous?.teleportFailed === undefined ? {} : { teleportFailed: previous.teleportFailed }),
   ...(previous?.staleRefused === undefined ? {} : { staleRefused: previous.staleRefused }),
   ...(previous?.paneHeld === undefined ? {} : { paneHeld: previous.paneHeld }),
+  ...(previous?.liveRefused === undefined ? {} : { liveRefused: previous.liveRefused }),
   ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
 })
 
@@ -695,12 +703,13 @@ async function resumeDark(
   seat: string,
   liveness: LivenessVerdict,
   launch: Launch,
-): Promise<string> {
+): Promise<string[]> {
   save(pass)
   const woke = await launch(seat, RESUME_MESSAGE).catch((err: unknown) => ({
     ok: false,
     detail: err instanceof Error ? err.message : String(err),
   }))
+  if (!woke.ok && seatIsLiveRefusal(woke.detail)) return refusedLive(pass, seat, liveness, woke.detail)
   if (woke.ok) delete pass.doc.seats[seat]?.resumeRetry
   const next = (liveness.tries ?? 1) < RESUME_TRY_CAP ? 'will retry next run' : 'giving up on this episode'
   const outcome = woke.ok
@@ -709,7 +718,27 @@ async function resumeDark(
   const line = `Watchdog: ${liveness.reason}; ${outcome}`
   pass.deps.appendLog(seat, pass.deps.now(), line)
   const refreshed = woke.ok ? refreshUnits(pass.deps, seat) : undefined
-  return `${seat}: ${line}${refreshed === undefined ? '' : `; ${refreshed}`}`
+  return [`${seat}: ${line}${refreshed === undefined ? '' : `; ${refreshed}`}`]
+}
+
+/**
+ * CC-344: the broker says the seat is or may be live, which no retry fixes, so the try is handed
+ * back (kept at 0, not deleted, so the episode stays open) and the human is told once per episode.
+ */
+async function refusedLive(
+  pass: Pass,
+  seat: string,
+  liveness: LivenessVerdict,
+  detail: string,
+): Promise<string[]> {
+  const record = pass.doc.seats[seat]
+  if (record !== undefined) record.resumeRetry = (liveness.tries ?? 1) - 1
+  const line =
+    `Watchdog: ${liveness.reason}; resume REFUSED ${seat} (${detail}); ` +
+    'seat may be live, not counted as a try'
+  const flagged = await flagOnce(pass, seat, 'liveRefused', String(liveness.episode), line)
+  if (flagged.length === 0) pass.deps.appendLog(seat, pass.deps.now(), line)
+  return (flagged.length === 0 ? [line] : flagged).map(out => `${seat}: ${out}`)
 }
 
 /** A unit write that fails must not fail the resume that already happened. */
@@ -821,7 +850,7 @@ const failedTeleportLine = (seat: string, successor: string): string =>
 async function flagOnce(
   pass: Pass,
   seat: string,
-  mark: 'teleportFailed' | 'staleRefused' | 'paneHeld',
+  mark: 'teleportFailed' | 'staleRefused' | 'paneHeld' | 'liveRefused',
   key: string,
   line: string,
 ): Promise<string[]> {
@@ -881,15 +910,16 @@ function relaunchLaunch(
  */
 function launchGate(pass: Pass, name: string, judged: Judgement) {
   const { stale } = judged
-  return async (verb: string, run: (launch: Launch) => Promise<string>): Promise<string[]> => {
-    if (stale === undefined) return [await run((seat, message) => pass.deps.wake(seat, message, false))]
+  return async (verb: string, run: (launch: Launch) => Promise<string | string[]>): Promise<string[]> => {
+    if (stale === undefined)
+      return [await run((seat, message) => pass.deps.wake(seat, message, false))].flat()
     let refusal: string | undefined
     const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (refusal = why))
     if (launch === undefined) return refuseStale(pass, name, verb, stale)
-    const line = await run(launch)
-    if (refusal === undefined) return [line]
+    const lines = [await run(launch)].flat()
+    if (refusal === undefined) return lines
     const refused = { ...stale, reason: `${stale.reason}; ${refusal}` }
-    return [line, ...(await refuseStale(pass, name, verb, refused))]
+    return [...lines, ...(await refuseStale(pass, name, verb, refused))]
   }
 }
 
