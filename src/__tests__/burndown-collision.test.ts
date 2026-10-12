@@ -171,11 +171,11 @@ describe('open-pr ignores the Version Packages PR (CC-1152)', () => {
   })
 
   it('still refuses on an ordinary PR naming the task alongside the release PR', () => {
-    const ordinary = pr(8, { branch: 'agent-chat/tc-tp-737-a', title: 'Fix the scorer' })
+    const ordinary = pr(8, { branch: 'agent-chat/bd-tp-737-a', title: 'Fix the scorer' })
     const result = collision(work('TP-737'), facts({ prs: [release, ordinary] }))
     expect(result).toEqual({
       kind: 'open-pr',
-      reason: '#8 (agent-chat/tc-tp-737-a) names TP-737: Fix the scorer',
+      reason: '#8 (agent-chat/bd-tp-737-a) names TP-737: Fix the scorer',
     })
   })
 
