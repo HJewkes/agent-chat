@@ -14,6 +14,7 @@ import {
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolvePoolProbe,
+  resolvePaceControllerMode,
   resolvePoolPickMode,
   resolveProcessGuardMode,
   resolveProcessKillBytes,
@@ -363,6 +364,29 @@ describe('resolvePoolPickMode', () => {
 
     expect(resolvePoolPickMode()).toBe('shadow')
     expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"poolPick"')
+  })
+})
+
+describe('resolvePaceControllerMode (CC-1104)', () => {
+  it('is shadow when config.json does not set paceController', () => {
+    writeConfigJson({ agentSlots: 30 })
+
+    expect(resolvePaceControllerMode()).toBe('shadow')
+  })
+
+  it('honors on and off', () => {
+    writeConfigJson({ paceController: 'on' })
+    expect(resolvePaceControllerMode()).toBe('on')
+
+    writeConfigJson({ paceController: 'off' })
+    expect(resolvePaceControllerMode()).toBe('off')
+  })
+
+  it('falls back to shadow on an unknown mode, and logs it', () => {
+    writeConfigJson({ paceController: 'bogus' })
+
+    expect(resolvePaceControllerMode()).toBe('shadow')
+    expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"paceController"')
   })
 })
 
