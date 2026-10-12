@@ -40,7 +40,6 @@ const Defaults = z.looseObject({
   size: z.object({ le3: z.number(), le8: z.number(), gt8: z.number() }),
   stop_short_factor: z.number(),
   gate_free_bonus: z.number().positive().optional(),
-  worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
   /** CC-861: idle days before the tick flags a seat's unregistered PR. */
   stale_pr_days: z.number().int().nonnegative().optional(),
