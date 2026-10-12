@@ -43,6 +43,24 @@ export const PR_READY_RULE =
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
 
+/**
+ * CC-311: Claude Code cannot resolve a write target that holds a variable, so it asks, and a headless
+ * reviewer parks on that prompt until the hook's deadline. The same edit on a literal path ran unprompted.
+ */
+export const MUTANT_RULE =
+  "Mutants: in your own tree under `$TMPDIR/<your name>`, `sed -i.bak '<edit>' <literal path>`, then " +
+  '`git checkout -- <literal path>`. Never put `$VAR`, a glob on a variable or `$(...)` in a write ' +
+  'target: it raises a permission prompt nobody answers.'
+
+/**
+ * CC-713: a reviewer piped a bypass probe to bash from a shared main checkout, and it ran a real
+ * `git push origin HEAD:main`. The burndown reviewer brief and the bd-reviewer prelude carry it too.
+ */
+export const PROBE_SANDBOX_RULE =
+  'Run a probe that may use git, network or destructive commands only in a scratch repo under ' +
+  '$TMPDIR/<your name> whose origin is a local bare repo (git init --bare); never in a real ' +
+  'checkout, never against a real remote, never piped to a shell from a real checkout.'
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
@@ -120,8 +138,9 @@ const REVIEWER = [
   '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
   '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
   '`Earlier findings: none found`.',
-  'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
+  PROBE_SANDBOX_RULE,
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  MUTANT_RULE,
   SHIM_RULE,
   REVIEWER_BODY_FILE_RULE,
   QUOTE_RULE,

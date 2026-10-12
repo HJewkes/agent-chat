@@ -88,16 +88,32 @@ export function startBurndownKick(core: {
   }
 }
 
-/** The timer job's own command and env, detached so the broker never waits on it; output appends to a log. */
+const USER_BUS_ENV = ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'] as const
+
+/**
+ * The timer job's command and env plus the user bus. systemd hands the timer job its bus; the kick has to pass
+ * it, or `systemctl --user` fails in the tick's service check and reads `not loaded` (CC-1144).
+ */
+export function kickCommand(source: NodeJS.ProcessEnv): {
+  command: string
+  args: string[]
+  env: Record<string, string>
+} {
+  const env = jobEnv(source)
+  for (const key of USER_BUS_ENV) {
+    const value = source[key]
+    if (value !== undefined && value !== '') env[key] = value
+  }
+  return { command: process.execPath, args: [cliEntry(), 'burndown', 'tick', '--once'], env }
+}
+
+/** The kick command, detached so the broker never waits on it; output appends to a log. */
 function launchTick(done: () => void): void {
   let out: number | undefined
   try {
     out = fs.openSync(path.join(home(), 'burndown-kick.log'), 'a')
-    const child = spawn(process.execPath, [cliEntry(), 'burndown', 'tick', '--once'], {
-      detached: true,
-      stdio: ['ignore', out, out],
-      env: jobEnv(process.env),
-    })
+    const { command, args, env } = kickCommand(process.env)
+    const child = spawn(command, args, { detached: true, stdio: ['ignore', out, out], env })
     child.once('exit', done)
     child.once('error', (err: Error) => {
       logEvent('burndown_kick_failed', { error: err.message })

@@ -191,7 +191,7 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
     defaults:
       opts.readySet === true ? { ...policy.defaults, share_caps: {}, initiative_decay: 1 } : policy.defaults,
     exclusions: { tags: policy.seat.excluded_tags, titlePatterns: policy.seat.excluded_title_patterns },
-    hardStops: policy.charter.hard_stops,
+    hardStops: policy.hardStops,
     today: opts.today,
     top: opts.top,
     dormant: dormantInitiatives(policy.seat),

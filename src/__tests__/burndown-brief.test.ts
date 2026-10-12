@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PROBE_SANDBOX_RULE } from '../agents/return-contract-blocks.js'
 import {
   ANSWER_TEXT_MAX_BYTES,
   briefWriterBrief,
@@ -48,6 +49,13 @@ describe('reviewer brief', () => {
       expect(brief).not.toContain(word)
     expect(brief).toContain('bd-cc-900')
     expect(brief).toMatch(/^.*Verdict: APPROVE \| CHANGES/m)
+  })
+
+  // CC-713. Mutation caught: omitting the rule from the brief's Constraints.
+  it('tells the reviewer probes run only in a scratch repo with a local bare origin', () => {
+    const brief = reviewerBrief({ ...task(), implementer: 'bd-cc-900' })
+
+    expect(brief).toContain(PROBE_SANDBOX_RULE)
   })
 })
 
