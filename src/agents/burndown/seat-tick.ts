@@ -30,6 +30,7 @@ import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
 import { diskPlanReader } from './seed-slices.js'
+import { readPriorRouter } from './prior-route.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readTasks, type TickConfig } from './source.js'
@@ -173,6 +174,9 @@ export function loadSeats(names: readonly string[], ledger: Ledger, deps: SeatTi
   return result
 }
 
+type BriefDeps = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'> &
+  Partial<Pick<TickConfig, 'priorRouting'>>
+
 export interface SeatPlanDeps {
   ledger: Ledger
   initiatives: readonly Initiative[]
@@ -186,8 +190,11 @@ export interface SeatPlanDeps {
   lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
-  /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /**
+   * The config's per-seat brief gates (CC-925), hand reserves (CC-936) and prior routing (CC-638); absent, every
+   * gate is off, no slot is reserved and no workflow table is read.
+   */
+  brief?: BriefDeps
   /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
   scopeTagAliases: TickConfig['scopeTagAliases']
 }
@@ -275,6 +282,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
   const scope = scopeInputs(seat, deps.scopeTagAliases)
+  const prior = priorRouterOf(deps, seat)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -295,7 +303,9 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
     pathExists: diskPathExists,
+    ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
+  if (prior.note !== undefined) planned.notes.push(prior.note)
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
       initiative: '-',
@@ -369,12 +379,23 @@ function orderInputs(
   }
 }
 
-/** The config fields the brief gate and hand reserve read; the tick and `plan --seat` both pass these. */
+/** The config fields the brief gate, hand reserve and prior routing read; the tick and `plan --seat` both pass these. */
 export function briefDepsOf(
-  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>,
-): NonNullable<SeatPlanDeps['brief']> {
-  const { briefGate, briefMaxAgeDays, maxAgents, handReserve } = config
-  return { briefGate, briefMaxAgeDays, maxAgents, handReserve }
+  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'priorRouting'>,
+): BriefDeps {
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting }
+}
+
+/** CC-638: the seat's prior router from its autonomy root's workflow table; `off` or absent reads nothing. */
+function priorRouterOf({ brief }: SeatPlanDeps, seat: LoadedSeat): ReturnType<typeof readPriorRouter> {
+  const mode = brief?.priorRouting ?? 'off'
+  if (mode === 'off') return {}
+  if (seat.autonomyRoot === undefined)
+    return {
+      note: `prior routing ${mode}: seat ${seat.dispatch.seat} has no autonomy root; routing as today`,
+    }
+  return readPriorRouter(mode, seat.autonomyRoot)
 }
 
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */

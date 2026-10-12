@@ -17,6 +17,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
+import { configPrograms, extPrograms, OPAQUE_PROGRAM_ENV, PROGRAM_ENV } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
@@ -135,6 +136,8 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
+  programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
@@ -429,8 +432,34 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
+    checkPrograms(run, ctx, scope, depth) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/**
+ * Each value git runs as a program (TP-636), checked as a command line of its own: a `-c` config
+ * value and an `ext::` transport payload. git passes its `-c` options on to each, so an include on
+ * this git is a deny whatever the value holds. Program env vars are closed by `checkProgramEnvLine`.
+ */
+function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
+  const options = gitOptions(run.args, scope.cwd, scope.gitParams)
+  const at =
+    options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
+  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
+  if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
+  const scripts = [...config, ...ext.scripts]
+  const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
+  if (scripts.length === 0) return extOn
+  const params = options === UNSURE_CALL ? scope.gitParams : options.params
+  if (includesConfig(params)) return REASONS.includePath
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: params }
+  for (const script of scripts) {
+    const reason = checkAt(script, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return extOn
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -1328,6 +1357,187 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV]
+// A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
+const nameUse = (name: string): RegExp =>
+  new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
+// `${NAME=x}`, `${NAME:=x}` and zsh's `${NAME::=x}` assign; `${NAME-x}` and the other operators only read.
+const nameAssign = (name: string): RegExp => new RegExp(`\\$\\{${name}(?:\\[[^\\]]*\\])?:{0,2}=`)
+const ENV_REFS = ENV_NAMES.map(name => ({ use: nameUse(name), assign: nameAssign(name) }))
+
+/** Whether a word uses a program env var other than by reading it. */
+const namesProgramEnv = (text: string): boolean =>
+  ENV_REFS.some(({ use, assign }) => use.test(text) || assign.test(text))
+
+/** Whether a word holds a `${NAME...}` expansion of a program env var that assigns it. */
+const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) => assign.test(text))
+
+// The same assigning expansion where the shell expands it, as marked: not inside single quotes.
+const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
+const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
+
+/** The literal value of a plain `NAME=value` to a PROGRAM_ENV name, null when it is unreadable. */
+function plainProgramValue(word: string): string | null | undefined {
+  const name = ASSIGNMENT.exec(word)?.[1]
+  if (name === undefined || !PROGRAM_ENV.has(name) || !word.startsWith(`${name}=`)) return undefined
+  const value = word.slice(name.length + 1)
+  return value.includes(LIVE) ? null : value
+}
+
+type WordRole = 'assign' | 'data' | 'removes' | 'arg'
+const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+const ENV_UNSET = new Set(['-u', '--unset'])
+
+/** The roles of `env`'s arguments from `i`: its own assignments, and the names `-u` removes. */
+function envRoles(marked: readonly string[], i: number, roles: WordRole[]): void {
+  for (; i < marked.length; i++) {
+    const word = marked[i] as string
+    if (ENV_UNSET.has(word)) {
+      roles[i] = 'removes'
+      roles[++i] = 'removes'
+    } else if (ASSIGNMENT.test(word)) roles[i] = 'assign'
+    else return
+  }
+}
+
+/**
+ * Whether the command `unwrap` says runs takes its arguments as data: git, gh and
+ * `agent-chat gh-write` never assign a shell variable a word names, unlike `read` or `printf -v`.
+ */
+function takesData(words: readonly string[]): boolean {
+  const head = unmark(words[0] ?? '')
+  if (head === 'gh') return true
+  if (head === 'agent-chat') return unmark(words[1] ?? '') === 'gh-write'
+  return path.basename(head) === 'git'
+}
+
+/**
+ * How the shell reads each word of one command. Only a prefix assignment, an assignment argument
+ * of a literal `env`, and an argument of an export-like builtin written as the command word itself
+ * are read as an assignment exactly once; a word under `eval` or any other wrapper may be read again.
+ */
+function wordRoles(cmd: SimpleCommand): WordRole[] {
+  const { marked } = cmd
+  const roles: WordRole[] = marked.map(() => 'arg')
+  let i = 0
+  while (i < marked.length && PREFIX_WORDS.has(marked[i] as string)) i++
+  for (; i < marked.length && ASSIGNMENT.test(marked[i] as string); i++) roles[i] = 'assign'
+  const head = marked[i]
+  if (head === 'env') envRoles(marked, i + 1, roles)
+  else if (head === 'unset') roles.fill('removes', i)
+  else if (head !== undefined && ENV_DECL.has(head)) roles.fill('assign', i + 1)
+  const unwrapped = unwrap(marked)
+  const data = 'words' in unwrapped && takesData(unwrapped.words)
+  if (data && marked.slice(-unwrapped.words.length).join('\0') === unwrapped.words.join('\0'))
+    roles.fill('data', marked.length - unwrapped.words.length)
+  return roles
+}
+
+/**
+ * A program-env event for one word. A plain literal `NAME=value` where the shell reads an
+ * assignment once gives its value to check. Any other use of a program env name gives null, since
+ * the shell has many ways to assign one (`+=`, a subscript, a brace, read, printf -v, a for loop,
+ * `${NAME:=x}`, eval); a read is no event. In the arguments of a command that takes them as data,
+ * such as git or gh, only an assigning expansion the shell expands counts.
+ */
+function envEvent(word: string, role: WordRole): string | null | undefined {
+  const text = unmark(word)
+  if (role === 'removes') return undefined
+  if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
+  const plain = role === 'assign' ? plainProgramValue(word) : undefined
+  if (plain !== undefined) return plain
+  return namesProgramEnv(text) ? null : undefined
+}
+
+/** A word's text for the git scan, with a program-env assignment's value blanked so a `git` in it does not count. */
+function scanWord(word: string): string {
+  const um = unmark(word)
+  const name = ASSIGNMENT.exec(word)?.[1]
+  return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
+}
+
+/** How many words at the end of `words` are the written words they end with, so not split out of one. */
+function sharedTail(words: readonly string[], written: readonly string[]): number {
+  let n = 0
+  while (n < words.length && n < written.length && words.at(-1 - n) === written.at(-1 - n)) n++
+  return n
+}
+
+/** One command's program-env events, and its text for the git scan. */
+interface EnvUse {
+  events: (string | null)[]
+  scan: string[]
+}
+
+/** Events from the command as written; only a word the shell reads as an assignment once has its value blanked for the scan. */
+function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
+  return {
+    events: cmd.marked
+      .map((word, i) => envEvent(word, roles[i] as WordRole))
+      .filter((event): event is string | null => event !== undefined),
+    scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
+  }
+}
+
+/**
+ * Events from the command `unwrap` says runs: its assignments and words, including those
+ * `env -S` splits out of one word. A word the written command lacks is never read once by the
+ * shell, so any program env name in it denies; its words and assignments join the git scan.
+ */
+function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
+  const unwrapped = unwrap(functionBody(cmd.marked))
+  if ('reason' in unwrapped) return { events: [], scan: [] }
+  const { words, assigns } = unwrapped
+  const written = new Set(cmd.marked.filter((_, i) => roles[i] !== 'removes'))
+  const data = takesData(words)
+  const usesEnv = (word: string): boolean =>
+    data ? expandsProgramEnv(unmark(word)) : namesProgramEnv(unmark(word))
+  const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
+  const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
+  return {
+    events: [...assigned, ...used].map(() => null),
+    scan: [...unwrapped.assigns.map(scanWord), ...unwrapped.words.map(unmark)],
+  }
+}
+
+/** Every program-env event on one command, read from the words as written and from the unwrapped command. */
+function envUse(cmd: SimpleCommand): EnvUse {
+  const roles = wordRoles(cmd)
+  const written = writtenEnvUse(cmd, roles)
+  const unwrapped = unwrappedEnvUse(cmd, roles)
+  return {
+    events: [...written.events, ...unwrapped.events],
+    scan: [...written.scan, ...unwrapped.scan],
+  }
+}
+
+/**
+ * Program env vars git runs (TP-636), closed as one conservative line rule. If a program env name
+ * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
+ * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
+ * as a nested script and any other use denies. Both the uses and the git test read the unwrapped
+ * command too, so a wrapper or an `env -S` split hides neither.
+ */
+function checkProgramEnvLine(
+  command: string,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const uses = parseShell(command).map(envUse)
+  const events = uses.flatMap(use => use.events)
+  if (events.length === 0) return undefined
+  const scan = uses.flatMap(use => use.scan).join(' ')
+  if (!mayReachGit(scan, ctx.env)) return undefined
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined }
+  for (const event of events) {
+    if (event === null) return REASONS.programEnv
+    const reason = checkAt(event, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return undefined
+}
+
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
@@ -1335,6 +1545,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
   const said = `${scope.said}\n${unreferenced(command)}`
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
+  const envReason = checkProgramEnvLine(command, ctx, at, depth)
+  if (envReason !== undefined) return envReason
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)

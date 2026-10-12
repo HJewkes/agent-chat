@@ -223,6 +223,25 @@ describe('the check-run rule (CC-357)', () => {
   })
 })
 
+describe('the reviewer findings shape (CC-1079)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: deleting the Defect class sentence or renaming its label.
+  it('asks every FIX_FIRST for a Defect class line after Class', () => {
+    expect(text).toContain('then one line `Defect class: <what the blocking items share;')
+    expect(text.indexOf('Defect class:')).toBeGreaterThan(text.indexOf('Class: defect|'))
+  })
+
+  // Mutation caught: dropping the `- not fixed:` form, leaving only `fixed`.
+  it('asks every re-review for an Earlier findings checklist marking each item fixed or not fixed', () => {
+    expect(text).toContain('On a re-review')
+    expect(text).toContain('`Earlier findings:` then one short line per earlier blocking item')
+    expect(text).toContain('`- fixed: <item>`')
+    expect(text).toContain('`- not fixed: <item>`')
+    expect(text).toContain('`Earlier findings: none found`')
+  })
+})
+
 describe('a spawn by a registered session', () => {
   it.each([
     ['implementer', 'implementer'],
