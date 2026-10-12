@@ -21,7 +21,9 @@ frames by caller.
 
 ## Frames in scope
 
-The broker gives these frames the human's authority, and `isHuman` guards them:
+An unregistered connection gets the human's authority in three different ways.
+
+**Human-only frames.** `isHuman` guards these, and they mean "the human decided":
 
 | Frame                | Handler                                                         |
 | -------------------- | --------------------------------------------------------------- |
@@ -31,12 +33,37 @@ The broker gives these frames the human's authority, and `isHuman` guards them:
 | `endorse_approve`    | `handleEndorseApprove`                                          |
 | `approve_permission` | `handleApprovePermission`                                       |
 | `teleport_abort`     | `handleTeleportAbort`                                           |
+| `service_ask`        | `handleServiceAsk`                                              |
 
-`permission_hook` and `service_ask` also check `isHuman`, but for a different reason.
-They are for processes that never register, and the PermissionRequest hook runs
-**inside** an agent's process tree. A caller gate must leave them open to connections
-that come from an agent. `approval` is a session frame (it requires a name), so it is
-out of scope.
+`service_ask` is on the list because an agent that sends it asks the human under a
+service label that nothing vouches for. Profiles already deny agents `agent-chat ask`
+(CC-169, `src/agents/profiles.ts`), so leaving the frame open would undo that deny.
+
+**Lifecycle frames that fall back to `requestedBy = HUMAN`.** These do not check
+`isHuman`. They take the requester's registered name, or `HUMAN` when there is none:
+
+| Frame     | Where the fallback happens                                                |
+| --------- | ------------------------------------------------------------------------- |
+| `spawn`   | `handleSpawn`: `registry.nameOf(conn) ?? HUMAN`                           |
+| `resume`  | `handleResume`: `requester?.name ?? HUMAN`                                |
+| `surface` | `switchSurface` call: `requester?.name ?? HUMAN`                          |
+| `park`    | the `park` case in the dispatcher: `requester?.name ?? HUMAN`             |
+| `retire`  | the `retire` case: the actor is `msg.caller`, a field the caller fills in |
+
+`requestedBy === HUMAN` switches off these checks in `src/agents/supervisor.ts`:
+`checkEscalation`, the worker-spawn ban, the cwd policy (`checkCwd`) and the spawn rate
+limit (`rateRefusal`). It also switches off the predecessor-ownership check
+(`resolvePredecessor` in `src/agents/predecessor.ts`). So an agent that reaches these
+frames over the CLI acts without its own role's limits. The CC-216 `WORKER_CLI_DENY` deny
+list (`Bash(agent-chat agent:*)`) covers the same gap, with the same weakness as
+`HUMAN_ONLY_CLI_DENY`: it matches only the literal spelling.
+
+**`permission_hook`** stays open to agent connections. The PermissionRequest hook runs
+inside an agent's process tree, so it always carries the agent's id. Today, though, the
+caller chooses `msg.session`, which names the agent the prompt is filed for
+(`handlePermissionHook`).
+
+`approval` is a session frame (it requires a name), so it is out of scope.
 
 ## Options weighed
 
@@ -66,16 +93,35 @@ The design:
 
 - `BrokerClient` sends a hello frame carrying the id, when the variable is set, on every
   connection before its first request.
-- The broker records the declared id per connection. It refuses the frames in the table
-  above from a connection that declared one, and appends `verdict_refused` the way
+- The broker resolves the declared id to that agent's name, and records the name and id
+  per connection.
+- **Human-only frames** (the first table, including `service_ask`) are refused from a
+  connection that declared an id. The broker appends `verdict_refused` the way
   `refuseToSession` does today.
-- `permission_hook` and `service_ask` stay open to such connections.
+- **Lifecycle frames** (the second table) are not refused. The broker uses the declared
+  agent as the requester: `requestedBy` is its name and `requesterAgentId` is its id, and
+  for `retire` the actor is its name, with `msg.caller` ignored. If the id resolves to no
+  known agent, the frame is refused rather than falling back to `HUMAN`.
+- **`permission_hook`** is accepted only when `msg.session` names the declared agent.
+  Any other session is refused.
 
-This catches every CLI spelling that the deny list misses, because the gate keys on the
+Why lifecycle frames get the agent as requester instead of being refused: an agent
+already has these verbs through its own MCP tools (`agent_spawn`, `agent_resume`,
+`agent_surface`, and so on), and those tools apply its role's checks. Mapping the CLI path
+to the same requester gives the two paths the same result. The worker-spawn ban, the
+escalation check, the cwd policy, the rate limit and the predecessor-ownership check then
+apply however the agent spells the command. Refusing outright would also refuse a
+coordinator that drives the CLI from its shell, which those checks already allow. Once
+the gate lands, `WORKER_CLI_DENY` becomes defence in depth rather than the only guard.
+
+This catches every CLI spelling that the deny lists miss, because the gate keys on the
 process's environment rather than on the command text.
 
-**Limits, stated plainly.** The id is self-declared. `env -u AGENT_CHAT_AGENT_ID
-agent-chat debug send …` or a raw `nc` write still gets through. This meets the bar in
+**Limits, stated plainly.** The id is self-declared, so omitting or forging it fails
+open. `env -u AGENT_CHAT_AGENT_ID agent-chat debug send …` or a raw `nc` write still
+reaches the broker as the human, with `requestedBy = HUMAN` and a `permission_hook`
+`session` of the caller's choosing. Declaring another agent's id makes the caller act as
+that agent. This meets the bar in
 `agent-teams.md` §11.4, which stops a confused agent but not an adversarial one. It does
 not raise that bar. The OS account remains the trust boundary. Every agent runs as the
 human's user and can do anything the human's CLI can do.
@@ -97,7 +143,8 @@ human's user and can do anything the human's CLI can do.
 
 ## Relationship to the deny list
 
-Keep both. The deny list (CC-1083 slice a) stops the common spelling before the command
+Keep both. The deny lists (`HUMAN_ONLY_CLI_DENY` with CC-1083 slice a, and CC-216's
+`WORKER_CLI_DENY`) stop the common spelling before the command
 runs, and the denial shows up in the agent's transcript. The broker gate catches the
 other spellings at the point of authority. Neither replaces the OS account as the
 boundary.
