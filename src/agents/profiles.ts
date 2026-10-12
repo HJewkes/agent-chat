@@ -73,6 +73,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
   'Bash(agent-chat ask:*)',
+  'Bash(agent-chat teleport:*)',
 ]
 
 /**
@@ -289,6 +290,12 @@ const DERIVED_DENIES: DerivedDeny[] = [
     deny: 'Bash(agent-chat ask:*)',
     when: [APPROVE_DENY],
     why: 'the file denies approve, and ask puts a question to the human under a service label',
+  },
+  {
+    // CC-951: `teleport request` sends a from="human" message, the same door `send` closes.
+    deny: 'Bash(agent-chat teleport:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and teleport request sends a message as the human',
   },
 ]
 

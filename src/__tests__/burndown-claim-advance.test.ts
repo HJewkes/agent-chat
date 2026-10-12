@@ -68,9 +68,15 @@ const agent = (name: string, state: AgentIdentity['state']): AgentIdentity =>
   }) as AgentIdentity
 
 /** Observe then advance, as the tick does, with Shepherd and the roster stubbed. */
-async function tick(ledger: Ledger, rows: ShepherdRow[], roster: Roster = { agents: [] }): Promise<Ledger> {
+async function tickActions(
+  ledger: Ledger,
+  rows: ShepherdRow[],
+  roster: Roster = { agents: [] },
+  finalText?: string,
+): Promise<{ ledger: Ledger; actions: Action[] }> {
   const held = ledger.claims.filter(c => c.phase !== 'done')
   const { observations } = await observe(held, roster, {
+    finalText: () => finalText,
     inboxSince: async () => [],
     root: '/nowhere',
     shepherdRows: () => rows,
@@ -80,10 +86,15 @@ async function tick(ledger: Ledger, rows: ShepherdRow[], roster: Roster = { agen
     activity: () => ({ ok: false, reason: 'stub' }) as never,
   })
   const actions = advance(held, observations, NOW)
-  return applyActions(ledger, actions, NOW)
+  return { ledger: applyActions(ledger, actions, NOW), actions }
+}
+
+async function tick(ledger: Ledger, rows: ShepherdRow[], roster: Roster = { agents: [] }): Promise<Ledger> {
+  return (await tickActions(ledger, rows, roster)).ledger
 }
 
 const retires = (actions: Action[]) => actions.filter(a => a.kind === 'retire')
+const registers = (actions: Action[]) => actions.filter(a => a.kind === 'register')
 
 describe('a merged PR finishes its claim (CC-978)', () => {
   it('links the PR its live agent registered, then moves the claim to done once it merges', async () => {
@@ -258,5 +269,69 @@ describe("a claim's agent for the implementer cap (CC-978)", () => {
       true,
       false,
     ])
+  })
+})
+
+describe('a stalled worker that finished with a PR goes to Shepherd (CC-1074)', () => {
+  const DWC = 'Status: DONE_WITH_CONCERNS'
+  const stalled = (patch: Partial<Claim> = {}): Claim =>
+    claim({ stalledReason: DWC, stalledClass: 'failed', ...patch })
+  const exited = { agents: [agent('bd-cc-1', 'exited')] }
+
+  it('moves to shepherding on the run its agent registered, clears the stall, then finishes on merge', async () => {
+    const first = await tickActions(
+      { ...EMPTY_LEDGER, claims: [stalled()] },
+      [run({ phase: 'ci' })],
+      exited,
+      DWC,
+    )
+    const second = await tickActions(first.ledger, [run()], exited, DWC)
+
+    expect(registers(first.actions)).toEqual([])
+    expect(first.ledger.claims[0]).toMatchObject({ phase: 'shepherding', pr: 'o/r#9' })
+    expect(first.ledger.claims[0]?.stalledReason).toBeUndefined()
+    expect(first.ledger.claims[0]?.stalledClass).toBeUndefined()
+    expect(second.ledger.claims[0]).toMatchObject({ phase: 'done' })
+    expect(retires(second.actions)).toHaveLength(1)
+  })
+
+  it('registers the PR its report names when Shepherd holds no run', async () => {
+    const report = `${DWC}\nPR: https://github.com/o/r/pull/9`
+
+    const { ledger, actions } = await tickActions(
+      { ...EMPTY_LEDGER, claims: [stalled()] },
+      [],
+      exited,
+      report,
+    )
+
+    expect(registers(actions)).toEqual([
+      expect.objectContaining({ registration: expect.objectContaining({ target: { repo: 'o/r', pr: 9 } }) }),
+    ])
+    expect(ledger.claims[0]).toMatchObject({ phase: 'shepherding', pr: 'https://github.com/o/r/pull/9' })
+    expect(ledger.claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('leaves a coded stall held though its report names a PR', async () => {
+    const budget = stalled({ stallCode: 'budget', stalledReason: 'spent $9 of $5' })
+    const report = `${DWC}\nPR: https://github.com/o/r/pull/9`
+
+    const { ledger, actions } = await tickActions({ ...EMPTY_LEDGER, claims: [budget] }, [], exited, report)
+
+    expect(registers(actions)).toEqual([])
+    expect(ledger.claims[0]).toMatchObject({ phase: 'implementing', stallCode: 'budget' })
+  })
+
+  it('leaves a BLOCKED stall held though its agent registered a run', async () => {
+    const blocked = stalled({ stalledReason: 'Status: BLOCKED' })
+
+    const { ledger } = await tickActions(
+      { ...EMPTY_LEDGER, claims: [blocked] },
+      [run({ phase: 'ci' })],
+      exited,
+      'Status: BLOCKED',
+    )
+
+    expect(ledger.claims[0]).toMatchObject({ phase: 'implementing', stalledReason: 'Status: BLOCKED' })
   })
 })

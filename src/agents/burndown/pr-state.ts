@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
@@ -95,10 +97,19 @@ export function claimPrReader(exec: Runner): (claim: Claim) => ClaimPr | undefin
     return origins.get(checkout)
   }
   return claim => {
-    const repo =
-      shepherdTarget(claim.pr)?.repo ?? (claim.worktree === undefined ? undefined : originOf(claim.worktree))
+    const checkout = claim.worktree === undefined ? undefined : liveCheckout(claim.worktree)
+    const repo = shepherdTarget(claim.pr)?.repo ?? (checkout === undefined ? undefined : originOf(checkout))
     if (repo === undefined) return undefined
     if (!pulls.has(repo)) pulls.set(repo, readRepoPulls(repo, exec))
     return claimPrState(claim, repo, pulls.get(repo))
   }
+}
+
+/**
+ * CC-1074: a parked tree is gone, so its origin is read from the checkout it was cut under
+ * (`<checkout>/.worktrees/<name>`, see `worktreePathFor`).
+ */
+function liveCheckout(worktree: string): string {
+  const parent = path.dirname(worktree)
+  return existsSync(worktree) || path.basename(parent) !== '.worktrees' ? worktree : path.dirname(parent)
 }

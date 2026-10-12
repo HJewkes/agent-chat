@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions } from '../agents/burndown/advance.js'
 import type { RunResult } from '../agents/burndown/exec.js'
@@ -163,5 +166,43 @@ describe('the tick settles a claim on what GitHub says (CC-1054)', () => {
     await tick({ ...EMPTY_LEDGER, claims: [claim(), b] }, gh, roster)
 
     expect(gh.calls.filter(([bin]) => bin === 'gh')).toHaveLength(1)
+  })
+})
+
+describe('the tick finishes a shepherding claim on a merged PR (CC-1074)', () => {
+  const shepherding = (patch: Partial<Claim> = {}): Claim =>
+    claim({
+      phase: 'shepherding',
+      pr: 'o/r#9',
+      stalledReason: undefined,
+      stalledClass: undefined,
+      stallCode: undefined,
+      ...patch,
+    })
+
+  it('finishes a shepherding claim whose PR merged when Shepherd holds no row for it', async () => {
+    const after = await tick({ ...EMPTY_LEDGER, claims: [shepherding()] }, fakeGh([pull()]), exited)
+
+    expect(after.claims).toEqual([expect.objectContaining({ phase: 'done', pr: 'o/r#9', prHead: 'h9' })])
+  })
+
+  it('leaves a shepherding claim alone while its PR is open', async () => {
+    const ledger = { ...EMPTY_LEDGER, claims: [shepherding()] }
+
+    const after = await tick(ledger, fakeGh([pull({ state: 'open', mergedAt: null })]), exited)
+
+    expect(after).toEqual(ledger)
+  })
+
+  it('reads the origin of the checkout above a parked worktree', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-settle-'))
+    const gh = fakeGh([pull()])
+    const parked = claim({ worktree: path.join(repo, '.worktrees', 'bd-cc-1-a') })
+
+    const state = claimPrReader(gh.exec)(parked)
+
+    expect(gh.calls[0]).toEqual(['git', '-C', repo, 'remote', 'get-url', 'origin'])
+    expect(state).toEqual({ kind: 'merged', pr: 'o/r#9', head: 'h9' })
+    fs.rmSync(repo, { recursive: true })
   })
 })

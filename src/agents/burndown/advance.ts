@@ -145,7 +145,7 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   const settled = settledOnGitHub(claim, obs)
   if (settled !== undefined) return settled
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
-  if (claim.stalledReason !== undefined) return linkPr(claim, obs)
+  if (claim.stalledReason !== undefined) return relink(claim, obs) ?? linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
   if (claim.respawn !== undefined) return []
@@ -223,11 +223,11 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine, 'failed')]
   const pr = report?.pr ?? claim.pr
-  const handsOff = report?.status === 'DONE' && pr !== undefined
+  const handsOff = handsOffPr(report) && pr !== undefined
   const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs.owned) : undefined
   if (held !== undefined) return held
-  if (report?.status === 'DONE' && pr !== undefined)
-    return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
+  if (handsOff)
+    return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport }, obs.shepherd?.row)
   const silent = report === undefined || report.status === 'unknown'
   const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
   if (adopted !== undefined) return adopted
@@ -239,6 +239,32 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   return [
     stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
   ]
+}
+
+/** CC-1074: a worker that finished DONE or DONE_WITH_CONCERNS and names a PR goes to Shepherd rather than a reviewer. */
+const handsOffPr = (report: Report | undefined): boolean =>
+  report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS'
+
+/**
+ * CC-1074: a stall `afterWorker` left on a finished worker whose PR is known, from its report or a Shepherd run
+ * it registered itself, clears and goes to Shepherd. A coded stall is a deliberate hold and a BLOCKED report a
+ * question, so both stay; undefined falls back to `linkPr`.
+ */
+function relink(claim: Claim, obs: Observation): Action[] | undefined {
+  const { report } = obs
+  if (claim.phase !== 'implementing' || claim.stallCode !== undefined || !finished(obs)) return undefined
+  if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT') return undefined
+  const row = obs.shepherd?.row
+  const run = row !== undefined && !ENDED.has(row.phase) ? row : undefined
+  const reported = handsOffPr(report) ? (report?.pr ?? claim.pr) : undefined
+  const pr = reported ?? (run === undefined ? undefined : (claim.pr ?? prRef(run)))
+  if (pr === undefined) return undefined
+  const cleared: ClaimPatch = {
+    stalledReason: undefined,
+    stalledClass: undefined,
+    ...(report === undefined ? {} : { lastReport: report.firstLine }),
+  }
+  return fenced(claim, obs.owned) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
 }
 
 /** CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits. */
@@ -369,15 +395,23 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
   return claim.phase === 'awaiting-merge' ? [update(claim, { phase: 'shepherding' })] : []
 }
 
-/** A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. */
-function handOff(claim: Claim, pr: string, implementer: string, patch: ClaimPatch): Action[] {
+/**
+ * A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. A run Shepherd
+ * already holds open, such as one the agent registered itself, is not registered again (CC-1074).
+ */
+function handOff(
+  claim: Claim,
+  pr: string,
+  implementer: string,
+  patch: ClaimPatch,
+  held?: ShepherdRow,
+): Action[] {
   const target = shepherdTarget(pr)
   if (target === undefined) return [stall(claim, `${pr} is not a GitHub PR Shepherd can take`, 'failed')]
+  const moved = update(claim, { ...patch, phase: 'shepherding', pr })
+  if (held !== undefined && !ENDED.has(held.phase)) return [moved]
   const registration = { target, task: `${claim.initiative}/${claim.taskId}`, implementer }
-  return [
-    update(claim, { ...patch, phase: 'shepherding', pr }),
-    { kind: 'register', key: keyOf(claim), registration },
-  ]
+  return [moved, { kind: 'register', key: keyOf(claim), registration }]
 }
 
 /** The worker the claim's next successor takes over from: the latest successor, else the original. */

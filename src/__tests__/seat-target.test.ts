@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Pool } from '../agents/seats/charter.js'
 import { accountRefusal, seatAccount } from '../agents/seats/seat-account.js'
-import { seatTarget } from '../agents/seats/seat-target.js'
+import { type RelaunchTarget, seatTarget, spawnLineage, withoutLineage } from '../agents/seats/seat-target.js'
 import type { SeatAgent } from '../agents/seats/watchdog.js'
 
 const SERVER = '/home/example/.profiles/server'
@@ -138,5 +138,50 @@ describe('accountRefusal (CC-1053)', () => {
     expect(refusal).toBe(
       `seat config_dir ${PERSONAL} is neither its pool's (${SERVER}) nor spawned row g1's (unrecorded)`,
     )
+  })
+})
+
+describe('spawnLineage (CC-1053)', () => {
+  const adopted = row('teleport-140', { origin: 'adopted', sessionId: 'shared' })
+
+  it('holds when a retired spawned row of the seat ran as the adopted session', () => {
+    const rows = [row('teleport-138', { origin: 'spawned', state: 'retired', sessionId: 'shared' }), adopted]
+
+    expect(spawnLineage(adopted, rows)).toBe(true)
+  })
+
+  it('fails when no spawned row of the seat ran as the adopted session', () => {
+    expect(spawnLineage(adopted, INCIDENT)).toBe(false)
+  })
+
+  // Catches: dropping the name filter.
+  it("fails when only another seat's spawned row ran as it", () => {
+    const other = row('w1', { name: 'other-seat', origin: 'spawned', sessionId: 'shared' })
+
+    expect(spawnLineage(adopted, [other, adopted])).toBe(false)
+  })
+
+  // Catches: dropping the origin filter, which makes an adopted row its own lineage.
+  it('fails when only an adopted row carries the session id', () => {
+    expect(spawnLineage(adopted, [adopted])).toBe(false)
+  })
+})
+
+describe('withoutLineage (CC-1053)', () => {
+  const target = seatTarget(INCIDENT, 'lead-seat', { configDir: PERSONAL }) as RelaunchTarget
+
+  it('turns a resume of a session with no lineage into a fresh launch that keeps the adopted latest', () => {
+    expect(withoutLineage(target, INCIDENT)).toEqual({
+      kind: 'fresh',
+      latest: INCIDENT[2],
+      stale: ['teleport-138'],
+      spawned: INCIDENT[0],
+    })
+  })
+
+  it('keeps the resume when a spawned row of the seat ran as the session', () => {
+    const rows = [...INCIDENT, row('teleport-137', { origin: 'spawned', sessionId: 'session-teleport-140' })]
+
+    expect(withoutLineage(target, rows)).toBe(target)
   })
 })
