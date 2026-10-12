@@ -1078,6 +1078,23 @@ every read-only profile kept a shell. Note the supervisor consumes only
 `profile.*` via the launch plan, so returning a deny list from a strategy alone
 changes nothing.
 
+**Symlinked active-work dirs are granted after allocation (CC-236).** Claude Code
+prompts for a Write whose path is lexically inside the cwd but resolves outside
+every working directory, even under a bare `Write` allow rule. A headless worker
+cannot answer that prompt. Its turn ends BLOCKED. A workspace whose top-level
+`sources` links into the active-work root hit exactly this. So once `allocate` has
+run, `withLinkedDirs` (`agents/linked-dirs.ts`) adds the realpath of each
+top-level cwd symlink that resolves under the active-work root and outside the
+cwd to `allocation.addDirs`. It also appends `<cwd>/<link> is <real>; write there
+by either path` to the brief note. Links to anywhere else, such as sibling repos,
+are not granted, so a read-only verifier's write reach does not grow. The grant is
+written to runtime state before launch, so resume and teleport inherit it. Then
+`crossingBriefPaths` (`agents/brief-paths.ts`) checks each file path the brief
+names under the cwd. If one still resolves through an ungranted symlink to
+somewhere outside the cwd, `spawn_result.warnings` gets a line naming the path
+and its real target. The warning is advisory and never refuses the spawn. A
+worktree allocation's cwd normally holds no such links, so it gets no grant.
+
 #### 7.3 Composition
 
 `toolset-limited` is really a decorator over any of the others. The interface
