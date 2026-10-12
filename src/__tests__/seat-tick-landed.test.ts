@@ -20,6 +20,7 @@ const ledger: Ledger = {
   ...EMPTY_LEDGER,
   seats: {
     'seat-a': {
+      configDir: '/tmp/pool-x',
       samples: [
         { at: new Date(2026, 8, 29, 6).getTime(), sevenDay: 38 },
         { at: runStart, sevenDay: 39 },

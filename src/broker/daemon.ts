@@ -260,11 +260,16 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
   // CC-316, CC-331, CC-288, CC-606: the same rule for the seat journal, dispatch log, spawn budget gate and pool pick, which read the real autonomy root.
+  // CC-316: one journal for the supervisor's lines and the ended writer's merged line, so both dedupe through one latch.
+  const sharedJournal = seatJournal(defaultAutonomyRoot())
   const journal = ephemeral
     ? {}
     : {
-        seatJournal: seatJournal(defaultAutonomyRoot()),
-        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), { shepherd: () => shepherdRowsAsync() }),
+        seatJournal: sharedJournal,
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), {
+          shepherd: () => shepherdRowsAsync(),
+          journal: sharedJournal,
+        }),
         shepherdSkip: cliShepherdSkipPort,
         autoRetireOnReport: resolveAutoRetireOnReport,
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
