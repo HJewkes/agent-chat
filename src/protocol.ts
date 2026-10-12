@@ -889,6 +889,20 @@ export type ClientMessage =
   /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
   | { t: 'permission_hook_withdrawn'; msgId: string }
   /**
+   * The hook allowed a call itself under a standing grant (CC-694) and records it.
+   *
+   * Same caller rule as `permission_hook`. The broker appends a closed
+   * `approval_request` (`meta.source = 'self-grant'`) and its `allow` resolution,
+   * so the queue never shows it, and answers with `permission_hook_result`.
+   */
+  | {
+      t: 'permission_self_granted'
+      session: string
+      toolName: string
+      toolInput: unknown
+      grant: 'repo-skills'
+    }
+  /**
    * A process that is not a session asks the human a question under a label (CC-169).
    *
    * Same caller rule as `permission_hook`: an UNREGISTERED connection only, and
