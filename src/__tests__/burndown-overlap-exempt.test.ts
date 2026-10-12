@@ -1,0 +1,124 @@
+import { describe, expect, it } from 'vitest'
+import {
+  collision,
+  collisionCheck,
+  type CollisionFacts,
+  type CollisionWork,
+} from '../agents/burndown/collision.js'
+import type { Runner } from '../agents/burndown/exec.js'
+import { DEFAULT_OVERLAP_EXEMPT, overlapExemptFor } from '../agents/burndown/overlap-exempt.js'
+
+/** CC-1153: index and generated files that merge-up resolves never refuse a dispatch on overlap alone. */
+
+const TITAN = '/x/titan-platform'
+const README = 'products/factory/README.md'
+
+const facts = (over: Partial<CollisionFacts> = {}): CollisionFacts => ({
+  repo: TITAN,
+  subjects: [],
+  prs: [],
+  prFiles: () => [],
+  names: [],
+  claims: [],
+  ours: new Set(),
+  held: [],
+  heldOwns: [],
+  overlapExempt: overlapExemptFor(TITAN, {}),
+  ...over,
+})
+
+const work = (owns: string[]): CollisionWork => ({ taskId: 'TP-1', slice: 'a', tags: [], owns })
+
+const openPrTouching = (files: string[]): Partial<CollisionFacts> => ({
+  prs: [{ number: 1261, title: 'Other work', branch: 'feat/other', body: '' }],
+  prFiles: () => files,
+})
+
+describe('dispatch file-overlap gate with an exempt list', () => {
+  it('dispatches when an open PR overlaps only on the factory README index', () => {
+    const found = collision(work([README, 'src/x.ts']), facts(openPrTouching([README])))
+
+    expect(found).toBeUndefined()
+  })
+
+  it('still refuses when the same PR also touches a real source file', () => {
+    const found = collision(work([README, 'src/x.ts']), facts(openPrTouching([README, 'src/x.ts'])))
+
+    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/x.ts' })
+  })
+
+  it('dispatches over a held claim whose owns overlap only on a nested CAPABILITIES.md', () => {
+    const heldOwns = [{ holder: 'TP-2 slice a', repo: TITAN, owns: ['packages/a/CAPABILITIES.md'] }]
+
+    expect(collision(work(['packages/a/CAPABILITIES.md']), facts({ heldOwns }))).toBeUndefined()
+  })
+
+  it('still refuses a held claim overlapping on run-tick.ts', () => {
+    const heldOwns = [{ holder: 'TP-2 slice a', repo: TITAN, owns: ['src/run-tick.ts'] }]
+
+    expect(collision(work(['src/run-tick.ts', 'CAPABILITIES.md']), facts({ heldOwns }))).toEqual({
+      kind: 'file-overlap',
+      reason: "src/run-tick.ts is under TP-2 slice a's owns",
+    })
+  })
+
+  it('still refuses a broker file claim on an exempt path', () => {
+    const claims = [{ owner: 'someone', repo: TITAN, patterns: [README] }]
+
+    expect(collision(work([README]), facts({ claims }))?.kind).toBe('claimed')
+  })
+
+  it('applies no exemption in a repo without a list', () => {
+    const found = collision(
+      work([README]),
+      facts({ repo: '/x/agent-chat', overlapExempt: [], ...openPrTouching([README]) }),
+    )
+
+    expect(found?.kind).toBe('file-overlap')
+  })
+
+  it('collisionCheck reads the exempt list for the repo it checks', () => {
+    const exec: Runner = (bin, args) => {
+      if (bin !== 'gh') return { status: 0, stdout: args[0] === 'log' ? 'init\n' : '' }
+      if (args[2]?.includes('/files')) return { status: 0, stdout: `${README}\n` }
+      return { status: 0, stdout: JSON.stringify({ number: 7, title: 'x', branch: 'feat/x', body: '' }) }
+    }
+    const asked: string[] = []
+    const check = collisionCheck(
+      { version: 1, claims: [] },
+      { names: [], claims: [] },
+      exec,
+      undefined,
+      repo => {
+        asked.push(repo)
+        return [README]
+      },
+    )
+
+    expect(check(TITAN, work([README]))).toBeUndefined()
+    expect(asked).toEqual([TITAN])
+  })
+})
+
+describe('overlapExemptFor', () => {
+  it('returns the built-in titan-platform list when config names none', () => {
+    expect(overlapExemptFor(TITAN, {})).toEqual(DEFAULT_OVERLAP_EXEMPT['titan-platform'])
+    expect(overlapExemptFor(TITAN, {})).toContain(README)
+  })
+
+  it('lets config replace the list for the repo it names', () => {
+    const config = { dispatchOverlapExempt: { 'titan-platform': ['a.md'] } }
+
+    expect(overlapExemptFor(TITAN, config)).toEqual(['a.md'])
+  })
+
+  it('returns an empty list for a repo with no default and no config', () => {
+    expect(overlapExemptFor('/x/agent-chat', {})).toEqual([])
+  })
+
+  it.each([['not a list'], [[1, 2]], [null]])('keeps the default when the configured value is %j', value => {
+    const config = { dispatchOverlapExempt: { 'titan-platform': value } }
+
+    expect(overlapExemptFor(TITAN, config)).toEqual(DEFAULT_OVERLAP_EXEMPT['titan-platform'])
+  })
+})
