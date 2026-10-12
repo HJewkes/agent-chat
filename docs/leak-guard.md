@@ -502,6 +502,12 @@ agent's gh shim, and gh-write is the only write path (CC-456). `git push -n` is
 `--dry-run`, which pushes nothing, so it is allowed. `git commit --no-verify` is allowed too:
 it skips only the repository's own commit hooks, and the push is still scanned.
 
+`env` splits an `-S` or `--split-string` value by its own rules, which differ from the shell's: a
+backslash escapes, and it splits on more blanks than space and tab. So a split value that holds a
+backslash or any whitespace other than space and tab is denied, as is one with an expansion. The
+guard finds `-S` alone, as `--split-string` or `--split-string=`, and at the end of a short-option
+cluster such as `-vS` (any `-[a-zA-Z]*S`), where the rest of the word or the next word is the value.
+
 The PR pre-check runs egress-scan's rules on each line of the title, the body, a `--body-file`
 or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: its `--subject`,
 `--body` and `--body-file`. It reads the private term list from the default path only, never from
@@ -789,6 +795,17 @@ expansion. `GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"` is al
 may go only to `github.com`: a literal `--hostname` or `GH_HOST` for another host, and any
 `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` setting, is denied. The deny says to put the value in
 literally, or to run the call alone on its line.
+
+A gh config can name a socket that gh sends every request through: `http_unix_socket`. A probe
+on 2026-10-11 and again on 2026-10-12 (gh 2.102.0, Linux, scratch dirs, `GH_TOKEN=invalid`) put
+`http_unix_socket: <scratch>/nope.sock` in a config under `GH_CONFIG_DIR`, under
+`XDG_CONFIG_HOME/gh` and under `HOME/.config/gh`. Each one rerouted `gh api /zen` to
+`dial unix <scratch>/nope.sock: connect: no such file or directory`. macOS is UNVERIFIED. So any gh
+`api`, `pr` or `issue` text call that sets `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME` is denied (CC-733).
+This applies to a prefix assignment and to an `env` operand. On a line with an unread `gh api` read, it
+also applies to a standalone assignment. The one exception is a literal `NAME=value` whose value is the
+hook's own value for that variable. An append, a subscript or an expansion is always denied. `env -u`
+of these names is allowed: gh then falls back to its next default, not to a directory the command picks.
 
 ### The guard never reads one file while the shell posts another
 
