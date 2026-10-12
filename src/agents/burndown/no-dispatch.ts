@@ -21,6 +21,8 @@ export interface SeatOutcome {
   skipped?: string
   /** What the seat holds of each role after planning, as its role caps count it (CC-929); absent when skipped. */
   roles?: Record<'implementers' | 'reviewers' | 'planners', number>
+  /** The seat's plan section-2 task IDs (CC-1128), for the tick summary; absent without a readable `plan_file`. */
+  plan?: ReadonlySet<string>
 }
 
 export interface NoDispatchReason {
