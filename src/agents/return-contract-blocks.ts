@@ -121,6 +121,11 @@ export const IMPLEMENTER_WITHOUT_SHEPHERD = implementerBlock(
   'as it stands at the final head after the wait',
 )
 
+/** TP-2498: non-blocking work goes here and Shepherd files it as tasks, so nits stop costing a round. */
+export const FOLLOW_UPS_RULE =
+  'Optional, after blocking items: `Follow-ups:` then `- <title> | <done_when> | low|medium|high` per ' +
+  'task; never blocks MERGE.'
+
 const REVIEWER = [
   `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
   'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
@@ -145,6 +150,7 @@ const REVIEWER = [
   REVIEWER_BODY_FILE_RULE,
   QUOTE_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
+  FOLLOW_UPS_RULE,
 ].join('\n')
 
 export const RETURN_CONTRACT_BLOCKS: Readonly<Record<ReturnContract, string>> = {
