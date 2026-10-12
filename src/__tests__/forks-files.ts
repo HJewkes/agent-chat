@@ -41,5 +41,7 @@ export const FORKS_FILES = [
   'src/__tests__/resume-role-gate.test.ts',
   'src/__tests__/surface-role-gate.test.ts',
   'src/__tests__/report-batch.test.ts',
+  // git execs the pre-push hook writeGitHooks just wrote; the write sits in production code, so the detector misses it.
+  'src/__tests__/leak-scan-path.test.ts',
   ...EXEC_SCRIPT_FILES,
 ]
