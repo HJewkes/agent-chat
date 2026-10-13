@@ -48,6 +48,8 @@ export const Report = z.object({
   lines: z.array(z.string()),
   /** A run-level refusal (legacy `fail()`'s stderr line), printed before the exit it causes. */
   errors: z.array(z.string()).optional(),
+  /** The exit status when `ok` is false, for a verb whose caller keys on more than 1 (the port verbs' 69). */
+  exit: z.number().int().optional(),
 })
 export type Report = z.infer<typeof Report>
 
@@ -128,5 +130,5 @@ async function runVerb<Args>(
   const report = verb.result.parse(envelope.data)
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
-  process.exit(report.ok ? 0 : 1)
+  process.exit(report.ok ? 0 : (report.exit ?? 1))
 }
