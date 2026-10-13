@@ -65,6 +65,7 @@ import {
   expandWord,
   HOLE,
   LIVE,
+  holdsOperatorExpansion,
   mixesParenAndGuarded,
   NAME,
   parseShell,
@@ -173,6 +174,7 @@ export const REASONS = {
   configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  operatorExpansion: `leak-guard: this line holds a \${...} expansion with an operator or flag, which the guard cannot read the way the shell will, beside a gh command. Compute the value in an earlier Bash call, or write it out. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
@@ -247,6 +249,7 @@ const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
+const NAMES_GH = /\bgh\b/
 
 /**
  * `chdir` is set when a wrapper such as `env -C` runs the command in another directory.
@@ -2165,6 +2168,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
+  // On the raw line: a misread expansion can hide the gh word inside a quote (CC-718).
+  if (NAMES_GH.test(command) && holdsOperatorExpansion(command)) return REASONS.operatorExpansion
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 

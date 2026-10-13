@@ -388,6 +388,15 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
+A line that names `gh` (which includes `agent-chat gh-write`) is denied when it holds an unquoted or
+double-quoted `${...}` that is anything but `${NAME}` or `${1}` (CC-718): an operator such as `:-`,
+`:=`, `:+`, `:?`, `#`, `%`, `/`, `^` or `,`, a leading `#` or `!`, or a zsh flag group such as `(e)`.
+The splitter ends such an expansion at its first `}`, so `echo ${X:-'${Y}'}; gh pr create ...` opens a
+quote it never closes and hides the gh command, and zsh's `(e)` flag runs the text it expands, which
+can redefine `gh`. The test is on the raw line, since the misread can hide the gh word itself. Compute
+the value in an earlier Bash call, or write it out; inside single quotes, as in `-b '${X:-y}'`, it is
+plain text and allowed. git-only lines are not affected.
+
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
 in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets

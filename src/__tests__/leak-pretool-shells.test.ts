@@ -219,6 +219,9 @@ const DENIED = [
   `repeat 1 gh ${FROM_FILE}`,
   `caffeinate gh ${FROM_FILE}`,
   `export TMP""DIR=$HOME/../evil; gh pr create -t x --body-file "$TMPDIR/pr.md"`,
+  // CC-718: the splitter ends `${X:-'${Y}` at its first `}`, and zsh's (e) flag runs an assignment.
+  `echo \${X:-'\${Y}'}; gh pr create -t ${TERM} -b ok`,
+  `X='\${functions[gh]::=command gh pr create -t ${TERM} -b ok}'; : \${(e)X}; gh pr view`,
 ]
 
 // The guard may allow these; the shells show whether what it read is what gh was given.
