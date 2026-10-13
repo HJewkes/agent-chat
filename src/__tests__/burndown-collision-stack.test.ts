@@ -43,7 +43,7 @@ describe('file-overlap for a stacked child', () => {
 
   it('still refuses the same file in an unrelated PR', () => {
     const found = collision(child(), facts({ 40: ['src/shared/widget.ts'], 41: ['src/shared/widget.ts'] }))
-    expect(found).toEqual({ kind: 'file-overlap', reason: '#41 touches src/shared/widget.ts' })
+    expect(found).toEqual({ kind: 'file-overlap', reason: '#41 touches src/shared/widget.ts', pr: 41 })
   })
 
   it('refuses a child that is not stacked even when a PR is numbered like a parent', () => {

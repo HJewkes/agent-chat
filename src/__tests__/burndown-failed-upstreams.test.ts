@@ -137,7 +137,7 @@ describe('burndown plan --seat behind a failed upstream', () => {
     const { lines, dispatched } = planLines(ledgerWith([], ladder))
 
     expect(dispatched).toContain('AA-1')
-    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: dep-blocked')
+    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: dep-blocked: AA-1 (open, no claim)')
   })
 
   it('keeps a dependent of an open task dep-blocked', () => {
@@ -147,7 +147,9 @@ describe('burndown plan --seat behind a failed upstream', () => {
     const { lines, dispatched } = planLines(ledgerWith([claim('AA-1', {})]))
 
     expect(dispatched).not.toContain('AA-2')
-    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: dep-blocked')
+    expect(lines).toContain(
+      'refused init-alpha AA-2 [plan-blocked]: dep-blocked: AA-1 (open, claim implementing)',
+    )
   })
 
   it('names only held failed claims, by stall code', () => {
