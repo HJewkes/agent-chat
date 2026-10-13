@@ -267,11 +267,16 @@ function readOnce(read: ArgvReader): ArgvReader {
   }
 }
 
-/** CC-951: the predecessor's `--effort` when its profile names none, so an adopted session keeps its own. */
-const withCarriedEffort = (profile: AgentProfile, carried: CarriedFlags): AgentProfile =>
-  profile.effort !== undefined || carried.effort === undefined
-    ? profile
-    : { ...profile, effort: carried.effort }
+/**
+ * CC-951: the predecessor's `--effort` when its profile names none, so an adopted session keeps its own.
+ * CC-1166: likewise its `--model` when the profile inherits one (`''`), which is an adopted session
+ * whose transcript the broker could not read; a spawned profile's model and an explicit one both win.
+ */
+const withCarried = (profile: AgentProfile, carried: CarriedFlags): AgentProfile => ({
+  ...profile,
+  ...(profile.effort === undefined && carried.effort !== undefined ? { effort: carried.effort } : {}),
+  ...(profile.model === '' && carried.model !== undefined ? { model: carried.model } : {}),
+})
 
 /** CC-881: a reported host that is not the broker's; its pid and its terminal are that host's to act on. */
 const onAnotherHost = (subject: TeleportSubject): boolean =>
@@ -1245,7 +1250,7 @@ export class Teleport {
     return {
       agentId: entry.descendantId,
       name: subject.name,
-      profile: withCarriedEffort(entry.profile, entry.carried),
+      profile: withCarried(entry.profile, entry.carried),
       brief,
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,

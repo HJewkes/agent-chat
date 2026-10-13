@@ -1146,7 +1146,7 @@ export type ClientMessage =
       /** CC-951: the caller's own OS, sent by its MCP process and never by the model. */
       hostPlatform?: string
       /** CC-951: launch flags the caller read from its own argv, which a broker on another host cannot. */
-      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
+      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string; model?: string }
       /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
       to?: string
       /** CC-951: the caller's MCP process ends its own Claude Code on an `endSelf` plan; an older one does not. */

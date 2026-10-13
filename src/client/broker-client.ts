@@ -308,6 +308,7 @@ export class BrokerClient {
     spawn(process.execPath, [cliEntry(), 'broker'], {
       detached: true,
       stdio: 'ignore',
+      cwd: home(),
       env: withoutLaunchIdentity(process.env),
     }).unref()
   }
