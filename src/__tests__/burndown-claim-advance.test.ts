@@ -248,6 +248,18 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
   })
 
+  it('releases an unclaimed slice of a task whose claims are all done, so it stops waiting on that run', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [slice('a', { phase: 'done' })] })
+
+    const retireNone = vi.fn(async (_name: string) => ({ ok: true }))
+
+    const report = await releaseTask('CC-1', retireNone, NOW, 'b')
+
+    expect(report.ok).toBe(true)
+    expect(readLedger(file()).slicesReleased).toEqual({ 'CC-1': ['b'] })
+    expect(retireNone).not.toHaveBeenCalled()
+  })
+
   it('links a PR to a queued slice and refuses one that is not queued', async () => {
     const linked = await linkSlicePr('CC-1', 'b', 'o/r#41')
     const refused = await linkSlicePr('CC-1', 'a', 'o/r#42')

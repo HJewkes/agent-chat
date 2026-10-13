@@ -46,6 +46,10 @@ export async function releaseTask(
     const dropped = ledger.claims.filter(
       c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
     )
+    if (dropped.length === 0 && slice !== undefined && unclaimedOfDoneTask(ledger, task, slice)) {
+      writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
+      return { dropped, hold: undefined, unclaimed: true }
+    }
     if (dropped.length === 0) return { dropped, hold: undefined }
     const claims = ledger.claims.filter(c => !dropped.includes(c))
     if (slice !== undefined) {
@@ -63,6 +67,8 @@ export async function releaseTask(
   if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
   const { dropped, hold } = locked.value
   const what = slice === undefined ? task : `${task} slice ${slice}`
+  if ('unclaimed' in locked.value)
+    return { ok: true, lines: [`released ${what}, which had no claim; the task no longer waits on it`] }
   if (dropped.length === 0) return refusedReport(`no held claim on ${what}`)
   const lines: string[] = []
   for (const claim of dropped) lines.push(describeClaim(claim), ...(await retireNames(claim, retire)))
@@ -78,6 +84,19 @@ export async function releaseTask(
 function releaseSlice(ledger: Ledger, claims: Claim[], task: string, slice: string): Ledger {
   const released = [...new Set([...(ledger.slicesReleased?.[task] ?? []), slice])]
   return { ...ledger, claims, slicesReleased: { ...ledger.slicesReleased, [task]: released } }
+}
+
+/**
+ * CC-1240: the slice has no claim, not even a done one, and every slice claim of the task is done. That is a slice
+ * whose off-ledger run never opened a PR; releasing it is the only way the task stops waiting on that run.
+ */
+function unclaimedOfDoneTask(ledger: Ledger, task: string, slice: string): boolean {
+  const slices = ledger.claims.filter(c => c.taskId === task && c.slice !== undefined)
+  return (
+    slices.length > 0 &&
+    slices.every(c => c.phase === 'done' && c.slice !== slice) &&
+    !(ledger.slicesReleased?.[task] ?? []).includes(slice)
+  )
 }
 
 /** A whole-task release lets the task be seeded again. */

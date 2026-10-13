@@ -766,7 +766,7 @@ function seedFromPlan(
   if ('merged' in seeding) return { seeds: [] }
   if ('pending' in seeding) {
     walk.notes.push(...seeding.notes)
-    return { seeds: [] }
+    return { seeds: seeding.claims }
   }
   walk.claimed.add(row.id)
   const slices = seeding.claims.map(c => c.slice).join(', ')

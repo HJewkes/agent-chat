@@ -256,15 +256,60 @@ describe('a slice that ran outside the ledger with no PR at seeding, whose PR op
     })
   })
 
-  it('marks the parent merged once the slice is claimed done', () => {
-    const done: Ledger = { version: 1, claims: [claim('a', 'done'), claim('b', 'done')] }
+  it('names the slice release as the way out of a run that never opened a PR', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
 
-    expect(pendingOffLedger(done, readPlan)('demo', 'DM-1')).toEqual([])
-    expect(
-      seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () => [ran('b', { kind: 'none' })]),
-    ).toEqual({
-      merged: true,
+    const result = seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () => [
+      ran('b', { kind: 'none' }),
+    ])
+
+    expect(result).toMatchObject({ pending: ['b'], claims: [] })
+    expect(JSON.stringify(result)).toContain('run agent-chat burndown release DM-1 --slice b')
+  })
+
+  it('adopts at seeding a run whose PR merged after every claim was done', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+
+    const result = seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () => [
+      ran('b', { kind: 'merged', pr: 'demo/repo#9', head: 'h9' }),
+    ])
+
+    expect(result).toMatchObject({
+      pending: [],
+      claims: [{ slice: 'b', phase: 'done', pr: 'demo/repo#9', agentName: 'sx-dm-1-b' }],
     })
+    expect(JSON.stringify(result)).not.toContain('no open or merged PR yet')
+  })
+
+  it('adopts on resync from an all-done ledger, then tells the seat the task merged', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+    const tasks = new Map([['demo', [{ id: 'DM-1', status: 'open' } as never]]])
+    const { prOf } = github({ kind: 'merged', pr: 'demo/repo#9', head: 'h9' })
+
+    const next = applyActions(done, resyncQueuedSlices(done, readPlan, NOW, prOf).actions, NOW)
+
+    expect(bySlice(next.claims).b).toMatchObject({ phase: 'done', pr: 'demo/repo#9', agentName: 'sx-dm-1-b' })
+    expect(mergedEvents(next, tasks, undefined, pendingOffLedger(next, readPlan))).toEqual({
+      'seat-x': [expect.objectContaining({ kind: 'slices-merged', taskId: 'DM-1' })],
+    })
+  })
+
+  it('does not read a task a seat was already told merged', () => {
+    const told: Ledger = { version: 1, claims: [claim('a', 'done')], slicesFlagged: ['demo/DM-1'] }
+    const { prOf, asked } = github({ kind: 'merged', pr: 'demo/repo#9', head: 'h9' })
+
+    expect(resyncQueuedSlices(told, readPlan, NOW, prOf)).toEqual({ actions: [], notes: [] })
+    expect(asked).toEqual([])
+  })
+
+  it('holds a run with no recorded dispatch time rather than take an older merge for its work', () => {
+    const undated: PlanReader = (i, t, seat) => ({ ...readPlan(i, t, seat), ranSince: {} })
+    const { prOf } = github({ kind: 'merged', pr: 'demo/repo#9', head: 'h9' })
+
+    const out = resyncQueuedSlices(ledger, undated, NOW, prOf)
+
+    expect(out.actions).toEqual([])
+    expect(out.notes.join('\n')).toContain('did not queue new slice b')
   })
 
   it('tells no seat the task merged while the slice is pending', () => {

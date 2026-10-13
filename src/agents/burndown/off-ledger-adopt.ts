@@ -65,19 +65,24 @@ export function adoptOffLedger(
   return { claims, notes }
 }
 
+/** The agent's earliest timestamped dispatch in the seat's log, if any. */
+export const firstDispatch = (records: readonly DispatchRecord[], agent: string): string | undefined =>
+  records
+    .filter(r => r.agent === agent && r.ts !== null)
+    .map(r => r.ts as string)
+    .sort()[0]
+
 /** The task's slice agents in the seat's dispatch log, each with its first dispatch and its branch PR. */
 export function offLedgerRunsIn(
   records: readonly DispatchRecord[],
   agents: readonly string[],
   prOf: BranchPr,
 ): OffLedgerRun[] {
-  return agents.map(agent => {
-    const since = records
-      .filter(r => r.agent === agent && r.ts !== null)
-      .map(r => r.ts as string)
-      .sort()[0]
-    return { agent, slice: agent.slice(-1), pr: prOf(agent, since ?? new Date(0).toISOString()) }
-  })
+  return agents.map(agent => ({
+    agent,
+    slice: agent.slice(-1),
+    pr: prOf(agent, firstDispatch(records, agent) ?? new Date(0).toISOString()),
+  }))
 }
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits.
