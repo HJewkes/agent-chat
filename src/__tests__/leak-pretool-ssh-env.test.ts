@@ -47,6 +47,14 @@ describe('shell startup, exec path and template env on a line that may reach git
     'env BASH_ENV=/x git push',
     ': ${BASH_ENV:=/x}; git push',
     'env -S "BASH_ENV=/x git push"',
+    "env 'BASH_FUNC_git%%=() { command git push --no-verify; }' bash -c 'git status'",
+    "env 'BASH_FUNC_git()=() { command git push --no-verify; }' bash -c 'git status'",
+    "SHELLOPTS=xtrace PS4='$(git push --no-verify)' bash -c 'git status'",
+    'export BASHOPTS=extdebug; git push',
+    "PROMPT_COMMAND='git push --no-verify' bash -ic 'git status'",
+    "PS1='$(git push --no-verify)' zsh -ic 'git status'",
+    "RPROMPT='%F' zsh -c 'gh pr list'",
+    "FPATH=/tmp/f zsh -c 'git status'",
   ])('denies shellStartupEnv: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.shellStartupEnv)
   })
@@ -64,6 +72,10 @@ describe('shell startup, exec path and template env on a line that may reach git
     'unset BASH_ENV; git push',
     'BASH_ENV=/tmp/rc make',
     "git commit -m 'drop BASH_ENV'",
+    'echo "$PS1"; git status',
+    "PS1='$ ' make",
+    "git commit -m 'set PS4 and BASH_FUNC_x%%'",
+    'NODE_ENV=production git status',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

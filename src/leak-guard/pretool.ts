@@ -31,7 +31,7 @@ import {
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
-import { TRUST_ENV, type TrustEnv } from './trust-inputs.js'
+import { SHELL_CODE_ENV, TRUST_ENV, type TrustEnv } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
   ghAliasReader,
@@ -202,7 +202,7 @@ export const REASONS = {
   xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
   sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
-  shellStartupEnv: `leak-guard: this line sets or exports BASH_ENV, ENV or ZDOTDIR, which make bash, sh or zsh source a startup file the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
+  shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
   gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH, which makes git run its helper programs, hooks included, from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, which makes git init and clone copy hooks and config from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
 } as const
@@ -1985,7 +1985,18 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV, ...TRUST_ENV.keys()]
+// Regex sources for whole names; SHELL_CODE_ENV holds patterns such as BASH_FUNC_*.
+const TRUST_NAMES: readonly (readonly [string, TrustEnv])[] = [
+  ...TRUST_ENV,
+  ...SHELL_CODE_ENV.map(name => [name, 'shellStartup'] as const),
+]
+const ENV_NAMES = [
+  ...PROGRAM_ENV,
+  ...OPAQUE_PROGRAM_ENV,
+  ...PROTOCOL_ENV,
+  ...TRUST_NAMES.map(([name]) => name),
+]
+const ENV_NAME = new RegExp(`^(?:${ENV_NAMES.join('|')})$`)
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -2019,7 +2030,7 @@ interface TrustOn {
 }
 type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | TrustOn
 
-const TRUST_REFS = [...TRUST_ENV].map(([name, trust]) => ({
+const TRUST_REFS = TRUST_NAMES.map(([name, trust]) => ({
   use: nameUse(name),
   assign: nameAssign(name),
   trust,
@@ -2212,7 +2223,7 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
 function scanWord(word: string): string {
   const um = unmark(word)
   const name = ASSIGNMENT.exec(word)?.[1]
-  return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
+  return name !== undefined && ENV_NAME.test(name) ? um.slice(0, um.indexOf('=') + 1) : um
 }
 
 /** How many words at the end of `words` are the written words they end with, so not split out of one. */

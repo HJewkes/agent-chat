@@ -885,13 +885,20 @@ file and stays the script-file gap.
 **Shell startup, exec path and template variables.** `BASH_ENV` (bash), `ENV` (sh and ksh in
 POSIX mode) and `ZDOTDIR` (zsh) make a shell source a file before it runs its command;
 `GIT_EXEC_PATH` makes git run its helpers from a directory; `GIT_TEMPLATE_DIR` makes `git init`
-and `git clone` copy hooks and config from one. They join the program env rule above with the same
+and `git clone` copy hooks and config from one. The shell class fails closed on any variable bash, zsh, sh or ksh
+turns straight into code, matched by pattern in `SHELL_CODE_ENV` (`trust-inputs.ts`): bash's
+exported functions `BASH_FUNC_<name>%%` and `BASH_FUNC_<name>()`, `SHELLOPTS` and `BASHOPTS`
+(`SHELLOPTS=xtrace` expands `PS4`), every prompt (`PS0` to `PS4`, `PROMPT_COMMAND`, zsh's
+`PROMPT*`, `RPROMPT*`, `RPS*` and `SPROMPT`), and `FPATH`, `MODULE_PATH` and
+`BASH_LOADABLES_PATH`. They join the program env rule above with the same
 line test and the same reading of each word, but each denies with its own reason
 (`shellStartupEnv`, `gitExecPath`, `templateDir`), and a plain literal value denies too, since the
 value names a file, not a command line to check. So `BASH_ENV=/tmp/rc bash -c "gh zz"`,
 `export BASH_ENV=/tmp/rc; git push`, `ZDOTDIR=/tmp/z zsh -c 'git status'`,
 `env BASH_ENV=/x git push`, `: ${BASH_ENV:=/x}; git push`, `GIT_EXEC_PATH=/tmp/x git push` and
-`export GIT_TEMPLATE_DIR=/t; git init r` deny. A read (`echo "$BASH_ENV"`), `unset BASH_ENV`, a
+`export GIT_TEMPLATE_DIR=/t; git init r` deny, as do
+`env 'BASH_FUNC_git%%=() { command git push --no-verify; }' bash -c 'git status'` and
+`SHELLOPTS=xtrace PS4='$(git push --no-verify)' bash -c 'git status'`. A read (`echo "$BASH_ENV"`), `unset BASH_ENV`, a
 line that never reaches git or gh (`BASH_ENV=/tmp/rc make`) and a commit message naming the
 variable stay allowed. Known false deny: a bare `ENV` word on a line that reaches git, as in
 `echo ENV; git status`, denies the way `LESS` does. The agents' pre-push hook runs under
