@@ -72,6 +72,13 @@ function planOwns(claim: Claim, plan: PlanReader): string[] | string {
 }
 
 function unstalled(claim: Claim, owns: string[]): Claim {
-  const { stalledReason: _reason, stalledClass: _class, stallCode: _code, ...kept } = claim
+  const {
+    stalledReason: _reason,
+    stalledClass: _class,
+    stallCode: _code,
+    stalledAt: _at,
+    stale: _stale,
+    ...kept
+  } = claim
   return { ...kept, owns }
 }
