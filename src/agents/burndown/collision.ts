@@ -26,6 +26,8 @@ export type CollisionKind = Extract<
 export interface Collision {
   kind: CollisionKind
   reason: string
+  /** CC-1241: the open PR a `file-overlap` hit names, for the refusal snapshot's blocker. */
+  pr?: number
 }
 
 export interface CollisionWork {
@@ -183,7 +185,8 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
       owns,
       files.filter(path => !isChangeset(path)),
     )
-    if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
+    if (path !== undefined)
+      return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}`, pr: pr.number }
   }
   return undefined
 }
