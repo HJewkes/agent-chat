@@ -15,6 +15,7 @@ import {
   runOnBasement,
   type BasementTarget,
 } from './pr-ready-basement.js'
+import { depsStep, packageManager } from './pr-ready-deps.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
 import { hasPrivacyTest, privacyStep } from './pr-ready-privacy.js'
 
@@ -201,9 +202,6 @@ function readPackage(dir: string): PackageJson | undefined {
 
 const scriptsIn = (pkg: PackageJson | undefined): string[] =>
   CHECK_SCRIPTS.filter(script => pkg?.scripts?.[script] !== undefined)
-
-export const packageManager = (cwd: string): 'pnpm' | 'npm' =>
-  fs.existsSync(path.join(cwd, 'pnpm-lock.yaml')) ? 'pnpm' : 'npm'
 
 const escapeRegExp = (text: string): string => text.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
 
@@ -406,9 +404,9 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 }
 
 /**
- * Order: clean tree, base, rebase, checks, privacy (agent-chat only), changeset, scan. A dirty tree
- * or a failed rebase stops the run, since the checks would not see the tree that merges. Exit 0 only
- * when every step passed.
+ * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, privacy
+ * (agent-chat only), changeset, scan. A dirty tree, a failed rebase or a failed install stops the
+ * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
   const { run, cwd } = deps
@@ -428,6 +426,8 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
+  const install = await guarded(async () => (await depsStep(run, cwd)) ?? { ok: true })
+  if (install.reason !== undefined && !report('deps', install)) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
   if (hasPrivacyTest(cwd)) ok = (await step('privacy', () => privacyStep(run, cwd, deps.err))) && ok
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
