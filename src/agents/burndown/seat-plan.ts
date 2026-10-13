@@ -12,8 +12,10 @@ import {
   type BriefCheck,
   type BriefGateMode,
   type Refusal,
+  type RefusalKind,
   type Task,
 } from './eligibility.js'
+import { binaryGate, capGate } from './gate-reading.js'
 import { contractOverlap, liveOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
 import { stopLineRefusal, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
@@ -21,6 +23,7 @@ import { heldClaims, readySlices, slotMismatch, type Claim, type Ledger } from '
 import type { AgentIdentity } from '../../protocol.js'
 import {
   agentNameFor,
+  BURNDOWN_CONFIG,
   capacityRefusal,
   orphanRefusal,
   type Capacity,
@@ -162,7 +165,7 @@ export interface Placement {
 
 type Role = keyof SeatDispatch['caps']
 const ROLES: readonly Role[] = ['implementers', 'reviewers', 'planners']
-type Refused = Pick<Refusal, 'kind' | 'reason'>
+type Refused = Pick<Refusal, 'kind' | 'reason' | 'gate'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
 /** CC-986: an implementer-routed task with no plan to seed from; a planner writes the one at this path. */
@@ -897,7 +900,7 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     const reason = inputs.trust?.(d.repo, d.cwd, inputs.seat.configDir)
     return reason === undefined ? undefined : { kind: 'trust', reason }
   }
-  return (
+  const refused =
     stopLineRefusal(flow, inputs.lineStop) ??
     inputs.collision?.(d.repo, work, landedRepos(inputs.seat)) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
@@ -908,8 +911,21 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??
     budgetRefusal(d.profile, walk.gate)
-  )
+  return refused === undefined || ('gate' in refused && refused.gate !== undefined)
+    ? refused
+    : {
+        ...refused,
+        gate: binaryGate(`gate.${refused.kind}`, BINARY_SOURCES[refused.kind] ?? COLLISION_SOURCE),
+      }
 }
+
+/** CC-1097: where a binary stop is read; every collision kind reads the ledger and the open PRs. */
+const BINARY_SOURCES: Partial<Record<RefusalKind, string>> = {
+  'stop-line': 'service line stop',
+  orphan: 'repo branches and worktrees no claim accounts for',
+  trust: "the seat config dir's Claude trust state",
+}
+const COLLISION_SOURCE = 'ledger claims and open PR files'
 
 function roleCap(role: Role, walk: Walk): Refused | undefined {
   const { seat } = walk.inputs
@@ -917,7 +933,11 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
   const cap = seat.caps[role]
   const ledger = walk.idle[role] > 0 ? ` (ledger ${used + walk.idle[role]})` : ''
   if (used >= cap)
-    return { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}${ledger}` }
+    return {
+      kind: 'role-cap',
+      reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}${ledger}`,
+      gate: capGate(`concurrency.${role}`, cap, used, SEAT_SOURCE),
+    }
   const reserve = role === 'implementers' ? (walk.inputs.handReserve ?? 0) : 0
   const tickUsed = used - walk.handImplementers
   return reserve === 0 || tickUsed < cap - reserve
@@ -925,6 +945,7 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
     : {
         kind: 'role-cap',
         reason: `seat ${seat.seat} holds ${tickUsed} tick ${role} of ${cap - reserve}; handReserve keeps ${reserve} of ${cap}`,
+        gate: capGate('burndown.handReserve', cap - reserve, tickUsed, BURNDOWN_CONFIG),
       }
 }
 
@@ -935,13 +956,21 @@ function worktreeCap(d: Dispatch, walk: Walk): Refused | undefined {
     return {
       kind: 'worktrees',
       reason: `seat ${d.seat ?? '?'} holds ${ours} active worktrees under ${d.repo}/.worktrees; ${capName} is ${perRepoPerSeat}`,
+      gate: capGate(capName, perRepoPerSeat, ours, SEAT_SOURCE),
     }
   return capacityRefusal(d, walk.capacity, walk.tally)
 }
 
 function budgetRefusal(profile: string, gate: PoolGateResult): Refused | undefined {
-  if (!gate.open) return { kind: 'budget', reason: gate.reason }
+  if (!gate.open) return { kind: 'budget', reason: gate.reason, gate: gate.gate }
   if (gate.sonnetOnly && !SONNET_PROFILES.has(profile))
-    return { kind: 'budget', reason: `${gate.reason}; task needs ${profile}` }
+    return {
+      kind: 'budget',
+      reason: `${gate.reason}; task needs ${profile}`,
+      // The band's figure is the window reading the reason already shows, so the lever stays binary.
+      gate: binaryGate(`pools.${gate.pool}.sonnet_band_points`, 'autonomy charter pools'),
+    }
   return undefined
 }
+
+const SEAT_SOURCE = 'seats/<seat>.md'

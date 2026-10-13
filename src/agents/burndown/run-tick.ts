@@ -57,7 +57,9 @@ import {
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
+import { binaryGate, capGate, type GateReading } from './gate-reading.js'
 import {
+  BURNDOWN_CONFIG,
   DEFAULT_NAME_PREFIX,
   plan,
   stackInputs,
@@ -870,9 +872,9 @@ function triageFor(
   config: TickConfig,
   ledger: Ledger,
   roster: Roster,
-  capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
+  capacity: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   now: Date,
-): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason'> } {
+): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> } {
   const readiness = triageReadiness(config)
   const { agents: free, agentsReason } = capacity
   const verdicts = triageVerdicts({
@@ -897,7 +899,7 @@ export function agentCapacity(
   config: TickConfig,
   claims: Claim[],
   roster: Roster,
-): Pick<Capacity, 'agents' | 'agentsReason'> {
+): Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> {
   const live = liveBurndownAgents(claims, roster, config.decider === undefined ? [] : [config.decider.name])
   const slots = roster.slots
   const free = slots === undefined ? 0 : slots.cap - slots.held - config.reserveSlots
@@ -905,15 +907,31 @@ export function agentCapacity(
     slots === undefined
       ? 'broker reported no slot reading, so none are assumed free'
       : `broker slots ${slots.held}/${slots.cap} held, ${config.reserveSlots} kept free`
+  const agents = Math.max(0, Math.min(config.maxAgents - live, free))
   return {
-    agents: Math.max(0, Math.min(config.maxAgents - live, free)),
+    agents,
     agentsReason: `${live} of maxAgents ${config.maxAgents} burndown agents alive; ${broker}`,
+    agentsGate: room => agentsGate(config, live, slots, agents - room),
   }
 }
 
+/**
+ * CC-1097: the smaller of the two agent ceilings binds; broker slots bind when unread, as none are assumed free.
+ * `started` is what the tick took from `agents` before the refusal: decider, advance, triage and plan spawns.
+ */
+function agentsGate(config: TickConfig, live: number, slots: Roster['slots'], started: number): GateReading {
+  if (slots === undefined) return binaryGate('agentSlots', AGENT_SLOTS_SOURCE)
+  const used = slots.held + config.reserveSlots
+  return config.maxAgents - live <= slots.cap - used
+    ? capGate('burndown.maxAgents', config.maxAgents, live + started, BURNDOWN_CONFIG)
+    : capGate('agentSlots', slots.cap, used + started, AGENT_SLOTS_SOURCE)
+}
+
+const AGENT_SLOTS_SOURCE = '~/.agent-chat/config.json'
+
 function worktreeCapacity(
   config: TickConfig,
-  agents: Pick<Capacity, 'agents' | 'agentsReason'>,
+  agents: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   prefixes: readonly string[],
 ): Capacity {
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
