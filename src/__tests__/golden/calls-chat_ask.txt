@@ -17,6 +17,16 @@ frame: {"t":"ask","text":"what now?"}
   }
 ]
 
+=== chat_ask: v2 meta, options with descriptions
+args: {"text":"which store?","header":"Pick the store","options":["sqlite",{"label":"postgres","description":"needs a server"}],"default":"sqlite","door":"two-way","category":"tech_design","initiative":"titan-platform","blocking":"continue","reversible":"swap the adapter back"}
+frame: {"t":"ask","text":"which store?","header":"Pick the store","default":"sqlite","door":"two-way","category":"tech_design","initiative":"titan-platform","blocking":"continue","reversible":"swap the adapter back","options":["sqlite","postgres"],"optionDescriptions":["","needs a server"]}
+[
+  {
+    "type": "text",
+    "text": "Question queued for the human (msg_id m-1). They may not see it for a while — carry on with other work."
+  }
+]
+
 === chat_ask: text blank
 args: {"text":"   "}
 [

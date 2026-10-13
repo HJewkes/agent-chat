@@ -31,6 +31,7 @@ import { collisionCheck, type BrokerView, type CollisionReader } from './collisi
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
+import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
@@ -68,12 +69,14 @@ import {
   watchdogUnusable,
   planSeats,
   scopeExhausted,
+  type LoadedSeat,
   type LoadedSeats,
   type SeatPlanDeps,
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
 import { seedSteps } from './seed-slices.js'
+import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
 import { accountDir, readInitiatives, readTaskText, readTasks, type TickConfig } from './source.js'
@@ -102,6 +105,7 @@ import {
   tickSummary,
   tickSummaryWriter,
   type RegisterRecord,
+  type SummaryInputs,
   type SummaryPlan,
 } from './tick-summary.js'
 import { loadWorld, type World } from './tick.js'
@@ -152,6 +156,8 @@ export interface TickOptions {
   egress?: EgressRunner
   /** The owner-queue spool the scope-exhausted item is filed into; defaults to the console's inbox spool. */
   ownerQueueDir?: string
+  /** CC-1192: the monotonic ms clock the step timings read; defaults to `performance.now`. */
+  monotonic?: () => number
 }
 
 interface ReaderFailure {
@@ -209,30 +215,58 @@ function clockOf({ clock, now }: TickOptions): () => Date {
 const stopCode = (config: TickConfig, paused: string | undefined): StopCode =>
   !config.enabled ? 'disabled' : paused !== undefined ? 'paused' : 'no-report-to'
 
-async function tickOnce(opts: TickOptions): Promise<TickResult> {
+type Gate = { done: TickResult } | { config: TickConfig; head: string[] }
+
+/** The config, pause and mode checks that run before the lock is taken. */
+function gateTick(opts: TickOptions): Gate {
   const resolved = loadResolvedConfig()
   const config = resolved.tick
   const paused = pauseOf(resolved)
   const stop = stopReason(config, paused)
   if (stop !== undefined && !opts.dryRun)
-    return { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } }
+    return { done: { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } } }
   const head = stop === undefined ? [] : [`${stop}; dry run proceeds anyway`]
   const conflict = modeConflict(config, readInitiatives(opts.root ?? activeWorkRoot()))
   if (conflict !== undefined)
-    return { lines: [...head, conflict], outcome: { kind: 'failed', errorClass: 'ModeConflict' } }
-  const locked = await withLedgerLock(burndownLedgerPath(), () => runTick(config, opts))
-  if (!locked.ran)
-    return {
-      lines: [...head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
-      outcome: { kind: 'skipped' },
-    }
-  return { lines: [...head, ...locked.value], outcome: { kind: 'ok' } }
+    return { done: { lines: [...head, conflict], outcome: { kind: 'failed', errorClass: 'ModeConflict' } } }
+  return { config, head }
 }
 
-async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
+/** CC-1192: the summary row is appended after the lock is released, so its write never counts as lock-held time. */
+async function tickOnce(opts: TickOptions): Promise<TickResult> {
+  const monotonic = opts.monotonic ?? (() => performance.now())
+  const started = monotonic()
+  const timer = stepTimer(monotonic)
+  const gate = await timer.time('config', () => gateTick(opts))
+  if ('done' in gate) return gate.done
+  const locked = await withLedgerLock(burndownLedgerPath(), async () => {
+    const lockedAt = monotonic()
+    const ran = await runTick(gate.config, opts, timer)
+    return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
+  })
+  if (!locked.ran)
+    return {
+      lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
+      outcome: { kind: 'skipped' },
+    }
+  const { lines, summary, lockHeldMs } = locked.value
+  if (summary !== undefined) {
+    const timings = { durationMs: Math.round(monotonic() - started), lockHeldMs, steps: timer.steps() }
+    appendTickSummary(tickSummary(summary, timings), opts.log ?? logEvent)
+  }
+  return { lines: [...gate.head, ...lines], outcome: { kind: 'ok' } }
+}
+
+interface Ran {
+  lines: string[]
+  /** A real tick's summary row inputs; a dry run has none. */
+  summary?: SummaryInputs
+}
+
+async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer): Promise<Ran> {
   const now = opts.now ?? new Date()
-  const ledger = readLedger(burndownLedgerPath())
-  const decided = await decide(config, opts, ledger, now)
+  const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
+  const decided = await decide(config, opts, ledger, now, timer)
   const { steps, notes, decider } = decided
   if (opts.dryRun) {
     const planned = applyActions(
@@ -241,18 +275,23 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
       now,
     )
     const diff = { seats: config.seats, before: ledger, after: planned, spawns: [] }
-    return [
-      `burndown tick at ${now.toISOString()} (dry run)`,
-      ...steps.map(describe),
-      ...describeDecider(config, decider),
-      ...describeTriage(decided.triage),
-      ...describeSeatEvents(diff, now),
-      ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
-      ...notes,
-    ]
+    return {
+      lines: [
+        `burndown tick at ${now.toISOString()} (dry run)`,
+        ...steps.map(describe),
+        ...describeDecider(config, decider),
+        ...describeTriage(decided.triage),
+        ...describeSeatEvents(diff, now),
+        ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
+        ...notes,
+      ],
+    }
   }
-  const lines = await actOn(config, opts, ledger, decided, now)
-  return [`burndown tick at ${now.toISOString()}`, ...lines, ...notes]
+  const acted = await actOn(config, opts, ledger, decided, now, timer)
+  return {
+    lines: [`burndown tick at ${now.toISOString()}`, ...acted.lines, ...notes],
+    summary: acted.summary,
+  }
 }
 
 /** Executes the steps, wakes the decider, scans claimed PRs for leaks, then tells each seat what changed, writing the ledger last. */
@@ -273,54 +312,89 @@ async function actOn(
     reasons,
     adopt,
     summary,
+    humanStepSeats,
   }: Decided,
   now: Date,
-): Promise<string[]> {
+  timer: StepTimer,
+): Promise<Ran & { summary: SummaryInputs }> {
   const log = opts.log ?? logEvent
   const clock = clockOf(opts)
   logReasons(defaultAutonomyRoot(opts.root), reasons, clock, log)
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
-  const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
+  const exhausted = await timer.time('scope-exhausted', () =>
+    fileScopeExhausted(outcomes, seatStates, opts, now),
+  )
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
+  const routed = await fileSeatHumanSteps(humanStepSeats, config, opts)
   const spawns: SpawnResult[] = []
   const registrations: RegisterRecord[] = []
   const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
-  const executed = await execute(steps, sampled, {
-    ledgerFile: burndownLedgerPath(),
-    spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
-    retire: opts.broker.retire,
-    register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
-    prHead: target => prHeadOf(target, opts.exec ?? run),
-    log,
-    now,
-  })
-  logLadder(ledger, executed.ledger, log)
-  const adopted = adoptPrs(adopt, executed.ledger, opts, now, registrations)
-  const woken = await actOnTriage(
-    config,
-    triage,
-    await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
-    triageDeps(opts, log, now),
+  const executed = await timer.time('execute', () =>
+    execute(steps, sampled, {
+      ledgerFile: burndownLedgerPath(),
+      spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
+      retire: opts.broker.retire,
+      register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
+      prHead: target => prHeadOf(target, opts.exec ?? run),
+      log,
+      now,
+    }),
   )
-  const leaks = await leakCheck(woken.ledger, {
-    exec: opts.exec ?? run,
-    log,
-    seats: config.seats,
-    ...(opts.egress === undefined ? {} : { egress: opts.egress }),
-  })
+  logLadder(ledger, executed.ledger, log)
+  const adopted = await timer.time('adopt', () => adoptPrs(adopt, executed.ledger, opts, now, registrations))
+  const woken = await timer.time('decider-triage', async () =>
+    actOnTriage(
+      config,
+      triage,
+      await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
+      triageDeps(opts, log, now),
+    ),
+  )
+  const leaks = await timer.time('leak-check', () =>
+    leakCheck(woken.ledger, {
+      exec: opts.exec ?? run,
+      log,
+      seats: config.seats,
+      ...(opts.egress === undefined ? {} : { egress: opts.egress }),
+    }),
+  )
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
-  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), {
-    ...told.ledger,
-    lastTickAt: now.toISOString(),
-    ...(serviceCheck === undefined ? {} : { serviceCheck }),
-  })
-  appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
-  return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+  const told = await timer.time('deliver', () =>
+    deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch }),
+  )
+  await timer.time('write-ledger', () =>
+    writeLedger(burndownLedgerPath(), {
+      ...told.ledger,
+      lastTickAt: now.toISOString(),
+      ...(serviceCheck === undefined ? {} : { serviceCheck }),
+    }),
+  )
+  return {
+    lines: [...routed, ...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines],
+    summary: { ...summary, now, registrations },
+  }
+}
+
+/** CC-974: files each seat's due kind:owner and kind:operator task into the owner queue, beside `fileScopeExhausted`. */
+async function fileSeatHumanSteps(
+  seats: readonly LoadedSeat[],
+  config: TickConfig,
+  opts: TickOptions,
+): Promise<string[]> {
+  if (seats.length === 0) return []
+  const root = opts.root ?? activeWorkRoot()
+  const done = memo(() => doneIdsOnDisk(root))
+  const log = opts.log ?? logEvent
+  return fileHumanSteps(
+    () => humanStepSources(seats, readInitiatives(root), root, config.scopeTagAliases, log),
+    id => done().has(id),
+    spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir()),
+    log,
+  )
 }
 
 /**
@@ -472,6 +546,8 @@ interface Decided {
   adopt: AdoptSeat[]
   /** What this tick's summary row reads from the plan (CC-929). */
   summary: SummaryPlan
+  /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
+  humanStepSeats: LoadedSeat[]
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -487,10 +563,17 @@ function isRunning(roster: Roster, name: string): boolean {
 }
 
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
-async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now: Date): Promise<Decided> {
+async function decide(
+  config: TickConfig,
+  opts: TickOptions,
+  ledger: Ledger,
+  now: Date,
+  timer: StepTimer,
+): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
-  const roster = await opts.broker.roster()
-  const world = loadWorld(now, root)
+  const roster = await timer.time('roster', () => opts.broker.roster())
+  const world = await timer.time('world', () => loadWorld(now, root))
+  const seating = timer.start('seats')
   const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
   if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
@@ -499,19 +582,22 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       : unusable !== undefined
         ? { loaded: [], skipped: config.seats.map(seat => ({ seat, reason: unusable })) }
         : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
+  seating.stop()
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
   const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])
-  const { observations, unread } = await observe(held, roster, {
-    proposed: (initiative, taskId) =>
-      briefAnswered(tasks.get(initiative)?.find(t => t.id === taskId)?.tags ?? []),
-    inboxSince: opts.broker.inboxSince,
-    root,
-    shepherdRows: shepherd,
-    landed: target => shepherdLanded(target, opts.exec ?? run),
-    exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
-    prState: claimPrReader(opts.exec ?? run),
-  })
+  const { observations, unread } = await timer.time('observe', () =>
+    observe(held, roster, {
+      proposed: (initiative, taskId) =>
+        briefAnswered(tasks.get(initiative)?.find(t => t.id === taskId)?.tags ?? []),
+      inboxSince: opts.broker.inboxSince,
+      root,
+      shepherdRows: shepherd,
+      landed: target => shepherdLanded(target, opts.exec ?? run),
+      exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+      prState: claimPrReader(opts.exec ?? run),
+    }),
+  )
   const ctx = {
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
@@ -520,8 +606,9 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     tasks,
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
-  const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
+  const decider = await timer.time('decider', () => deciderFor(config, opts, ledger, roster, capacity, now))
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
+  const planning = timer.start('plan')
   const laddered = ladderActions(
     withFindings(advance(held, observations, now), held, observations, now, seat => {
       const lookup = ctx.seat?.(seat)
@@ -547,7 +634,9 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     { ...agents, agents: agents.agents - advanced.spawns },
     now,
   )
-  const { check, failures } = await tickCollision(planLedger, opts)
+  planning.stop()
+  const { check, failures } = await timer.time('collision', () => tickCollision(planLedger, opts))
+  const building = timer.start('plan')
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
   const planned = planNew(
@@ -596,11 +685,13 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     .map(i => i.slug)
   const marked =
     seats === undefined ? undefined : dueReasons(planned.outcomes, samplesAfter(ledger, seats), now)
+  building.stop()
   return {
     steps,
     reasons: marked?.due ?? [],
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    humanStepSeats: seats?.loaded ?? [],
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),

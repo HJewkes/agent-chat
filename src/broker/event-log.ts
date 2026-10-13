@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
-import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type {
   DecidedItem,
@@ -18,6 +17,7 @@ import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
+import { newMsgId } from './msg-id.js'
 import { SEAT_HOLD_MARK } from './seat-hold.js'
 import type {
   AgentEventRow,
@@ -165,7 +165,8 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 
 export const BUSY_TIMEOUT_MS = 5_000
 
-export const newMsgId = (): string => randomUUID().slice(0, 8)
+/** CC-1188: temporary, for registry, supervisor and teleport until slice b mints them through the log. */
+export { newMsgId } from './msg-id.js'
 
 const citationOf = (meta: Record<string, string>): DecisionCitation => ({
   precedent: meta.precedent ?? '',
@@ -308,9 +309,11 @@ export class EventLog implements EventStore {
   /**
    * CC-1187: an 8-hex id repeats about 7% of the time across 25,000 rows, and a repeat of a
    * resolved id makes the new item born closed. The `ref` check covers resolutions whose
-   * item was never logged under that id.
+   * item was never logged under that id. A caller that needs the id before it appends uses
+   * this; the id is checked, not reserved, so two mints before either is written can match
+   * (about 2^-32 a pair).
    */
-  private mintMsgId(): string {
+  mintMsgId(): string {
     const taken = this.db.prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? OR ref = ? LIMIT 1`)
     for (;;) {
       const msgId = newMsgId()
