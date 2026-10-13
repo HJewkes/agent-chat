@@ -26,20 +26,23 @@ import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
 import {
-  autoApproveBriefs,
   autoApprovePortsOn,
   briefAnswered,
+  finishBriefRoutes,
+  settleProposedBriefs,
   type ApprovePorts,
-  type DeciderRoute,
+  type AutoApprovePorts,
+  type BriefRoute,
+  type SettledBriefs,
 } from './brief-approve.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import {
-  briefRouteRefusal,
   deciderVerdict,
   recordRefusal,
   wakeDecider,
   type DeciderVerdict,
+  type WakeDelivery,
 } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
@@ -291,10 +294,10 @@ interface Ran {
 async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer): Promise<Ran> {
   const now = opts.now ?? new Date()
   const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
-  const decided = await decide(config, opts, ledger, now, timer)
-  const { steps, decider } = decided
   const briefs = await timer.time('brief-approve', () => settleBriefs(config, opts, now))
-  const notes = [...briefs, ...decided.notes]
+  const decided = await decide(config, opts, ledger, now, timer, briefs.routes)
+  const { steps, decider } = decided
+  const notes = [...briefs.lines, ...decided.notes]
   if (opts.dryRun) {
     const planned = applyActions(
       ledger,
@@ -329,6 +332,7 @@ async function actOn(
   {
     steps,
     decider,
+    briefRoutes,
     triage,
     failures,
     unchecked,
@@ -375,7 +379,13 @@ async function actOn(
     actOnTriage(
       config,
       triage,
-      await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
+      await actOnDeciderAndBriefs(
+        config,
+        { decider, briefRoutes },
+        executed.ledger,
+        { broker: opts.broker, log, now },
+        opts,
+      ),
       triageDeps(opts, log, now),
     ),
   )
@@ -535,23 +545,22 @@ function recordingSpawn(
   }
 }
 
-/** CC-1234: approves each proposed brief whose plan lints and sends the rest to the decider once; a dry run only says so. */
-function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): Promise<string[]> {
-  const name = config.decider?.name
+const briefPorts = (opts: TickOptions): AutoApprovePorts => {
   const ports = autoApprovePortsOn(opts.root ?? activeWorkRoot())
-  return autoApproveBriefs(opts.briefEdit === undefined ? ports : { ...ports, edit: opts.briefEdit }, {
-    today: localDate(now),
-    dryRun: opts.dryRun,
-    ...(name === undefined ? {} : { route: deciderRoute(name, opts.broker) }),
-  })
+  return opts.briefEdit === undefined ? ports : { ...ports, edit: opts.briefEdit }
 }
 
-const deciderRoute =
-  (name: string, broker: TickBroker): DeciderRoute =>
-  async message => {
-    const refusal = briefRouteRefusal(name, resolveDeciderAgentId(), await broker.roster())
-    return refusal === undefined ? broker.resume(name, message) : { ok: false, reason: refusal }
-  }
+/**
+ * CC-1234: approves each proposed brief whose plan lints before the world is read, so it can dispatch this tick.
+ * The failing ones become routes that ride the tick's one decider wake; a dry run only says so.
+ */
+function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): SettledBriefs {
+  return settleProposedBriefs(briefPorts(opts), {
+    today: localDate(now),
+    dryRun: opts.dryRun,
+    decider: config.decider !== undefined,
+  })
+}
 
 /** Wakes the decider, or records why not when the human has something to fix. */
 async function actOnDecider(
@@ -559,9 +568,10 @@ async function actOnDecider(
   verdict: DeciderVerdict | undefined,
   ledger: Ledger,
   deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
-): Promise<{ ledger: Ledger; lines: string[] }> {
+): Promise<{ ledger: Ledger; lines: string[]; delivery: WakeDelivery }> {
   const name = config.decider?.name
-  if (verdict === undefined || name === undefined) return { ledger, lines: [] }
+  if (verdict === undefined || name === undefined)
+    return { ledger, lines: [], delivery: { sent: false, reason: 'no decider configured' } }
   if (verdict.wake) {
     const write = (l: Ledger): void => writeLedger(burndownLedgerPath(), l)
     const woken = await wakeDecider(name, verdict.message, ledger, {
@@ -569,21 +579,35 @@ async function actOnDecider(
       write,
       ...deps,
     })
-    return { ledger: woken.ledger, lines: [woken.line] }
+    return { ledger: woken.ledger, lines: [woken.line], delivery: woken.delivery }
   }
-  if (!verdict.record) return { ledger, lines: [`decider ${name} not woken: ${verdict.reason}`] }
+  const line = `decider ${name} not woken: ${verdict.reason}`
+  const delivery = { sent: false as const, reason: verdict.reason }
+  if (!verdict.record) return { ledger, lines: [line], delivery }
   deps.log('burndown_decider_refused', { name, reason: verdict.reason })
-  return {
-    ledger: recordRefusal(ledger, verdict.reason, deps.now),
-    lines: [`decider ${name} not woken: ${verdict.reason}`],
-  }
+  return { ledger: recordRefusal(ledger, verdict.reason, deps.now), lines: [line], delivery }
+}
+
+/** CC-1234: the tick's one decider wake, then each brief route kept or released by how that wake ended. */
+async function actOnDeciderAndBriefs(
+  config: TickConfig,
+  decided: { decider: DeciderVerdict | undefined; briefRoutes: readonly BriefRoute[] },
+  ledger: Ledger,
+  deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
+  opts: TickOptions,
+): Promise<{ ledger: Ledger; lines: string[] }> {
+  const acted = await actOnDecider(config, decided.decider, ledger, deps)
+  const finished = finishBriefRoutes(decided.briefRoutes, acted.delivery, briefPorts(opts))
+  return { ledger: acted.ledger, lines: [...acted.lines, ...finished] }
 }
 
 function describeDecider(config: TickConfig, verdict: DeciderVerdict | undefined): string[] {
   const name = config.decider?.name
   if (verdict === undefined || name === undefined) return []
   if (verdict.wake)
-    return [`would wake decider ${name} (headless) for ${verdict.waiting} waiting question(s)`]
+    return [
+      `would wake decider ${name} (headless) for ${verdict.waiting} waiting question(s) and ${verdict.briefs} proposed brief(s)`,
+    ]
   return [`decider ${name} not woken: ${verdict.reason}`]
 }
 
@@ -591,6 +615,8 @@ interface Decided {
   steps: Step[]
   notes: string[]
   decider?: DeciderVerdict
+  /** CC-1234: failing briefs that ride the decider wake, released when the decider is not woken. */
+  briefRoutes: readonly BriefRoute[]
   triage: TriagePlan
   failures: ReaderFailure[]
   unchecked: string[]
@@ -630,6 +656,7 @@ async function decide(
   ledger: Ledger,
   now: Date,
   timer: StepTimer,
+  briefRoutes: readonly BriefRoute[],
 ): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
   const roster = await timer.time('roster', () => opts.broker.roster())
@@ -668,7 +695,10 @@ async function decide(
     tasks,
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
-  const decider = await timer.time('decider', () => deciderFor(config, opts, ledger, roster, capacity, now))
+  const briefs = briefRoutes.map(route => route.section)
+  const decider = await timer.time('decider', () =>
+    deciderFor(config, opts, ledger, roster, capacity, now, briefs),
+  )
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const planning = timer.start('plan')
   const laddered = ladderActions(
@@ -779,6 +809,7 @@ async function decide(
     skippedSeats: planned.skipped,
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
+    briefRoutes,
     ...(marked === undefined ? {} : { seatStates: marked.states }),
     ...(service === undefined ? {} : { serviceCheck: service.read }),
   }
@@ -888,6 +919,7 @@ async function deciderFor(
   roster: Roster,
   capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
   now: Date,
+  briefs: readonly string[],
 ): Promise<DeciderVerdict | undefined> {
   if (config.decider === undefined) return undefined
   return deciderVerdict({
@@ -899,6 +931,7 @@ async function deciderFor(
     capacity: capacity.agents,
     capacityReason: capacity.agentsReason,
     now,
+    briefs,
   })
 }
 

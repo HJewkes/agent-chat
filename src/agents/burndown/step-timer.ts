@@ -2,6 +2,7 @@
 export type StepName =
   | 'config'
   | 'read-ledger'
+  | 'brief-approve'
   | 'roster'
   | 'world'
   | 'seats'
@@ -9,7 +10,6 @@ export type StepName =
   | 'decider'
   | 'plan'
   | 'collision'
-  | 'brief-approve'
   | 'scope-exhausted'
   | 'execute'
   | 'adopt'

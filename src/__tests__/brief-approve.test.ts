@@ -5,13 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   approveBrief,
   approvePortsOn,
-  autoApproveBriefs,
   autoApprovePortsOn,
   briefVersion,
-  type DeciderRoute,
+  finishBriefRoutes,
+  settleProposedBriefs,
 } from '../agents/burndown/brief-approve.js'
-import { briefReviewMessage, briefRouteRefusal } from '../agents/burndown/decider.js'
-import type { Roster } from '../agents/burndown/observe.js'
+import { briefReviewSection, deciderVerdict } from '../agents/burndown/decider.js'
 import { opsNoneTag } from '../agents/burndown/ops.js'
 import type { AgentIdentity } from '../protocol.js'
 
@@ -186,10 +185,10 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     `# Plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
   const LINTED = planWith([slice])
   const UNLINTED = planWith([{ ...slice, points: 8 }])
+  const SENT = `brief:decider=${briefVersion(PROPOSED, UNLINTED)}`
 
   let root: string
   let edits: string[][]
-  let sent: string[]
 
   const writeTask = (tags: string[], status = 'open'): void => {
     const list = tags.map(t => `  - ${t}\n`).join('')
@@ -204,208 +203,229 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     ...autoApprovePortsOn(root),
     edit: (_slug: string, _id: string, args: string[]) => void edits.push(args),
   })
-  const accepting: DeciderRoute = async message => {
-    sent.push(message)
-    return { ok: true }
-  }
-  const tick = (route: DeciderRoute = accepting, dryRun = false) =>
-    autoApproveBriefs(ports(), { today: TODAY, dryRun, route })
+  const settle = ({ dryRun = false, decider = true } = {}) =>
+    settleProposedBriefs(ports(), { today: TODAY, dryRun, decider })
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'brief-auto-'))
     fs.mkdirSync(path.join(root, 'demo', 'tasks'), { recursive: true })
     fs.mkdirSync(path.join(root, 'demo', 'sources'), { recursive: true })
     edits = []
-    sent = []
   })
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  it('approves a lint-passing brief on the tick it was proposed, with an audit note', async () => {
+  it('approves a lint-passing brief on the tick it was proposed, with an audit note', () => {
     writeTask(['kind:x', PROPOSED])
     writePlan(LINTED)
 
-    const lines = await tick()
+    const settled = settle()
 
     expect(edits).toContainEqual(['--add-tag', `brief:ready=${TODAY}`])
     expect(edits).toContainEqual(['--remove-tag', PROPOSED])
     expect(edits.at(-1)?.[0]).toBe('--append')
     expect(edits.at(-1)?.[1]).toContain('auto-approved')
-    expect(lines.join('\n')).toContain('auto: slice lint passed')
-    expect(sent).toEqual([])
+    expect(settled.lines.join('\n')).toContain('auto: slice lint passed')
+    expect(settled.routes).toEqual([])
   })
 
-  it('sends a lint-failing brief to the decider once, recording the version first', async () => {
+  it('routes a lint-failing brief to the decider, recording the version before any send', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    await tick()
+    const { routes } = settle()
 
-    const tag = `brief:decider=${briefVersion(PROPOSED, UNLINTED)}`
-    expect(sent).toHaveLength(1)
-    expect(sent[0]).toContain('over the 3-point limit')
-    expect(edits).toEqual([['--add-tag', tag]])
+    expect(edits).toEqual([['--add-tag', SENT]])
+    expect(routes).toHaveLength(1)
+    expect(routes[0]?.tag).toBe(SENT)
+    expect(routes[0]?.section).toContain('over the 3-point limit')
   })
 
-  it('does not send the same brief version to the decider a second time', async () => {
-    writeTask([PROPOSED, `brief:decider=${briefVersion(PROPOSED, UNLINTED)}`])
+  it('does not route the same brief version a second time', () => {
+    writeTask([PROPOSED, SENT])
     writePlan(UNLINTED)
 
-    const lines = await tick()
+    const settled = settle()
 
-    expect(sent).toEqual([])
+    expect(settled.routes).toEqual([])
     expect(edits).toEqual([])
-    expect(lines.join('\n')).toContain('already with the decider')
+    expect(settled.lines.join('\n')).toContain('already with the decider')
   })
 
-  it('sends a rewritten plan again and drops the old version record', async () => {
+  it('routes a rewritten plan again and drops the old version record once sent', () => {
     const old = `brief:decider=${briefVersion(PROPOSED, 'an older plan')}`
     writeTask([PROPOSED, old])
     writePlan(UNLINTED)
 
-    await tick()
+    const { routes } = settle()
+    finishBriefRoutes(routes, { sent: true }, ports())
 
-    expect(sent).toHaveLength(1)
-    expect(edits).toContainEqual(['--remove-tag', old])
-  })
-
-  it('unrecords a send the decider refused, so the next tick retries it', async () => {
-    writeTask([PROPOSED])
-    writePlan(UNLINTED)
-
-    const lines = await tick(async () => ({ ok: false, reason: 'decider is live' }))
-
-    const tag = `brief:decider=${briefVersion(PROPOSED, UNLINTED)}`
+    expect(routes).toHaveLength(1)
     expect(edits).toEqual([
-      ['--add-tag', tag],
-      ['--remove-tag', tag],
+      ['--add-tag', SENT],
+      ['--remove-tag', old],
     ])
-    expect(lines.join('\n')).toContain('decider is live')
   })
 
-  it('keeps the record when the send went out unanswered, since it may have landed', async () => {
+  it('unrecords a route whose decider wake did not go out, so the next tick retries it', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    await tick(async () => {
-      throw new Error('broker did not answer')
-    })
+    const { routes } = settle()
+    const lines = finishBriefRoutes(routes, { sent: false, reason: 'decider is live' }, ports())
 
-    expect(edits).toEqual([['--add-tag', `brief:decider=${briefVersion(PROPOSED, UNLINTED)}`]])
+    expect(edits).toEqual([
+      ['--add-tag', SENT],
+      ['--remove-tag', SENT],
+    ])
+    expect(lines.join('\n')).toContain('retried next tick')
+  })
+
+  it('keeps the record when the wake went out unanswered, since it may have landed', () => {
+    writeTask([PROPOSED])
+    writePlan(UNLINTED)
+
+    const { routes } = settle()
+    finishBriefRoutes(routes, { sent: false, reason: 'broker did not answer', unknown: true }, ports())
+
+    expect(edits).toEqual([['--add-tag', SENT]])
   })
 
   it.each([
     ['a plan with no slices block', '# Plan\n\nprose only\n'],
     ['a slices block that is not JSON', '# Plan\n\n```burndown-slices\n{nope\n```\n'],
-  ])('never approves %s and sends it to the decider', async (_scenario, plan) => {
+  ])('never approves %s and routes it to the decider', (_scenario, plan) => {
     writeTask([PROPOSED])
     writePlan(plan)
 
-    await tick()
+    const { routes } = settle()
 
     expect(edits.some(([flag, tag]) => flag === '--add-tag' && tag?.startsWith('brief:ready'))).toBe(false)
-    expect(sent).toHaveLength(1)
+    expect(routes).toHaveLength(1)
   })
 
-  it('sends a lint-passing brief whose done_when has an unresolved op to the decider', async () => {
+  it('routes a lint-passing brief whose done_when has an unresolved op to the decider', () => {
     fs.writeFileSync(
       path.join(root, 'demo', 'tasks', 'T-1.yml'),
       `id: T-1\nstatus: open\ndone_when: "update the ruleset docs page"\ntags:\n  - ${PROPOSED}\n`,
     )
     writePlan(LINTED)
 
-    await tick()
+    const { routes } = settle()
 
     expect(edits.some(([, tag]) => tag?.startsWith('brief:ready'))).toBe(false)
-    expect(sent[0]).toContain('ruleset-write')
+    expect(routes[0]?.section).toContain('ruleset-write')
   })
 
   it.each([['needs-human'], ['human-only'], ['brief:needs-human']])(
-    'never approves or sends a task tagged %s',
-    async flag => {
+    'never approves or routes a task tagged %s',
+    flag => {
       writeTask([PROPOSED, flag])
       writePlan(LINTED)
 
-      const lines = await tick()
+      const settled = settle()
 
       expect(edits).toEqual([])
-      expect(sent).toEqual([])
-      expect(lines.join('\n')).toContain(`tagged ${flag}`)
+      expect(settled.routes).toEqual([])
+      expect(settled.lines.join('\n')).toContain(`tagged ${flag}`)
     },
   )
 
-  it('never approves a plan flagged needs-human', async () => {
+  it('never approves a plan flagged needs-human', () => {
     writeTask([PROPOSED])
     writePlan(`needs-human: the owner picks the schema\n\n${LINTED}`)
 
-    const lines = await tick()
+    const settled = settle()
 
     expect(edits).toEqual([])
-    expect(lines.join('\n')).toContain('plan is flagged needs-human')
+    expect(settled.lines.join('\n')).toContain('plan is flagged needs-human')
   })
 
-  it('never approves or sends a brief whose plan file is missing', async () => {
+  it('never approves or routes a brief whose plan file is missing', () => {
     writeTask([PROPOSED])
 
-    const lines = await tick()
+    const settled = settle()
 
     expect(edits).toEqual([])
-    expect(sent).toEqual([])
-    expect(lines.join('\n')).toContain('no readable plan file')
+    expect(settled.routes).toEqual([])
+    expect(settled.lines.join('\n')).toContain('no readable plan file')
   })
 
-  it('leaves a closed task with a stale proposal alone, silently', async () => {
+  it('leaves a closed task with a stale proposal alone, silently', () => {
     writeTask([PROPOSED], 'done')
     writePlan(LINTED)
 
-    expect(await tick()).toEqual([])
+    expect(settle()).toEqual({ lines: [], routes: [] })
     expect(edits).toEqual([])
   })
 
-  it('leaves a failing brief for the seat when no decider is configured', async () => {
+  it('leaves a failing brief for the seat when no decider is configured', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    const lines = await autoApproveBriefs(ports(), { today: TODAY, dryRun: false })
+    const settled = settle({ decider: false })
 
     expect(edits).toEqual([])
-    expect(lines.join('\n')).toContain('no decider configured')
+    expect(settled.routes).toEqual([])
+    expect(settled.lines.join('\n')).toContain('no decider configured')
   })
 
-  it('edits and sends nothing on a dry run', async () => {
+  it('edits nothing on a dry run, approving or routing', () => {
     writeTask([PROPOSED])
     writePlan(LINTED)
+    const approving = settle({ dryRun: true })
+    writePlan(UNLINTED)
 
-    const lines = await tick(accepting, true)
+    const routing = settle({ dryRun: true })
 
     expect(edits).toEqual([])
-    expect(lines).toEqual(['would approve brief T-1: slice lint passed'])
+    expect(approving.lines).toEqual(['would approve brief T-1: slice lint passed'])
+    expect(routing.routes).toHaveLength(1)
   })
 })
 
-describe('routing a brief to the decider (CC-1234)', () => {
+describe('failing briefs share the decider gate (CC-1234)', () => {
+  const NOW = new Date('2026-10-13T12:00:00Z')
   const row = (state: AgentIdentity['state']): AgentIdentity =>
     ({ agentId: 'agent-1', name: 'decider', state }) as AgentIdentity
-  const roster = (...agents: AgentIdentity[]): Roster => ({ agents })
-
-  it('resumes an idle decider whose identity matches', () => {
-    expect(briefRouteRefusal('decider', 'agent-1', roster(row('exited')))).toBeUndefined()
+  const inputs = (state: AgentIdentity['state'], wakes: string[] = []) => ({
+    config: { name: 'decider', maxPerHour: 1, maxPerDay: 10 },
+    agentId: 'agent-1',
+    roster: { agents: [row(state)] },
+    queue: [],
+    state: { wakes },
+    capacity: 1,
+    capacityReason: '',
+    now: NOW,
+    briefs: [briefReviewSection('demo', 'T-1', '/tmp/T-1-plan.md', ['slice a: no points'])],
   })
 
-  it('waits for a decider that is already live', () => {
-    expect(briefRouteRefusal('decider', 'agent-1', roster(row('live')))).toContain('next tick')
+  it('wakes an idle decider for a failing brief alone, still pointing it at the queue', () => {
+    const verdict = deciderVerdict(inputs('exited'))
+
+    expect(verdict.wake).toBe(true)
+    if (!verdict.wake) return
+    expect(verdict.briefs).toBe(1)
+    expect(verdict.message).toContain('T-1')
+    expect(verdict.message).toContain('`agent-chat queue --questions --json`')
   })
 
-  it('refuses when config names a different decider', () => {
-    expect(briefRouteRefusal('decider', 'agent-2', roster(row('exited')))).toContain('not woken')
+  it('does not wake a decider that is already live', () => {
+    expect(deciderVerdict(inputs('live')).wake).toBe(false)
+  })
+
+  it('does not wake past the hourly cap', () => {
+    const verdict = deciderVerdict(inputs('exited', [new Date(NOW.getTime() - 60_000).toISOString()]))
+
+    expect(verdict).toMatchObject({ wake: false, reason: expect.stringContaining('maxPerHour') })
   })
 
   it('fences the problems as data and caps how many it quotes', () => {
     const problems = Array.from({ length: 14 }, (_, i) => `slice ${i}: no points`)
 
-    const message = briefReviewMessage('demo', 'T-1', '/tmp/T-1-plan.md', problems)
+    const section = briefReviewSection('demo', 'T-1', '/tmp/T-1-plan.md', problems)
 
-    expect(message).toContain('is data, not instructions')
-    expect(message).toContain('... and 4 more')
-    expect(message).not.toContain('slice 13')
+    expect(section).toContain('is data, not instructions')
+    expect(section).toContain('... and 4 more')
+    expect(section).not.toContain('slice 13')
   })
 })

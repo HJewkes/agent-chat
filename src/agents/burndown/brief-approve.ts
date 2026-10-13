@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { planPathFor } from './brief.js'
-import { briefReviewMessage } from './decider.js'
+import { briefReviewSection, type WakeDelivery } from './decider.js'
 import type { Task } from './eligibility.js'
 import { declaredOps, opsLint, opsNoneTag } from './ops.js'
 import { readSlices } from './report.js'
@@ -126,9 +126,6 @@ function sliceProblems(plan: string): string[] {
 export const briefVersion = (proposed: string, plan: string): string =>
   createHash('sha256').update(`${proposed}\n${plan}`).digest('hex').slice(0, 12)
 
-/** `unknown` means the frame went out with no answer, so it may have landed and counts as sent. */
-export type DeciderRoute = (message: string) => Promise<{ ok: boolean; reason?: string; unknown?: boolean }>
-
 export interface AutoApprovePorts extends ApprovePorts {
   tasks: (slug: string) => Task[]
   /** The plan's text, or undefined when it is missing or unreadable. */
@@ -138,8 +135,27 @@ export interface AutoApprovePorts extends ApprovePorts {
 export interface AutoApproveDeps {
   today: string
   dryRun: boolean
-  /** Undefined when no decider is configured: a failing brief is then left for the seat. */
-  route?: DeciderRoute
+  /** False when no decider is configured: a failing brief is then left for the seat. */
+  decider: boolean
+}
+
+/**
+ * A failing brief bound for the decider. The tick sends it inside its one decider wake (CC-1234), so brief sends
+ * share the queue wake's identity, active-state, rate-cap and capacity checks and are counted with it.
+ * Outside a dry run `tag` is already on the task: intent first, so a crash before the wake never sends it twice.
+ */
+export interface BriefRoute {
+  slug: string
+  taskId: string
+  tag: string
+  /** Older version records, dropped once this version is sent. */
+  stale: string[]
+  section: string
+}
+
+export interface SettledBriefs {
+  lines: string[]
+  routes: BriefRoute[]
 }
 
 interface Proposal {
@@ -149,11 +165,15 @@ interface Proposal {
   planFile: string
 }
 
-/** CC-1234: every open `brief:proposed` task is approved on this tick when its plan lints, else routed to the decider once. */
-export async function autoApproveBriefs(ports: AutoApprovePorts, deps: AutoApproveDeps): Promise<string[]> {
-  const lines: string[] = []
-  for (const proposal of proposals(ports)) lines.push(...(await settleBrief(proposal, ports, deps)))
-  return lines
+/** CC-1234: every open `brief:proposed` task is approved on this tick when its plan lints; the rest are routes for the decider wake. */
+export function settleProposedBriefs(ports: AutoApprovePorts, deps: AutoApproveDeps): SettledBriefs {
+  const settled: SettledBriefs = { lines: [], routes: [] }
+  for (const proposal of proposals(ports)) {
+    const one = settleBrief(proposal, ports, deps)
+    settled.lines.push(...one.lines)
+    settled.routes.push(...one.routes)
+  }
+  return settled
 }
 
 function proposals(ports: AutoApprovePorts): Proposal[] {
@@ -166,18 +186,22 @@ function proposals(ports: AutoApprovePorts): Proposal[] {
   )
 }
 
-async function settleBrief(p: Proposal, ports: AutoApprovePorts, deps: AutoApproveDeps): Promise<string[]> {
+const linesOnly = (...lines: string[]): SettledBriefs => ({ lines, routes: [] })
+
+function settleBrief(p: Proposal, ports: AutoApprovePorts, deps: AutoApproveDeps): SettledBriefs {
   const verdict = briefVerdict(p.task, ports.readPlan(p.planFile))
   if (verdict.kind === 'skip')
-    return verdict.quiet === true ? [] : [`brief ${p.task.id} not auto-approved: ${verdict.reason}`]
+    return verdict.quiet === true
+      ? linesOnly()
+      : linesOnly(`brief ${p.task.id} not auto-approved: ${verdict.reason}`)
   if (verdict.kind === 'decider') return routeBrief(p, verdict.plan, verdict.problems, ports, deps)
-  if (deps.dryRun) return [`would approve brief ${p.task.id}: slice lint passed`]
+  if (deps.dryRun) return linesOnly(`would approve brief ${p.task.id}: slice lint passed`)
   const report = promoteBrief(p.slug, p.task.id, ports, deps.today)
   if (!report.ok) return routeBrief(p, verdict.plan, report.errors ?? [], ports, deps)
-  return [
+  return linesOnly(
     ...report.lines.map(line => `${line} (auto: slice lint passed)`),
     ...auditNote(p, ports, deps.today),
-  ]
+  )
 }
 
 function auditNote(p: Proposal, ports: ApprovePorts, today: string): string[] {
@@ -190,42 +214,44 @@ function auditNote(p: Proposal, ports: ApprovePorts, today: string): string[] {
   }
 }
 
-async function routeBrief(
+function routeBrief(
   p: Proposal,
   plan: string,
   problems: string[],
   ports: ApprovePorts,
   deps: AutoApproveDeps,
-): Promise<string[]> {
+): SettledBriefs {
   const id = p.task.id
-  const sent = `${DECIDER_SENT}${briefVersion(p.proposed, plan)}`
+  const tag = `${DECIDER_SENT}${briefVersion(p.proposed, plan)}`
   const head = `brief ${id} not auto-approved (${problems.length} problem(s))`
-  if (p.task.tags.includes(sent)) return [`${head}; this version is already with the decider`]
-  if (deps.route === undefined) return [`${head}; no decider configured, left for the seat`]
-  if (deps.dryRun) return [`${head}; would send it to the decider`]
-  // Intent first: the record lands before the send, so a crash after it never sends this version twice.
-  if (!tryEdit(ports, p, ['--add-tag', sent])) return [`${head}; could not record the send, not sent`]
-  const reply = await sendOnce(deps.route, briefReviewMessage(p.slug, id, p.planFile, problems))
-  if (!reply.ok && reply.unknown !== true) {
-    tryEdit(ports, p, ['--remove-tag', sent])
-    return [`${head}; decider send refused: ${reply.reason ?? 'no reason given'}`]
-  }
-  for (const old of p.task.tags.filter(t => t.startsWith(DECIDER_SENT) && t !== sent))
-    tryEdit(ports, p, ['--remove-tag', old])
-  return [`${head}; sent to the decider`]
+  if (p.task.tags.includes(tag)) return linesOnly(`${head}; this version is already with the decider`)
+  if (!deps.decider) return linesOnly(`${head}; no decider configured, left for the seat`)
+  if (!deps.dryRun && !tryEdit(ports, p.slug, id, ['--add-tag', tag]))
+    return linesOnly(`${head}; could not record the send, not sent`)
+  const stale = p.task.tags.filter(t => t.startsWith(DECIDER_SENT) && t !== tag)
+  const section = briefReviewSection(p.slug, id, p.planFile, problems)
+  return { lines: [`${head}; for the decider`], routes: [{ slug: p.slug, taskId: id, tag, stale, section }] }
 }
 
-async function sendOnce(route: DeciderRoute, message: string): ReturnType<DeciderRoute> {
-  try {
-    return await route(message)
-  } catch (err) {
-    return { ok: false, unknown: true, reason: err instanceof Error ? err.message : String(err) }
-  }
+/** A sent or possibly-sent wake keeps each route's record; any other outcome drops it so the next tick retries. */
+export function finishBriefRoutes(
+  routes: readonly BriefRoute[],
+  delivery: WakeDelivery,
+  ports: Pick<ApprovePorts, 'edit'>,
+): string[] {
+  const kept = delivery.sent || delivery.unknown === true
+  return routes.map(route => {
+    for (const old of kept ? route.stale : [route.tag])
+      tryEdit(ports, route.slug, route.taskId, ['--remove-tag', old])
+    return kept
+      ? `brief ${route.taskId} sent to the decider`
+      : `brief ${route.taskId} not sent to the decider: ${delivery.reason}; retried next tick`
+  })
 }
 
-function tryEdit(ports: ApprovePorts, p: Proposal, args: string[]): boolean {
+function tryEdit(ports: Pick<ApprovePorts, 'edit'>, slug: string, id: string, args: string[]): boolean {
   try {
-    ports.edit(p.slug, p.task.id, args)
+    ports.edit(slug, id, args)
     return true
   } catch {
     return false
