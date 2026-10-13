@@ -17,12 +17,18 @@ import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orpha
  * live process has its cwd or an open fd inside.
  *
  * CC-1184: a launch may put its dir under an on-disk root, `<home>/.cache/agent-chat/tmp`, instead
- * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes. Those two are the
- * only roots accepted; every check above applies under either.
+ * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes.
+ *
+ * CC-1266: Claude Code writes each Bash call's output under `CLAUDE_CODE_TMPDIR`, falling back to
+ * TMPDIR. A launch's harness dir lives under its own root, `<home>/.cache/agent-chat/harness`, so
+ * a full scratch dir cannot take the agent's Bash tool, and the `rm` to recover, down with it.
+ *
+ * Those three are the only roots accepted; every check above applies under each.
  */
 
 export const TMP_ROOT = '/tmp'
 export const DISK_TMP_ROOT_SUFFIX = '/.cache/agent-chat/tmp'
+export const HARNESS_ROOT_SUFFIX = '/.cache/agent-chat/harness'
 const DIR_MODE = 0o700
 const VALID_NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`, 'i')
 const PREFIX = 'ac-'
@@ -96,10 +102,15 @@ const currentUid = (): number => process.getuid?.() ?? -1
 /** The on-disk root under `home`. */
 export const diskTmpRoot = (home: string): string => `${home}${DISK_TMP_ROOT_SUFFIX}`
 
-/** /tmp, or an absolute, normalised `<home>/.cache/agent-chat/tmp`. */
+/** The on-disk root of the launches' Claude Code harness dirs under `home`. */
+export const diskHarnessRoot = (home: string): string => `${home}${HARNESS_ROOT_SUFFIX}`
+
+/** /tmp, or an absolute, normalised `<home>/.cache/agent-chat/tmp` or `<home>/.cache/agent-chat/harness`. */
 export const isTmpRoot = (root: string): boolean =>
   root === TMP_ROOT ||
-  (path.posix.isAbsolute(root) && path.posix.normalize(root) === root && root.endsWith(DISK_TMP_ROOT_SUFFIX))
+  (path.posix.isAbsolute(root) &&
+    path.posix.normalize(root) === root &&
+    (root.endsWith(DISK_TMP_ROOT_SUFFIX) || root.endsWith(HARNESS_ROOT_SUFFIX)))
 
 /** The one path this module will ever create or remove for an agent, or undefined when any part is invalid. */
 export function agentTmpPath(name: string, pid: number, root = TMP_ROOT): string | undefined {

@@ -411,7 +411,7 @@ export const burndownReleaseVerb = defineVerb({
       return tickBroker(client).retire(name)
     }
     try {
-      return await releaseTask(task, retire, new Date(), slice)
+      return await releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot()))
     } finally {
       client.close()
     }

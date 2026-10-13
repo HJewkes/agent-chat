@@ -17,12 +17,14 @@ export const AGENT_NAME_PATTERN = '[a-z0-9][a-z0-9_-]{0,63}'
  * CC-901: a launch's private temp dir is per-launch like its identity. Inherited by a broker an
  * agent started, it would become every later agent's TMPDIR and vanish when that agent exits.
  * CC-1184: it lives under /tmp or the on-disk root `<home>/.cache/agent-chat/tmp`.
+ * CC-1266: its Claude Code harness dir, `CLAUDE_CODE_TMPDIR`, is per-launch too, under
+ * `<home>/.cache/agent-chat/harness`.
  */
 const LAUNCH_TMP_DIR = new RegExp(
-  `^(?:/tmp|(?:/[^/]+)*/\\.cache/agent-chat/tmp)/ac-${AGENT_NAME_PATTERN}-[1-9]\\d{0,9}/?$`,
+  `^(?:/tmp|(?:/[^/]+)*/\\.cache/agent-chat/(?:tmp|harness))/ac-${AGENT_NAME_PATTERN}-[1-9]\\d{0,9}/?$`,
   'i',
 )
-const TMP_ENV = ['TMPDIR', 'TMP', 'TEMP'] as const
+const TMP_ENV = ['TMPDIR', 'TMP', 'TEMP', 'CLAUDE_CODE_TMPDIR'] as const
 
 export const isLaunchTmpDir = (dir: string | undefined): boolean =>
   dir !== undefined && LAUNCH_TMP_DIR.test(dir)
