@@ -134,7 +134,7 @@ export function seedSlices(
     }
   const read = readSlices(plan.text)
   if (read.slices === undefined) return { blocked: `${plan.path}: ${read.problems.join('; ')}` }
-  const runs = ranOffLedger?.(parent.taskId) ?? []
+  const runs = ranOffLedger?.(parent.taskId, parent.initiative) ?? []
   const unread = runs.filter(r => r.pr === undefined).map(r => r.agent)
   if (unread.length > 0)
     return {
@@ -188,15 +188,15 @@ const isWaiting = (c: Claim): boolean =>
   c.phase === 'queued' && c.agentName === undefined && c.pr === undefined
 
 /**
- * CC-1233: the slices whose `<prefix>-<id>-<slice>` agent the seat's dispatch log shows, which the resync never
- * queues. A log that could not be read holds every new slice. A claim with no seat names no log, so none ran.
+ * CC-1233: why the resync holds a new slice rather than queue it: the seat's dispatch log shows its
+ * `<prefix>-<id>-<slice>` agent, or the log could not be read, which holds every new slice. A claim with no seat
+ * names no log, so none ran.
  */
-function ranSlices(plan: PlanFile): { slices: Set<string> | undefined; why: string } {
-  if (plan.runsUnread !== undefined) return { slices: undefined, why: plan.runsUnread }
-  const agents = plan.ranOffLedger ?? []
-  return {
-    slices: new Set(agents.map(a => a.slice(-1))),
-    why: `its agent ${agents.join(', ')} ran outside the ledger`,
+function heldBy(plan: PlanFile): (slice: string) => string | undefined {
+  return slice => {
+    if (plan.runsUnread !== undefined) return plan.runsUnread
+    const agent = (plan.ranOffLedger ?? []).find(a => a.slice(-1) === slice)
+    return agent === undefined ? undefined : `its agent ${agent} ran outside the ledger`
   }
 }
 
@@ -214,8 +214,8 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
   const inPlan = new Set(read.slices.map(s => s.n))
   const known = new Set([...claims.map(c => c.slice), ...(ledger.slicesReleased?.[taskId] ?? [])])
   const unclaimed = read.slices.filter(s => !known.has(s.n))
-  const ran = ranSlices(plan)
-  const fresh = unclaimed.filter(s => ran.slices !== undefined && !ran.slices.has(s.n))
+  const why = heldBy(plan)
+  const fresh = unclaimed.filter(s => why(s.n) === undefined)
   const held = unclaimed.filter(s => !fresh.includes(s))
   const removed = claims.filter(c => !inPlan.has(c.slice as string))
   const dropped = removed.filter(isWaiting)
@@ -237,7 +237,7 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
       ...fresh.map(s => `plan drift ${initiative} ${taskId}: queued new slice ${s.n} from ${plan.path}`),
       ...held.map(
         s =>
-          `plan drift ${initiative} ${taskId}: did not queue new slice ${s.n} from ${plan.path}: ${ran.why}`,
+          `plan drift ${initiative} ${taskId}: did not queue new slice ${s.n} from ${plan.path}: ${why(s.n) as string}`,
       ),
       ...dropped.map(
         c =>

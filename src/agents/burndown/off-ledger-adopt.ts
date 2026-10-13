@@ -5,8 +5,10 @@ import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
 import { readTextIfPresent } from '../seats/io.js'
 import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
-import { originRepo } from './pr-adopt-ports.js'
-import { claimPrState, readRepoPulls, type ClaimPr, type RepoPulls } from './pr-state.js'
+import { BRANCH_PREFIX } from '../isolation/worktree.js'
+import { jsonLines, originRepo } from './pr-adopt-ports.js'
+import type { ClaimPr } from './pr-state.js'
+import { targetRef } from './shepherd.js'
 
 /**
  * CC-1233 (D3): a plan whose slice agents ran by hand, outside the ledger, is seeded by what each run left on
@@ -22,8 +24,8 @@ export interface OffLedgerRun {
   pr: ClaimPr | undefined
 }
 
-/** The slice agents already run for a task, with their branch PRs (CC-1121 b). */
-export type SliceRuns = (taskId: string) => OffLedgerRun[]
+/** The slice agents already run for a task, with their branch PRs in the task's initiative's checkouts (CC-1121 b). */
+export type SliceRuns = (taskId: string, initiative: string) => OffLedgerRun[]
 
 /** The PR on `agent`'s branch, counting a merge only after `since`; undefined when a read failed. */
 export type BranchPr = (agent: string, since: string) => ClaimPr | undefined
@@ -77,34 +79,65 @@ export function offLedgerRunsIn(
   })
 }
 
+// REST, never GraphQL: the owner's account hits GraphQL rate limits.
+const BRANCH_JQ = '.[] | {number, state, mergedAt: .merged_at, headSha: .head.sha}'
+
+interface BranchPull {
+  number: number
+  state: string
+  mergedAt: string | null
+  headSha: string
+}
+
+/** Every PR GitHub lists for the agent's branch in `repo`; undefined only when the read failed. */
+function branchPulls(repo: string, agent: string, exec: Runner): BranchPull[] | undefined {
+  const owner = repo.split('/')[0] ?? ''
+  const head = encodeURIComponent(`${owner}:${BRANCH_PREFIX}${agent}`)
+  const result = exec('gh', [
+    'api',
+    `repos/${repo}/pulls?state=all&head=${head}&per_page=100`,
+    '--jq',
+    BRANCH_JQ,
+  ])
+  if (result.status !== 0) return undefined
+  const pulls = jsonLines(result.stdout) as Partial<BranchPull>[]
+  return pulls.every(p => typeof p?.number === 'number' && typeof p.state === 'string')
+    ? pulls.map(p => ({
+        number: p.number!,
+        state: p.state!,
+        mergedAt: p.mergedAt ?? null,
+        headSha: p.headSha ?? '',
+      }))
+    : undefined
+}
+
+/** An open PR wins; else the newest merge since the run was dispatched; else none. */
+function branchState(repo: string, pulls: readonly BranchPull[], since: string): ClaimPr {
+  const open = pulls.find(p => p.state === 'open')
+  if (open !== undefined) return { kind: 'open', pr: targetRef({ repo, pr: open.number }) }
+  const merged = pulls
+    .filter(p => p.mergedAt !== null && Date.parse(p.mergedAt) >= Date.parse(since))
+    .sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''))[0]
+  return merged === undefined
+    ? { kind: 'none' }
+    : { kind: 'merged', pr: targetRef({ repo, pr: merged.number }), head: merged.headSha }
+}
+
 /**
- * Reads each checkout's origin and each repo's pulls at most once, and only when a run is looked up. An open PR
- * in any repo wins over a merged one; a repo that could not be read makes the answer "could not tell".
+ * Asks GitHub for each agent's branch PRs in every checkout's repo, reading each checkout's origin once and only
+ * when a run is looked up. A checkout with no GitHub origin has no PR. An open PR in any repo wins over a merged
+ * one, and only a failed `gh` read makes the answer "could not tell".
  */
 export function branchPrReader(checkouts: readonly string[], exec: Runner): BranchPr {
-  const pulls = new Map<string, RepoPulls | undefined>()
-  const repos = (): (string | undefined)[] => [...new Set(checkouts)].map(c => originRepo(c, exec))
-  let origins: (string | undefined)[] | undefined
+  let repos: string[] | undefined
   return (agent, since) => {
-    origins ??= repos()
-    const probe: Claim = {
-      taskId: '',
-      initiative: '',
-      spawnedAt: since,
-      phase: 'queued',
-      phaseAt: since,
-      spawned: [agent],
-    }
-    const states = [...new Set(origins)].map(repo => {
-      if (repo === undefined) return undefined
-      if (!pulls.has(repo)) pulls.set(repo, readRepoPulls(repo, exec))
-      return claimPrState(probe, repo, pulls.get(repo))
+    repos ??= [...new Set([...new Set(checkouts)].map(c => originRepo(c, exec)).filter(r => r !== undefined))]
+    const states = repos.map(repo => {
+      const pulls = branchPulls(repo, agent, exec)
+      return pulls === undefined ? undefined : branchState(repo, pulls, since)
     })
-    return (
-      states.find(s => s?.kind === 'open') ??
-      states.find(s => s?.kind === 'merged') ??
-      (states.every(s => s !== undefined) ? { kind: 'none' } : undefined)
-    )
+    if (states.some(s => s === undefined)) return undefined
+    return states.find(s => s?.kind === 'open') ?? states.find(s => s?.kind === 'merged') ?? { kind: 'none' }
   }
 }
 

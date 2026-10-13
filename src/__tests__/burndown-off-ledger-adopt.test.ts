@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { applyActions } from '../agents/burndown/advance.js'
 import type { RunResult } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { branchPrReader, type OffLedgerRun } from '../agents/burndown/off-ledger-adopt.js'
+import { branchPrReader, offLedgerRunsIn, type OffLedgerRun } from '../agents/burndown/off-ledger-adopt.js'
+import { initiativePrReaders } from '../agents/burndown/seat-tick.js'
 import type { RepoPull } from '../agents/burndown/pr-state.js'
 import {
   diskPlanReader,
@@ -13,6 +14,7 @@ import {
   seedSlices,
   type PlanReader,
 } from '../agents/burndown/seed-slices.js'
+import type { DispatchRecord } from '../agents/seats/dispatch-record.js'
 
 /** CC-1233: a plan whose slice agents ran outside the ledger is seeded by their branch PRs. Every name is synthetic. */
 
@@ -160,6 +162,7 @@ describe('the drift resync with slice agents that ran outside the ledger', () =>
 })
 
 describe('branchPrReader', () => {
+  const SINCE = '2026-10-10T00:00:00.000Z'
   const pull = (patch: Partial<RepoPull>): RepoPull => ({
     number: 1,
     state: 'closed',
@@ -168,39 +171,93 @@ describe('branchPrReader', () => {
     headSha: 'h1',
     ...patch,
   })
+  /** 100 newer PRs on other branches fill the first page of the repo's pull list, as in any busy repo. */
+  const busy = Array.from({ length: 100 }, (_, i) =>
+    pull({ number: 1000 + i, branch: `agent-chat/other-${i}` }),
+  )
   let calls: string[][] = []
-  const gh =
-    (pulls: RepoPull[] | undefined) =>
+
+  /** A fake GitHub: `git` reads the checkout's origin, `gh` lists pulls, filtered by `head=` when it is given. */
+  const github =
+    (pulls: RepoPull[] | undefined, origins: Record<string, string> = { '/tmp/r1': 'demo/repo' }) =>
     (bin: string, args: string[]): RunResult => {
       calls.push([bin, ...args])
-      if (bin === 'git') return { status: 0, stdout: 'https://github.com/demo/repo.git\n' }
+      if (bin === 'git') {
+        const origin = origins[args[1] as string]
+        return origin === undefined
+          ? { status: 128, stdout: '', stderr: 'not a git repository' }
+          : { status: 0, stdout: `https://github.com/${origin}.git\n` }
+      }
       if (pulls === undefined) return { status: 1, stdout: '', stderr: 'HTTP 502' }
-      return { status: 0, stdout: pulls.map(p => JSON.stringify(p)).join('\n') }
+      const head = new URL(`https://x/${args[1]}`).searchParams.get('head')
+      const listed =
+        head === null ? [...busy, ...pulls].slice(0, 100) : pulls.filter(p => `demo:${p.branch}` === head)
+      return { status: 0, stdout: listed.map(p => JSON.stringify(p)).join('\n') }
     }
-  const SINCE = '2026-10-10T00:00:00.000Z'
 
   afterEach(() => {
     calls = []
   })
 
-  it("finds a merged PR on the agent's branch, once per repo however many agents", () => {
+  it("finds a merged PR on the agent's branch past the first page of a busy repo", () => {
     const prOf = branchPrReader(
-      ['/tmp/r1', '/tmp/r1'],
-      gh([pull({ mergedAt: '2026-10-11T00:00:00Z', number: 7, headSha: 'h7' })]),
+      ['/tmp/r1'],
+      github([pull({ mergedAt: '2026-10-11T00:00:00Z', number: 7, headSha: 'h7' })]),
     )
 
     expect(prOf('sx-dm-1-a', SINCE)).toEqual({ kind: 'merged', pr: 'demo/repo#7', head: 'h7' })
-    expect(prOf('sx-dm-1-b', SINCE)).toEqual({ kind: 'none' })
-    expect(calls.filter(c => c[0] === 'gh')).toHaveLength(1)
+  })
+
+  it('says a live agent in a busy repo has no PR, so seeding leaves its slice alone rather than waiting', () => {
+    const prOf = branchPrReader(['/tmp/r1'], github([]))
+    const records = [
+      { ts: SINCE, task: 'DM-1', agent: 'sx-dm-1-c', outcome: 'dispatched' },
+    ] as DispatchRecord[]
+
+    const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () =>
+      offLedgerRunsIn(records, ['sx-dm-1-c'], prOf),
+    )
+
+    expect(result).toMatchObject({
+      notes: [
+        'left demo DM-1 slice c to sx-dm-1-c, which ran outside the ledger and has no open or merged PR',
+      ],
+    })
+    expect(JSON.stringify(result)).not.toContain('seeding waits a tick')
+  })
+
+  it('reads each checkout origin once however many agents are looked up', () => {
+    const prOf = branchPrReader(['/tmp/r1', '/tmp/r1'], github([]))
+
+    prOf('sx-dm-1-a', SINCE)
+    prOf('sx-dm-1-b', SINCE)
+
+    expect(calls.filter(c => c[0] === 'git')).toHaveLength(1)
   })
 
   it('does not count a merge from before the run was dispatched', () => {
-    const prOf = branchPrReader(['/tmp/r1'], gh([pull({ mergedAt: '2026-10-01T00:00:00Z' })]))
+    const prOf = branchPrReader(['/tmp/r1'], github([pull({ mergedAt: '2026-10-01T00:00:00Z' })]))
 
     expect(prOf('sx-dm-1-a', SINCE)).toEqual({ kind: 'none' })
   })
 
-  it('cannot tell when the pulls read fails', () => {
-    expect(branchPrReader(['/tmp/r1'], gh(undefined))('sx-dm-1-a', SINCE)).toBeUndefined()
+  it('takes a checkout with no GitHub origin to hold no PR', () => {
+    expect(branchPrReader(['/tmp/notes'], github([]))('sx-dm-1-a', SINCE)).toEqual({ kind: 'none' })
+  })
+
+  it('cannot tell only when the pulls read fails', () => {
+    expect(branchPrReader(['/tmp/r1'], github(undefined))('sx-dm-1-a', SINCE)).toBeUndefined()
+  })
+
+  it("adopts in a seat with a non-git repo, reading only the task's initiative", () => {
+    const merged = pull({ mergedAt: '2026-10-11T00:00:00Z', number: 7, headSha: 'h7' })
+    const exec = github([merged], { '/tmp/r1': 'demo/repo', '/tmp/r2': 'other/repo' })
+    const readers = initiativePrReaders(
+      { repos: { demo: ['/tmp/r1', '/tmp/notes'], other: ['/tmp/r2'] }, nonGitRepos: ['/tmp/notes'] },
+      exec,
+    )
+
+    expect(readers('demo')('sx-dm-1-a', SINCE)).toEqual({ kind: 'merged', pr: 'demo/repo#7', head: 'h7' })
+    expect(calls.filter(c => c[0] === 'git').map(c => c[2])).toEqual(['/tmp/r1'])
   })
 })
