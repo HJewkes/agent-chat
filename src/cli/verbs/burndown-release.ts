@@ -9,6 +9,7 @@ import {
   type Ledger,
 } from '../../agents/burndown/ledger.js'
 import { pendingOffLedger, type PlanReader } from '../../agents/burndown/seed-slices.js'
+import { slicesReleasedUnclaimed } from '../../agents/burndown/slices-complete.js'
 import type { Report } from '../command.js'
 
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -32,7 +33,8 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
 
 /**
  * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
- * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
+ * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing,
+ * except that a task with released slices and no slice claim (`slicesReleasedUnclaimed`) is cleared to reseed.
  * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`. `readPlan` lets it release an
  * unclaimed slice an off-ledger run holds (CC-1240).
  */
@@ -53,7 +55,7 @@ export async function releaseTask(
       writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
       return { dropped, hold: undefined, unclaimed: true }
     }
-    if (dropped.length === 0 && slice === undefined && ledger.slicesReleased?.[task] !== undefined) {
+    if (slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
       writeLedger(file, withoutSliceReleases(ledger, task))
       return { dropped, hold: undefined, reseedable: true }
     }

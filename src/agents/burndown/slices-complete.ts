@@ -27,6 +27,15 @@ export function slicesReleasedComplete(ledger: Ledger, taskId: string): boolean 
   return slices.length > 0 && slices.every(c => c.phase === 'done')
 }
 
+/**
+ * CC-1256: slices of the task were released and it has no slice claim at all, done or held. The seeder refuses
+ * it as released, and a whole-task release clears the released slices so it can be seeded again.
+ */
+export function slicesReleasedUnclaimed(ledger: Ledger, taskId: string): boolean {
+  if ((ledger.slicesReleased?.[taskId] ?? []).length === 0) return false
+  return !ledger.claims.some(c => c.taskId === taskId && c.slice !== undefined)
+}
+
 /** A parent the seeder must not reseed: all its slices merged, or the rest were released. */
 export const slicesSettled = (ledger: Ledger, taskId: string): boolean =>
   slicesMerged(ledger, taskId) || slicesReleasedComplete(ledger, taskId)

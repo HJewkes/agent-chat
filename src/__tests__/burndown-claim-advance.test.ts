@@ -15,6 +15,7 @@ import { observe, type Roster } from '../agents/burndown/observe.js'
 import { liveAgentOf } from '../agents/burndown/seat-tick.js'
 import { seedSlices, type PlanReader } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import { slicesReleasedComplete } from '../agents/burndown/slices-complete.js'
 import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
 import type { AgentIdentity } from '../protocol.js'
 
@@ -259,6 +260,21 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(seedSlices(parent, plan, ledger, NOW)).toEqual({
       blocked: expect.not.stringContaining('released'),
     })
+  })
+
+  it('leaves a task with a done slice and a released one released-complete on a whole-task release', async () => {
+    const ledger = {
+      ...EMPTY_LEDGER,
+      claims: [slice('a', { phase: 'done' })],
+      slicesReleased: { 'CC-1': ['b'] },
+    }
+    writeLedger(file(), ledger)
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1'] })
+    expect(readLedger(file())).toEqual(ledger)
+    expect(slicesReleasedComplete(readLedger(file()), 'CC-1')).toBe(true)
   })
 
   it('refuses a slice with no held claim', async () => {
