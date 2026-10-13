@@ -30,6 +30,17 @@ describe('ssh options that run a local command (TP-2376)', () => {
     'scp a h:b -oProxyCommand=x',
     'sftp -D /x h',
     'sftp -b batch h',
+    'ssh -o',
+    'ssh h -o',
+    'ssh -F',
+    'ssh -vo',
+    'scp -S',
+    'ssh -I /tmp/lib.so h',
+    'ssh -o PKCS11Provider=/tmp/lib.so h',
+    'ssh -o smartcarddevice=/tmp/lib.so h',
+    'ssh -o SecurityKeyProvider=/tmp/sk.so h',
+    'ssh -o XAuthLocation=/tmp/xauth h',
+    'scp -o pkcs11provider=/tmp/lib.so a h:b',
   ])('%s runs a local program', line => {
     expect(runsLocalProgram(line)).toBe(true)
   })

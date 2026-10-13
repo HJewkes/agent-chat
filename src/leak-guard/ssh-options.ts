@@ -1,9 +1,11 @@
 /**
  * Reads an ssh, scp or sftp argv the way OpenSSH's getopt does (TP-2376), to find an option that
  * makes it run a local program the guard never reads: an `-o` keyword ending in `Command`
- * (ProxyCommand, LocalCommand, KnownHostsCommand and the like), a `-F` config file, which can set
- * any of them, scp's `-S` and `-D`, and sftp's `-S`, `-D` and `-b` (a batch file's `!` lines run
- * locally). Option strings are from OpenSSH 10.2 `ssh.c`, `scp.c` and `sftp.c`.
+ * (ProxyCommand, LocalCommand, KnownHostsCommand and the like), an `-o` keyword that loads a local
+ * library or program (PKCS11Provider, SecurityKeyProvider, XAuthLocation), ssh's `-I`, a `-F`
+ * config file, which can set any of them, scp's `-S` and `-D`, and sftp's `-S`, `-D` and `-b` (a batch file's `!` lines run
+ * locally). A value-taking flag with no value fails closed: a caller may hand ssh the
+ * rest of the line. Option strings are from OpenSSH 10.2 `ssh.c`, `scp.c` and `sftp.c`.
  */
 
 import { LIVE, unmark } from './shell-words.js'
@@ -25,7 +27,7 @@ function grammar(optstring: string, runs: string, stopsAfterHost: boolean): Gram
 }
 
 const GRAMMARS: ReadonlyMap<string, Grammar> = new Map([
-  ['ssh', grammar('1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy', '', true)],
+  ['ssh', grammar('1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy', 'I', true)],
   ['scp', grammar('12346ABCTdfOpqRrstvD:F:J:M:P:S:c:i:l:o:X:', 'SD', false)],
   ['sftp', grammar('1246AafhNpqrvCc:D:i:l:o:s:S:b:B:F:J:P:R:X:', 'SDb', false)],
 ])
@@ -42,9 +44,12 @@ const keyword = (option: string): string =>
     .split(/[\s=]+/)
     .find(token => token !== '') ?? ''
 
+/** `-o` keywords whose value names a local program or library; SmartcardDevice is PKCS11Provider's alias. */
+const RUNS_KEYWORD = /command|^(?:pkcs11provider|smartcarddevice|securitykeyprovider|xauthlocation)$/i
+
 function valueRuns(g: Grammar, letter: string, value: string, splits: readonly string[]): boolean {
   if (g.runs.has(letter)) return true
-  if (letter === 'o') return value.includes(LIVE) || /command/i.test(keyword(unmark(value)))
+  if (letter === 'o') return value.includes(LIVE) || RUNS_KEYWORD.test(keyword(unmark(value)))
   if (letter === 'F') return value.includes(LIVE) || !EMPTY_CONFIGS.has(value)
   return splits.includes(value)
 }
@@ -61,7 +66,7 @@ function readCluster(
     if (!g.takesValue.has(letter)) continue
     const attached = letters.slice(i + 1)
     const value = attached === '' ? next : attached
-    return { runs: value !== undefined && valueRuns(g, letter, value, splits), tookNext: attached === '' }
+    return { runs: value === undefined || valueRuns(g, letter, value, splits), tookNext: attached === '' }
   }
   return { runs: false, tookNext: false }
 }
