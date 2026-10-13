@@ -93,11 +93,14 @@ export function findClauses(marked: readonly string[], from = 0): FindCall {
   return { clauses }
 }
 
-/** Long options that take a value, without the leading `--`. */
+/**
+ * Long options that take a value, without the leading `--`. `--sshlogin`/`-S` are left out on
+ * purpose: a sshlogin may name its own ssh command, so it is refused like any unknown option.
+ */
 const PARALLEL_LONG_VALUE: ReadonlySet<string> = new Set(
   [
     'arg-file arg-file-sep arg-sep delimiter colsep jobs max-procs max-args max-replace-args',
-    'max-lines max-chars sshlogin joblog results halt tagstring env workdir timeout delay memfree',
+    'max-lines max-chars joblog results halt tagstring env workdir timeout delay memfree',
     'load block tmpdir header retries nice extensionreplace basenamereplace dirnamereplace',
     'seqreplace slotreplace',
   ]
@@ -114,7 +117,7 @@ const PARALLEL_LONG_FLAG: ReadonlySet<string> = new Set(
     .split(' '),
 )
 
-const PARALLEL_SHORT_VALUE = new Set('adEIjPnNLsSC')
+const PARALLEL_SHORT_VALUE = new Set('adEIjPnNLsC')
 const PARALLEL_SHORT_FLAG = new Set('0kquvXmtprx')
 
 const LONG_ALIAS: ReadonlyMap<string, string> = new Map([
@@ -189,10 +192,13 @@ function readCluster(word: string, next: string | undefined): Read {
   return [options, 1]
 }
 
-/** Folds one read option into `opts`; false when its value is unreadable but decides structure. */
+/** GNU parallel runs the perl in a `{= … =}` string, in the command and in option values alike. */
+const runsPerl = (word: string): boolean => unmark(word).includes('{=')
+
+/** Folds one read option into `opts`; false when its value runs perl, or is unreadable but decides structure. */
 function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
   const structural = REPLACE_OPTIONS.has(name) || name === 'arg-sep' || name === 'arg-file-sep'
-  if (value !== undefined && structural && hidden(value)) return false
+  if (value !== undefined && (runsPerl(value) || (structural && hidden(value)))) return false
   const read = value === undefined ? '' : unmark(plain(value))
   if (name === 'q') opts.quote = true
   if (name === 'a') opts.argFile = true
@@ -231,7 +237,7 @@ function readParallelOptions(
 }
 
 const isSeparator = (opts: ParallelOptions, word: string): boolean =>
-  [opts.argSep, opts.argSep + '+', opts.argFileSep, opts.argFileSep + '+', '--'].includes(word)
+  [opts.argSep, opts.argSep + '+', opts.argFileSep, opts.argFileSep + '+'].includes(word)
 
 /** The input groups after the command; any group read from a file or holding an expansion is unread. */
 function readInputs(opts: ParallelOptions, marked: readonly string[], from: number): ParallelInputs {
@@ -251,8 +257,10 @@ function readInputs(opts: ParallelOptions, marked: readonly string[], from: numb
  * `SimpleCommand.splits`. It returns `unknownOption`, the word's index, for an option the guard does
  * not know (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), one it cannot
  * read, an expansion where an option may stand, or an option value the shell splits (`-j $N` may be
- * `1 git push`): the caller cannot tell what the command becomes. A literal `--` after the command
- * is read as an input separator too, which covers moreutils' `parallel`.
+ * `1 git push`): the caller cannot tell what the command becomes. It refuses a command word that
+ * runs perl (`{= … =}`) too, and a `--` among the command words: GNU passes it on as part of the
+ * command, but moreutils' `parallel` starts its inputs there, and the two run different commands.
+ * After a separator, `--` is a plain input.
  */
 export function parallelCall(
   marked: readonly string[],
@@ -264,6 +272,8 @@ export function parallelCall(
   const [opts, start] = options
   let end = start
   while (end < marked.length && !isSeparator(opts, marked[end] ?? '')) end++
+  const refused = marked.slice(start, end).findIndex(word => word === '--' || runsPerl(word))
+  if (refused >= 0) return { unknownOption: start + refused }
   return {
     command: marked.slice(start, end),
     quote: opts.quote,

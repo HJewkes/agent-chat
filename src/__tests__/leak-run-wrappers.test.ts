@@ -125,10 +125,10 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     expect(call.inputs).toEqual({ kind: 'literal', groups: [['git push --no-verify', 'ls']] })
   })
 
-  it('ends options at -- and reads a later -- as an input separator', () => {
-    const call = parallel('parallel -- -x git push -- --no-verify')
-    expect(call.command.map(unmark)).toEqual(['-x', 'git', 'push'])
-    expect(call.inputs).toEqual({ kind: 'literal', groups: [['--no-verify']] })
+  it('ends options at -- and reads a -- after a separator as an input', () => {
+    const call = parallel('parallel -- -x tool sub ::: -- y')
+    expect(call.command.map(unmark)).toEqual(['-x', 'tool', 'sub'])
+    expect(call.inputs).toEqual({ kind: 'literal', groups: [['--', 'y']] })
   })
 
   it('honours --arg-sep', () => {
@@ -167,6 +167,14 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     ['parallel -j$N main ::: x', 0],
     ['parallel --jobs=$N main ::: x', 0],
     ['parallel -k --tagstring $T main ::: x', 1],
+    ['parallel env -- tool sub ::: x', 1],
+    ['parallel -k tool sub -- --flag', 3],
+    ['parallel -S host tool ::: x', 0],
+    ['parallel -kS host tool ::: x', 0],
+    ["parallel --sshlogin 'wrap -c tool host' main ::: x", 0],
+    ['parallel --sshlogin=host main ::: x', 0],
+    ["parallel --tagstring '{= qx(tool) =}' main ::: x", 0],
+    ["parallel echo '{= qx(tool) =}' ::: x", 1],
   ])('refuses an option it cannot read: %s', (line, at) => {
     expect(parallelOf(line)).toEqual({ unknownOption: at })
   })
