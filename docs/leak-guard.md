@@ -908,12 +908,16 @@ variable stay allowed. Known false deny: a bare `ENV` word on a line that reache
 
 **git options and config writes.** `safe.directory` makes git trust the config and hooks of a
 repository another user owns, and git reads it only from protected config: system, global and the
-command line. `init.templateDir`, like `GIT_TEMPLATE_DIR`, makes `git init` and `git clone` copy a
-directory's hooks and `config` into the new repository, so a template can set `core.hooksPath` or a
-`!` alias. The guard denies with its `safeDirectory` or `templateDir` reason a git leading `-c` or
+command line. `init.templateDir`, like `GIT_TEMPLATE_DIR`, makes `git init` (and its old name
+`git init-db`) and `git clone` copy a directory's hooks and `config` into the new repository, so a
+template can set `core.hooksPath` or a `!` alias. These three builtins (`REPO_CREATORS` in
+`trust-inputs.ts`) are the only ones on git 2.53 that take `--template`. `git submodule add` and
+`update` clone through `git clone`, which reads a template only from config and env, both denied
+here. `git clone --config init.templateDir=<dir>` writes the key into the new repository after it
+is created, so it copies nothing and stays allowed. The guard denies with its `safeDirectory` or `templateDir` reason a git leading `-c` or
 `--config-env` on either key (any case), and a `git config` call (`trust-inputs.ts`, legacy or
 `set` grammar, after any `-C` or other leading option) that writes either key or renames a section
-into `safe` or `init`. `git init` and `git clone` deny `templateDir` for `--template=<dir>` or
+into `safe` or `init`. `git init`, `git init-db` and `git clone` deny `templateDir` for `--template=<dir>` or
 `--template <dir>` under any unique prefix (`--templ`), wherever the option sits before `--`.
 `git --exec-path=<dir>` denies `gitExecPath`. Reads and unsets
 (`git config --get-all safe.directory`, `git config --global --unset safe.directory /x`), an

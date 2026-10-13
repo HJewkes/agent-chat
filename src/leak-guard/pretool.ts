@@ -212,7 +212,7 @@ export const REASONS = {
   sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
   shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
   gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
-  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
@@ -838,9 +838,7 @@ function checkTrustWrites(run: GitRun, scope: Scope): string | undefined {
     return trust === 'option' ? REASONS.gitOptionUnmatched : trust && REASONS[trust]
   }
   // An unmatched option makes git itself refuse; an unread word naming a template stays the env gap TP-2444 accepts.
-  return (sub === 'init' || sub === 'clone') && templateOption(sub, args) === true
-    ? REASONS.templateDir
-    : undefined
+  return sub !== undefined && templateOption(sub, args) === true ? REASONS.templateDir : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>
