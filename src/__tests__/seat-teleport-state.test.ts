@@ -6,7 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { readBootInbox, readLogSection } from '../agents/seats/boot-read.js'
-import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import type { ShepherdRow } from '../shepherd-client.js'
 import {
   nextTeleportNumber,
   renderTeleportState,

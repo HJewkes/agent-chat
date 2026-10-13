@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
-import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS } from '../burndown/shepherd.js'
-import { childEnv, describeExecFailure } from '../burndown/exec.js'
+import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS } from '../../shepherd-client.js'
+import { childEnv, describeExecFailure } from '../../exec.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { ParkTarget } from './park.js'
 
