@@ -53,7 +53,8 @@ export interface Observation {
   diff?: { reviewable: boolean; reason: string }
   /**
    * CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns
-   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before.
+   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before. CC-1023: a
+   * silent exit's adopted PR adds its own files, and an unreadable PR read reads as unreadable.
    */
   owned?: { outside: string[]; adjudicated?: Adjudication } | 'unreadable'
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
@@ -269,7 +270,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (handsOff)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport }, obs.shepherd?.row)
   const silent = report === undefined || report.status === 'unknown'
-  const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
+  const adopted = silent ? adoptExited(claim, obs, lastReport) : undefined
   if (adopted !== undefined) return adopted
   if (obs.diff?.reviewable === true) {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
@@ -373,16 +374,17 @@ function amended(claim: Claim, obs: Observation, files: string[], resume: Resume
  * CC-673: adopt what a silent exit left. An open PR goes to Shepherd; commits ahead get one
  * resume successor per claim. An unreadable read waits a tick, under the phase timeout, rather
  * than move on a guess. Nothing here releases the claim; undefined falls through to review or a stall.
+ * CC-1023: the PR is fenced by its owns first, read from the PR's own files, since the worktree may hold none of them.
  */
-function adoptExited(
-  claim: Claim,
-  work: Observation['exitedWork'],
-  lastReport: string | undefined,
-): Action[] | undefined {
+function adoptExited(claim: Claim, obs: Observation, lastReport: string | undefined): Action[] | undefined {
+  const work = obs.exitedWork
   if (work === undefined) return undefined
   if (work === 'unreadable') return []
   if (work.openPr !== null)
-    return handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+    return (
+      fenced(claim, obs, afterWorker) ??
+      handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+    )
   if (work.ahead > 0 && claim.resumed !== true)
     return successor(claim, { kind: 'resume', ahead: work.ahead }, { resumed: true, lastReport })
   return undefined

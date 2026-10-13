@@ -18,7 +18,7 @@ import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
-import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
+import { adoptSeatOf, changedFiles as prChangedFiles, diskAdoptPorts } from './pr-adopt-ports.js'
 import { claimPrReader } from './pr-state.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
@@ -451,6 +451,15 @@ function adoptPrs(
   }
 }
 
+/** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
+const prFilesReader =
+  (exec: Runner) =>
+  (pr: string): string[] | undefined => {
+    const target = shepherdTarget(pr)
+    const files = target === undefined ? undefined : prChangedFiles(target, exec)
+    return files?.flatMap(f => (f.previousPath === undefined ? [f.path] : [f.path, f.previousPath]))
+  }
+
 /** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
 function logReasons(
   autonomyRoot: string,
@@ -595,6 +604,7 @@ async function decide(
       shepherdRows: shepherd,
       landed: target => shepherdLanded(target, opts.exec ?? run),
       exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+      prFiles: prFilesReader(opts.exec ?? run),
       prState: claimPrReader(opts.exec ?? run),
     }),
   )

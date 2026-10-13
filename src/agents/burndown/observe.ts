@@ -73,6 +73,8 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-1023: the files of a silent exit's adopted PR, undefined when GitHub could not tell; absent reads nothing. */
+  prFiles?: (pr: string) => string[] | undefined
   /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
   prState?: (claim: Claim) => ClaimPr | undefined
   /**
@@ -270,7 +272,7 @@ async function observeClaim(
     obs.owned = ownedRead(claim, deps, adjudicate, obs.report)
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-    return withExitedWork(obs, claim.worktree, deps)
+    return withAdoptedPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
   }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
@@ -284,9 +286,37 @@ function ownedRead(
 ): NonNullable<Observation['owned']> {
   const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
   if (files === undefined) return 'unreadable'
-  const outside = outsideOwns(files, claim.owns ?? [])
+  return judged(claim, outsideOwns(files, claim.owns ?? []), adjudicate, report)
+}
+
+function judged(
+  claim: Claim,
+  outside: string[],
+  adjudicate: Adjudicator | undefined,
+  report: Report | undefined,
+): NonNullable<Observation['owned']> {
   if (outside.length === 0 || adjudicate === undefined) return { outside }
   return { outside, adjudicated: adjudicate(claim, outside, report) }
+}
+
+/**
+ * CC-1023: a silent exit's open PR carries what was pushed, which a worktree reset to its base no longer shows, so
+ * the owns read adds the PR's own files. Only for a claim with owns, so a claim that owns nothing reads no PR.
+ */
+function withAdoptedPrOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const { owned, exitedWork } = obs
+  if (typeof owned !== 'object' || typeof exitedWork !== 'object' || exitedWork.openPr === null) return obs
+  if (deps.prFiles === undefined) return obs
+  const files = deps.prFiles(exitedWork.openPr)
+  if (files === undefined) return { ...obs, owned: 'unreadable' }
+  const added = outsideOwns(files, claim.owns ?? []).filter(file => !owned.outside.includes(file))
+  if (added.length === 0) return obs
+  return { ...obs, owned: judged(claim, [...owned.outside, ...added], adjudicate, obs.report) }
 }
 
 /** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */

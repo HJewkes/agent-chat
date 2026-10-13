@@ -200,6 +200,104 @@ describe('observe reads exited work only for a silent exit', () => {
   })
 })
 
+describe('an adopted PR is fenced by its owns (CC-1023)', () => {
+  const owning = (patch: Partial<Claim> = {}): Claim => claim({ owns: ['src/a.ts'], ...patch })
+  const level = { reviewable: false, reason: 'nothing committed past base' }
+  const adopted = (owned: Observation['owned']): Observation => ({
+    ...silentExit({ openPr: PR, ahead: 0 }, level),
+    owned,
+  })
+
+  it('stalls a silent exit whose PR touches a file outside owns, registering and spawning nothing', () => {
+    const { actions, after } = step(owning(), adopted({ outside: ['src/other/x.ts'] }))
+
+    expect(kinds(actions)).not.toContain('register')
+    expect(kinds(actions)).not.toContain('spawn')
+    expect(after).toEqual([expect.objectContaining({ phase: 'implementing', stallCode: 'outside-owns' })])
+  })
+
+  it('hands a silent exit whose PR stays inside owns to Shepherd', () => {
+    const { actions, after } = step(owning(), adopted({ outside: [] }))
+
+    expect(kinds(actions)).toContain('register')
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+  })
+
+  it('waits a tick when the owns read is unreadable', () => {
+    expect(step(owning(), adopted('unreadable')).actions).toEqual([])
+  })
+
+  it('clears the stall and hands off on the tick the PR drops the outside file', () => {
+    const [stalled] = step(owning(), adopted({ outside: ['src/other/x.ts'] })).after
+
+    const { actions, after } = step(stalled as Claim, adopted({ outside: [] }))
+
+    expect(actions.filter(a => a.kind === 'register')).toHaveLength(1)
+    expect(after).toEqual([
+      expect.objectContaining({
+        phase: 'shepherding',
+        pr: PR,
+        stallCode: undefined,
+        stalledReason: undefined,
+      }),
+    ])
+  })
+
+  describe('observe', () => {
+    let dir: string
+    beforeEach(() => {
+      dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-adopted-')))
+    })
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+    const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+    const levelDeps = (over: Partial<ObserveDeps>): ObserveDeps => ({
+      root: '/active-work',
+      inboxSince: async () => [],
+      finalText: () => undefined,
+      diff: () => level,
+      changedFiles: () => [],
+      exitedWork: () => ({ openPr: PR, ahead: 0 }),
+      ...over,
+    })
+    const observed = async (c: Claim, deps: ObserveDeps): Promise<Observation> =>
+      (await observe([c], { agents: [row] }, deps)).observations.get(claimKey(c)) ?? {}
+
+    it('reads the PR files of a level worktree, so its outside file stalls the claim', async () => {
+      const c = owning({ worktree: dir })
+
+      const obs = await observed(c, levelDeps({ prFiles: () => ['src/a.ts', 'src/other/x.ts'] }))
+
+      expect(obs.owned).toEqual({ outside: ['src/other/x.ts'] })
+      expect(kinds(step(c, obs).actions)).not.toContain('register')
+      expect(step(c, obs).after).toEqual([expect.objectContaining({ stallCode: 'outside-owns' })])
+    })
+
+    it('reads the owns as unreadable when the PR files cannot be read', async () => {
+      const c = owning({ worktree: dir })
+
+      const obs = await observed(c, levelDeps({ prFiles: () => undefined }))
+
+      expect(obs.owned).toBe('unreadable')
+      expect(step(c, obs).actions).toEqual([])
+    })
+
+    it.each([
+      ['a claim with no owns', [], undefined],
+      ['a worker that reported a status', ['src/a.ts'], 'Status: DONE'],
+    ])('never reads the PR files for %s', async (_, owns, text) => {
+      let reads = 0
+
+      await observed(
+        claim({ owns, worktree: dir }),
+        levelDeps({ finalText: () => text, prFiles: () => ((reads += 1), []) }),
+      )
+
+      expect(reads).toBe(0)
+    })
+  })
+})
+
 describe('readExitedWork', () => {
   const runner =
     (gh: RunResult) =>
