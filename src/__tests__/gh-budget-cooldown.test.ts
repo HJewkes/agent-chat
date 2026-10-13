@@ -13,7 +13,9 @@ import {
   type BudgetPaths,
   type Hit,
 } from '../gh-budget/state.js'
-import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
+import { shimCallLine } from '../gh-shim/call-log.js'
+import { callShape } from '../gh-shim/call-shape.js'
+import { GH_BUDGET_URL_ENV, hitOf } from '../gh-shim/rate-limit.js'
 import { ghWrite, type GhResult, type ThrottleDeps } from '../gh-write/throttle.js'
 
 /**
@@ -68,6 +70,30 @@ describe('cooldown length', () => {
     const old = { until: NOW - MAX_SECONDARY_MS - 1, class: 'secondary' as const, strikes: 3 }
 
     expect(nextEntry(old, secondary(), NOW)).toEqual({ until: NOW + 60_000, class: 'secondary', strikes: 0 })
+  })
+})
+
+describe('the hit a refused call records', () => {
+  const shape = callShape(['api', 'repos/acme/widgets/issues/7'])!
+  const refused = (stdout: string, stderr: string) =>
+    hitOf(
+      shimCallLine('agent-one', { ...shape, include: stdout !== '' }, { exitCode: 1, stdout, stderr, ms: 1 }),
+    )
+
+  it('reads "API rate limit exceeded" without headers as secondary, since both limits say it', () => {
+    expect(refused('', 'gh: API rate limit exceeded for user ID 1. (HTTP 403)\n')?.class).toBe('secondary')
+  })
+
+  it('reads a remaining 0 header as primary, with its reset', () => {
+    const reset = Math.floor(NOW / 1000) + 900
+    const stdout = `HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: ${reset}\r\n\r\n{}`
+
+    expect(refused(stdout, 'gh: API rate limit exceeded for user ID 1. (HTTP 403)\n')).toEqual({
+      lane: 'rest',
+      class: 'primary',
+      retryAfterSeconds: undefined,
+      resetSeconds: reset,
+    })
   })
 })
 
@@ -139,22 +165,23 @@ describe('gh-write reading the shared cooldown', () => {
   }
 
   it('pauses an ambiguous refusal until the shared cooldown ends, never asking /rate_limit', async () => {
-    // The shim on gh-write's PATH records the refusal while gh runs, as the first call fails.
+    // The shim on gh-write's PATH records the refusal from the same stderr while gh runs.
+    const write = ['api', '-X', 'POST', 'repos/acme/widgets/issues/7/comments', '-f', 'body=hi']
     let recorded = false
     const shimRecords = async (now: number) => {
       if (recorded) return
       recorded = true
-      await recordHit(budgetPaths(env), secondary(240), { now: () => now, sleep: async () => {} })
+      const outcome = { exitCode: 1, stdout: '', stderr: AMBIGUOUS, ms: 1 }
+      const hit = hitOf(shimCallLine('agent-one', callShape(write)!, outcome, new Date(now)))
+      expect(hit).toBeDefined()
+      await recordHit(budgetPaths(env), hit!, { now: () => now, sleep: async () => {} })
     }
     const { deps, sleeps, calls } = harness([fail(AMBIGUOUS), ok()], shimRecords)
 
-    const result = await ghWrite(
-      ['api', '-X', 'POST', 'repos/acme/widgets/issues/7/comments', '-f', 'body=hi'],
-      deps,
-    )
+    const result = await ghWrite(write, deps)
 
     expect(result.code).toBe(0)
-    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(240_000)
+    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(60_000)
     expect(calls.filter(args => args.includes('rate_limit'))).toEqual([])
     expect(calls).toHaveLength(2)
   })

@@ -18,7 +18,9 @@ Two sources are merged, and the later end wins per lane:
 - **Observed.** The shim classifies every real-gh call it logs with `classify403`
   ([gh-calls](gh-calls.md)). A `secondary` or `primary` refusal on a call it answered or passed
   through records a cooldown. A 403 that names no limit (`unknown`) records nothing, since it may be a
-  permission error.
+  permission error. A hit is recorded as primary only when an `x-ratelimit-remaining: 0` header proves it.
+  "API rate limit exceeded" in stderr alone is what the secondary limit says too, so without that header
+  it is recorded as secondary.
 - **Gateway.** Shepherd serve's `shepherd.ghBudget` RPC, `POST http://127.0.0.1:7410/rpc/shepherd.ghBudget`
   (override with `AGENT_CHAT_GH_BUDGET_URL`). The expected answer is
   `{"ok": true, "data": {"cooldowns": [{"lane": "rest", "until": <epoch ms or ISO>, "class": "secondary"}]}}`.
@@ -44,9 +46,9 @@ Two sources are merged, and the later end wins per lane:
   `used = limit`, and `reset` at the cooldown's end (`resources.core` and `rate` for REST,
   `resources.graphql` for GraphQL). Any other flags pass through to the real endpoint.
 - **gh-write:** before each attempt it waits until both its spacing stamp and the lane's cooldown have
-  passed. Its `coreRemaining()` reads this state rather than `/rate_limit`. It answers 0 only while a
-  primary limit cools the REST lane, so an ambiguous "API rate limit exceeded" gives up then and
-  pauses otherwise.
+  passed. It reads the cooldown before taking its lock, so a slow gateway never holds the lock. Its
+  `coreRemaining()` reads this state rather than `/rate_limit`. It answers 0 only while a proven primary
+  limit cools the REST lane, so an ambiguous "API rate limit exceeded" gives up then and pauses otherwise.
 
 `AGENT_CHAT_GH_SHIM_OFF=1` turns off the shim's gate along with its answers. Refusals are still
 recorded.

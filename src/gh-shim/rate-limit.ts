@@ -111,11 +111,21 @@ export async function currentCooldowns(env: NodeJS.ProcessEnv, now: number): Pro
   return active
 }
 
-/** The cooldown a refused call starts, or undefined for a call no rate limit refused. */
+/**
+ * The cooldown a refused call starts, or undefined for a call no rate limit refused.
+ * "API rate limit exceeded" in stderr is also what the secondary limit says, so a hit counts as
+ * primary only on a `remaining 0` header; gh-write gives up on a primary hit rather than pausing.
+ */
 export function hitOf(line: GhCallLine): Hit | undefined {
   const kind = classify403(line)
   if (kind !== 'secondary' && kind !== 'primary') return undefined
-  return { lane: line.api, class: kind, retryAfterSeconds: line.retryAfter, resetSeconds: line.reset }
+  const proven = kind === 'primary' && line.remaining === 0
+  return {
+    lane: line.api,
+    class: proven ? 'primary' : 'secondary',
+    retryAfterSeconds: line.retryAfter,
+    resetSeconds: line.reset,
+  }
 }
 
 const READ_SUBCOMMANDS = new Set(['view', 'list', 'status', 'checks', 'diff', 'watch'])

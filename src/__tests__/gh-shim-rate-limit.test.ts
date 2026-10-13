@@ -5,8 +5,10 @@ import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { stateCoreRemaining, stateCooldownEnd } from '../cli/gh-write.js'
 import { writeGhShim } from '../gh-shim/install.js'
 import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
+import { ghWrite, type GhResult } from '../gh-write/throttle.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -24,8 +26,14 @@ const CLOSED_GATEWAY = 'http://127.0.0.1:1/rpc/shepherd.ghBudget'
 const FAKE_GH = `#!${process.execPath}
 const fs = require('node:fs')
 const args = process.argv.slice(2)
-fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + '\\n')
-const fixture = JSON.parse(fs.readFileSync(process.env.FAKE_GH_FIXTURES, 'utf8'))[args.join(' ')]
+const line = JSON.stringify(args)
+const seen = fs.existsSync(process.env.FAKE_GH_LOG)
+  ? fs.readFileSync(process.env.FAKE_GH_LOG, 'utf8').split('\\n').filter(l => l === line).length
+  : 0
+fs.appendFileSync(process.env.FAKE_GH_LOG, line + '\\n')
+const entry = JSON.parse(fs.readFileSync(process.env.FAKE_GH_FIXTURES, 'utf8'))[args.join(' ')]
+// A list answers the nth call with its nth fixture, repeating the last.
+const fixture = Array.isArray(entry) ? entry[Math.min(seen, entry.length - 1)] : entry
 if (fixture === undefined) { process.stderr.write('no fixture: ' + args.join(' ') + '\\n'); process.exit(9) }
 process.stdout.write(fixture.stdout ?? '')
 process.stderr.write(fixture.stderr ?? '')
@@ -54,7 +62,12 @@ const REAL_RATE_LIMIT = JSON.stringify({
   },
   rate: { limit: 5000, used: 0, remaining: 5000, reset: 1 },
 })
-const FIXTURES: Record<string, Fixture> = {
+const REVIEW_WRITE = ['api', '-X', 'POST', 'repos/acme/widgets/pulls/7/reviews', '-f', 'event=COMMENT']
+// The refusal policy.ts calls ambiguous: primary or secondary wording, with no -i headers to tell.
+const AMBIGUOUS_403: Fixture = { stderr: 'gh: API rate limit exceeded for user ID 1. (HTTP 403)\n', code: 1 }
+
+const FIXTURES: Record<string, Fixture | Fixture[]> = {
+  [REVIEW_WRITE.join(' ')]: [AMBIGUOUS_403, { stdout: '{"id":2}\n' }],
   [COMMENTS.join(' ')]: SECONDARY_403,
   [ISSUE.join(' ')]: { stdout: '{"number":7}\n' },
   [GRAPHQL.join(' ')]: { stdout: '{"data":{"viewer":{"login":"someone"}}}\n' },
@@ -199,5 +212,47 @@ describe('gh shim shared cooldown', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('{"number":7}\n')
     expect(realCalls()).toEqual([ISSUE])
+  })
+})
+
+describe('gh-write through the real shim', () => {
+  function runGhThroughShim(args: string[]): Promise<GhResult> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('gh', args, { cwd: dir, env })
+      const stdout: Buffer[] = []
+      const stderr: Buffer[] = []
+      child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+      child.on('error', reject)
+      child.on('close', code =>
+        resolve({ code: code ?? 1, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }),
+      )
+    })
+  }
+
+  it('pauses an ambiguous refusal the shim recorded and retries once the cooldown ends', async () => {
+    // Sleeps advance a virtual clock from real time, so the shim's real-time cooldown is waited out at once.
+    let clock = Date.now()
+    const sleeps: number[] = []
+
+    const result = await ghWrite(REVIEW_WRITE, {
+      now: () => clock,
+      sleep: async ms => {
+        sleeps.push(ms)
+        clock += ms
+      },
+      runGh: runGhThroughShim,
+      coreRemaining: stateCoreRemaining(env, () => clock),
+      cooldownEnd: stateCooldownEnd(env, () => clock),
+      notice: () => {},
+      lockDir: path.join(dir, 'gh-write.lock'),
+      stampPath: path.join(dir, 'gh-write.stamp.json'),
+      gapMs: 3000,
+    })
+
+    expect(result.code).toBe(0)
+    expect(result.stdout.toString()).toBe('{"id":2}\n')
+    expect(realCalls()).toEqual([REVIEW_WRITE, REVIEW_WRITE])
+    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(60_000)
   })
 })

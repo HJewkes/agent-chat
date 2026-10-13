@@ -28,7 +28,9 @@ export interface ThrottleDeps {
  */
 export async function ghWrite(args: string[], deps: ThrottleDeps): Promise<GhResult> {
   for (let attempt = 0; ;) {
-    const outcome = await withLock(deps, () => attemptWhenDue(args, attempt, deps))
+    // Read before locking: the gateway half may wait on a network answer.
+    const cooldownEnd = (await deps.cooldownEnd?.(args)) ?? 0
+    const outcome = await withLock(deps, () => attemptWhenDue(args, attempt, cooldownEnd, deps))
     if (outcome.kind === 'wait') {
       if (outcome.cooldown)
         deps.notice(`gh-write: GitHub rate-limit cooldown; waiting ${Math.round(outcome.ms / 1000)}s`)
@@ -51,8 +53,12 @@ type Outcome =
  * Nothing sleeps under the lock: a writer that is not yet due releases it and waits outside.
  * A write is due once both the spacing stamp and the shared cooldown have passed.
  */
-async function attemptWhenDue(args: string[], attempt: number, deps: ThrottleDeps): Promise<Outcome> {
-  const cooldownEnd = (await deps.cooldownEnd?.(args)) ?? 0
+async function attemptWhenDue(
+  args: string[],
+  attempt: number,
+  cooldownEnd: number,
+  deps: ThrottleDeps,
+): Promise<Outcome> {
   const notBefore = readNotBefore(deps.stampPath)
   const wait = Math.max(notBefore, cooldownEnd) - deps.now()
   if (wait > 0) return { kind: 'wait', ms: wait, cooldown: cooldownEnd > notBefore }
