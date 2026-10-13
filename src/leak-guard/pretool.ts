@@ -30,6 +30,8 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
+import { TRUST_ENV, type TrustEnv } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
   ghAliasReader,
@@ -199,6 +201,10 @@ export const REASONS = {
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
   xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
+  sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
+  shellStartupEnv: `leak-guard: this line sets or exports BASH_ENV, ENV or ZDOTDIR, which make bash, sh or zsh source a startup file the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
+  gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH, which makes git run its helper programs, hooks included, from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
+  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, which makes git init and clone copy hooks and config from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -212,6 +218,7 @@ const CHECKED_NAMES = new Set([
   ...OPTION_WRAPPERS,
   ...SHELLS,
   ...ENV_EDITS,
+  ...SSH_PROGRAMS,
   ...['function', 'eval', 'git', 'gh', 'agent-chat'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
@@ -1876,6 +1883,8 @@ function checkSimple(
       checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
     )
   }
+  if (SSH_PROGRAMS.has(name))
+    return sshRunsLocalProgram(name, marked, cmd.splits) ? REASONS.sshProgram : undefined
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
@@ -1976,7 +1985,7 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
+const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV, ...TRUST_ENV.keys()]
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -2004,7 +2013,31 @@ const EXT_ON = Symbol('ext-on')
 const EXT_LISTED = Symbol('ext-listed')
 // A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
 const NAME_HIDDEN = Symbol('name-hidden')
-type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN
+/** A use of a TRUST_ENV name other than a read or an unset (TP-2376): denied with its own reason. */
+interface TrustOn {
+  trust: TrustEnv
+}
+type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | TrustOn
+
+const TRUST_REFS = [...TRUST_ENV].map(([name, trust]) => ({
+  use: nameUse(name),
+  assign: nameAssign(name),
+  trust,
+}))
+const TRUST_REASONS: Readonly<Record<TrustEnv, string>> = {
+  shellStartup: REASONS.shellStartupEnv,
+  execPath: REASONS.gitExecPath,
+  templateDir: REASONS.templateDir,
+}
+
+/** The trust input a word sets by any use of its name but a read; `assignOnly` counts only an assigning `${NAME:=x}`. */
+function trustOn(text: string, assignOnly = false): TrustOn | undefined {
+  const ref = TRUST_REFS.find(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
+  return ref === undefined ? undefined : { trust: ref.trust }
+}
+
+/** A program-env name's event in a word: a trust input's own event, else null for a use the guard cannot read. */
+const nameEvent = (text: string, assignOnly = false): TrustOn | null => trustOn(text, assignOnly) ?? null
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
@@ -2166,7 +2199,9 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
   // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
   if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
-  if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
+  if (role === 'data') return liveExpandsProgramEnv(word) ? nameEvent(text, true) : undefined
+  const trust = trustOn(text)
+  if (trust !== undefined) return trust
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
   if (plain === 'none') return undefined
   if (plain !== undefined) return plain
@@ -2219,7 +2254,10 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
   const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
   return {
-    events: [...assigned, ...used].map(() => null),
+    events: [
+      ...assigned.map(word => nameEvent(unmark(word))),
+      ...used.map(word => nameEvent(unmark(word), data)),
+    ],
     scan: [...unwrapped.assigns.map(scanWord), ...unwrapped.words.map(unmark)],
   }
 }
@@ -2260,6 +2298,7 @@ function checkProgramEnvLine(
     if (event === null) return REASONS.programEnv
     if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
     if (event === NAME_HIDDEN) continue
+    if (typeof event === 'object') return TRUST_REASONS[event.trust]
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
