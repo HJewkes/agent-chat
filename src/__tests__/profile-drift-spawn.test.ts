@@ -5,9 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import { Supervisor } from '../agents/supervisor.js'
+import { Supervisor, type SpawnOutcome } from '../agents/supervisor.js'
 import { ProfileBaseline, type ProfileDriftMode } from '../agents/profile-baseline.js'
-import type { SpawnOutcome } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /** CC-1094: a profile file rewritten after broker start is flagged, or refused, on an agent spawn. */
