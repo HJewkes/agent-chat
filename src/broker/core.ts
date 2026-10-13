@@ -15,6 +15,7 @@ import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
+import { StrandedReports } from './stranded-reports.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
@@ -108,7 +109,7 @@ export class BrokerCore<C = Conn> {
   private readonly reports: ReportBatcher<C>
   private readonly isSeat: (name: string) => boolean
   /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
-  private readonly stranded = new Map<string, DeliveredMessage[]>()
+  private readonly stranded = new StrandedReports()
   /** CC-1140: the log id a non-seat name went dark at, read as it registers, until its missed answers are pushed. */
   private readonly missedSince = new Map<string, number>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
@@ -391,7 +392,7 @@ export class BrokerCore<C = Conn> {
   }
 
   private strand(name: string, unpushed: DeliveredMessage[]): void {
-    if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
+    this.stranded.add(name, unpushed, Date.now())
   }
 
   /**
@@ -409,10 +410,10 @@ export class BrokerCore<C = Conn> {
    */
   deliverStranded(name: string): void {
     this.deliverMissedAnswers(name)
-    const unpushed = this.stranded.get(name)
     const conn = this.registry.connFor(name)
-    if (unpushed === undefined || conn === undefined) return
-    this.stranded.delete(name)
+    if (conn === undefined) return
+    const unpushed = this.stranded.take(name, Date.now())
+    if (unpushed.length === 0) return
     this.reports.resend(conn, unpushed)
     logEvent('stranded_reports_delivered', { name, count: unpushed.length })
   }
