@@ -119,6 +119,20 @@
       "owner": "owner",
       "coordinatorSideDoor": false,
       "external": true
+    },
+    {
+      "path": "src/cli/verbs/port-agent.ts",
+      "kind": "spawn-frame",
+      "why": "CC-1194: `agent-chat port spawn --frame-stdin`, the out-of-process burndown tick's spawn port. The frame must parse as the tick's own SpawnFrame, strictly: `spawnedAs` only `burndown`, a non-blank `task`, headless, and no field the tick never sends. Its connection is unregistered, so the broker reads `spawnedAs` as attribution for the human at the 0600 socket, as it already does for `agent spawn --spawned-as`; it grants nothing beyond that spawn's checks.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
+    },
+    {
+      "path": "src/cli/verbs/port-agent.ts",
+      "kind": "resume-frame",
+      "why": "CC-1194: `agent-chat port resume --message-stdin`, the out-of-process tick's resume port; headless only.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
     }
   ]
 }

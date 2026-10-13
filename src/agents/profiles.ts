@@ -81,8 +81,9 @@ const HUMAN_ONLY_CLI_DENY = [
  * which the broker counts as the human, so a worker with Bash could spawn or
  * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
  * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
+ * CC-1194: the `port` verbs spawn, resume and retire over the same connection.
  */
-const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)']
+const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)']
 
 /**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without
