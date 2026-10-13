@@ -21,6 +21,7 @@ export const EVENT_KINDS = [
   'leak',
   'released',
   'brake',
+  'stale',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -89,6 +90,8 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
     events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
+  if (after.stale !== undefined)
+    events.push(event('stale', `${after.stale.class}: proposed ${after.stale.proposed}`))
   return events
 }
 
@@ -116,6 +119,7 @@ function stillHolds(claim: Claim, entry: string): boolean {
   if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
   if (kind === 'stalled-after-claim') return claim.finding !== undefined && sameCode(code, claim.finding.code)
   if (kind === 'leak') return claim.leak !== undefined
+  if (kind === 'stale') return claim.stale !== undefined
   // A release or brake is told from the ledger diff, so a claim never holds it.
   if (kind === 'released' || kind === 'brake') return false
   // ready-to-merge stays on a done claim: `merged` reads it there.

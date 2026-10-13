@@ -19,7 +19,6 @@ export type SeamResult = { ok: true; waitedMs: number } | { ok: false; why: stri
 export function seamBlockers(blockers: RestartBlockers, procs: InflightProcs): string[] {
   const lines: string[] = []
   if (blockers.spawning.length > 0) lines.push(`mid-spawn: ${blockers.spawning.join(', ')}`)
-  for (const ask of blockers.asks) lines.push(`unanswered ask from ${ask.from}: "${ask.excerpt}"`)
   if (procs.pushes.length > 0) lines.push(`a git push is running (pid ${procs.pushes.join(',')})`)
   if (procs.merges.length > 0) lines.push(`a merge is running (pid ${procs.merges.join(',')})`)
   return lines
@@ -28,8 +27,8 @@ export function seamBlockers(blockers: RestartBlockers, procs: InflightProcs): s
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 async function poll(wait: SeamWait, at: number): Promise<string[]> {
-  const [agents, queue, rows] = await Promise.all([wait.source.agents(), wait.source.queue(), wait.procs()])
-  return seamBlockers(restartBlockers(agents, queue, at), inflight(rows))
+  const [agents, rows] = await Promise.all([wait.source.agents(), wait.procs()])
+  return seamBlockers(restartBlockers(agents, at), inflight(rows))
 }
 
 /**

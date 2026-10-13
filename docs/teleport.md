@@ -305,7 +305,12 @@ platform or its announced surfaces cannot run, and a cwd or config dir that is
 not an absolute, normalised path strictly under the home directory (shared
 across this deployment's machines) or that sits in a credential directory. It
 then sends `host_probe` with the cwd, config dir and surface, and refuses with
-the launcher's own reason (a missing path) or "did not answer within 10s". At
+the launcher's own reason (a missing path) or "did not answer within 10s". The
+launcher also refuses, at the probe and again at launch, a cwd its account's
+`.claude.json` (the config dir's, or `~/.claude.json`) can be read and does not
+trust, since the successor would sit on the workspace trust prompt with nobody
+to answer it (CC-1081). It never seeds trust: the owner runs `claude` there once
+and accepts it. An unreadable config launches as before. At
 the end of the countdown the paths are checked again, the successor's row is
 recorded here, and its launch (with that cwd and config dir) goes out as
 `host_launch`. A refusal, a timeout or a launcher disconnect releases the

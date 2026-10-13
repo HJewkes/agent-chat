@@ -2,20 +2,25 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentIdentity } from '../../protocol.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findTranscript } from '../transcript.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from '../transcript-spend.js'
+import { githubRepoOf } from '../spawn-provenance.js'
 import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
+import { readPrFiles, type HeldOwns } from './collision.js'
 import { run, type Runner } from './exec.js'
 import { readExitedWork, type ExitedWork } from './exited-adopt.js'
-import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
+import { AGENT_PHASES, sameClaim, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import type { ClaimPr } from './pr-state.js'
 import { readProgress, type Progress } from './progress.js'
 import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { adjudicateOutside, type Adjudication, type OtherPr } from './owns-adjudicate.js'
 import { outsideOwns } from './owns-fence.js'
-import { parseReport, readSlices } from './report.js'
+import { prFactsReader, type PrFacts } from './pr-facts.js'
+import { parseReport, readSlices, type Report } from './report.js'
 import { sumSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
@@ -70,7 +75,18 @@ export interface ObserveDeps {
   exitedWork?: (worktree: string) => ExitedWork | undefined
   /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
   prState?: (claim: Claim) => ClaimPr | undefined
+  /**
+   * CC-1150 f: a checkout's open PRs, each with a lazy file list, for adjudicating an outside-owns PR; undefined
+   * when unreadable. Absent, the tick's readers serve a caller that passes `shepherdRows`, and others adjudicate nothing.
+   */
+  openPrs?: (checkout: string) => readonly CheckoutPr[] | undefined
 }
+
+export interface CheckoutPr extends OtherPr {
+  branch: string
+}
+
+type Adjudicator = (claim: Claim, outside: string[], report: Report | undefined) => Adjudication
 
 export interface Observed {
   observations: Map<string, Observation>
@@ -141,8 +157,10 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   }
   // Only a caller that passes its own reader, as the tick does, has implementing claims looked up in Shepherd.
   const prRuns = deps.shepherdRows === undefined ? undefined : once
+  const openPrs = deps.openPrs ?? (deps.shepherdRows === undefined ? undefined : tickOpenPrs())
+  const adjudicate = openPrs === undefined ? undefined : adjudicator(claims, openPrs)
   for (const claim of claims) {
-    const result = await observeClaim(claim, roster, once)
+    const result = await observeClaim(claim, roster, once, adjudicate)
     if (typeof result === 'string') {
       const settled = mergedOnGitHub(claim, deps.prState)
       if (settled === undefined) unread.push(`${claimKey(claim)}: ${result}`)
@@ -214,7 +232,12 @@ export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRo
   return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
-async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
+async function observeClaim(
+  claim: Claim,
+  roster: Roster,
+  deps: ObserveDeps,
+  adjudicate?: Adjudicator,
+): Promise<Observation | string> {
   const row = rowNamed(roster, claim.agentName)
   if (row === undefined && claim.agentName !== undefined && roster.partial !== undefined)
     return `no live row for ${claim.agentName} and ${roster.partial}`
@@ -243,7 +266,8 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     return obs
   }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0) obs.owned = ownedRead(claim, deps)
+  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0)
+    obs.owned = ownedRead(claim, deps, adjudicate, obs.report)
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
     return withExitedWork(obs, claim.worktree, deps)
@@ -252,16 +276,92 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   return obs
 }
 
-function ownedRead(claim: Claim, deps: ObserveDeps): NonNullable<Observation['owned']> {
+function ownedRead(
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+  report: Report | undefined,
+): NonNullable<Observation['owned']> {
   const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  return files === undefined ? 'unreadable' : { outside: outsideOwns(files, claim.owns ?? []) }
+  if (files === undefined) return 'unreadable'
+  const outside = outsideOwns(files, claim.owns ?? [])
+  if (outside.length === 0 || adjudicate === undefined) return { outside }
+  return { outside, adjudicated: adjudicate(claim, outside, report) }
 }
 
-/** Committed changes only: the PR carries what was pushed, not what the worktree still holds. */
+/** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */
+const checkoutOf = (claim: Claim): string | undefined =>
+  claim.worktree === undefined ? claim.repo : path.dirname(path.dirname(claim.worktree))
+
+/** The changesets Version Packages PR, which collision skips too: it only deletes changesets. */
+const RELEASE_BRANCH = 'changeset-release/'
+
+/** CC-1150 f: the context each outside-owns PR is judged in: the other held claims and the other open PRs. */
+function adjudicator(claims: Claim[], openPrs: NonNullable<ObserveDeps['openPrs']>): Adjudicator {
+  return (claim, outside, report) => {
+    const checkout = checkoutOf(claim)
+    const others = (): readonly OtherPr[] | undefined =>
+      checkout === undefined ? undefined : openPrs(checkout)?.filter(notOwn(claim, report))
+    return adjudicateOutside(outside, { held: heldOwns(claims, claim, checkout), openPrs: others })
+  }
+}
+
+/** As collision's `heldOwns`: dispatched claims other than this one, in its repo; a queued claim holds nothing yet. */
+function heldOwns(claims: Claim[], claim: Claim, checkout: string | undefined): HeldOwns[] {
+  return claims.flatMap(c => {
+    const repo = checkoutOf(c)
+    const owns = c.owns ?? []
+    if (c.phase === 'queued' || sameClaim(c, claim) || owns.length === 0 || repo === undefined) return []
+    if (repo !== checkout) return []
+    return [{ holder: `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`, repo, owns }]
+  })
+}
+
+/** The claim's own PR, by number or by one of its agents' branches, and the Version Packages PR are no collision. */
+function notOwn(claim: Claim, report: Report | undefined): (pr: CheckoutPr) => boolean {
+  const ownPr = shepherdTarget(report?.pr ?? claim.pr)?.pr
+  const names = [...(claim.spawned ?? []), ...(claim.agentName === undefined ? [] : [claim.agentName])]
+  const ownBranches = new Set(names.map(name => `${BRANCH_PREFIX}${name}`))
+  return pr => pr.number !== ownPr && !ownBranches.has(pr.branch) && !pr.branch.startsWith(RELEASE_BRANCH)
+}
+
+/**
+ * The tick's open-PR reader: CC-1157's one ETag read per repo, then each PR's files only when asked. A stale or
+ * truncated list reads as unreadable, since a PR missing from it may be the one that collides.
+ */
+function tickOpenPrs(exec: Runner = run): (checkout: string) => readonly CheckoutPr[] | undefined {
+  const facts = prFactsReader({ exec })
+  const lists = new Map<string, readonly CheckoutPr[] | undefined>()
+  return checkout => {
+    if (!lists.has(checkout)) lists.set(checkout, checkoutPrs(checkout, facts, exec))
+    return lists.get(checkout)
+  }
+}
+
+export function checkoutPrs(
+  checkout: string,
+  facts: (repo: string) => PrFacts | undefined,
+  exec: Runner,
+): CheckoutPr[] | undefined {
+  const origin = exec(GIT_BIN, ['-C', checkout, 'remote', 'get-url', 'origin'])
+  const repo = origin.status === 0 ? githubRepoOf(origin.stdout) : undefined
+  const read = repo === undefined ? undefined : facts(repo)
+  if (read === undefined || read.stale || !read.complete) return undefined
+  return read.prs.map(pr => ({
+    number: pr.number,
+    branch: pr.branch,
+    files: memo(() => readPrFiles(checkout, pr.number, exec)),
+  }))
+}
+
+/**
+ * Committed changes only: the PR carries what was pushed, not what the worktree still holds. `--no-renames` lists a
+ * moved file's old path too, so moving a protected file out of its tree still reads as touching it (CC-1150 f).
+ */
 export function changedFiles(cwd: string, exec: Runner = run): string[] | undefined {
   const base = resolveBaseRef(cwd, exec)
   if (base === undefined) return undefined
-  const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
+  const result = exec(GIT_BIN, ['diff', '--no-renames', '--name-only', `${base}...HEAD`], cwd)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
 
@@ -366,6 +466,7 @@ export function worktreesUnder(repo: string, exec: Runner = run): string[] | und
 /**
  * Counts against the tick's ceilings; an unreadable repo counts as full, so the tick cuts nothing there.
  * `prefixes` is every agent-name prefix the tick spawns under: `bd` plus each enabled seat's (CC-205).
+ * Reviewer trees sit in the broker's separate reviewer pool (CC-1040), so `total` counts implementer trees only.
  */
 export function worktreeUse(
   names: string[] | undefined,
@@ -375,9 +476,17 @@ export function worktreeUse(
 ): WorktreeUse {
   const totalCeiling = Math.max(0, budget - config.reserveWorktrees)
   if (names === undefined)
-    return { total: totalCeiling, ours: 0, totalCeiling, oursCeiling: config.maxWorktreesPerRepo }
+    return {
+      total: totalCeiling,
+      ours: 0,
+      reviewers: 0,
+      totalCeiling,
+      oursCeiling: config.maxWorktreesPerRepo,
+    }
+  const reviewers = names.filter(isReviewerTreeName).length
   return {
-    total: names.length,
+    total: names.length - reviewers,
+    reviewers,
     ours: names.filter(n => prefixes.some(p => n.startsWith(`${p}-`))).length,
     totalCeiling,
     oursCeiling: config.maxWorktreesPerRepo,

@@ -6,7 +6,13 @@ import type { ClientMessage } from '../protocol.js'
 
 const argv = vi.hoisted(() => ({
   seen: undefined as boolean | undefined,
-  carried: undefined as { channels: string[]; effort?: 'high' } | undefined,
+  carried: undefined as { channels: string[]; effort?: 'high'; model?: string } | undefined,
+  observed: undefined as string | undefined,
+}))
+
+vi.mock('../agents/transcript.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../agents/transcript.js')>()),
+  observedModel: () => argv.observed,
 }))
 
 vi.mock('../broker/host-channels.js', async importOriginal => ({
@@ -53,6 +59,7 @@ describe('agent_teleport reports the Remote Control its own session was launched
   beforeEach(() => {
     argv.seen = undefined
     argv.carried = undefined
+    argv.observed = undefined
   })
 
   it('tells the broker it saw --remote-control in its Claude Code argv', async () => {
@@ -77,6 +84,7 @@ describe('agent_teleport reports the Remote Control its own session was launched
 describe('agent_teleport reports the launch flags its own session was launched with', () => {
   beforeEach(() => {
     argv.seen = undefined
+    argv.observed = undefined
   })
 
   it('sends what its argv shows as launchSeen', async () => {
@@ -86,6 +94,59 @@ describe('agent_teleport reports the launch flags its own session was launched w
 
   it('sends none when the argv cannot be read', async () => {
     argv.carried = undefined
+    expect(await teleportFrame({})).toEqual(frame)
+  })
+})
+
+/** CC-1166: a broker on another host cannot read this session's transcript, so the model rides on launchSeen. */
+describe('agent_teleport reports the model its own session runs on', () => {
+  const sessionEnv = process.env.CLAUDE_CODE_SESSION_ID
+
+  beforeEach(() => {
+    argv.seen = undefined
+    argv.carried = undefined
+    argv.observed = undefined
+    process.env.CLAUDE_CODE_SESSION_ID = 'session-1'
+    return () => {
+      if (sessionEnv === undefined) delete process.env.CLAUDE_CODE_SESSION_ID
+      else process.env.CLAUDE_CODE_SESSION_ID = sessionEnv
+    }
+  })
+
+  it('sends the transcript model when the argv names none', async () => {
+    argv.carried = { channels: [] }
+    argv.observed = 'claude-sonnet-5-5'
+    expect(await teleportFrame({})).toEqual({
+      ...frame,
+      launchSeen: { channels: [], model: 'claude-sonnet-5-5' },
+    })
+  })
+
+  it('falls back to the argv --model when the transcript shows none', async () => {
+    argv.carried = { channels: [], model: 'sonnet' }
+    expect(await teleportFrame({})).toEqual({ ...frame, launchSeen: { channels: [], model: 'sonnet' } })
+  })
+
+  it('prefers the transcript model over the argv --model, since /model changes it', async () => {
+    argv.carried = { channels: [], model: 'sonnet' }
+    argv.observed = 'claude-opus-5-5'
+    expect(await teleportFrame({})).toEqual({
+      ...frame,
+      launchSeen: { channels: [], model: 'claude-opus-5-5' },
+    })
+  })
+
+  it('still sends the transcript model when the argv cannot be read', async () => {
+    argv.observed = 'claude-sonnet-5-5'
+    expect(await teleportFrame({})).toEqual({
+      ...frame,
+      launchSeen: { channels: [], model: 'claude-sonnet-5-5' },
+    })
+  })
+
+  it('reads no transcript without a session id', async () => {
+    delete process.env.CLAUDE_CODE_SESSION_ID
+    argv.observed = 'claude-sonnet-5-5'
     expect(await teleportFrame({})).toEqual(frame)
   })
 })

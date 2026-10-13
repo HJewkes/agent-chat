@@ -56,6 +56,7 @@ import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
+import { jobKickRequest, type JobKick } from './job-kick.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -283,6 +284,8 @@ export class SocketServer {
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
   private readonly remoteSpawners = new Map<string, Conn>()
+  /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
+  private jobKick: JobKick | undefined
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -307,6 +310,22 @@ export class SocketServer {
     this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
+  }
+
+  attachJobKick(port: JobKick): void {
+    this.jobKick = port
+  }
+
+  /**
+   * CC-1151, Class 4: accepted from any connection, since it grants nothing the timers do not already do. The
+   * request is rebuilt from `job` and `seat` alone, so nothing else the caller put on the frame reaches the job.
+   */
+  private handleJobKick(conn: Conn, msg: Extract<ClientMessage, { t: 'job_kick' }>): void {
+    const request = jobKickRequest(msg)
+    if (typeof request === 'string') return reply(conn, { t: 'job_kick_result', ok: false, detail: request })
+    if (this.jobKick === undefined)
+      return reply(conn, { t: 'job_kick_result', ok: false, detail: 'this broker runs no kicked jobs' })
+    reply(conn, { t: 'job_kick_result', ...this.jobKick(request) })
   }
 
   /** Hook rows open at boot belong to connections the previous broker held; nothing can answer them now. */
@@ -1871,6 +1890,8 @@ export class SocketServer {
         return
       case 'hosts':
         return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
+      case 'job_kick':
+        return this.handleJobKick(conn, msg)
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return

@@ -123,6 +123,8 @@ export interface BrokerClientOptions {
    * it on the next connect attempt would make "stop" mean nothing.
    */
   autoStart?: boolean
+  /** CC-1059: the broker asked the agent `agentId` to end, because it was retired on another host. */
+  onEndSelf?: (agentId: string, reason: string) => void
 }
 
 /**
@@ -165,6 +167,7 @@ export class BrokerClient {
     // A push with no waiter, like the two above: nothing on this side asked for
     // it, and the CLI leaves the callback unset so it can never be its target.
     if (msg.t === 'permission_verdict') return this.onPermissionVerdict?.(msg.requestId, msg.behavior)
+    if (msg.t === 'end_self') return this.options.onEndSelf?.(msg.agentId, msg.reason)
     if (msg.t === 'error') {
       if (msg.code === 'not_registered') return void this.reregister()
       if (!msg.fatal) return
@@ -305,6 +308,7 @@ export class BrokerClient {
     spawn(process.execPath, [cliEntry(), 'broker'], {
       detached: true,
       stdio: 'ignore',
+      cwd: home(),
       env: withoutLaunchIdentity(process.env),
     }).unref()
   }

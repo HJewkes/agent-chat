@@ -48,6 +48,7 @@ import { OFF_PLAN_REASON } from './off-plan.js'
 import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
 import { worktreePathFor } from './trust-gate.js'
 import { planFacts, priorRoute, type PriorRouter, type Routed } from './prior-route.js'
+import { shareOrder, sharedDefaults, type ProjectShares } from './project-shares.js'
 import type { TaskFacts } from './classify-task.js'
 
 /**
@@ -107,6 +108,8 @@ export interface SeatPlanInputs {
   pathExists?: PathExists
   /** CC-638: route implementer dispatches by the task-time prior; absent, today's route picks the profile. */
   priorRouter?: PriorRouter
+  /** CC-1107: project shares of the seat's whole-task picks; absent, the legacy order (decay, kind weights, share caps). */
+  shares?: ProjectShares
 }
 
 export interface SeatBriefGate {
@@ -132,7 +135,11 @@ export interface SeatPlan {
   placement?: Placement
   /** What the seat holds of each role after this plan: held claims, live hand spawns and this tick's dispatches. */
   roles: Record<Role, number>
+  /** CC-1107: each initiative's configured share and its whole-task picks this run, this tick's included; absent without shares. */
+  shareMix?: ShareMix
 }
+
+export type ShareMix = Record<string, { share: number; picks: number }>
 
 /** A placed row's tier, with the milestone, slack and float that put it there. */
 export type PlacedTier = Pick<PlannedRow, 'tier' | 'milestone' | 'slack' | 'float'>
@@ -243,8 +250,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     }
   }
   const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
-  const depth = supplyDepth(order, ungatedCount(slices, inputs), walk)
-  for (const claim of slices) take(claim.initiative, claim.taskId, considerSlice(claim, walk))
+  // Rows are counted first: a taken slice claims its task, which would hide that task's row.
+  const rowDepth = supplyDepth(order, walk)
+  const depth = rowDepth + takeSlices(slices, walk, take)
   const picked = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
   const aging = { aged: agedRows(inputs, order), every: inputs.brief?.agingEvery ?? 1 }
   walkOrder(
@@ -263,20 +271,30 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
   plan.notes.push(...idleNotes(inputs.seat.seat, walk))
-  return { ...plan, roles: { ...walk.roles } }
+  const shareMix =
+    inputs.shares === undefined ? undefined : shareMixOf(inputs.shares, priorPicks, plan.dispatch)
+  return { ...plan, roles: { ...walk.roles }, ...(shareMix !== undefined && { shareMix }) }
+}
+
+/** Shares count whole-task picks, as `priorPicksOf` does: a slice dispatch is part of its task's pick. */
+function shareMixOf(
+  shares: ProjectShares,
+  priorPicks: Readonly<Record<string, number>>,
+  dispatch: readonly Dispatch[],
+): ShareMix {
+  const picks = new Map(Object.entries(priorPicks))
+  for (const d of dispatch)
+    if (d.slice === undefined) picks.set(d.initiative, (picks.get(d.initiative) ?? 0) + 1)
+  const slugs = new Set([...Object.keys(shares.initiatives), ...picks.keys()])
+  return Object.fromEntries(
+    [...slugs].map(slug => [slug, { share: shares.initiatives[slug] ?? 0, picks: picks.get(slug) ?? 0 }]),
+  )
 }
 
 type Outcome = Taken | Refused | Seeded
 
-/** CC-1121: a slice its parent's tags or status hold is not ready supply for the brief floor. */
-function ungatedCount(slices: readonly Claim[], inputs: SeatPlanInputs): number {
-  const taskOf = taskOfRow(inputs)
-  const parentOf = (c: Claim) => taskOf({ initiative: c.initiative, id: c.taskId })
-  return slices.filter(c => sliceRefusal(parentOf(c), inputs.seat.excludedTags) === undefined).length
-}
-
-/** The seat's ready depth before this tick dispatches anything: the rows `consider` would not refuse. */
-function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk): number {
+/** The seat's ready rows before this tick dispatches anything: the rows `consider` would not refuse. */
+function supplyDepth(order: readonly DispatchRow[], walk: Walk): number {
   const check = briefCheck(walk.inputs)
   if (check === undefined) return 0
   const taskOf = taskOfRow(walk.inputs)
@@ -291,7 +309,7 @@ function supplyDepth(order: readonly DispatchRow[], slices: number, walk: Walk):
     const work = { taskId: row.id, tags: task.tags, owns: [] }
     return walk.inputs.collision?.(repo, work, landedRepos(seat)) === undefined
   }
-  return readyDepth(order, dispatchable, slices)
+  return readyDepth(order, dispatchable, 0)
 }
 
 /** A planner cap or a closed pool stops the pass; any other refusal leaves that row refused no-brief. */
@@ -395,20 +413,32 @@ interface Ordered {
   placement?: Placement
 }
 
-/** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s; an `on` brief gate re-ranks it. */
+/**
+ * `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s; an `on` brief gate re-ranks it.
+ * Project shares (CC-1107) then interleave the rows the walk can take: the ready set under an `on` gate, else all.
+ */
 function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
   const ordered = baseOrder(inputs, priorPicks)
-  if (inputs.brief?.gate !== 'on') return ordered
-  return { ...ordered, order: briefReadyFirst(inputs, ordered.order) }
+  const byShares = <T extends Ordered['order'][number]>(rows: readonly T[]): T[] =>
+    inputs.shares === undefined ? [...rows] : shareOrder(rows, inputs.shares, priorPicks)
+  if (inputs.brief?.gate !== 'on')
+    return inputs.shares === undefined ? ordered : { ...ordered, order: byShares(ordered.order) }
+  return { ...ordered, order: briefReadyFirst(inputs, ordered.order, byShares) }
 }
 
-/** CC-926: share caps and initiative decay do not apply to the ready set, so the base order is built without them. */
+/**
+ * CC-926: share caps and initiative decay do not apply to the ready set, so the base order is built without them.
+ * CC-1107: under shares, decay is 1, kind weights are the default and the kind caps come from `shares.kinds`.
+ */
+function scoringDefaults(inputs: SeatPlanInputs): ScoringDefaults {
+  if (inputs.shares !== undefined) return sharedDefaults(inputs.defaults, inputs.shares)
+  if (inputs.brief?.gate === 'on') return { ...inputs.defaults, share_caps: {}, initiative_decay: 1 }
+  return inputs.defaults
+}
+
 function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
   const { rows, order: extra } = inputs
-  const defaults =
-    inputs.brief?.gate === 'on'
-      ? { ...inputs.defaults, share_caps: {}, initiative_decay: 1 }
-      : inputs.defaults
+  const defaults = scoringDefaults(inputs)
   if (extra === undefined)
     return { ...dispatchOrder(rows, defaults, rows.length, priorPicks), planRefusals: [] }
   const base = {
@@ -426,13 +456,17 @@ function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
     planRefusals: tagRefusals(rows, planned, base),
-    placement: placementOf(planned, inputs.defaults.initiative_decay),
+    placement: placementOf(planned, inputs.shares === undefined ? inputs.defaults.initiative_decay : 1),
   }
 }
 
-/** Brief-ready rows by `readyOrder`; the rest follow in their base order, where the gate refuses them. */
-function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
-  const ready = readyRows(inputs, order)
+/** Brief-ready rows by `readyOrder`, then `rerank`; the rest follow in their base order, where the gate refuses them. */
+function briefReadyFirst(
+  inputs: SeatPlanInputs,
+  order: Ordered['order'],
+  rerank: (rows: Ordered['order']) => Ordered['order'],
+): Ordered['order'] {
+  const ready = rerank(readyRows(inputs, order))
   const taken = new Set(ready)
   return [...ready, ...order.filter(r => !taken.has(r))]
 }
@@ -766,6 +800,25 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   if (refused !== undefined) return refused
   if (note !== undefined) walk.notes.push(note)
   return { dispatch, role: 'implementers', work: checked }
+}
+
+/**
+ * Takes each ready slice and returns the slice supply for the brief floor: the slices dispatched or refused
+ * only by a role cap (CC-1160, owner decision 273). A role-cap refusal means every earlier check in `blocker`
+ * passed. Two role-capped slices that overlap each other both count, since collision sees only accepted work.
+ */
+function takeSlices(
+  slices: readonly Claim[],
+  walk: Walk,
+  take: (i: string, t: string, o: Outcome) => void,
+): number {
+  let supply = 0
+  for (const claim of slices) {
+    const outcome = considerSlice(claim, walk)
+    if (!('kind' in outcome) || outcome.kind === 'role-cap') supply += 1
+    take(claim.initiative, claim.taskId, outcome)
+  }
+  return supply
 }
 
 const sliceWork = (claim: Claim, tags: string[]): CollisionWork => ({

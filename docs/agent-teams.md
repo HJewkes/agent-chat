@@ -818,6 +818,18 @@ placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
 exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
 the old placement.
 
+Once registered, an agent on another host is known by its spawn row's `host`, which
+`agent_list` shows. The broker can read neither its pids nor its Claude Code session
+records, so a detach that outlasts the settle window is the exit: `agent_exited` is
+inferred with a body naming the host, and the slot taken at spawn is released. A
+reattach after that reopens the row and takes a slot again. Retire cannot signal a
+pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
+connection, and that MCP process ends its own Claude Code when the id is its own
+(`src/server/end-self.ts`). The `agent_retired` row says `reaped:
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
+
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
 A spawned agent starts from its brief and nothing else, so in practice every
@@ -1465,6 +1477,12 @@ timer or a presence check, not by a recorded process exit. It is false for a rec
 and for an agent that has not exited. A row with `presence: "exited"` and `inferred: true`
 does not prove the process stopped writing: a reboot or a dead launcher can leave a
 reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
+
+`agent ls` shows each live agent's context fill against its role's retire threshold, as
+`ctx=212k/200k` (CC-290). The thresholds are `DEFAULT_CONTEXT_HINTS`, overridable by
+`contextHints` in config. `retire-due` follows when the agent is past its threshold and has
+sent a `Status:` or `Verdict:` report to its spawner, or to `tick.reportTo` for a burndown
+spawn. `--json` rows carry `contextK`, `retireK` and `retireDue`, each null when unread.
 
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call

@@ -1514,6 +1514,45 @@ describe('launch flags across a teleport', () => {
       profile: { effort: 'low' },
     })
   })
+
+  it("starts a remote adopted caller's successor on the model it reported (CC-1166)", async () => {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      launchSeen: { channels: [], model: 'sonnet' },
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect((await plan).launch).toMatchObject({ profile: { model: 'sonnet' } })
+  })
+
+  it("starts an adopted successor on its predecessor's argv --model when no transcript names one", async () => {
+    expect(after(await successor('claude --model sonnet'), '--model')).toBe('sonnet')
+  })
+
+  it('lets an explicit model win over a carried one', async () => {
+    const args = await successor(undefined, { model: 'opus', launchSeen: { channels: [], model: 'sonnet' } })
+
+    expect(after(args, '--model')).toBe('opus')
+  })
+
+  it("keeps a spawned agent's profile model over its argv --model", async () => {
+    supervisor.close()
+    makeSupervisor(undefined, () => 'claude --model haiku')
+    const agentId = await spawnAgent({
+      name: 'alpha',
+      profile: installCoordinatorProfile(),
+      surface: 'iterm-pane',
+    })
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(after(planFor(result.agentId as string).args, '--model')).toBe('opus')
+  })
 })
 
 /** CC-883: a coordinator seat runs with Remote Control after a watchdog resume and across a teleport; a worker never does. */

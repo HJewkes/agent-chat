@@ -373,10 +373,15 @@ describe('burndown phase machine', () => {
     ])
   })
 
-  it('leaves a stalled claim alone even when its agent has exited', () => {
+  it('leaves a stalled claim alone but for its stale class even when its agent has exited', () => {
     const stalled = claim({ stalledReason: 'implementing past its timeout' })
 
-    expect(step(stalled, { agent: exited, report: parseReport('Status: DONE') }).actions).toEqual([])
+    expect(step(stalled, { agent: exited, report: parseReport('Status: DONE') }).actions).toEqual([
+      expect.objectContaining({
+        kind: 'update',
+        patch: { stale: expect.objectContaining({ class: 'other' }) },
+      }),
+    ])
   })
 })
 

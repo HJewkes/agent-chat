@@ -7,6 +7,7 @@ import type { BrokerCore } from '../broker/core.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
+  encode,
   HUMAN,
   RESERVED_NAMES,
   type AgentIdentity,
@@ -46,6 +47,7 @@ import {
   hostProbe,
   isStaleLive,
   launcherPid,
+  remoteHostOf,
   staleAtStart,
   type DeadLiveness,
   type ProcessProbe,
@@ -105,6 +107,8 @@ import { withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
   allocationRecord,
+  createdWorktreeFor,
+  type CreatedWorktree,
   goneWorktree,
   identityTranscript,
   missingAgent,
@@ -966,6 +970,10 @@ export interface MachineGuardReaders {
   limits: () => MachineLimits
 }
 
+/** What retire did to an agent's process; the `reaped` meta on its `agent_retired` row. */
+type Reaped =
+  'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' | 'remote_end_requested'
+
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   /** CC-881: a remote successor's session id, held between its plan and its host's report. */
@@ -1121,6 +1129,7 @@ export class Supervisor implements TeleportHost {
     if (kind === 'agent_detached') this.reaper.schedule(agentId)
     else this.reaper.cancel(agentId)
     if (kind === 'agent_attached') return this.countReattach(agentId)
+    if (kind === 'agent_exited' && !this.reattached.has(agentId)) this.releaseRemoteSlot(agentId)
     if (!this.reattached.has(agentId)) return
     if (kind === 'agent_detached') this.scheduleReattachRelease(agentId)
     if (kind === 'agent_exited' || kind === 'agent_retired') this.releaseReattach(agentId)
@@ -1146,6 +1155,13 @@ export class Supervisor implements TeleportHost {
     const timer = setTimeout(() => this.releaseReattach(agentId), this.settleMs)
     timer.unref?.()
     this.reattached.set(agentId, timer)
+  }
+
+  /** CC-1059: a remote spawn holds the slot it took at spawn, never counted as a reattach, until it exits. */
+  private releaseRemoteSlot(agentId: string): void {
+    const identity = this.core.agents.get(agentId)
+    if (identity === undefined || remoteHostOf(identity) === undefined) return
+    this.semaphore.release(agentId)
   }
 
   private releaseReattach(agentId: string): void {
@@ -2393,7 +2409,11 @@ export class Supervisor implements TeleportHost {
       configDir: account.dir,
       ...(account.unset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agentId, allocation, isolationName),
+    )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
     // Appended BEFORE the launch. If the launch then fails, the identity exists
@@ -3033,7 +3053,10 @@ export class Supervisor implements TeleportHost {
     this.finishRetired(identity.agentId, held)
     this.seatJournal?.({ event: 'retire', agent: name })
     this.writeRetiredRow(identity, transcript.path)
-    return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
+    const remote = remoteHostOf(identity)
+    const hadHandle = entry !== undefined || remote !== undefined
+    const caveat = this.retireCaveat(name, hadHandle, reaped, tenancy?.warning, remote)
+    return { ok: true, ...(caveat ?? {}) }
   }
 
   /** CC-331: the spend read streams the whole transcript, so the row is written after retire has answered. */
@@ -3334,16 +3357,30 @@ export class Supervisor implements TeleportHost {
    * `not_registered` is the ordinary, quiet case: the agent already exited, or
    * its pane close above ended it, and there is nothing left to signal.
    */
-  private reap(
-    identity: AgentIdentity,
-  ): 'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' {
+  private reap(identity: AgentIdentity): Reaped {
     const name = identity.name
     const presence = this.namePresence(identity)
     if (presence === 'none') return 'not_registered'
     if (presence === 'other') return 'another_agent'
+    const remote = remoteHostOf(identity)
+    if (remote !== undefined) return this.requestRemoteEnd(identity, remote)
     const hostPid = this.core.registry.hostPidFor(name)
     if (hostPid === undefined) return 'no_host_pid'
     return this.endSession(name, hostPid, this.core.registry.hostFor(name)).ok ? 'true' : 'already_gone'
+  }
+
+  /**
+   * CC-1059: the broker cannot signal a pid on another host, so it asks the agent's own MCP
+   * process, which ends its Claude Code when the id is its own. Nothing confirms it: retired is
+   * terminal, so the detach that follows changes no row.
+   */
+  private requestRemoteEnd(identity: AgentIdentity, host: string): Reaped {
+    const conn = this.core.registry.connFor(identity.name)
+    if (conn === undefined) return 'not_registered'
+    const reason = `retired; ending ${identity.name} on ${host}`
+    conn.write(encode({ t: 'end_self', agentId: identity.agentId, reason }))
+    logEvent('remote_end_requested', { agentId: identity.agentId, name: identity.name, host })
+    return 'remote_end_requested'
   }
 
   /** CC-408: an unbound connection counts as this agent's, so the doubt falls on not retiring. */
@@ -3364,8 +3401,15 @@ export class Supervisor implements TeleportHost {
     hadHandle: boolean,
     reaped: string,
     tenancyWarning: string | undefined,
+    remoteHost?: string,
   ): { reason: string } | undefined {
     const notes: string[] = tenancyWarning === undefined ? [] : [tenancyWarning]
+    if (reaped === 'remote_end_requested')
+      notes.push(
+        `${name} runs on ${remoteHost ?? 'another host'}, so the broker asked its own process to end ` +
+          'rather than signalling it. Nothing confirms that it ended, and an older agent-chat there ' +
+          'ignores the request; check its terminal on that host',
+      )
     if (!hadHandle)
       notes.push(
         `the broker has no record of what ${name} held, in memory or on disk (spawned before ` +
@@ -3550,6 +3594,15 @@ export class Supervisor implements TeleportHost {
     return gone !== undefined && gone.worktree === path.resolve(identity.cwd) ? gone : undefined
   }
 
+  /** CC-1110: the self-grant anchor, the tree this allocation launches in only if agent-chat recorded creating it. */
+  private createdWorktree(
+    agentId: string,
+    allocation: Allocation,
+    isolation: IsolationName,
+  ): CreatedWorktree | undefined {
+    return createdWorktreeFor(this.core.events.agentEvents(), agentId, allocation, isolation)
+  }
+
   /** Re-create the worktree and record it, so a later retire treats it like the allocation or adoption it was. */
   private async reattachForResume(
     identity: AgentIdentity,
@@ -3599,7 +3652,11 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
       ...(req.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agent.agentId, allocation, isolation),
+    )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
       kind: 'agent_resumed',
@@ -3718,7 +3775,11 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agent.agentId, allocation, isolation),
+    )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
     // longer has — `foldAgent` reads it, and only a switch ever writes it.
@@ -3882,7 +3943,11 @@ export class Supervisor implements TeleportHost {
       })
 
     const { plan, sessionId } = this.successorPlan(input, allocation)
-    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      this.createdWorktree(input.agentId, allocation, isolation),
+    )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
     const executionId = this.openSuccessor(input, predecessor)

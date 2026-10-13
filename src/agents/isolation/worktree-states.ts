@@ -1,5 +1,6 @@
 import fs from 'node:fs'
-import { isReviewerSpawn } from '../reviewer-tree.js'
+import path from 'node:path'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { BRANCH_PREFIX } from './worktree.js'
 import type { SweptWorktree } from './sweep.js'
 
@@ -26,6 +27,10 @@ export interface RepoHeadroom {
   nonSeat: number
   budget: number
   free: number
+  /** CC-1040: live reviewer trees, counted against their own pool rather than `active`. */
+  reviewers: number
+  reviewerBudget: number
+  reviewerFree: number
   /** Null when the volume could not be read, e.g. a repo deleted under a never-retired agent. */
   freeDiskBytes: number | null
   rows: StateRow[]
@@ -34,7 +39,7 @@ export interface RepoHeadroom {
 export const LOW_DISK_BYTES = 50 * 1024 ** 3
 
 const isReviewerTree = (entry: SweptWorktree): boolean =>
-  isReviewerSpawn('', entry.agent?.name ?? entry.branch.slice(BRANCH_PREFIX.length))
+  isReviewerTreeName(entry.agent?.name ?? entry.branch.slice(BRANCH_PREFIX.length))
 
 export function rowState(entry: SweptWorktree): WorktreeState {
   if (entry.status === 'held' || entry.status === 'in-grace') return 'active'
@@ -56,22 +61,44 @@ export function nonSeatRow(tree: { path: string; branch?: string }): StateRow {
   }
 }
 
-/** Free slots are what the budget leaves after the trees that cannot be parked. */
+/**
+ * Free slots are what the budget leaves after the trees that cannot be parked. A live reviewer
+ * tree is charged to the reviewer pool, classified by directory name as the broker does.
+ */
 export function repoHeadroom(
   gitRoot: string,
   rows: StateRow[],
   budget: number,
+  reviewerBudget: number,
   freeDiskBytes: number | null,
 ): RepoHeadroom {
   const count = (state: WorktreeState): number => rows.filter(r => r.state === state).length
-  const active = count('active')
+  const reviewers = rows.filter(
+    r => r.state === 'active' && isReviewerTreeName(path.basename(r.worktree)),
+  ).length
+  const active = count('active') - reviewers
   const nonSeat = count('non-seat')
   const free = Math.max(0, budget - active - nonSeat)
-  return { gitRoot, active, parkable: count('parkable'), nonSeat, budget, free, freeDiskBytes, rows }
+  const reviewerFree = Math.max(0, reviewerBudget - reviewers)
+  const parkable = count('parkable')
+  return {
+    gitRoot,
+    active,
+    parkable,
+    nonSeat,
+    budget,
+    free,
+    reviewers,
+    reviewerBudget,
+    reviewerFree,
+    freeDiskBytes,
+    rows,
+  }
 }
 
 export const repoSummary = (r: RepoHeadroom): string =>
-  `${r.gitRoot}: active ${r.active}, parkable ${r.parkable}, non-seat ${r.nonSeat}, budget ${r.budget}, free ${r.free}`
+  `${r.gitRoot}: active ${r.active}, parkable ${r.parkable}, non-seat ${r.nonSeat}, budget ${r.budget}, free ${r.free}, ` +
+  `reviewers ${r.reviewers}/${r.reviewerBudget}`
 
 /** A repo the sweep found may be gone; unknown free space is reported, never fatal. */
 export function volumeFreeBytes(dir: string): number | null {

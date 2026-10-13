@@ -47,6 +47,10 @@ export interface HostProbe {
   surface: PackageSurfaceName
 }
 
+/** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
+export const JOB_KICK_NAMES = ['burndown_tick', 'seats_watchdog', 'seats_heartbeat_check'] as const
+export type JobKickName = (typeof JOB_KICK_NAMES)[number]
+
 /** CC-951: a connected host launcher, as `hosts` lists it. */
 export interface HostLauncherInfo {
   host: string
@@ -1142,7 +1146,7 @@ export type ClientMessage =
       /** CC-951: the caller's own OS, sent by its MCP process and never by the model. */
       hostPlatform?: string
       /** CC-951: launch flags the caller read from its own argv, which a broker on another host cannot. */
-      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
+      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string; model?: string }
       /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
       to?: string
       /** CC-951: the caller's MCP process ends its own Claude Code on an `endSelf` plan; an older one does not. */
@@ -1195,6 +1199,11 @@ export type ClientMessage =
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
   | { t: 'hosts' }
+  /**
+   * CC-1151: run one of the broker's jobs now, in the broker's own env. The frame names the job and,
+   * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
+   */
+  | { t: 'job_kick'; job: JobKickName; seat?: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */
@@ -1288,6 +1297,11 @@ export type ServerMessage =
    * answered in the terminal is simply ignored there.
    */
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  /**
+   * CC-1059: retire of an agent on another host. A push to that agent's own connection, since the
+   * broker cannot signal a pid there; its MCP process ends its own Claude Code when `agentId` is its own.
+   */
+  | { t: 'end_self'; agentId: string; reason: string }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
@@ -1359,6 +1373,7 @@ export type ServerMessage =
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
   | { t: 'host_launch'; id: string; launch: RemoteLaunch }
   | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
+  | { t: 'job_kick_result'; ok: boolean; detail: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the
@@ -1440,6 +1455,8 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-1059: the machine the spawn launched on; absent on rows written before it was recorded. */
+  host?: string
   /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
   provisionalName?: true
   /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
@@ -1503,7 +1520,7 @@ export interface RetireResult {
   reason?: string
 }
 
-export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>
+export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict' | 'end_self'>
 
 /**
  * Frames a stream of newline-delimited JSON. Returned callback is fed raw chunks.

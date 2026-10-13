@@ -111,6 +111,61 @@ describe('burndown kick on a freed slot', () => {
     expect(h.launches).toHaveLength(2)
   })
 
+  it('a hand kick launches at once when idle', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    const detail = kicker.request()
+
+    expect(detail).toBe('launched')
+    expect(h.launches).toHaveLength(1)
+  })
+
+  it('a hand kick defers while another tick holds the ledger lock, then launches once it is free', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+    h.holder.pid = 4242
+
+    const detail = kicker.request()
+    const whileHeld = h.launches.length
+    h.holder.pid = undefined
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(detail).toMatch(/^deferred: 4242/)
+    expect(whileHeld).toBe(0)
+    expect(h.launches).toHaveLength(1)
+  })
+
+  it('a hand kick never overlaps a kicked tick, and coalesces into the follow-up', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    kicker.request()
+    const during = kicker.request()
+    const again = kicker.request()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+    const beforeEnd = h.launches.length
+    h.launches[0]?.()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(during).toMatch(/^deferred: kicked tick/)
+    expect(again).toMatch(/^coalesced/)
+    expect(beforeEnd).toBe(1)
+    expect(h.launches).toHaveLength(2)
+  })
+
+  it('a hand kick rides an exit kick already armed', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    kicker.offer(exited('bd-1'))
+    const detail = kicker.request()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(detail).toMatch(/^coalesced/)
+    expect(h.launches).toHaveLength(1)
+  })
+
   it('launches nothing after stop', () => {
     const h = harness()
     const kicker = burndownKicker(h.ports)

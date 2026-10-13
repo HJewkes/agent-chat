@@ -308,6 +308,40 @@ describe('a detached row with no launcher pid', () => {
     expect(h.core.agents.get(agentId)?.state).toBe('exited')
   })
 
+  it('is reaped on presence alone, never probed here, when it launched on another host', () => {
+    h = startSupervisor({ slots: 5, settleMs: SETTLE_MS, processProbe: probe })
+    const agentId = h.core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'far',
+      meta: {
+        name: 'far',
+        cwd: '/Users/x/far',
+        session_id: SESSION,
+        depth: '0',
+        host: 'far-host',
+        site: 'caller',
+      },
+    }).msgId
+    alive.add(CLAUDE_PID)
+    argvOf = () => '/usr/local/bin/claude --session-id x'
+    records = [{ pid: CLAUDE_PID, sessionId: SESSION }]
+    const isAlive = vi.spyOn(probe, 'isAlive')
+    const sessionRecords = vi.spyOn(probe, 'sessionRecords')
+    h.core.append({ kind: 'agent_attached', actor: 'far', ref: agentId })
+    h.core.append({ kind: 'agent_detached', actor: 'far', ref: agentId })
+
+    vi.advanceTimersByTime(SETTLE_MS)
+
+    expect(exitsOf(agentId)).toHaveLength(1)
+    expect(exitsOf(agentId)[0]).toMatchObject({ meta: { inferred: 'true' } })
+    expect(h.core.events.agentEvents().find(r => r.kind === 'agent_exited')?.body).toContain(
+      'on host far-host',
+    )
+    expect(isAlive).not.toHaveBeenCalled()
+    expect(sessionRecords).not.toHaveBeenCalled()
+  })
+
   it('reads as exited, not detached, when its connection closes after a real exit', async () => {
     h = startSupervisor({ slots: 5, settleMs: SETTLE_MS, processProbe: probe })
     const agentId = await spawnA()
