@@ -36,7 +36,7 @@ export interface StepContext {
   initiatives: ReadonlyMap<string, Initiative>
   tasks: ReadonlyMap<string, Task[]>
   reportTo: string
-  repoFacts: (repo: string) => { defaultBranch: string; verifySteps?: string }
+  repoFacts: (repo: string) => { defaultBranch: string; verifySteps?: string; prePushChecks?: string }
   /** The account the budget gate opens for an initiative right now, or why none is open. */
   account: (initiative: Initiative) => { account: string } | { closed: string }
   configDir: (account: string) => string
@@ -357,6 +357,7 @@ function taskBrief(
     configDir,
     defaultBranch: facts.defaultBranch,
     ...(facts.verifySteps === undefined ? {} : { verifySteps: facts.verifySteps }),
+    ...(facts.prePushChecks === undefined ? {} : { prePushChecks: facts.prePushChecks }),
     initiative: initiative.slug,
     initiativeDir,
     taskId,
