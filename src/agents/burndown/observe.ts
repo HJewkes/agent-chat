@@ -272,7 +272,7 @@ async function observeClaim(
     Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-    return withAdoptedPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
+    return withPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
   }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
@@ -317,23 +317,33 @@ function judged(
 }
 
 /**
- * CC-1023: a silent exit's open PR carries what was pushed, which a worktree reset to its base no longer shows, so
- * the owns read adds the PR's own files. Only for a claim with owns, so a claim that owns nothing reads no PR.
+ * CC-1023: a PR carries what was pushed, which a worktree reset to its base no longer shows, so the owns read adds
+ * the PR's own files. CC-1066: for the PR the claim hands off, not only a silent exit's. Only for a claim with owns,
+ * so a claim that owns nothing reads no PR.
  */
-function withAdoptedPrOwns(
+function withPrOwns(
   obs: Observation,
   claim: Claim,
   deps: ObserveDeps,
   adjudicate: Adjudicator | undefined,
 ): Observation {
-  const { owned, exitedWork } = obs
-  if (typeof owned !== 'object' || typeof exitedWork !== 'object' || exitedWork.openPr === null) return obs
-  if (deps.prFiles === undefined) return obs
-  const files = deps.prFiles(exitedWork.openPr)
+  const { owned } = obs
+  const pr = handOffPr(obs, claim)
+  if (typeof owned !== 'object' || pr === undefined || deps.prFiles === undefined) return obs
+  const files = deps.prFiles(pr)
   if (files === undefined) return { ...obs, owned: 'unreadable' }
-  const added = outsideOwns(files, claim.owns ?? []).filter(file => !owned.outside.includes(file))
+  const owns = obs.planOwns ?? claim.owns ?? []
+  const added = outsideOwns(files, owns).filter(file => !owned.outside.includes(file))
   if (added.length === 0) return obs
   return { ...obs, owned: judged(claim, [...owned.outside, ...added], adjudicate, obs.report) }
+}
+
+/** The PR `afterWorker` hands to Shepherd: a silent exit's open PR, a finished report's, or a fenced claim's own. */
+function handOffPr(obs: Observation, claim: Claim): string | undefined {
+  const { exitedWork, report } = obs
+  if (typeof exitedWork === 'object') return exitedWork.openPr ?? undefined
+  if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS') return report.pr ?? claim.pr
+  return claim.stallCode === 'outside-owns' ? claim.pr : undefined
 }
 
 /** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */
