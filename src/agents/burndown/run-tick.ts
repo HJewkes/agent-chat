@@ -462,7 +462,7 @@ function adoptPrs(
 }
 
 /** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
-const prFilesReader =
+export const prFilesReader =
   (exec: Runner) =>
   (pr: string): string[] | undefined => {
     const target = shepherdTarget(pr)

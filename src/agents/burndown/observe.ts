@@ -269,7 +269,7 @@ async function observeClaim(
   }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
   if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0)
-    obs.owned = ownedRead(claim, deps, adjudicate, obs.report)
+    Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
     return withAdoptedPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
@@ -278,15 +278,32 @@ async function observeClaim(
   return obs
 }
 
+/**
+ * CC-1232: a stalled outside-owns claim is read against the plan's owns as they are now, so a widened plan clears the
+ * stall; the changed files come from the worktree, else from the PR when the worktree is parked. A list neither can
+ * give is unreadable, never nothing outside.
+ */
 function ownedRead(
   claim: Claim,
   deps: ObserveDeps,
   adjudicate: Adjudicator | undefined,
   report: Report | undefined,
-): NonNullable<Observation['owned']> {
-  const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  if (files === undefined) return 'unreadable'
-  return judged(claim, outsideOwns(files, claim.owns ?? []), adjudicate, report)
+): Pick<Observation, 'owned' | 'planOwns'> {
+  const planOwns = claim.stallCode === 'outside-owns' ? currentPlanOwns(claim, deps) : undefined
+  const owned = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
+  const files = owned ?? (claim.pr === undefined ? undefined : deps.prFiles?.(claim.pr))
+  if (files === undefined) return { owned: 'unreadable' }
+  const judgedOwned = judged(claim, outsideOwns(files, planOwns ?? claim.owns ?? []), adjudicate, report)
+  return planOwns === undefined ? { owned: judgedOwned } : { owned: judgedOwned, planOwns }
+}
+
+/** The slice's owns in its plan now; undefined when the plan or the slice cannot be read, so the claim's own stand. */
+function currentPlanOwns(claim: Claim, deps: ObserveDeps): string[] | undefined {
+  const planPath = planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
+  const text = (deps.readFile ?? readFileOrUndefined)(planPath)
+  const slices = text === undefined ? undefined : readSlices(text).slices
+  const owns = slices?.find(s => s.n === claim.slice)?.owns
+  return owns === undefined || owns.length === 0 ? undefined : owns
 }
 
 function judged(
