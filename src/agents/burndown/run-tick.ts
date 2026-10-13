@@ -57,7 +57,15 @@ import {
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
-import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import {
+  DEFAULT_NAME_PREFIX,
+  plan,
+  stackInputs,
+  type Capacity,
+  type Dispatch,
+  type PlanInputs,
+} from './plan.js'
+import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
@@ -640,6 +648,7 @@ async function decide(
   const building = timer.start('plan')
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
+  const stacking = stackInputs(config.stack.mode, planLedger, backoffHeld(planLedger, now), shepherd)
   const planned = planNew(
     world,
     seats,
@@ -651,6 +660,7 @@ async function decide(
       orphan: (repo, name) => orphanAt(repo, name),
       collision: check,
       charged: advanced.charged,
+      ...(stacking.stack === undefined ? {} : { stack: stacking.stack }),
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
@@ -670,6 +680,7 @@ async function decide(
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
     ...planned.notes,
+    ...stacking.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -729,9 +740,10 @@ function serviceGate(
   }
 }
 
-type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> & {
-  charged: readonly string[]
-}
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> &
+  Pick<PlanInputs, 'stack'> & {
+    charged: readonly string[]
+  }
 
 interface Planned {
   dispatch: Dispatch[]

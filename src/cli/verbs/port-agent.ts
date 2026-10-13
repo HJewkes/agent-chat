@@ -34,6 +34,7 @@ export const PortSpawnFrame = z
     tier: z.number().int().exactOptional(),
     spawnedAs: z.literal('burndown'),
     claimPaths: z.array(z.string()).exactOptional(),
+    baseRef: nonBlank.exactOptional(),
   })
   .strict()
 export type PortSpawnFrame = z.infer<typeof PortSpawnFrame>

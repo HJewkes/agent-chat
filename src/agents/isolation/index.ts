@@ -53,6 +53,12 @@ export interface IsolationContext {
    * as release can, so it takes the same explicit instruction.
    */
   forceReset?: boolean
+  /**
+   * CC-1158: an `origin/<branch>` a new worktree branch is cut from instead of the
+   * default branch: a stacked slice starts on its parent's PR branch. Refused when
+   * it cannot be fetched, never quietly replaced by the default branch.
+   */
+  baseRef?: string
 }
 
 export interface Allocation {

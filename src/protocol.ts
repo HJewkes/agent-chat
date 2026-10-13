@@ -1019,6 +1019,8 @@ export type ClientMessage =
        * and is accepted with a worktree profile.
        */
       claimPaths?: string[]
+      /** CC-1158: the `origin/<branch>` a worktree spawn is cut from; a stacked slice names its parent's PR branch. */
+      baseRef?: string
       /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
