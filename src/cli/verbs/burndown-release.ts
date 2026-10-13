@@ -55,7 +55,7 @@ export async function releaseTask(
       writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
       return { dropped, hold: undefined, unclaimed: true }
     }
-    if (slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
+    if (dropped.length === 0 && slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
       writeLedger(file, withoutSliceReleases(ledger, task))
       return { dropped, hold: undefined, reseedable: true }
     }

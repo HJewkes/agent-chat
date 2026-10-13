@@ -277,6 +277,19 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(slicesReleasedComplete(readLedger(file()), 'CC-1')).toBe(true)
   })
 
+  it('drops a held whole-task claim with released slices, retiring it and counting a backoff', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [claim()], slicesReleased: { 'CC-1': ['a'] } })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(retire).toHaveBeenCalledWith('bd-cc-1')
+    expect(ledger.claims).toEqual([])
+    expect(ledger.releases?.['CC-1']?.n).toBe(1)
+    expect(ledger.slicesReleased).toBeUndefined()
+  })
+
   it('refuses a slice with no held claim', async () => {
     const report = await releaseTask('CC-1', retire, NOW, 'z')
 
