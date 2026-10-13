@@ -104,7 +104,14 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
-import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import {
+  diskPlanReader,
+  pendingOffLedger,
+  resyncQueuedSlices,
+  resyncSteps,
+  seedSteps,
+} from './seed-slices.js'
+import { seatPrReader } from './off-ledger-adopt.js'
 import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
@@ -753,7 +760,12 @@ async function decide(
   )
   const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
-  const resynced = resyncQueuedSlices(applyActions(ledger, kept, now), diskPlanReader(root))
+  const resynced = resyncQueuedSlices(
+    applyActions(ledger, kept, now),
+    diskPlanReader(root),
+    now,
+    seatPrReader(seats?.loaded.map(s => s.dispatch) ?? [], opts.exec ?? run),
+  )
   const planLedger = applyActions(ledger, [...kept, ...resynced.actions], now)
   const triage = triageFor(
     config,
@@ -826,7 +838,10 @@ async function decide(
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     humanStepSeats: seats?.loaded ?? [],
-    merged: seats === undefined ? {} : mergedEvents(ledger, dispatchCtx.tasks),
+    merged:
+      seats === undefined
+        ? {}
+        : mergedEvents(ledger, dispatchCtx.tasks, undefined, pendingOffLedger(ledger, diskPlanReader(root))),
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),

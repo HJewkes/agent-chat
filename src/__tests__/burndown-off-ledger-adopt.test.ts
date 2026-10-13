@@ -5,11 +5,18 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { applyActions } from '../agents/burndown/advance.js'
 import type { RunResult } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { branchPrReader, offLedgerRunsIn, type OffLedgerRun } from '../agents/burndown/off-ledger-adopt.js'
-import { initiativePrReaders } from '../agents/burndown/seat-tick.js'
-import type { RepoPull } from '../agents/burndown/pr-state.js'
+import {
+  branchPrReader,
+  initiativePrReaders,
+  offLedgerRunsIn,
+  seatPrReader,
+  type OffLedgerRun,
+} from '../agents/burndown/off-ledger-adopt.js'
+import { mergedEvents } from '../agents/burndown/slices-complete.js'
+import type { ClaimPr, RepoPull } from '../agents/burndown/pr-state.js'
 import {
   diskPlanReader,
+  pendingOffLedger,
   resyncQueuedSlices,
   seedSlices,
   type PlanReader,
@@ -158,6 +165,124 @@ describe('the drift resync with slice agents that ran outside the ledger', () =>
     expect(out.actions).toEqual([])
     expect(out.notes.join('\n')).toContain('its agent sx-dm-1-b ran outside the ledger')
     fs.rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('a slice that ran outside the ledger with no PR at seeding, whose PR opens later', () => {
+  const claim = (n: string, phase: Claim['phase']): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    spawnedAt: NOW.toISOString(),
+    phase,
+    phaseAt: NOW.toISOString(),
+    slice: n,
+    dependsOn: [],
+    owns: [`${n}.ts`],
+    seat: 'seat-x',
+    namePrefix: 'sx',
+  })
+  const twoSlices = planText([slice('a'), slice('b')])
+  const readPlan: PlanReader = (_i, _t, seat) => ({
+    path: PLAN_PATH,
+    text: twoSlices,
+    ...(seat === undefined
+      ? {}
+      : { ranOffLedger: ['sx-dm-1-b'], ranSince: { 'sx-dm-1-b': NOW.toISOString() } }),
+  })
+  const ledger: Ledger = { version: 1, claims: [claim('a', 'queued')] }
+  const github = (pr: ClaimPr | undefined) => {
+    const asked: string[] = []
+    const prOf = (seat: string, initiative: string) => {
+      asked.push(`${seat}/${initiative}`)
+      return (agent: string, since: string) => {
+        asked.push(`${agent} since ${since}`)
+        return pr
+      }
+    }
+    return { prOf, asked }
+  }
+
+  it('links the PR as a shepherding claim on the next resync, with no repeated note', () => {
+    const { prOf, asked } = github({ kind: 'open', pr: 'demo/repo#9' })
+
+    const out = resyncQueuedSlices(ledger, readPlan, NOW, prOf)
+
+    const next = applyActions(ledger, out.actions, NOW)
+    expect(bySlice(next.claims).b).toMatchObject({
+      phase: 'shepherding',
+      pr: 'demo/repo#9',
+      agentName: 'sx-dm-1-b',
+      seat: 'seat-x',
+    })
+    expect(out.notes.join('\n')).toContain(
+      'adopted demo DM-1 slice b from sx-dm-1-b as shepherding with demo/repo#9',
+    )
+    expect(out.notes.join('\n')).not.toContain('did not queue new slice b')
+    expect(asked).toContain(`sx-dm-1-b since ${NOW.toISOString()}`)
+  })
+
+  it('adopts a merged PR as done', () => {
+    const { prOf } = github({ kind: 'merged', pr: 'demo/repo#9', head: 'h9' })
+
+    const out = resyncQueuedSlices(ledger, readPlan, NOW, prOf)
+
+    expect(bySlice(applyActions(ledger, out.actions, NOW).claims).b).toMatchObject({
+      phase: 'done',
+      pr: 'demo/repo#9',
+      prHead: 'h9',
+    })
+  })
+
+  it('keeps holding the slice, with the note, while it still has no PR or the read failed', () => {
+    for (const pr of [{ kind: 'none' as const }, undefined]) {
+      const out = resyncQueuedSlices(ledger, readPlan, NOW, github(pr).prOf)
+
+      expect(out.actions).toEqual([])
+      expect(out.notes).toEqual([
+        `plan drift demo DM-1: did not queue new slice b from ${PLAN_PATH}: its agent sx-dm-1-b ran outside the ledger`,
+      ])
+    }
+  })
+
+  it('does not mark the parent merged while the slice has no merged PR', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+    const reader: PlanReader = readPlan
+
+    expect(pendingOffLedger(done, reader)('demo', 'DM-1')).toEqual(['b'])
+    expect(
+      seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () => [ran('b', { kind: 'none' })]),
+    ).toMatchObject({
+      pending: ['b'],
+    })
+  })
+
+  it('marks the parent merged once the slice is claimed done', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done'), claim('b', 'done')] }
+
+    expect(pendingOffLedger(done, readPlan)('demo', 'DM-1')).toEqual([])
+    expect(
+      seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () => [ran('b', { kind: 'none' })]),
+    ).toEqual({
+      merged: true,
+    })
+  })
+
+  it('tells no seat the task merged while the slice is pending', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+    const tasks = new Map([['demo', [{ id: 'DM-1', status: 'open' } as never]]])
+
+    expect(mergedEvents(done, tasks)).toEqual({
+      'seat-x': [expect.objectContaining({ kind: 'slices-merged' })],
+    })
+    expect(mergedEvents(done, tasks, undefined, pendingOffLedger(done, readPlan))).toEqual({})
+  })
+
+  it('reads through the loaded seat only', () => {
+    const exec = (): RunResult => ({ status: 0, stdout: '' })
+    const reader = seatPrReader([{ seat: 'seat-x', repos: {} } as never], exec)
+
+    expect(reader('seat-y', 'demo')).toBeUndefined()
+    expect(reader('seat-x', 'demo')?.('sx-dm-1-b', NOW.toISOString())).toEqual({ kind: 'none' })
   })
 })
 

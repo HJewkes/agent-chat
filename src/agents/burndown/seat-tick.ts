@@ -37,7 +37,7 @@ import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
 import { parseFunds, parsePools, seatInitiatives, seatPools, type FundsMap } from '../seats/charter.js'
 import { run, type Runner } from './exec.js'
-import { branchPrReader, offLedgerRunsIn, seatDispatchRecords, type BranchPr } from './off-ledger-adopt.js'
+import { initiativePrReaders, offLedgerRunsIn, seatDispatchRecords } from './off-ledger-adopt.js'
 import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
 import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
@@ -464,19 +464,6 @@ function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } 
     }
   } catch (err) {
     return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }
-  }
-}
-
-/** CC-1233: one branch-PR reader per initiative, over its git checkouts only, made when a task of it is seeded. */
-export function initiativePrReaders(
-  { repos, nonGitRepos = [] }: Pick<SeatDispatch, 'repos' | 'nonGitRepos'>,
-  exec: Runner = run,
-): (initiative: string) => BranchPr {
-  const readers = new Map<string, BranchPr>()
-  return initiative => {
-    const checkouts = (repos[initiative] ?? []).filter(r => !nonGitRepos.includes(r))
-    if (!readers.has(initiative)) readers.set(initiative, branchPrReader(checkouts, exec))
-    return readers.get(initiative) as BranchPr
   }
 }
 

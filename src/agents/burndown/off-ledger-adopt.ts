@@ -3,12 +3,13 @@ import { parseSeat } from '../seats/charter.js'
 import { dispatchLogPath } from '../seats/dispatch-log.js'
 import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
 import { readTextIfPresent } from '../seats/io.js'
-import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { jsonLines, originRepo } from './pr-adopt-ports.js'
 import type { ClaimPr } from './pr-state.js'
 import { targetRef } from './shepherd.js'
+import { run, type Runner } from './exec.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
  * CC-1233 (D3): a plan whose slice agents ran by hand, outside the ledger, is seeded by what each run left on
@@ -138,6 +139,33 @@ export function branchPrReader(checkouts: readonly string[], exec: Runner): Bran
     })
     if (states.some(s => s === undefined)) return undefined
     return states.find(s => s?.kind === 'open') ?? states.find(s => s?.kind === 'merged') ?? { kind: 'none' }
+  }
+}
+
+/** CC-1233: one branch-PR reader per initiative, over its git checkouts only, made when a task of it is seeded. */
+export function initiativePrReaders(
+  { repos, nonGitRepos = [] }: Pick<SeatDispatch, 'repos' | 'nonGitRepos'>,
+  exec: Runner = run,
+): (initiative: string) => BranchPr {
+  const readers = new Map<string, BranchPr>()
+  return initiative => {
+    const checkouts = (repos[initiative] ?? []).filter(r => !nonGitRepos.includes(r))
+    if (!readers.has(initiative)) readers.set(initiative, branchPrReader(checkouts, exec))
+    return readers.get(initiative) as BranchPr
+  }
+}
+
+/** CC-1240: the branch-PR reader of a seat's checkouts for an initiative; undefined when the seat is not loaded. */
+export type SeatPrReader = (seat: string, initiative: string) => BranchPr | undefined
+
+/** One `initiativePrReaders` per loaded seat, made on first use, so the resync reads GitHub only for a held slice. */
+export function seatPrReader(seats: readonly SeatDispatch[], exec: Runner = run): SeatPrReader {
+  const readers = new Map<string, (initiative: string) => BranchPr>()
+  return (seat, initiative) => {
+    const dispatch = seats.find(s => s.seat === seat)
+    if (dispatch === undefined) return undefined
+    if (!readers.has(seat)) readers.set(seat, initiativePrReaders(dispatch, exec))
+    return (readers.get(seat) as (initiative: string) => BranchPr)(initiative)
   }
 }
 

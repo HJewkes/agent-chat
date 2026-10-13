@@ -5,7 +5,13 @@ import { planPathFor } from './brief.js'
 import type { Step } from './execute.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
-import { adoptOffLedger, seatDispatchRecords, type SliceRuns } from './off-ledger-adopt.js'
+import {
+  adoptOffLedger,
+  seatDispatchRecords,
+  type OffLedgerRun,
+  type SeatPrReader,
+  type SliceRuns,
+} from './off-ledger-adopt.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { readSlices, type PlannedSlice } from './report.js'
 import { slicesSettled } from './slices-complete.js'
@@ -26,6 +32,8 @@ export interface PlanFile {
   path: string
   text: string | undefined
   ranOffLedger?: string[]
+  /** CC-1240: each of those agents' first dispatch, so a PR merged before the run is not taken for its work. */
+  ranSince?: Record<string, string>
   runsUnread?: string
 }
 
@@ -45,9 +53,25 @@ const planText = (file: string): string | undefined => {
   }
 }
 
+function firstDispatches(
+  records: readonly DispatchRecord[],
+  agents: readonly string[],
+): Record<string, string> {
+  const since = agents.map((agent): [string, string | undefined] => [
+    agent,
+    records
+      .filter(r => r.agent === agent && r.ts !== null)
+      .map(r => r.ts as string)
+      .sort()[0],
+  ])
+  return Object.fromEntries(since.filter((e): e is [string, string] => e[1] !== undefined))
+}
+
 function seatRuns(autonomyRoot: string, taskId: string, { seat, prefix }: SeatRef): Partial<PlanFile> {
   try {
-    return { ranOffLedger: sliceRunsIn(seatDispatchRecords(autonomyRoot, seat) ?? [], taskId, prefix) }
+    const records = seatDispatchRecords(autonomyRoot, seat) ?? []
+    const ranOffLedger = sliceRunsIn(records, taskId, prefix)
+    return { ranOffLedger, ranSince: firstDispatches(records, ranOffLedger) }
   } catch (err) {
     return {
       runsUnread: `slice runs unread for seat ${seat}: ${err instanceof Error ? err.message : String(err)}`,
@@ -91,10 +115,12 @@ export const seedSteps = (seeds: readonly Claim[] = []): Step[] =>
 /** `warnings` are the slice lint's advisory lines (CC-1155); they never block seeding. */
 /** `notes` say how each slice run outside the ledger was adopted or left alone (CC-1233). */
 /** `merged`: every slice of the task is done, so there is nothing to seed and nothing to refuse (CC-1049). */
+/** `pending`: every claim is done, but a slice's off-ledger run has no claim yet, so the task is not merged (CC-1240). */
 export type Seeding =
   | { claims: Claim[]; plan: string; warnings: string[]; notes: string[] }
   | { blocked: string }
   | { merged: true }
+  | { pending: string[]; notes: string[] }
 
 export type { SliceRuns }
 
@@ -124,7 +150,23 @@ export function seedSlices(
   ranOffLedger?: SliceRuns,
 ): Seeding | undefined {
   if (plan.text === undefined) return undefined
-  if (slicesSettled(ledger, parent.taskId)) return { merged: true }
+  if (slicesSettled(ledger, parent.taskId)) {
+    const waiting = unclaimedRuns(
+      ledger,
+      parent.taskId,
+      ranOffLedger?.(parent.taskId, parent.initiative) ?? [],
+    )
+    const inPlan = new Set(readSlices(plan.text).slices?.map(s => s.n))
+    const pending = waiting.filter(r => inPlan.has(r.slice))
+    if (pending.length === 0) return { merged: true }
+    return {
+      pending: pending.map(r => r.slice),
+      notes: pending.map(
+        r =>
+          `${parent.initiative} ${parent.taskId} slice ${r.slice} ran as ${r.agent} outside the ledger with no merged PR yet, so the task is not merged`,
+      ),
+    }
+  }
   const seeded =
     ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined && c.phase !== 'done') ||
     ledger.slicesReleased?.[parent.taskId] !== undefined
@@ -184,6 +226,36 @@ function resyncClaim(claim: Claim, slice: PlannedSlice, plan: string): Resync {
   }
 }
 
+/** CC-1240: the runs whose slice has no claim and was not released; each waits on a PR to be adopted. */
+function unclaimedRuns<T extends { slice: string }>(ledger: Ledger, taskId: string, runs: readonly T[]): T[] {
+  const claimed = new Set(ledger.claims.filter(c => c.taskId === taskId).map(c => c.slice))
+  const released = ledger.slicesReleased?.[taskId] ?? []
+  return runs.filter(r => !claimed.has(r.slice) && !released.includes(r.slice))
+}
+
+/**
+ * CC-1240: the slices of tasks whose claims are all done that an off-ledger run still holds with no claim, by
+ * `<initiative>/<task>`. Such a task is not merged: its PR may open, and the resync then adopts it.
+ */
+export function pendingOffLedger(
+  ledger: Ledger,
+  readPlan: PlanReader,
+): (initiative: string, taskId: string) => string[] {
+  return (initiative, taskId) => {
+    const parent = ledger.claims.find(
+      c => c.initiative === initiative && c.taskId === taskId && c.slice !== undefined,
+    )
+    if (parent === undefined) return []
+    const plan = readPlan(...planOf(parent))
+    if (plan.text === undefined) return []
+    const inPlan = new Set(readSlices(plan.text).slices?.map(s => s.n))
+    const runs = (plan.ranOffLedger ?? []).map(agent => ({ agent, slice: agent.slice(-1) }))
+    return unclaimedRuns(ledger, taskId, runs)
+      .filter(r => inPlan.has(r.slice))
+      .map(r => r.slice)
+  }
+}
+
 const isWaiting = (c: Claim): boolean =>
   c.phase === 'queued' && c.agentName === undefined && c.pr === undefined
 
@@ -200,7 +272,42 @@ function heldBy(plan: PlanFile): (slice: string) => string | undefined {
   }
 }
 
-function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, now: Date): Resync {
+/**
+ * CC-1240: the held slices whose off-ledger run now has an open or merged branch PR, adopted as `adoptOffLedger`
+ * does at seeding. A run whose PR could not be read, or has none, stays held.
+ */
+function adoptedRuns(
+  parent: Claim,
+  held: readonly PlannedSlice[],
+  plan: PlanFile,
+  prOf: SeatPrReader | undefined,
+  now: Date,
+): { claims: Claim[]; notes: string[] } {
+  const reader = parent.seat === undefined ? undefined : prOf?.(parent.seat, parent.initiative)
+  if (reader === undefined || plan.runsUnread !== undefined) return { claims: [], notes: [] }
+  const agents = plan.ranOffLedger ?? []
+  const runs = held.flatMap((s): OffLedgerRun[] => {
+    const agent = agents.find(a => a.slice(-1) === s.n)
+    if (agent === undefined) return []
+    return [{ agent, slice: s.n, pr: reader(agent, plan.ranSince?.[agent] ?? new Date(0).toISOString()) }]
+  })
+  const adoptable = runs.filter(r => r.pr?.kind === 'open' || r.pr?.kind === 'merged')
+  const queued = sliceClaims(
+    parent,
+    held.filter(s => adoptable.some(r => r.slice === s.n)),
+    now,
+  )
+  const adopted = adoptOffLedger(queued, adoptable)
+  return { claims: adopted.claims, notes: adopted.notes }
+}
+
+function resyncTask(
+  ledger: Ledger,
+  claims: readonly Claim[],
+  plan: PlanFile,
+  now: Date,
+  prOf?: SeatPrReader,
+): Resync {
   const { initiative, taskId } = claims[0] as Claim
   if (plan.text === undefined) return { actions: [], notes: [] }
   const read = readSlices(plan.text)
@@ -216,7 +323,15 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
   const unclaimed = read.slices.filter(s => !known.has(s.n))
   const why = heldBy(plan)
   const fresh = unclaimed.filter(s => why(s.n) === undefined)
-  const held = unclaimed.filter(s => !fresh.includes(s))
+  const adopting = adoptedRuns(
+    claims[0] as Claim,
+    unclaimed.filter(s => !fresh.includes(s)),
+    plan,
+    prOf,
+    now,
+  )
+  const adoptedSlices = new Set(adopting.claims.map(c => c.slice))
+  const held = unclaimed.filter(s => !fresh.includes(s) && !adoptedSlices.has(s.n))
   const removed = claims.filter(c => !inPlan.has(c.slice as string))
   const dropped = removed.filter(isWaiting)
   const stuck = removed.filter(c => c.phase !== 'done' && !isWaiting(c))
@@ -224,8 +339,8 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
   const each = kept.map(c =>
     resyncClaim(c, read.slices.find(s => s.n === c.slice) as PlannedSlice, plan.path),
   )
-  const adds: Action[] =
-    fresh.length === 0 ? [] : [{ kind: 'add', claims: sliceClaims(claims[0] as Claim, fresh, now) }]
+  const added = [...sliceClaims(claims[0] as Claim, fresh, now), ...adopting.claims]
+  const adds: Action[] = added.length === 0 ? [] : [{ kind: 'add', claims: added }]
   const drops = dropped.map((c): Action => ({
     kind: 'update',
     key: { taskId, slice: c.slice },
@@ -235,6 +350,7 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
     actions: [...adds, ...drops, ...each.flatMap(r => r.actions)],
     notes: [
       ...fresh.map(s => `plan drift ${initiative} ${taskId}: queued new slice ${s.n} from ${plan.path}`),
+      ...adopting.notes,
       ...held.map(
         s =>
           `plan drift ${initiative} ${taskId}: did not queue new slice ${s.n} from ${plan.path}: ${why(s.n) as string}`,
@@ -256,10 +372,16 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
  * CC-977: re-reads the plan of every task holding slice claims. A queued slice with no agent or PR takes the plan's
  * `owns`, `dependsOn`, `repo` and `contracts`. CC-1231: a plan slice with no claim is queued, and a waiting claim
  * for a slice the plan removed is marked done; a claim with an agent, a PR or a done phase is never touched, and a
- * removed slice that is live keeps its note. A failing plan only earns a note. A missing plan changes nothing, and
+ * removed slice that is live keeps its note. CC-1240: a new slice held for an off-ledger run is adopted once that
+ * run's branch PR is open or merged. A failing plan only earns a note. A missing plan changes nothing, and
  * a task whose claims are all done is not read.
  */
-export function resyncQueuedSlices(ledger: Ledger, readPlan: PlanReader, now: Date = new Date()): Resync {
+export function resyncQueuedSlices(
+  ledger: Ledger,
+  readPlan: PlanReader,
+  now: Date = new Date(),
+  prOf?: SeatPrReader,
+): Resync {
   const tasks = new Map<string, Claim[]>()
   for (const c of ledger.claims.filter(c => c.slice !== undefined)) {
     const key = `${c.initiative}/${c.taskId}`
@@ -267,7 +389,7 @@ export function resyncQueuedSlices(ledger: Ledger, readPlan: PlanReader, now: Da
   }
   const each = [...tasks.values()]
     .filter(claims => claims.some(c => c.phase !== 'done'))
-    .map(claims => resyncTask(ledger, claims, readPlan(...planOf(claims[0] as Claim)), now))
+    .map(claims => resyncTask(ledger, claims, readPlan(...planOf(claims[0] as Claim)), now, prOf))
   return { actions: each.flatMap(r => r.actions), notes: each.flatMap(r => r.notes) }
 }
 
