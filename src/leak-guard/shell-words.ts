@@ -64,9 +64,44 @@ interface Mark {
   skip: SimpleCommand
 }
 
-/** Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run. */
+/**
+ * Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run,
+ * and a `${...}` met inside a substitution still counts; see `expansionRisk`.
+ */
 interface Budget {
   forks: number
+  expansion: ExpansionRisk | undefined
+}
+
+/**
+ * `operator`: a `${...}` with an operator, a leading `#` or `!`, which the splitter reads up to its
+ * first `}`. `unreadable`: one holding a quote, an escape, a nested `$` or a zsh flag group, or a nested
+ * `{` whose close zsh finds past a blank, quote or operator, where that first `}` may not be the shell's,
+ * so the rest of the line is not what the shell runs.
+ */
+export type ExpansionRisk = 'operator' | 'unreadable'
+
+// The only `${...}` forms the splitter reads as the shell does.
+const PLAIN_BRACED = /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*|\d+)\}$/
+const UNREADABLE_BRACED = /^\$\{(?:\(|[\s\S]*\$)|['"`\\]/
+// Text that keeps one word whichever `}` closes the expansion.
+const SAME_WORD = /^[^\s'"`\\$#;&|<>()]*$/
+
+/** Where zsh closes the `${` at `start`: it counts nested braces, where bash and the splitter stop at the first `}`. */
+function nestedClose(src: string, start: number): number {
+  let depth = 0
+  for (let i = start + 1; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}' && --depth === 0) return i
+  }
+  return -1
+}
+
+function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
+  if (UNREADABLE_BRACED.test(text)) return 'unreadable'
+  const close = nestedClose(src, start)
+  if (close < 0 || !SAME_WORD.test(src.slice(start + text.length, close + 1))) return 'unreadable'
+  return PLAIN_BRACED.test(text) ? undefined : 'operator'
 }
 
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
@@ -141,10 +176,14 @@ class ShellLexer {
     private readonly src: string,
     start = 0,
     private readonly nested = false,
-    private readonly budget: Budget = { forks: MAX_FORKS },
+    private readonly budget: Budget = { forks: MAX_FORKS, expansion: undefined },
   ) {
     this.pos = start
     this.cur = this.newCommand()
+  }
+
+  get expansion(): ExpansionRisk | undefined {
+    return this.budget.expansion
   }
 
   private newCommand(): SimpleCommand {
@@ -390,10 +429,18 @@ class ShellLexer {
   }
 
   private braced(): string {
+    const text = this.bracedAt()
+    this.pos += text.length
+    return text
+  }
+
+  /** The `${...}` at the cursor, up to its first `}`, which is where an operator expansion stops being read right. */
+  private bracedAt(): string {
     const end = this.src.indexOf('}', this.pos)
-    const stop = end < 0 ? this.src.length : end + 1
-    const text = this.src.slice(this.pos, stop)
-    this.pos = stop
+    const text = this.src.slice(this.pos, end < 0 ? this.src.length : end + 1)
+    const risk = bracedRisk(this.src, this.pos, text)
+    if (risk === 'unreadable') this.budget.expansion = risk
+    else if (risk !== undefined) this.budget.expansion ??= risk
     return text
   }
 
@@ -418,7 +465,11 @@ class ShellLexer {
       const next = this.src[this.pos + 1] ?? ''
       if (c === '$' && next === '(') this.append(this.substitution(true), true)
       else if (c === '`') this.append(this.backtick(true), true)
-      else if (c === '\\' && '$`"\\\n'.includes(next)) {
+      else if (c === '$' && next === '{') {
+        this.bracedAt()
+        this.append(c, true)
+        this.pos++
+      } else if (c === '\\' && '$`"\\\n'.includes(next)) {
         this.append(next === '\n' ? '' : next)
         this.pos += 2
       } else {
@@ -558,6 +609,17 @@ export function expandWord(
     return value
   })
   return known && !expanded.includes(LIVE) ? expanded : undefined
+}
+
+/**
+ * The worst unquoted or double-quoted `${...}` in `src` that is not `${NAME}` or `${1}`. The splitter
+ * ends one at its first `}`, so `${X:-'${Y}'}` opens a quote it never closes and hides any command
+ * after it, even one spelt `g''h`, and zsh's `${(e)...}` runs the text it expands (CC-718).
+ */
+export function expansionRisk(src: string): ExpansionRisk | undefined {
+  const lexer = new ShellLexer(unmark(src))
+  lexer.run()
+  return lexer.expansion
 }
 
 const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/

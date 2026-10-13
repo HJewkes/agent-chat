@@ -388,6 +388,20 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
+The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
+`echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
+command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
+function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
+`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. It is also denied when the
+expansion holds a nested `{` and zsh, which counts nested braces, finds the close past a blank, a
+quote or an operator, as in `${X:-{} #}`, or finds no close at all. `${X:-python{3,}}` keeps one
+word under either close and is not affected. A line that names `gh` (which
+includes `agent-chat gh-write`) is also denied for any other `${...}` that is not `${NAME}` or
+`${1}`: one with an operator such as `:-`, `#`, `%`, `/`, `^` or `,`, or with a leading `#` or `!`.
+`$x`, `${HOME}` and `${10}` stay allowed everywhere. Inside single quotes, as in `-b '${X:-y}'`, the
+expansion is plain text and allowed. To get past the rule, compute the value in an earlier Bash call,
+or write it out.
+
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
 in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets
