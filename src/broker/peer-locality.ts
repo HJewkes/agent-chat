@@ -56,6 +56,25 @@ const runsClaudeCode = (pid: number, ports: PeerPorts): boolean => {
   return ['node', 'bun'].includes(path.basename(exe)) && (entry?.includes('/claude-code/') ?? false)
 }
 
+/**
+ * CC-1206: the first pid running Claude Code in the peer's ancestry, the peer included, or
+ * undefined when none is found within `maxDepth`. A hit only lowers trust (an agent, not
+ * the human, is behind the connection), so unlike `provePeerLocal` it does not stop at a
+ * socket forwarder: walking past one cannot grant anything. Real defense in depth, not a fix: a caller detached from its own tree
+ * (`setsid`, `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from
+ * such a process has no Claude Code ancestor and is not caught here.
+ */
+export function claudeCodeAncestor(conn: net.Socket, ports: PeerPorts, maxDepth = 64): number | undefined {
+  const seen = new Set<number>()
+  let pid = ports.peerPid(conn)
+  while (pid !== undefined && pid > 1 && seen.size < maxDepth && !seen.has(pid)) {
+    if (runsClaudeCode(pid, ports)) return pid
+    seen.add(pid)
+    pid = ports.process(pid)?.ppid
+  }
+  return undefined
+}
+
 const forwarderAt = (pid: number, ports: PeerPorts): boolean => {
   const proc = ports.process(pid)
   return proc === undefined || FORWARDERS.test(proc.comm)
