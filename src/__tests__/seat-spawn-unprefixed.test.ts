@@ -9,6 +9,7 @@ import {
   type UnprefixedSpawnInput,
 } from '../agents/seats/spawn-gate.js'
 import type { OverlapRequest } from '../agents/seats/spawn-gate-read.js'
+import type { SpawnRequest } from '../agents/supervisor.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 /** CC-965: a seat's implementer spawn named without the seat's prefix escapes its reserve. Synthetic names throughout. */
@@ -106,7 +107,7 @@ describe('the broker gating unprefixed seat spawns', () => {
     expect((await h.spawnAgent('tc-tp-1', { profile: 'implementer' })).ok).toBe(true)
   })
 
-  it.each([
+  it.each<[string, Partial<SpawnRequest>]>([
     ['a reviewer', { profile: 'reviewer' }],
     ['a planner', { profile: 'implementer', workRole: 'planner' }],
     ['a fix-round override', { profile: 'implementer', override: 'fix-round' }],
