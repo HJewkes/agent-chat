@@ -32,6 +32,7 @@ function fakePort() {
     open: async () => items.filter(i => i.status === 'open'),
     deposit: async (d: OwnerItemDeposit) => {
       items.push(fromDeposit(d, NOW))
+      return true
     },
   }
   return { port, items }
