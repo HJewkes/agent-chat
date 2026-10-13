@@ -6,6 +6,7 @@ import type { Step } from './execute.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
 import { readSlices, type PlannedSlice } from './report.js'
+import { slicesMerged } from './slices-complete.js'
 
 /**
  * CC-927 (item 179 S3): a seat-written `sources/<ID>-plan.md` is the brief. A brief-ready task
@@ -59,7 +60,9 @@ export const seedSteps = (seeds: readonly Claim[] = []): Step[] =>
   seeds.length === 0 ? [] : [{ kind: 'ledger', actions: [{ kind: 'add', claims: [...seeds] }] }]
 
 /** `warnings` are the slice lint's advisory lines (CC-1155); they never block seeding. */
-export type Seeding = { claims: Claim[]; plan: string; warnings: string[] } | { blocked: string }
+/** `merged`: every slice of the task is done, so there is nothing to seed and nothing to refuse (CC-1049). */
+export type Seeding =
+  { claims: Claim[]; plan: string; warnings: string[] } | { blocked: string } | { merged: true }
 
 /** The slice agents already run for a task, by name (CC-1121 b). */
 export type SliceRuns = (taskId: string) => string[]
@@ -88,8 +91,9 @@ export function seedSlices(
   ranOffLedger?: SliceRuns,
 ): Seeding | undefined {
   if (plan.text === undefined) return undefined
+  if (slicesMerged(ledger, parent.taskId)) return { merged: true }
   const seeded =
-    ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined) ||
+    ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined && c.phase !== 'done') ||
     ledger.slicesReleased?.[parent.taskId] !== undefined
   if (seeded)
     return {

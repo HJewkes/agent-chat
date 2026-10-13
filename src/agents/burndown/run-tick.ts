@@ -70,7 +70,8 @@ import {
 import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
-import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
+import { describeSeatEvents, deliverSeatEvents, type HumanItem, type OpenSender } from './seat-deliver.js'
+import { mergedParentFlags } from './slices-complete.js'
 import type { SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
@@ -323,6 +324,7 @@ async function actOn(
     adopt,
     summary,
     humanStepSeats,
+    merged,
   }: Decided,
   now: Date,
   timer: StepTimer,
@@ -370,7 +372,13 @@ async function actOn(
       ...(opts.egress === undefined ? {} : { egress: opts.egress }),
     }),
   )
-  const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
+  const diff = {
+    seats: config.seats,
+    before: ledger,
+    after: leaks.ledger,
+    spawns,
+    human: [...leaks.human, ...merged],
+  }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
   const told = await timer.time('deliver', () =>
@@ -574,6 +582,8 @@ interface Decided {
   summary: SummaryPlan
   /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
   humanStepSeats: LoadedSeat[]
+  /** CC-1049: open tasks whose slices all merged, flagged once to the owner queue. */
+  merged: HumanItem[]
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -731,6 +741,7 @@ async function decide(
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     humanStepSeats: seats?.loaded ?? [],
+    merged: seats === undefined ? [] : mergedParentFlags(ledger, dispatchCtx.tasks),
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
