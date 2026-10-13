@@ -50,6 +50,7 @@ import {
 } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
+import { dailyRetire, dailyRetireDue, type RetireFinishedReply } from './daily-retire.js'
 import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
@@ -176,6 +177,8 @@ export interface TickBroker {
   inboxSince: (name: string, afterId: number) => Promise<InboxMessage[]>
   spawn: (frame: SpawnFrame) => Promise<SpawnReply>
   retire: (name: string) => Promise<SpawnReply>
+  /** TP-1974 c: retires the finished agents `spawner` started, once a day per enrolled seat. */
+  retireFinished: (spawner: string) => Promise<RetireFinishedReply>
   /** The human queue's open items; read only when a decider is configured. */
   queue: () => Promise<QueueItem[]>
   resume: (name: string, message: string) => Promise<SpawnReply>
@@ -349,6 +352,7 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
           p => `would close ${p.initiative} ${p.id}: every slice landed or was released`,
         ),
         ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
+        ...dailyRetireDue(config.seats, ledger.dailyRetire, now).map(s => `would retire finished (${s})`),
         ...notes,
       ],
     }
@@ -399,6 +403,14 @@ async function actOn(
   )
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const routed = await fileSeatHumanSteps(humanStepSeats, config, opts)
+  const retired = await timer.time('daily-retire', () =>
+    dailyRetire(config.seats, ledger.dailyRetire, {
+      retireFinished: opts.broker.retireFinished,
+      seatLog: (seat, text) => appendSeatLog(defaultAutonomyRoot(opts.root), seat, clock(), text),
+      log,
+      now,
+    }),
+  )
   const spawns: SpawnResult[] = []
   const registrations: RegisterRecord[] = []
   const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
@@ -455,6 +467,7 @@ async function actOn(
     writeLedger(burndownLedgerPath(), {
       ...told.ledger,
       lastTickAt: now.toISOString(),
+      ...dailyRetireStamps(told.ledger.dailyRetire, retired.stamps),
       ...(serviceCheck === undefined ? {} : { serviceCheck }),
     })
     writeRefusalSnapshot(burndownRefusalsPath(), refusalSnapshot(outcomes, now))
@@ -462,6 +475,7 @@ async function actOn(
   return {
     lines: [
       ...routed,
+      ...retired.lines,
       ...executed.lines,
       ...adopted,
       ...woken.lines,
@@ -472,6 +486,12 @@ async function actOn(
     summary: { ...summary, now, registrations },
   }
 }
+
+const dailyRetireStamps = (
+  before: Ledger['dailyRetire'],
+  stamps: Record<string, string>,
+): Pick<Ledger, 'dailyRetire'> =>
+  Object.keys(stamps).length === 0 ? {} : { dailyRetire: { ...before, ...stamps } }
 
 /** CC-974: files each seat's due kind:owner and kind:operator task into the owner queue, beside `fileScopeExhausted`. */
 async function fileSeatHumanSteps(
