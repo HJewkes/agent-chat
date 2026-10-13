@@ -94,13 +94,32 @@ export function findClauses(marked: readonly string[], from = 0): FindCall {
 }
 
 /**
- * How the guard must read an allowlisted option's value. `inert` values never reach the command
- * (job counts, timeouts). `evaluated` values are expanded with replacement strings and `{= perl =}`,
- * `replace` values become replacement strings, and `separator` values split the inputs; the guard
- * accepts these only as a literal it read in full, without `{=`, and only once. `argFile` inputs are
- * unread.
+ * How the guard must read an allowlisted option's value. GNU parallel runs some numeric values
+ * through perl `eval` to apply units (`--memfree`, `--delay`, `--timeout`), so a `numeric` value
+ * must be a literal matching its option's grammar in `NUMERIC_GRAMMAR`. `evaluated` values are
+ * expanded with replacement strings and `{= perl =}`, `replace` values become replacement strings,
+ * `separator` values split the inputs, and `argFile` names a file of inputs the guard does not read.
+ * Every kind but `numeric` is accepted only as a literal read in full, without `{=`, and only once.
  */
-type ValueKind = 'inert' | 'evaluated' | 'replace' | 'separator' | 'argFile'
+type ValueKind = 'numeric' | 'evaluated' | 'replace' | 'separator' | 'argFile'
+
+const NUMBER = String.raw`\d+(?:\.\d+)?`
+
+/** One strict shape per numeric option: digits, an optional decimal part and at most one unit. */
+const NUMERIC_GRAMMAR: ReadonlyMap<string, RegExp> = new Map([
+  ['jobs', new RegExp(`^[+-]?${NUMBER}%?$`)],
+  ['max-procs', new RegExp(`^[+-]?${NUMBER}%?$`)],
+  ['halt', /^(?:-?\d+|never|(?:now|soon),(?:fail|success|done)=\d+%?)$/],
+  ['timeout', new RegExp(`^${NUMBER}[smhdw%]?$`)],
+  ['delay', new RegExp(`^${NUMBER}[smhdw]?$`)],
+  ['memfree', new RegExp(`^${NUMBER}[kmgtpezy]?$`, 'i')],
+  ['load', new RegExp(`^${NUMBER}%?$`)],
+  ['retries', /^\d+$/],
+  ['nice', /^-?\d+$/],
+])
+
+/** Options whose value perl opens as a path, where `|`, `<` or `>` would make it run a command. */
+const PATH_OPTIONS: ReadonlySet<string> = new Set(['arg-file', 'joblog', 'results'])
 
 /**
  * An allowlist: only options whose whole effect `ParallelCall` carries or which leave the command
@@ -111,9 +130,7 @@ type ValueKind = 'inert' | 'evaluated' | 'replace' | 'separator' | 'argFile'
  * the leading `--`; one-letter names are short options.
  */
 const PARALLEL_VALUE: ReadonlyMap<string, ValueKind> = new Map([
-  ...['jobs', 'max-procs', 'halt', 'timeout', 'delay', 'memfree', 'load', 'retries', 'nice'].map(
-    name => [name, 'inert'] as const,
-  ),
+  ...[...NUMERIC_GRAMMAR.keys()].map(name => [name, 'numeric'] as const),
   ...['tagstring', 'results', 'joblog'].map(name => [name, 'evaluated'] as const),
   ...['I', 'extensionreplace', 'basenamereplace', 'dirnamereplace', 'seqreplace', 'slotreplace'].map(
     name => [name, 'replace'] as const,
@@ -155,7 +172,7 @@ export interface ParallelCall {
 }
 
 interface ParallelOptions {
-  /** The non-inert value options already read: GNU keeps only the last of a repeated one. */
+  /** The non-numeric value options already read: GNU keeps only the last of a repeated one. */
   seen: Set<string>
   quote: boolean
   argFile: boolean
@@ -204,17 +221,18 @@ function readCluster(word: string, next: string | undefined): Read {
 /** GNU parallel runs the perl in a `{= … =}` string, in the command and in option values alike. */
 const runsPerl = (word: string): boolean => unmark(word).includes('{=')
 
-/** Whether a value of `kind` is one the guard read in full and that runs no perl. */
-function valueIsSafe(kind: ValueKind, value: string): boolean {
-  if (runsPerl(value)) return false
-  if (kind === 'inert' || kind === 'argFile') return true
-  if (hidden(value) || unmark(value) === '') return false
-  return kind !== 'separator' || !unmark(value).startsWith('-')
+/** Whether `value` for option `name` of `kind` is one the guard read in full and that runs no perl. */
+function valueIsSafe(name: string, kind: ValueKind, value: string): boolean {
+  const read = unmark(plain(value))
+  if (kind === 'numeric') return !value.includes(LIVE) && (NUMERIC_GRAMMAR.get(name)?.test(read) ?? false)
+  if (runsPerl(value) || hidden(value) || read === '') return false
+  if (PATH_OPTIONS.has(name) && /[|<>]/.test(read)) return false
+  return kind !== 'separator' || !read.startsWith('-')
 }
 
 /**
  * Folds one read option into `opts`; false when the guard cannot account for it: an unclassified
- * option, a value it may not read, or a repeated non-inert option. A separator spelled like an
+ * option, a value it may not read, or a repeated non-numeric option. A separator spelled like an
  * option is refused too, because Getopt reads it as an option before parallel splits the inputs.
  */
 function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
@@ -223,8 +241,8 @@ function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
     return true
   }
   const kind = PARALLEL_VALUE.get(name)
-  if (kind === undefined || !valueIsSafe(kind, value)) return false
-  if (kind !== 'inert' && opts.seen.has(name)) return false
+  if (kind === undefined || !valueIsSafe(name, kind, value)) return false
+  if (kind !== 'numeric' && opts.seen.has(name)) return false
   opts.seen.add(name)
   const read = unmark(plain(value))
   if (kind === 'argFile') opts.argFile = true

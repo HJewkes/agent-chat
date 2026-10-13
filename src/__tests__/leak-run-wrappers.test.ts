@@ -211,8 +211,42 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     expect(call.inputs).toEqual({ kind: 'literal', groups: [['x']] })
   })
 
-  it('reads a value it cannot see when the value decides nothing', () => {
-    expect(parallel('parallel -j "$N" gzip ::: a').command.map(unmark)).toEqual(['gzip'])
+  it.each([
+    'parallel --memfree 1G --delay 0.5 --timeout 10s --load 80% tool ::: x',
+    'parallel -j 100% -P +2 --retries 3 --nice -5 --timeout 200% tool ::: x',
+    "parallel --memfree '512m' --delay 2 --halt soon,fail=10% tool ::: x",
+  ])('reads numeric values that match their grammar: %s', line => {
+    expect(parallel(line).command.map(unmark)).toEqual(['tool'])
+  })
+
+  it.each(['memfree', 'delay', 'timeout', 'load', 'jobs', 'max-procs', 'halt', 'retries', 'nice'])(
+    'refuses a perl payload or an expansion as --%s',
+    name => {
+      const payload = String.raw`"qx(\164\157\157\154)"`
+      expect(parallelOf(`parallel --${name} ${payload} echo ::: x`)).toEqual({ unknownOption: 0 })
+      expect(parallelOf(`parallel --${name}='qx(tool)' echo ::: x`)).toEqual({ unknownOption: 0 })
+      expect(parallelOf(`parallel --${name} "$X" echo ::: x`)).toEqual({ unknownOption: 0 })
+    },
+  )
+
+  it.each([
+    'parallel -j "$N" tool ::: x',
+    'parallel -j4x tool ::: x',
+    'parallel -P ./procs tool ::: x',
+    'parallel --memfree 1G+1 tool ::: x',
+    'parallel --delay 1s2 tool ::: x',
+    'parallel --timeout 1e3 tool ::: x',
+    "parallel --delay ' 1' tool ::: x",
+  ])('refuses a numeric value off its grammar: %s', line => {
+    expect(parallelOf(line)).toHaveProperty('unknownOption')
+  })
+
+  it.each([
+    "parallel -a 'tool|' echo",
+    "parallel --joblog '>out' echo ::: x",
+    "parallel --results 'a|b' echo ::: x",
+  ])('refuses a path perl may open as a command: %s', line => {
+    expect(parallelOf(line)).toHaveProperty('unknownOption')
   })
 })
 
