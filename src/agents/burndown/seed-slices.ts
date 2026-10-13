@@ -5,6 +5,8 @@ import { planPathFor } from './brief.js'
 import type { Step } from './execute.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
+import { adoptOffLedger, seatDispatchRecords, type SliceRuns } from './off-ledger-adopt.js'
+import { defaultAutonomyRoot } from './policy.js'
 import { readSlices, type PlannedSlice } from './report.js'
 import { slicesSettled } from './slices-complete.js'
 
@@ -15,23 +17,50 @@ import { slicesSettled } from './slices-complete.js'
  * the lint blocks the task rather than being planned over. Pure but for `diskPlanReader`.
  */
 
-/** A task's plan file: its path, and its text when the file exists. */
+/**
+ * A task's plan file: its path, and its text when the file exists. Read for a seat, it also carries the slice
+ * agents that seat's dispatch log shows for the task (CC-1233), or why the log could not be read, since the
+ * tick hands the drift resync only a plan reader.
+ */
 export interface PlanFile {
   path: string
   text: string | undefined
+  ranOffLedger?: string[]
+  runsUnread?: string
 }
 
-export type PlanReader = (initiative: string, taskId: string) => PlanFile
+/** The seat whose dispatch log names the task's slice agents. */
+export interface SeatRef {
+  seat: string
+  prefix: string
+}
+
+export type PlanReader = (initiative: string, taskId: string, seat?: SeatRef) => PlanFile
+
+const planText = (file: string): string | undefined => {
+  try {
+    return fs.readFileSync(file, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+function seatRuns(autonomyRoot: string, taskId: string, { seat, prefix }: SeatRef): Partial<PlanFile> {
+  try {
+    return { ranOffLedger: sliceRunsIn(seatDispatchRecords(autonomyRoot, seat) ?? [], taskId, prefix) }
+  } catch (err) {
+    return {
+      runsUnread: `slice runs unread for seat ${seat}: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
 
 export const diskPlanReader =
-  (root: string): PlanReader =>
-  (initiative, taskId) => {
+  (root: string, autonomyRoot?: string): PlanReader =>
+  (initiative, taskId, seat) => {
     const file = planPathFor(path.join(root, initiative), taskId)
-    try {
-      return { path: file, text: fs.readFileSync(file, 'utf8') }
-    } catch {
-      return { path: file, text: undefined }
-    }
+    const runs = seat === undefined ? {} : seatRuns(autonomyRoot ?? defaultAutonomyRoot(root), taskId, seat)
+    return { path: file, text: planText(file), ...runs }
   }
 
 type Parent = Pick<Claim, 'taskId' | 'initiative' | 'seat' | 'namePrefix'>
@@ -60,12 +89,14 @@ export const seedSteps = (seeds: readonly Claim[] = []): Step[] =>
   seeds.length === 0 ? [] : [{ kind: 'ledger', actions: [{ kind: 'add', claims: [...seeds] }] }]
 
 /** `warnings` are the slice lint's advisory lines (CC-1155); they never block seeding. */
+/** `notes` say how each slice run outside the ledger was adopted or left alone (CC-1233). */
 /** `merged`: every slice of the task is done, so there is nothing to seed and nothing to refuse (CC-1049). */
 export type Seeding =
-  { claims: Claim[]; plan: string; warnings: string[] } | { blocked: string } | { merged: true }
+  | { claims: Claim[]; plan: string; warnings: string[]; notes: string[] }
+  | { blocked: string }
+  | { merged: true }
 
-/** The slice agents already run for a task, by name (CC-1121 b). */
-export type SliceRuns = (taskId: string) => string[]
+export type { SliceRuns }
 
 const escaped = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -81,7 +112,9 @@ export function sliceRunsIn(records: readonly DispatchRecord[], taskId: string, 
 
 /**
  * The task's slices from its plan file, why the plan blocks it, or undefined when there is no
- * plan file and the planner runs as before. A task whose slices already ran, or had one released, is not seeded twice.
+ * plan file and the planner runs as before. A task whose slices were queued, or had one released, is not seeded
+ * twice; CC-1233: slices whose agents ran outside the ledger are adopted by their branch PRs, and seeding waits a
+ * tick while any of those PRs could not be read.
  */
 export function seedSlices(
   parent: Parent,
@@ -99,15 +132,16 @@ export function seedSlices(
     return {
       blocked: `${plan.path}: slices of ${parent.taskId} were already queued; close the task or replan it`,
     }
-  const ran = ranOffLedger?.(parent.taskId) ?? []
-  if (ran.length > 0)
-    return {
-      blocked: `${plan.path}: slice agents of ${parent.taskId} already ran outside the ledger (${ran.join(', ')}); seed by hand or close the task`,
-    }
   const read = readSlices(plan.text)
-  return read.slices === undefined
-    ? { blocked: `${plan.path}: ${read.problems.join('; ')}` }
-    : { claims: sliceClaims(parent, read.slices, now), plan: plan.path, warnings: read.warnings }
+  if (read.slices === undefined) return { blocked: `${plan.path}: ${read.problems.join('; ')}` }
+  const runs = ranOffLedger?.(parent.taskId, parent.initiative) ?? []
+  const unread = runs.filter(r => r.pr === undefined).map(r => r.agent)
+  if (unread.length > 0)
+    return {
+      blocked: `${plan.path}: could not read the branch PRs of ${unread.join(', ')}, slice agents of ${parent.taskId} that ran outside the ledger; seeding waits a tick`,
+    }
+  const { claims, notes } = adoptOffLedger(sliceClaims(parent, read.slices, now), runs)
+  return { claims, plan: plan.path, warnings: read.warnings, notes }
 }
 
 /** CC-977: the update actions that carry an edited plan into its queued slice claims, and a note for each change or drift. */
@@ -153,6 +187,19 @@ function resyncClaim(claim: Claim, slice: PlannedSlice, plan: string): Resync {
 const isWaiting = (c: Claim): boolean =>
   c.phase === 'queued' && c.agentName === undefined && c.pr === undefined
 
+/**
+ * CC-1233: why the resync holds a new slice rather than queue it: the seat's dispatch log shows its
+ * `<prefix>-<id>-<slice>` agent, or the log could not be read, which holds every new slice. A claim with no seat
+ * names no log, so none ran.
+ */
+function heldBy(plan: PlanFile): (slice: string) => string | undefined {
+  return slice => {
+    if (plan.runsUnread !== undefined) return plan.runsUnread
+    const agent = (plan.ranOffLedger ?? []).find(a => a.slice(-1) === slice)
+    return agent === undefined ? undefined : `its agent ${agent} ran outside the ledger`
+  }
+}
+
 function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, now: Date): Resync {
   const { initiative, taskId } = claims[0] as Claim
   if (plan.text === undefined) return { actions: [], notes: [] }
@@ -166,7 +213,10 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
     }
   const inPlan = new Set(read.slices.map(s => s.n))
   const known = new Set([...claims.map(c => c.slice), ...(ledger.slicesReleased?.[taskId] ?? [])])
-  const fresh = read.slices.filter(s => !known.has(s.n))
+  const unclaimed = read.slices.filter(s => !known.has(s.n))
+  const why = heldBy(plan)
+  const fresh = unclaimed.filter(s => why(s.n) === undefined)
+  const held = unclaimed.filter(s => !fresh.includes(s))
   const removed = claims.filter(c => !inPlan.has(c.slice as string))
   const dropped = removed.filter(isWaiting)
   const stuck = removed.filter(c => c.phase !== 'done' && !isWaiting(c))
@@ -185,6 +235,10 @@ function resyncTask(ledger: Ledger, claims: readonly Claim[], plan: PlanFile, no
     actions: [...adds, ...drops, ...each.flatMap(r => r.actions)],
     notes: [
       ...fresh.map(s => `plan drift ${initiative} ${taskId}: queued new slice ${s.n} from ${plan.path}`),
+      ...held.map(
+        s =>
+          `plan drift ${initiative} ${taskId}: did not queue new slice ${s.n} from ${plan.path}: ${why(s.n) as string}`,
+      ),
       ...dropped.map(
         c =>
           `plan drift ${initiative} ${taskId}: dropped queued slice ${c.slice} that ${plan.path} no longer lists`,
@@ -213,10 +267,15 @@ export function resyncQueuedSlices(ledger: Ledger, readPlan: PlanReader, now: Da
   }
   const each = [...tasks.values()]
     .filter(claims => claims.some(c => c.phase !== 'done'))
-    .map(claims =>
-      resyncTask(ledger, claims, readPlan((claims[0] as Claim).initiative, (claims[0] as Claim).taskId), now),
-    )
+    .map(claims => resyncTask(ledger, claims, readPlan(...planOf(claims[0] as Claim)), now))
   return { actions: each.flatMap(r => r.actions), notes: each.flatMap(r => r.notes) }
+}
+
+/** The claim's plan, read with its seat's dispatch log when it has a seat (CC-1233). */
+function planOf({ initiative, taskId, seat, namePrefix }: Claim): Parameters<PlanReader> {
+  return seat === undefined || namePrefix === undefined
+    ? [initiative, taskId]
+    : [initiative, taskId, { seat, prefix: namePrefix }]
 }
 
 /** The resync's ledger step, written before any seeding or dispatch in the same tick. */

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { profilesDir } from '../paths.js'
 import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
+import { PROBE_SANDBOX_RULE } from './return-contract-blocks.js'
 import {
   AGENT_ROLES,
   EFFORT_LEVELS,
@@ -135,7 +136,9 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' },
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
-      'Do not fix what you find unless asked.',
+      'Do not fix what you find unless asked. ' +
+      // In the prelude, not only the contract block: CLI, resumed and return_contract none launches get no block.
+      PROBE_SANDBOX_RULE,
   },
   {
     name: 'implementer',
