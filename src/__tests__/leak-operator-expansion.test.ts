@@ -44,6 +44,10 @@ describe('a ${...} expansion with an operator or flag on a gh line (CC-718)', ()
     'echo ${X:-${Y}}',
     'echo ${X:-$(true)}',
     'echo ${(e)X}',
+    `echo \${X:-{} #}; g''h pr create -t ${TERM} -b ok`,
+    `echo "\${X:-{} #}"; g''h pr create -t x -b ok`,
+    'echo ${X:-{a} b}',
+    'echo ${X:-{a',
   ])('denies %j on any line, since what follows the expansion is not what the shell runs', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.operatorExpansion)
   })
@@ -54,6 +58,7 @@ describe('a ${...} expansion with an operator or flag on a gh line (CC-718)', ()
     'echo "${T}" ${1}; gh pr create -t x -b ok',
     'echo ${HOME} ${1} ${10} $x "${HOME}"; gh pr create -t x -b ok',
     'echo ${X:-y} ${#X} ${X%.md}',
+    'echo ${X:-a{1,2}} ${X:-{a}}',
   ])('allows %j', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

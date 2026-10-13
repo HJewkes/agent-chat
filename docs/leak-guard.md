@@ -392,7 +392,10 @@ The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718
 `echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
 command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
 function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
-`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. A line that names `gh` (which
+`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. It is also denied when the
+expansion holds a nested `{` and zsh, which counts nested braces, finds the close past a blank, a
+quote or an operator, as in `${X:-{} #}`, or finds no close at all. `${X:-python{3,}}` keeps one
+word under either close and is not affected. A line that names `gh` (which
 includes `agent-chat gh-write`) is also denied for any other `${...}` that is not `${NAME}` or
 `${1}`: one with an operator such as `:-`, `#`, `%`, `/`, `^` or `,`, or with a leading `#` or `!`.
 `$x`, `${HOME}` and `${10}` stay allowed everywhere. Inside single quotes, as in `-b '${X:-y}'`, the

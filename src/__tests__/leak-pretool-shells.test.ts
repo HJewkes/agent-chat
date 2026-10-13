@@ -187,16 +187,18 @@ const HIDDEN_BY_EXPANSION = [
   `${MISREAD} eval 'g''h ${POST_TERM}'`,
   `${MISREAD} f(){ g''h "$@";}; f ${POST_TERM}`,
 ]
-// zsh's (e) flag runs the assignment, which defines foo; bash rejects the flag and posts nothing.
-const ZSH_FLAG_ASSIGNS = [
+// Only zsh posts these: its (e) flag runs the assignment, which defines foo, and it counts the nested
+// `{`, so the `#` is inside the expansion. bash rejects the flag, and reads the `#` as a comment.
+const ZSH_POSTS = [
   `X='\${functions[gh]::=command gh ${POST_TERM}}'; : \${(e)X}; gh pr view`,
   `X='\${functions[foo]::=command g''h ${POST_TERM}}'; : \${(e)X}; foo`,
+  `echo \${X:-{} #}; g''h ${POST_TERM}`,
 ]
 
 const DENIED = [
   ...COPIED_ONTO_STDIN,
   ...HIDDEN_BY_EXPANSION,
-  ...ZSH_FLAG_ASSIGNS,
+  ...ZSH_POSTS,
   ...HIDDEN_BEHIND_OPTION,
   `${COMMENT} <<'EOF' ${OPEN3} 0<&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} <&3\nclean\nEOF`,
@@ -291,7 +293,7 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
     for (const record of posted(`${EVIL} | ${CREATE} 3${HEREDOC}`)) expect(record).toContain(TERM)
   })
 
-  it.each([...HIDDEN_BY_EXPANSION, ...ZSH_FLAG_ASSIGNS])(
+  it.each([...HIDDEN_BY_EXPANSION, ...ZSH_POSTS])(
     'denies %j through the hook entry, and a shell posts the term when run',
     command => {
       const raw = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: WORK })
@@ -301,7 +303,7 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
 
       expect(decision.hookSpecificOutput.permissionDecision).toBe('deny')
       expect(decision.hookSpecificOutput.permissionDecisionReason).toBe(REASONS.operatorExpansion)
-      const runnable = !ZSH_FLAG_ASSIGNS.includes(command) || SHELLS.some(([shell]) => shell.endsWith('zsh'))
+      const runnable = !ZSH_POSTS.includes(command) || SHELLS.some(([shell]) => shell.endsWith('zsh'))
       if (runnable) expect(posted(command).some(record => record.includes(TERM))).toBe(true)
     },
   )

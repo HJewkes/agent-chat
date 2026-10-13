@@ -75,14 +75,34 @@ interface Budget {
 
 /**
  * `operator`: a `${...}` with an operator, a leading `#` or `!`, which the splitter reads up to its
- * first `}`. `unreadable`: one holding a quote, an escape, a nested `$` or a zsh flag group, where
- * that first `}` may not be the shell's, so the rest of the line is not what the shell runs.
+ * first `}`. `unreadable`: one holding a quote, an escape, a nested `$` or a zsh flag group, or a nested
+ * `{` whose close zsh finds past a blank, quote or operator, where that first `}` may not be the shell's,
+ * so the rest of the line is not what the shell runs.
  */
 export type ExpansionRisk = 'operator' | 'unreadable'
 
 // The only `${...}` forms the splitter reads as the shell does.
 const PLAIN_BRACED = /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*|\d+)\}$/
-const UNREADABLE_BRACED = /^\$\{\(|['"`\\]|.\$/
+const UNREADABLE_BRACED = /^\$\{(?:\(|[\s\S]*\$)|['"`\\]/
+// Text that keeps one word whichever `}` closes the expansion.
+const SAME_WORD = /^[^\s'"`\\$#;&|<>()]*$/
+
+/** Where zsh closes the `${` at `start`: it counts nested braces, where bash and the splitter stop at the first `}`. */
+function nestedClose(src: string, start: number): number {
+  let depth = 0
+  for (let i = start + 1; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}' && --depth === 0) return i
+  }
+  return -1
+}
+
+function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
+  if (UNREADABLE_BRACED.test(text)) return 'unreadable'
+  const close = nestedClose(src, start)
+  if (close < 0 || !SAME_WORD.test(src.slice(start + text.length, close + 1))) return 'unreadable'
+  return PLAIN_BRACED.test(text) ? undefined : 'operator'
+}
 
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
@@ -418,8 +438,9 @@ class ShellLexer {
   private bracedAt(): string {
     const end = this.src.indexOf('}', this.pos)
     const text = this.src.slice(this.pos, end < 0 ? this.src.length : end + 1)
-    if (UNREADABLE_BRACED.test(text)) this.budget.expansion = 'unreadable'
-    else if (!PLAIN_BRACED.test(text)) this.budget.expansion ??= 'operator'
+    const risk = bracedRisk(this.src, this.pos, text)
+    if (risk === 'unreadable') this.budget.expansion = risk
+    else if (risk !== undefined) this.budget.expansion ??= risk
     return text
   }
 
