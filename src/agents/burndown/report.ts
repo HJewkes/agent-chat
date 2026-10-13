@@ -66,6 +66,14 @@ export const Contract = z.object({
 })
 export type Contract = z.infer<typeof Contract>
 
+/** CC-1259: one open PR the slice may share one exact owns path with, because the planner read both edits as line-local. */
+export const AcceptedOverlap = z.object({
+  pr: z.number().int().positive(),
+  path: z.string().min(1),
+  why: z.string().trim().min(1),
+})
+export type AcceptedOverlap = z.infer<typeof AcceptedOverlap>
+
 const PlannedSlice = z.object({
   n: z.string().min(1),
   title: z.string(),
@@ -80,6 +88,8 @@ const PlannedSlice = z.object({
   ops: z.array(z.enum(OPS)).optional(),
   /** CC-1155: the semantic reason a slice waits on one whose owns it does not share. */
   dependsWhy: z.string().optional(),
+  /** CC-1259: file-overlaps with an open PR the planner accepted; every other overlap still refuses. */
+  overlapsAccepted: z.array(AcceptedOverlap).optional(),
 })
 /** `contracts` is optional on the type so fixtures built by hand stay valid; `readSlices` always fills it. */
 export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { contracts?: Contract[] }
