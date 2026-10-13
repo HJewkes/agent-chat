@@ -656,7 +656,7 @@ function slicesLanded(
   const reads = [...new Set(named.length > 0 ? named : fallback)].map(repo =>
     days === undefined ? { repo, subjects: undefined, titles: [] } : { repo, ...read(repo, days) },
   )
-  const slices = { done: claims.length, released: ledger.slicesReleased?.[id]?.length ?? 0 }
+  const slices = { done: claims.flatMap(c => c.slice ?? []), released: ledger.slicesReleased?.[id] ?? [] }
   return (
     reads.length > 0 &&
     releasedSlicesLanded(

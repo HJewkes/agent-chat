@@ -3206,7 +3206,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it('closes the parent once, however many ticks follow', async () => {
     releasedParent()
-    land('DM-1: first slice', 'DM-1 b: second slice')
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
     const { calls, done } = doneCalls()
 
     await tickWith(done)
@@ -3217,7 +3217,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it('only flags a parent whose released slice has no commit on the default branch', async () => {
     releasedParent()
-    land('DM-1: first slice')
+    land('DM-1 a: first slice')
     const { calls, done } = doneCalls()
 
     await tickWith(done)
@@ -3226,9 +3226,19 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
     expect(readLedger(burndownLedgerPath()).slicesFlagged).toEqual(['demo/DM-1:released'])
   })
 
+  it('leaves a parent open when the second commit is a typo fix opening with the id', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1: fix typo in docs')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
   it('leaves a parent open when a slice commit was reverted', async () => {
     releasedParent()
-    land('DM-1: first slice', 'Revert "DM-1: first slice"')
+    land('DM-1 a: first slice', 'DM-1 b: second slice', 'Revert "DM-1 b: second slice"')
     const { calls, done } = doneCalls()
 
     await tickWith(done)
@@ -3238,7 +3248,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it("leaves a parent open when the second commit belongs to another task's subject", async () => {
     releasedParent()
-    land('DM-1: first slice', 'DM-9: follow-up filed from DM-1')
+    land('DM-1 a: first slice', 'DM-9: follow-up filed from DM-1')
     const { calls, done } = doneCalls()
 
     await tickWith(done)
@@ -3248,7 +3258,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it('leaves a parent open when the open-PR read fails', async () => {
     releasedParent()
-    land('DM-1: first slice', 'DM-1 b: second slice')
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
     const { calls, done } = doneCalls()
 
     await tickWith(
@@ -3261,7 +3271,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it('leaves a parent open when its repo cannot be read', async () => {
     releasedParent()
-    land('DM-1: first slice', 'DM-1 b: second slice')
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
     const unreadable: Runner = (bin, args, cwd) =>
       bin === GIT_BIN && args.includes('fetch')
         ? { status: 1, stdout: '', stderr: '' }
@@ -3275,7 +3285,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
 
   it('leaves a parent open while an open PR title names it', async () => {
     releasedParent()
-    land('DM-1: first slice', 'DM-1 b: second slice')
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
     const pr = { number: 9, title: 'DM-1 c: more', branch: 'x', body: '' }
     const exec = stubGh(() => ({ status: 0, stdout: JSON.stringify(pr) }))
     const { calls, done } = doneCalls()
