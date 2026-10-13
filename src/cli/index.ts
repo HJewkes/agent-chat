@@ -19,6 +19,7 @@ import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
 import { askVerb, USAGE_EXIT } from './verbs/ask.js'
+import { countsVerb } from './verbs/counts.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
@@ -235,6 +236,7 @@ function addAgentCommands(program: Command): void {
 
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
   addVerb(program, ghCallsVerb, { helpGroup: AGENTS })
+  addVerb(program, countsVerb, { helpGroup: AGENTS })
 
   program
     .command('gh-write <gh-args...>')

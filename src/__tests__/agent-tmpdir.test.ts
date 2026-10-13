@@ -6,6 +6,7 @@ import type { AgentIdentity } from '../protocol.js'
 import { agentEnv } from '../agents/agent-env.js'
 import {
   agentTmpPath,
+  diskTmpRoot,
   ensureAgentTmpDir,
   realTmpFs,
   removeAgentTmpDir,
@@ -227,6 +228,36 @@ describe('a per-agent TMPDIR under the on-disk root (CC-1184)', () => {
   })
 })
 
+describe('a per-agent harness dir under the on-disk harness root (CC-1266)', () => {
+  const HARNESS_ROOT = '/home/example/.cache/agent-chat/harness'
+  const HARNESS_DIR = `${HARNESS_ROOT}/ac-worker-4242`
+  const request = (fs: FakeFs, root: string) =>
+    ({ name: 'worker', pid: 4242, root, platform: 'linux', fs, uid: UID }) as const
+
+  it('builds the leaf under the harness root', () => {
+    expect(agentTmpPath('worker', 4242, HARNESS_ROOT)).toBe(HARNESS_DIR)
+  })
+
+  it('creates the root and then the dir, both 0700', () => {
+    const fs = new FakeFs()
+
+    expect(ensureAgentTmpDir(request(fs, HARNESS_ROOT))).toBe(HARNESS_DIR)
+    expect(fs.made).toEqual([
+      [HARNESS_ROOT, 0o700],
+      [HARNESS_DIR, 0o700],
+    ])
+  })
+
+  it('refuses a root that only resembles the harness root', () => {
+    for (const root of [`${HARNESS_ROOT}X`, `${HARNESS_ROOT}/../tmp`, `${HARNESS_ROOT}/`]) {
+      const fs = new FakeFs()
+      expect(ensureAgentTmpDir(request(fs, root)), root).toBeUndefined()
+      expect(agentTmpPath('worker', 4242, root), root).toBeUndefined()
+      expect(fs.made, root).toEqual([])
+    }
+  })
+})
+
 describe('agentEnv with an agent launch', () => {
   const linux = (fs: FakeFs) => ({ name: 'worker', pid: 4242, platform: 'linux' as const, fs, uid: UID })
 
@@ -248,7 +279,7 @@ describe('agentEnv with an agent launch', () => {
     const env = agentEnv(parent, { agentTmp: linux(fs) })
 
     expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([DIR, DIR, DIR])
-    expect(fs.made).toEqual([[DIR, 0o700]])
+    expect(fs.made.filter(([dir]) => dir.startsWith('/tmp/'))).toEqual([[DIR, 0o700]])
   })
 
   it('never passes another agent’s dir on, even when its own cannot be made', () => {
@@ -274,7 +305,7 @@ describe('agentEnv with an agent launch', () => {
     )
 
     expect(env.TMPDIR).toBe('/home/example/.cache/rounds')
-    expect(fs.made).toEqual([])
+    expect(fs.made.filter(([dir]) => dir.startsWith('/tmp/'))).toEqual([])
   })
 
   it('keeps the macOS user temp dir', () => {
@@ -293,6 +324,81 @@ describe('agentEnv with an agent launch', () => {
     const env = agentEnv({ TMPDIR: '/tmp' }, { agentTmp: linux(new FakeFs().add(DIR, 'symlink')) })
 
     expect(env.TMPDIR).toBe('/tmp')
+  })
+})
+
+describe('agentEnv harness dir (CC-1266)', () => {
+  const HOME = '/home/example'
+  const HARNESS_DIR = `${HOME}/.cache/agent-chat/harness/ac-worker-4242`
+  const linux = (fs: FakeFs, root?: string) =>
+    ({
+      name: 'worker',
+      pid: 4242,
+      platform: 'linux',
+      fs,
+      uid: UID,
+      ...(root === undefined ? {} : { root }),
+    }) as const
+  const apart = (a: string | undefined, b: string | undefined): boolean =>
+    a !== undefined && b !== undefined && a !== b && !a.startsWith(`${b}/`) && !b.startsWith(`${a}/`)
+
+  it('puts the harness dir on disk, apart from a /tmp scratch dir', () => {
+    const fs = new FakeFs()
+
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(fs) })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+    expect(env.TMPDIR).toBe(DIR)
+    expect(apart(env.CLAUDE_CODE_TMPDIR, env.TMPDIR)).toBe(true)
+    expect(fs.made).toContainEqual([HARNESS_DIR, 0o700])
+  })
+
+  it('keeps the harness dir apart from scratch on the disk root', () => {
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(new FakeFs(), diskTmpRoot(HOME)) })
+
+    expect(env.TMPDIR).toBe(DISK_DIR)
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+    expect(apart(env.CLAUDE_CODE_TMPDIR, env.TMPDIR)).toBe(true)
+  })
+
+  it('replaces another launch’s harness dir with its own', () => {
+    const parent = { HOME, CLAUDE_CODE_TMPDIR: `${HOME}/.cache/agent-chat/harness/ac-lead-123` }
+
+    const env = agentEnv(parent, { agentTmp: linux(new FakeFs()), tmpDir: () => '/tmp' })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+  })
+
+  it('keeps an operator’s CLAUDE_CODE_TMPDIR and makes no harness dir', () => {
+    const fs = new FakeFs()
+
+    const env = agentEnv(
+      { HOME, CLAUDE_CODE_TMPDIR: `${HOME}/cc` },
+      { agentTmp: linux(fs), tmpDir: () => '/tmp' },
+    )
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(`${HOME}/cc`)
+    expect(fs.made.filter(([dir]) => dir.includes('/harness'))).toEqual([])
+  })
+
+  it('leaves it unset when the harness dir cannot be made, without touching TMPDIR', () => {
+    const fs = new FakeFs().add(HARNESS_DIR, 'symlink')
+
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(fs) })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBeUndefined()
+    expect(env.TMPDIR).toBe(DIR)
+  })
+
+  it('leaves it unset off Linux or for an env with no launch', () => {
+    const darwin = agentEnv(
+      { HOME },
+      { agentTmp: { ...linux(new FakeFs()), platform: 'darwin' }, tmpDir: () => '/x' },
+    )
+    const none = agentEnv({ HOME }, { tmpDir: () => '/tmp' })
+
+    expect(darwin.CLAUDE_CODE_TMPDIR).toBeUndefined()
+    expect(none.CLAUDE_CODE_TMPDIR).toBeUndefined()
   })
 })
 
@@ -633,6 +739,22 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
 
     expect(fs.removed).toEqual([dir])
     expect(events).toContainEqual(['tmpdir_removed', expect.objectContaining({ source: 'sweep', path: dir })])
+  })
+
+  it('removes a finished agent’s harness dir and keeps a live agent’s (CC-1266)', () => {
+    const harness = '/home/example/.cache/agent-chat/harness'
+    const fs = new FakeFs().add(harness).add(`${harness}/ac-worker-4242`).add(`${harness}/ac-lead-77`)
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited'), row('a2', 'lead', 'live')],
+      now: () => now,
+      ...deps(fs),
+      log: () => undefined,
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([`${harness}/ac-worker-4242`])
+    expect(fs.nodes.has(`${harness}/ac-lead-77`)).toBe(true)
   })
 
   it('skips a root that does not exist', () => {

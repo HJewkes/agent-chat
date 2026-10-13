@@ -9,6 +9,7 @@ import {
   burndownOverridePath,
   burndownOwedHoldsPath,
   burndownPausePath,
+  burndownShadowDir,
   burndownTickStatusPath,
   burndownTicksPath,
 } from '../../paths.js'
@@ -25,7 +26,7 @@ import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
-import { verifySection } from './brief.js'
+import { briefFacts } from './brief.js'
 import {
   autoApprovePortsOn,
   briefAnswered,
@@ -49,6 +50,7 @@ import {
 } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
+import { dailyRetire, dailyRetireDue, type RetireFinishedReply } from './daily-retire.js'
 import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
@@ -107,6 +109,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { burndownRefusalsPath, refusalSnapshot, writeRefusalSnapshot } from './refusal-snapshot.js'
 import {
   diskPlanReader,
   pendingOffLedger,
@@ -115,6 +118,7 @@ import {
   seedSteps,
 } from './seed-slices.js'
 import { seatPrReader } from './off-ledger-adopt.js'
+import { shadowDecisions, writeShadowRecord, type ShadowCapture } from './shadow-record.js'
 import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
@@ -173,6 +177,8 @@ export interface TickBroker {
   inboxSince: (name: string, afterId: number) => Promise<InboxMessage[]>
   spawn: (frame: SpawnFrame) => Promise<SpawnReply>
   retire: (name: string) => Promise<SpawnReply>
+  /** TP-1974 c: retires the finished agents `spawner` started, once a day per enrolled seat. */
+  retireFinished: (spawner: string) => Promise<RetireFinishedReply>
   /** The human queue's open items; read only when a decider is configured. */
   queue: () => Promise<QueueItem[]>
   resume: (name: string, message: string) => Promise<SpawnReply>
@@ -293,11 +299,13 @@ async function tickOnce(opts: TickOptions): Promise<TickResult> {
       lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
       outcome: { kind: 'skipped' },
     }
-  const { lines, summary, lockHeldMs } = locked.value
+  const { lines, summary, lockHeldMs, shadow } = locked.value
   if (summary !== undefined) {
     const timings = { durationMs: Math.round(monotonic() - started), lockHeldMs, steps: timer.steps() }
     appendTickSummary(tickSummary(summary, timings), opts.log ?? logEvent)
   }
+  if (shadow !== undefined && summary !== undefined && gate.config.shadowOut)
+    recordShadow(shadow, summary.now, opts.log ?? logEvent)
   return { lines: [...gate.head, ...lines], outcome: { kind: 'ok' } }
 }
 
@@ -305,11 +313,23 @@ interface Ran {
   lines: string[]
   /** A real tick's summary row inputs; a dry run has none. */
   summary?: SummaryInputs
+  /** CC-1193: a real tick's ledger as read and its decisions, for the shadow record. */
+  shadow?: ShadowCapture
+}
+
+/** Best effort: a record that cannot be written is an event, never a failed tick. */
+function recordShadow(shadow: ShadowCapture, now: Date, log: NonNullable<TickOptions['log']>): void {
+  try {
+    writeShadowRecord(burndownShadowDir(), shadow, now)
+  } catch (err) {
+    log('burndown_shadow_record_failed', { reason: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer): Promise<Ran> {
   const now = opts.now ?? new Date()
   const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
+  const ledgerText = JSON.stringify(ledger)
   const briefs = await timer.time('brief-approve', () => settleBriefs(config, opts, now))
   const decided = await decide(config, opts, ledger, now, timer, briefs.routes)
   const { steps, decider } = decided
@@ -332,14 +352,17 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
           p => `would close ${p.initiative} ${p.id}: every slice landed or was released`,
         ),
         ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
+        ...dailyRetireDue(config.seats, ledger.dailyRetire, now).map(s => `would retire finished (${s})`),
         ...notes,
       ],
     }
   }
   const acted = await actOn(config, opts, ledger, decided, now, timer)
+  const decisions = shadowDecisions({ steps: steps.map(describe), briefs, decided })
   return {
     lines: [`burndown tick at ${now.toISOString()}`, ...acted.lines, ...notes],
     summary: acted.summary,
+    shadow: { ledgerText, config, decisions },
   }
 }
 
@@ -380,6 +403,14 @@ async function actOn(
   )
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const routed = await fileSeatHumanSteps(humanStepSeats, config, opts)
+  const retired = await timer.time('daily-retire', () =>
+    dailyRetire(config.seats, ledger.dailyRetire, {
+      retireFinished: opts.broker.retireFinished,
+      seatLog: (seat, text) => appendSeatLog(defaultAutonomyRoot(opts.root), seat, clock(), text),
+      log,
+      now,
+    }),
+  )
   const spawns: SpawnResult[] = []
   const registrations: RegisterRecord[] = []
   const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
@@ -432,16 +463,19 @@ async function actOn(
   const told = await timer.time('deliver', () =>
     deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch }),
   )
-  await timer.time('write-ledger', () =>
+  await timer.time('write-ledger', () => {
     writeLedger(burndownLedgerPath(), {
       ...told.ledger,
       lastTickAt: now.toISOString(),
+      ...dailyRetireStamps(told.ledger.dailyRetire, retired.stamps),
       ...(serviceCheck === undefined ? {} : { serviceCheck }),
-    }),
-  )
+    })
+    writeRefusalSnapshot(burndownRefusalsPath(), refusalSnapshot(outcomes, now))
+  })
   return {
     lines: [
       ...routed,
+      ...retired.lines,
       ...executed.lines,
       ...adopted,
       ...woken.lines,
@@ -452,6 +486,12 @@ async function actOn(
     summary: { ...summary, now, registrations },
   }
 }
+
+const dailyRetireStamps = (
+  before: Ledger['dailyRetire'],
+  stamps: Record<string, string>,
+): Pick<Ledger, 'dailyRetire'> =>
+  Object.keys(stamps).length === 0 ? {} : { dailyRetire: { ...before, ...stamps } }
 
 /** CC-974: files each seat's due kind:owner and kind:operator task into the owner queue, beside `fileScopeExhausted`. */
 async function fileSeatHumanSteps(
@@ -1232,7 +1272,7 @@ function stepContext(
   now: Date,
   root: string,
 ): Omit<StepContext, 'running'> {
-  const facts = new Map<string, { defaultBranch: string; verifySteps?: string }>()
+  const facts = new Map<string, RepoFacts>()
   return {
     now,
     root,
@@ -1252,10 +1292,10 @@ function stepContext(
   }
 }
 
-function repoFacts(repo: string): { defaultBranch: string; verifySteps?: string } {
-  const claudeMd = readOrUndefined(path.join(repo, 'CLAUDE.md'))
-  const verifySteps = claudeMd === undefined ? undefined : verifySection(claudeMd)
-  return { defaultBranch: defaultBranch(repo), ...(verifySteps === undefined ? {} : { verifySteps }) }
+type RepoFacts = ReturnType<StepContext['repoFacts']>
+
+function repoFacts(repo: string): RepoFacts {
+  return { defaultBranch: defaultBranch(repo), ...briefFacts(readOrUndefined(path.join(repo, 'CLAUDE.md'))) }
 }
 
 /** The gate for a successor or reviewer, which run on opus: a sonnet-only account is closed to them. */

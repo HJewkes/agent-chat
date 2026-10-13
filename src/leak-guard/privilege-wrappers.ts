@@ -1,0 +1,246 @@
+/**
+ * Option parsers for the privilege wrappers other than sudo: doas, run0, pkexec and su (CC-1218).
+ * Each returns where the command it runs starts, or the words of the shell it runs instead, so
+ * the guard can read that command. An option a table here does not know, an option with no value,
+ * and any option word or value the shell expands give undefined: the caller denies rather than
+ * guess where the command starts (an empty unquoted `-u $U` shifts every word after it).
+ * Tables: run0 (systemd 259) and su (util-linux) from `--help`, pkexec (polkit 127) from its usage,
+ * doas from the OpenBSD and opendoas getopt string `+a:C:Lnsu:` (UNVERIFIED on this box).
+ */
+
+import { LIVE } from './shell-words.js'
+
+/** The command's first word, or the argv of the shell the wrapper hands the command to. */
+export type PrivilegeRun = { at: number } | { shell: string[] }
+
+export interface OptionTable {
+  shortValue: string
+  shortFlag: string
+  /** Letters that run the command through the target user's shell. */
+  shortShell: string
+  longValue: ReadonlySet<string>
+  longFlag: ReadonlySet<string>
+  longShell: ReadonlySet<string>
+  /** Whether a long option takes its value glued as `--name=value`; pkexec matches whole words only. */
+  gluedLong: boolean
+  /** Whether the wrapper with no command runs the target user's shell. */
+  bareShell: boolean
+}
+
+const DOAS: OptionTable = {
+  shortValue: 'aCu',
+  shortFlag: 'Ln',
+  shortShell: 's',
+  longValue: new Set(),
+  longFlag: new Set(),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: false,
+}
+
+const RUN0: OptionTable = {
+  shortValue: 'ugD',
+  shortFlag: 'hV',
+  shortShell: 'i',
+  longValue: new Set([
+    '--machine',
+    '--unit',
+    '--property',
+    '--description',
+    '--slice',
+    '--user',
+    '--group',
+    '--nice',
+    '--chdir',
+    '--setenv',
+    '--background',
+    '--shell-prompt-prefix',
+    '--lightweight',
+    '--area',
+  ]),
+  longFlag: new Set([
+    '--no-ask-password',
+    '--slice-inherit',
+    '--pty',
+    '--pty-late',
+    '--pipe',
+    '--empower',
+    '--help',
+    '--version',
+  ]),
+  longShell: new Set(['--via-shell']),
+  gluedLong: true,
+  bareShell: true,
+}
+
+const PKEXEC: OptionTable = {
+  shortValue: '',
+  shortFlag: '',
+  shortShell: '',
+  longValue: new Set(['--user']),
+  longFlag: new Set(['--keep-cwd', '--disable-internal-agent', '--help', '--version']),
+  longShell: new Set(),
+  gluedLong: false,
+  bareShell: true,
+}
+
+const SU: OptionTable = {
+  shortValue: 'cgGsw',
+  shortFlag: 'lfmpPThV',
+  shortShell: '',
+  longValue: new Set([
+    '--command',
+    '--session-command',
+    '--shell',
+    '--group',
+    '--supp-group',
+    '--whitelist-environment',
+  ]),
+  longFlag: new Set([
+    '--login',
+    '--fast',
+    '--preserve-environment',
+    '--pty',
+    '--no-pty',
+    '--help',
+    '--version',
+  ]),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: true,
+}
+
+export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
+  ['doas', DOAS],
+  ['run0', RUN0],
+  ['pkexec', PKEXEC],
+  ['su', SU],
+])
+
+export const PRIVILEGE_WRAPPERS: ReadonlySet<string> = new Set(PRIVILEGE_OPTIONS.keys())
+
+/** What `name` (one of PRIVILEGE_WRAPPERS) runs when its options start at `words[i]`. */
+export function dropPrivilegeOptions(
+  name: string,
+  words: readonly string[],
+  i: number,
+): PrivilegeRun | undefined {
+  const table = PRIVILEGE_OPTIONS.get(name)
+  if (table === undefined) return undefined
+  const run = name === 'su' ? readSu(words, i) : readGetopt(table, words, i)
+  // The shell argv is new words the caller cannot trace back to a quoted or split word, so none may be expanded.
+  return run !== undefined && 'shell' in run && run.shell.some(word => word.includes(LIVE)) ? undefined : run
+}
+
+/** A shell run on the words joined, each character but alnum, _, - and $ escaped, as sudo -s does. */
+const joinedShell = (words: readonly string[]): string[] =>
+  words.length === 0 ? ['sh'] : ['sh', '-c', words.map(w => w.replace(/[^A-Za-z0-9_$-]/g, '\\$&')).join(' ')]
+
+/** One option: the words after it its value takes, its letter or long name, and its value. */
+interface Option {
+  width: number
+  key: string
+  value?: string
+  shell: boolean
+}
+
+/** The option at `words[i]`, or undefined when it is unknown, lacks its value, or holds an expansion. */
+function readOption(t: OptionTable, words: readonly string[], i: number): Option | undefined {
+  const a = words[i] as string
+  const option = a.startsWith('--') ? longOption(t, a) : shortCluster(t, a)
+  if (option === undefined || a.includes(LIVE)) return undefined
+  if (option.width === 0) return option
+  const value = words[i + 1]
+  return value === undefined || value.includes(LIVE) ? undefined : { ...option, value }
+}
+
+function longOption(t: OptionTable, option: string): Option | undefined {
+  const [key, ...rest] = option.split('=') as [string, ...string[]]
+  const glued = rest.length > 0
+  if (t.longValue.has(key)) {
+    if (!glued) return { width: 1, key, shell: false }
+    return t.gluedLong ? { width: 0, key, value: rest.join('='), shell: false } : undefined
+  }
+  if (glued) return undefined
+  if (t.longFlag.has(key)) return { width: 0, key, shell: false }
+  if (t.longShell.has(key)) return { width: 0, key, shell: true }
+  return undefined
+}
+
+/** A short cluster's first value letter takes the rest of the cluster, or the next word when it ends it. */
+function shortCluster(t: OptionTable, cluster: string): Option | undefined {
+  let shell = false
+  for (let k = 1; k < cluster.length; k++) {
+    const key = cluster[k] as string
+    if (t.shortValue.includes(key)) {
+      const last = k === cluster.length - 1
+      return last ? { width: 1, key, shell } : { width: 0, key, value: cluster.slice(k + 1), shell }
+    }
+    if (t.shortShell.includes(key)) shell = true
+    else if (!t.shortFlag.includes(key)) return undefined
+  }
+  return cluster.length > 1 ? { width: 0, key: cluster, shell } : undefined
+}
+
+/** A getopt reader that stops at the first operand, as doas's `+` and run0's option strings do. */
+function readGetopt(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  let shell = false
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') {
+      i++
+      break
+    }
+    if (!a.startsWith('-') || a === '-') break
+    const option = readOption(t, words, i)
+    if (option === undefined) return undefined
+    shell ||= option.shell
+    i += option.width
+  }
+  if (shell || (t.bareShell && i >= words.length)) return { shell: joinedShell(words.slice(i)) }
+  return { at: i }
+}
+
+const SU_KEYS: ReadonlyMap<string, string> = new Map([
+  ['--command', 'c'],
+  ['--session-command', 'c'],
+  ['--shell', 's'],
+])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+
+/**
+ * util-linux su permutes, so options after the user still count. Its first operand is the user and
+ * the rest are arguments to the shell, which runs -c's value when one is given.
+ */
+function readSu(words: readonly string[], i: number): PrivilegeRun | undefined {
+  const values = new Map<string, string>()
+  const operands: string[] = []
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    // An expanded word may split into a user and a -c script (`su -- $E`), even after `--`, where su takes the user from it.
+    if (a === '--') {
+      const rest = words.slice(i + 1)
+      if (rest.some(word => word.includes(LIVE))) return undefined
+      operands.push(...rest)
+      break
+    }
+    // An expanded word may be an option wherever it sits, since su reads options past the user.
+    if (a.includes(LIVE)) return undefined
+    if (!a.startsWith('-') || a === '-') {
+      if (a !== '-') operands.push(a)
+      continue
+    }
+    const option = readOption(SU, words, i)
+    if (option === undefined) return undefined
+    if (option.value !== undefined) values.set(SU_KEYS.get(option.key) ?? option.key, option.value)
+    i += option.width
+  }
+  return suShell(values, operands.slice(1))
+}
+
+function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): PrivilegeRun | undefined {
+  const shell = values.get('s')
+  if (shell !== undefined && !SHELLS.has(shell.split('/').pop() as string)) return undefined
+  const command = values.get('c')
+  return { shell: command === undefined ? ['sh', ...args] : ['sh', '-c', command, ...args] }
+}

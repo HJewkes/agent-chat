@@ -165,7 +165,11 @@ describe('planSeat ordered by planOrder', () => {
   it('refuses a dep-blocked task with its reason instead of dropping it', () => {
     const { ticked } = fixtureTick(tagged(tags), milestoneFile([]))
     expect(ticked.refusals.filter(r => r.task === 'AL-2')).toEqual([
-      expect.objectContaining({ kind: 'plan-blocked', reason: 'dep-blocked' }),
+      expect.objectContaining({
+        kind: 'plan-blocked',
+        reason: 'dep-blocked: AL-1 (open, no claim)',
+        blocker: { task: 'AL-1', state: 'open, no claim' },
+      }),
     ])
     expect(ticked.dispatch.map(d => d.task)).not.toContain('AL-2')
   })
