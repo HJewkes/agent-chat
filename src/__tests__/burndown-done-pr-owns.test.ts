@@ -98,6 +98,22 @@ describe('a DONE+PR hand-off is fenced by the PR files (CC-1066)', () => {
     expect(step(c, obs).actions).toEqual([])
   })
 
+  it.each(['none', '#871', 'https://gitlab.com/o/r/-/merge_requests/9'])(
+    'stalls a DONE worker whose PR line is %s on the first tick, reading no PR files',
+    async line => {
+      const c = claim()
+      const { calls, prFiles } = counting(['src/a.ts'])
+
+      const obs = await observed(c, cleanDeps({ finalText: () => `Status: DONE\nPR: ${line}`, prFiles }))
+      const { after } = step(c, obs)
+
+      expect(calls.n).toBe(0)
+      expect(after).toEqual([
+        expect.objectContaining({ stalledReason: expect.stringContaining('not a GitHub PR') }),
+      ])
+    },
+  )
+
   it('reads the claim PR when the DONE report names none', async () => {
     const c = claim({ pr: PR })
     const { calls, prFiles } = counting(['src/a.ts', OUTSIDE])

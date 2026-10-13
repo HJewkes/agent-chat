@@ -338,8 +338,16 @@ function withPrOwns(
   return { ...obs, owned: judged(claim, [...owned.outside, ...added], adjudicate, obs.report) }
 }
 
-/** The PR `afterWorker` hands to Shepherd: a silent exit's open PR, a finished report's, or a fenced claim's own. */
+/**
+ * The PR `afterWorker` hands to Shepherd: a silent exit's open PR, a finished report's, or a fenced claim's own.
+ * One Shepherd can't take is never read, so `handOff` stalls it on the same tick instead of the read failing forever.
+ */
 function handOffPr(obs: Observation, claim: Claim): string | undefined {
+  const pr = handOffCandidate(obs, claim)
+  return pr !== undefined && shepherdTarget(pr) !== undefined ? pr : undefined
+}
+
+function handOffCandidate(obs: Observation, claim: Claim): string | undefined {
   const { exitedWork, report } = obs
   if (typeof exitedWork === 'object') return exitedWork.openPr ?? undefined
   if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS') return report.pr ?? claim.pr
