@@ -1,8 +1,14 @@
+import { LIVE, parseShell, type SimpleCommand } from './shell-words.js'
+
 /**
  * Fills the positionals a `sh -c SCRIPT [ARG0 [ARGS...]]` script reads with the words the shell
  * binds to them (CC-1201), so the guard can check the script as the command line it becomes.
  * A word the guard cannot read becomes `$@`, which the guard already reads as "unreadable, may be
  * none or several", in the same quote context as the positional it replaces.
+ *
+ * The fill is literal only when the guard can see every way the script reads its arguments. A
+ * script that may rebind, re-split or hide them, or that the scanner cannot fully lex, returns
+ * `implicit` instead: teaching the scanner each shell's corner is a race the guard loses.
  */
 
 /** One word bound to a positional; `undefined` when the guard cannot read it. */
@@ -17,7 +23,7 @@ export interface ScriptArgs {
   more: boolean
 }
 
-/** The filled script, or the word through which the script reads its arguments in a way a fill cannot follow. */
+/** The filled script, or the reason the guard cannot tell what the script makes of its arguments. */
 export type ScriptFill = { text: string } | { implicit: string }
 
 interface Use {
@@ -31,75 +37,119 @@ interface Use {
 // `${N}` fills exactly; any other brace form (`${1:-x}`, `${#1}`, `${10}`, `${@:2}`) is modified.
 const BRACED = /^\$\{[#!]?([0-9@*])[^}]*\}/
 const EXACT = /^\$\{[0-9@*]\}/
-const BARE = /^\$([0-9@*])/
+// `$10` is `${1}0` in sh and the tenth argument in zsh, so a multi-digit read is modified.
+const BARE = /^\$([0-9]+|[@*])/
+// zsh's `$argv`, bash's `$BASH_ARGV`, indirect `${!#}` and zsh flags such as `${=1}` or `$=1`.
+const ARRAY_NAMES = String.raw`(?:argv|BASH_ARGV)(?![A-Za-z0-9_])`
+const OTHER_READ = new RegExp(
+  String.raw`^\$(?:[=~^]+\S|${ARRAY_NAMES}|\{[#]?${ARRAY_NAMES}[^}]*\}|\{[^A-Za-z_#}][^}]*\})`,
+)
 // Restated from git-alias.ts, which does not export it; the empty word is plain too.
 const FILL_PLAIN = /^[A-Za-z0-9_./:=@%+-]*$/
 const UNREADABLE = '$@'
 const BOUNDARY = /[\s;&|()<>]/
+const WORD_START = /[\s;&|()]/
 
-const BEFORE = String.raw`(?:^|[\s;&|(){}])`
-const AFTER = String.raw`(?=$|[\s;&|()])`
-const IMPLICIT_READERS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['shift', new RegExp(`${BEFORE}shift${AFTER}`)],
-  ['getopts', new RegExp(`${BEFORE}getopts${AFTER}`)],
-  ['for', new RegExp(`${BEFORE}for\\s+[A-Za-z_]\\w*\\s*(?:;|\\n|do${AFTER})`)],
-  ['function', new RegExp(`${BEFORE}(?:function\\s+[A-Za-z_]|[A-Za-z_][\\w-]*\\s*\\(\\s*\\))`)],
-]
-const SET_CALL = new RegExp(`${BEFORE}set((?:[ \\t]+[^\\s;&|()]+)*)`, 'g')
+// Words that rebind, read or re-run the arguments wherever they appear (`echo shift` over-denies).
+const READERS = new Set(['shift', 'getopts', 'eval', 'alias', 'trap'])
+// Words a command word may follow; `command` and `builtin` run a builtin such as `shift`.
+const PREFIXES = new Set(['{', '}', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
+const WRAPPERS = new Set(['command', 'builtin'])
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
+const FUNCTION_DEF = /(?:^|[\s;&|(){}])(?:function\s|[A-Za-z_][\w-]*\s*\(\s*\))/
+const SET_FLAGS = /^[-+][A-Za-z]+$/
 
-/** The script with each positional it reads replaced by its word, or the implicit reader that defeats a fill. */
+/** The script with each positional it reads replaced by its word, or why the fill cannot be trusted. */
 export function fillScriptArgs(script: string, args: ScriptArgs): ScriptFill {
-  if (args.params.length > 0 || args.more) {
-    const implicit = implicitReader(script)
-    if (implicit !== undefined) return { implicit }
-  }
+  const implicit = implicitReader(script)
+  if (implicit !== undefined) return { implicit }
+  const uses = positionalUses(script)
+  if (typeof uses === 'string') return { implicit: uses }
   let text = script
-  for (const use of positionalUses(script).reverse()) {
+  for (const use of uses.reverse()) {
     const { start, end, words } = replacement(script, use, args)
     text = text.slice(0, start) + words + text.slice(end)
   }
   return { text }
 }
 
-/** `shift`, `getopts`, `set` with operands, `for NAME` without `in`, or a function definition. */
+/** A reader the fill cannot follow: IFS, a function, or one of `commandReader`'s. */
 function implicitReader(script: string): string | undefined {
-  const found = IMPLICIT_READERS.find(([, pattern]) => pattern.test(script))
-  if (found !== undefined) return found[0]
-  return [...script.matchAll(SET_CALL)].some(call => setsParams(call[1] ?? '')) ? 'set' : undefined
-}
-
-/** Whether `set`'s words include an operand: `--` or a word that is not an option or `-o`'s value. */
-function setsParams(rest: string): boolean {
-  const words = rest
-    .trim()
-    .split(/[ \t]+/)
-    .filter(Boolean)
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i] ?? ''
-    if (word === '--' || !/^[-+]/.test(word)) return true
-    if (/^[-+][A-Za-z]*o$/.test(word)) i++
+  if (script.includes('IFS')) return 'IFS'
+  if (FUNCTION_DEF.test(script)) return 'function'
+  for (const cmd of parseShell(script)) {
+    const reader = commandReader(cmd)
+    if (reader !== undefined) return reader
   }
-  return false
+  return undefined
 }
 
-/** Every positional the script reads, outside single quotes and `$'...'` strings, with its span. */
-function positionalUses(script: string): Use[] {
+/** A reader word, a `set` that is not plain flags, `for NAME` without `in`, or a command word that expands. */
+function commandReader({ words, marked }: SimpleCommand): string | undefined {
+  const reader = words.find(word => READERS.has(word))
+  if (reader !== undefined) return reader
+  if (words.some((word, i) => word === 'set' && !plainSet(words.slice(i + 1)))) return 'set'
+  const head = headIndex(words)
+  if (head === undefined) return undefined
+  if (marked[head]?.includes(LIVE)) return 'command word'
+  if (words[head] === '.' || words[head] === 'source') return 'source'
+  if (words[head] === 'function') return 'function'
+  return words[head] === 'for' && words[head + 2] !== 'in' ? 'for' : undefined
+}
+
+/** The command word: past keywords, assignments and the builtin wrappers. */
+function headIndex(words: readonly string[]): number | undefined {
+  const i = words.findIndex(word => !PREFIXES.has(word) && !WRAPPERS.has(word) && !ASSIGNMENT.test(word))
+  return i === -1 ? undefined : i
+}
+
+/** `set` with only flag clusters, each `-o` followed by an option name; anything else may set operands. */
+function plainSet(rest: readonly string[]): boolean {
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i] ?? ''
+    if (!SET_FLAGS.test(word)) return false
+    if (word.endsWith('o') && !/^[a-z]+$/.test(rest[++i] ?? '')) return false
+  }
+  return true
+}
+
+/**
+ * Every positional the script reads, outside single quotes and `$'...'` strings, with its span;
+ * or why the scan cannot be trusted: a comment, a heredoc, an unclosed quote, or quoting nested in
+ * a backtick, a double-quoted `$(...)` or a double-quoted `${...}`, which a flat scan misreads.
+ */
+function positionalUses(script: string): Use[] | string {
   const uses: Use[] = []
   let quote: string | undefined
   for (let i = 0; i < script.length; i++) {
     const c = script[i]
     if (quote === "'") quote = c === "'" ? undefined : quote
     else if (c === '\\' || script.startsWith('$$', i)) i++
+    else if (c === '`' || (quote === '"' && nestsQuotes(script, i))) return 'nested quoting'
     else if (quote === undefined && script.startsWith("$'", i)) i = ansiEnd(script, i + 2)
+    else if (quote === undefined && script.startsWith('<<', i)) return 'heredoc'
+    else if (quote === undefined && c === '#' && wordStart(script, i)) return 'comment'
     else if (c === '"') quote = quote === '"' ? undefined : '"'
     else if (c === "'" && quote === undefined) quote = "'"
     else if (c === '$') {
       const use = useAt(script, i, quote === '"')
-      if (use !== undefined) uses.push(use)
+      if (use === undefined) continue
+      uses.push(use)
+      i = use.end - 1
     }
   }
-  return uses
+  return quote === undefined ? uses : 'unclosed quote'
 }
+
+/** A `$(` inside double quotes, or a `${` whose text before its `}` holds a quote. */
+function nestsQuotes(script: string, i: number): boolean {
+  if (script.startsWith('$(', i)) return true
+  if (!script.startsWith('${', i)) return false
+  const close = script.indexOf('}', i)
+  return /["']/.test(script.slice(i, close === -1 ? undefined : close))
+}
+
+const wordStart = (script: string, i: number): boolean => i === 0 || WORD_START.test(script[i - 1] ?? '')
 
 function useAt(script: string, start: number, quoted: boolean): Use | undefined {
   const rest = script.slice(start)
@@ -109,7 +159,14 @@ function useAt(script: string, start: number, quoted: boolean): Use | undefined 
     return { start, end, name: braced[1] ?? '', quoted, modified: !EXACT.test(rest) }
   }
   const bare = BARE.exec(rest)
-  return bare === null ? undefined : { start, end: start + 2, name: bare[1] ?? '', quoted, modified: false }
+  if (bare !== null) {
+    const name = bare[1] ?? ''
+    return { start, end: start + 1 + name.length, name, quoted, modified: name.length > 1 }
+  }
+  const other = OTHER_READ.exec(rest)
+  return other === null
+    ? undefined
+    : { start, end: start + other[0].length, name: '', quoted, modified: true }
 }
 
 /** The index of the `'` that closes a `$'...'` string opened before `from`. */

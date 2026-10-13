@@ -19,7 +19,6 @@ describe('sh -c positionals filled with their words (CC-1201)', () => {
     ['git push $1', ['--no-verify'], 'git push --no-verify'],
     ['git push ${1}', ['--no-verify'], 'git push --no-verify'],
     ['git push "$2"', ['a', '--no-verify'], 'git push "--no-verify"'],
-    ['git push $10', ['a'], 'git push a0'],
   ])('fills %s from the params', (script, params, text) => {
     expect(filled(script, { params })).toEqual({ text })
   })
@@ -69,7 +68,20 @@ describe('sh -c positionals filled with their words (CC-1201)', () => {
     expect(filled('git push $1', { params: [word] })).toEqual({ text: 'git push $@' })
   })
 
-  it.each(['${1:-x}', '${#1}', '${10}', '${@:2}', '${!1}'])('fills the modified %s as $@', use => {
+  it.each([
+    '${1:-x}',
+    '${#1}',
+    '${10}',
+    '${@:2}',
+    '${!1}',
+    '${!#}',
+    '${=1}',
+    '$=1',
+    '$argv',
+    '${argv[1]}',
+    '$BASH_ARGV',
+    '$10',
+  ])('fills the modified or other-shell read %s as $@', use => {
     expect(filled(`git push ${use}`, { params: ['a'] })).toEqual({ text: 'git push $@' })
   })
 
@@ -92,9 +104,31 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     ['for a do git push $a; done', 'for'],
     ['f() { git push $1; }; f x', 'function'],
     ['function f { git push $1; }; f x', 'function'],
-    // A regex over the text: a quoted mention matches too, which over-denies on a git line only.
+    // Any word counts, so a mention over-denies, on a git line only.
     ['echo shift; git push', 'shift'],
-  ])('reads %j through %s when params are present', (script, implicit) => {
+    ['sh\\ift; git push $1', 'shift'],
+    ['"shift"; git push $1', 'shift'],
+    ["sh''ift; git push $1", 'shift'],
+    ['command shift; git push $1', 'shift'],
+    ["eval 'shift'; git push $1", 'eval'],
+    ['alias s=shift\ns; git push $1', 'alias'],
+    ['set - --no-verify; git push $1', 'set'],
+    ['set -o -- --no-verify; git push $1', 'set'],
+    ['set -o; git push $1', 'set'],
+    ['x=shift; $x; git push $1', 'command word'],
+    ['$1; git push $2', 'command word'],
+    ['"$0" push', 'command word'],
+    ['. ./lib.sh; git push $1', 'source'],
+    ['source lib.sh; git push $1', 'source'],
+    ['IFS=.; git push $1', 'IFS'],
+    [': ${IFS:=.}; git push $1', 'IFS'],
+    ["# it's a comment\ngit push $1", 'comment'],
+    ['git push "$(echo "\'")" $1', 'nested quoting'],
+    ['git push "${x:-"\'"}" $1', 'nested quoting'],
+    ['git push `echo $1`', 'nested quoting'],
+    ["cat <<E\nit's $1\nE", 'heredoc'],
+    ['git push "$1', 'unclosed quote'],
+  ])('reads %j through %s', (script, implicit) => {
     expect(filled(script, { params: ['a'] })).toEqual({ implicit })
   })
 
@@ -108,13 +142,14 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     ['for a in x y; do git push $1; done', 'for a in x y; do git push a; done'],
     ['git log --format=%s $1', 'git log --format=%s a'],
     ['echo $(date) $1', 'echo $(date) a'],
-    // Known gap: a backslash inside the word hides it from the regex.
-    ['sh\\ift; git push $1', 'sh\\ift; git push a'],
+    ['git push origin a#b $1', 'git push origin a#b a'],
+    ['echo "$HOME" $# ${#x} $1', 'echo "$HOME" $# ${#x} a'],
+    ['git config --unset x $1', 'git config --unset x a'],
   ])('fills %j, which sets options or loops over a list', (script, text) => {
     expect(filled(script, { params: ['a'] })).toEqual({ text })
   })
 
-  it('ignores an implicit reader when there are no params to read', () => {
-    expect(filled('shift; git push $0', { zero: 'x' })).toEqual({ text: 'shift; git push x' })
+  it('reads an implicit reader even with no params, since $0 and the defaults may still be read', () => {
+    expect(filled('shift; git push $0', { zero: 'x' })).toEqual({ implicit: 'shift' })
   })
 })
