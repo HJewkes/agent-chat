@@ -331,9 +331,11 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `caffeinate`, `coproc`, zsh's `noglob`, `nocorrect` and `repeat <n>`, `if`/`then`
-and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
-`/usr/bin/nice` is stripped like `nice`.
+`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
+`if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
+`/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
+unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
+not know, or an option word the shell expands, denies (CC-1209).
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |

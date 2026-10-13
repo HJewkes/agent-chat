@@ -166,6 +166,7 @@ export const REASONS = {
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
+  sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -204,7 +205,7 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
-const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env']
+const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env', 'sudo']
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
@@ -234,6 +235,42 @@ const XARGS_LONG_FLAG = new Set([
   '--exit',
   '--show-limits',
   '--version',
+  '--help',
+])
+// From sudo's getopt string `+Aa:BbC:c:D:Eeg:Hh::iKklNnPpR:r:SsT:t:U:u:Vv`; -h takes a value only glued.
+const SUDO_SHORT_VALUE = new Set('aCcDgpRrTtUu')
+const SUDO_LONG_VALUE = new Set([
+  '--close-from',
+  '--chdir',
+  '--group',
+  '--host',
+  '--prompt',
+  '--chroot',
+  '--role',
+  '--type',
+  '--command-timeout',
+  '--other-user',
+  '--user',
+  '--login-class',
+])
+const SUDO_LONG_FLAG = new Set([
+  '--askpass',
+  '--bell',
+  '--background',
+  '--preserve-env',
+  '--edit',
+  '--set-home',
+  '--login',
+  '--remove-timestamp',
+  '--reset-timestamp',
+  '--list',
+  '--no-update',
+  '--non-interactive',
+  '--preserve-groups',
+  '--stdin',
+  '--shell',
+  '--version',
+  '--validate',
   '--help',
 ])
 
@@ -313,6 +350,12 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       const { replace } = fed
       if (replace !== undefined)
         rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
+    } else if (name === 'sudo') {
+      const after = dropSudoOptions(rest, at + 1)
+      if (after === undefined) return { reason: REASONS.sudoOption }
+      at = after
+      // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
+      chdir = true
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
@@ -446,6 +489,36 @@ function clusterFeed(cluster: string, next: string | undefined): FeedOption {
 const replaceString = (marked: string): string => {
   const plain = marked.replaceAll(BRACE_PAIR, '{}')
   return plain.includes(LIVE) ? ANY_WORD : plain
+}
+
+/**
+ * The index of the command sudo runs, or undefined on a long option this guard does not know
+ * or an option word the shell expands, which may be any option.
+ */
+function dropSudoOptions(words: readonly string[], i: number): number | undefined {
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return i + 1
+    if (!a.startsWith('-') || a === '-') break
+    if (a.includes(LIVE)) return undefined
+    const name = a.split('=')[0] as string
+    if (a.startsWith('--') && !SUDO_LONG_VALUE.has(name) && !SUDO_LONG_FLAG.has(name)) return undefined
+    i += a.startsWith('--')
+      ? SUDO_LONG_VALUE.has(name) && !a.includes('=')
+        ? 1
+        : 0
+      : sudoClusterValueWords(a)
+  }
+  return Math.min(i, words.length)
+}
+
+/** A sudo short-flag cluster takes the next word only when its first value letter ends it; a glued -h takes the rest. */
+function sudoClusterValueWords(cluster: string): number {
+  for (let k = 1; k < cluster.length; k++) {
+    if (SUDO_SHORT_VALUE.has(cluster[k] as string)) return k === cluster.length - 1 ? 1 : 0
+    if (cluster[k] === 'h') return 0
+  }
+  return 0
 }
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
