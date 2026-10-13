@@ -25,8 +25,6 @@ const REPLACE_OPERATOR = /^(?::\/|\/[/#%]?)/
 // Text with no expansion, quote or escape in it; a pattern may also hold glob characters.
 const LITERAL = /^[\w\s.,/@%+=:{}-]*$/
 const PATTERN = /^[\w\s.,@%+=:{}*?[\]!^~-]*$/
-// A brace expansion such as `{a,-f}` or `{0..-1}` may start a word with any `-` it holds.
-const BRACE_WITH_DASH = /[{}].*-|-.*[{}]/
 // An option that takes its value after `=` keeps its literal name whatever the value expands to.
 const OPTION_WITH_VALUE = /^--?[A-Za-z][\w-]*=/
 // A word that starts with `-`, or with a glob that may match a file named `-x`.
@@ -55,9 +53,28 @@ function braceBody(word: string, from: number): string | undefined {
   return undefined
 }
 
+// A word's unquoted `{` is marked; an operand inside `${...}` carries no marks, so any `{` there counts.
+const LIVE_BRACE = `${LIVE}{`
+const OPERAND_BRACE = '{'
+// `{}` with no `}` after it is the one brace that never expands.
+const EMPTY_BRACES = /^\}[^}]*$/
+
+/**
+ * Whether `text` holds an `opener` that may start a brace expansion. zsh's braceccl expands any
+ * `{chars}` and a range such as `{+../}` makes a `-` of its own, so every `{` but a lone `{}` counts,
+ * including one with no `}` after it. A quoted `}` cannot be told from the closing one, so the body
+ * is not parsed.
+ */
+function mayBraceExpand(text: string, opener: string): boolean {
+  for (let at = text.indexOf(opener); at >= 0; at = text.indexOf(opener, at + 1)) {
+    if (!EMPTY_BRACES.test(text.slice(at + opener.length))) return true
+  }
+  return false
+}
+
 /** Whether injected text may yield an option word once the shell splits it on `ifs`. */
 function spellsOption(operand: string, ifs: string): boolean {
-  if (!LITERAL.test(operand) || BRACE_WITH_DASH.test(operand)) return true
+  if (!LITERAL.test(operand) || mayBraceExpand(operand, OPERAND_BRACE)) return true
   // `--` anywhere counts, because an IFS set by an earlier call may split the text just before it.
   if (operand.includes('--')) return true
   const pieces = [...ifs].reduce((parts, blank) => parts.flatMap(part => part.split(blank)), [operand])
@@ -146,22 +163,6 @@ function segments(marked: string, ifs: string): Segment[] {
   return out
 }
 
-const BRACE_OPENER = `${LIVE}{`
-// `{}` with no `}` after it is the one brace that never expands.
-const EMPTY_BRACES = /^\}[^}]*$/
-
-/**
- * Whether any unquoted `{` in `marked` may open a brace expansion. zsh's braceccl expands any
- * `{chars}`, so every `{` but a lone `{}` counts, including one with no `}` after it. Only `{` is
- * marked, so a quoted `}` cannot be told from the closing one and the body is not parsed.
- */
-function opensBraceExpansion(marked: string): boolean {
-  for (let at = marked.indexOf(BRACE_OPENER); at >= 0; at = marked.indexOf(BRACE_OPENER, at + 1)) {
-    if (!EMPTY_BRACES.test(marked.slice(at + BRACE_OPENER.length))) return true
-  }
-  return false
-}
-
 /**
  * Whether `marked`, a word holding an expansion, may become an option word once the shell expands
  * and splits it on `ifs` (the line's IFS when it sets one): an expansion that may inject one, or
@@ -173,7 +174,7 @@ function opensBraceExpansion(marked: string): boolean {
 export function operandMaySpellOption(marked: string, ifs = DEFAULT_IFS): boolean {
   const parts = segments(marked, ifs)
   if (parts.length === 1) return false
-  if (opensBraceExpansion(marked)) return true
+  if (mayBraceExpand(marked, LIVE_BRACE)) return true
   return parts.some((part, index) => {
     if (!('text' in part)) return part.unsafe
     if (index === 0) return WORD_START.test(part.text) && !OPTION_WITH_VALUE.test(part.text)
