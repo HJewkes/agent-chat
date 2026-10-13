@@ -160,6 +160,8 @@ export const TickConfigSchema = z.object({
     .int()
     .positive({ error: 'briefMaxAgeDays must be a positive integer' })
     .default(14),
+  /** CC-1193: write each real tick's decision record for the shadow diff; `false` turns it off. */
+  shadowOut: z.boolean().default(true),
 })
 export type TickConfig = z.infer<typeof TickConfigSchema>
 

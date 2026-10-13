@@ -275,7 +275,7 @@ const SUBMODULE_ADD = `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [n
   [no-]dissociate [no-]name= [no-]depth=`
 // `git clone`'s options, from `git clone -h` on git 2.53. `--recurse-submodules[=<pathspec>]` takes
 // its value only attached, so it reads as a flag.
-const CLONE_OPTIONS = optionSpec(
+export const CLONE_OPTIONS = optionSpec(
   `v:[no-]verbose q:[no-]quiet [no-]progress [no-]reject-shallow n:no-checkout checkout [no-]bare
   [no-]mirror l:[no-]local no-hardlinks hardlinks s:[no-]shared [no-]recurse-submodules [no-]recursive
   j:[no-]jobs= [no-]template= [no-]reference= [no-]reference-if-able= [no-]dissociate o:[no-]origin=

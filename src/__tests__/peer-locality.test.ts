@@ -10,6 +10,7 @@ import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 import {
+  claudeCodeAncestor,
   linuxPeerPorts,
   parseStat,
   peerPidFromSs,
@@ -143,6 +144,55 @@ describe('provePeerLocal', () => {
   })
 })
 
+describe('claudeCodeAncestor', () => {
+  it('finds a Claude Code process several steps above the peer', () => {
+    const ports = tree({ 700: [650, 'node'], 650: [500, 'bash'], 500: [1, 'claude'] }, 700)
+
+    expect(claudeCodeAncestor(conn, ports)).toBe(500)
+  })
+
+  it('counts the peer itself when it runs Claude Code', () => {
+    expect(claudeCodeAncestor(conn, tree({ 700: [1, 'claude'] }, 700))).toBe(700)
+  })
+
+  it('recognises a node runtime running the Claude Code package as an ancestor', () => {
+    const ports = tree({ 700: [650, 'node'], 650: [500, 'bash'], 500: [1, 'node'] }, 700, {
+      500: 'node /opt/claude-code/cli.js --resume x',
+    })
+
+    expect(claudeCodeAncestor(conn, ports)).toBe(500)
+  })
+
+  it('finds nothing above a plain terminal chain', () => {
+    const ports = tree({ 700: [650, 'node'], 650: [600, 'zsh'], 600: [1, 'tmux'] }, 700)
+
+    expect(claudeCodeAncestor(conn, ports)).toBeUndefined()
+  })
+
+  it('finds nothing when the peer pid or its process cannot be read', () => {
+    expect(claudeCodeAncestor(conn, tree({}, undefined))).toBeUndefined()
+    expect(claudeCodeAncestor(conn, tree({}, 700))).toBeUndefined()
+  })
+
+  it('ends a ppid cycle without a match', () => {
+    const ports = tree({ 700: [701, 'a'], 701: [700, 'b'] }, 700)
+    const readProcess = vi.fn((pid: number) => {
+      if (readProcess.mock.calls.length > 10) throw new Error('walked the cycle')
+      return ports.process(pid)
+    })
+
+    expect(claudeCodeAncestor(conn, { ...ports, process: readProcess }, 1_000_000)).toBeUndefined()
+    expect(readProcess).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops at maxDepth', () => {
+    const ports = tree({ 700: [650, 'a'], 650: [600, 'b'], 600: [1, 'claude'] }, 700)
+
+    expect(claudeCodeAncestor(conn, ports, 2)).toBeUndefined()
+    expect(claudeCodeAncestor(conn, ports, 3)).toBe(600)
+  })
+})
+
 describe('parsers', () => {
   it('reads ppid and comm from stat even when comm holds parentheses', () => {
     expect(parseStat('12 (a) b) S 7 12 12 0')).toEqual({ ppid: 7, comm: 'a) b' })
@@ -176,6 +226,8 @@ describe.skipIf(process.platform !== 'linux')('linuxPeerPorts on a real socket',
     const serverSide = await accepted
 
     expect(linuxPeerPorts.peerPid(serverSide)).toBe(process.pid)
+    const ancestor = claudeCodeAncestor(serverSide, linuxPeerPorts)
+    expect(claudeCodeAncestor(serverSide, linuxPeerPorts)).toBe(ancestor)
 
     client.destroy()
     serverSide.destroy()

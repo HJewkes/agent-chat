@@ -227,15 +227,17 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(edits.at(-1)?.[1]).toContain('auto-approved')
     expect(settled.lines.join('\n')).toContain('auto: slice lint passed')
     expect(settled.routes).toEqual([])
+    expect(settled.approved).toEqual([{ slug: 'demo', taskId: 'T-1' }])
   })
 
   it('routes a lint-failing brief to the decider without recording a send while settling', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    const { routes } = settle()
+    const { routes, approved } = settle()
 
     expect(edits).toEqual([])
+    expect(approved).toEqual([])
     expect(routes).toHaveLength(1)
     expect(routes[0]?.tag).toBe(SENT)
     expect(routes[0]?.section).toContain('over the 3-point limit')
@@ -370,7 +372,7 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     writeTask([PROPOSED], 'done')
     writePlan(LINTED)
 
-    expect(settle()).toEqual({ lines: [], routes: [] })
+    expect(settle()).toEqual({ lines: [], routes: [], approved: [] })
     expect(edits).toEqual([])
   })
 
