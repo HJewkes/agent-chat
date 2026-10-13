@@ -17,14 +17,20 @@ import { resolveOrphanReapKill } from '../config.js'
 import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
-import { realExitTmpDeps, removeOwnTmpDir } from './agent-tmpdir.js'
+import {
+  diskTmpRoot,
+  realExitTmpDeps,
+  removeOwnTmpDir,
+  TMP_ROOT,
+  type AgentTmpRequest,
+} from './agent-tmpdir.js'
 import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
 import { holderOf } from './launch-guard.js'
 import { continueStarted } from './launch-plan.js'
 import { findTranscript } from './transcript.js'
-import { reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
+import { isReviewerSpawn, reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -81,9 +87,27 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
   return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }), GIT_ALLOW_PROTOCOL } }
 }
 
+/** Where the launch's private TMPDIR goes, beyond its name and pid. Injected by tests. */
+export type LaunchTmp = Omit<AgentTmpRequest, 'name' | 'pid'>
+
+/**
+ * CC-1184: a Linux reviewer's TMPDIR goes on disk, because its review checkouts under
+ * `$TMPDIR/<name>` each carry an install, and three at once fill /tmp's inodes. Implementers
+ * and macOS keep /tmp.
+ */
+export function launchTmpRoot(
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+  homeDir: string = os.homedir(),
+): string {
+  const name = env.AGENT_CHAT_NAME
+  const reviewer = name !== undefined && isReviewerSpawn(env.AGENT_CHAT_PROFILE ?? '', name)
+  return platform === 'linux' && reviewer ? diskTmpRoot(homeDir) : TMP_ROOT
+}
+
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */
-export function launchOptions(agentId: string, name?: string): RunAgentOptions {
-  const options = name === undefined ? {} : { agentTmp: { name, pid: process.pid } }
+export function launchOptions(agentId: string, name?: string, tmp: LaunchTmp = {}): RunAgentOptions {
+  const options = name === undefined ? {} : { agentTmp: { ...tmp, name, pid: process.pid } }
   return {
     agentDir: agentDir(agentId),
     baseEnv: agentBaseEnv(process.env, undefined, options),
@@ -109,14 +133,32 @@ export function runAgentVerb(agentId: string): void {
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
   const shimmed = withShims(continued)
   const name = shimmed.env.AGENT_CHAT_NAME
-  const options = launchOptions(agentId, name)
+  const root = launchTmpRoot(shimmed.env)
+  const options = launchOptions(agentId, name, { root })
   const plan = withScratchAddDir(shimmed, reviewerScratchDir({ ...options.baseEnv, ...shimmed.env }))
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  process.on('exit', () => {
-    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
-    if (name !== undefined) removeOwnTmpDir(name, agentId, process.pid, realExitTmpDeps(logEvent))
-  })
+  process.on('exit', launchExitHook(agentId, name, root))
   runAgent(plan, options)
+}
+
+export interface LaunchExitSteps {
+  reap: typeof reapOwnLaunch
+  removeTmp: typeof removeOwnTmpDir
+}
+
+const realExitSteps: LaunchExitSteps = { reap: reapOwnLaunch, removeTmp: removeOwnTmpDir }
+
+/** Reaps the launch's orphans, then removes its TMPDIR from the same root it was made under. */
+export function launchExitHook(
+  agentId: string,
+  name: string | undefined,
+  root: string,
+  steps: LaunchExitSteps = realExitSteps,
+): () => void {
+  return () => {
+    steps.reap(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
+    if (name !== undefined) steps.removeTmp(name, agentId, process.pid, realExitTmpDeps(logEvent), root)
+  }
 }
 
 function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {
