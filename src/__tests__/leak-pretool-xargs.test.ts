@@ -104,6 +104,25 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand(command, ctx)).toBeDefined()
   })
 
+  it.each([
+    `X='nv -I--'; xargs -a $X git push origin HEAD:x --`,
+    'xargs -n {1,-I--} git push origin HEAD:x -- < nv',
+    'xargs -d $X git push origin HEAD:x --',
+    'xargs -P $X git push origin HEAD:x --',
+    'xargs -n $X git push origin HEAD:x --',
+    'xargs -E $X git push origin HEAD:x --',
+    'xargs --arg-file $X git push origin HEAD:x --',
+    'xargs --max-procs $X git push origin HEAD:x --',
+    'xargs -a * git push origin HEAD:x --',
+    'xargs -a f* git push origin HEAD:x --',
+    'xargs -a $(cat g) git push origin HEAD:x --',
+    'xargs -n$X git push origin HEAD:x --',
+    'xargs --arg-file=$X git push origin HEAD:x --',
+    'xargs -I$X git push origin HEAD:x --',
+  ])('denies a push behind an xargs option value the shell may split: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
   it('denies --max-lines with no value, which leaves the next word as the command', () => {
     expect(checkCommand('xargs --max-lines git push --no-verify', ctx)).toBe(REASONS.noVerify)
   })
@@ -122,6 +141,9 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs git push -u -f origin --',
     'xargs --max-lines=1 git push origin --',
     'xargs -I{} -P4 git push origin -- {}',
+    'xargs -a "$X" git push origin --',
+    'xargs -I {} git push origin -- {}',
+    'xargs -- "$X"',
     'xargs git log',
     'ls | xargs git add',
     'xargs git status',

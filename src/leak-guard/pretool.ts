@@ -52,6 +52,7 @@ import {
   type ReadGhAliases,
 } from './gh-runs.js'
 import {
+  expandsToWords,
   hasOptionAlternation,
   hasSplittableOption,
   hasUnreadableConfig,
@@ -269,7 +270,7 @@ const ANY_WORD = ''
 const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
-function unwrap(words: readonly string[]): Unwrapped {
+function unwrap(words: readonly string[], splits: readonly string[] = []): Unwrapped {
   let rest = words
   let at = 0
   let chdir = false
@@ -289,7 +290,7 @@ function unwrap(words: readonly string[]): Unwrapped {
     } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
     else if (next !== undefined) at = next
     else if (name === 'xargs') {
-      const after = dropXargsOptions(rest, at + 1)
+      const after = dropXargsOptions(rest, at + 1, splits)
       if (after === undefined) return { reason: REASONS.xargsOption }
       at = after.at
       fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
@@ -347,8 +348,13 @@ const BATCH_LONG = new Set(['--max-args', '--max-lines'])
 /**
  * Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know.
  * GNU xargs drops a replace string on a later -n, -L or -l and appends instead; the guard does not track the order and reads both.
+ * An option word or value the shell may split could hold another option, such as -I--, so the feed mode is then unknown.
  */
-function dropXargsOptions(words: readonly string[], i: number): { at: number; fed: Fed } | undefined {
+function dropXargsOptions(
+  words: readonly string[],
+  i: number,
+  splits: readonly string[],
+): { at: number; fed: Fed } | undefined {
   let replace: string | undefined
   let batches = false
   for (; i < words.length; i++) {
@@ -360,17 +366,25 @@ function dropXargsOptions(words: readonly string[], i: number): { at: number; fe
         : a.startsWith('--')
           ? longFeed(a)
           : clusterFeed(a, words[i + 1])
+    const width = !a.startsWith('-') ? 0 : a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
+    const splitting = words.slice(i, i + 1 + width).some(word => mayResplit(word, splits))
     // An expansion here may be an option such as -I--, so the guard cannot tell how xargs feeds the command.
-    if (a.includes(LIVE) && option?.replace === undefined)
-      return { at: i, fed: { replace: ANY_WORD, append: true } }
+    if (splitting || (a.includes(LIVE) && option?.replace === undefined)) return { at: i, fed: UNKNOWN_FEED }
     if (!a.startsWith('-') || a === '-') break
     if (option === undefined) return undefined
     replace = option.replace ?? replace
     batches ||= option.batches === true
-    i += a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
+    i += width
   }
   return { at: Math.min(i, words.length), fed: feed(replace, batches) }
 }
+
+/** Every word may be fed, and more appended: where the guard cannot read xargs' options. */
+const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
+
+/** A word the shell may split into several; xargs' `{}` is a literal, not a brace list. */
+const mayResplit = (word: string, splits: readonly string[]): boolean =>
+  word.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && expandsToWords(word, splits)
 
 const feed = (replace: string | undefined, batches: boolean): Fed => ({
   replace,
@@ -1641,7 +1655,7 @@ function checkSimple(
   depth: number,
   outermost = true,
 ): string | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked))
+  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
