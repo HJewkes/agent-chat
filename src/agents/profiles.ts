@@ -425,7 +425,12 @@ export function loadProfileSource(
   if (refused !== undefined) return { profile: { error: refused } }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
-    const source = fs.readFileSync(file, 'utf8')
+    let source: string
+    try {
+      source = fs.readFileSync(file, 'utf8')
+    } catch (err) {
+      return { profile: { error: `${name}: cannot read ${file} (${(err as Error).message})` } }
+    }
     let parsed: unknown
     try {
       parsed = JSON.parse(source)

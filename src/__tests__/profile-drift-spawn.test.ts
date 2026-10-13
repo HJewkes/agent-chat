@@ -104,7 +104,7 @@ afterEach(() => {
 
 describe('profile drift at spawn (CC-1094)', () => {
   it('spawns an unchanged profile with no drift warning', async () => {
-    const outcome = await spawn('worker-a', 'steady', 'titan-coord')
+    const outcome = await spawn('worker-a', 'steady', 'seat-a')
 
     expect(outcome.ok).toBe(true)
     expect(driftWarnings(outcome)).toEqual([])
@@ -113,7 +113,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   it('flags an agent spawn of a profile rewritten after start, naming the file', async () => {
     writeProfile('bd-implementer', 'rewritten')
 
-    const outcome = await spawn('worker-b', 'bd-implementer', 'titan-coord')
+    const outcome = await spawn('worker-b', 'bd-implementer', 'seat-a')
 
     expect(outcome.ok).toBe(true)
     expect(driftWarnings(outcome)).toEqual([expect.stringContaining(profileFile('bd-implementer'))])
@@ -124,7 +124,7 @@ describe('profile drift at spawn (CC-1094)', () => {
     writeProfile('bd-implementer', 'rewritten')
     fs.utimesSync(profileFile('bd-implementer'), atime, mtime)
 
-    const outcome = await spawn('worker-c', 'bd-implementer', 'titan-coord')
+    const outcome = await spawn('worker-c', 'bd-implementer', 'seat-a')
 
     expect(driftWarnings(outcome)).toHaveLength(1)
   })
@@ -133,7 +133,7 @@ describe('profile drift at spawn (CC-1094)', () => {
     mode = 'refuse'
     writeProfile('bd-implementer', 'rewritten')
 
-    const outcome = await spawn('worker-d', 'bd-implementer', 'titan-coord')
+    const outcome = await spawn('worker-d', 'bd-implementer', 'seat-a')
 
     expect(outcome.ok).toBe(false)
     expect(outcome.reason).toContain(profileFile('bd-implementer'))
@@ -145,7 +145,7 @@ describe('profile drift at spawn (CC-1094)', () => {
     writeProfile('bd-implementer', 'rewritten')
 
     const human = await spawn('worker-e', 'bd-implementer', 'human')
-    const after = await spawn('worker-f', 'bd-implementer', 'titan-coord')
+    const after = await spawn('worker-f', 'bd-implementer', 'seat-a')
 
     expect(human.ok).toBe(true)
     expect(after.ok).toBe(true)
@@ -160,7 +160,7 @@ describe('profile drift at spawn (CC-1094)', () => {
       spawnedAs: 'burndown',
       task: 'claude-channels/CC-1094',
     })
-    const after = await spawn('worker-j', 'bd-implementer', 'titan-coord')
+    const after = await spawn('worker-j', 'bd-implementer', 'seat-a')
 
     expect(burndown.ok).toBe(false)
     expect(burndown.reason).toContain(profileFile('bd-implementer'))
@@ -170,7 +170,7 @@ describe('profile drift at spawn (CC-1094)', () => {
 
   it('refuses a human resume of an agent whose profile was rewritten under refuse', async () => {
     mode = 'refuse'
-    const first = await spawn('worker-k', 'bd-implementer', 'titan-coord')
+    const first = await spawn('worker-k', 'bd-implementer', 'seat-a')
     await exited(first)
     writeProfile('bd-implementer', 'rewritten')
 
@@ -184,7 +184,7 @@ describe('profile drift at spawn (CC-1094)', () => {
     mode = 'refuse'
     writeProfile('newcomer')
 
-    const outcome = await spawn('worker-g', 'newcomer', 'titan-coord')
+    const outcome = await spawn('worker-g', 'newcomer', 'seat-a')
 
     expect(outcome.reason).toContain('was created after the broker started')
   })
@@ -192,9 +192,31 @@ describe('profile drift at spawn (CC-1094)', () => {
   it('never counts a builtin with no file as drift', async () => {
     mode = 'refuse'
 
-    const outcome = await spawn('worker-h', 'explorer', 'titan-coord')
+    const outcome = await spawn('worker-h', 'explorer', 'seat-a')
 
     expect(outcome.ok).toBe(true)
     expect(driftWarnings(outcome)).toEqual([])
   })
+
+  it('refuses, without throwing, a spawn whose profile path is a directory', async () => {
+    fs.mkdirSync(profileFile('hollow'))
+
+    const outcome = await spawn('worker-l', 'hollow', 'seat-a')
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toContain(`cannot read ${profileFile('hollow')}`)
+  })
+
+  it.skipIf(process.getuid?.() === 0)(
+    'refuses, without throwing, a spawn whose profile is unreadable',
+    async () => {
+      writeProfile('sealed')
+      fs.chmodSync(profileFile('sealed'), 0o000)
+
+      const outcome = await spawn('worker-m', 'sealed', 'seat-a')
+
+      expect(outcome.ok).toBe(false)
+      expect(outcome.reason).toContain(`cannot read ${profileFile('sealed')}`)
+    },
+  )
 })
