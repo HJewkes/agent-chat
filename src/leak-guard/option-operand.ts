@@ -12,9 +12,12 @@ const DEFAULT_IFS = ' \t\n'
 // zsh flags, a name, a positional or a special parameter, and an optional subscript. `!` is left out, so
 // bash indirection such as ${!X:- -x} is never read and always denies.
 const HEAD = new RegExp(`^[=~^]*(?:${NAME}|\\d+|[@*#?$-])(?:\\[[\\w@*#+,-]*\\])?`)
-// A special parameter must not run into a name (zsh reads `$#X` and `$+X` as one expansion), and a
-// name must not take a zsh subscript or modifier; such a `$` is read as an unknown expansion.
-const BARE_PARAMETER = new RegExp(`^\\$(?:${NAME}|\\d|[@*#?$!-](?![\\w{]))(?![\\[]|:[A-Za-z&])`)
+// A special parameter must not run into a name (zsh reads `$#X` and `$+X` as one expansion), and no
+// parameter may take a zsh subscript or modifier; such a `$` is read as an unknown expansion. Each
+// alternative ends at a true token boundary, so a rejected `$AB:s` cannot backtrack into `$A`.
+const BARE_PARAMETER = new RegExp(
+  `^\\$(?:${NAME}(?!\\w)|\\d+(?!\\d)|[@*#?$!-](?![\\w{]))(?![\\[]|:[A-Za-z&])`,
+)
 const LENGTH = new RegExp(`^#(?:${NAME}|\\d+)$`)
 const OFFSET = /^:\s*-?\d+(?::\s*-?\d+)?$/
 // zsh modifiers that only reshape the value; `:s`, `:gs`, `:&` and `:g&` add text of their own.
@@ -108,7 +111,7 @@ function injectedOperand(rest: string): string | undefined {
 // A `$(...)` or backtick substitution read in full: one plain command with no quote, escape, nested
 // expansion, paren, backtick, comment or redirect, whose first word does not open a compound command
 // (the splitter ends `$(case a in a) …` at the pattern's `)`). Any other may end elsewhere, so it denies.
-const PLAIN_COMMAND = String.raw`\s*(?!(?:case|if|for|while|until|select|function|time|coproc|repeat|foreach)\b)[\w\s.,/@%+=:-]*`
+const PLAIN_COMMAND = String.raw`(?!\s*(?:case|if|for|while|until|select|function|time|coproc|repeat|foreach)\b)[\w\s.,/@%+=:-]*`
 const PLAIN_SUBSTITUTION = new RegExp(`^(?:\\$\\(${PLAIN_COMMAND}\\)|\`${PLAIN_COMMAND}\`)`)
 // The other marks that stay text: a glob, a leading `~` and a brace, which is judged on its own.
 const TEXT_MARK = /^[*?[~{]/
