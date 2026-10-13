@@ -178,3 +178,52 @@ describe('classifyStale (CC-1150 b)', () => {
     expect(classOf({ stallCode: 'retry-spent' }).proposed).toBe('release with requeue, branch kept')
   })
 })
+
+describe('classifyStale reads a silent, empty exit as nothing-to-do (CC-1230 a)', () => {
+  const TD_829_REPORT = parseReport(
+    "I didn't open a PR: the plan says this slice changes no repo files.\nThe worktree is clean.",
+  )
+  const EMPTY = { openPr: null, ahead: 0 }
+  const NO_PR = { kind: 'none' as const }
+  const classOf = (obs: Observation) =>
+    classifyStale(claim({ stalledReason: TD_829_REPORT.firstLine }), obs).class
+
+  it('finishes the TD-829 a shape: no status line, no commits, no PR on GitHub', () => {
+    expect(classOf({ report: TD_829_REPORT, exitedWork: EMPTY, prState: NO_PR })).toBe('nothing-to-do')
+  })
+
+  it('reads a claim whose roster row is gone, so no report was read, the same way', () => {
+    expect(classOf({ exitedWork: EMPTY, prState: NO_PR })).toBe('nothing-to-do')
+  })
+
+  it.each<[string, Observation]>([
+    ['the exited work is unreadable', { report: TD_829_REPORT, exitedWork: 'unreadable', prState: NO_PR }],
+    ['the exited work was never read', { report: TD_829_REPORT, prState: NO_PR }],
+    ['commits are ahead', { report: TD_829_REPORT, exitedWork: { openPr: null, ahead: 1 }, prState: NO_PR }],
+    [
+      'the worktree has an open PR',
+      { report: TD_829_REPORT, exitedWork: { openPr: 'o/r#9', ahead: 0 }, prState: NO_PR },
+    ],
+    [
+      'GitHub shows an open PR',
+      { report: TD_829_REPORT, exitedWork: EMPTY, prState: { kind: 'open', pr: 'o/r#9' } },
+    ],
+    ['the PR read is unreadable', { report: TD_829_REPORT, exitedWork: EMPTY, prState: 'unreadable' }],
+    ['the PR was never read', { report: TD_829_REPORT, exitedWork: EMPTY }],
+    [
+      'the report parked a question',
+      { report: parseReport('PARKED m-1'), exitedWork: EMPTY, prState: NO_PR },
+    ],
+  ])('keeps other when %s', (_, obs) => {
+    expect(classOf(obs)).toBe('other')
+  })
+
+  it.each([
+    ['a phase timeout', { stallCode: 'phase-timeout' as const }, 'timeout'],
+    ['a retry-spent code', { stallCode: 'retry-spent' as const }, 'retry-spent'],
+  ])('leaves %s to its own class, since a crash also leaves nothing behind', (_, patch, expected) => {
+    const obs = { exitedWork: EMPTY, prState: NO_PR }
+
+    expect(classifyStale(claim({ stalledReason: 'stalled', ...patch }), obs).class).toBe(expected)
+  })
+})

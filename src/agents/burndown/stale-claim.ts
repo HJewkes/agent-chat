@@ -45,6 +45,16 @@ const QUESTION = /^Status:\s*(?:BLOCKED|NEEDS_CONTEXT)\b/
 
 const prNone = (pr: string | undefined): boolean => /^none\b/i.test(pr ?? '')
 
+/**
+ * CC-1230 a: an exit that said nothing, left no commits, and has no PR on GitHub had nothing to do (TD-829 a).
+ * Every read must be fresh and say so; an unreadable or absent read keeps the claim `other`.
+ */
+function silentAndEmpty({ report, exitedWork, prState }: Observation): boolean {
+  const silent = report === undefined || (report.status === 'unknown' && report.parked === undefined)
+  const empty = typeof exitedWork === 'object' && exitedWork.openPr === null && exitedWork.ahead === 0
+  return silent && empty && typeof prState === 'object' && prState.kind === 'none'
+}
+
 function staleClass(claim: Claim, obs: Observation): Omit<StaleVerdict, 'proposed'> {
   const { report, prState } = obs
   const done = report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS'
@@ -59,7 +69,7 @@ function staleClass(claim: Claim, obs: Observation): Omit<StaleVerdict, 'propose
     return { class: 'blocked' }
   if (claim.stallCode === 'outside-owns') return { class: 'outside-owns' }
   if (claim.stallCode === 'phase-timeout') return { class: 'timeout' }
-  return { class: 'other' }
+  return { class: silentAndEmpty(obs) ? 'nothing-to-do' : 'other' }
 }
 
 /** The class of a stalled claim whose agent is gone, with the action the seat is told it could take. */
