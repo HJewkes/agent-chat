@@ -75,7 +75,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
-import { seedSteps } from './seed-slices.js'
+import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
@@ -626,7 +626,8 @@ async function decide(
   )
   const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
-  const planLedger = applyActions(ledger, kept, now)
+  const resynced = resyncQueuedSlices(applyActions(ledger, kept, now), diskPlanReader(root))
+  const planLedger = applyActions(ledger, [...kept, ...resynced.actions], now)
   const triage = triageFor(
     config,
     planLedger,
@@ -663,6 +664,7 @@ async function decide(
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...laddered.notes,
+    ...resynced.notes,
     ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
@@ -677,6 +679,7 @@ async function decide(
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...resyncSteps(resynced),
     ...seedSteps(planned.seeds),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
