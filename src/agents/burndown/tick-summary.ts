@@ -4,6 +4,7 @@ import { claimKey, type ClaimKey } from './advance.js'
 import { briefRefusal, type Task } from './eligibility.js'
 import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
+import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
 import { onPlan } from './seat-scope.js'
@@ -25,6 +26,8 @@ import type { TickStep } from './step-timer.js'
  *   durationMs      CC-1192: the whole tick, monotonic ms
  *   lockHeldMs      CC-1192: from taking the ledger lock to releasing it: every step but `config`, and the untimed
  *                   work between steps
+ *   orphanQueues    CC-1226: [{seat, queued, ready, oldestMinutes}] for each seat that holds queued claims but
+ *                   has no plan this tick; absent when there is none or the tick did not pass its ledger
  *   steps           CC-1192: [{name, ms}] per named stage in run order (`StepName` in step-timer.ts); `plan` holds
  *                   the planning on both sides of `collision`; factory
  *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
@@ -86,6 +89,7 @@ export interface TickSummaryRow {
   durationMs?: number
   lockHeldMs?: number
   steps?: TickStep[]
+  orphanQueues?: OrphanQueue[]
 }
 
 export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
@@ -107,6 +111,8 @@ export interface SummaryPlan {
 export interface SummaryInputs extends SummaryPlan {
   now: Date
   registrations: readonly RegisterRecord[]
+  /** CC-1226: the ledger the tick planned against; without it the row names no orphan queue. */
+  ledger?: Ledger
 }
 
 const noRegistrations = (): RegisterCounts => ({ ok: 0, refused: 0, failed: 0 })
@@ -191,12 +197,21 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   }
 }
 
+/** CC-1226: the seats that hold queued claims although no plan covered them this tick. */
+function orphansOf(inputs: SummaryInputs): OrphanQueue[] {
+  if (inputs.ledger === undefined) return []
+  const planned = new Set(inputs.outcomes.filter(o => o.skipped === undefined).map(o => o.seat))
+  return orphanQueues(inputs.ledger, planned, inputs.now)
+}
+
 export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickSummaryRow {
+  const orphans = orphansOf(inputs)
   return {
     v: TICK_SUMMARY_VERSION,
     ts: inputs.now.toISOString(),
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
+    ...(orphans.length === 0 ? {} : { orphanQueues: orphans }),
     ...timings,
   }
 }

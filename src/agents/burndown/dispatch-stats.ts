@@ -3,6 +3,7 @@ import { SEAT_HAND_RESERVE, SEAT_SPAWN_OVERLAP, SEAT_SPAWN_UNPREFIXED } from '..
 import { inferWorkRole } from '../spawn-provenance.js'
 import type { Ledger } from './ledger.js'
 import { NO_DISPATCH_PREFIX } from './no-dispatch.js'
+import { orphanQueueLine, orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import { BRIEF_SOURCES, type BriefSource } from './task-tags.js'
 import type { VerdictObservation } from './waste.js'
 import {
@@ -101,6 +102,8 @@ export interface SeatDispatchStats {
     implementers: ImplementerCounts
   }
   queue: { depth: number; p50Minutes: number | null; maxMinutes: number | null }
+  /** CC-1226: set when the seat holds queued claims but the window's last tick planned nothing for it. */
+  orphan: OrphanQueue | null
   ready: Pick<SeatSummary, 'ready' | 'unbriefed' | 'stale'> | null
   readyFloor: ReadyFloor
   caps: SeatSummary['roles'] | null
@@ -316,6 +319,13 @@ export function readyFloor(rows: readonly TickSummaryRow[], seat: string, floor:
   }
 }
 
+/** The seat's queue as an orphan: no plan for it in the last tick row, or no tick row in the window at all. */
+function orphanOf(w: Window, seat: string, now: Date): OrphanQueue | null {
+  const planned = Object.entries(w.rows.at(-1)?.seats ?? {}).filter(([, s]) => s.skipped === undefined)
+  const found = orphanQueues(w.ledger, new Set(planned.map(([name]) => name)), now)
+  return found.find(o => o.seat === seat) ?? null
+}
+
 const perHour = (n: number, windowMs: number): number => round2(n / (windowMs / HOUR_MS))
 
 interface Window {
@@ -346,6 +356,7 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
       implementers: implementerCounts(log, w.sinceMs),
     },
     queue: queueAges(w.ledger, seat, ports.now),
+    orphan: orphanOf(w, seat, ports.now),
     ready:
       summary === undefined
         ? null
@@ -437,6 +448,7 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
       `  hand share     ${handShareLine(spawns.implementers)}`,
       `  spawn gate     ${gateLine(s.gate)}`,
       `  queue          ${queue.depth} queued, age p50 ${dash(queue.p50Minutes)}m, max ${dash(queue.maxMinutes)}m`,
+      ...(s.orphan === null ? [] : [`  ${orphanQueueLine(s.orphan)}`]),
       `  ready depth    ${ready === null ? '-' : `ready ${ready.ready}, unbriefed ${ready.unbriefed}, stale ${ready.stale}`}`,
       `  ready floor    ${floorLine(s.readyFloor)}`,
       `  cap use        ${capsLine(s.caps)}`,
