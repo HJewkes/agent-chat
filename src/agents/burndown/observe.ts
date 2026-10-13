@@ -431,9 +431,15 @@ export function changedFiles(cwd: string, exec: Runner = run): string[] | undefi
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
 
-/** CC-1230 a: an implementing claim whose row was pruned left no report, so what its worktree holds is all there is to read. */
+/**
+ * CC-1230 a: a stalled implementing claim whose row was pruned left no report, so what its worktree holds is all
+ * there is to read. Only a stalled one, since only a stall is classified.
+ */
 const goneWork = (obs: Observation, claim: Claim, deps: ObserveDeps): Observation =>
-  claim.phase === 'implementing' && claim.agentName !== undefined && claim.worktree !== undefined
+  claim.phase === 'implementing' &&
+  claim.stalledReason !== undefined &&
+  claim.agentName !== undefined &&
+  claim.worktree !== undefined
     ? withExitedWork(obs, claim.worktree, deps)
     : obs
 

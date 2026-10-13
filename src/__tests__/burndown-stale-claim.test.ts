@@ -221,6 +221,12 @@ describe('classifyStale reads a silent, empty exit as nothing-to-do (CC-1230 a)'
   it.each([
     ['a phase timeout', { stallCode: 'phase-timeout' as const }, 'timeout'],
     ['a retry-spent code', { stallCode: 'retry-spent' as const }, 'retry-spent'],
+    ['a budget park', { stallCode: 'budget' as const }, 'other'],
+    [
+      'a dirty-uncommitted park, whose work ahead: 0 cannot see',
+      { stallCode: 'dirty-uncommitted' as const },
+      'other',
+    ],
   ])('leaves %s to its own class, since a crash also leaves nothing behind', (_, patch, expected) => {
     const obs = { exitedWork: EMPTY, prState: NO_PR }
 
