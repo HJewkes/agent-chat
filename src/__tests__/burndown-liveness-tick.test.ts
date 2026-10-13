@@ -126,6 +126,7 @@ function fakeBroker(replies: SpawnReply[], agents: AgentIdentity[] = []): Fake {
       retire: async () => ({ ok: true }),
       queue: async () => [],
       resume: async name => ({ ok: true, agentId: `id-${name}` }),
+      retireFinished: async () => ({ ok: true, plan: [], results: [] }),
       collisionView: async () => ({ names: [], claims: [] }),
       seatSender: async () => ({
         send: async (_to, text) => {

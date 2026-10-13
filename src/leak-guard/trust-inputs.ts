@@ -24,6 +24,28 @@ export const TRUST_ENV: ReadonlyMap<string, TrustEnv> = new Map([
   ['GIT_TEMPLATE_DIR', 'templateDir'],
 ])
 
+/**
+ * Regex sources for whole variable names a shell turns straight into code it runs, so they set a
+ * shell's startup as BASH_ENV does. Patterns rather than names, to fail closed on kin: bash's
+ * exported functions (`BASH_FUNC_f%%`, and `BASH_FUNC_f()` from older patches), its option lists
+ * (`SHELLOPTS=xtrace` expands `PS4`), every prompt bash, zsh, sh or ksh expands (`PS0`-`PS4`,
+ * `PROMPT_COMMAND`, zsh's `PROMPT*`, `RPROMPT*`, `RPS*` and `SPROMPT`), and the paths a shell loads
+ * functions or modules from.
+ */
+export const SHELL_CODE_ENV: readonly string[] = [
+  'BASH_FUNC_[^\\s=]*',
+  'SHELLOPTS',
+  'BASHOPTS',
+  'PS[0-9]+',
+  'PROMPT\\w*',
+  'RPROMPT\\w*',
+  'RPS[0-9]+',
+  'SPROMPT',
+  'FPATH',
+  'MODULE_PATH',
+  'BASH_LOADABLES_PATH',
+]
+
 // git reads both keys only without a subsection, and section and key names case-insensitively.
 const TRUST_KEYS: Readonly<Record<string, TrustKey>> = {
   'safe.directory': 'safeDirectory',
