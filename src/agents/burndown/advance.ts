@@ -197,6 +197,8 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
   const shepherds = exitedToShepherd(claim, obs)
   if (shepherds !== undefined) return shepherds
+  const healed = reregistered(claim, obs, now)
+  if (healed !== undefined) return healed
   if (claim.stalledReason !== undefined) return relink(claim, obs) ?? linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
@@ -510,6 +512,38 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
     ]
   }
   return claim.phase === 'awaiting-merge' ? [update(claim, { phase: 'shepherding' })] : []
+}
+
+const TRANSIENT = /ci-timeout|gh-api-5xx|rate-limit|connection/i
+const REREGISTER_CAP = 2
+const REREGISTER_GAP_MS = 30 * 60_000
+
+/** CC-1229: whether the claim may take one more run: under the cap, 30 minutes on, and the head moved on. */
+function mayReregister(claim: Claim, head: string | null, now: Date): boolean {
+  const last = claim.reregistered
+  if (last === undefined) return true
+  const gapped = now.getTime() - Date.parse(last.at) >= REREGISTER_GAP_MS
+  return last.n < REREGISTER_CAP && gapped && (head === null || head !== last.head)
+}
+
+/**
+ * CC-1229: a run that ended failed on a transient class (CI timeout, GitHub 5xx, rate limit, connection) while
+ * GitHub reads the PR open goes back to Shepherd, with the claim's own task and implementer. Anything unreadable,
+ * unknown, closed or merged, or past the cap, falls through to the park; undefined leaves the claim to its step.
+ */
+function reregistered(claim: Claim, obs: Observation, now: Date): Action[] | undefined {
+  const row = obs.shepherd?.row
+  if (claim.stallCode !== undefined && claim.stallCode !== 'shepherd-ended') return undefined
+  if (claim.pr === undefined || !(claim.phase === 'shepherding' || claim.phase === 'awaiting-merge'))
+    return undefined
+  if (row === undefined || row.phase !== 'failed' || !TRANSIENT.test(row.stalled?.reason ?? ''))
+    return undefined
+  if (obs.prState === undefined || obs.prState === 'unreadable' || obs.prState.kind !== 'open')
+    return undefined
+  if (!mayReregister(claim, row.headSha, now)) return undefined
+  const seen = { n: (claim.reregistered?.n ?? 0) + 1, at: now.toISOString() }
+  const reregistered = row.headSha === null ? seen : { ...seen, head: row.headSha }
+  return handOff(claim, claim.pr, workerOf(claim), { ...UNSTALLED, reregistered })
 }
 
 /**
