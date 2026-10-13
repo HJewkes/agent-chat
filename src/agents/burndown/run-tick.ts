@@ -108,6 +108,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { burndownRefusalsPath, refusalSnapshot, writeRefusalSnapshot } from './refusal-snapshot.js'
 import {
   diskPlanReader,
   pendingOffLedger,
@@ -450,13 +451,14 @@ async function actOn(
   const told = await timer.time('deliver', () =>
     deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch }),
   )
-  await timer.time('write-ledger', () =>
+  await timer.time('write-ledger', () => {
     writeLedger(burndownLedgerPath(), {
       ...told.ledger,
       lastTickAt: now.toISOString(),
       ...(serviceCheck === undefined ? {} : { serviceCheck }),
-    }),
-  )
+    })
+    writeRefusalSnapshot(burndownRefusalsPath(), refusalSnapshot(outcomes, now))
+  })
   return {
     lines: [
       ...routed,
