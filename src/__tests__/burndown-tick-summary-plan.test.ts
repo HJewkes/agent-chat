@@ -44,6 +44,23 @@ describe('tick summary on-plan refusals (CC-1128)', () => {
     expect(seat?.refusals).toEqual({ claimed: 3, 'no-brief': 1, 'plan-blocked': 1 })
   })
 
+  it('counts each refused task once, so the counts sum to distinct tasks plus task-less refusals (CC-1186)', () => {
+    const refusals = [
+      refusal('A-1', 'file-overlap'),
+      refusal('A-1', 'role-cap'),
+      refusal('A-1', 'claimed'),
+      refusal('A-2', 'no-brief'),
+      { initiative: '-', kind: 'plan-blocked', reason: 'backlog unreadable' } as const,
+    ]
+
+    const seat = tickSummary(inputs({ refusals, plan: new Set(['A-1']) })).seats['seat-p']
+
+    const sum = Object.values(seat?.refusals ?? {}).reduce((a, n) => a + n, 0)
+    expect(sum).toBe(2 + 1)
+    expect(seat?.refusals).toEqual({ 'file-overlap': 1, 'no-brief': 1, 'plan-blocked': 1 })
+    expect(seat?.onPlanRefusals).toEqual({ 'file-overlap': 1 })
+  })
+
   it('emits an empty count when the plan names none of the refused tasks', () => {
     const seat = tickSummary(inputs({ plan: new Set(['Z-9']) })).seats['seat-p']
 
