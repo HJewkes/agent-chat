@@ -1,9 +1,18 @@
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, claimKey, type Observation } from '../agents/burndown/advance.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import type { Claim } from '../agents/burndown/ledger.js'
 import { observe } from '../agents/burndown/observe.js'
-import { registerWithShepherd, shepherdRows } from '../agents/burndown/shepherd.js'
+import {
+  registerWithShepherd,
+  SHEPHERD_STATUS_ARGS,
+  shepherdListed,
+  shepherdRows,
+  shepherdRowsAsync,
+} from '../agents/burndown/shepherd.js'
 
 /** CC-791: one row Shepherd's status answers in a shape this build does not know must not blind the whole read. */
 
@@ -102,5 +111,50 @@ describe('reading Shepherd status row by row (CC-791)', () => {
     )
 
     expect(calls.some(a => a[1] === 'register')).toBe(false)
+  })
+})
+
+describe('readers that need finished Shepherd runs ask for them (TP-2516)', () => {
+  const ALL = ['shepherd', 'status', '--json', '--all']
+
+  function recording(): { exec: Runner; calls: string[][] } {
+    const calls: string[][] = []
+    return { calls, exec: (_bin, args) => (calls.push(args), { status: 0, stdout: '[]' }) }
+  }
+
+  it('reads every row, finished ones included, for landed-run detection', () => {
+    const { exec, calls } = recording()
+
+    shepherdRows(exec, () => {})
+
+    expect(calls).toEqual([ALL])
+  })
+
+  it('reads every row, finished ones included, for seat PR adoption', () => {
+    const { exec, calls } = recording()
+
+    shepherdListed(exec)
+
+    expect(calls).toEqual([ALL])
+  })
+
+  it('reads every row, finished ones included, from the broker without blocking', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shepherd-all-'))
+    const out = join(dir, 'args')
+    const bin = join(dir, 'titan-factory')
+    writeFileSync(bin, `#!/bin/sh\necho "$@" > ${out}\necho '[]'\n`)
+    chmodSync(bin, 0o755)
+    try {
+      const rows = await shepherdRowsAsync(() => {}, 5_000, bin)
+
+      expect(rows).toEqual([])
+      expect(readFileSync(out, 'utf8').trim()).toBe(ALL.join(' '))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves the bare args, which list live runs only, to the live-run readers', () => {
+    expect(SHEPHERD_STATUS_ARGS).toEqual(['shepherd', 'status', '--json'])
   })
 })
