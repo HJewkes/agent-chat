@@ -213,7 +213,6 @@ const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
   '--arg-file',
   '--delimiter',
-  '--max-lines',
   '--max-args',
   '--max-chars',
   '--max-procs',
@@ -223,6 +222,7 @@ const XARGS_LONG_FLAG = new Set([
   '--null',
   '--eof',
   '--replace',
+  '--max-lines',
   '--interactive',
   '--open-tty',
   '--no-run-if-empty',
@@ -253,13 +253,20 @@ const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 type Unwrapped =
   { words: string[]; chdir?: boolean; assigns: string[]; fed?: Fed | undefined } | { reason: string }
 
-/** xargs runs its command with words it reads: appended, or in place of each word holding the `replace` string. */
+/**
+ * xargs runs its command with words it reads: in place of each word holding the `replace` string,
+ * and appended when `append` is set. A replace mode the guard cannot pin down sets both.
+ */
 interface Fed {
   replace?: string | undefined
+  append: boolean
 }
 
 /** The words xargs adds, read as an unquoted `$@`: unreadable, and may be none or several. */
 const XARGS_ARGS = LIVE + '$@'
+/** A replace string the guard cannot read, which any word may hold. */
+const ANY_WORD = ''
+const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
 function unwrap(words: readonly string[]): Unwrapped {
@@ -284,7 +291,8 @@ function unwrap(words: readonly string[]): Unwrapped {
     else if (name === 'xargs') {
       const after = dropXargsOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.xargsOption }
-      ;({ at, fed } = after)
+      at = after.at
+      fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1)
       if ('reason' in env) return env
@@ -299,9 +307,16 @@ function unwrap(words: readonly string[]): Unwrapped {
 function stdinArgs(words: readonly string[], fed: Fed | undefined): string[] {
   if (fed === undefined || words.length === 0) return [...words]
   const { replace } = fed
-  if (replace === undefined) return [...words, XARGS_ARGS]
-  return words.map(word => (unmark(word).includes(replace) ? XARGS_ARGS : word))
+  const placed =
+    replace === undefined ? words : words.map(word => (unmark(word).includes(replace) ? XARGS_ARGS : word))
+  return fed.append ? [...placed, XARGS_ARGS] : [...placed]
 }
+
+/** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
+const nestedFed = (outer: Fed, inner: Fed): Fed => ({
+  append: true,
+  replace: outer.replace === undefined && inner.replace === undefined ? undefined : ANY_WORD,
+})
 
 /** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
 function wrapperEnd(words: readonly string[], at: number, name: string): number | undefined {
@@ -321,36 +336,68 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
   return Math.min(i, words.length)
 }
 
-/** Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know. */
-function dropXargsOptions(words: readonly string[], i: number): { at: number; fed: Fed } | undefined {
-  const fed: Fed = {}
-  for (; i < words.length; i++) {
-    const a = words[i] as string
-    if (a === '--') return { at: i + 1, fed }
-    if (!a.startsWith('-') || a === '-') break
-    if (a.startsWith('--')) {
-      const name = a.split('=')[0] as string
-      if (name === '--replace') fed.replace = a.includes('=') ? a.slice(name.length + 1) : '{}'
-      if (XARGS_LONG_VALUE.has(name)) i += a.includes('=') ? 0 : 1
-      else if (!XARGS_LONG_FLAG.has(name)) return undefined
-    } else {
-      fed.replace = clusterReplace(a, words[i + 1]) ?? fed.replace
-      i += clusterValueWords(a)
-    }
-  }
-  return { at: Math.min(i, words.length), fed }
+/** What one xargs option sets about how it feeds its command. */
+interface FeedOption {
+  replace?: string | undefined
+  batches?: boolean
 }
 
-/** The replace string a short-flag cluster sets: `-I R`, `-J R`, or `-i[R]`, whose bare form means `{}`. */
-function clusterReplace(cluster: string, next: string | undefined): string | undefined {
+const BATCH_LONG = new Set(['--max-args', '--max-lines'])
+
+/**
+ * Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know.
+ * GNU xargs drops a replace string on a later -n, -L or -l and appends instead; the guard does not track the order and reads both.
+ */
+function dropXargsOptions(words: readonly string[], i: number): { at: number; fed: Fed } | undefined {
+  let replace: string | undefined
+  let batches = false
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return { at: i + 1, fed: feed(replace, batches) }
+    if (!a.startsWith('-') || a === '-') break
+    const option = a.startsWith('--') ? longFeed(a) : clusterFeed(a, words[i + 1])
+    if (option === undefined) return undefined
+    replace = option.replace ?? replace
+    batches ||= option.batches === true
+    i += a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
+  }
+  return { at: Math.min(i, words.length), fed: feed(replace, batches) }
+}
+
+const feed = (replace: string | undefined, batches: boolean): Fed => ({
+  replace,
+  append: replace === undefined || batches,
+})
+
+function longFeed(option: string): FeedOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!XARGS_LONG_VALUE.has(name) && !XARGS_LONG_FLAG.has(name)) return undefined
+  if (name === '--replace')
+    return { replace: option.includes('=') ? replaceString(option.slice(name.length + 1)) : '{}' }
+  return { batches: BATCH_LONG.has(name) }
+}
+
+const longValueWords = (option: string): number =>
+  XARGS_LONG_VALUE.has(option.split('=')[0] as string) && !option.includes('=') ? 1 : 0
+
+/** What a short-flag cluster sets: a replace string (`-I R`, `-J R`, or `-i[R]`, whose bare form means `{}`), or a batch size. */
+function clusterFeed(cluster: string, next: string | undefined): FeedOption {
   for (let k = 1; k < cluster.length; k++) {
     const letter = cluster[k] as string
     const glued = cluster.slice(k + 1)
-    if (letter === 'I' || letter === 'J') return unmark(glued === '' ? (next ?? '') : glued)
-    if (letter === 'i') return glued === '' ? '{}' : unmark(glued)
-    if (XARGS_SHORT_VALUE.has(letter) || 'le'.includes(letter)) return undefined
+    if (letter === 'I' || letter === 'J')
+      return { replace: replaceString(glued === '' ? (next ?? '') : glued) }
+    if (letter === 'i') return { replace: glued === '' ? '{}' : replaceString(glued) }
+    if ('nLl'.includes(letter)) return { batches: true }
+    if (XARGS_SHORT_VALUE.has(letter) || letter === 'e') return {}
   }
-  return undefined
+  return {}
+}
+
+/** A replace string as xargs gets it; one the shell expands may be anything, so any word may hold it. */
+const replaceString = (marked: string): string => {
+  const plain = marked.replaceAll(BRACE_PAIR, '{}')
+  return plain.includes(LIVE) ? ANY_WORD : plain
 }
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
@@ -519,13 +566,26 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   )
 }
 
-/** A `git push` that xargs feeds words before any literal `--` may take `--no-verify` from them (CC-1117). */
+/** git push options that take no value, so a `--` after them ends the options. */
+const PUSH_FLAGS = new Set(
+  '-u --set-upstream -f --force -n --dry-run -q --quiet -v --verbose --all --tags --atomic --follow-tags --porcelain --progress --no-progress --prune'.split(
+    ' ',
+  ),
+)
+
+/**
+ * A `git push` that xargs feeds words may take `--no-verify` from them (CC-1117), unless git's own option
+ * parsing ends at a `--` first. An option that may take a value, or a word the guard cannot read, may swallow that `--`.
+ */
 function checkFedPush(run: GitRun, scope: Scope): string | undefined {
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  if (at < 0 || run.resolved[at] !== 'push') return undefined
-  const rest = run.marked.slice(at + 1)
-  const end = rest.indexOf('--')
-  return (end < 0 ? rest : rest.slice(0, end)).includes(XARGS_ARGS) ? REASONS.xargsPush : undefined
+  if (at < 0 || run.resolved[at] !== 'push' || !run.marked.slice(at + 1).includes(XARGS_ARGS))
+    return undefined
+  for (const word of run.resolved.slice(at + 1)) {
+    if (word === '--') return undefined
+    if (word === undefined || (word.startsWith('-') && !PUSH_FLAGS.has(word))) return REASONS.xargsPush
+  }
+  return REASONS.xargsPush
 }
 
 /**

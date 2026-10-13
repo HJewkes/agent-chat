@@ -58,6 +58,50 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand(command, ctx)).toBe(REASONS.xargsPush)
   })
 
+  it.each([
+    'xargs -I{} -n2 git push',
+    'xargs -i -n2 git push',
+    'xargs -n2 -I{} git push',
+    'xargs -I{} --max-args=2 git push',
+    'xargs -I{} --max-lines git push',
+    'xargs -I{} -tL1 git push',
+  ])('denies a push whose replace mode a batch option may switch to appending: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.xargsPush)
+  })
+
+  it.each(['xargs -I{} -L1 git config', 'xargs -I{} -l git config'])(
+    'denies a config write a batch option may append to: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBeDefined()
+    },
+  )
+
+  it.each([
+    'xargs git push -o --',
+    'xargs git push --push-option --',
+    'xargs git push --repo --',
+    'xargs git push --receive-pack --',
+    'xargs git push origin -o --',
+    'xargs git push $X --',
+  ])('denies a push whose -- may be an option value: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.xargsPush)
+  })
+
+  it.each(['R=origin; xargs -I"$R" git push origin', 'xargs -I"$R" git push origin --'])(
+    'denies a push when the replace string is unreadable: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBeDefined()
+    },
+  )
+
+  it('denies --max-lines with no value, which leaves the next word as the command', () => {
+    expect(checkCommand('xargs --max-lines git push --no-verify', ctx)).toBe(REASONS.noVerify)
+  })
+
+  it('denies an xargs that runs xargs, whose outer words land past the inner --', () => {
+    expect(checkCommand('xargs xargs -I{} git push origin -- {}', ctx)).toBeDefined()
+  })
+
   it('denies a config write through the replace word', () => {
     expect(checkCommand('xargs -I % git config %', ctx)).toBeDefined()
   })
@@ -65,6 +109,9 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
   it.each([
     'xargs git push origin --',
     'xargs -I{} git push origin -- {}',
+    'xargs git push -u -f origin --',
+    'xargs --max-lines=1 git push origin --',
+    'xargs -I{} -P4 git push origin -- {}',
     'xargs git log',
     'ls | xargs git add',
     'xargs git status',
