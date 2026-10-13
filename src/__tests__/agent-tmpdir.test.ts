@@ -16,6 +16,7 @@ import {
   type TmpStat,
 } from '../agents/agent-tmpdir.js'
 import { SWEEP_GRACE_MS } from '../agents/orphan-reap.js'
+import { agentTmpSweepRoots } from '../agents/orphan-sweep.js'
 
 const UID = 1000
 
@@ -223,6 +224,36 @@ describe('a per-agent TMPDIR under the on-disk root (CC-1184)', () => {
 
     expect(fs.removed).toEqual([DISK_DIR])
     expect(fs.nodes.has(DIR)).toBe(true)
+  })
+})
+
+describe('a per-agent harness dir under the on-disk harness root (CC-1266)', () => {
+  const HARNESS_ROOT = '/home/example/.cache/agent-chat/harness'
+  const HARNESS_DIR = `${HARNESS_ROOT}/ac-worker-4242`
+  const request = (fs: FakeFs, root: string) =>
+    ({ name: 'worker', pid: 4242, root, platform: 'linux', fs, uid: UID }) as const
+
+  it('builds the leaf under the harness root', () => {
+    expect(agentTmpPath('worker', 4242, HARNESS_ROOT)).toBe(HARNESS_DIR)
+  })
+
+  it('creates the root and then the dir, both 0700', () => {
+    const fs = new FakeFs()
+
+    expect(ensureAgentTmpDir(request(fs, HARNESS_ROOT))).toBe(HARNESS_DIR)
+    expect(fs.made).toEqual([
+      [HARNESS_ROOT, 0o700],
+      [HARNESS_DIR, 0o700],
+    ])
+  })
+
+  it('refuses a root that only resembles the harness root', () => {
+    for (const root of [`${HARNESS_ROOT}X`, `${HARNESS_ROOT}/../tmp`, `${HARNESS_ROOT}/`]) {
+      const fs = new FakeFs()
+      expect(ensureAgentTmpDir(request(fs, root)), root).toBeUndefined()
+      expect(agentTmpPath('worker', 4242, root), root).toBeUndefined()
+      expect(fs.made, root).toEqual([])
+    }
   })
 })
 
@@ -615,6 +646,39 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     })
 
     expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
+  })
+
+  it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', () => {
+    const dir = `${DISK_ROOT}/ac-seat-a-impl-4242`
+    const fs = new FakeFs().add(DISK_ROOT).add(dir)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'seat-a-impl', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([dir])
+    expect(events).toContainEqual(['tmpdir_removed', expect.objectContaining({ source: 'sweep', path: dir })])
+  })
+
+  it('removes a finished agent’s harness dir and keeps a live agent’s (CC-1266)', () => {
+    const harness = '/home/example/.cache/agent-chat/harness'
+    const fs = new FakeFs().add(harness).add(`${harness}/ac-worker-4242`).add(`${harness}/ac-lead-77`)
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited'), row('a2', 'lead', 'live')],
+      now: () => now,
+      ...deps(fs),
+      log: () => undefined,
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([`${harness}/ac-worker-4242`])
+    expect(fs.nodes.has(`${harness}/ac-lead-77`)).toBe(true)
   })
 
   it('skips a root that does not exist', () => {

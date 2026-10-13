@@ -75,6 +75,39 @@ describe('a worker writing agent-chat profiles or config (CC-1094)', () => {
   })
 })
 
+const KEY_TOUCHES: [string, Record<string, string>][] = [
+  ['Bash', { command: 'cat ~/.agent-chat/launcher.key' }],
+  ['Bash', { command: 'cp ~/.agent-chat/launcher-keys/mac.key /tmp' }],
+  ['Edit', { file_path: path.join(HOME, '.agent-chat/launcher.key'), old_string: 'a', new_string: 'b' }],
+  [
+    'Edit',
+    { file_path: path.join(HOME, '.agent-chat/launcher-keys/mac.key'), old_string: 'a', new_string: 'b' },
+  ],
+]
+
+describe('an agent touching the launcher key files (CC-1063)', () => {
+  it.each([
+    ['worker', { AGENT_CHAT_ROLE: 'worker' }],
+    ['coordinator', { AGENT_CHAT_ROLE: 'coordinator' }],
+    ['missing role', {}],
+  ])('is denied for a %s', (_role, env) => {
+    const ctx = hookContext(env)
+
+    for (const [tool, call] of KEY_TOUCHES) expect(checkToolCall(tool, call, ctx)).toBe(REASONS.protectedPath)
+  })
+
+  it('covers a relocated agent-chat home by its absolute path, for a coordinator too', () => {
+    const ctx = hookContext({ AGENT_CHAT_ROLE: 'coordinator', AGENT_CHAT_HOME: '/srv/bus' })
+
+    expect(checkToolCall('Bash', { command: 'base64 /srv/bus/launcher.key' }, ctx)).toBe(
+      REASONS.protectedPath,
+    )
+    expect(checkToolCall('Edit', { file_path: '/srv/bus/launcher-keys/mac.key' }, ctx)).toBe(
+      REASONS.protectedPath,
+    )
+  })
+})
+
 describe('AGENT_CHAT_ROLE in the launch env', () => {
   it('is the profile role, and a profile cannot set it', () => {
     const worker = bdImplementer({ env: { AGENT_CHAT_ROLE: 'coordinator' } })

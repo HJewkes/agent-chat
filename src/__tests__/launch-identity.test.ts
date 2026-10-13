@@ -49,6 +49,26 @@ describe('what a broker spawned by an agent carries', () => {
     expect(env).toEqual({ PATH: '/bin' })
   })
 
+  it('recognises a launch harness dir and nothing below it (CC-1266)', () => {
+    expect(isLaunchTmpDir('/home/example/.cache/agent-chat/harness/ac-worker-4242')).toBe(true)
+    expect(isLaunchTmpDir('/home/example/.cache/agent-chat/harness/ac-worker-4242/sub')).toBe(false)
+    expect(isLaunchTmpDir('/home/example/.cache/agent-chat/harnessX/ac-worker-4242')).toBe(false)
+  })
+
+  it('strips another launch’s CLAUDE_CODE_TMPDIR and keeps an operator one (CC-1266)', () => {
+    const launch: NodeJS.ProcessEnv = {
+      CLAUDE_CODE_TMPDIR: '/home/example/.cache/agent-chat/harness/ac-lead-123',
+      PATH: '/bin',
+    }
+    const operator: NodeJS.ProcessEnv = { CLAUDE_CODE_TMPDIR: '/home/example/cc', PATH: '/bin' }
+
+    clearLaunchTmpDirs(launch)
+    clearLaunchTmpDirs(operator)
+
+    expect(launch).toEqual({ PATH: '/bin' })
+    expect(operator).toEqual({ CLAUDE_CODE_TMPDIR: '/home/example/cc', PATH: '/bin' })
+  })
+
   it('clears both in place, as a broker started by hand does to its own environment', () => {
     const env: NodeJS.ProcessEnv = { AGENT_CHAT_AGENT_ID: 'a1', TMPDIR: '/tmp/ac-lead-123', PATH: '/bin' }
     clearLaunchIdentity(env)

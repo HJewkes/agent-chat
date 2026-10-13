@@ -3,12 +3,13 @@ import { parseSeat } from '../seats/charter.js'
 import { dispatchLogPath } from '../seats/dispatch-log.js'
 import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
 import { readTextIfPresent } from '../seats/io.js'
-import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { jsonLines, originRepo } from './pr-adopt-ports.js'
 import type { ClaimPr } from './pr-state.js'
 import { targetRef } from './shepherd.js'
+import { run, type Runner } from './exec.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
  * CC-1233 (D3): a plan whose slice agents ran by hand, outside the ledger, is seeded by what each run left on
@@ -64,18 +65,35 @@ export function adoptOffLedger(
   return { claims, notes }
 }
 
-/** The task's slice agents in the seat's dispatch log, each with its first dispatch and its branch PR. */
-export function offLedgerRunsIn(
+/** The agent's earliest timestamped dispatch in the seat's log, if any. */
+const firstDispatch = (records: readonly DispatchRecord[], agent: string): string | undefined =>
+  records
+    .filter(r => r.agent === agent && r.ts !== null)
+    .map(r => r.ts as string)
+    .sort()[0]
+
+/** Each agent's first dispatch in the seat's log; an agent whose rows carry no time is left out. */
+export function firstDispatches(
   records: readonly DispatchRecord[],
+  agents: readonly string[],
+): Record<string, string> {
+  const since = agents.map((agent): [string, string | undefined] => [agent, firstDispatch(records, agent)])
+  return Object.fromEntries(since.filter((e): e is [string, string] => e[1] !== undefined))
+}
+
+/**
+ * The task's slice agents, each with its branch PR counted from its first dispatch. The one place seeding and the
+ * drift resync read a run's PR (CC-1240). A run with no dispatch time has no PR: a reused name shares its branch
+ * with earlier runs, so any merge on it could be an older run's work. Such a slice waits on a release.
+ */
+export function offLedgerRunsIn(
+  ranSince: Readonly<Record<string, string>>,
   agents: readonly string[],
   prOf: BranchPr,
 ): OffLedgerRun[] {
   return agents.map(agent => {
-    const since = records
-      .filter(r => r.agent === agent && r.ts !== null)
-      .map(r => r.ts as string)
-      .sort()[0]
-    return { agent, slice: agent.slice(-1), pr: prOf(agent, since ?? new Date(0).toISOString()) }
+    const since = ranSince[agent]
+    return { agent, slice: agent.slice(-1), pr: since === undefined ? { kind: 'none' } : prOf(agent, since) }
   })
 }
 
@@ -138,6 +156,33 @@ export function branchPrReader(checkouts: readonly string[], exec: Runner): Bran
     })
     if (states.some(s => s === undefined)) return undefined
     return states.find(s => s?.kind === 'open') ?? states.find(s => s?.kind === 'merged') ?? { kind: 'none' }
+  }
+}
+
+/** CC-1233: one branch-PR reader per initiative, over its git checkouts only, made when a task of it is seeded. */
+export function initiativePrReaders(
+  { repos, nonGitRepos = [] }: Pick<SeatDispatch, 'repos' | 'nonGitRepos'>,
+  exec: Runner = run,
+): (initiative: string) => BranchPr {
+  const readers = new Map<string, BranchPr>()
+  return initiative => {
+    const checkouts = (repos[initiative] ?? []).filter(r => !nonGitRepos.includes(r))
+    if (!readers.has(initiative)) readers.set(initiative, branchPrReader(checkouts, exec))
+    return readers.get(initiative) as BranchPr
+  }
+}
+
+/** CC-1240: the branch-PR reader of a seat's checkouts for an initiative; undefined when the seat is not loaded. */
+export type SeatPrReader = (seat: string, initiative: string) => BranchPr | undefined
+
+/** One `initiativePrReaders` per loaded seat, made on first use, so the resync reads GitHub only for a held slice. */
+export function seatPrReader(seats: readonly SeatDispatch[], exec: Runner = run): SeatPrReader {
+  const readers = new Map<string, (initiative: string) => BranchPr>()
+  return (seat, initiative) => {
+    const dispatch = seats.find(s => s.seat === seat)
+    if (dispatch === undefined) return undefined
+    if (!readers.has(seat)) readers.set(seat, initiativePrReaders(dispatch, exec))
+    return (readers.get(seat) as (initiative: string) => BranchPr)(initiative)
   }
 }
 
