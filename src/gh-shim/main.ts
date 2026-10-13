@@ -2,6 +2,7 @@ import { parseRequest, type ShimRequest } from './argv.js'
 import { fileCallLogger } from './call-log.js'
 import { runRequest } from './commands.js'
 import { GH_SHIM_DIR_ENV, GH_SHIM_OFF_ENV } from './install.js'
+import { gatewayApi } from './gateway.js'
 import { findOnPath, processIo } from './io.js'
 import { passThrough } from './passthrough.js'
 import { shimBudget, type ShimBudget } from './rate-limit.js'
@@ -13,7 +14,9 @@ import { shimBudget, type ShimBudget } from './rate-limit.js'
  * machine shares; REST has its own, far larger, quota. This answers the read-only shapes agents use
  * from REST and hands every other command, writes included, to the real gh unchanged. Every real-gh
  * call, answered or passed through, gets one gh-calls line (TP-1172 b), and a call a rate limit
- * refused starts the shared cooldown that later reads respect (CC-1162).
+ * refused starts the shared cooldown that later reads respect (CC-1162). Answers read through
+ * Shepherd serve's gateway first (CC-1178), so they are not gated up front: the gateway serves
+ * reads during a cooldown, and a direct read checks the cooldown itself.
  */
 
 /** A shim answer that fails falls back to the real gh, unless the failure was a limit that now cools the lane. */
@@ -23,7 +26,8 @@ async function answer(
   req: ShimRequest,
   budget: ShimBudget,
 ): Promise<number> {
-  const io = processIo(realGh, findOnPath('jq', process.env.PATH), budget.log)
+  const direct = processIo(realGh, findOnPath('jq', process.env.PATH), budget.log)
+  const io = { ...direct, api: gatewayApi(process.env, direct.api, direct.err) }
   try {
     const code = await runRequest(io, req)
     io.flush()
@@ -45,12 +49,10 @@ async function main(argv: readonly string[]): Promise<number> {
   const log = fileCallLogger(process.env)
   const budget = shimBudget(argv, { env: process.env, realGh, jqBin, log, enforce: !off })
   try {
-    const early = await budget.gate()
-    if (early !== undefined) return early
-    if (req === undefined || ('jq' in req && req.jq !== undefined && jqBin === undefined)) {
-      return await passThrough(realGh, argv, budget.log)
+    if (req !== undefined && !('jq' in req && req.jq !== undefined && jqBin === undefined)) {
+      return await answer(realGh, argv, req, budget)
     }
-    return await answer(realGh, argv, req, budget)
+    return (await budget.gate()) ?? (await passThrough(realGh, argv, budget.log))
   } finally {
     await budget.settled()
   }
