@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { frontmatterField } from '../active-work.js'
-import type { ShepherdRow } from '../burndown/shepherd.js'
+import type { ShepherdRow } from '../../shepherd-client.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { agentLine } from '../teleport-appendix.js'
 import type { AgentIdentity } from '../../protocol.js'

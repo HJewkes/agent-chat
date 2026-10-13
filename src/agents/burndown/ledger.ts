@@ -90,6 +90,10 @@ const Claim = z.object({
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
   prHead: z.string().optional(),
   lastReport: z.string().optional(),
+  /** CC-1229: Shepherd runs the tick re-registered after a transient failure: how many, when last, and for which head. */
+  reregistered: z
+    .object({ n: z.number().int().positive(), at: z.string(), head: z.string().optional() })
+    .optional(),
   stalledReason: z.string().optional(),
   /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
@@ -302,6 +306,8 @@ const Ledger = z.object({
    * dropped slice no longer gates the slices that depend on it. A whole-task release clears the entry.
    */
   slicesReleased: z.record(z.string(), z.array(z.string())).optional(),
+  /** Tasks whose merged slices were told to their seat (CC-1049), as `<initiative>/<id>`, so each is told once. */
+  slicesFlagged: z.array(z.string()).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */

@@ -25,7 +25,7 @@ import type { LaunchPlan } from '../agents/types.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import type { JournalEntry } from '../agents/seats/journal-line.js'
 import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
-import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import type { ShepherdRow } from '../shepherd-client.js'
 
 /**
  * CC-20 — teleport. What is being proved is that a session can end itself into a

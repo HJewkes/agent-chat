@@ -88,7 +88,8 @@ import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
-import type { SpawnResult } from './seat-events.js'
+import { mergedEvents } from './slices-complete.js'
+import type { SeatEvents, SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
   diskSeatDeps,
@@ -104,6 +105,7 @@ import {
   type SkippedSeat,
 } from './seat-tick.js'
 import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
@@ -306,7 +308,7 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
       steps.flatMap(s => (s.kind === 'ledger' ? s.actions : [])),
       now,
     )
-    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [] }
+    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [], merged: decided.merged }
     return {
       lines: [
         `burndown tick at ${now.toISOString()} (dry run)`,
@@ -346,6 +348,7 @@ async function actOn(
     adopt,
     summary,
     humanStepSeats,
+    merged,
   }: Decided,
   now: Date,
   timer: StepTimer,
@@ -399,7 +402,14 @@ async function actOn(
       ...(opts.egress === undefined ? {} : { egress: opts.egress }),
     }),
   )
-  const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
+  const diff = {
+    seats: config.seats,
+    before: ledger,
+    after: leaks.ledger,
+    spawns,
+    human: leaks.human,
+    merged,
+  }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
   const told = await timer.time('deliver', () =>
@@ -491,7 +501,7 @@ function adoptPrs(
 }
 
 /** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
-const prFilesReader =
+export const prFilesReader =
   (exec: Runner) =>
   (pr: string): string[] | undefined => {
     const target = shepherdTarget(pr)
@@ -652,6 +662,8 @@ interface Decided {
   summary: SummaryPlan
   /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
   humanStepSeats: LoadedSeat[]
+  /** CC-1049: open tasks whose slices all merged, told once to the seat that holds them. */
+  merged: SeatEvents
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -799,6 +811,7 @@ async function decide(
     ...advanced.steps,
     ...resyncSteps(resynced),
     ...seedSteps(planned.seeds),
+    ...healSteps(planned.heals),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
@@ -813,6 +826,7 @@ async function decide(
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     humanStepSeats: seats?.loaded ?? [],
+    merged: seats === undefined ? {} : mergedEvents(ledger, dispatchCtx.tasks),
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
@@ -864,6 +878,8 @@ interface Planned {
   notes: string[]
   /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
   seeds?: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices their seat cannot place. */
+  heals?: Action[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */

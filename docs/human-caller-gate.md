@@ -207,13 +207,13 @@ an agent that calls an opt-out site from its own shell. Citations are at origin/
 `6031c17`:
 
 - **`PATH`.** The tick runs programs by bare name, through `childEnv`
-  (`src/agents/burndown/exec.ts:14-17`), which copies the whole environment and strips
+  (`src/exec.ts:14-17`), which copies the whole environment and strips
   only `AGENT_CHAT_NAME` and `AGENT_CHAT_AGENT_ID`. So the calling agent's `PATH` picks
   which binary answers:
   - `gh`, for PR state (`src/agents/burndown/pr-state.ts:68`, and the collision,
     leak-check, exited-adopt and pr-adopt ports);
   - `titan-factory`, for Shepherd's status (`SHEPHERD_BIN`,
-    `src/agents/burndown/shepherd.ts:14`, run at `:89`);
+    `src/shepherd-client.ts:15`, run at `:89`);
   - `active-work`, for task edits (`src/agents/burndown/brief-approve.ts:67`);
   - `git` (for example `src/agents/burndown/pr-adopt-ports.ts:61`).
 
@@ -282,7 +282,7 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   watchdog would be checked as that agent and would break.
 
   Options:
-  1. Strip the id for these callers, the way `childEnv` (`burndown/exec.ts`) already
+  1. Strip the id for these callers, the way `childEnv` (`src/exec.ts`) already
      strips it for the tick's subprocesses.
   2. Give them an exempt frame or source.
   3. Accept the refusal and document it.

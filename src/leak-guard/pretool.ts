@@ -52,6 +52,7 @@ import {
   type ReadGhAliases,
 } from './gh-runs.js'
 import {
+  expandsToWords,
   hasOptionAlternation,
   hasSplittableOption,
   hasUnreadableConfig,
@@ -192,6 +193,8 @@ export const REASONS = {
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
+  xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
@@ -212,7 +215,6 @@ const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
   '--arg-file',
   '--delimiter',
-  '--max-lines',
   '--max-args',
   '--max-chars',
   '--max-procs',
@@ -222,6 +224,7 @@ const XARGS_LONG_FLAG = new Set([
   '--null',
   '--eof',
   '--replace',
+  '--max-lines',
   '--interactive',
   '--open-tty',
   '--no-run-if-empty',
@@ -249,21 +252,48 @@ const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
  * `chdir` is set when a wrapper such as `env -C` runs the command in another directory.
  * `assigns` are the command's own `NAME=value` words, and a bare `NAME` that `env -u` unsets.
  */
-type Unwrapped = { words: string[]; chdir?: boolean; assigns: string[] } | { reason: string }
+type Unwrapped =
+  { words: string[]; chdir?: boolean; assigns: string[]; fed?: Fed | undefined } | { reason: string }
+
+/**
+ * xargs runs its command with words it reads: in place of each word holding the `replace` string,
+ * and appended when `append` is set. A replace mode the guard cannot pin down sets both.
+ */
+interface Fed {
+  replace?: string | undefined
+  append: boolean
+}
+
+/** The words xargs adds, read as an unquoted `$@`: unreadable, and may be none or several. */
+const XARGS_ARGS = LIVE + '$@'
+/** A replace string the guard cannot read, which any word may hold. */
+const ANY_WORD = ''
+const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
-function unwrap(words: readonly string[]): Unwrapped {
+function unwrap(words: readonly string[], splits: readonly string[] = []): Unwrapped {
   let rest = words
   let at = 0
   let chdir = false
+  let fed: Fed | undefined
+  // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
+  let fedCommand = false
   const assigns: string[] = []
+  const done = (): Unwrapped =>
+    fedCommand && at >= rest.length
+      ? { reason: REASONS.hiddenCommand }
+      : { words: rest.slice(at), chdir, assigns, fed }
   for (;;) {
     const head = rest[at]
-    if (head === undefined) return { words: rest.slice(at), chdir, assigns }
+    if (head === undefined) return done()
+    // A command word xargs fills, behind any wrappers, is a command its input names.
+    if (fed !== undefined && head.includes(XARGS_ARGS)) return { reason: REASONS.hiddenCommand }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const next = wrapperEnd(rest, at, name)
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
+    if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
+      return { reason: REASONS.xargsWrapper }
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
@@ -271,18 +301,44 @@ function unwrap(words: readonly string[]): Unwrapped {
     } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
     else if (next !== undefined) at = next
     else if (name === 'xargs') {
-      const after = dropXargsOptions(rest, at + 1)
+      const after = dropXargsOptions(rest, at + 1, splits)
       if (after === undefined) return { reason: REASONS.xargsOption }
-      at = after
+      at = after.at
+      fedCommand ||= at < rest.length
+      fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
+      // Every wrapper and the command after this point parse the words as xargs fills them.
+      const { replace } = fed
+      if (replace !== undefined)
+        rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
     } else if (name === 'env') {
-      const env = unwrapEnv(rest, at + 1)
+      const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
       assigns.push(...env.assigns)
-    } else return { words: rest.slice(at), chdir, assigns }
+    } else return done()
   }
 }
+
+/** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
+const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] =>
+  fed?.append === true && words.length > 0 ? [...words, XARGS_ARGS] : [...words]
+
+/**
+ * A word with each copy of the replace string swapped for the unreadable words, keeping the rest of it
+ * readable, as in the script of `sh -c 'git push {} --no-verify'`. A replace string the guard cannot read may be anywhere.
+ */
+function placeFed(word: string, replace: string): string {
+  if (replace === ANY_WORD) return XARGS_ARGS
+  const pattern = [...replace].map(c => `${LIVE}?${c.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}`).join('')
+  return word.replace(new RegExp(pattern, 'g'), () => XARGS_ARGS)
+}
+
+/** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
+const nestedFed = (outer: Fed, inner: Fed): Fed => ({
+  append: true,
+  replace: outer.replace === undefined && inner.replace === undefined ? undefined : ANY_WORD,
+})
 
 /** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
 function wrapperEnd(words: readonly string[], at: number, name: string): number | undefined {
@@ -302,19 +358,91 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
   return Math.min(i, words.length)
 }
 
-/** Returns where the command xargs runs starts, or undefined on a long option this guard does not know. */
-function dropXargsOptions(words: readonly string[], i: number): number | undefined {
+/** What one xargs option sets about how it feeds its command. */
+interface FeedOption {
+  replace?: string | undefined
+  /** The option may make xargs append what it reads: a batch size, or BSD's -J. */
+  appends?: boolean
+}
+
+const BATCH_LONG = new Set(['--max-args', '--max-lines'])
+
+/**
+ * Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know.
+ * GNU xargs drops a replace string on a later -n, -L or -l and appends instead; the guard does not track the order and reads both.
+ * An option word or value the shell may split could hold another option, such as -I--, so the feed mode is then unknown.
+ */
+function dropXargsOptions(
+  words: readonly string[],
+  i: number,
+  splits: readonly string[],
+): { at: number; fed: Fed } | undefined {
+  let replace: string | undefined
+  let appends = false
   for (; i < words.length; i++) {
     const a = words[i] as string
-    if (a === '--') return i + 1
+    if (a === '--') return { at: i + 1, fed: feed(replace, appends) }
+    const option =
+      !a.startsWith('-') || a === '-'
+        ? undefined
+        : a.startsWith('--')
+          ? longFeed(a)
+          : clusterFeed(a, words[i + 1])
+    const width = !a.startsWith('-') ? 0 : a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
+    const splitting = words.slice(i, i + 1 + width).some(word => mayResplit(word, splits))
+    // An expansion here may be an option such as -I--, so the guard cannot tell how xargs feeds the command.
+    if (splitting || (a.includes(LIVE) && option?.replace === undefined)) return { at: i, fed: UNKNOWN_FEED }
     if (!a.startsWith('-') || a === '-') break
-    if (a.startsWith('--')) {
-      const name = a.split('=')[0] as string
-      if (XARGS_LONG_VALUE.has(name)) i += a.includes('=') ? 0 : 1
-      else if (!XARGS_LONG_FLAG.has(name)) return undefined
-    } else i += clusterValueWords(a)
+    if (option === undefined) return undefined
+    replace = option.replace ?? replace
+    appends ||= option.appends === true
+    i += width
   }
-  return Math.min(i, words.length)
+  return { at: Math.min(i, words.length), fed: feed(replace, appends) }
+}
+
+/** Every word may be fed, and more appended: where the guard cannot read xargs' options. */
+const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
+
+/** A word the shell may split into several; xargs' `{}` is a literal, not a brace list. */
+const mayResplit = (word: string, splits: readonly string[]): boolean =>
+  word.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && expandsToWords(word, splits)
+
+const feed = (replace: string | undefined, appends: boolean): Fed => ({
+  replace,
+  append: replace === undefined || appends,
+})
+
+function longFeed(option: string): FeedOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!XARGS_LONG_VALUE.has(name) && !XARGS_LONG_FLAG.has(name)) return undefined
+  if (name === '--replace')
+    return { replace: option.includes('=') ? replaceString(option.slice(name.length + 1)) : '{}' }
+  return { appends: BATCH_LONG.has(name) }
+}
+
+const longValueWords = (option: string): number =>
+  XARGS_LONG_VALUE.has(option.split('=')[0] as string) && !option.includes('=') ? 1 : 0
+
+/** What a short-flag cluster sets: a replace string (`-I R`, `-J R`, or `-i[R]`, whose bare form means `{}`), or a batch size. */
+function clusterFeed(cluster: string, next: string | undefined): FeedOption {
+  for (let k = 1; k < cluster.length; k++) {
+    const letter = cluster[k] as string
+    const glued = cluster.slice(k + 1)
+    // BSD -J appends when no word is exactly the replace string, so only GNU's -I is known never to append.
+    if (letter === 'I' || letter === 'J')
+      return { replace: replaceString(glued === '' ? (next ?? '') : glued), appends: letter === 'J' }
+    if (letter === 'i') return { replace: glued === '' ? '{}' : replaceString(glued) }
+    if ('nLl'.includes(letter)) return { appends: true }
+    if (XARGS_SHORT_VALUE.has(letter) || letter === 'e') return {}
+  }
+  return {}
+}
+
+/** A replace string as xargs gets it; one the shell expands may be anything, so any word may hold it. */
+const replaceString = (marked: string): string => {
+  const plain = marked.replaceAll(BRACE_PAIR, '{}')
+  return plain.includes(LIVE) ? ANY_WORD : plain
 }
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
@@ -345,11 +473,28 @@ function splitString(a: string, next: string | undefined): { value: string; widt
 // env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
 const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
-function unwrapEnv(args: readonly string[], i: number): EnvRun {
+const ENV_VALUE_OPTIONS_FED = new Set(['-u', '--unset', '-C', '--chdir', '-P', '-S', '--split-string'])
+const nameOf = (word: string): string => word.split('=')[0] as string
+
+/**
+ * Behind xargs, an env word the guard cannot read may become any option: -i, -u GIT_CONFIG_COUNT,
+ * or -S with a command. Like an unreadable xargs option, it fails closed.
+ */
+function fedEnvWord(a: string, next: string | undefined): string | undefined {
+  if (!a.startsWith('-'))
+    return a.includes('=') && nameOf(a).includes(LIVE) ? REASONS.gitConfigEnv : undefined
+  const value = ENV_VALUE_OPTIONS_FED.has(a) ? (next ?? '') : ''
+  if (!a.includes(LIVE) && !value.includes(LIVE)) return undefined
+  return /^(?:-u|--unset)/.test(a) ? REASONS.gitConfigEnv : REASONS.xargsWrapper
+}
+
+function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
   let chdir = false
   const assigns: string[] = []
   for (; i < args.length; i++) {
     const a = args[i] as string
+    const fedReason = fed ? fedEnvWord(a, args[i + 1]) : undefined
+    if (fedReason !== undefined) return { reason: fedReason }
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
     if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
@@ -363,7 +508,7 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
       const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
-      const inner = unwrapEnv(words, 0)
+      const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
     }
@@ -374,7 +519,8 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       let at = i + 1
       for (; at < args.length && (args[at] as string).includes('='); at++) {
         const operand = args[at] as string
-        if (isGitConfigVar(operand.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+        if (isGitConfigVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
+          return { reason: REASONS.gitConfigEnv }
         assigns.push(operand)
       }
       return { words: args, at, chdir, assigns }
@@ -478,8 +624,35 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
     checkExtEnablers(run, scope) ??
+    checkFedPush(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/** git push options that take no value, so a `--` after them ends the options. */
+const PUSH_FLAGS = new Set(
+  '-u --set-upstream -f --force -n --dry-run -q --quiet -v --verbose --all --tags --atomic --follow-tags --porcelain --progress --no-progress --prune'.split(
+    ' ',
+  ),
+)
+
+/**
+ * A `git push` that xargs feeds words may take `--no-verify` from them (CC-1117), unless git's own option
+ * parsing ends at a `--` first. An option that may take a value, or a word the guard cannot read, may swallow that `--`.
+ */
+function checkFedPush(run: GitRun, scope: Scope): string | undefined {
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (
+    at < 0 ||
+    run.resolved[at] !== 'push' ||
+    !run.marked.slice(at + 1).some(word => word.includes(XARGS_ARGS))
+  )
+    return undefined
+  for (const word of run.resolved.slice(at + 1)) {
+    if (word === '--') return undefined
+    if (word === undefined || (word.startsWith('-') && !PUSH_FLAGS.has(word))) return REASONS.xargsPush
+  }
+  return REASONS.xargsPush
 }
 
 /**
@@ -1527,15 +1700,16 @@ function checkSimple(
   depth: number,
   outermost = true,
 ): string | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked))
+  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
-  const marked = unwrapped.words.slice(1)
-  const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
+  const words = stdinArgs(unwrapped.words, unwrapped.fed)
+  const marked = words.slice(1)
+  const head = resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
-    return checkHidden(unwrapped.words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
