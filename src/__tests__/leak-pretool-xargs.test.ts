@@ -261,3 +261,26 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })
 })
+
+describe('a git alias keeps the marks of the words around it (CC-1117)', () => {
+  const ALIASES: Record<string, string> = { cfg: 'config', p: 'push' }
+  const aliased: GuardContext = {
+    ...ctx,
+    readAlias: word => (word in ALIASES ? { value: ALIASES[word] as string, runsIn: '/work' } : undefined),
+  }
+
+  it.each(['git cfg "$@"', 'git cfg $X', 'xargs git cfg', 'xargs git p'])(
+    'denies an aliased config or push that takes unreadable words: %s',
+    command => {
+      expect(checkCommand(command, aliased)).toBeDefined()
+    },
+  )
+
+  it('denies an aliased push fed by xargs as a fed push', () => {
+    expect(checkCommand('xargs git p origin', aliased)).toBe(REASONS.xargsPush)
+  })
+
+  it.each(['git cfg --get user.name', 'git p origin main', 'xargs git p origin --'])('allows %s', command => {
+    expect(checkCommand(command, aliased)).toBeUndefined()
+  })
+})

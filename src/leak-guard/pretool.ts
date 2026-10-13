@@ -835,9 +835,21 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
     )
   const value = splitAlias(alias.value)
   if (value === undefined) return undefined
-  const words = [...run.args.slice(0, call.at), ...value, ...rest]
+  // The words around the alias keep their marks, so an expansion or xargs' stdin stays unreadable (CC-1117).
+  const around = <T extends string | undefined>(words: readonly T[]): (T | string)[] => [
+    ...words.slice(0, call.at),
+    ...value,
+    ...words.slice(call.at + 1),
+  ]
   return checkGitRun(
-    { ...run, resolved: words, args: words, marked: words, literal: true, tied: true },
+    {
+      ...run,
+      resolved: around(run.resolved),
+      args: around(run.args),
+      marked: around(run.marked),
+      literal: true,
+      tied: true,
+    },
     ctx,
     inner,
     depth,
