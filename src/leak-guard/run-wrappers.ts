@@ -94,15 +94,17 @@ export function findClauses(marked: readonly string[], from = 0): FindCall {
 }
 
 /**
- * Long options that take a value, without the leading `--`. `--sshlogin`/`-S` are left out on
- * purpose: a sshlogin may name its own ssh command, so it is refused like any unknown option.
+ * An allowlist: only options whose whole effect `ParallelCall` carries (quoting, replacement
+ * strings, input separators, unread arg files) or which leave the command and its inputs alone
+ * (scheduling, output, logging). Every other option is refused. That includes the ones that regroup
+ * inputs into one command (`-X`, `-m`, `--xargs`, `-n`, `-N`, `-L`, `--max-*`, `-C`/`--colsep`),
+ * drop or reshape inputs (`-E`, `-d`, `-0`, `--header`, `--pipe`), and name a command of their own
+ * (`-S`/`--sshlogin`, `--ssh`). Long names are without the leading `--`.
  */
 const PARALLEL_LONG_VALUE: ReadonlySet<string> = new Set(
   [
-    'arg-file arg-file-sep arg-sep delimiter colsep jobs max-procs max-args max-replace-args',
-    'max-lines max-chars joblog results halt tagstring env workdir timeout delay memfree',
-    'load block tmpdir header retries nice extensionreplace basenamereplace dirnamereplace',
-    'seqreplace slotreplace',
+    'arg-file arg-file-sep arg-sep jobs max-procs joblog results halt tagstring timeout delay',
+    'memfree load retries nice extensionreplace basenamereplace dirnamereplace seqreplace slotreplace',
   ]
     .join(' ')
     .split(' '),
@@ -110,15 +112,15 @@ const PARALLEL_LONG_VALUE: ReadonlySet<string> = new Set(
 
 const PARALLEL_LONG_FLAG: ReadonlySet<string> = new Set(
   [
-    'null keep-order quote ungroup verbose xargs no-run-if-empty pipe pipepart group line-buffer lb',
-    'tag dry-run bar progress eta will-cite plus shuf no-notice',
+    'keep-order quote ungroup verbose group line-buffer lb tag dry-run bar progress eta will-cite',
+    'plus shuf no-notice',
   ]
     .join(' ')
     .split(' '),
 )
 
-const PARALLEL_SHORT_VALUE = new Set('adEIjPnNLsC')
-const PARALLEL_SHORT_FLAG = new Set('0kquvXmtprx')
+const PARALLEL_SHORT_VALUE = new Set('aIjP')
+const PARALLEL_SHORT_FLAG = new Set('kquvt')
 
 const LONG_ALIAS: ReadonlyMap<string, string> = new Map([
   ['arg-file', 'a'],
@@ -224,7 +226,6 @@ function readParallelOptions(
   let i = from
   while (i < marked.length) {
     const word = marked[i] ?? ''
-    if (word === '--') return [opts, i + 1]
     if (plain(word).startsWith(LIVE)) return i
     if (!word.startsWith('-') || word === '-' || isSeparator(opts, word)) return [opts, i]
     if ((word.split('=')[0] ?? '').includes(LIVE)) return i
@@ -236,6 +237,7 @@ function readParallelOptions(
   return [opts, i]
 }
 
+/** `--` ends GNU's options but starts moreutils' commands or inputs, so it is refused anywhere. */
 const isSeparator = (opts: ParallelOptions, word: string): boolean =>
   [opts.argSep, opts.argSep + '+', opts.argFileSep, opts.argFileSep + '+'].includes(word)
 
@@ -258,9 +260,9 @@ function readInputs(opts: ParallelOptions, marked: readonly string[], from: numb
  * not know (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), one it cannot
  * read, an expansion where an option may stand, or an option value the shell splits (`-j $N` may be
  * `1 git push`): the caller cannot tell what the command becomes. It refuses a command word that
- * runs perl (`{= … =}`) too, and a `--` among the command words: GNU passes it on as part of the
- * command, but moreutils' `parallel` starts its inputs there, and the two run different commands.
- * After a separator, `--` is a plain input.
+ * runs perl (`{= … =}`) too, and a `--` anywhere: GNU reads it as the end of options, as part of
+ * the command or as an input, but moreutils' `parallel` runs each word after it as a command or
+ * starts its inputs there.
  */
 export function parallelCall(
   marked: readonly string[],
@@ -272,8 +274,8 @@ export function parallelCall(
   const [opts, start] = options
   let end = start
   while (end < marked.length && !isSeparator(opts, marked[end] ?? '')) end++
-  const refused = marked.slice(start, end).findIndex(word => word === '--' || runsPerl(word))
-  if (refused >= 0) return { unknownOption: start + refused }
+  const refused = marked.findIndex((word, i) => i >= start && (word === '--' || (i < end && runsPerl(word))))
+  if (refused >= 0) return { unknownOption: refused }
   return {
     command: marked.slice(start, end),
     quote: opts.quote,

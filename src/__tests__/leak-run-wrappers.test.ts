@@ -107,7 +107,7 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
   })
 
   it('reads separate values, long values and bundled flags', () => {
-    const call = parallel('parallel -j 4 --jobs=2 --colsep , -kq --halt now,fail=1 gzip :::+ a ::: b c')
+    const call = parallel('parallel -j 4 --jobs=2 -kq --halt now,fail=1 gzip :::+ a ::: b c')
     expect(call.command.map(unmark)).toEqual(['gzip'])
     expect(call.quote).toBe(true)
     expect(call.inputs).toEqual({ kind: 'literal', groups: [['a'], ['b', 'c']] })
@@ -123,12 +123,6 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     const call = parallel("parallel -k ::: 'git push --no-verify' ls")
     expect(call.command).toEqual([])
     expect(call.inputs).toEqual({ kind: 'literal', groups: [['git push --no-verify', 'ls']] })
-  })
-
-  it('ends options at -- and reads a -- after a separator as an input', () => {
-    const call = parallel('parallel -- -x tool sub ::: -- y')
-    expect(call.command.map(unmark)).toEqual(['-x', 'tool', 'sub'])
-    expect(call.inputs).toEqual({ kind: 'literal', groups: [['--', 'y']] })
   })
 
   it('honours --arg-sep', () => {
@@ -175,6 +169,22 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     ['parallel --sshlogin=host main ::: x', 0],
     ["parallel --tagstring '{= qx(tool) =}' main ::: x", 0],
     ["parallel echo '{= qx(tool) =}' ::: x", 1],
+    ['parallel -- -x tool sub ::: -- y', 0],
+    ["parallel -- ls 'tool sub --flag'", 0],
+    ['parallel tool ::: -- y', 2],
+    ['parallel -X tool ::: sub --flag', 0],
+    ['parallel -m tool ::: sub --flag', 0],
+    ['parallel --xargs tool ::: sub --flag', 0],
+    ['parallel -n2 tool ::: sub --flag', 0],
+    ['parallel -N2 {1} {2} ::: tool sub', 0],
+    ['parallel -L 2 tool ::: sub --flag', 0],
+    ['parallel --max-args=2 tool ::: sub --flag', 0],
+    ['parallel --max-replace-args 2 {1} {2} ::: tool sub', 0],
+    ['parallel --max-lines=2 tool ::: sub --flag', 0],
+    ['parallel -C , {1} {2} ::: tool,sub', 0],
+    ['parallel --colsep , {1} {2} ::: tool,sub', 0],
+    ['parallel -kX tool ::: sub --flag', 0],
+    ['parallel --frobnicate tool ::: x', 0],
   ])('refuses an option it cannot read: %s', (line, at) => {
     expect(parallelOf(line)).toEqual({ unknownOption: at })
   })
