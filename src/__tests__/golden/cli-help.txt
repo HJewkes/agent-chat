@@ -1300,15 +1300,23 @@ Usage: agent-chat ask [options] [text...]
 put a question to the human under a service label and print its msg_id
 
 Options:
-  --as <label>            the label answers are read back under
-  --text-stdin            read the question from stdin, not argv
-  --kind <kind>           one of decision, needs-grant, stalled, ready-to-merge
-  --task <id>             the task or gate the question is about
-  --option <value>        an answer to offer (repeatable)
-  --recommended <option>  the option you recommend
-  --on-no-answer <text>   what happens if nobody answers
-  --json                  print {"msgId": ...} instead of the bare id
-  -h, --help              display help for command
+  --as <label>                  the label answers are read back under
+  --text-stdin                  read the question from stdin, not argv
+  --kind <kind>                 one of decision, needs-grant, stalled, ready-to-merge
+  --task <id>                   the task or gate the question is about
+  --header <text>               a one-line title for the queue, at most 80 chars
+  --option <value>              an answer to offer (repeatable)
+  --option-description <value>  describes the --option at the same position (repeatable)
+  --recommended <option>        the option you recommend
+  --default <option>            the option taken if nobody answers
+  --door <door>                 one-way or two-way; absent is treated as one-way
+  --category <name>             decision category, e.g. tech_design
+  --initiative <slug>           the initiative the question belongs to
+  --blocking <mode>             continue or parked: is the asker waiting
+  --reversible <text>           one line on how to undo the answer
+  --on-no-answer <text>         what happens if nobody answers
+  --json                        print {"msgId": ...} instead of the bare id
+  -h, --help                    display help for command
 
 === agent-chat answers
 Usage: agent-chat answers [options] <name>

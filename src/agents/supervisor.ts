@@ -52,7 +52,7 @@ import {
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
-import { loadProfile, recordedRole, roleOf } from './profiles.js'
+import { loadProfileSource, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -140,10 +140,11 @@ import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
-import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftMode } from '../config.js'
+import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -815,6 +816,10 @@ export interface SupervisorOptions {
   processProbe?: ProcessProbe
   /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
+  /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
+  profileBaseline?: ProfileBaseline
+  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
+  profileDriftMode?: () => ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -836,6 +841,9 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   const { tokens, usd_est, usage, models, price_table } = read
   return { tokens, usd_est, usage, models, price_table }
 }
+
+/** Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`. */
+const isHumanSpawn = (req: SpawnRequest): boolean => req.requestedBy === HUMAN && req.spawnedAs === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1017,6 +1025,8 @@ export class Supervisor implements TeleportHost {
   private readonly hosts: LauncherSite | undefined
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
+  private readonly profileBaseline: ProfileBaseline
+  private readonly profileDriftMode: () => ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1046,6 +1056,8 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1769,6 +1781,30 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /**
+   * CC-1094: loads a profile for a launch. A profile file rewritten since broker start may have lost its
+   * denies to the agent that rewrote it, so an agent launch of it is flagged or, under `refuse`, refused.
+   * Only a human's own spawn accepts it. A resume or surface switch never does: the background
+   * auto-resume and the decider's CLI resume both arrive as HUMAN.
+   */
+  private loadCheckedProfile(
+    name: string,
+    by: string | undefined,
+    human: boolean,
+  ): AgentProfile | { error: string } {
+    const { profile, source } = loadProfileSource(name)
+    if ('error' in profile) return profile
+    const drift = this.profileBaseline.drift(profile.name, source)
+    if (drift === undefined) return profile
+    const refused = !human && this.profileDriftMode() === 'refuse'
+    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
+    if (refused)
+      return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
+    if (human) this.profileBaseline.accept(profile.name, source)
+    const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
+    return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
+  }
+
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
   private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
@@ -1959,7 +1995,7 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = loadProfile(req.profile)
+    const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
     const lineage: Lineage = {
       depth: this.depthOf(req.parentAgentId),
@@ -3485,7 +3521,7 @@ export class Supervisor implements TeleportHost {
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
     if (blocked) return { ok: false, reason: blocked, transcript }
-    const profile = loadProfile(identity.profile)
+    const profile = this.loadCheckedProfile(identity.profile, req.requestedBy, false)
     if ('error' in profile)
       return {
         ok: false,
@@ -3710,7 +3746,7 @@ export class Supervisor implements TeleportHost {
     const agent = identity as AgentIdentity
     const refused = req.to === 'interactive' ? this.checkSurfacer(agent, req) : undefined
     if (refused) return { ok: false, reason: refused }
-    const profile = loadProfile(agent.profile)
+    const profile = this.loadCheckedProfile(agent.profile, req.requestedBy, false)
     if ('error' in profile)
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
     if (agent.sessionId === '')

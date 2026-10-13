@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { readLedger } from '../agents/burndown/ledger.js'
-import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
+import { tickFromDisk, type TickBroker, type TickOptions } from '../agents/burndown/run-tick.js'
 import { readTickStatus } from '../agents/burndown/tick-status.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -151,7 +151,11 @@ const broker: TickBroker = {
   }),
 }
 
-async function tick(log: (event: string) => void = () => {}, exec: Runner = factory): Promise<void> {
+async function tick(
+  log: (event: string) => void = () => {},
+  exec: Runner = factory,
+  extra: Partial<TickOptions> = {},
+): Promise<void> {
   await tickFromDisk({
     dryRun: false,
     broker,
@@ -159,7 +163,48 @@ async function tick(log: (event: string) => void = () => {}, exec: Runner = fact
     log: event => log(event),
     exec,
     ownerQueueDir: path.join(world, 'spool'),
+    ...extra,
   })
+}
+
+const IN_LOCK_STEPS = [
+  'read-ledger',
+  'roster',
+  'world',
+  'seats',
+  'observe',
+  'decider',
+  'plan',
+  'collision',
+  'scope-exhausted',
+  'execute',
+  'adopt',
+  'decider-triage',
+  'leak-check',
+  'deliver',
+  'write-ledger',
+]
+
+/** A fake monotonic clock that moves only while the broker or a subprocess answers, 5 ms per call. */
+function ioClock(): { monotonic: () => number; broker: TickBroker; exec: Runner } {
+  let t = 0
+  const spend =
+    <A extends unknown[], R>(fn: (...args: A) => R) =>
+    (...args: A): R => {
+      t += 5
+      return fn(...args)
+    }
+  return {
+    monotonic: () => t,
+    broker: {
+      ...broker,
+      roster: spend(broker.roster),
+      collisionView: spend(broker.collisionView),
+      spawn: spend(broker.spawn),
+      seatSender: spend(broker.seatSender),
+    },
+    exec: spend(factory),
+  }
 }
 
 beforeEach(() => {
@@ -187,7 +232,9 @@ describe('the burndown tick summary in the live tick', () => {
 
     const lines = fs.readFileSync(ticksFile(), 'utf8').trimEnd().split('\n')
     expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0]!)).toEqual({
+    const { durationMs, lockHeldMs, steps, ...counts } = JSON.parse(lines[0]!)
+    expect([durationMs, lockHeldMs, steps]).not.toContain(undefined)
+    expect(counts).toEqual({
       v: 1,
       ts: NOW.toISOString(),
       registrations: { ok: 0, refused: 0, failed: 0 },
@@ -243,5 +290,43 @@ describe('the burndown tick summary in the live tick', () => {
     })
     expect(readLedger(path.join(home(), 'burndown.json')).lastTickAt).toBe(NOW.toISOString())
     expect(events.filter(e => e === 'burndown_tick_summary_failed')).toHaveLength(1)
+  })
+
+  it('times every stage, with lock-held ms covering exactly the in-lock stages', async () => {
+    const io = ioClock()
+
+    await tick(() => {}, io.exec, { broker: io.broker, monotonic: io.monotonic })
+
+    const row = JSON.parse(fs.readFileSync(ticksFile(), 'utf8'))
+    const steps: { name: string; ms: number }[] = row.steps
+    expect(steps.map(s => s.name)).toEqual(['config', ...IN_LOCK_STEPS])
+    for (const s of steps) expect(Number.isInteger(s.ms) && s.ms >= 0).toBe(true)
+    const inLock = steps.filter(s => s.name !== 'config').reduce((sum, s) => sum + s.ms, 0)
+    expect(row.lockHeldMs).toBeGreaterThan(0)
+    expect(row.lockHeldMs).toBe(inLock)
+    expect(row.durationMs).toBeGreaterThanOrEqual(row.lockHeldMs + steps[0]!.ms)
+  })
+
+  it('appends the row after the ledger lock is released', async () => {
+    const lockHeld: boolean[] = []
+    const append = fs.appendFileSync
+    const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation((file, data, options) => {
+      if (file === ticksFile()) lockHeld.push(fs.existsSync(path.join(home(), 'burndown.json.lock')))
+      append(file, data, options)
+    })
+
+    try {
+      await tick()
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(lockHeld).toEqual([false])
+  })
+
+  it('appends no row for a dry run', async () => {
+    await tick(() => {}, factory, { dryRun: true })
+
+    expect(fs.existsSync(ticksFile())).toBe(false)
   })
 })
