@@ -35,7 +35,21 @@ const RULES: Rule[] = [
           `slice ${s.n}: declares publish; a publish is its own task (ops:publish, done_when "publish <pkg> at <version>", dep: on the build task), not a slice`,
         ]
       : [],
+  s => unacceptableOverlaps(s),
 ]
+
+const GLOB_CHARS = /[*?[{]/
+
+/** CC-1259: an accepted overlap waives one exact owns path; a glob would waive more than the planner read. */
+function unacceptableOverlaps(slice: PlannedSlice): string[] {
+  return (slice.overlapsAccepted ?? []).flatMap(({ pr, path }) => {
+    if (GLOB_CHARS.test(path))
+      return [`slice ${slice.n}: overlapsAccepted #${pr} path ${path} is a glob; name one exact owns path`]
+    if (!slice.owns.includes(path))
+      return [`slice ${slice.n}: overlapsAccepted #${pr} path ${path} is not an exact owns entry`]
+    return []
+  })
+}
 
 /**
  * CC-974: a slice that declares ops must declare each op its doneWhen names; `[]` marks every hit
