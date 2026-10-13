@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { waitForSeam, type SeamWait } from '../cli/drain.js'
 import type { BlockerSource } from '../cli/restart-guard.js'
-import type { AgentIdentity, QueueItem } from '../protocol.js'
+import type { AgentIdentity } from '../protocol.js'
 
 const START = 1_000_000_000
 const POLL_MS = 1_000
@@ -24,25 +24,13 @@ const spawning = (name: string, spawnedAt: number): AgentIdentity => ({
   generation: 1,
 })
 
-const ask = (from: string, text: string): QueueItem => ({
-  msgId: `m-${from}`,
-  kind: 'question',
-  from,
-  text,
-  at: START,
-  meta: {},
-})
-
 /** A clock that only moves when the wait sleeps, and counts the polls. */
-const harness = (
-  source: (poll: number) => { agents?: AgentIdentity[]; queue?: QueueItem[]; procs?: string[] },
-) => {
+const harness = (source: (poll: number) => { agents?: AgentIdentity[]; procs?: string[] }) => {
   let clock = START
   let polls = 0
   const reads = (): ReturnType<typeof source> => source(polls)
   const blockers: BlockerSource = {
     agents: async () => reads().agents ?? [],
-    queue: async () => reads().queue ?? [],
   }
   const wait = (deadlineMs: number): SeamWait => ({
     source: blockers,
@@ -78,17 +66,6 @@ describe('waiting for the restart seam', () => {
 
     expect(result).toEqual({ ok: false, why: ['a git push is running (pid 4242)'] })
     expect(h.polls()).toBe(TEN_MINUTES / POLL_MS + 1)
-  })
-
-  it('gives up at the deadline and quotes an ask that is never answered', { timeout: 1_000 }, async () => {
-    const h = harness(() => ({ queue: [ask('cc-worker', 'Should I merge\nthe PR now?')] }))
-
-    const result = await waitForSeam(h.wait(TEN_MINUTES))
-
-    expect(result).toEqual({
-      ok: false,
-      why: ['unanswered ask from cc-worker: "Should I merge the PR now?"'],
-    })
   })
 
   it('names every remaining blocker at the deadline, merges included', { timeout: 1_000 }, async () => {

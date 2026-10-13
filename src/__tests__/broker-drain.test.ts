@@ -66,7 +66,6 @@ describe('a supervisor under drain', () => {
 
   const sourceOf = (harness: RestartHarness): BlockerSource => ({
     agents: async () => harness.core.agents.roster(),
-    queue: async () => [],
   })
 
   it('refuses a 10-spawn burst as retryable while the pre-drain spawn attaches, and the restart then goes ahead', async () => {
@@ -81,11 +80,11 @@ describe('a supervisor under drain', () => {
       expect(outcome).toMatchObject({ ok: false, code: 'broker_draining', retryable: true })
     expect(burst.every(outcome => (outcome.retryAfterMs ?? 0) > 0)).toBe(true)
     const now = Date.now()
-    expect(restartBlockers(harness.core.agents.roster(), [], now).spawning).toEqual(['first'])
+    expect(restartBlockers(harness.core.agents.roster(), now).spawning).toEqual(['first'])
 
     harness.reattach(['first'])
     expect(await inFlight).toMatchObject({ ok: true, name: 'first' })
-    expect(restartBlockers(harness.core.agents.roster(), [], Date.now()).spawning).toEqual([])
+    expect(restartBlockers(harness.core.agents.roster(), Date.now()).spawning).toEqual([])
     expect(await guardRestart('restart', sourceOf(harness))).toBeNull()
   })
 

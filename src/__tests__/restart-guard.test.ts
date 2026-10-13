@@ -32,19 +32,25 @@ const item = (kind: QueueItem['kind'], from: string, text: string): QueueItem =>
   meta: {},
 })
 
-const source = (agents: AgentIdentity[], queue: QueueItem[]): BlockerSource => ({
+const source = (agents: AgentIdentity[]): BlockerSource => ({
   agents: async () => agents,
-  queue: async () => queue,
 })
+
+/** A broker socket that answers both the agents and the human-queue reads. */
+const fakeBroker = (agents: AgentIdentity[], queue: QueueItem[]): BrokerClient =>
+  ({
+    request: async (message: ClientMessage): Promise<ServerMessage> =>
+      message.t === 'agents'
+        ? ({ t: 'agents_result', agents } as ServerMessage)
+        : ({ t: 'queue_result', items: queue } as ServerMessage),
+  }) as unknown as BrokerClient
 
 describe('service restart guard', () => {
   it('refuses while an agent is mid-spawn and names it', async () => {
     const refusal = await guardRestart(
       'restart',
-      source([agent('cc-new', 'spawning'), agent('cc-old', 'live')], []),
-      {
-        now: NOW,
-      },
+      source([agent('cc-new', 'spawning'), agent('cc-old', 'live')]),
+      { now: NOW },
     )
 
     expect(refusal).toContain('refusing to restart')
@@ -53,51 +59,36 @@ describe('service restart guard', () => {
     expect(refusal).toContain('Use --force to restart anyway.')
   })
 
-  it('refuses while an ask to the human is unanswered and quotes it', async () => {
-    const refusal = await guardRestart(
-      'restart',
-      source([], [item('question', 'cc-worker', 'Should I   merge\nthe PR now?')]),
-      { now: NOW },
+  it('goes ahead while an ask to the human is unanswered, since the ask survives the restart', async () => {
+    const broker = fakeBroker(
+      [agent('cc-worker', 'live')],
+      [item('question', 'cc-worker', 'Merge the PR now?')],
     )
 
-    expect(refusal).toContain('unanswered ask from cc-worker: "Should I merge the PR now?"')
-  })
-
-  it('shortens a long ask to an excerpt', async () => {
-    const refusal = await guardRestart(
-      'restart',
-      source([], [item('question', 'cc-worker', 'x'.repeat(500))]),
-      {
-        now: NOW,
-      },
-    )
-
-    expect(refusal).not.toContain('x'.repeat(100))
+    expect(await guardRestart('restart', brokerSource(broker), { now: NOW })).toBeNull()
+    expect(await guardRestart('stop', brokerSource(broker), { now: NOW })).toBeNull()
   })
 
   it('goes ahead with --force even when work is in flight', async () => {
-    const busy = source([agent('cc-new', 'spawning')], [item('question', 'cc-worker', 'ok?')])
+    const busy = source([agent('cc-new', 'spawning')])
 
     expect(await guardRestart('restart', busy, { force: true, now: NOW })).toBeNull()
   })
 
   it('goes ahead when nothing is pending', async () => {
-    const quiet = source(
-      [agent('cc-live', 'live'), agent('cc-done', 'exited')],
-      [item('notice', 'cc-live', 'fyi')],
-    )
+    const quiet = source([agent('cc-live', 'live'), agent('cc-done', 'exited')])
 
     expect(await guardRestart('restart', quiet, { now: NOW })).toBeNull()
   })
 
   it('ignores a spawn orphaned past the attach ceiling, since no live wait remains to lose', async () => {
-    const orphan = source([agent('cc-ghost', 'spawning', ATTACH_CEILING_MS + 1)], [])
+    const orphan = source([agent('cc-ghost', 'spawning', ATTACH_CEILING_MS + 1)])
 
     expect(await guardRestart('restart', orphan, { now: NOW })).toBeNull()
   })
 
   it('names the verb it refuses so stop reads correctly', async () => {
-    const refusal = await guardRestart('stop', source([agent('cc-new', 'spawning')], []), { now: NOW })
+    const refusal = await guardRestart('stop', source([agent('cc-new', 'spawning')]), { now: NOW })
 
     expect(refusal).toMatch(/^refusing to stop/)
     expect(refusal).toContain('Use --force to stop anyway.')
@@ -109,43 +100,12 @@ describe('service restart guard when the broker does not answer (CC-1182)', () =
     throw new Error(`broker did not answer ${frame}`)
   }
 
-  it('refuses, naming queue_result, when the queue read times out', async () => {
-    const refusal = await guardRestart('restart', { agents: async () => [], queue: timedOut('queue_result') })
-
-    expect(refusal).toMatch(/^refusing to restart:/)
-    expect(refusal).toContain('the broker did not answer queue_result within 5s; the broker was not touched')
-  })
-
   it('refuses, naming agents_result and its own timeout, when the agents read times out', async () => {
-    const refusal = await guardRestart('stop', { agents: timedOut('agents_result'), queue: async () => [] })
+    const refusal = await guardRestart('stop', { agents: timedOut('agents_result') })
 
     expect(refusal).toMatch(/^refusing to stop:/)
     expect(refusal).toContain(
       'the broker did not answer agents_result within 30s; the broker was not touched',
     )
-  })
-
-  it('does not ask for agents until the queue has answered, so the queue never waits behind them', async () => {
-    const sent: string[] = []
-    let answerQueue: () => void = () => undefined
-    const broker = {
-      request: (message: ClientMessage): Promise<ServerMessage> => {
-        sent.push(message.t)
-        if (message.t === 'agents')
-          return Promise.resolve({ t: 'agents_result', agents: [] } as ServerMessage)
-        return new Promise(resolve => {
-          answerQueue = () => resolve({ t: 'queue_result', items: [] })
-        })
-      },
-    } as unknown as BrokerClient
-
-    const guarded = guardRestart('restart', brokerSource(broker), { now: NOW })
-    await new Promise(resolve => setImmediate(resolve))
-    const beforeQueueAnswered = [...sent]
-    answerQueue()
-
-    expect(await guarded).toBeNull()
-    expect(beforeQueueAnswered).toEqual(['queue'])
-    expect(sent).toEqual(['queue', 'agents'])
   })
 })
