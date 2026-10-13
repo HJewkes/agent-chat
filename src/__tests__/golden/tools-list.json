@@ -250,7 +250,7 @@
     },
     {
       "name": "chat_ask",
-      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions.",
+      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. Set door: an ask without one is treated as one-way.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -272,15 +272,70 @@
             "description": "The task id you were working on",
             "type": "string"
           },
+          "header": {
+            "description": "A one-line title for the queue, at most 80 characters",
+            "type": "string"
+          },
           "options": {
-            "description": "The choices, if the answer is one of a few",
+            "description": "The choices, if the answer is one of a few: a label, or {label, description}",
             "type": "array",
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "recommended": {
             "description": "The answer you would pick; shown first",
+            "type": "string"
+          },
+          "default": {
+            "description": "The option taken if nobody answers; must be one of the labels",
+            "type": "string"
+          },
+          "door": {
+            "description": "two-way if the answer is cheap to undo; absent is treated as one-way",
+            "type": "string",
+            "enum": [
+              "one-way",
+              "two-way"
+            ]
+          },
+          "category": {
+            "description": "Decision category, e.g. tech_design, scope_priority, merge_gate",
+            "type": "string"
+          },
+          "initiative": {
+            "description": "The initiative slug the question belongs to",
+            "type": "string"
+          },
+          "blocking": {
+            "description": "continue if you carry on meanwhile, parked if you stopped",
+            "type": "string",
+            "enum": [
+              "continue",
+              "parked"
+            ]
+          },
+          "reversible": {
+            "description": "One line on how to undo the answer",
             "type": "string"
           },
           "onNoAnswer": {

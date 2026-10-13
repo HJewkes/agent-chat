@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
-import { QUEUE_ITEM_KINDS, type ClientMessage, type ServerMessage } from '../../protocol.js'
+import {
+  ASK_BLOCKING,
+  ASK_DOORS,
+  QUEUE_ITEM_KINDS,
+  type ClientMessage,
+  type ServerMessage,
+} from '../../protocol.js'
 import type { BrokerClient } from '../../client/broker-client.js'
 import { BROKER_UNAVAILABLE_EXIT, BrokerUnavailableError } from '../client.js'
 import { defineVerb, Report, type VerbContext } from '../command.js'
@@ -48,6 +54,15 @@ async function questionText(words: string[] | undefined, fromStdin: boolean | un
   return text
 }
 
+/** `--option-description` pairs with `--option` by position; a missing one is `""`. */
+function optionShape(options: string[] | undefined, descriptions: string[] | undefined) {
+  if ((descriptions?.length ?? 0) > (options?.length ?? 0))
+    throw new UsageError('each --option-description needs a matching --option before it')
+  if (!options) return {}
+  if (!descriptions) return { options }
+  return { options, optionDescriptions: options.map((_, i) => descriptions[i] ?? '') }
+}
+
 const Args = z.object({
   as: requiredString('--as <label>'),
   text: z.array(z.string()).optional(),
@@ -55,8 +70,16 @@ const Args = z.object({
   kind: z.enum(QUEUE_ITEM_KINDS).optional(),
   task: z.string().optional(),
   option: z.array(z.string()).optional(),
+  optionDescription: z.array(z.string()).optional(),
   recommended: z.string().optional(),
   onNoAnswer: z.string().optional(),
+  header: z.string().optional(),
+  door: z.enum(ASK_DOORS).optional(),
+  default: z.string().optional(),
+  category: z.string().optional(),
+  initiative: z.string().optional(),
+  blocking: z.enum(ASK_BLOCKING).optional(),
+  reversible: z.string().optional(),
   json: z.boolean().optional(),
 })
 
@@ -77,15 +100,30 @@ export const askVerb = defineVerb({
       textStdin: { long: '--text-stdin', description: 'read the question from stdin, not argv' },
       kind: { long: '--kind <kind>', description: `one of ${QUEUE_ITEM_KINDS.join(', ')}` },
       task: { long: '--task <id>', description: 'the task or gate the question is about' },
+      header: { long: '--header <text>', description: 'a one-line title for the queue, at most 80 chars' },
       option: { long: '--option', description: 'an answer to offer (repeatable)' },
+      optionDescription: {
+        long: '--option-description',
+        description: 'describes the --option at the same position (repeatable)',
+      },
       recommended: { long: '--recommended <option>', description: 'the option you recommend' },
+      default: { long: '--default <option>', description: 'the option taken if nobody answers' },
+      door: { long: '--door <door>', description: `${ASK_DOORS.join(' or ')}; absent is treated as one-way` },
+      category: { long: '--category <name>', description: 'decision category, e.g. tech_design' },
+      initiative: { long: '--initiative <slug>', description: 'the initiative the question belongs to' },
+      blocking: {
+        long: '--blocking <mode>',
+        description: `${ASK_BLOCKING.join(' or ')}: is the asker waiting`,
+      },
+      reversible: { long: '--reversible <text>', description: 'one line on how to undo the answer' },
       onNoAnswer: { long: '--on-no-answer <text>', description: 'what happens if nobody answers' },
       json: { long: '--json', description: 'print {"msgId": ...} instead of the bare id' },
     },
   },
-  async run({ as, text: words, textStdin, json, option, ...shape }, ctx) {
+  async run({ as, text: words, textStdin, json, option, optionDescription, ...shape }, ctx) {
+    const options = optionShape(option, optionDescription)
     const text = await questionText(words, textStdin)
-    const frame = { t: 'service_ask', as, text, ...shape, ...(option ? { options: option } : {}) } as const
+    const frame = { t: 'service_ask', as, text, ...shape, ...options } as const
     const res = (await serviceRequest(ctx, frame, 'service_ask_result')) as Extract<
       ServerMessage,
       { t: 'service_ask_result' }

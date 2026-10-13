@@ -532,7 +532,27 @@ export interface ItemShape {
   recommended?: string | undefined
   /** What happens if nobody answers: the default taken, or "parked". */
   onNoAnswer?: string | undefined
+  /** A one-line title for the queue, at most 80 characters. */
+  header?: string | undefined
+  /** One per option, same order; `""` where an option has none. */
+  optionDescriptions?: string[] | undefined
+  /** Whether the answer is cheap to undo. Readers treat an absent door as one-way. */
+  door?: AskDoor | undefined
+  /** The option taken if nobody answers; dropped unless it is one of the options. */
+  default?: string | undefined
+  /** Precedent vocabulary, such as `tech_design` or `merge_gate`. */
+  category?: string | undefined
+  initiative?: string | undefined
+  /** Whether the asker carries on meanwhile or is parked on the answer. */
+  blocking?: AskBlocking | undefined
+  /** One line on how to undo the answer. */
+  reversible?: string | undefined
 }
+
+export const ASK_DOORS = ['one-way', 'two-way'] as const
+export type AskDoor = (typeof ASK_DOORS)[number]
+export const ASK_BLOCKING = ['continue', 'parked'] as const
+export type AskBlocking = (typeof ASK_BLOCKING)[number]
 
 /** A question the decider answered, shown to the human for audit. */
 export interface DecidedItem {
