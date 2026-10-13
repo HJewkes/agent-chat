@@ -24,6 +24,7 @@ import {
   selfGrantRootOf,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
+import type { CreatedWorktree } from '../agents/resume-session.js'
 import { linkedWorktreeRoot, REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import { launchEnv, oscTitle } from '@titan-design/agent-surface'
 import { terminalAnchor } from '../server/anchor.js'
@@ -910,7 +911,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
   const optedIn = profile({ allowedTools: ['Read', 'Write', 'Edit', REPO_SKILLS_RULE] })
 
   /** A linked worktree made by `git worktree add`, so git itself registers it. */
-  function linkedWorktree(): string {
+  function linkedWorktree(): CreatedWorktree {
     const repo = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'repo-'))
     const git = (...args: string[]): void => {
       spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
@@ -921,7 +922,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     git('commit', '-q', '--allow-empty', '-m', 'init')
     const root = path.join(repo, 'wt')
     git('worktree', 'add', '-q', root)
-    return fs.realpathSync(root)
+    return { worktree: fs.realpathSync(root), gitRoot: repo }
   }
 
   /** A hand-written common dir whose layout git accepts, made by nothing agent-chat ran (CC-1110). */
@@ -941,9 +942,34 @@ describe('arming the repo skill self-grant (CC-694)', () => {
   }
 
   it('arms the root when cwd is the worktree agent-chat recorded creating', () => {
-    const cwd = linkedWorktree()
+    const created = linkedWorktree()
+    const cwd = created.worktree
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), cwd)).toBe(cwd)
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBe(cwd)
+  })
+
+  it('does not arm a forged common dir at the recorded path', () => {
+    const cwd = forgedWorktree()
+    const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+  })
+
+  it('does not arm a real worktree of a different repository than the record names', () => {
+    const cwd = linkedWorktree().worktree
+    const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+  })
+
+  it('does not arm a recorded path that is now a symlink, even to a real worktree of the repo', () => {
+    const real = linkedWorktree()
+    const cwd = path.join(fs.realpathSync(tmpdir()), 'link')
+    fs.symlinkSync(real.worktree, cwd)
+
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { ...real, worktree: cwd }),
+    ).toBeUndefined()
   })
 
   it('does not arm a forged common dir at the spawn cwd', () => {
@@ -962,39 +988,44 @@ describe('arming the repo skill self-grant (CC-694)', () => {
   })
 
   it('does not arm a linked worktree agent-chat has no record of creating', () => {
-    const cwd = linkedWorktree()
+    const cwd = linkedWorktree().worktree
 
     expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
   })
 
   it('does not arm a profile without the rule', () => {
-    const cwd = linkedWorktree()
+    const created = linkedWorktree()
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd })), cwd)).toBeUndefined()
+    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd: created.worktree })), created)).toBeUndefined()
   })
 
   it('does not arm a main checkout, whose .git is a directory', () => {
     const cwd = fs.realpathSync(tmpdir())
     fs.mkdirSync(path.join(cwd, '.git'))
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), cwd)).toBeUndefined()
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { worktree: cwd, gitRoot: cwd }),
+    ).toBeUndefined()
   })
 
   it('does not read the rule from the brief', () => {
-    const cwd = linkedWorktree()
-    const plan = buildLaunchPlan(input({ cwd, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }))
+    const created = linkedWorktree()
+    const plan = buildLaunchPlan(
+      input({ cwd: created.worktree, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }),
+    )
 
-    expect(selfGrantRootOf(plan, cwd)).toBeUndefined()
+    expect(selfGrantRootOf(plan, created)).toBeUndefined()
   })
 
   it('puts the root on the hook command in the written settings file', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
-    const cwd = linkedWorktree()
+    const created = linkedWorktree()
+    const cwd = created.worktree
 
     writeLaunchFiles(
       buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
       {},
-      cwd,
+      created,
     )
 
     expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain(`--self-grant-skills '${cwd}'`)
@@ -1002,7 +1033,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
 
   it('leaves the hook command unarmed when no created worktree is passed', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
-    const cwd = linkedWorktree()
+    const cwd = linkedWorktree().worktree
 
     writeLaunchFiles(
       buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),

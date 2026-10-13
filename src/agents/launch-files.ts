@@ -11,7 +11,8 @@ import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
 import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
 import { strictMcpFor } from './launch-policy.js'
-import { linkedWorktreeRoot, REPO_SKILLS_RULE } from './skill-self-grant.js'
+import type { CreatedWorktree } from './resume-session.js'
+import { gitCommonDir, linkedWorktreeRoot, REPO_SKILLS_RULE } from './skill-self-grant.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -288,18 +289,23 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 /**
  * The worktree whose repo skills the hook may allow writes to: the plan's cwd, only when
  * the profile opted in with the owner-approved rule, the cwd is the worktree the broker
- * recorded agent-chat creating for this launch, and git still has that registered as a
- * linked worktree. A shared or main checkout stays behind the owner prompt (CC-694), and
- * so does a hand-written common dir at the cwd: git checks its layout, not who made it (CC-1110).
+ * recorded agent-chat creating for this agent, and git still has that registered as a
+ * linked worktree of the recorded repository. A shared or main checkout stays behind the
+ * owner prompt (CC-694), and so does a hand-written common dir at the cwd, or one swapped
+ * in behind a symlink at the recorded path: git checks its layout, not who made it (CC-1110).
  */
-export function selfGrantRootOf(plan: LaunchPlan, createdWorktree?: string): string | undefined {
+export function selfGrantRootOf(plan: LaunchPlan, created?: CreatedWorktree): string | undefined {
   const end = plan.args.indexOf('--')
   const options = end === -1 ? plan.args : plan.args.slice(0, end)
   const at = options.indexOf('--allowed-tools')
   if (at === -1 || !(options[at + 1] ?? '').split(',').includes(REPO_SKILLS_RULE)) return undefined
-  const created = createdWorktree === undefined ? undefined : realpathOrUndefined(createdWorktree)
-  if (created === undefined || realpathOrUndefined(plan.cwd) !== created) return undefined
-  return linkedWorktreeRoot(created)
+  if (created === undefined) return undefined
+  const cwd = path.resolve(plan.cwd)
+  if (cwd !== path.resolve(created.worktree) || realpathOrUndefined(cwd) !== cwd) return undefined
+  const root = linkedWorktreeRoot(cwd)
+  const repoGitDir = realpathOrUndefined(path.join(created.gitRoot, '.git'))
+  if (root === undefined || repoGitDir === undefined) return undefined
+  return gitCommonDir(root) === repoGitDir ? root : undefined
 }
 
 function realpathOrUndefined(dir: string): string | undefined {
@@ -313,7 +319,7 @@ function realpathOrUndefined(dir: string): string | undefined {
 export function writeLaunchFiles(
   plan: LaunchPlan,
   config: Record<string, unknown>,
-  createdWorktree?: string,
+  createdWorktree?: CreatedWorktree,
 ): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
   const settings = buildHookSettings(
