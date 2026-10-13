@@ -16,6 +16,7 @@ import {
   sameTickCollision,
   type CollisionFacts,
   type CollisionWork,
+  type FileClaim,
 } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
 
@@ -632,5 +633,49 @@ describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
 
   it("never refuses a work on its own held claim's owns", () => {
     expect(check([claim({ taskId: 'CC-2', slice: undefined })], ['src/a/x.ts'])).toBeUndefined()
+  })
+})
+
+describe("collisionCheck reads burndown agents' owns from the ledger, not their broker claim (CC-1276)", () => {
+  const claim = (over: Partial<Claim> = {}): Claim => ({
+    taskId: 'TP-1',
+    initiative: 'alpha',
+    spawnedAt: '2026-10-13T09:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-10-13T09:00:00.000Z',
+    slice: 'b',
+    agentName: 'bd-tp-1-b',
+    owns: ['.changeset/tp-1-b*.md', 'src/b.ts'],
+    worktree: '/repo/.worktrees/bd-tp-1-b',
+    ...over,
+  })
+  const check = (claims: Claim[], fileClaims: FileClaim[], owns: string[]) => {
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims }, { names: [], claims: fileClaims }, exec)
+    return run('/repo', work('CC-2', { owns }))
+  }
+  const stale: FileClaim = { owner: 'bd-tp-1-b', repo: '/repo', patterns: ['README.md'] }
+
+  it("passes work on a path only the burndown agent's spawn-time broker claim holds", () => {
+    expect(check([claim()], [stale], ['README.md'])).toBeUndefined()
+  })
+
+  it("refuses work on the ledger's reloaded owns of the same agent", () => {
+    const result = check([claim()], [stale], ['src/b.ts'])
+
+    expect(result).toEqual({ kind: 'file-overlap', reason: "src/b.ts is under TP-1 slice b's owns" })
+  })
+
+  it("still refuses on a non-burndown owner's broker claim", () => {
+    const human: FileClaim = { owner: 'human-session', repo: '/repo', patterns: ['README.md'] }
+
+    expect(check([claim()], [human], ['README.md'])?.kind).toBe('claimed')
+  })
+
+  it("still refuses on the broker claim of a queued claim's agent", () => {
+    expect(check([claim({ phase: 'queued' })], [stale], ['README.md'])?.kind).toBe('claimed')
   })
 })
