@@ -19,9 +19,10 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(home, { recursive: true, force: true }))
 
-function runCli(...args: string[]) {
+function runCli(args: string[], input = '') {
   return spawnSync(process.execPath, [cli, ...args], {
     encoding: 'utf8',
+    input,
     env: { ...process.env, AGENT_CHAT_HOME: home },
     timeout: 30_000,
   })
@@ -29,20 +30,48 @@ function runCli(...args: string[]) {
 
 describe('agent-chat port, run from dist', () => {
   it('lists all eight verbs in port --help', () => {
-    const { stdout, status } = runCli('port', '--help')
+    const { stdout, status } = runCli(['port', '--help'])
 
     expect(status).toBe(0)
     for (const verb of VERBS) expect(stdout).toMatch(new RegExp(`^\\s+${verb}\\b`, 'm'))
   })
 
   it('exits 69 with broker_unavailable and starts no broker when none is listening', () => {
-    const { stdout, status } = runCli('port', 'roster')
+    const { stdout, status } = runCli(['port', 'roster'])
 
     const envelope = PortEnvelope.parse(JSON.parse(stdout.trim()))
     expect(status).toBe(69)
     expect(envelope).toMatchObject({ ok: false, error: { code: 'broker_unavailable' } })
     expect(existsSync(path.join(home, 'chat.sock'))).toBe(false)
     expect(readdirSync(home)).toEqual([])
+  })
+})
+
+describe('port stdin switches, run from dist', () => {
+  it.each([
+    [
+      ['port', 'spawn', '--frame-stdin'],
+      JSON.stringify({
+        t: 'spawn',
+        name: 'worker',
+        profile: 'implementer',
+        brief: 'do it',
+        cwd: '/work/tree',
+        configDir: '/cfg',
+        surface: 'headless',
+        briefing: '',
+        tags: [],
+        task: 'T-1',
+        spawnedAs: 'burndown',
+      }),
+    ],
+    [['port', 'resume', 'worker', '--message-stdin'], 'wake up'],
+  ])('%j parses as a bare switch and reaches the broker check', (args, input) => {
+    const { stdout, status } = runCli(args, input)
+
+    const envelope = PortEnvelope.parse(JSON.parse(stdout.trim()))
+    expect(status).toBe(69)
+    expect(envelope).toMatchObject({ ok: false, error: { code: 'broker_unavailable' } })
   })
 })
 

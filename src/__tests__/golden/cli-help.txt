@@ -930,8 +930,8 @@ Usage: agent-chat port spawn [options]
 spawn from burndown's spawn frame on stdin as one JSON envelope line; never starts a broker
 
 Options:
-  --frame-stdin <value>  read the spawn frame JSON from stdin
-  -h, --help             display help for command
+  --frame-stdin  read the spawn frame JSON from stdin
+  -h, --help     display help for command
 
 === agent-chat port retire
 Usage: agent-chat port retire [options] <name>
@@ -947,8 +947,8 @@ Usage: agent-chat port resume [options] <name>
 resume an agent headless on a message from stdin, as one JSON envelope line
 
 Options:
-  --message-stdin <value>  read the wake message from stdin
-  -h, --help               display help for command
+  --message-stdin  read the wake message from stdin
+  -h, --help       display help for command
 
 === agent-chat port send
 Usage: agent-chat port send [options] [to]

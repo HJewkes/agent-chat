@@ -59,9 +59,13 @@ export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(
 
 /** The registry appends `<value>` to every non-boolean flag; a flag that already names its argument keeps its own. */
 const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof optionFlagSpec>[2]): string =>
-  option.long.includes('<')
+  option.long.includes('<') || isTrueSwitch(verb, key)
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
+
+/** A required `z.literal(true)` flag is a bare switch: commander yields `true` when it is present. */
+const isTrueSwitch = (verb: Verb<unknown>, key: string): boolean =>
+  schemaKind(fieldSchema(verb.args, key)) === 'literal'
 
 /** An array-typed positional takes every remaining word: `[name...]`. */
 function variadicAware<Args>(verb: Verb<Args>, name: string): string {
