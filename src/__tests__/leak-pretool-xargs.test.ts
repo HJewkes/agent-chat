@@ -151,6 +151,28 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand('xargs -J % git push origin HEAD:x', ctx)).toBe(REASONS.xargsPush)
   })
 
+  it.each([
+    'echo GIT_CONFIG_COUNT | xargs -I% env -u % git push origin --',
+    'xargs -I% env %=0 git push origin --',
+    'xargs -I% env -u% git push origin --',
+    'xargs -I% env --unset=% git push origin --',
+    'xargs -I% env -- %=0 git push origin --',
+    'xargs -I"$R" env -u x git push origin --',
+    'xargs -I% env -u "$X" git push origin --',
+    'xargs -I% env "$X"=0 git push origin --',
+    'xargs env -u "$X" git push origin --',
+    'xargs -n1 env "$X"=0 git push origin --',
+  ])('denies env words xargs may fill with a GIT_CONFIG_* name: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.gitConfigEnv)
+  })
+
+  it.each(['env -u "$X" git push origin', 'env "$X"=0 git push origin', 'env -u $X git push origin'])(
+    'denies env unsetting or setting a name the guard cannot read: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBeDefined()
+    },
+  )
+
   it('denies a config write through the replace word', () => {
     expect(checkCommand('xargs -I % git config %', ctx)).toBeDefined()
   })
@@ -164,6 +186,9 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -a "$X" git push origin --',
     'xargs -I {} git push origin -- {}',
     'xargs -- "$X"',
+    'xargs -I% env -u FOO git push origin -- %',
+    'xargs -I% env FOO=1 git log %',
+    'env FOO="$X" git log',
     'xargs -J % git push origin -- HEAD:x',
     'ls | xargs -P "$(nproc)" grep foo',
     `xargs -I{} sh -c 'git log {}'`,

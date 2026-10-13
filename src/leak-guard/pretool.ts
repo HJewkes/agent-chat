@@ -275,10 +275,15 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
   let at = 0
   let chdir = false
   let fed: Fed | undefined
+  let fedFrom = 0
   const assigns: string[] = []
+  const done = (): Unwrapped => {
+    const reason = fedEnvReason(assigns.slice(fedFrom), fed)
+    return reason === undefined ? { words: rest.slice(at), chdir, assigns, fed } : { reason }
+  }
   for (;;) {
     const head = rest[at]
-    if (head === undefined) return { words: rest.slice(at), chdir, assigns, fed }
+    if (head === undefined) return done()
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const next = wrapperEnd(rest, at, name)
@@ -294,14 +299,28 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       if (after === undefined) return { reason: REASONS.xargsOption }
       at = after.at
       fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
+      fedFrom = assigns.length
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1)
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
       assigns.push(...env.assigns)
-    } else return { words: rest.slice(at), chdir, assigns, fed }
+    } else return done()
   }
+}
+
+/**
+ * xargs puts the replace string into env's own words too, so an `env -u NAME` or `NAME=value` it may fill,
+ * or whose name the guard cannot read, may unset or set GIT_CONFIG_*.
+ */
+function fedEnvReason(envWords: readonly string[], fed: Fed | undefined): string | undefined {
+  if (fed === undefined) return undefined
+  const { replace } = fed
+  const filled = (word: string): boolean =>
+    (word.split('=')[0] as string).includes(LIVE) ||
+    (replace !== undefined && (replace === ANY_WORD || unmark(word).includes(replace)))
+  return envWords.some(filled) ? REASONS.gitConfigEnv : undefined
 }
 
 /** The words xargs runs: its fixed words with the ones it reads put where xargs puts them. */
