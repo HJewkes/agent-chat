@@ -102,6 +102,10 @@ function substitutionEnd(word: string, at: number): number | undefined {
   return undefined
 }
 
+// Text that may make substitutionEnd disagree with the shell: a quoted or escaped close, a comment,
+// a nested `${`, a heredoc, or a `case` pattern's `)`. Any of these makes the substitution deny.
+const UNSCANNABLE_SUBSTITUTION = /["'\\#]|\$\{|<<|\bcase\b/
+
 const known = (end: number, unsafe: boolean): Expansion => ({ end, unsafe, unknown: false })
 
 /** The expansion at `at`, just after a LIVE mark, with the index past it; undefined for a glob or `~`, which stay text. */
@@ -113,7 +117,10 @@ function readExpansion(word: string, at: number, ifs: string): Expansion | undef
   }
   if (word.startsWith('$(', at) || word[at] === '`') {
     const end = substitutionEnd(word, at)
-    return end === undefined ? known(word.length, true) : known(end, false)
+    const scanned = word.slice(at, end ?? word.length)
+    return end === undefined || UNSCANNABLE_SUBSTITUTION.test(scanned)
+      ? known(word.length, true)
+      : known(end, false)
   }
   const bare = BARE_PARAMETER.exec(word.slice(at))
   if (bare) return known(at + bare[0].length, false)

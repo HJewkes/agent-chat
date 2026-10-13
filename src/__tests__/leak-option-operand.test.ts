@@ -112,6 +112,20 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
   })
 
   it.each([
+    '$(: ")")--no-verify',
+    '$(case a in a) :;; esac)--no-verify',
+    '"$(: ")")"--no-verify',
+    "$(: ')')--no-verify",
+    '$(: \\))--no-verify',
+    '$(echo ${X:-)})--no-verify',
+    '`echo "\\`"`--no-verify',
+    '$(: #)',
+    'main$(cat <<E)',
+  ])('is true for a substitution whose end the scanner may misplace: %s', word => {
+    expect(operandMaySpellOption(pushedWord(word))).toBe(true)
+  })
+
+  it.each([
     'main{a,$X}--zz',
     'main$X{-f,a}',
     'main$X{,-}-zz',
