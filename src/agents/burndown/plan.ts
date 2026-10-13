@@ -55,10 +55,12 @@ export interface Dispatch {
   owns?: string[]
 }
 
-/** Worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
+/** Implementer worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
 export interface WorktreeUse {
   total: number
   ours: number
+  /** Reviewer trees, charged to the broker's reviewer pool and not to `total` (CC-1040). */
+  reviewers?: number
   /** The broker's per-repo budget less the reserve the tick never takes. */
   totalCeiling: number
   oursCeiling: number
@@ -376,12 +378,14 @@ export function capacityRefusal(
   if (use.total + added >= use.totalCeiling)
     return {
       kind: 'worktrees',
-      reason: `${use.total + added} worktrees under ${where}; the tick stops at ${use.totalCeiling} (budget less reserve)`,
+      reason:
+        `${use.total + added} worktrees under ${where}: implementer pool full ` +
+        `(${use.reviewers ?? 0} reviewer trees not counted); the tick stops at ${use.totalCeiling} (budget less reserve)`,
     }
   if (use.ours + added >= use.oursCeiling)
     return {
       kind: 'worktrees',
-      reason: `${use.ours + added} burndown worktrees under ${where}; maxWorktreesPerRepo is ${use.oursCeiling}`,
+      reason: `implementer pool: ${use.ours + added} burndown worktrees under ${where}; maxWorktreesPerRepo is ${use.oursCeiling}`,
     }
   return undefined
 }
