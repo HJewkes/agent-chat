@@ -194,7 +194,7 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
-  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
   xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
@@ -1996,20 +1996,22 @@ const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).so
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
 /**
- * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
- * protocol list that lets git run `ext::` URLs.
+ * A program-env event: a script to check, null for a use the guard cannot read, EXT_ON for
+ * unsetting the protocol list, or EXT_LISTED for a literal list naming `ext` (CC-1137 d).
  */
 const EXT_ON = Symbol('ext-on')
+// Nothing legitimate lists ext, so this denies on any line; an unset off a git line is left to the CC-1095 pin.
+const EXT_LISTED = Symbol('ext-listed')
 // A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
 const NAME_HIDDEN = Symbol('name-hidden')
-type EnvEvent = string | null | typeof EXT_ON | typeof NAME_HIDDEN
+type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
 
 /**
  * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
- * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * value, null when the value is unreadable, and for a protocol list EXT_LISTED when it lists `ext` or
  * no event at all. undefined when the word is no such assignment.
  */
 function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
@@ -2020,7 +2022,7 @@ function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const value = word.slice(name.length + 1)
   if (value.includes(LIVE)) return null
   if (!protocol) return value
-  return listsExt(unmark(value)) ? EXT_ON : 'none'
+  return listsExt(unmark(value)) ? EXT_LISTED : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
@@ -2250,12 +2252,13 @@ function checkProgramEnvLine(
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
+  if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
   if (!mayReachGit(scan, ctx.env)) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
-    if (event === EXT_ON) return REASONS.extProtocol
+    if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
     if (event === NAME_HIDDEN) continue
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
