@@ -25,10 +25,16 @@ import { advance, applyActions, claimKey, type Action, type ClaimKey, type Inbox
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
-import { briefAnswered } from './brief-approve.js'
+import { autoApproveBriefs, autoApprovePortsOn, briefAnswered, type DeciderRoute } from './brief-approve.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
-import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
+import {
+  briefRouteRefusal,
+  deciderVerdict,
+  recordRefusal,
+  wakeDecider,
+  type DeciderVerdict,
+} from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
 import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
@@ -76,6 +82,7 @@ import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  localDate,
   watchdogUnusable,
   planSeats,
   scopeExhausted,
@@ -277,7 +284,9 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
   const now = opts.now ?? new Date()
   const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
   const decided = await decide(config, opts, ledger, now, timer)
-  const { steps, notes, decider } = decided
+  const { steps, decider } = decided
+  const briefs = await timer.time('brief-approve', () => settleBriefs(config, opts, now))
+  const notes = [...briefs, ...decided.notes]
   if (opts.dryRun) {
     const planned = applyActions(
       ledger,
@@ -517,6 +526,23 @@ function recordingSpawn(
     return reply
   }
 }
+
+/** CC-1234: approves each proposed brief whose plan lints and sends the rest to the decider once; a dry run only says so. */
+function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): Promise<string[]> {
+  const name = config.decider?.name
+  return autoApproveBriefs(autoApprovePortsOn(opts.root ?? activeWorkRoot()), {
+    today: localDate(now),
+    dryRun: opts.dryRun,
+    ...(name === undefined ? {} : { route: deciderRoute(name, opts.broker) }),
+  })
+}
+
+const deciderRoute =
+  (name: string, broker: TickBroker): DeciderRoute =>
+  async message => {
+    const refusal = briefRouteRefusal(name, resolveDeciderAgentId(), await broker.roster())
+    return refusal === undefined ? broker.resume(name, message) : { ok: false, reason: refusal }
+  }
 
 /** Wakes the decider, or records why not when the human has something to fix. */
 async function actOnDecider(

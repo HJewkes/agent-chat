@@ -176,6 +176,7 @@ const IN_LOCK_STEPS = [
   'decider',
   'plan',
   'collision',
+  'brief-approve',
   'scope-exhausted',
   'execute',
   'adopt',

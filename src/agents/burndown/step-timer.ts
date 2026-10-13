@@ -9,6 +9,7 @@ export type StepName =
   | 'decider'
   | 'plan'
   | 'collision'
+  | 'brief-approve'
   | 'scope-exhausted'
   | 'execute'
   | 'adopt'
