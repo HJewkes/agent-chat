@@ -188,26 +188,60 @@ describe('a parent whose slices are all done or released (CC-1227)', () => {
 
 describe('releasedSlicesLanded', () => {
   const reads = (subjects: string[]) => [{ repo: '/r', subjects }]
-  const one = { done: 0, released: 1 }
+  const one = { done: [], released: ['b'] }
+  const two = { done: ['a'], released: ['b'] }
 
   it('is true when a distinct commit names the parent for each slice', () => {
-    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(['A-1: one', 'A-1 b: two']), [])).toBe(
+    expect(releasedSlicesLanded('A-1', two, reads(['A-1 a: one', 'A-1 b: two']), [])).toBe(true)
+  })
+
+  it('is false when the second commit is a typo fix that opens with the parent id', () => {
+    const lines = ['A-1 a: slice a', 'A-1: fix typo in docs']
+
+    expect(releasedSlicesLanded('A-1', two, reads(lines), [])).toBe(false)
+  })
+
+  it('matches each slice by its own letter', () => {
+    expect(releasedSlicesLanded('A-1', two, reads(['A-1 b: two', 'A-1 c: three']), [])).toBe(false)
+    expect(releasedSlicesLanded('A-1', two, reads(['A-1 c: three', 'A-1 b: two', 'A-1 a: one']), [])).toBe(
       true,
     )
   })
 
+  it('does not match a letter that only starts a longer word', () => {
+    expect(releasedSlicesLanded('A-1', one, reads(['A-1 bump: deps']), [])).toBe(false)
+  })
+
   it('is false when the done slice alone landed', () => {
-    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(['A-1: one']), [])).toBe(false)
+    expect(releasedSlicesLanded('A-1', two, reads(['A-1 a: one']), [])).toBe(false)
   })
 
   it('counts a commit with a Covers line once', () => {
-    const lines = ['A-1: one', 'A-1: one [covers B-2]']
+    const lines = ['A-1 a: one', 'A-1 a: one [covers B-2]']
 
-    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
+    expect(releasedSlicesLanded('A-1', two, reads(lines), [])).toBe(false)
+  })
+
+  it('is false when the second commit is a revert of the first', () => {
+    const lines = ['A-1 a: one', 'A-1 b: two', 'Revert "A-1 b: two"']
+
+    expect(releasedSlicesLanded('A-1', two, reads(lines), [])).toBe(false)
+  })
+
+  it("is false when the second commit only mentions the parent in another task's subject", () => {
+    const lines = ['A-1 a: one', 'A-9: follow-up filed from A-1']
+
+    expect(releasedSlicesLanded('A-1', two, reads(lines), [])).toBe(false)
+  })
+
+  it('does not count a commit that was later reverted', () => {
+    const lines = ['A-1 a: one', 'A-1 b: two', 'Revert "A-1 b: two"']
+
+    expect(releasedSlicesLanded('A-1', two, reads(lines), [])).toBe(false)
   })
 
   it('is false when an open PR names the parent', () => {
-    expect(releasedSlicesLanded('A-1', one, reads(['A-1: one']), ['A-1: open work'])).toBe(false)
+    expect(releasedSlicesLanded('A-1', one, reads(['A-1 b: one']), ['A-1: open work'])).toBe(false)
   })
 
   it('is false when a repo could not be read', () => {
