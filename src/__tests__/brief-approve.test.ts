@@ -8,6 +8,7 @@ import {
   autoApprovePortsOn,
   briefVersion,
   finishBriefRoutes,
+  recordBriefRoutes,
   settleProposedBriefs,
 } from '../agents/burndown/brief-approve.js'
 import { briefReviewSection, deciderVerdict } from '../agents/burndown/decider.js'
@@ -228,13 +229,13 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(settled.routes).toEqual([])
   })
 
-  it('routes a lint-failing brief to the decider, recording the version before any send', () => {
+  it('routes a lint-failing brief to the decider without recording a send while settling', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
     const { routes } = settle()
 
-    expect(edits).toEqual([['--add-tag', SENT]])
+    expect(edits).toEqual([])
     expect(routes).toHaveLength(1)
     expect(routes[0]?.tag).toBe(SENT)
     expect(routes[0]?.section).toContain('over the 3-point limit')
@@ -256,10 +257,10 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     writeTask([PROPOSED, old])
     writePlan(UNLINTED)
 
-    const { routes } = settle()
-    finishBriefRoutes(routes, { sent: true }, ports())
+    const { recorded } = recordBriefRoutes(settle().routes, ports())
+    finishBriefRoutes(recorded, { sent: true }, ports())
 
-    expect(routes).toHaveLength(1)
+    expect(recorded).toHaveLength(1)
     expect(edits).toEqual([
       ['--add-tag', SENT],
       ['--remove-tag', old],
@@ -270,8 +271,8 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    const { routes } = settle()
-    const lines = finishBriefRoutes(routes, { sent: false, reason: 'decider is live' }, ports())
+    const { recorded } = recordBriefRoutes(settle().routes, ports())
+    const lines = finishBriefRoutes(recorded, { sent: false, reason: 'decider is live' }, ports())
 
     expect(edits).toEqual([
       ['--add-tag', SENT],
@@ -280,12 +281,27 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(lines.join('\n')).toContain('retried next tick')
   })
 
+  it('does not send a route whose record could not be written', () => {
+    writeTask([PROPOSED])
+    writePlan(UNLINTED)
+    const failing = {
+      edit: () => {
+        throw new Error('synthetic edit failure')
+      },
+    }
+
+    const { recorded, lines } = recordBriefRoutes(settle().routes, failing)
+
+    expect(recorded).toEqual([])
+    expect(lines.join('\n')).toContain('could not record the send')
+  })
+
   it('keeps the record when the wake went out unanswered, since it may have landed', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    const { routes } = settle()
-    finishBriefRoutes(routes, { sent: false, reason: 'broker did not answer', unknown: true }, ports())
+    const { recorded } = recordBriefRoutes(settle().routes, ports())
+    finishBriefRoutes(recorded, { sent: false, reason: 'broker did not answer', unknown: true }, ports())
 
     expect(edits).toEqual([['--add-tag', SENT]])
   })

@@ -29,6 +29,7 @@ import {
   autoApprovePortsOn,
   briefAnswered,
   finishBriefRoutes,
+  recordBriefRoutes,
   settleProposedBriefs,
   type ApprovePorts,
   type AutoApprovePorts,
@@ -42,6 +43,7 @@ import {
   recordRefusal,
   wakeDecider,
   type DeciderVerdict,
+  withRecordedBriefs,
   type WakeDelivery,
 } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
@@ -588,18 +590,33 @@ async function actOnDecider(
   return { ledger: recordRefusal(ledger, verdict.reason, deps.now), lines: [line], delivery }
 }
 
-/** CC-1234: the tick's one decider wake, then each brief route kept or released by how that wake ended. */
+/** CC-1234: the tick's one decider wake; its briefs' sends are recorded right before it and kept or dropped by how it ended. */
 async function actOnDeciderAndBriefs(
   config: TickConfig,
-  decided: { decider: DeciderVerdict | undefined; briefRoutes: readonly BriefRoute[] },
+  { decider, briefRoutes }: { decider: DeciderVerdict | undefined; briefRoutes: readonly BriefRoute[] },
   ledger: Ledger,
   deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
   opts: TickOptions,
 ): Promise<{ ledger: Ledger; lines: string[] }> {
-  const acted = await actOnDecider(config, decided.decider, ledger, deps)
-  const finished = finishBriefRoutes(decided.briefRoutes, acted.delivery, briefPorts(opts))
-  return { ledger: acted.ledger, lines: [...acted.lines, ...finished] }
+  const ports = briefPorts(opts)
+  if (decider?.wake !== true) {
+    const acted = await actOnDecider(config, decider, ledger, deps)
+    const reason = decider?.wake === false ? decider.reason : 'no decider configured'
+    return { ledger: acted.ledger, lines: [...acted.lines, ...unsentBriefLines(briefRoutes, reason)] }
+  }
+  const { recorded, lines } = recordBriefRoutes(briefRoutes, ports)
+  const verdict = withRecordedBriefs(
+    decider,
+    recorded.map(route => route.section),
+    deps.now,
+  )
+  const acted = await actOnDecider(config, verdict, ledger, deps)
+  const finished = finishBriefRoutes(recorded, acted.delivery, ports)
+  return { ledger: acted.ledger, lines: [...lines, ...acted.lines, ...finished] }
 }
+
+const unsentBriefLines = (routes: readonly BriefRoute[], reason: string): string[] =>
+  routes.map(route => `brief ${route.taskId} not sent to the decider: ${reason}; retried next tick`)
 
 function describeDecider(config: TickConfig, verdict: DeciderVerdict | undefined): string[] {
   const name = config.decider?.name

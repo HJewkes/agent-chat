@@ -160,6 +160,23 @@ export function briefReviewSection(
 }
 
 /**
+ * CC-1234: the wake with only the briefs whose send was recorded; no wake when none was and no question waits.
+ * The gate's checks already passed, so only the message and count change.
+ */
+export function withRecordedBriefs(
+  verdict: DeciderVerdict | undefined,
+  briefs: readonly string[],
+  now: Date,
+): DeciderVerdict | undefined {
+  if (verdict?.wake !== true || verdict.briefs === briefs.length) return verdict
+  if (briefs.length === 0 && verdict.waiting === 0)
+    return { wake: false, reason: 'no brief send could be recorded', record: false }
+  const message =
+    briefs.length === 0 ? wakeMessage(verdict.waiting, now) : briefWakeMessage(verdict.waiting, briefs, now)
+  return { ...verdict, message, briefs: briefs.length }
+}
+
+/**
  * A wake carrying failing briefs. It always points at the queue too: the wake is counted, so any question it
  * leaves unread would count as seen at the next tick.
  */
