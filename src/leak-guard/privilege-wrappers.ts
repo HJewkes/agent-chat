@@ -127,7 +127,9 @@ export function dropPrivilegeOptions(
 ): PrivilegeRun | undefined {
   const table = PRIVILEGE_OPTIONS.get(name)
   if (table === undefined) return undefined
-  return name === 'su' ? readSu(words, i) : readGetopt(table, words, i)
+  const run = name === 'su' ? readSu(words, i) : readGetopt(table, words, i)
+  // The shell argv is new words the caller cannot trace back to a quoted or split word, so none may be expanded.
+  return run !== undefined && 'shell' in run && run.shell.some(word => word.includes(LIVE)) ? undefined : run
 }
 
 /** A shell run on the words joined, each character but alnum, _, - and $ escaped, as sudo -s does. */
@@ -215,8 +217,11 @@ function readSu(words: readonly string[], i: number): PrivilegeRun | undefined {
   const operands: string[] = []
   for (; i < words.length; i++) {
     const a = words[i] as string
+    // An expanded word may split into a user and a -c script (`su -- $E`), even after `--`, where su takes the user from it.
     if (a === '--') {
-      operands.push(...words.slice(i + 1))
+      const rest = words.slice(i + 1)
+      if (rest.some(word => word.includes(LIVE))) return undefined
+      operands.push(...rest)
       break
     }
     // An expanded word may be an option wherever it sits, since su reads options past the user.

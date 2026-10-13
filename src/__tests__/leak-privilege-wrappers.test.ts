@@ -185,6 +185,20 @@ describe('an expanded option value fails closed, since an empty one shifts the c
   })
 })
 
+describe('an expanded word in a returned shell argv fails closed, since it may split into options', () => {
+  it.each([
+    [['su', '--', live('$E')]],
+    [['su', 'root', '--', live('$E'), '-c', 'x']],
+    [['su', '-c', 'x', '--', 'root', live('$A')]],
+    [['doas', '-s', live('$X')]],
+    [['doas', '-s', '--', 'git', live('$X')]],
+    [['run0', '-i', live('$X')]],
+    [['run0', '--via-shell', 'git', live('$X')]],
+  ])('%j', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
 describe('fail closed', () => {
   it.each([
     [['doas', '-X', 'git']],
