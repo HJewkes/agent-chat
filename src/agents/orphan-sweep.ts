@@ -16,6 +16,9 @@ import { diskTmpRoot, realTmpFs, realTmpProcessTable, sweepAgentTmpDirs, TMP_ROO
 
 export const ORPHAN_SWEEP_MS = 60_000
 
+/** /tmp for launches made before CC-1264, and the disk root every Linux launch now uses. */
+export const agentTmpSweepRoots = (home: string): string[] => [TMP_ROOT, diskTmpRoot(home)]
+
 export interface SweepDeps {
   roster: () => readonly AgentIdentity[]
   table: () => ProcessTable
@@ -81,7 +84,7 @@ export function startOrphanSweep(
     uid: process.getuid?.() ?? -1,
     self: process.pid,
     announced: new Set<string>(),
-    roots: [TMP_ROOT, diskTmpRoot(os.homedir())],
+    roots: agentTmpSweepRoots(os.homedir()),
   }
   let running = false
   const timer = setInterval(() => {
