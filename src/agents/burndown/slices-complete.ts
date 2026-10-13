@@ -17,13 +17,14 @@ export function slicesMerged(ledger: Ledger, taskId: string): boolean {
 }
 
 /**
- * CC-1227: no slice claim is held, every one that remains is done, and at least one slice was released.
- * Seeding adds every plan slice at once and a release drops its claim, so done claims plus released
- * slices are the whole plan.
+ * CC-1227: at least one slice is done and one was released, and no slice claim is held. Seeding adds every
+ * plan slice at once and a release drops its claim, so done claims plus released slices are the whole plan.
+ * A parent with no done claim stays refused: it has no claim to name its seat, so the tick could tell no one.
  */
 export function slicesReleasedComplete(ledger: Ledger, taskId: string): boolean {
   if ((ledger.slicesReleased?.[taskId] ?? []).length === 0) return false
-  return ledger.claims.every(c => c.taskId !== taskId || c.slice === undefined || c.phase === 'done')
+  const slices = ledger.claims.filter(c => c.taskId === taskId && c.slice !== undefined)
+  return slices.length > 0 && slices.every(c => c.phase === 'done')
 }
 
 /** A parent the seeder must not reseed: all its slices merged, or the rest were released. */

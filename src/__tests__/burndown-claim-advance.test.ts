@@ -231,7 +231,7 @@ describe('burndown release --slice and link (CC-978)', () => {
     const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
     expect(ledger.claims).toEqual([])
     expect(seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)).toEqual({
-      merged: true,
+      blocked: expect.stringContaining('already queued'),
     })
   })
 

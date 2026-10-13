@@ -143,6 +143,10 @@ describe('merged parents told to their seat', () => {
 describe('a parent whose slices are all done or released (CC-1227)', () => {
   const released = (): Ledger => ledgerOf([slice('a', 'done')], { slicesReleased: { 'A-1': ['b'] } })
 
+  it('is not complete when every slice was released and none is done', () => {
+    expect(slicesReleasedComplete(ledgerOf([], { slicesReleased: { 'A-1': ['a', 'b'] } }), 'A-1')).toBe(false)
+  })
+
   it('counts as complete when no slice is held', () => {
     expect(slicesReleasedComplete(released(), 'A-1')).toBe(true)
   })
@@ -184,20 +188,29 @@ describe('a parent whose slices are all done or released (CC-1227)', () => {
 
 describe('releasedSlicesLanded', () => {
   const reads = (subjects: string[]) => [{ repo: '/r', subjects }]
+  const one = { done: 0, released: 1 }
 
-  it('is true when a default-branch commit names the parent for each released slice', () => {
-    expect(releasedSlicesLanded('A-1', 2, reads(['A-1: one', 'A-1 b: two']), [])).toBe(true)
+  it('is true when a distinct commit names the parent for each slice', () => {
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(['A-1: one', 'A-1 b: two']), [])).toBe(
+      true,
+    )
   })
 
-  it('is false when fewer commits than released slices name the parent', () => {
-    expect(releasedSlicesLanded('A-1', 2, reads(['A-1: one']), [])).toBe(false)
+  it('is false when the done slice alone landed', () => {
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(['A-1: one']), [])).toBe(false)
+  })
+
+  it('counts a commit with a Covers line once', () => {
+    const lines = ['A-1: one', 'A-1: one [covers B-2]']
+
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
   })
 
   it('is false when an open PR names the parent', () => {
-    expect(releasedSlicesLanded('A-1', 1, reads(['A-1: one']), ['A-1: open work'])).toBe(false)
+    expect(releasedSlicesLanded('A-1', one, reads(['A-1: one']), ['A-1: open work'])).toBe(false)
   })
 
   it('is false when a repo could not be read', () => {
-    expect(releasedSlicesLanded('A-1', 1, [{ repo: '/r', subjects: undefined }], [])).toBe(false)
+    expect(releasedSlicesLanded('A-1', one, [{ repo: '/r', subjects: undefined }], [])).toBe(false)
   })
 })
