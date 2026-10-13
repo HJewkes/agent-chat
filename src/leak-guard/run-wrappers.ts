@@ -227,13 +227,19 @@ function valueIsSafe(name: string, kind: ValueKind, value: string): boolean {
   if (kind === 'numeric') return !value.includes(LIVE) && (NUMERIC_GRAMMAR.get(name)?.test(read) ?? false)
   if (runsPerl(value) || hidden(value) || read === '') return false
   if (PATH_OPTIONS.has(name) && /[|<>]/.test(read)) return false
-  return kind !== 'separator' || !read.startsWith('-')
+  return kind !== 'separator' || SEPARATOR.test(read)
 }
 
 /**
+ * A separator the shell never rewrites and Getopt never reads as an option: no braces, globs,
+ * quotes or `$`, and no leading `-`. So a word spelling it reads the same to the guard and to parallel.
+ */
+const SEPARATOR = /^[A-Za-z0-9_:,.@%+=^]+$/
+
+/**
  * Folds one read option into `opts`; false when the guard cannot account for it: an unclassified
- * option, a value it may not read, or a repeated non-numeric option. A separator spelled like an
- * option is refused too, because Getopt reads it as an option before parallel splits the inputs.
+ * option, a value it may not read, or a repeated non-numeric option. A separator off the `SEPARATOR`
+ * grammar is refused, and so is one that clashes with the other or with a replacement string.
  */
 function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
   if (value === undefined) {
@@ -249,8 +255,29 @@ function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
   if (kind === 'replace') opts.replaceStrings.push(read)
   if (name === 'arg-sep') opts.argSep = read
   if (name === 'arg-file-sep') opts.argFileSep = read
-  return true
+  return separatorsSound(opts)
 }
+
+/** The four separator spellings parallel matches, `:::`, `:::+`, `::::` and `::::+` by default. */
+const separators = (opts: ParallelOptions): string[] => [
+  opts.argSep,
+  opts.argSep + '+',
+  opts.argFileSep,
+  opts.argFileSep + '+',
+]
+
+/**
+ * Whether the separators can be told apart from each other and from a replacement string. A
+ * separator spelled `{}` or `{.}` (or one equal to the other separator) is a word the guard would
+ * read one way while parallel reads it the other, so it is refused.
+ */
+function separatorsSound(opts: ParallelOptions): boolean {
+  const all = separators(opts)
+  return new Set(all).size === all.length && !all.some(sep => holdsReplacement(sep, opts.replaceStrings))
+}
+
+/** The text parallel sees for `word`, or `undefined` when the shell may change it. */
+const wordOf = (word: string): string | undefined => (hidden(word) ? undefined : unmark(plain(word)))
 
 /** The options before the command and the index of the first word after them, or the unknown option's index. */
 function readParallelOptions(
@@ -280,16 +307,21 @@ function readParallelOptions(
   return [opts, i]
 }
 
-/** `--` ends GNU's options but starts moreutils' commands or inputs, so it is refused anywhere. */
+/** Whether `word` is a separator once the shell removes its quotes; an unreadable word never is. */
 const isSeparator = (opts: ParallelOptions, word: string): boolean =>
-  [opts.argSep, opts.argSep + '+', opts.argFileSep, opts.argFileSep + '+'].includes(word)
+  separators(opts).includes(wordOf(word) ?? LIVE)
+
+const isFileSeparator = (opts: ParallelOptions, word: string): boolean =>
+  separators(opts)
+    .slice(2)
+    .includes(wordOf(word) ?? LIVE)
 
 /** The input groups after the command; any group read from a file or holding an expansion is unread. */
 function readInputs(opts: ParallelOptions, marked: readonly string[], from: number): ParallelInputs {
   if (opts.argFile || from >= marked.length) return { kind: 'unread' }
   const groups: string[][] = []
   for (const word of marked.slice(from)) {
-    if (word === opts.argFileSep || word === opts.argFileSep + '+') return { kind: 'unread' }
+    if (isFileSeparator(opts, word)) return { kind: 'unread' }
     if (isSeparator(opts, word)) groups.push([])
     else if (hidden(word)) return { kind: 'unread' }
     else groups.at(-1)?.push(unmark(plain(word)))
@@ -317,7 +349,9 @@ export function parallelCall(
   const [opts, start] = options
   let end = start
   while (end < marked.length && !isSeparator(opts, marked[end] ?? '')) end++
-  const refused = marked.findIndex((word, i) => i >= start && (word === '--' || (i < end && runsPerl(word))))
+  const refused = marked.findIndex(
+    (word, i) => i >= start && (wordOf(word) === '--' || (i < end && runsPerl(word))),
+  )
   if (refused >= 0) return { unknownOption: refused }
   return {
     command: marked.slice(start, end),

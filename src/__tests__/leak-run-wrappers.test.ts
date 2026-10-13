@@ -92,6 +92,12 @@ describe('find action clauses (CC-1223)', () => {
     expect(findClauses(argv('find {} -print')).hiddenAt).toBeUndefined()
   })
 
+  it('keeps a + after an unreadable word inside the clause, for the caller to deny', () => {
+    const call = findClauses(argv(String.raw`find . -exec tool $X + -exec git push \;`))
+    expect(call.clauses).toHaveLength(1)
+    expect(call.clauses[0]?.words.map(unmark)).toEqual(['tool', '$X', '+', '-exec', 'git', 'push'])
+  })
+
   it('leaves an unreadable word inside a clause to the caller', () => {
     const call = findClauses(argv(String.raw`find . -exec $CMD {} \;`))
     expect(call.hiddenAt).toBeUndefined()
@@ -239,6 +245,42 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     "parallel --delay ' 1' tool ::: x",
   ])('refuses a numeric value off its grammar: %s', line => {
     expect(parallelOf(line)).toHaveProperty('unknownOption')
+  })
+
+  it.each<[string, number]>([
+    [`parallel --arg-file-sep '{}' sh -c ::: 'eval "$0"' {} cmds.txt`, 0],
+    ["parallel --arg-sep '{}' {} 'tool sub --flag'", 0],
+    ...['{}', '{.}', '{/}', '{#}', '{1}'].flatMap((rs): [string, number][] => [
+      [`parallel --arg-sep '${rs}' ${rs} 'tool sub'`, 0],
+      [`parallel --arg-sep "${rs}" tool ::: x`, 0],
+      [`parallel --arg-file-sep=${rs.replace('{', '\\{').replace('}', '\\}')} tool ::: x`, 0],
+      [`parallel -k --arg-file-sep ${rs} tool ::: x`, 1],
+    ]),
+    ['parallel -I @@ --arg-sep @@ tool @@ x', 2],
+    ['parallel --arg-sep @@ -I @@ tool @@ x', 2],
+    ['parallel -I ::: tool ::: x', 0],
+    ['parallel --arg-sep :::: tool :::: x', 0],
+    ['parallel --arg-file-sep ::: tool ::: x', 0],
+    ['parallel --arg-sep A --arg-file-sep A+ tool A x', 2],
+    ["parallel --arg-sep '*' tool '*' x", 0],
+    ["parallel --arg-sep '$S' tool '$S' x", 0],
+    ["parallel --arg-sep 'a b' tool 'a b' x", 0],
+  ])('refuses a separator it could read differently from parallel: %s', (line, at) => {
+    expect(parallelOf(line)).toEqual({ unknownOption: at })
+  })
+
+  it.each([
+    'parallel --arg-sep AA tool AA x',
+    'parallel --arg-sep AA tool "AA" x',
+    "parallel --arg-sep AA tool A'A' x",
+  ])('matches a separator after quote removal: %s', line => {
+    const call = parallel(line)
+    expect(call.command.map(unmark)).toEqual(['tool'])
+    expect(call.inputs).toEqual({ kind: 'literal', groups: [['x']] })
+  })
+
+  it('reads a quoted file separator as unread inputs', () => {
+    expect(parallel("parallel --arg-file-sep FF tool ::: x 'F'F list").inputs).toEqual({ kind: 'unread' })
   })
 
   it.each([
