@@ -12,6 +12,7 @@ import type { DeliveredMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 import { BACKGROUND_RESUME_MESSAGE } from '../agents/background-resume.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
+import { resolveNoticeTtlMs } from '../config.js'
 
 /**
  * CC-266 and CC-255: a headless agent that exits without a `Status:` report to
@@ -110,8 +111,7 @@ const backgroundBash = [
   },
 ]
 
-const unreported = () =>
-  core.events.history(200).filter(row => row.kind === 'message' && row.meta.event === 'unreported-exit')
+const unreported = () => core.events.history(200).filter(row => row.meta.event === 'unreported-exit')
 
 const exits = () => core.events.agentEvents().filter(r => r.kind === 'agent_exited').length
 const resumes = () => core.events.agentEvents().filter(r => r.kind === 'agent_resumed')
@@ -232,6 +232,30 @@ describe('an agent that exits without its Status report', () => {
     const pushed = delivered.find(d => d.message.event === 'unreported-exit')
     expect(pushed?.conn).toBe(coord)
     expect(pushed?.message.text).toBe(row?.text)
+  })
+
+  it('tells a coordinator spawner with a message', async () => {
+    registerCoord()
+    await spawnScout()
+
+    await exitAndSettle()
+
+    expect(unreported().map(row => row.kind)).toEqual(['message'])
+  })
+
+  it('tells the human with a plain notice that leaves the queue after the notice TTL (CC-1182)', async () => {
+    await spawnScout('human')
+    await exitAndSettle()
+    const queued = () => core.events.humanQueue().filter(item => item.meta.event === 'unreported-exit')
+    expect(unreported().map(row => row.kind)).toEqual(['notice'])
+    expect(queued()).toHaveLength(1)
+
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + resolveNoticeTtlMs() + 1 })
+    try {
+      expect(queued()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reads last action unknown when the transcript is missing', async () => {
