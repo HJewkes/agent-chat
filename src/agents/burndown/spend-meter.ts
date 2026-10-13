@@ -1,7 +1,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { meterSpend, type SavedMeters, type SpendMeter } from '../seats/stops.js'
-import { dayStart, spendSince, type SevenDaySample } from './budget-gate.js'
+import { daySpend, dayStart, spendSince, type SevenDaySample } from './budget-gate.js'
 import type { SeatState } from './ledger.js'
 import { expandHome } from './seat-dispatch.js'
 
@@ -76,7 +76,7 @@ export function seatSpend(input: SeatSpendInput): SeatSpend {
     runStart: meters.runStart,
     source: useMeters ? 'meters' : 'ledger',
     run: current === undefined ? undefined : spendSince(history, meters.runStart, current),
-    day: current === undefined ? undefined : spendSince(history, dayStart(now), current),
+    day: current === undefined ? undefined : daySpend(history, dayStart(now), current)?.points,
     dayMeter: meters.day,
   }
 }

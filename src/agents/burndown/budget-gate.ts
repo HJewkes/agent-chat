@@ -214,6 +214,29 @@ export function spendSince(
   return pointsSpent([...known.filter(s => s.at >= baseline.at), now])
 }
 
+/**
+ * CC-1190: day spend since `start`, from the reading at or before it, else from the day's first earlier
+ * reading after it, which undercounts the spend before that reading. `from` is the baseline used;
+ * undefined with no earlier reading at all.
+ */
+export function daySpend(
+  history: readonly SevenDaySample[],
+  start: number,
+  now: SevenDaySample,
+): { points: number; from: number } | undefined {
+  const atStart = spendSince(history, start, now)
+  if (atStart !== undefined) return { points: atStart, from: start }
+  const today = [...history].filter(s => s.at > start && s.at < now.at).sort((a, b) => a.at - b.at)
+  const first = today[0]
+  if (first === undefined) return undefined
+  return { points: pointsSpent([...today, now]), from: first.at }
+}
+
+const clockTime = (ms: number): string => {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 /** The latest 07:00 local at or before `now`, where the charter's spend day starts. */
 export function dayStart(now: Date): number {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DAY_START_HOUR)
@@ -313,14 +336,18 @@ function dayStop(input: PoolGateInput, now: SevenDaySample, spend: SpendCaps): S
   ].filter((c): c is { cap: number; whose: string; lever: string; source: string } => c.cap !== undefined)
   if (caps.length === 0) return undefined
   // seven_day points are pool-wide, so both caps count spend by the owner and sibling seats too.
-  const day = spendSince(input.history, dayStart(input.ctx.now), now)
-  if (day === undefined)
+  const start = dayStart(input.ctx.now)
+  const spent = daySpend(input.history, start, now)
+  if (spent === undefined)
     return unknownSpend('no seven_day reading at or before 07:00, so day spend unknown', seatSource)
+  const day = spent.points
   const hit = caps.filter(c => day >= c.cap).sort((a, b) => a.cap - b.cap)[0]
+  const since =
+    spent.from === start ? '07:00' : `${clockTime(spent.from)} (first sample; none at or before 07:00)`
   return hit === undefined
     ? undefined
     : {
-        text: `day spend ${day} points since 07:00 at or above the ${hit.whose} ${hit.cap}`,
+        text: `day spend ${day} points since ${since} at or above the ${hit.whose} ${hit.cap}`,
         gate: capGate(hit.lever, hit.cap, day, hit.source),
       }
 }
