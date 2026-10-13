@@ -169,6 +169,7 @@ async function tick(
 
 const IN_LOCK_STEPS = [
   'read-ledger',
+  'brief-approve',
   'roster',
   'world',
   'seats',
