@@ -99,9 +99,9 @@ function addServiceCommands(program: Command): void {
   svc
     .command('stop')
     .description(
-      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered; --hold keeps auto-starts off for a while',
+      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn; --hold keeps auto-starts off for a while',
     )
-    .option('--force', 'stop even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'stop even if a mid-spawn agent would be lost')
     .option(
       '--hold <seconds>',
       `refuse broker starts, including auto-starts, for this long (at most ${MAX_HOLD_SECONDS})`,
@@ -118,10 +118,10 @@ function addServiceCommands(program: Command): void {
   svc
     .command('restart')
     .description(
-      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn or an ask is unanswered',
+      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn',
     )
     .option('-p, --port <port>', 'bind this port instead of the recorded one', port)
-    .option('--force', 'restart even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
   svc
