@@ -35,6 +35,10 @@ import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { addHostCommands } from './verbs/host.js'
 import { addMachineCommands } from './verbs/machine.js'
+import { portFilesClaimsVerb, portInboxSinceVerb, portRosterVerb } from './verbs/port-reads.js'
+import { portQueueVerb } from './verbs/port-queue.js'
+import { portSendVerb } from './verbs/port-send.js'
+import { portResumeVerb, portRetireVerb, portSpawnVerb } from './verbs/port-agent.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
@@ -399,6 +403,20 @@ function addHiddenCommands(program: Command): void {
   program.command('send <to> <text...>', { hidden: true }).action(debug.send)
 }
 
+function addPortCommands(program: Command): void {
+  const port = program
+    .command('port')
+    .description('JSON envelope ports for the dispatch factory; none of them starts a broker')
+  addVerb(port, portRosterVerb)
+  addVerb(port, portInboxSinceVerb)
+  addVerb(port, portQueueVerb)
+  addVerb(port, portFilesClaimsVerb)
+  addVerb(port, portSpawnVerb)
+  addVerb(port, portRetireVerb)
+  addVerb(port, portResumeVerb)
+  addVerb(port, portSendVerb)
+}
+
 export function buildProgram(): Command {
   const program = new Command('agent-chat')
     .description('cross-session messaging for Claude Code')
@@ -414,6 +432,7 @@ export function buildProgram(): Command {
   addMirrorCommands(program)
   addBurndownCommands(program)
   addSeatsCommands(program)
+  addPortCommands(program)
   addMachineCommands(program)
   addHostCommands(program)
   addDebugCommands(program)
