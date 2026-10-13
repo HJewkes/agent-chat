@@ -43,9 +43,11 @@ import {
   type ScoringDefaults,
   type ShareCapRefusals,
 } from './score.js'
-import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
-import { sliceRepo, type PathExists } from './slice-repo.js'
+import { healSlice, sliceRepo, taskRepo, type PathExists } from './slice-repo.js'
+import type { Action } from './advance.js'
+import { parkUpdate } from './stall-code.js'
 import { seedSlices, type PlanReader, type SliceRuns } from './seed-slices.js'
 import { OFF_PLAN_REASON } from './off-plan.js'
 import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
@@ -115,6 +117,8 @@ export interface SeatPlanInputs {
   shares?: ProjectShares
   /** CC-1158: admits a queued slice onto its one unmerged parent; absent, none stacks. */
   stack?: PlanInputs['stack']
+  /** CC-1228: the other seats this tick runs; set, a queued slice the seat cannot place moves to one that can or parks `no-repo`. Absent, it is refused each tick. */
+  peers?: readonly SeatDispatch[]
 }
 
 export interface SeatBriefGate {
@@ -134,6 +138,8 @@ export interface SeatPlan {
   notes: string[]
   /** `queued` slice claims seeded from seat-written plans in place of a planner (CC-927). */
   seeds: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices the seat cannot place. */
+  heals: Action[]
   priorPicks: Record<string, number>
   shareCapped: ShareCapRefusals
   /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
@@ -233,6 +239,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     refusals: [],
     notes: [],
     seeds: [],
+    heals: [],
     priorPicks,
     shareCapped: refused,
     ...(placement !== undefined && { placement }),
@@ -254,7 +261,8 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  const slices = readySlices(inputs.ledger, walk.held, inputs.stack).filter(c => c.seat === inputs.seat.seat)
+  const own = readySlices(inputs.ledger, walk.held, inputs.stack).filter(c => c.seat === inputs.seat.seat)
+  const slices = healSlices(own, walk, plan)
   // Rows are counted first: a taken slice claims its task, which would hide that task's row.
   const rowDepth = supplyDepth(order, walk)
   const depth = rowDepth + takeSlices(slices, walk, take)
@@ -309,7 +317,7 @@ function supplyDepth(order: readonly DispatchRow[], walk: Walk): number {
     const { seat } = walk.inputs
     if (taskRefusal(task, seat.grants, walk.claimed, walk.held) !== undefined) return false
     if (briefRefusal(task, check) !== undefined) return false
-    const repo = repoForTask(seat, row.initiative, task.tags)
+    const repo = taskRepo(seat, row.initiative, task.tags)
     if (repo === undefined || ROUTES[row.route] === undefined) return false
     const work = { taskId: row.id, tags: task.tags, owns: [] }
     return walk.inputs.collision?.(repo, work, landedRepos(seat)) === undefined
@@ -357,7 +365,7 @@ function planBelowFloor(
 function briefFor(refusal: Refusal, reason: string, walk: Walk): Taken | Refused | undefined {
   const { seat, tasks } = walk.inputs
   const task = tasks.get(refusal.initiative)?.find(t => t.id === refusal.task)
-  const repo = task === undefined ? undefined : repoForTask(seat, refusal.initiative, task.tags)
+  const repo = task === undefined ? undefined : taskRepo(seat, refusal.initiative, task.tags)
   if (task === undefined || repo === undefined) return undefined
   const work = { initiative: refusal.initiative, task: task.id, profile: PLANNER_PROFILE }
   const dispatch = { ...dispatchFor(work, repo, reason, walk), briefer: true }
@@ -668,7 +676,7 @@ function consider(
   const route = ROUTES[row.route]
   if (route === undefined)
     return { kind: 'untriaged', reason: "route triage; triage stays with the seat's Discovery" }
-  const repo = repoForTask(seat, row.initiative, task.tags)
+  const repo = taskRepo(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const seeded = seedFromPlan(row, task, route.role, walk)
@@ -773,6 +781,37 @@ function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): und
   walk.notes.push(`would-plan ${row.initiative} ${row.id} (seat ${seat}): no plan at ${plan.path}`)
   return undefined
 }
+
+/**
+ * CC-1228: a slice the seat cannot place is rehomed or parked in the ledger and leaves this pass; a parked one waits
+ * silently, so its refusal no longer repeats. A slice the seat can place now clears an earlier park.
+ */
+function healSlices(slices: readonly Claim[], walk: Walk, plan: Pick<SeatPlan, 'heals'>): Claim[] {
+  const { seat, tasks, peers, pathExists } = walk.inputs
+  if (peers === undefined) return [...slices]
+  return slices.filter(claim => {
+    const tags = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)?.tags ?? []
+    const heal = healSlice(seat, peers, claim.initiative, tags, claim, pathExists)
+    const key = { taskId: claim.taskId, slice: claim.slice }
+    if (heal === undefined) return true
+    if (heal.kind === 'unpark') {
+      plan.heals.push({ kind: 'update', key, patch: UNPARKED })
+      return true
+    }
+    if (heal.kind === 'rehome') {
+      const patch = { seat: heal.to, ...UNPARKED }
+      plan.heals.push({ kind: 'update', key, patch })
+      walk.notes.push(`rehomed ${claim.taskId} slice ${claim.slice ?? '?'} from ${seat.seat} to ${heal.to}`)
+    }
+    if (heal.kind === 'park') {
+      plan.heals.push(parkUpdate(key, 'no-repo', heal.reason))
+      walk.notes.push(`parked ${claim.taskId} slice ${claim.slice ?? '?'} no-repo: ${heal.reason}`)
+    }
+    return false
+  })
+}
+
+const UNPARKED = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
 
 /** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */
 function considerSlice(claim: Claim, walk: Walk): Taken | Refused {

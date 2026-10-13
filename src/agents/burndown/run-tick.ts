@@ -86,6 +86,7 @@ import {
   type SkippedSeat,
 } from './seat-tick.js'
 import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
@@ -717,6 +718,7 @@ async function decide(
     ...advanced.steps,
     ...resyncSteps(resynced),
     ...seedSteps(planned.seeds),
+    ...healSteps(planned.heals),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
@@ -781,6 +783,8 @@ interface Planned {
   notes: string[]
   /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
   seeds?: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices their seat cannot place. */
+  heals?: Action[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
