@@ -140,10 +140,11 @@ import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
-import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftMode } from '../config.js'
+import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -815,6 +816,10 @@ export interface SupervisorOptions {
   processProbe?: ProcessProbe
   /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
+  /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
+  profileBaseline?: ProfileBaseline
+  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
+  profileDriftMode?: () => ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -1017,6 +1022,8 @@ export class Supervisor implements TeleportHost {
   private readonly hosts: LauncherSite | undefined
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
+  private readonly profileBaseline: ProfileBaseline
+  private readonly profileDriftMode: () => ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1046,6 +1053,8 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1769,6 +1778,23 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /**
+   * CC-1094: a profile file rewritten since broker start may have lost its denies to the agent that
+   * rewrote it. An agent spawn of it is flagged or, under `refuse`, refused; a human spawn accepts it.
+   */
+  private checkProfileDrift(req: SpawnRequest, profile: AgentProfile): AgentProfile | { refusal: string } {
+    const drift = this.profileBaseline.drift(profile.name)
+    if (drift === undefined) return profile
+    const human = req.requestedBy === HUMAN
+    const refused = !human && this.profileDriftMode() === 'refuse'
+    logEvent('profile_drift', { name: req.name, profile: profile.name, by: req.requestedBy, drift, refused })
+    if (refused)
+      return { refusal: `${drift}; profileDrift=refuse holds agent spawns of it until a human spawns it` }
+    if (human) this.profileBaseline.accept(profile.name)
+    const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
+    return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
+  }
+
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
   private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
@@ -1959,8 +1985,10 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = loadProfile(req.profile)
-    if ('error' in profile) return this.refuse(req, profile.error)
+    const loaded = loadProfile(req.profile)
+    if ('error' in loaded) return this.refuse(req, loaded.error)
+    const profile = this.checkProfileDrift(req, loaded)
+    if ('refusal' in profile) return this.refuse(req, profile.refusal)
     const lineage: Lineage = {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
