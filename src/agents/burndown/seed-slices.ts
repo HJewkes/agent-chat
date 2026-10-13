@@ -128,9 +128,24 @@ export function sliceRunsIn(records: readonly DispatchRecord[], taskId: string, 
 }
 
 /**
+ * Why a task whose slices were seeded before is not seeded again. A held slice claim reads "already queued";
+ * CC-1256: released slices with none held name the slices and how to reseed.
+ */
+function alreadySeeded(taskId: string, planPath: string, ledger: Ledger): string | undefined {
+  const held = ledger.claims.some(c => c.taskId === taskId && c.slice !== undefined && c.phase !== 'done')
+  if (held) return `${planPath}: slices of ${taskId} were already queued; close the task or replan it`
+  const released = ledger.slicesReleased?.[taskId]
+  if (released === undefined) return undefined
+  return (
+    `${planPath}: slices ${released.join(', ')} of ${taskId} were released and none is held; ` +
+    `close the task, or run agent-chat burndown release ${taskId} to reseed`
+  )
+}
+
+/**
  * The task's slices from its plan file, why the plan blocks it, or undefined when there is no
  * plan file and the planner runs as before. A task whose slices were queued, or had one released, is not seeded
- * twice; CC-1233: slices whose agents ran outside the ledger are adopted by their branch PRs, and seeding waits a
+ * twice (`alreadySeeded`); CC-1233: slices whose agents ran outside the ledger are adopted by their branch PRs, and seeding waits a
  * tick while any of those PRs could not be read.
  */
 export function seedSlices(
@@ -149,13 +164,8 @@ export function seedSlices(
       now,
       ranOffLedger?.(parent.taskId, parent.initiative) ?? [],
     )
-  const seeded =
-    ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined && c.phase !== 'done') ||
-    ledger.slicesReleased?.[parent.taskId] !== undefined
-  if (seeded)
-    return {
-      blocked: `${plan.path}: slices of ${parent.taskId} were already queued; close the task or replan it`,
-    }
+  const seeded = alreadySeeded(parent.taskId, plan.path, ledger)
+  if (seeded !== undefined) return { blocked: seeded }
   const read = readSlices(plan.text)
   if (read.slices === undefined) return { blocked: `${plan.path}: ${read.problems.join('; ')}` }
   const runs = ranOffLedger?.(parent.taskId, parent.initiative) ?? []

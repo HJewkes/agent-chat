@@ -230,9 +230,9 @@ describe('burndown release --slice and link (CC-978)', () => {
     const ledger = readLedger(file())
     const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
     expect(ledger.claims).toEqual([])
-    expect(seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)).toEqual({
-      blocked: expect.stringContaining('already queued'),
-    })
+    const result = seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)
+    expect(result).toEqual({ blocked: expect.stringContaining('released') })
+    expect(result).toEqual({ blocked: expect.not.stringContaining('already queued') })
   })
 
   it('lets a whole-task release re-seed again', async () => {
