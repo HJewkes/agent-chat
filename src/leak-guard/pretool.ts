@@ -276,8 +276,11 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
   let chdir = false
   let fed: Fed | undefined
   let fedFrom = 0
+  // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
+  let fedCommand = false
   const assigns: string[] = []
   const done = (): Unwrapped => {
+    if (fedCommand && at >= rest.length) return { reason: REASONS.hiddenCommand }
     const reason = fedEnvReason(assigns.slice(fedFrom), fed)
     return reason === undefined ? { words: rest.slice(at), chdir, assigns, fed } : { reason }
   }
@@ -298,6 +301,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       const after = dropXargsOptions(rest, at + 1, splits)
       if (after === undefined) return { reason: REASONS.xargsOption }
       at = after.at
+      fedCommand ||= at < rest.length
       fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
       fedFrom = assigns.length
     } else if (name === 'env') {
@@ -1693,6 +1697,7 @@ function checkSimple(
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
+  if (unwrapped.fed !== undefined && words[0]?.includes(XARGS_ARGS)) return REASONS.hiddenCommand
   const marked = words.slice(1)
   const head = resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {

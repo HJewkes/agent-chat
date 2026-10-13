@@ -173,6 +173,31 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     },
   )
 
+  it.each([
+    `printf '%s\\n' git push --no-verify origin HEAD:x | xargs nice`,
+    'xargs env',
+    'xargs command',
+    'xargs timeout 5',
+    'xargs timeout',
+    'xargs nohup',
+    'xargs nice -n 5',
+    'xargs env FOO=1',
+    'xargs xargs',
+    'xargs -n1 nice',
+  ])('denies an xargs whose wrappers leave the command to its input: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.hiddenCommand)
+  })
+
+  it.each([
+    `printf '%s\\n' '-Sgit push --no-verify origin HEAD:x' | xargs -I% env %`,
+    'xargs -I% %',
+    'xargs -I% nice %',
+    'xargs -I% %it push origin HEAD:x',
+    'xargs -I"$R" ls',
+  ])('denies an xargs whose command word is filled from its input: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.hiddenCommand)
+  })
+
   it('denies a config write through the replace word', () => {
     expect(checkCommand('xargs -I % git config %', ctx)).toBeDefined()
   })
@@ -199,6 +224,10 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs gh pr view',
     'ls | xargs grep x',
     'echo a | xargs',
+    'xargs nice ls',
+    'xargs -I% echo %',
+    'xargs -I% nice ls %',
+    'xargs timeout 5 ls',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })
