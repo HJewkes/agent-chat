@@ -755,10 +755,7 @@ function seedFromPlan(
   const seeding = seedSlices(parent, plan, ledger, budget.ctx.now, sliceRuns)
   if (seeding === undefined) return undefined
   if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
-  if ('merged' in seeding) {
-    walk.claimed.add(row.id)
-    return { seeds: [] }
-  }
+  if ('merged' in seeding) return { seeds: [] }
   walk.claimed.add(row.id)
   const slices = seeding.claims.map(c => c.slice).join(', ')
   walk.notes.push(

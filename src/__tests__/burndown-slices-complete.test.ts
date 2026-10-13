@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { seedSlices } from '../agents/burndown/seed-slices.js'
-import { mergedParentFlags, mergedFlagKey, slicesMerged } from '../agents/burndown/slices-complete.js'
+import { deliverSeatEvents, type SeatSender } from '../agents/burndown/seat-deliver.js'
+import { mergedEvents, slicesMerged } from '../agents/burndown/slices-complete.js'
 
-/** CC-1049: a parent whose every slice merged is flagged once, not refused plan-blocked each tick. */
+/** CC-1049: a parent whose every slice merged is told to its seat once, not refused plan-blocked each tick. */
 
 const NOW = new Date('2026-10-13T12:00:00.000Z')
 const PLAN = { path: '/tmp/aw/alpha/sources/A-1-plan.md', text: '```burndown-slices\n```' }
@@ -79,31 +80,61 @@ describe('seedSlices on a parent whose slices all merged', () => {
   })
 })
 
-describe('mergedParentFlags', () => {
+describe('merged parents told to their seat', () => {
   const tasks = new Map([['alpha', [task('A-1'), task('A-2'), task('A-3', { status: 'done' })]]])
+  const held = (c: Claim): Claim => ({ ...c, seat: 'seat-a' })
   const ledger = ledgerOf([
-    slice('a', 'done'),
-    slice('b', 'done'),
-    slice('a', 'done', 'A-2'),
-    slice('b', 'queued', 'A-2'),
-    slice('a', 'done', 'A-3'),
+    held(slice('a', 'done')),
+    held(slice('b', 'done')),
+    held(slice('a', 'done', 'A-2')),
+    held(slice('b', 'queued', 'A-2')),
+    held(slice('a', 'done', 'A-3')),
   ])
 
-  it('flags an open parent whose slices all merged, once', () => {
-    const flags = mergedParentFlags(ledger, tasks)
-
-    expect(flags).toEqual([
-      {
-        key: mergedFlagKey('alpha', 'A-1'),
-        task: 'A-1',
-        text: 'alpha A-1: slices merged: close or replan',
+  function tick(start: Ledger) {
+    const sent: string[] = []
+    const open = async (): Promise<SeatSender> => ({
+      send: async (to, text) => {
+        sent.push(`${to}: ${text.split('\n').slice(1).join('|')}`)
+        return { ok: true }
       },
-    ])
+      notify: async () => ({ ok: true }),
+      close: () => {},
+    })
+    const merged = mergedEvents(start, tasks)
+    const diff = { seats: ['seat-a'], before: start, after: start, spawns: [], merged }
+    const done = deliverSeatEvents(diff, { open, log: () => {}, now: NOW })
+    return done.then(r => ({ ...r, sent }))
+  }
+
+  it('sends the seat one line naming an open parent whose slices all merged, and files no human item', async () => {
+    const first = await tick(ledger)
+
+    expect(first.sent).toEqual(['seat-a: slices merged: close or replan: A-1 (1 new)'])
+    expect(first.ledger.humanFiled).toBeUndefined()
+    expect(first.ledger.slicesFlagged).toEqual(['alpha/A-1'])
   })
 
-  it('flags nothing once the flag is filed', () => {
-    const filed = { ...ledger, humanFiled: [mergedFlagKey('alpha', 'A-1')] }
+  it('tells nothing on the next tick', async () => {
+    const first = await tick(ledger)
 
-    expect(mergedParentFlags(filed, tasks)).toEqual([])
+    const second = await tick(first.ledger)
+
+    expect(second.sent).toEqual([])
+  })
+
+  it('batches several parents into one line and names only the first fifteen', async () => {
+    const ids = Array.from({ length: 17 }, (_, i) => `B-${i + 1}`)
+    const many = ledgerOf(ids.map(id => held(slice('a', 'done', id))))
+    const open = new Map([['alpha', ids.map(id => task(id))]])
+
+    const events = mergedEvents(many, open)['seat-a'] ?? []
+
+    expect(events).toHaveLength(1)
+    expect(events[0]?.flagged).toHaveLength(15)
+  })
+
+  it('does not tell a seat of a parent whose claims hold no seat', () => {
+    expect(mergedEvents(ledgerOf([slice('a', 'done')]), tasks)).toEqual({})
   })
 })

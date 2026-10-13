@@ -70,9 +70,9 @@ import {
 import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
-import { describeSeatEvents, deliverSeatEvents, type HumanItem, type OpenSender } from './seat-deliver.js'
-import { mergedParentFlags } from './slices-complete.js'
-import type { SpawnResult } from './seat-events.js'
+import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
+import { mergedEvents } from './slices-complete.js'
+import type { SeatEvents, SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
   diskSeatDeps,
@@ -285,7 +285,7 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
       steps.flatMap(s => (s.kind === 'ledger' ? s.actions : [])),
       now,
     )
-    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [] }
+    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [], merged: decided.merged }
     return {
       lines: [
         `burndown tick at ${now.toISOString()} (dry run)`,
@@ -377,7 +377,8 @@ async function actOn(
     before: ledger,
     after: leaks.ledger,
     spawns,
-    human: [...leaks.human, ...merged],
+    human: leaks.human,
+    merged,
   }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
@@ -582,8 +583,8 @@ interface Decided {
   summary: SummaryPlan
   /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
   humanStepSeats: LoadedSeat[]
-  /** CC-1049: open tasks whose slices all merged, flagged once to the owner queue. */
-  merged: HumanItem[]
+  /** CC-1049: open tasks whose slices all merged, told once to the seat that holds them. */
+  merged: SeatEvents
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -741,7 +742,7 @@ async function decide(
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     humanStepSeats: seats?.loaded ?? [],
-    merged: seats === undefined ? [] : mergedParentFlags(ledger, dispatchCtx.tasks),
+    merged: seats === undefined ? {} : mergedEvents(ledger, dispatchCtx.tasks),
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
