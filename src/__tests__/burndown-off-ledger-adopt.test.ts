@@ -7,6 +7,7 @@ import type { RunResult } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import {
   branchPrReader,
+  firstDispatches,
   initiativePrReaders,
   offLedgerRunsIn,
   seatPrReader,
@@ -281,6 +282,29 @@ describe('a slice that ran outside the ledger with no PR at seeding, whose PR op
     expect(JSON.stringify(result)).not.toContain('no open or merged PR yet')
   })
 
+  it('keeps an undated run pending at seeding though its reused branch holds a merged PR', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+    const merged = () => ({ kind: 'merged' as const, pr: 'demo/repo#3', head: 'h3' })
+
+    const result = seedSlices(PARENT, { path: PLAN_PATH, text: twoSlices }, done, NOW, () =>
+      offLedgerRunsIn({}, ['sx-dm-1-b'], merged),
+    )
+
+    expect(result).toMatchObject({ pending: ['b'], claims: [] })
+  })
+
+  it('keeps an undated run held on resync from an all-done ledger though its branch holds a merged PR', () => {
+    const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
+    const undated: PlanReader = (i, t, seat) => ({ ...readPlan(i, t, seat), ranSince: {} })
+    const { prOf, asked } = github({ kind: 'merged', pr: 'demo/repo#3', head: 'h3' })
+
+    const out = resyncQueuedSlices(done, undated, NOW, prOf)
+
+    expect(out.actions).toEqual([])
+    expect(asked.filter(a => a.includes(' since '))).toEqual([])
+    expect(pendingOffLedger(done, undated)('demo', 'DM-1')).toEqual(['b'])
+  })
+
   it('adopts on resync from an all-done ledger, then tells the seat the task merged', () => {
     const done: Ledger = { version: 1, claims: [claim('a', 'done')] }
     const tasks = new Map([['demo', [{ id: 'DM-1', status: 'open' } as never]]])
@@ -385,7 +409,7 @@ describe('branchPrReader', () => {
     ] as DispatchRecord[]
 
     const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () =>
-      offLedgerRunsIn(records, ['sx-dm-1-c'], prOf),
+      offLedgerRunsIn(firstDispatches(records, ['sx-dm-1-c']), ['sx-dm-1-c'], prOf),
     )
 
     expect(result).toMatchObject({

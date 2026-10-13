@@ -8,6 +8,7 @@ import {
   type Claim,
   type Ledger,
 } from '../../agents/burndown/ledger.js'
+import { pendingOffLedger, type PlanReader } from '../../agents/burndown/seed-slices.js'
 import type { Report } from '../command.js'
 
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -32,13 +33,15 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
 /**
  * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
  * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
- * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`.
+ * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`. `readPlan` lets it release an
+ * unclaimed slice an off-ledger run holds (CC-1240).
  */
 export async function releaseTask(
   task: string,
   retire: RetireCall,
   now = new Date(),
   slice?: string,
+  readPlan?: PlanReader,
 ): Promise<Report> {
   const file = burndownLedgerPath()
   const locked = await withLedgerLock(file, () => {
@@ -46,7 +49,7 @@ export async function releaseTask(
     const dropped = ledger.claims.filter(
       c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
     )
-    if (dropped.length === 0 && slice !== undefined && unclaimedOfDoneTask(ledger, task, slice)) {
+    if (dropped.length === 0 && slice !== undefined && waitsOnRun(ledger, task, slice, readPlan)) {
       writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
       return { dropped, hold: undefined, unclaimed: true }
     }
@@ -87,16 +90,14 @@ function releaseSlice(ledger: Ledger, claims: Claim[], task: string, slice: stri
 }
 
 /**
- * CC-1240: the slice has no claim, not even a done one, and every slice claim of the task is done. That is a slice
- * whose off-ledger run never opened a PR; releasing it is the only way the task stops waiting on that run.
+ * CC-1240: every slice claim of the task is done, and the plan's slice has no claim but an off-ledger run that
+ * never opened a PR. Releasing it is the only way the task stops waiting on that run. With no plan reader, none is.
  */
-function unclaimedOfDoneTask(ledger: Ledger, task: string, slice: string): boolean {
-  const slices = ledger.claims.filter(c => c.taskId === task && c.slice !== undefined)
-  return (
-    slices.length > 0 &&
-    slices.every(c => c.phase === 'done' && c.slice !== slice) &&
-    !(ledger.slicesReleased?.[task] ?? []).includes(slice)
-  )
+function waitsOnRun(ledger: Ledger, task: string, slice: string, readPlan?: PlanReader): boolean {
+  const claims = ledger.claims.filter(c => c.taskId === task && c.slice !== undefined)
+  const parent = claims[0]
+  if (readPlan === undefined || parent === undefined || claims.some(c => c.phase !== 'done')) return false
+  return pendingOffLedger(ledger, readPlan)(parent.initiative, task).includes(slice)
 }
 
 /** A whole-task release lets the task be seeded again. */

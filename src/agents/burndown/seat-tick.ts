@@ -37,7 +37,12 @@ import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
 import { parseFunds, parsePools, seatInitiatives, seatPools, type FundsMap } from '../seats/charter.js'
 import { run, type Runner } from './exec.js'
-import { initiativePrReaders, offLedgerRunsIn, seatDispatchRecords } from './off-ledger-adopt.js'
+import {
+  firstDispatches,
+  initiativePrReaders,
+  offLedgerRunsIn,
+  seatDispatchRecords,
+} from './off-ledger-adopt.js'
 import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
 import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
@@ -459,8 +464,10 @@ function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } 
     if (records === undefined) return none
     const prOf = initiativePrReaders(seat.dispatch)
     return {
-      sliceRuns: (taskId, initiative) =>
-        offLedgerRunsIn(records, sliceRunsIn(records, taskId, prefix), prOf(initiative)),
+      sliceRuns: (taskId, initiative) => {
+        const agents = sliceRunsIn(records, taskId, prefix)
+        return offLedgerRunsIn(firstDispatches(records, agents), agents, prOf(initiative))
+      },
     }
   } catch (err) {
     return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }

@@ -66,23 +66,35 @@ export function adoptOffLedger(
 }
 
 /** The agent's earliest timestamped dispatch in the seat's log, if any. */
-export const firstDispatch = (records: readonly DispatchRecord[], agent: string): string | undefined =>
+const firstDispatch = (records: readonly DispatchRecord[], agent: string): string | undefined =>
   records
     .filter(r => r.agent === agent && r.ts !== null)
     .map(r => r.ts as string)
     .sort()[0]
 
-/** The task's slice agents in the seat's dispatch log, each with its first dispatch and its branch PR. */
-export function offLedgerRunsIn(
+/** Each agent's first dispatch in the seat's log; an agent whose rows carry no time is left out. */
+export function firstDispatches(
   records: readonly DispatchRecord[],
+  agents: readonly string[],
+): Record<string, string> {
+  const since = agents.map((agent): [string, string | undefined] => [agent, firstDispatch(records, agent)])
+  return Object.fromEntries(since.filter((e): e is [string, string] => e[1] !== undefined))
+}
+
+/**
+ * The task's slice agents, each with its branch PR counted from its first dispatch. The one place seeding and the
+ * drift resync read a run's PR (CC-1240). A run with no dispatch time has no PR: a reused name shares its branch
+ * with earlier runs, so any merge on it could be an older run's work. Such a slice waits on a release.
+ */
+export function offLedgerRunsIn(
+  ranSince: Readonly<Record<string, string>>,
   agents: readonly string[],
   prOf: BranchPr,
 ): OffLedgerRun[] {
-  return agents.map(agent => ({
-    agent,
-    slice: agent.slice(-1),
-    pr: prOf(agent, firstDispatch(records, agent) ?? new Date(0).toISOString()),
-  }))
+  return agents.map(agent => {
+    const since = ranSince[agent]
+    return { agent, slice: agent.slice(-1), pr: since === undefined ? { kind: 'none' } : prOf(agent, since) }
+  })
 }
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits.

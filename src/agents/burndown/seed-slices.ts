@@ -7,7 +7,8 @@ import type { Claim, Ledger } from './ledger.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
 import {
   adoptOffLedger,
-  firstDispatch,
+  firstDispatches,
+  offLedgerRunsIn,
   seatDispatchRecords,
   type OffLedgerRun,
   type SeatPrReader,
@@ -52,14 +53,6 @@ const planText = (file: string): string | undefined => {
   } catch {
     return undefined
   }
-}
-
-function firstDispatches(
-  records: readonly DispatchRecord[],
-  agents: readonly string[],
-): Record<string, string> {
-  const since = agents.map((agent): [string, string | undefined] => [agent, firstDispatch(records, agent)])
-  return Object.fromEntries(since.filter((e): e is [string, string] => e[1] !== undefined))
 }
 
 function seatRuns(autonomyRoot: string, taskId: string, { seat, prefix }: SeatRef): Partial<PlanFile> {
@@ -309,13 +302,8 @@ function adoptedRuns(
 ): { claims: Claim[]; notes: string[] } {
   const reader = parent.seat === undefined ? undefined : prOf?.(parent.seat, parent.initiative)
   if (reader === undefined || plan.runsUnread !== undefined) return { claims: [], notes: [] }
-  const agents = plan.ranOffLedger ?? []
-  const runs = held.flatMap((s): OffLedgerRun[] => {
-    const agent = agents.find(a => a.slice(-1) === s.n)
-    if (agent === undefined) return []
-    const since = plan.ranSince?.[agent]
-    return since === undefined ? [] : [{ agent, slice: s.n, pr: reader(agent, since) }]
-  })
+  const agents = (plan.ranOffLedger ?? []).filter(a => held.some(s => s.n === a.slice(-1)))
+  const runs = offLedgerRunsIn(plan.ranSince ?? {}, agents, reader)
   const adoptable = runs.filter(r => r.pr?.kind === 'open' || r.pr?.kind === 'merged')
   const queued = sliceClaims(
     parent,
