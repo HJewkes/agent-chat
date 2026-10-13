@@ -306,6 +306,8 @@ const Ledger = z.object({
    * dropped slice no longer gates the slices that depend on it. A whole-task release clears the entry.
    */
   slicesReleased: z.record(z.string(), z.array(z.string())).optional(),
+  /** Tasks whose merged slices were told to their seat (CC-1049), as `<initiative>/<id>`, so each is told once. */
+  slicesFlagged: z.array(z.string()).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */

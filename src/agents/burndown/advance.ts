@@ -58,6 +58,8 @@ export interface Observation {
    * silent exit's adopted PR adds its own files, and an unreadable PR read reads as unreadable.
    */
   owned?: { outside: string[]; adjudicated?: Adjudication } | 'unreadable'
+  /** CC-1232: the plan's owns for a stalled outside-owns slice, which `owned` was read against; a clear keeps them. */
+  planOwns?: string[]
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
@@ -223,7 +225,8 @@ const UNSTALLED: ClaimPatch = { stalledReason: undefined, stalledClass: undefine
  */
 function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.owned === undefined || obs.owned === 'unreadable') return []
-  const moveOn: Resume = (c, o) => [update(c, UNSTALLED), ...advanceClaim({ ...c, ...UNSTALLED }, o, now)]
+  const cleared: ClaimPatch = obs.planOwns === undefined ? UNSTALLED : { ...UNSTALLED, owns: obs.planOwns }
+  const moveOn: Resume = (c, o) => [update(c, cleared), ...advanceClaim({ ...c, ...cleared }, o, now)]
   const held = fenced(claim, obs, moveOn)
   if (held === undefined) return moveOn(claim, obs) ?? []
   const [restall] = held

@@ -22,6 +22,7 @@ export const EVENT_KINDS = [
   'released',
   'brake',
   'stale',
+  'slices-merged',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -34,6 +35,8 @@ export interface SeatEvent {
   code?: StallCode
   /** On a brake event: the braked claims' stalls it stands for, told and journaled with it but given no line (CC-829). */
   covers?: SeatEvent[]
+  /** On a slices-merged event: the `<initiative>/<id>` keys it flags, recorded on the ledger once told (CC-1049). */
+  flagged?: string[]
 }
 
 /** One spawn the tick sent; only a delivered spawn counts as a dispatch. */
@@ -200,7 +203,12 @@ export function foldBraked(events: SeatEvents, before: Ledger, after: Ledger): S
 }
 
 /** Events for claims with a seat whose held `notified` lacks that kind, less a stall told with these facts; a claim without a seat yields none. */
-export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
+export function seatEvents(
+  before: Ledger,
+  after: Ledger,
+  spawnResults: readonly SpawnResult[],
+  merged: SeatEvents = {},
+): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
@@ -212,6 +220,7 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   for (const [seat, event] of brakeEvents(before, after)) (out[seat] ??= []).push(event)
+  for (const [seat, events] of Object.entries(merged)) (out[seat] ??= []).push(...events)
   const made = releasesSince(before, after)
   const due = releasesDue(after).filter(d => !made.some(r => claimKey(r) === claimKey(d)))
   for (const r of [...made, ...due]) {
@@ -259,6 +268,8 @@ export function markReleaseDue(ledger: Ledger, events: readonly SeatEvent[], due
 }
 
 const line = (e: SeatEvent): string => {
+  if (e.kind === 'slices-merged')
+    return `slices merged: close or replan: ${e.taskId} (${e.flagged?.length ?? 0} new)`
   const task = e.slice === undefined ? e.taskId : `${e.taskId}#${e.slice}`
   return `${e.kind} ${task}${e.detail === undefined ? '' : `: ${e.detail}`}`
 }
@@ -288,4 +299,11 @@ export function renderSeatEvents(seat: string, events: readonly SeatEvent[], now
     used += text.length + 1
   }
   return [header, ...lines].join('\n')
+}
+
+/** Records the tasks a delivered slices-merged event flagged, so the seat hears of each once (CC-1049). */
+export function markFlagged(ledger: Ledger, delivered: readonly SeatEvent[]): Ledger {
+  const keys = delivered.flatMap(e => e.flagged ?? [])
+  if (keys.length === 0) return ledger
+  return { ...ledger, slicesFlagged: [...new Set([...(ledger.slicesFlagged ?? []), ...keys])] }
 }

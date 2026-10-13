@@ -201,7 +201,8 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
     const result = plan({ ...ON, ledger, readPlan: reader(planText(SLICES)) })
 
     expect(result.seeds).toEqual([])
-    expect(result.refusals.map(r => r.kind)).toEqual(['plan-blocked'])
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([])
   })
 
   it('reads no plan and dispatches the planner when the gate is off or shadow', () => {

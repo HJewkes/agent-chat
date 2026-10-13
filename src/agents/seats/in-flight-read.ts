@@ -6,8 +6,8 @@ import {
   parseShepherdRows,
   shepherdTarget,
   targetRef,
-} from '../burndown/shepherd.js'
-import { run, type Runner } from '../burndown/exec.js'
+} from '../../shepherd-client.js'
+import { run, type Runner } from '../../exec.js'
 import { readLedger, type Claim } from '../burndown/ledger.js'
 import { openEvents } from './io.js'
 import { reportHead, reportPr } from './retire-outcome.js'

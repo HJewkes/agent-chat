@@ -31,6 +31,7 @@ import {
 import { readyFloorFor } from './dispatch-stats.js'
 import { scoreAll, type ScoreRow } from './score.js'
 import { readScoredTasks } from './score-source.js'
+import type { Action } from './advance.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
@@ -333,6 +334,8 @@ export interface SeatsPlan {
   notes: string[]
   /** Slice claims seeded from seat-written plans (CC-927), for the tick to add to the ledger. */
   seeds: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices their seat cannot place. */
+  heals: Action[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -356,7 +359,13 @@ export interface Taken {
   charged: readonly string[]
 }
 
-export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
+export function planLoaded(
+  seat: LoadedSeat,
+  deps: SeatPlanDeps,
+  root: string,
+  taken: Taken,
+  peers?: readonly SeatDispatch[],
+) {
   const { charter, seats, defaults, hardStops } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
@@ -406,6 +415,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     sliceRuns: runs.sliceRuns,
     offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
+    ...(peers === undefined ? {} : { peers }),
     ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
   if (prior.note !== undefined) planned.notes.push(prior.note)
@@ -615,6 +625,10 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
 export const localDate = (now: Date): string =>
   [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(n => String(n).padStart(2, '0')).join('-')
 
+/** CC-1228: the other seats this tick runs, where a slice its seat cannot place may go. */
+const peersOf = (seats: readonly LoadedSeat[], seat: LoadedSeat): SeatDispatch[] =>
+  seats.filter(s => s !== seat).map(s => s.dispatch)
+
 /** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
   const result: SeatsPlan = {
@@ -626,6 +640,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
     outcomes: [],
     notes: [],
     seeds: [],
+    heals: [],
   }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
@@ -633,12 +648,19 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
       // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
       const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
-      const { planned, tasks, skipped, plan } = planLoaded(seat, { ...deps, ledger }, root, taken)
+      const { planned, tasks, skipped, plan } = planLoaded(
+        seat,
+        { ...deps, ledger },
+        root,
+        taken,
+        peersOf(seats, seat),
+      )
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
       result.notes.push(...planned.notes)
       result.seeds.push(...planned.seeds)
+      result.heals.push(...planned.heals)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals, roles } = planned
