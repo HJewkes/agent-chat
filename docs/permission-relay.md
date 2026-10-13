@@ -328,6 +328,14 @@ in `agent-chat permission-hook` (CC-694 slices b to e), with the approved rule a
 opt-in switch. Rerun the live test after each Claude Code bump: if the literal-rule arm
 starts writing the file, the hook self-grant is no longer needed.
 
+The hook command carries a launch pin: `--self-grant-skills <root>` and
+`--self-grant-common-dir <dir>`, git's common dir for the root at launch. On every call the
+hook rechecks that the root is still its own real path and that git still resolves the
+pinned common dir, so a root swapped for a symlink after launch asks the owner (CC-1200).
+A hook command without both flags, such as one armed before the upgrade, asks the owner
+too. So does a legitimate common-dir change such as a moved main repo, until the agent is
+resumed and its settings file is rewritten.
+
 ## An approval row is session-relative — never compare rows across sessions
 
 The broker log records _that a session prompted_, which depends on that session's
