@@ -85,7 +85,7 @@ describe('repo headroom line', () => {
 describe('reviewer pool headroom (CC-1040)', () => {
   const rows = [
     stateRow(swept('held', 'agent-chat/rv-o-r-1')),
-    stateRow(swept('held', 'agent-chat/tc-cc-1-reviewer')),
+    stateRow(swept('held', 'agent-chat/seat-a-reviewer')),
     stateRow(swept('held', 'agent-chat/impl-1')),
   ]
 
