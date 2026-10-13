@@ -215,16 +215,15 @@ const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo', '.api-ex
 /** Tool caches that sit at any depth as single files. */
 const REGENERABLE_FILES = ['.eslintcache']
 
-/** Only at the top: re-attach copies `.claude` from the repository root, and codewatch rebuilds its index in `.codewatch` there; a nested dir so named may hold anything. */
-const TOP_LEVEL_REGENERABLE_DIRS = ['.claude', '.codewatch']
-
-/** `.tsbuildinfo` applies to files only: a directory so named may hold anything. */
+/**
+ * `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything.
+ * `.codewatch` is never regenerable: it holds paid triage verdicts and a hand-written check.json that re-indexing does not rebuild.
+ */
 const isRegenerable = (entry: string): boolean => {
   const segments = entry.split('/').filter(Boolean)
   if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
   if (!entry.endsWith('/') && REGENERABLE_FILES.includes(segments.at(-1) ?? '')) return true
-  if (TOP_LEVEL_REGENERABLE_DIRS.includes(segments[0] ?? '')) return true
-  return segments.some(segment => REGENERABLE_DIRS.includes(segment))
+  return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
 }
 
 /** `--directory` collapses a wholly ignored directory into one entry; list its files so a nested build output is judged alone. */
@@ -253,7 +252,7 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   if (unregenerable.length === 0) return undefined
   return (
     `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo and a top-level ${TOP_LEVEL_REGENERABLE_DIRS.join(', ')}`
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo and a top-level .claude`
   )
 }
 
