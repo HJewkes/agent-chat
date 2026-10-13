@@ -7,6 +7,7 @@ import { briefGateOf } from '../agents/burndown/seat-tick.js'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
 import type { Initiative, Task } from '../agents/burndown/eligibility.js'
+import { binaryGate } from '../agents/burndown/gate-reading.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
@@ -421,6 +422,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 5,
       agentsReason: 'free',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 5, ours: 0, totalCeiling: 7, oursCeiling: 5 }),
     }
 
@@ -435,6 +437,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 0,
       agentsReason: '3 of maxAgents 3',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 0, ours: 0, totalCeiling: 10, oursCeiling: 5 }),
     }
 
