@@ -25,6 +25,12 @@ export interface DecidedEntry {
   basis: string
   precedent: string
   state: DecisionState
+  /** How to undo it, from the decided row's meta; absent on rows written without one. */
+  reversible?: string
+  /** The decider's confidence, 0..1, when the decided row carries one (TP-709). */
+  confidence?: number
+  /** Ids of the decider principles the answer rests on, when the decided row carries them (TP-709). */
+  principleIds?: string[]
 }
 
 export interface ClassReversal {

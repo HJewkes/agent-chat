@@ -42,8 +42,18 @@ describe('seatSpend', () => {
       { at: RUN_SINCE, sevenDay: 25 },
       { at: at(14), sevenDay: 40 },
     ])
-    expect(result).toMatchObject({ source: 'ledger', run: 17 })
-    expect(result.day).toBeUndefined()
+    expect(result).toMatchObject({ source: 'ledger', run: 17, day: 17 })
+  })
+
+  it("counts the day from the day's first ledger sample when none is at or before 07:00 (CC-1190)", () => {
+    const result = spend(
+      [
+        { at: at(8), sevenDay: 20 },
+        { at: RUN_SINCE, sevenDay: 22 },
+      ],
+      { sevenDay: 25 },
+    )
+    expect(result).toMatchObject({ source: 'ledger', run: 3, day: 5 })
   })
 
   it('falls back to the meters when the ledger samples start after the run start', () => {
