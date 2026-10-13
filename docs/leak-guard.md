@@ -369,6 +369,7 @@ an expansion or xargs input among those words denies (CC-1209).
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
 | `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
+| `git -c` or `--config-env` on `safe.directory` or `init.templateDir`, a `git config` write or section rename to either, `git init` or `clone --template=<dir>` (any prefix), or `git --exec-path=<dir>` (below)                                 | `git init --template=/t r` copies an unread hook or alias   |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
@@ -904,6 +905,23 @@ variable stay allowed. Known false deny: a bare `ENV` word on a line that reache
 `echo ENV; git status`, denies the way `LESS` does. The agents' pre-push hook runs under
 `/bin/sh -p`, which ignores `BASH_ENV` and `ENV`; the rule is about a chained repo hook and about a
 `bash -c` or `zsh -c` that would hide git or gh from the guard.
+
+**git options and config writes.** `safe.directory` makes git trust the config and hooks of a
+repository another user owns, and git reads it only from protected config: system, global and the
+command line. `init.templateDir`, like `GIT_TEMPLATE_DIR`, makes `git init` and `git clone` copy a
+directory's hooks and `config` into the new repository, so a template can set `core.hooksPath` or a
+`!` alias. The guard denies with its `safeDirectory` or `templateDir` reason a git leading `-c` or
+`--config-env` on either key (any case), and a `git config` call (`trust-inputs.ts`, legacy or
+`set` grammar, after any `-C` or other leading option) that writes either key or renames a section
+into `safe` or `init`. `git init` and `git clone` deny `templateDir` for `--template=<dir>` or
+`--template <dir>` under any unique prefix (`--templ`), wherever the option sits before `--`.
+`git --exec-path=<dir>` denies `gitExecPath`. Reads and unsets
+(`git config --get-all safe.directory`, `git config --global --unset safe.directory /x`), an
+empty `--template=`, `--no-template` and a bare `git --exec-path`, which only prints, stay allowed.
+An option the guard cannot match, such as the ambiguous `git clone --t=/t`, is left to git, which
+refuses it. Known gap: an unread word such as `"$DIR"` in `git clone https://github.com/o/r "$DIR"`
+may hold `--template=<dir>` from the agent's environment; like any value set before this line, the
+guard does not read it.
 
 ### A gh alias (TP-2371)
 

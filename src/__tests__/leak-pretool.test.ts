@@ -2577,7 +2577,6 @@ describe('a config key the guard does not list as inert (TP-636)', () => {
     'git -c protocol.file.allow=always submodule update',
     'git -c protocol.allow=never fetch origin',
     'git -c advice.detachedHead=false checkout x',
-    'git -c safe.directory="$PWD" status',
     'git -c color.diff.meta="$C" log',
     'git -c commit.gpgSign=false commit -m x',
     'git -c remote.o.url="$U" fetch o',

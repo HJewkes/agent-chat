@@ -98,11 +98,12 @@ export const INIT_OPTIONS = optionSpec(
  */
 export function templateOption(sub: 'init' | 'clone', args: SubArgs): boolean | 'option' {
   const parsed = parseOptions(args, sub === 'init' ? INIT_OPTIONS : CLONE_OPTIONS)
-  if (parsed === undefined || parsed.positionals.slice(0, parsed.beforeDashDash).includes(undefined))
-    return 'option'
-  if (isSet(parsed, 'help') || !parsed.options.has('template')) return false
+  if (parsed === undefined) return 'option'
   const value = parsed.options.get('template')
-  return value === undefined || (typeof value === 'string' && value !== '')
+  const set =
+    parsed.options.has('template') && (value === undefined || (typeof value === 'string' && value !== ''))
+  if (set && !isSet(parsed, 'help')) return true
+  return parsed.positionals.slice(0, parsed.beforeDashDash).includes(undefined) ? 'option' : false
 }
 
 /** Whether a git leading option sets the exec path; bare `--exec-path` only prints it. */
