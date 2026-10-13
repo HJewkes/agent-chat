@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { HostDirectory, LAUNCH_TIMEOUT_MS, PROBE_TIMEOUT_MS } from '../broker/host-directory.js'
+import { ensureBrokerKey, helloProof } from '../broker/launcher-key.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
@@ -74,11 +75,34 @@ function wire(): Wire {
 const frame = <T extends ServerMessage['t']>(w: Wire, t: T): Extract<ServerMessage, { t: T }> | undefined =>
   w.frames.find(f => f.t === t) as Extract<ServerMessage, { t: T }> | undefined
 
+function challenge(launcher: Wire): string {
+  launcher.send({ t: 'host_challenge' })
+  const nonce = launcher.frames.filter(f => f.t === 'host_challenge_result').at(-1)?.nonce
+  if (nonce === undefined) throw new Error('the broker sent no host_challenge_result')
+  return nonce
+}
+
+/** A hello for the Mac carrying `proof`; the launcher's helper below proves with the broker's own key. */
+function helloAsMac(launcher: Wire, proof?: string): void {
+  launcher.send({
+    t: 'host_hello',
+    host: MAC,
+    platform: 'darwin',
+    surfaces: ['iterm-tab', 'headless'],
+    ...(proof === undefined ? {} : { proof }),
+  })
+}
+
 function macLauncher(): Wire {
   const launcher = wire()
-  launcher.send({ t: 'host_hello', host: MAC, platform: 'darwin', surfaces: ['iterm-tab', 'headless'] })
+  helloAsMac(launcher, helloProof(ensureBrokerKey(MAC), MAC, challenge(launcher)))
   return launcher
 }
+
+const configureMac = (): void =>
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { mac: MAC } }))
+
+const lastHello = (w: Wire) => w.frames.filter(f => f.t === 'host_hello_result').at(-1)
 
 function localPredecessor(): Wire {
   const predecessor = wire()
@@ -149,10 +173,16 @@ describe('announcing a host launcher', () => {
     expect(frame(after, 'hosts_result')?.hosts).toEqual([])
   })
 
-  it('refuses a second connection claiming a held machine, and the real launcher keeps it', async () => {
+  it('refuses a second connection claiming a held machine even with a valid proof, and the real launcher keeps it', async () => {
     const launcher = macLauncher()
     const impostor = wire()
-    impostor.send({ t: 'host_hello', host: MAC.toUpperCase(), platform: 'darwin', surfaces: ['iterm-tab'] })
+    impostor.send({
+      t: 'host_hello',
+      host: MAC.toUpperCase(),
+      platform: 'darwin',
+      surfaces: ['iterm-tab'],
+      proof: helloProof(ensureBrokerKey(MAC), MAC, challenge(impostor)),
+    })
 
     expect(frame(impostor, 'host_hello_result')).toMatchObject({
       ok: false,
@@ -173,6 +203,88 @@ describe('announcing a host launcher', () => {
 
     expect(frame(launcher, 'host_hello_result')?.reason).toContain('not one of the configured machines')
     expect(listed()).toEqual([])
+  })
+
+  it('refuses an impostor in the gap after the real launcher disconnects, with no proof or a wrong-key one', () => {
+    configureMac()
+    const launcher = macLauncher()
+    expect(lastHello(launcher)?.ok).toBe(true)
+    launcher.conn.emit('close')
+
+    const impostor = wire()
+    challenge(impostor)
+    helloAsMac(impostor)
+    expect(lastHello(impostor)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('no valid launcher proof'),
+    })
+    helloAsMac(impostor, helloProof('f'.repeat(64), MAC, challenge(impostor)))
+    expect(lastHello(impostor)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('no valid launcher proof'),
+    })
+    expect(listed()).toEqual([])
+    expect(JSON.stringify(core.events.agentEvents())).not.toContain(ensureBrokerKey(MAC))
+  })
+
+  it('refuses a hello replayed on a new connection with the earlier nonce and proof', () => {
+    configureMac()
+    const launcher = wire()
+    const proof = helloProof(ensureBrokerKey(MAC), MAC, challenge(launcher))
+    helloAsMac(launcher, proof)
+    launcher.conn.emit('close')
+
+    const replayer = wire()
+    helloAsMac(replayer, proof)
+    challenge(replayer)
+    helloAsMac(replayer, proof)
+    expect(replayer.frames.filter(f => f.t === 'host_hello_result').map(f => f.ok)).toEqual([false, false])
+    expect(listed()).toEqual([])
+  })
+
+  it('takes a nonce once, so a second hello on the same connection needs a new challenge', () => {
+    const launcher = wire()
+    const proof = helloProof(ensureBrokerKey(MAC), MAC, challenge(launcher))
+    helloAsMac(launcher, proof)
+    helloAsMac(launcher, proof)
+
+    expect(launcher.frames.filter(f => f.t === 'host_hello_result').map(f => f.ok)).toEqual([true, false])
+    expect(lastHello(launcher)?.reason).toContain('send host_challenge first')
+  })
+
+  it('refuses a configured machine the broker has no key for, naming host key-new', () => {
+    configureMac()
+    const launcher = wire()
+    helloAsMac(launcher, helloProof('a'.repeat(64), MAC, challenge(launcher)))
+
+    expect(lastHello(launcher)).toMatchObject({ ok: false, reason: expect.stringContaining('host key-new') })
+    expect(listed()).toEqual([])
+  })
+
+  it('refuses a configured machine’s hello sent without a prior challenge', () => {
+    configureMac()
+    const key = ensureBrokerKey(MAC)
+    const launcher = wire()
+    helloAsMac(launcher, helloProof(key, MAC, ''))
+
+    expect(lastHello(launcher)?.reason).toContain('send host_challenge first')
+    expect(listed()).toEqual([])
+  })
+
+  it('accepts a configured machine’s hello with a valid proof', () => {
+    configureMac()
+    const launcher = macLauncher()
+
+    expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
+    expect(listed()).toEqual([MAC])
+  })
+
+  it('refuses a challenge from a registered session connection', () => {
+    const session = localPredecessor()
+    session.send({ t: 'host_challenge' })
+
+    expect(frame(session, 'host_challenge_result')).toBeUndefined()
+    expect(frame(session, 'host_hello_result')?.ok).toBe(false)
   })
 
   it('refuses a register on a launcher connection', () => {
