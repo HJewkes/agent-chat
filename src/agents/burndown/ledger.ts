@@ -246,6 +246,8 @@ const LadderRecord = z.object({
   /** The branch the last release kept, the stall code that sent it there, and the seat to tell. */
   branch: z.string().optional(),
   code: z.enum(STALL_CODES).optional(),
+  /** CC-1158 d: why a release that is no stall (`stack-broken`) happened; it replaces any earlier `code`. */
+  reason: z.string().optional(),
   seat: z.string().optional(),
   /** Set when the seat's `released` notice failed to send, and cleared once one lands (CC-829). */
   releaseDue: z.literal(true).optional(),
