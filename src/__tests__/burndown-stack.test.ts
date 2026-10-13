@@ -3,6 +3,7 @@ import { readySlices, type Claim, type Ledger } from '../agents/burndown/ledger.
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import { STACK_MAX_DEPTH, stackable, stackReady } from '../agents/burndown/stack.js'
 import { TickConfigSchema } from '../agents/burndown/source.js'
+import { holdClass, parseShepherdRows } from '../shepherd-client.js'
 
 /** CC-1158 slice a: a queued slice stacks on its one unmerged parent once that parent is a D3 base. */
 
@@ -52,7 +53,35 @@ describe('stackable', () => {
   })
 
   it.each([
-    ['held', row(10, { held: { reason: 'owner hold' } })],
+    [
+      'g10-adversary',
+      row(10, { phase: 'awaiting-approval', held: { reason: 'g10-adversary: word "gate"; T-1' } }),
+    ],
+    ['g10-review', row(10, { held: { reason: 'g10-review: diff over the line limit' } })],
+    ['no-reviewer', row(10, { phase: 'merging', held: { reason: 'no-reviewer: none free; T-9' } })],
+  ])('admits a CI-green parent held %s, waiting on review', (_label, parentRow) => {
+    const ledger = ledgerOf(PARENT, CHILD)
+
+    const on = stackable(CHILD, 'a', ledger, [parentRow])
+
+    expect(on?.pr).toBe(prUrl(10))
+  })
+
+  it.each([
+    ['owner-held', row(10, { phase: 'awaiting-approval', held: { reason: 'owner: wait for a decision' } })],
+    ['park-held', row(10, { held: { reason: 'park: agent parked; T-9' } })],
+    ['held stalled', row(10, { held: { reason: 'stalled: no fixer; T-9' } })],
+    ['held in an unknown class', row(10, { held: { reason: 'later-class: something new' } })],
+    ['held with no class', row(10, { held: { reason: 'owner hold' } })],
+    [
+      'held for review but still fixing',
+      row(10, { phase: 'fixing', held: { reason: 'g10-review: big diff' } }),
+    ],
+    ['stack-frozen', row(10, { stackFrozen: true })],
+    [
+      'held for review and stack-frozen',
+      row(10, { held: { reason: 'g10-review: big diff' }, stackFrozen: true }),
+    ],
     ['first CI pending', row(10, { phase: 'ci' })],
     ['fixing a red CI', row(10, { phase: 'fixing' })],
     ['stalled', row(10, { stalled: { reason: 'no fixer' } })],
@@ -60,6 +89,10 @@ describe('stackable', () => {
     const ledger = ledgerOf(PARENT, CHILD)
 
     expect(stackable(CHILD, 'a', ledger, [parentRow])).toBeUndefined()
+  })
+
+  it('admits a parent whose Shepherd reports stackFrozen false', () => {
+    expect(stackable(CHILD, 'a', ledgerOf(PARENT, CHILD), [row(10, { stackFrozen: false })])).toBeDefined()
   })
 
   it('refuses a parent Shepherd has not registered', () => {
@@ -94,6 +127,32 @@ describe('stackable', () => {
     const ledger = ledgerOf(grandparent, parent, child)
 
     expect(stackable(child, 'b', ledger, [row(11)])?.pr).toBe(prUrl(11))
+  })
+})
+
+describe('holdClass', () => {
+  it('is the reason text before the first colon', () => {
+    expect(holdClass({ held: { reason: 'g10-review: a: b' } })).toBe('g10-review')
+  })
+
+  it('is undefined for an unheld run or a reason with no colon', () => {
+    expect(holdClass({ held: null })).toBeUndefined()
+    expect(holdClass({})).toBeUndefined()
+    expect(holdClass({ held: { reason: 'owner hold' } })).toBeUndefined()
+  })
+})
+
+describe('parseShepherdRows stackFrozen', () => {
+  it('reads stackFrozen when Shepherd sends it and leaves it absent on an older Shepherd', () => {
+    const base = { repo: REPO, runId: 'r', phase: 'review', headSha: null, stalled: null }
+    const json = JSON.stringify([
+      { ...base, pr: 1, stackFrozen: true },
+      { ...base, pr: 2 },
+    ])
+
+    const rows = parseShepherdRows(json, () => undefined)
+
+    expect(rows?.map(r => r.stackFrozen)).toEqual([true, undefined])
   })
 })
 
