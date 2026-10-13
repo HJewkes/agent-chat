@@ -2211,6 +2211,30 @@ describe('burndown tick settles proposed briefs through one decider gate (CC-123
     expect(lines.join('\n')).toContain('auto: slice lint passed')
   })
 
+  it('records no decider send when the tick fails before the wake, so the next tick still sends it', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')] })
+    const down: Fake = {
+      ...fake,
+      broker: {
+        ...fake.broker,
+        roster: async () => {
+          throw new Error('synthetic roster failure')
+        },
+      },
+    }
+
+    await tickWithEdits(down)
+    const afterFailure = tagsOf('DM-2')
+    await tickWithEdits(fake)
+
+    expect(afterFailure.some(t => t.startsWith('brief:decider='))).toBe(false)
+    expect(fake.resumes).toHaveLength(1)
+    expect(fake.resumes[0]?.message).toContain('DM-2')
+    expect(tagsOf('DM-2')).toContain(`brief:decider=${briefVersion(PROPOSED, UNLINTED)}`)
+  })
+
   it('holds a failing brief for the next tick when the decider is at its hourly cap', async () => {
     deciderSetup('id-decider', { decider: { name: 'decider', maxPerHour: 1 } })
     writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo([10]) } })
