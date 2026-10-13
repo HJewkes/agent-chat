@@ -413,23 +413,40 @@ export function profileNameRefusal(name: string): string | undefined {
  * variant of this function that takes a profile object.
  */
 export function loadProfile(name: string, dir: string = profilesDir()): AgentProfile | { error: string } {
+  return loadProfileSource(name, dir).profile
+}
+
+/** `loadProfile`, plus the exact file text it parsed (absent for a builtin), so a check hashes what loaded. */
+export function loadProfileSource(
+  name: string,
+  dir: string = profilesDir(),
+): { profile: AgentProfile | { error: string }; source?: string } {
   const refused = profileNameRefusal(name)
-  if (refused !== undefined) return { error: refused }
+  if (refused !== undefined) return { profile: { error: refused } }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
+    let source: string
+    try {
+      source = fs.readFileSync(file, 'utf8')
+    } catch (err) {
+      return { profile: { error: `${name}: cannot read ${file} (${(err as Error).message})` } }
+    }
     let parsed: unknown
     try {
-      parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+      parsed = JSON.parse(source)
     } catch (err) {
-      return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
+      return { profile: { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }, source }
     }
     const profile = parseProfile(name, parsed, file)
-    return 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir))
+    return {
+      profile: 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir)),
+      source,
+    }
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
-  if (builtin) return withWorkerConfigDenies(builtin, path.dirname(dir))
-  return { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` }
+  if (builtin) return { profile: withWorkerConfigDenies(builtin, path.dirname(dir)) }
+  return { profile: { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` } }
 }
 
 const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']

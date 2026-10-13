@@ -28,6 +28,7 @@ import {
   PROCESS_GUARD_MODES,
   type ProcessGuardMode,
 } from './agents/process-guard.js'
+import { PROFILE_DRIFT_MODES, type ProfileDriftMode } from './agents/profile-baseline.js'
 
 export interface AgentChatConfig {
   /** Path to a coordinator document; its `state_dir` relocates the autonomy root. */
@@ -68,6 +69,7 @@ export interface AgentChatConfig {
   autoPark?: unknown
   machineHoldOperators?: unknown
   dispatchOverlapExempt?: unknown
+  profileDrift?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -218,6 +220,19 @@ export function resolvePoolPickMode(): PoolPickMode {
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
   return 'shadow'
+}
+
+/**
+ * CC-1094: what an agent spawn of a profile whose file changed since broker start gets: a warning (`flag`,
+ * the default, since the owner edits profiles at runtime) or a refusal (`refuse`). Read per spawn.
+ */
+export function resolveProfileDriftMode(): ProfileDriftMode {
+  const value = readConfig().profileDrift
+  if (value === undefined) return 'flag'
+  const mode = PROFILE_DRIFT_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'profileDrift', value, fallback: 'flag' })
+  return 'flag'
 }
 
 /**
