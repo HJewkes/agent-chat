@@ -35,6 +35,10 @@ describe('a git push word that is or may become --no-verify (CC-1285)', () => {
     'git push origin $*',
     'git push -o "$X" origin main',
     'git push origin "$D" "$V"',
+    'git push origin "--no-$X$Y"',
+    'git push origin "$B:$C"',
+    'git push -o "$X" -- origin main',
+    'git push --repo "$R" -- origin main',
   ])('cannot read %s', line => {
     expect(riskOf(line)).toBe('unreadable')
   })
@@ -56,8 +60,31 @@ describe('a git push word that is or may become --no-verify (CC-1285)', () => {
     expect(riskOf('git push origin $B', { 2: 'main' })).toBeUndefined()
   })
 
+  it.each([
+    'git push -o -- --no-verify origin main',
+    'git push --push-option -- --no-verify origin main',
+    'git push --push-opt -- --no-verify origin main',
+    'git push -uo -- --no-verify origin main',
+    'git push --repo -- --no-verify origin main',
+    'git push --recurse-submodules -- --no-verify origin main',
+    'git push --receive-pack -- --no-verify origin main',
+    'git push --exec -- --no-verify origin main',
+    'git push --push-option=-- --no-verify origin main',
+    'git push -o-- --no-verify origin main',
+    'git push - --no-verify origin main',
+  ])('flags the flag after an option that takes -- as its value: %s', line => {
+    expect(riskOf(line)).toBe('flag')
+  })
+
+  it.each(['git push -o --no-verify origin main', 'git push --push-option --no-verify origin main'])(
+    'allows the flag as an option value: %s',
+    line => {
+      expect(riskOf(line)).toBeUndefined()
+    },
+  )
+
   it('reads only the words after push', () => {
-    expect(riskOf('git -c x.y=--no-verify push origin main')).toBeUndefined()
+    expect(riskOf('git -C "$D" push origin main')).toBeUndefined()
   })
 
   it('keeps the guard spellings of the flag', () => {
