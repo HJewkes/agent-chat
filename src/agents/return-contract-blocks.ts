@@ -9,8 +9,11 @@ import type { ReturnContract } from './types.js'
  * contract for every later spawn. A change here needs a build and a restart.
  */
 
-/** A block is paid for on every contracted spawn, so it stays a paragraph. */
-export const MAX_BLOCK_CHARS = 2450
+/**
+ * A block is paid for on every contracted spawn, so it stays a paragraph. CC-1184 raised it from 2450
+ * for `REVIEW_TREE_RULE`: concurrent reviewers each installing base, old and head trees filled /tmp.
+ */
+export const MAX_BLOCK_CHARS = 2600
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
@@ -126,6 +129,12 @@ export const FOLLOW_UPS_RULE =
   'Optional, after blocking items: `Follow-ups:` then `- <title> | <done_when> | low|medium|high` per ' +
   'task; never blocks MERGE.'
 
+/** CC-1184: three installed trees per review exhausted /tmp inodes on Linux; one install is enough. */
+export const REVIEW_TREE_RULE =
+  'One installed checkout per review, under `$TMPDIR/<your name>`: read base/old code via ' +
+  '`git show <rev>:<path>`, `git diff` or `git worktree add --detach <dir> <rev>` without installing; ' +
+  'never `git stash` (refs/stash is shared). Remove trees at verdict.'
+
 const REVIEWER = [
   `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
   'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
@@ -144,7 +153,7 @@ const REVIEWER = [
   '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
   '`Earlier findings: none found`.',
   PROBE_SANDBOX_RULE,
-  'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  REVIEW_TREE_RULE,
   MUTANT_RULE,
   SHIM_RULE,
   REVIEWER_BODY_FILE_RULE,
