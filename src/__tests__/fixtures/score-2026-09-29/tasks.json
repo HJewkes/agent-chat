@@ -102,7 +102,9 @@
    "estimate": 3,
    "done_when": "The service deploys to production and answers a probe.",
    "status": "open",
-   "tags": [],
+   "tags": [
+    "ops:deploy"
+   ],
    "notes": "",
    "created": "2026-09-01",
    "updated": "2026-09-20",
@@ -117,7 +119,9 @@
    "estimate": 2,
    "done_when": "A release tag push follows the fix.",
    "status": "open",
-   "tags": [],
+   "tags": [
+    "ops:publish"
+   ],
    "notes": "",
    "created": "2026-09-01",
    "updated": "2026-09-20",

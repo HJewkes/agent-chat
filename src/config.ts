@@ -20,6 +20,8 @@ import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 import { SEAT_SPAWN_MODES, type SeatSpawnMode } from './agents/seats/spawn-gate.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
+import { roleOfProfile } from './agents/seats/agent-rows.js'
+import { PACE_CONTROLLER_MODES, type PaceControllerMode } from './agents/seats/pace.js'
 import {
   DEFAULT_PROCESS_KILL_BYTES,
   MIN_PROCESS_KILL_BYTES,
@@ -32,12 +34,14 @@ export interface AgentChatConfig {
   coordinatorConfig?: unknown
   agentSlots?: unknown
   worktreeBudget?: unknown
+  reviewerWorktreeBudget?: unknown
   worktreeOwnerReserve?: unknown
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
   orphanReapKill?: unknown
   poolPick?: unknown
+  paceController?: unknown
   seatSpawnGate?: unknown
   seatStewards?: unknown
   permissionHookTimeoutSeconds?: unknown
@@ -56,10 +60,14 @@ export interface AgentChatConfig {
   coordinatorGrantableTools?: unknown
   poolProbe?: unknown
   tmuxSurfaceOnLinux?: unknown
+  machines?: unknown
   processKillBytes?: unknown
   processGuardMode?: unknown
   gitShellAliases?: unknown
   autoRetire?: unknown
+  autoPark?: unknown
+  machineHoldOperators?: unknown
+  dispatchOverlapExempt?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -110,6 +118,11 @@ export function resolveAgentSlots(): number {
 /** Per-repository worktree cap (`worktreeBudget`), read per spawn so a new value needs no broker restart. */
 export function resolveWorktreeBudget(fallback: number): number {
   return positiveIntegerFrom('worktreeBudget', fallback)
+}
+
+/** CC-1040: per-repository cap on reviewer worktrees (`reviewerWorktreeBudget`), a pool apart from `worktreeBudget`. */
+export function resolveReviewerWorktreeBudget(fallback: number): number {
+  return positiveIntegerFrom('reviewerWorktreeBudget', fallback)
 }
 
 export const DEFAULT_WORKTREE_OWNER_RESERVE = 2
@@ -176,6 +189,25 @@ export function resolveTmuxOnLinux(): boolean {
 }
 
 /**
+ * CC-951: teleport destination aliases, alias → hostname, so `to: "mac"` names a machine. Empty unless
+ * `machines` is an object of non-empty strings; any bad entry drops the whole map rather than half of it.
+ */
+export function resolveMachines(): Record<string, string> {
+  const value = readConfig().machines
+  if (value === undefined) return {}
+  const isHost = (host: unknown): host is string => typeof host === 'string' && host.trim() !== ''
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isHost)
+  )
+    return value as Record<string, string>
+  logInvalidOnce({ key: 'machines', value, fallback: {} })
+  return {}
+}
+
+/**
  * CC-606: whether the broker's pool pick for an unpinned seat spawn is only recorded (`shadow`, the default)
  * or also billed (`enforce`); `off` skips it. From `config.json`'s `poolPick`, read per spawn.
  */
@@ -185,6 +217,19 @@ export function resolvePoolPickMode(): PoolPickMode {
   const mode = POOL_PICK_MODES.find(known => known === value)
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
+  return 'shadow'
+}
+
+/**
+ * CC-1104: whether the pace controller only logs its verdict beside per_run and per_day (`shadow`, the
+ * default), replaces them (`on`), or is skipped (`off`). From `config.json`'s `paceController`, read per call.
+ */
+export function resolvePaceControllerMode(): PaceControllerMode {
+  const value = readConfig().paceController
+  if (value === undefined) return 'shadow'
+  const mode = PACE_CONTROLLER_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'paceController', value, fallback: 'shadow' })
   return 'shadow'
 }
 
@@ -235,6 +280,19 @@ export function resolveAutoRetireOnReport(spawner: string): boolean {
 }
 
 /**
+ * CC-1039: whether the broker parks a non-reviewer agent's clean, pushed tree when it exits.
+ * `autoPark.onExit` is on by default; `false` turns it off. Read per exit, so a change needs no
+ * broker restart. Anything else is logged and read as on.
+ */
+export function resolveAutoParkOnExit(): boolean {
+  const autoPark = readConfig().autoPark
+  const value = isObject(autoPark) ? autoPark.onExit : autoPark
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  logInvalidOnce({ key: 'autoPark.onExit', value, fallback: true })
+  return true
+}
+
+/**
  * The one durable agent id allowed to send `decided` (autonomy slice 3), from
  * `config.json`'s `decider.agentId`, set once by the human for one durable
  * decider (slice 4f option c); the burndown tick only reads it. Read per frame.
@@ -247,6 +305,21 @@ export function resolveDeciderAgentId(): string | undefined {
   if (typeof agentId === 'string' && agentId !== '') return agentId
   logInvalidOnce({ key: 'decider.agentId', value: agentId, fallback: 'no decider' })
   return undefined
+}
+
+export const DEFAULT_MACHINE_HOLD_OPERATORS: readonly string[] = ['tp-operator']
+
+/**
+ * CC-957: the agents whose machine-wide sends open and lift a chat HOLD, from `machineHoldOperators`,
+ * read per call. Anything but a non-empty list of names is logged and read as the default.
+ */
+export function resolveMachineHoldOperators(): readonly string[] {
+  const value = readConfig().machineHoldOperators
+  if (value === undefined) return DEFAULT_MACHINE_HOLD_OPERATORS
+  const isName = (name: unknown): name is string => typeof name === 'string' && name !== ''
+  if (Array.isArray(value) && value.length > 0 && value.every(isName)) return value
+  logInvalidOnce({ key: 'machineHoldOperators', value, fallback: DEFAULT_MACHINE_HOLD_OPERATORS })
+  return DEFAULT_MACHINE_HOLD_OPERATORS
 }
 
 /** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */
@@ -444,6 +517,8 @@ type HintTable = Record<string, ContextHintPolicy | null>
 /**
  * Absolute tokens, not percent of window: 70% of a 1M window is 700k, far past
  * where the cost of carrying context dominates. Numbers chosen by the owner on 2026-09-21.
+ * CC-290: this table is also the one source of each role's retire threshold
+ * (`retireThresholdK`); the charter's `retire_k` no longer feeds anything.
  */
 export const DEFAULT_CONTEXT_HINTS: { default: ContextHintPolicy; profiles: HintTable } = {
   default: { tokens: 250_000, boundary: 'episode boundary' },
@@ -451,16 +526,18 @@ export const DEFAULT_CONTEXT_HINTS: { default: ContextHintPolicy; profiles: Hint
     implementer: { tokens: 200_000, boundary: 'natural stopping point' },
     'implementer-lite': { tokens: 200_000, boundary: 'natural stopping point' },
     peer: { tokens: 250_000, boundary: 'assignment boundary' },
-    planner: null,
+    planner: { tokens: 250_000, boundary: 'plan section' },
     researcher: null,
     explorer: null,
-    reviewer: null,
+    reviewer: { tokens: 300_000, boundary: 'verdict' },
   },
 }
 
 /**
  * The policy for a session's profile, or null for "never hint". No profile means
  * a human-driven session and gets `default`, as does a profile nobody listed.
+ * A profile with no entry of its own takes the longest built-in key its name
+ * contains, so `bd-implementer` is held to `implementer` (CC-290).
  * Invalid entries in `contextHints` fall back to the built-in value, logged.
  */
 export function resolveContextHintPolicy(profile: string | undefined): ContextHintPolicy | null {
@@ -469,13 +546,33 @@ export function resolveContextHintPolicy(profile: string | undefined): ContextHi
   const profiles = isObject(configured.profiles) ? configured.profiles : {}
   const fallback = policyFrom('default', configured.default, DEFAULT_CONTEXT_HINTS.default)
   if (profile === undefined) return fallback
-  if (Object.hasOwn(profiles, profile)) {
-    const builtIn = DEFAULT_CONTEXT_HINTS.profiles[profile] ?? fallback
-    return profiles[profile] === null ? null : policyFrom(profile, profiles[profile], builtIn)
+  const key = Object.hasOwn(profiles, profile) ? profile : hintKeyOf(profile)
+  if (key === undefined) return fallback
+  if (Object.hasOwn(profiles, key)) {
+    const builtIn = DEFAULT_CONTEXT_HINTS.profiles[key] ?? fallback
+    return profiles[key] === null ? null : policyFrom(key, profiles[key], builtIn)
   }
-  return Object.hasOwn(DEFAULT_CONTEXT_HINTS.profiles, profile)
-    ? (DEFAULT_CONTEXT_HINTS.profiles[profile] ?? null)
-    : fallback
+  return DEFAULT_CONTEXT_HINTS.profiles[key] ?? null
+}
+
+/** The exact built-in key, else the longest built-in key the profile name contains. */
+function hintKeyOf(profile: string): string | undefined {
+  const builtIn = Object.keys(DEFAULT_CONTEXT_HINTS.profiles)
+  if (builtIn.includes(profile)) return profile
+  return builtIn
+    .filter(key => profile.includes(key))
+    .sort((a, b) => b.length - a.length)
+    .at(0)
+}
+
+/**
+ * CC-290: thousands of context tokens past which an agent of this profile is due to
+ * retire. Undefined for a profile naming no role, or one that is never hinted.
+ */
+export function retireThresholdK(profile: string): number | undefined {
+  if (roleOfProfile(profile) === 'other') return undefined
+  const policy = resolveContextHintPolicy(profile)
+  return policy === null ? undefined : Math.round(policy.tokens / 1000)
 }
 
 function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): ContextHintPolicy {
@@ -501,9 +598,13 @@ export interface ParkAdvicePolicy {
 /** 200k is where the CC-135 cold-rebuild cost cells start; keep-warm is deliberately absent. */
 export const DEFAULT_PARK_ADVICE: ParkAdvicePolicy = { tokens: 200_000, leadMinutes: 8, ttlMinutes: 60 }
 
+/** CC-290: these roles now carry a context hint as their retire threshold, but still get no park advice. */
+const NO_PARK_ADVICE_ROLES: ReadonlySet<string> = new Set(['planner', 'reviewer'])
+
 /**
  * Null means never advise: `parkAdvice.enabled` is false, the surface is headless, or the
- * profile is one the context hint never addresses.
+ * profile is one the context hint never addresses, or a
+ * planner or reviewer.
  */
 export function resolveParkAdvicePolicy(
   profile: string | undefined,
@@ -511,6 +612,7 @@ export function resolveParkAdvicePolicy(
 ): ParkAdvicePolicy | null {
   if (surface !== undefined && !isInteractiveSurface(surface as SurfaceName)) return null
   if (resolveContextHintPolicy(profile) === null) return null
+  if (profile !== undefined && NO_PARK_ADVICE_ROLES.has(roleOfProfile(profile))) return null
   const raw = readConfig().parkAdvice
   const configured = isObject(raw) ? raw : {}
   if (configured.enabled === false) return null

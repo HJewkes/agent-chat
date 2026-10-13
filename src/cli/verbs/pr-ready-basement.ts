@@ -19,8 +19,13 @@ export interface BasementTarget {
 
 export type BasementRoute =
   | { kind: 'local'; warning?: string }
-  | { kind: 'deferred'; commands: string[] }
+  | { kind: 'deferred'; runs: DeferredRun[] }
   | { kind: 'remote'; target: BasementTarget }
+
+export interface DeferredRun {
+  script: string
+  command: string
+}
 
 export interface BasementResult {
   script: string
@@ -118,7 +123,10 @@ export async function routeChecks(
       warning: `basement unreachable (probe exit ${probe.code}); running checks locally`,
     }
   if (pushed !== undefined) return { kind: 'remote', target: t }
-  return { kind: 'deferred', commands: scripts.map(script => basementCommandText(t, script)) }
+  return {
+    kind: 'deferred',
+    runs: scripts.map(script => ({ script, command: basementCommandText(t, script) })),
+  }
 }
 
 const INFRA_EXITS: Record<number, string> = {
@@ -148,3 +156,15 @@ export async function runOnBasement(
 }
 
 export const describeExit = (result: BasementResult): string => `${result.script} exit ${result.code}`
+
+/** basement-suite has no run id; the per-run log path in its summary line is unique, so it serves as one. */
+export const runIdOf = (result: BasementResult): string => {
+  const logs = [...result.output.matchAll(/\blog=(\S+)/g)]
+  return logs.at(-1)?.[1] ?? 'run id: unknown'
+}
+
+export const describeRun = (result: BasementResult): string =>
+  `basement ${result.script} exit ${result.code} run ${runIdOf(result)}`
+
+export const describeDeferred = (run: DeferredRun): string =>
+  `deferred ${run.script}: ${run.command}; run id: none (not started)`

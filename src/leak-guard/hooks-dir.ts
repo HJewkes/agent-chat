@@ -6,6 +6,7 @@ import path from 'node:path'
 import { ghShimDir } from '../paths.js'
 import { gitShimDirFor } from './git-shim.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
+import { ownToolDirs, withOwnTools } from './scan-path.js'
 
 /**
  * Client hooks shimmed to chain to the repo's own hook, since overriding the hooks path hides it.
@@ -172,7 +173,7 @@ const absolutePath = (value: string | undefined): string =>
 export const defaultScanInputs = (): ScanInputs => ({
   missingTermsRefuses: MISSING_TERMS_REFUSES,
   home: passwdHome(),
-  path: absolutePath(process.env.PATH),
+  path: withOwnTools(absolutePath(process.env.PATH), ownToolDirs()),
 })
 
 export const termsFileFor = (home: string): string =>

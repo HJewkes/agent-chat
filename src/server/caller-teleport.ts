@@ -3,13 +3,12 @@ import { once } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
-import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
-import { buildLaunchPlan } from '../agents/launch-plan.js'
-import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
-import type { AgentProfile, LaunchPlan } from '../agents/types.js'
+import { writeLaunchFiles } from '../agents/launch-files.js'
+import type { LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
-import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName } from '../protocol.js'
+import { agentDir, cliEntry } from '../paths.js'
+import type { RemoteLaunch, ServerMessage } from '../protocol.js'
+import { buildLaunch, checkLaunch, type BuiltLaunch } from './remote-launch.js'
 
 /**
  * CC-881: the half of a teleport that runs on the caller's host. When the broker is on another
@@ -20,6 +19,10 @@ import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName 
  *
  * CC-913: the report means armed, not launched. The successor reuses the predecessor's pane, which
  * frees only when the predecessor exits, so the launch (`caller-land.ts`) runs after that exit.
+ *
+ * CC-951: successor first. A plan with `endSelf` means the broker launched the successor elsewhere
+ * and it attached, so this ends its parent and writes nothing. A `successorFirst` spec opens a new
+ * surface at once, and this waits for the `endSelf` plan that follows the successor's attach.
  */
 
 /** What this host contributes to the plan: never taken from the broker. */
@@ -52,6 +55,7 @@ function landArgs(local: LocalHost, spec: RemoteLaunch, hostPid: number): string
     `--pid=${hostPid}`,
     `--surface=${spec.surface}`,
     ...anchor,
+    ...(spec.successorFirst === true ? ['--now'] : []),
   ]
 }
 
@@ -91,84 +95,13 @@ export const defaultCallerLaunch = (): CallerLaunchDeps => {
   }
 }
 
-const AGENT_ID = /^[0-9a-f]{8}$/
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const CONTROL = /[\u0000-\u001f\u007f]/
-
-/** A name becomes a pane title and a registry key; it must never steer a path. */
-const badName = (name: string): boolean =>
-  name === '' || name.length > 128 || /[/\\]/.test(name) || name.includes('..') || CONTROL.test(name)
-
-/** Profile values that become argv words: one starting with `-` would be read as a flag. */
-function flagWords(profile: RemoteLaunch['profile']): string[] {
-  return [
-    profile.model,
-    ...profile.allowedTools,
-    ...(profile.disallowedTools ?? []),
-    ...(profile.settingSources ?? []),
-    profile.effort ?? '',
-  ]
-}
-
-/** Why the spec cannot be run here, or undefined when it can. */
-export function checkLaunch(spec: RemoteLaunch): string | undefined {
-  if (!AGENT_ID.test(spec.agentId))
-    return `the successor id ${JSON.stringify(spec.agentId)} is not an agent id`
-  if (!SESSION_ID.test(spec.sessionId)) return 'the successor session id is not a uuid'
-  if (badName(spec.name)) return `the name ${JSON.stringify(spec.name)} is not a valid session name`
-  if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
-  if (flagWords(spec.profile).some(word => word.startsWith('-')))
-    return 'the successor profile has a value that would be read as a flag'
-  return undefined
-}
-
-/** Only these profile fields are read from the broker; env and MCP servers never are. */
-const profileOf = (p: RemoteLaunch['profile']): AgentProfile => ({
-  name: p.name,
-  description: p.description,
-  model: p.model,
-  allowedTools: [...p.allowedTools],
-  ...(p.disallowedTools === undefined ? {} : { disallowedTools: [...p.disallowedTools] }),
-  isolation: p.isolation,
-  surface: p.surface,
-  ...(p.surfaceLifetime === undefined ? {} : { surfaceLifetime: p.surfaceLifetime }),
-  ...(p.role === undefined ? {} : { role: p.role }),
-  ...(p.returnContract === undefined ? {} : { returnContract: p.returnContract }),
-  ...(p.effort === undefined ? {} : { effort: p.effort }),
-  promptPrelude: p.promptPrelude,
-  ...(p.strictMcpConfig === undefined ? {} : { strictMcpConfig: p.strictMcpConfig }),
-  ...(p.settingSources === undefined ? {} : { settingSources: [...p.settingSources] }),
-  ...(p.disableSlashCommands === undefined ? {} : { disableSlashCommands: p.disableSlashCommands }),
-})
-
-/** The plan and MCP config, every path, binary and variable from this host. */
-export function buildCallerLaunch(
-  spec: RemoteLaunch,
-  local: LocalHost,
-): { plan: LaunchPlan; mcpConfig: Record<string, unknown> } {
-  const profile = profileOf(spec.profile)
-  const configDir = local.env.CLAUDE_CONFIG_DIR
-  const plan = buildLaunchPlan({
-    agentId: spec.agentId,
-    sessionId: spec.sessionId,
-    name: spec.name,
-    profile,
-    brief: spec.brief,
+/** The plan and MCP config from this process's own cwd and account; a teleport carries neither. */
+export function buildCallerLaunch(spec: RemoteLaunch, local: LocalHost): BuiltLaunch {
+  return buildLaunch(spec, {
+    cliEntry: local.cliEntry,
     cwd: local.cwd,
-    cwdHoldsUserSettings: cwdHoldsUserSettings(local.cwd, configDir),
-    surface: spec.surface,
-    preamble: spec.preamble,
-    mcpConfigPath: mcpConfigPath(spec.agentId),
-    hookSettingsPath: hookSettingsPath(spec.agentId),
-    ...(spec.tags?.length ? { tags: spec.tags } : {}),
-    ...(spec.subscriptions?.length ? { subscriptions: spec.subscriptions } : {}),
-    agentChatHome: home(),
-    gitHooksDir: gitHooksDir(),
-    ...(configDir ? { configDir } : { configDirUnset: true }),
-    // CC-883: checked again here, so a worker never gets Remote Control whatever the broker sent.
-    ...(spec.remoteControl && profile.role === 'coordinator' ? { remoteControl: true } : {}),
+    configDir: local.env.CLAUDE_CONFIG_DIR || undefined,
   })
-  return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
 }
 
 type Broker = Pick<BrokerClient, 'request'>
@@ -215,16 +148,25 @@ async function armLocally(spec: RemoteLaunch, hostPid: number | undefined, deps:
   return deps.arm(spec, hostPid)
 }
 
+type Plan = Extract<ServerMessage, { t: 'teleport_plan' }>
+
+const awaitPlan = async (broker: Broker): Promise<Plan> =>
+  (await broker.request({ t: 'teleport_plan_wait' }, 'teleport_plan')) as Plan
+
+/** CC-951: the successor attached, so this session's Claude Code ends; anything else leaves it live. */
+function endOnAttach(plan: Plan, hostPid: number | undefined, deps: CallerLaunchDeps): void {
+  if (plan.ok && plan.endSelf === true && hostPid !== undefined) return deps.endParent(hostPid)
+  warn(`did not complete (${plan.reason ?? 'no successor attached'})`)
+}
+
 /** Waits out the countdown for the spec, arms it, and ends `hostPid` only on an accepted report. */
 export async function runCallerTeleport(
   broker: Broker,
   hostPid: number | undefined,
   deps: CallerLaunchDeps,
 ): Promise<void> {
-  const reply = (await broker.request({ t: 'teleport_plan_wait' }, 'teleport_plan')) as Extract<
-    ServerMessage,
-    { t: 'teleport_plan' }
-  >
+  const reply = await awaitPlan(broker)
+  if (reply.ok && reply.endSelf === true) return endOnAttach(reply, hostPid, deps)
   if (!reply.ok || reply.launch === undefined) return
   const spec = reply.launch
   let armed: Armed
@@ -241,8 +183,9 @@ export async function runCallerTeleport(
     return warn(`report not accepted (${ack.reason ?? 'no reason'}); disarmed successor ${spec.agentId}`)
   }
   const token = spec.landToken ?? ''
-  if (armed.go(token)) return deps.endParent(hostPid as number)
-  await helperLost(broker, spec, token, hostPid as number, deps)
+  if (!armed.go(token)) return helperLost(broker, spec, token, hostPid as number, deps)
+  if (spec.successorFirst !== true) return deps.endParent(hostPid as number)
+  endOnAttach(await awaitPlan(broker), hostPid, deps)
 }
 
 /**

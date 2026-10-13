@@ -47,7 +47,17 @@ export const chatEndorse = defineTool({
       `Waiting on your human (msg_id ${res.msgId}). NOTHING has been sent to "${to}" and nothing will ` +
       'be unless they approve it, at which point the broker delivers exactly the text above. Carry ' +
       'on with other work; do not send it yourself in the meantime.' +
-      (command ? `\nTo approve, your human can run:\n${command}` : '')
+      approvalHint(command)
     )
   },
 })
+
+// The MCP context carries no attended signal, so the hint names the condition instead of branching on it.
+function approvalHint(command: string | undefined): string {
+  if (!command) return ''
+  return (
+    '\nIn a session your human is attending: show them the exact text with AskUserQuestion, then ' +
+    'run this command yourself. They approve its permission prompt; do not ask them to type it. ' +
+    `Otherwise your human can run it:\n${command}`
+  )
+}

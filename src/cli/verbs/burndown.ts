@@ -38,6 +38,9 @@ import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
+import { unstallSlice } from './burndown-unstall.js'
+import { changedFiles } from '../../agents/burndown/observe.js'
+import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
 import {
   burndownConfigShowVerb,
   burndownOverrideClearVerb,
@@ -52,6 +55,7 @@ import {
   pauseFromCli,
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
+import { burndownLandedVerb } from './burndown-landed.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -429,6 +433,23 @@ export const burndownLinkVerb = defineVerb({
   run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
 })
 
+export const burndownUnstallVerb = defineVerb({
+  name: 'burndown.unstall',
+  description:
+    "reload an outside-owns slice's owns from its plan and clear the stall in place, keeping its PR and agents",
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: { slice: { long: '--slice', description: 'the stalled slice whose plan owns were fixed' } },
+  },
+  run: ({ task, slice }) =>
+    unstallSlice(task, slice, {
+      plan: diskPlanReader(activeWorkRoot()),
+      changedFiles: cwd => changedFiles(cwd),
+    }),
+})
+
 export const burndownBriefApproveVerb = defineVerb({
   name: 'burndown.brief.approve',
   description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
@@ -499,6 +520,8 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
+  addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownLandedVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),

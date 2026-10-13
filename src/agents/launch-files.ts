@@ -11,6 +11,8 @@ import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
 import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
 import { strictMcpFor } from './launch-policy.js'
+import type { CreatedWorktree } from './resume-session.js'
+import { gitCommonDir, linkedWorktreeRoot, REPO_SKILLS_RULE } from './skill-self-grant.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -90,6 +92,11 @@ export function markSuperseded(agentId: string): void {
   fs.writeFileSync(supersededMarkerPath(agentId), '', { mode: FILE_MODE })
 }
 
+/** CC-951: a successor that never attached leaves its predecessor live, so its prompts must reach the model again. */
+export function clearSuperseded(agentId: string): void {
+  fs.rmSync(supersededMarkerPath(agentId), { force: true })
+}
+
 /** The hook gives up this long before Claude Code would kill it, so it can withdraw its row itself. */
 const HOOK_DEADLINE_MARGIN_S = 10
 
@@ -103,6 +110,32 @@ const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 
 /** Seconds. The guard reads only regular files and never waits, so a run this long is already broken. */
 const PRETOOL_TIMEOUT_S = 15
+
+const SEAT_HOOK_TIMEOUT_S = 10
+
+const seatHookEntry = (entry: string, phase: 'pre' | 'post' | 'end', matcher?: string): HookEntry => ({
+  ...(matcher === undefined ? {} : { matcher }),
+  hooks: [
+    { type: 'command', command: hookCommand(entry, `seat-hook ${phase}`), timeout: SEAT_HOOK_TIMEOUT_S },
+  ],
+})
+
+/**
+ * CC-1056: the block instrument. A question opens a block at PreToolUse and closes it at
+ * PostToolUse; a prompt, stop or session end also closes it, since an interrupted question
+ * fires no PostToolUse. Only spawned agents get these, so a plain session pays nothing.
+ */
+function seatHooks(
+  entry: string,
+  staleGuard: { UserPromptSubmit?: HookEntry[] },
+): Record<string, HookEntry[]> {
+  return {
+    PostToolUse: [seatHookEntry(entry, 'post', 'AskUserQuestion')],
+    UserPromptSubmit: [...(staleGuard.UserPromptSubmit ?? []), seatHookEntry(entry, 'end')],
+    Stop: [seatHookEntry(entry, 'end')],
+    SessionEnd: [seatHookEntry(entry, 'end')],
+  }
+}
 
 /**
  * What a launch without the user settings source still takes from that account. Its deny
@@ -134,14 +167,16 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
  * can contain spaces. `carried` is set for a launch that loads no user settings.
+ * `selfGrantRoot` lets the hook allow repo skill writes in that worktree (CC-694).
  */
 export function buildHookSettings(
   entry: string,
   permissionTimeoutSeconds?: number,
   carried?: CarriedUserSettings,
   agentId?: string,
+  selfGrantRoot?: string,
 ): Record<string, unknown> {
-  const staleGuard =
+  const staleGuard: { UserPromptSubmit?: HookEntry[] } =
     agentId === undefined
       ? {}
       : {
@@ -165,17 +200,19 @@ export function buildHookSettings(
       ],
     },
     ...(carried?.pretool ?? []),
+    seatHookEntry(entry, 'pre'),
   ]
   const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
   if (permissionTimeoutSeconds === undefined)
-    return { ...account, hooks: { PreToolUse: pretool, ...staleGuard } }
+    return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard) } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
-  const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
+  const selfGrant = selfGrantRoot === undefined ? '' : ` --self-grant-skills ${shellQuote(selfGrantRoot)}`
+  const command = hookCommand(entry, `permission-hook --deadline ${deadline}${selfGrant}`)
   return {
     ...account,
     hooks: {
       PreToolUse: pretool,
-      ...staleGuard,
+      ...seatHooks(entry, staleGuard),
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],
@@ -249,9 +286,49 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
   fs.chmodSync(file, mode)
 }
 
-export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
+/**
+ * The worktree whose repo skills the hook may allow writes to: the plan's cwd, only when
+ * the profile opted in with the owner-approved rule, the cwd is the worktree the broker
+ * recorded agent-chat creating for this agent, and git still has that registered as a
+ * linked worktree of the recorded repository. A shared or main checkout stays behind the
+ * owner prompt (CC-694), and so does a hand-written common dir at the cwd, or one swapped
+ * in behind a symlink at the recorded path: git checks its layout, not who made it (CC-1110).
+ */
+export function selfGrantRootOf(plan: LaunchPlan, created?: CreatedWorktree): string | undefined {
+  const end = plan.args.indexOf('--')
+  const options = end === -1 ? plan.args : plan.args.slice(0, end)
+  const at = options.indexOf('--allowed-tools')
+  if (at === -1 || !(options[at + 1] ?? '').split(',').includes(REPO_SKILLS_RULE)) return undefined
+  if (created === undefined) return undefined
+  const cwd = path.resolve(plan.cwd)
+  if (cwd !== path.resolve(created.worktree) || realpathOrUndefined(cwd) !== cwd) return undefined
+  const root = linkedWorktreeRoot(cwd)
+  const repoGitDir = realpathOrUndefined(path.join(created.gitRoot, '.git'))
+  if (root === undefined || repoGitDir === undefined) return undefined
+  return gitCommonDir(root) === repoGitDir ? root : undefined
+}
+
+function realpathOrUndefined(dir: string): string | undefined {
+  try {
+    return fs.realpathSync(dir)
+  } catch {
+    return undefined
+  }
+}
+
+export function writeLaunchFiles(
+  plan: LaunchPlan,
+  config: Record<string, unknown>,
+  createdWorktree?: CreatedWorktree,
+): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan), plan.agentId)
+  const settings = buildHookSettings(
+    cliEntry(),
+    permissionTimeout,
+    carriedUserSettings(plan),
+    plan.agentId,
+    selfGrantRootOf(plan, createdWorktree),
+  )
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))

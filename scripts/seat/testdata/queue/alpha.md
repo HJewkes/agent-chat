@@ -20,7 +20,10 @@
 
 ## Morning queue (owner only)
 
+1. tc-131 (one-way): backlog pointer. backlog/alpha/tc-131.yml
+2. tc-130.2 (two-way): sub-question pointer
 3. ZZ-9 owner task
+4. tc-130 (two-way): parent question pointer
 5. ZZ-10 owner task
 
 ## Overflow offered

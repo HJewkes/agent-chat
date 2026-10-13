@@ -1,11 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
+import { resolvePoolPickMode } from '../../config.js'
 import { readAccountBudget } from '../budget.js'
-import { loadDoc } from '../seats/io.js'
-import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
+import { loadDoc, readTextIfPresent } from '../seats/io.js'
+import { readPace } from '../seats/pace-file.js'
+import { pickPool, poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
+import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
-import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import { billingOrder, firstOpen, type BillingOrder } from './billed-pool.js'
+import { chargesOn, gatePool, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
@@ -17,21 +21,36 @@ import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
   dormantInitiatives,
   loadPolicy,
-  mergeDefaults,
+  resolveSeat,
   seatBudget,
   seatScope,
+  type CharterPool,
   type Policy,
   type SeatPolicy,
 } from './policy.js'
-import { scoreAll } from './score.js'
+import { readyFloorFor } from './dispatch-stats.js'
+import { scoreAll, type ScoreRow } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
-import { diskPlanReader } from './seed-slices.js'
-import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
+import {
+  parseFunds,
+  parsePools,
+  parseSeat,
+  seatInitiatives,
+  seatPools,
+  type FundsMap,
+} from '../seats/charter.js'
+import { dispatchLogPath } from '../seats/dispatch-log.js'
+import { foldDispatch } from '../seats/dispatch-record.js'
+import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
+import { readPriorRouter } from './prior-route.js'
+import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
+import { readOffPlanIds } from './off-plan.js'
 import { readTasks, type TickConfig } from './source.js'
+import { poolSamples, seatSpend } from './spend-meter.js'
 
 /**
  * CC-205 slice 4: seats mode for one tick. Loads the policy once, samples each
@@ -39,9 +58,6 @@ import { readTasks, type TickConfig } from './source.js'
  * cannot be loaded or planned is skipped with a reason; the others still run.
  * CLI-only.
  */
-
-/** Covers the 07:00 day start and the 12-hour run, with slack for a late tick. */
-export const SAMPLE_KEEP_MS = 26 * 3_600_000
 
 export interface SeatTickDeps {
   autonomyRoot: string
@@ -56,15 +72,23 @@ export interface SeatTickDeps {
    * stand in for the run-start and day-start readings a seat with no ledger samples yet cannot supply.
    */
   meters: (seat: string, pool: string) => SavedMeters
+  /** CC-1145: the pool pick's mode and order for the seat's spawns; absent, the tick bills the seat's home pool. */
+  poolPick?: (seat: string, home: string) => { mode: PoolPickMode; order: string[]; funds?: FundsMap }
 }
 
 export interface LoadedSeat {
+  /** The pool the tick bills: the seat's home, or under `poolPick: enforce` the first open pool (CC-1145). */
   dispatch: SeatDispatch
   policy: Policy
   budget: PoolGateInput
+  /** Sampled on the home pool whichever pool is billed, so home's spend series stays whole. */
   state: SeatState
   /** The charter's root, where the week's milestone file lives; absent, no file is read. */
   autonomyRoot?: string
+  /** CC-1145: every candidate pool was closed; each one's reason, which the seat's budget refusals carry. */
+  closedPools?: string
+  /** CC-1145: under `enforce`, the charter's funds map; each task is planned only if the billed pool funds its initiative. */
+  funds?: FundsMap
 }
 
 export interface LoadedSeats {
@@ -89,41 +113,36 @@ function sampled(
 ) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
-  const kept = (previous?.samples ?? []).filter(s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs)
+  const kept = poolSamples(previous, dispatch.configDir, nowMs)
   const sample: SevenDaySample[] =
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
+  const { history, runStart } = seatSpend({
+    seatState: previous,
+    configDir: dispatch.configDir,
+    saved,
+    sevenDay: reading?.sevenDay,
+    now: deps.now,
+  })
   const marks = {
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
     ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
   }
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
-}
-
-/**
- * The ledger's samples when they hold a reading at or before the run start, as before CC-782, else the
- * watchdog meters alone. Never both: a meter's samples are estimates that never drop, so sorted among
- * real readings across a seven_day reset, `pointsSpent` would count the pre-reset readings again.
- */
-function oneSource(
-  kept: SevenDaySample[],
-  saved: SavedMeters,
-  sevenDay: number,
-  now: Date,
-): SevenDaySample[] {
-  const { history, runStart } = meterSpend(saved, sevenDay, now)
-  if (kept.some(s => s.at <= runStart)) return kept
-  return history.length === 0 ? kept : history
+  return {
+    reading,
+    resetsAt,
+    history,
+    runStart,
+    state: { samples: [...kept, ...sample], configDir: dispatch.configDir, ...marks },
+  }
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
   const saved = usableMeters(deps.meters(name, dispatch.pool.name))
-  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
-  const recordedAt = saved.run?.since
+  const { reading, resetsAt, history, runStart, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
   const { pool, spend } = pacedCaps({
     pacing: seat.pacing,
     ...seatBudget(policy.charter, seat),
@@ -132,19 +151,107 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
     history,
     now: deps.now,
   })
-  return {
+  const loaded: LoadedSeat = {
     dispatch,
-    policy: { ...policy, seat, defaults: mergeDefaults(policy.charter, seat) },
+    policy: { ...policy, seat, ...resolveSeat(policy.charter, seat) },
     budget: {
       pool,
       spend,
       reading,
       history,
-      runStartAt: runStartAt(deps.now, recordedAt === undefined ? {} : { recordedAt }),
+      runStartAt: runStart,
       ctx: { now: deps.now },
     },
     state,
     autonomyRoot: deps.autonomyRoot,
+  }
+  const { funds, ...billing } = billingOf(policy, seat, dispatch, deps)
+  if (funds === undefined) return loaded
+  return billed(loaded, { ...billing, funds }, other =>
+    otherPoolBudget(policy, name, ledger.seats?.[name], other, deps),
+  )
+}
+
+/** CC-1145: the funded pools the seat's tick may bill, best first; funds unset outside `enforce` keeps home as today. */
+function billingOf(
+  policy: Policy,
+  seat: SeatPolicy,
+  home: SeatDispatch,
+  deps: SeatTickDeps,
+): BillingOrder & { funds?: FundsMap } {
+  const pick = deps.poolPick?.(home.seat, home.pool.name) ?? { mode: 'off', order: [] }
+  const funds = pick.mode === 'enforce' ? pick.funds : undefined
+  const order = billingOrder({
+    mode: pick.mode,
+    home: home.pool.name,
+    pick: pick.order,
+    overflow: seat.overflow_pool,
+    pools: new Set(Object.keys(policy.charter.pools)),
+    funds,
+    initiatives: Object.keys(seat.initiatives),
+  })
+  return { ...order, ...(funds === undefined ? {} : { funds }) }
+}
+
+/**
+ * CC-1145: a pool other than the seat's home, gated on the pool's own caps alone. The seat's `spend` caps and pacing
+ * stay off there, as the broker's `seatSpawnGate` holds them (spawn-gate.ts `own`), and its run meter stays out.
+ */
+function otherPoolBudget(
+  policy: Policy,
+  seat: string,
+  previous: SeatState | undefined,
+  name: string,
+  deps: SeatTickDeps,
+): PoolGateInput {
+  const found = policy.charter.pools[name] as CharterPool
+  const { reading, resetsAt } = deps.reading(found.config_dir)
+  const { history, runStart } = seatSpend({
+    seatState: previous,
+    configDir: found.config_dir,
+    saved: usableMeters(deps.meters(seat, name)),
+    sevenDay: reading?.sevenDay,
+    now: deps.now,
+    ownRun: false,
+  })
+  const { pool, spend } = pacedCaps({
+    pacing: undefined,
+    pool: { ...found, name },
+    spend: {},
+    sevenDay: reading?.sevenDay,
+    resetsAt,
+    history,
+    now: deps.now,
+  })
+  return { pool, spend, reading, history, runStartAt: runStart, ctx: { now: deps.now } }
+}
+
+/**
+ * CC-1145: the seat dispatches on the first open funded pool of `order`, its sample state staying on home. With no
+ * funded pool open it keeps home and fails closed, carrying every pool's reason for its budget refusals.
+ */
+function billed(
+  seat: LoadedSeat,
+  { order, unfunded, funds }: BillingOrder & { funds: FundsMap },
+  other: (pool: string) => PoolGateInput,
+): LoadedSeat {
+  const loaded = { ...seat, funds }
+  if (order.length === 0) return { ...loaded, closedPools: unfunded.join('; ') }
+  const home = loaded.dispatch.pool.name
+  const budgets = new Map<string, PoolGateInput>([[home, loaded.budget]])
+  const budgetOf = (pool: string): PoolGateInput => {
+    const budget = budgets.get(pool) ?? other(pool)
+    budgets.set(pool, budget)
+    return budget
+  }
+  const chosen = firstOpen(order, pool => gatePool(budgetOf(pool)))
+  if (!chosen.open) return { ...loaded, closedPools: [chosen.reason, ...unfunded].join('; ') }
+  if (chosen.pool === home) return loaded
+  const found = loaded.policy.charter.pools[chosen.pool] as CharterPool
+  return {
+    ...loaded,
+    dispatch: { ...loaded.dispatch, pool: { ...found, name: chosen.pool }, configDir: found.config_dir },
+    budget: budgetOf(chosen.pool),
   }
 }
 
@@ -163,6 +270,9 @@ export function loadSeats(names: readonly string[], ledger: Ledger, deps: SeatTi
   return result
 }
 
+type BriefDeps = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'> &
+  Partial<Pick<TickConfig, 'priorRouting'>>
+
 export interface SeatPlanDeps {
   ledger: Ledger
   initiatives: readonly Initiative[]
@@ -176,8 +286,11 @@ export interface SeatPlanDeps {
   lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
-  /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /**
+   * The config's per-seat brief gates (CC-925), hand reserves (CC-936) and prior routing (CC-638); absent, every
+   * gate is off, no slot is reserved and no workflow table is read.
+   */
+  brief?: BriefDeps
   /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
   scopeTagAliases: TickConfig['scopeTagAliases']
 }
@@ -242,7 +355,7 @@ export interface Taken {
 }
 
 export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
-  const { charter, seats, defaults } = seat.policy
+  const { charter, seats, defaults, hardStops } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
   const slugs = Object.keys(weights)
@@ -252,19 +365,22 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   }
   const today = localDate(seat.budget.ctx.now)
   const read = readScoredTasks(root, slugs)
-  const { rows } = scoreAll(
+  const scored = scoreAll(
     read.tasks,
     weights,
     defaults,
     exclusions,
-    charter.hard_stops,
+    hardStops,
     today,
     dormantInitiatives(seat.policy.seat),
   )
+  const { rows, unfunded } = fundedRows(seat, scored.rows)
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
   const scope = scopeInputs(seat, deps.scopeTagAliases)
+  const prior = priorRouterOf(deps, seat)
+  const runs = sliceRunsOf(seat)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
@@ -284,27 +400,86 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
+    sliceRuns: runs.sliceRuns,
+    offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
+    ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
+  if (prior.note !== undefined) planned.notes.push(prior.note)
+  if (runs.note !== undefined) planned.notes.push(runs.note)
+  planned.notes.push(...scope.notes)
+  const closed = seat.closedPools
+  if (closed !== undefined)
+    planned.refusals = planned.refusals.map(r => (r.kind === 'budget' ? { ...r, reason: closed } : r))
   planned.refusals.push(
+    ...unfunded,
     ...[...order.faults, ...scope.faults].map(reason => ({
       initiative: '-',
       kind: 'plan-blocked' as const,
       reason,
     })),
   )
-  return { planned, tasks, skipped: read.skipped }
+  return { planned, tasks, skipped: read.skipped, plan: scope.scope.plan }
+}
+
+/** CC-1145: under `enforce`, a task whose initiative the billed pool does not fund is refused, never billed there. */
+function fundedRows(seat: LoadedSeat, rows: ScoreRow[]): { rows: ScoreRow[]; unfunded: Refusal[] } {
+  const { funds } = seat
+  if (funds === undefined) return { rows, unfunded: [] }
+  const pool = seat.dispatch.pool.name
+  const kept = rows.filter(row => poolFunds(funds, pool, row.initiative))
+  const unfunded = rows
+    .filter(row => !kept.includes(row))
+    .map(row => ({
+      initiative: row.initiative,
+      task: row.id,
+      kind: 'budget' as const,
+      reason: `pool ${pool} is not in the funds map for initiative ${row.initiative}`,
+    }))
+  return { rows: kept, unfunded }
+}
+
+/**
+ * CC-1121 b: the seat's dispatch log as slice runs. A seat with no log yet ran none; a log that
+ * cannot be read names none either, so seeding fails open with a note.
+ */
+function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } {
+  const { seat: name, prefix } = seat.dispatch
+  const none = { sliceRuns: () => [] }
+  if (seat.autonomyRoot === undefined) return none
+  try {
+    const log = readSeatLog(seat.autonomyRoot, name)
+    if (log === undefined) return none
+    const { records } = foldDispatch(log)
+    return { sliceRuns: taskId => sliceRunsIn(records, taskId, prefix) }
+  } catch (err) {
+    return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }
+  }
+}
+
+/** The seat's dispatch log text, undefined when it does not exist yet; any other fault throws. */
+function readSeatLog(root: string, name: string): string | undefined {
+  const text = readTextIfPresent(path.join(root, 'seats', `${name}.md`))
+  const parsed = text === undefined ? undefined : parseSeat(name, text)
+  if (text === undefined || parsed === undefined) throw new Error(`${name} is not a seat`)
+  const file = dispatchLogPath(root, { seat: parsed, text })
+  if (file === undefined) throw new Error(`${name} dispatch_log resolves outside the root`)
+  return readTextIfPresent(file)
 }
 
 /**
  * CC-779: the seat's scope with its backlog's task IDs. A backlog that cannot be read names no task, so
  * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
+ * CC-1128: a plan file that cannot be used widens nothing; the seat keeps tag-only scope and the tick notes it.
  */
-function scopeInputs(
-  seat: LoadedSeat,
-  aliases?: Readonly<Record<string, string>>,
-): { scope: SeatScope; faults: string[] } {
+function scopeInputs(seat: LoadedSeat, aliases?: Readonly<Record<string, string>>): SeatScopeRead {
   return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot, aliases)
+}
+
+interface SeatScopeRead {
+  scope: SeatScope
+  faults: string[]
+  notes: string[]
 }
 
 /** CC-935: `scopeInputs` for a caller holding the seats and the autonomy root, such as `seats boot`. */
@@ -313,18 +488,37 @@ export function readSeatScope(
   name: string,
   autonomyRoot: string | undefined,
   aliases?: Readonly<Record<string, string>>,
-): { scope: SeatScope; faults: string[] } {
-  const file = seats[name]?.backlog
-  if (file === undefined || autonomyRoot === undefined)
-    return { scope: seatScopeOf(seats, name, new Set(), aliases), faults: [] }
+): SeatScopeRead {
+  const backlog = readBacklog(seats[name]?.backlog, autonomyRoot)
+  const plan = readPlan(seats[name]?.plan_file, autonomyRoot)
+  return {
+    scope: seatScopeOf(seats, name, backlog.ids, aliases, plan.ids),
+    faults: backlog.faults,
+    notes: plan.notes,
+  }
+}
+
+function readBacklog(file: string | undefined, autonomyRoot: string | undefined) {
+  if (file === undefined || autonomyRoot === undefined) return { ids: new Set<string>(), faults: [] }
   try {
-    const ids = backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8'))
-    return { scope: seatScopeOf(seats, name, ids, aliases), faults: [] }
+    return { ids: backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8')), faults: [] }
   } catch (err) {
-    return {
-      scope: seatScopeOf(seats, name, new Set(), aliases),
-      faults: [`backlog ${file}: ${message(err)}`],
-    }
+    return { ids: new Set<string>(), faults: [`backlog ${file}: ${message(err)}`] }
+  }
+}
+
+/** CC-1128: section 2's task IDs of the seat's plan file, resolved against the autonomy root (absolute allowed). */
+function readPlan(
+  file: string | undefined,
+  autonomyRoot: string | undefined,
+): { ids?: Set<string>; notes: string[] } {
+  if (file === undefined || autonomyRoot === undefined) return { notes: [] }
+  const tagOnly = (why: string) => ({ notes: [`plan ${file}: ${why}; scope is tag-only`] })
+  try {
+    const ids = planSectionIds(fs.readFileSync(path.resolve(autonomyRoot, file), 'utf8'))
+    return ids === undefined ? tagOnly('no "## 2." section') : { ids, notes: [] }
+  } catch (err) {
+    return tagOnly(message(err))
   }
 }
 
@@ -359,12 +553,23 @@ function orderInputs(
   }
 }
 
-/** The config fields the brief gate and hand reserve read; the tick and `plan --seat` both pass these. */
+/** The config fields the brief gate, hand reserve and prior routing read; the tick and `plan --seat` both pass these. */
 export function briefDepsOf(
-  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>,
-): NonNullable<SeatPlanDeps['brief']> {
-  const { briefGate, briefMaxAgeDays, maxAgents, handReserve } = config
-  return { briefGate, briefMaxAgeDays, maxAgents, handReserve }
+  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'priorRouting'>,
+): BriefDeps {
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting }
+}
+
+/** CC-638: the seat's prior router from its autonomy root's workflow table; `off` or absent reads nothing. */
+function priorRouterOf({ brief }: SeatPlanDeps, seat: LoadedSeat): ReturnType<typeof readPriorRouter> {
+  const mode = brief?.priorRouting ?? 'off'
+  if (mode === 'off') return {}
+  if (seat.autonomyRoot === undefined)
+    return {
+      note: `prior routing ${mode}: seat ${seat.dispatch.seat} has no autonomy root; routing as today`,
+    }
+  return readPriorRouter(mode, seat.autonomyRoot)
 }
 
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
@@ -372,7 +577,14 @@ export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: Se
   const gate = brief?.briefGate[seat] ?? 'off'
   return brief === undefined || gate === 'off'
     ? {}
-    : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
+    : {
+        brief: {
+          gate,
+          maxAgeDays: brief.briefMaxAgeDays,
+          agingEvery: brief.maxAgents,
+          readyFloor: readyFloorFor(brief.maxAgents),
+        },
+      }
 }
 
 /** CC-936: the implementer slots the seat's hand spawns keep; none is passed as none. */
@@ -418,7 +630,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
       // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
       const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
-      const { planned, tasks, skipped } = planLoaded(seat, { ...deps, ledger }, root, taken)
+      const { planned, tasks, skipped, plan } = planLoaded(seat, { ...deps, ledger }, root, taken)
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
@@ -427,7 +639,8 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals, roles } = planned
-      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles })
+      const outcome = { seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles }
+      result.outcomes.push(plan === undefined ? outcome : { ...outcome, plan })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
       result.outcomes.push({ seat: seat.dispatch.seat, dispatched: 0, refusals: [], skipped: message(err) })
@@ -463,6 +676,43 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
       }
     },
     meters: (seat, pool) => savedMeters(doc, seat, pool),
+    poolPick: (seat, home) => diskPoolPick(autonomyRoot, seat, home, now),
+  }
+}
+
+/**
+ * CC-1145: the broker's pick for an unpinned spawn of the seat, over the pools its file allows and the funds map for
+ * all its initiatives. Trust is left to the tick's per-task gate on the billed config dir. A fault picks nothing.
+ */
+function diskPoolPick(
+  autonomyRoot: string,
+  seat: string,
+  home: string,
+  now: Date,
+): { mode: PoolPickMode; order: string[]; funds?: FundsMap } {
+  const mode = resolvePoolPickMode()
+  if (mode !== 'enforce') return { mode, order: [] }
+  try {
+    const charter = fs.readFileSync(path.join(autonomyRoot, 'charter.md'), 'utf8')
+    const text = fs.readFileSync(path.join(autonomyRoot, 'seats', `${seat}.md`), 'utf8')
+    const funds = parseFunds(charter)
+    const allowed = seatPools(text)
+    const pools = [...parsePools(charter).values()].filter(
+      p => allowed === undefined || allowed.includes(p.name),
+    )
+    const pick = pickPool({
+      pinned: false,
+      home,
+      pools,
+      funds,
+      initiatives: seatInitiatives(text),
+      pace: readPace(),
+      trusted: () => true,
+      now: now.getTime(),
+    })
+    return { mode, order: pick.order, ...(funds === undefined ? {} : { funds }) }
+  } catch {
+    return { mode, order: [] }
   }
 }
 

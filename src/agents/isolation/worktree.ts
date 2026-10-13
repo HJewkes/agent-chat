@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
 import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
-import { resolveWorktreeBudget } from '../../config.js'
+import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
@@ -18,6 +19,8 @@ export { findGitRoot }
 const execFileAsync = promisify(execFile)
 
 export const DEFAULT_WORKTREE_BUDGET = 3
+/** CC-1040: Shepherd's reviewer cap, so a full reviewer round never waits on implementer slots. */
+export const DEFAULT_REVIEWER_WORKTREE_BUDGET = 8
 const DEFAULT_BASE_PATH = '.worktrees'
 export const BRANCH_PREFIX = 'agent-chat/'
 
@@ -40,12 +43,24 @@ export const WORKTREE_ADD_TIMEOUT_MS = 300_000
  */
 export const RECLAIM_GRACE_MS = 120_000
 
+export type WorktreePool = 'implementer' | 'reviewer'
+
+const POOL_BUDGET_KEY: Record<WorktreePool, string> = {
+  implementer: 'worktreeBudget',
+  reviewer: 'reviewerWorktreeBudget',
+}
+
+const poolExhausted = (pool: WorktreePool, allocated: number, budget: number): string =>
+  `${pool} worktree pool exhausted: ${allocated}/${budget} allocated ` +
+  `(budget exhausted: ${allocated}/${budget}, ${POOL_BUDGET_KEY[pool]})`
+
 export class WorktreeBudgetExhaustedError extends Error {
   constructor(
     readonly allocated: number,
     readonly budget: number,
+    readonly pool: WorktreePool = 'implementer',
   ) {
-    super(`Worktree budget exhausted: ${allocated}/${budget} allocated`)
+    super(poolExhausted(pool, allocated, budget))
     this.name = 'WorktreeBudgetExhaustedError'
   }
 }
@@ -54,6 +69,8 @@ export interface WorktreeOptions {
   /** Relative to the git root. */
   basePath?: string
   budget?: number
+  /** Reviewer pool size; read from `reviewerWorktreeBudget` per spawn when absent. */
+  reviewerBudget?: number
   /** Bound on fetching origin's default branch before cutting a new one. */
   fetchTimeoutMs?: number
   /** Bound on one `git worktree add`; the add is killed and the repo's queue moves on when it passes. */
@@ -100,6 +117,42 @@ async function allocatedPaths(gitRoot: string, basePath: string): Promise<string
     .filter(line => line.startsWith('worktree '))
     .map(line => path.resolve(line.slice('worktree '.length).trim()))
     .filter(dir => dir.startsWith(base))
+}
+
+export interface PoolUse {
+  pool: WorktreePool
+  allocated: number
+  budget: number
+}
+
+const poolOf = (name: string): WorktreePool => (isReviewerTreeName(name) ? 'reviewer' : 'implementer')
+
+/** CC-1040: trees under basePath in the same pool as `agentName`, against that pool's budget. */
+async function poolUse(
+  gitRoot: string,
+  basePath: string,
+  agentName: string,
+  opts: WorktreeOptions,
+): Promise<PoolUse> {
+  const pool = poolOf(agentName)
+  const allocated = (await allocatedPaths(gitRoot, basePath)).filter(
+    dir => poolOf(path.basename(dir)) === pool,
+  )
+  const budget =
+    pool === 'reviewer'
+      ? (opts.reviewerBudget ?? resolveReviewerWorktreeBudget(DEFAULT_REVIEWER_WORKTREE_BUDGET))
+      : (opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET))
+  return { pool, allocated: allocated.length, budget }
+}
+
+async function claimPoolSlot(
+  gitRoot: string,
+  basePath: string,
+  agentName: string,
+  opts: WorktreeOptions,
+): Promise<void> {
+  const use = await poolUse(gitRoot, basePath, agentName, opts)
+  if (use.allocated >= use.budget) throw new WorktreeBudgetExhaustedError(use.allocated, use.budget, use.pool)
 }
 
 /**
@@ -163,22 +216,61 @@ async function landedOn(gitRoot: string, branch: string): Promise<string | null>
 
 const GH_TIMEOUT_MS = 3_000
 
-/** Advisory only: never required, never allowed to change the git answer. */
-async function ghPrState(gitRoot: string, branch: string): Promise<string | null> {
+interface GhPr {
+  state: string
+  headRefOid: string
+  commits: readonly string[]
+}
+
+/** The commit oids from gh's `commits` field, or null when it is not a list of `{oid}` objects. */
+function commitOids(commits: unknown): string[] | null {
+  if (!Array.isArray(commits)) return null
+  const oids = commits.map(c => (typeof c === 'object' && c !== null ? (c as { oid?: unknown }).oid : null))
+  return oids.every((oid): oid is string => typeof oid === 'string') ? oids : null
+}
+
+/** The branch's PR as gh reports it, or null when gh is missing, fails or says something unexpected. */
+async function ghPrView(gitRoot: string, branch: string): Promise<GhPr | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'gh',
-      ['pr', 'view', branch, '--json', 'state', '--jq', '.state'],
-      {
-        cwd: gitRoot,
-        encoding: 'utf8',
-        timeout: GH_TIMEOUT_MS,
-      },
-    )
-    return stdout.trim() || null
+    const args = ['pr', 'view', branch, '--json', 'state,headRefOid,commits']
+    const { stdout } = await execFileAsync('gh', args, {
+      cwd: gitRoot,
+      encoding: 'utf8',
+      timeout: GH_TIMEOUT_MS,
+    })
+    const pr: unknown = JSON.parse(stdout)
+    if (typeof pr !== 'object' || pr === null) return null
+    const { state, headRefOid } = pr as Record<string, unknown>
+    const commits = commitOids((pr as Record<string, unknown>).commits)
+    if (typeof state !== 'string' || typeof headRefOid !== 'string' || commits === null) return null
+    return { state, headRefOid, commits }
   } catch {
     return null
   }
+}
+
+/**
+ * gh decides only when it proves the local tip merged: the PR's merged head, or
+ * one of its commits when update-branch or another push moved the head past it
+ * (CC-624). Any other answer (open, closed, a later local commit, no gh) stays advisory.
+ */
+async function ghCheck(
+  gitRoot: string,
+  branch: string,
+): Promise<{ merged: boolean; check: ReleaseCheck } | null> {
+  const pr = await ghPrView(gitRoot, branch)
+  if (pr === null) return null
+  const tip = await gitOrNull(['rev-parse', branch], gitRoot)
+  if (pr.state === 'MERGED' && tip !== null) {
+    const sha7 = tip.slice(0, 7)
+    if (pr.headRefOid === tip)
+      return { merged: true, check: { name: 'gh', ok: true, detail: `gh reports PR merged at ${sha7}` } }
+    if (pr.commits.includes(tip)) {
+      const detail = `gh reports PR merged; local tip ${sha7} is in it`
+      return { merged: true, check: { name: 'gh', ok: true, detail } }
+    }
+  }
+  return { merged: false, check: { name: 'gh', ok: true, detail: `gh reports the PR as ${pr.state}` } }
 }
 
 function dirtyCheck(dirty: boolean): ReleaseCheck {
@@ -215,6 +307,10 @@ function landedCheck(target: string | null, targets: readonly string[]): Release
  * landed on the checkout's current branch (or `origin/HEAD`), which is how a
  * squash-merged PR looks once GitHub deletes the remote branch. Nothing is
  * fetched: a stale local main makes this refuse until someone pulls.
+ *
+ * CC-792: the file check refuses once main edits a file the branch touched, so
+ * when it fails, gh decides if it reports the PR merged at exactly the local tip.
+ * CC-624: or merged with the local tip among its commits, after the PR head moved on.
  */
 export async function inspectForRelease(
   gitRoot: string,
@@ -240,11 +336,12 @@ export async function inspectForRelease(
   const targets = await landingTargets(gitRoot)
   const target = await landedOn(gitRoot, branch)
   checked.push(landedCheck(target, targets))
-  if (target === null) {
-    const state = await ghPrState(gitRoot, branch)
-    if (state !== null) checked.push({ name: 'gh', ok: true, detail: `gh reports the PR as ${state}` })
-  }
-  return { dirty, unmerged: target === null, landed: target !== null, ahead, checked }
+  if (target !== null) return { dirty, unmerged: false, landed: true, ahead, checked }
+
+  const gh = await ghCheck(gitRoot, branch)
+  if (gh === null) return { dirty, unmerged: true, landed: false, ahead, checked }
+  checked.push(gh.check)
+  return { dirty, unmerged: !gh.merged, landed: gh.merged, ahead, checked }
 }
 
 /** The failed checks, as one line a coordinator can act on. */
@@ -275,11 +372,15 @@ export class WorktreeInUseError extends Error {
   }
 }
 
-/** The worktree currently holding `branch`, or null. Prune first, or this lies. */
+/**
+ * The worktree currently holding `branch`, or null. Prune first, or this lies. The branch line
+ * must match whole: `<name>-review` shares the `<name>` prefix and is not its holder (CC-1082).
+ */
 async function checkoutOf(gitRoot: string, branch: string): Promise<string | null> {
   const out = (await gitOrNull(['worktree', 'list', '--porcelain'], gitRoot)) ?? ''
   const blocks = out.split('\n\n')
-  const holder = blocks.find(block => block.includes(`branch refs/heads/${branch}`))
+  const branchLine = `branch refs/heads/${branch}`
+  const holder = blocks.find(block => block.split('\n').some(l => l.trim() === branchLine))
   const line = holder?.split('\n').find(l => l.startsWith('worktree '))
   return line ? path.resolve(line.slice('worktree '.length).trim()) : null
 }
@@ -739,9 +840,7 @@ export async function reattachWorktree(
   checkRecordPlacement(record, basePath)
   if (existsSync(worktree)) throw new WorktreeInUseError(branch, worktree)
   await pruneStaleWorktrees(gitRoot)
-  const allocated = await allocatedPaths(gitRoot, basePath)
-  const budget = opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
-  if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+  await claimPoolSlot(gitRoot, basePath, path.basename(worktree), opts)
   const holder = await checkoutOf(gitRoot, branch)
   if (holder !== null) throw new WorktreeInUseError(branch, holder)
 
@@ -838,8 +937,6 @@ async function releaseParked(alloc: Allocation, gitRoot: string, worktreePath: s
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
-
   return {
     name: 'worktree',
 
@@ -848,12 +945,10 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       if (gitRoot === null) return [`${ctx.baseCwd} is not a git repository; worktree isolation needs one`]
 
       await pruneStaleWorktrees(gitRoot)
-      const allocated = await allocatedPaths(gitRoot, basePath)
-      const budget = budgetNow()
+      const use = await poolUse(gitRoot, basePath, slug(ctx.agentName), opts)
       const reasons: string[] = []
-      if (allocated.length >= budget) {
-        reasons.push(`worktree budget exhausted: ${allocated.length}/${budget} allocated under ${basePath}`)
-      }
+      if (use.allocated >= use.budget)
+        reasons.push(`${poolExhausted(use.pool, use.allocated, use.budget)} under ${basePath}`)
       if ((await gitOrNull(['rev-parse', '--verify', branchFor(ctx.agentName)], gitRoot)) !== null) {
         reasons.push(
           warn(
@@ -886,9 +981,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       }
 
       await pruneStaleWorktrees(gitRoot)
-      const allocated = await allocatedPaths(gitRoot, basePath)
-      const budget = budgetNow()
-      if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+      await claimPoolSlot(gitRoot, basePath, slug(ctx.agentName), opts)
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))

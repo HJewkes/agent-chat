@@ -6,9 +6,11 @@ import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
+import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 import type { Step } from './execute.js'
+import type { TickStep } from './step-timer.js'
 
 /**
  * CC-929 (item 179 S5): every real tick that runs appends one row to `burndown-ticks.jsonl`, built from what the
@@ -20,6 +22,15 @@ import type { Step } from './execute.js'
  *   registrations   {ok, refused, failed}: every Shepherd register the tick made, for its claims and for the
  *                   seat PRs it adopted (CC-861), seat or not
  *   seats           {[seat]: SeatSummary}, one per configured seat; empty outside seats mode
+ *   durationMs      CC-1192: the whole tick, monotonic ms
+ *   lockHeldMs      CC-1192: from taking the ledger lock to releasing it: every step but `config`, and the untimed
+ *                   work between steps
+ *   steps           CC-1192: [{name, ms}] per named stage in run order (`StepName` in step-timer.ts); `plan` holds
+ *                   the planning on both sides of `collision`; factory
+ *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
+ *                   decider-triage, T7 write-ledger and this row's write
+ *
+ * Rows from before CC-1192 lack durationMs, lockHeldMs and steps.
  *
  * SeatSummary:
  *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
@@ -29,6 +40,12 @@ import type { Step } from './execute.js'
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
  *   refusals        {[refusal kind]: count}
+ *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refusals whose task the seat's plan_file section 2
+ *                   names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent when the seat has no
+ *                   readable plan_file
+ *   trust           CC-1077: [{initiative, task?, reason}] for each distinct trust refusal, reason on one line of at
+ *                   most 200 chars, at most 10 entries (the exact count stays in `refusals.trust`); absent when
+ *                   the seat refused nothing on trust
  *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` is what the seat's role caps
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
@@ -48,9 +65,17 @@ export interface SeatSummary {
   stale: number
   dispatched: number
   refusals: Record<string, number>
+  onPlanRefusals?: Record<string, number>
+  trust?: NamedRefusal[]
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
   skipped?: string
+}
+
+export interface NamedRefusal {
+  initiative: string
+  task?: string
+  reason: string
 }
 
 export interface TickSummaryRow {
@@ -58,7 +83,12 @@ export interface TickSummaryRow {
   ts: string
   registrations: RegisterCounts
   seats: Record<string, SeatSummary>
+  durationMs?: number
+  lockHeldMs?: number
+  steps?: TickStep[]
 }
+
+export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
 
 export interface RegisterRecord {
   seat?: string
@@ -109,27 +139,65 @@ function briefCounts(
   return counts
 }
 
+const MAX_REASON_CHARS = 200
+const MAX_NAMED_TRUST = 10
+
+const oneLine = (reason: string): string => reason.replace(/\s+/g, ' ').trim().slice(0, MAX_REASON_CHARS)
+
+/** CC-1077: the trust refusals by task and reason, so a tick row says which task the gate refused and why. */
+function namedTrustRefusals(outcome: SeatOutcome): NamedRefusal[] {
+  const named = new Map<string, NamedRefusal>()
+  for (const r of outcome.refusals) {
+    if (r.kind !== 'trust') continue
+    const entry: NamedRefusal = {
+      initiative: r.initiative,
+      ...(r.task === undefined ? {} : { task: r.task }),
+      reason: oneLine(r.reason),
+    }
+    named.set(JSON.stringify([entry.initiative, entry.task, entry.reason]), entry)
+  }
+  return [...named.values()].slice(0, MAX_NAMED_TRUST)
+}
+
+/** CC-1128: refusals of on-plan tasks by kind; a refused task not in the inputs is matched by its id alone. */
+function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<string, number> | undefined {
+  const plan = outcome.plan
+  if (plan === undefined) return undefined
+  const counts: Record<string, number> = {}
+  for (const r of outcome.refusals) {
+    if (r.task === undefined) continue
+    const task = inputs.tasks.get(r.initiative)?.find(t => t.id === r.task) ?? { id: r.task, tags: [] }
+    if (onPlan(plan, task)) counts[r.kind] = (counts[r.kind] ?? 0) + 1
+  }
+  return counts
+}
+
 function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   const refusals: Record<string, number> = {}
   for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
   const cap = inputs.caps[outcome.seat]
   const used = outcome.roles
+  const trust = namedTrustRefusals(outcome)
+  const onPlanCounts = onPlanRefusals(inputs, outcome)
   return {
     ...briefCounts(inputs, outcome),
     dispatched: outcome.dispatched,
     refusals,
+    ...(onPlanCounts === undefined ? {} : { onPlanRefusals: onPlanCounts }),
+    ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
     ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
   }
 }
 
-export function tickSummary(inputs: SummaryInputs): TickSummaryRow {
+export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickSummaryRow {
   return {
     v: TICK_SUMMARY_VERSION,
     ts: inputs.now.toISOString(),
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
+    ...timings,
   }
 }
 

@@ -34,7 +34,8 @@ import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { writeOutputTail } from '@titan-design/agent-surface'
-import { agentDir } from '../paths.js'
+import { agentDir, home } from '../paths.js'
+import { workerConfigDenies } from '../agents/profiles.js'
 import { RESUMED_BRIEF } from '../agents/resume-session.js'
 
 /**
@@ -414,7 +415,13 @@ describe('spawning', () => {
     const result = await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     expect(result.ok).toBe(true)
-    expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit', 'AskUserQuestion'])
+    expect(result.disallowedTools).toEqual([
+      'Bash',
+      'Write',
+      'Edit',
+      'AskUserQuestion',
+      ...workerConfigDenies(home()),
+    ])
   })
 
   /**
@@ -438,8 +445,10 @@ describe('spawning', () => {
       'Bash(agent-chat approve:*)',
       'Bash(agent-chat inbox:*)',
       'Bash(agent-chat ask:*)',
+      'Bash(agent-chat teleport:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
+      ...workerConfigDenies(home()),
     ])
   })
 
@@ -2099,7 +2108,9 @@ describe('spawn privilege', () => {
     await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
-    expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit,AskUserQuestion')
+    expect(spawned?.meta.disallowed_tools).toBe(
+      ['Bash', 'Write', 'Edit', 'AskUserQuestion', ...workerConfigDenies(home())].join(','),
+    )
   })
 
   /**
@@ -2162,6 +2173,25 @@ describe('spawn privilege', () => {
     expect(result.ok).toBe(true)
   })
 
+  /** CC-1094: the child carries the same derived config denies its parent was held to, so the check passes. */
+  it('lets a parent holding the worker config denies spawn a worker that carries them too', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParentWithDeny(
+      'peer-agent',
+      shared,
+      ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+      ['Bash(agent-chat endorse:*)', 'AskUserQuestion', ...workerConfigDenies(home())],
+    )
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'explorer', requestedBy: 'peer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.disallowedTools).toEqual(expect.arrayContaining(workerConfigDenies(home())))
+  })
+
   /**
    * The fix above must not become "any deny satisfies any deny" — a child that
    * only denies a scoped sub-pattern still does not satisfy a parent that was
@@ -2193,6 +2223,86 @@ describe('spawn privilege', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/weaker deny list/)
+  })
+
+  /**
+   * CC-604: worker profiles gained `mcp__active-work__*` before coordinators
+   * did, so coordinator seats could not spawn them. A seat's grants are its
+   * launch snapshot on the spawn row; a profile edit reaches it only on respawn.
+   */
+  describe('an MCP wildcard grant (CC-604)', () => {
+    const COORD = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Monitor']
+    const COORD_DENIED = ['Bash(agent-chat endorse:*)', 'AskUserQuestion']
+    const AW_MCP = 'mcp__active-work__*'
+
+    const writeProfile = (
+      name: string,
+      allowedTools: string[],
+      disallowedTools: string[],
+      role = 'worker',
+    ): void => {
+      fs.writeFileSync(
+        path.join(profilesDirFor(), `${name}.json`),
+        JSON.stringify({
+          model: 'sonnet',
+          role,
+          allowedTools,
+          disallowedTools,
+          isolation: 'none',
+          surface: 'headless',
+        }),
+      )
+    }
+
+    const awReviewer = (): void =>
+      writeProfile(
+        'aw-reviewer',
+        ['Read', 'Bash', 'Grep', 'Glob', AW_MCP],
+        [...COORD_DENIED, 'Write', 'Edit'],
+      )
+
+    const spawnAs = async (sup: ReturnType<typeof withStubbedSurface>, parentAgentId: string, cwd: string) =>
+      sup.spawn(spawnReq({ profile: 'aw-reviewer', requestedBy: 'coord', parentAgentId, cwd }))
+
+    it('lets a coordinator launched with the active-work MCP grant spawn a reviewer that has it', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      awReviewer()
+      const parentAgentId = spawnedParentWithDeny('coord', shared, [...COORD, AW_MCP], COORD_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared)
+
+      expect(result.ok).toBe(true)
+    })
+
+    it('refuses a coordinator launched without it, naming the tool', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      awReviewer()
+      const parentAgentId = spawnedParentWithDeny('coord', shared, COORD, COORD_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared)
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/mcp__active-work__\*/)
+      expect(result.reason).toMatch(/more capable than itself/)
+    })
+
+    it('does not widen a running seat when its profile file gains the grant after launch', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      awReviewer()
+      writeProfile('coord-old', COORD, COORD_DENIED, 'coordinator')
+      const parent = await sup.spawn(spawnReq({ name: 'coord', profile: 'coord-old', cwd: shared }))
+      core.register(fakeConn(), { t: 'register', name: 'coord', workingOn: '', cwd: shared, pid: 1 })
+      writeProfile('coord-old', [...COORD, AW_MCP], COORD_DENIED, 'coordinator')
+
+      const result = await spawnAs(sup, parent.agentId as string, shared)
+
+      expect(parent.ok).toBe(true)
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/mcp__active-work__\*/)
+    })
   })
 
   /**

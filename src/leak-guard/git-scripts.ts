@@ -11,7 +11,7 @@ export interface ScriptSpan {
   offset: number
 }
 
-interface ScriptOptions {
+export interface ScriptOptions {
   /** Long options whose value is a script; git takes any unambiguous prefix of them. */
   long: readonly string[]
   /** The short option whose value is a script. */
@@ -62,7 +62,8 @@ function shortSpan(word: string, i: number, words: readonly string[], opts: Scri
   return []
 }
 
-function optionSpans(words: readonly string[], at: number, opts: ScriptOptions): ScriptSpan[] {
+/** The value spans of one option after the subcommand at `at`, read by git's parse-options rules. */
+export function optionSpans(words: readonly string[], at: number, opts: ScriptOptions): ScriptSpan[] {
   const spans: ScriptSpan[] = []
   for (let i = at + 1; i < words.length && words[i] !== '--'; i++) {
     const word = words[i] as string
@@ -71,6 +72,9 @@ function optionSpans(words: readonly string[], at: number, opts: ScriptOptions):
   }
   return spans
 }
+
+/** `git clone -c`/`--config <key>=<value>`, beside clone's other short options that take a value. */
+export const CLONE_CONFIG: ScriptOptions = { long: ['--config'], short: 'c', shortValue: 'obuj' }
 
 /** The command after `foreach` or `run`, past the options git reads before it. */
 function trailingSpan(words: readonly string[], verbAt: number): ScriptSpan[] {

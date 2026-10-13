@@ -120,23 +120,26 @@ Caller must be a registered connection carrying an `agentId` (see §12 D3 for
 the ordinary-session case, which this design now requires rather than defers
 around). The broker:
 
-1. refuses if `events.openQuestionCount(callerName)` is nonzero. This check
-   used to gate a separate readiness call (see the superseded §4.2 below); it
-   moves here because there is no longer a second call to gate. The reason is
-   unchanged and still mechanical: `BrokerCore.answer` resolves the recipient
-   with `events.authorOf(msgId)` and delivers by **name**. If the predecessor's
-   name stops being held by a live connection while a question is outstanding,
-   the human's eventual answer is appended to the log and delivered to
-   nothing, recoverable only by someone who happens to query an inbox nobody
-   is watching. A predecessor with open questions must answer, dismiss, or
-   restate them in the handoff first — teleport does not get to abandon them
-   by leaving. **Consequence of folding this into the single call:** the
-   refusal now happens at teleport time, not at a later readiness step, so
-   the `reason` on the `teleport_result` has to be actionable, not just
-   accurate — it must name which questions are outstanding, the same way
-   `send_result.reason` names a route failure rather than just reporting
-   "failed." A refusal a model cannot act on is a refusal it will simply
-   retry against the same wall.
+1. refuses if any of `events.openQuestions(callerName)` has an id the handoff
+   text does not contain. This check used to gate a separate readiness call
+   (see the superseded §4.2 below); it moves here because there is no longer
+   a second call to gate. It used to refuse on any open question, for a
+   mechanical reason: `BrokerCore.answer` resolves the recipient with
+   `events.authorOf(msgId)` and delivers by **name**, so an answer landing
+   while no live connection held the name was appended and delivered to
+   nothing. That reason no longer holds (CC-1089): the successor keeps the
+   name, an answer that lands while the name is dark is held and pushed when
+   the successor registers (CC-301), and the broker appendix lists the
+   questions still open (CC-524). What remains is that the successor must
+   know a question exists before its answer arrives, so the predecessor
+   names each open question id in the handoff, or answers it. Matching is an
+   exact substring of the 8-hex msgId, with no prefix or fuzzy match. The
+   restated ids are recorded on the `agent_handoff` row as
+   `meta.questions`. A refusal names only the ids the handoff leaves out,
+   with their text: a refusal a model cannot act on is a refusal it will
+   simply retry against the same wall, which is what CC-1089 recorded when
+   the old text said "restate them in the handoff" and then refused the
+   restatement.
 2. reads the caller's identity, live tags, subscriptions and allocation from
    its own connection and its `agent_spawned` row, for use in step 5;
 3. appends `agent_handoff` — actor the predecessor's name, `ref` its agentId,
@@ -252,6 +255,116 @@ escalation and calling it a handoff: an `explorer` could teleport into an
 `implementer`. There is deliberately no such argument, for the same reason
 `loadProfile` resolves by name only and refuses to take a profile body.
 
+**The surface is the one exception (CC-951).** A surface is a window, not a
+privilege, and a recorded one may not exist where the successor lands: an
+adopted session on the linux broker used to be handed `iterm-tab` and refused.
+`agent_teleport` takes an optional `surface`. With none, `chooseSurface` picks,
+for the destination's OS: the seat file's `surfaces:` entry for that machine
+(or its legacy `surface:`), then the predecessor's recorded surface, each only
+when that OS can run it, then the OS default (`tmux-window` on Linux,
+`iterm-tab` on macOS). The destination is the broker's host, or for a caller on
+another host its own OS, which its MCP process reports as `hostPlatform`. A
+named surface the destination cannot run is refused before the handoff row is
+written, and a named surface opens fresh rather than in the predecessor's pane.
+The seat watchdog's resume (CC-320) picks by the same rule for the broker's
+host, so a seat declared `surface: iterm-window` comes back in a tmux window on
+the linux broker instead of being refused and falling back to headless. There
+the seat file outranks the agent record, which may hold an earlier headless
+fallback, and a seat that names nothing anywhere still resumes headless.
+
+**The destination machine (CC-951).** `agent_teleport` also takes an optional
+`to`: an alias from `config.json`'s `machines` (alias → hostname, for example
+`{"mac": "<mac hostname>", "basement": "<server hostname>"}`) or a bare hostname,
+matched without case. `resolveDestination` (`agents/teleport-destination.ts`)
+maps it to a launch site: `broker` when it is the broker's own host, `caller`
+when it is the predecessor's own host on another machine (the CC-881 path), and
+`launcher` when a host launcher is connected for it. With no `to`, the
+successor stays on the predecessor's own host, never the broker's by default.
+An unknown machine, or a configured one with no launcher connected, is refused
+with the list of known machines. A move off the predecessor's host is refused
+when the predecessor has any isolation other than `none`, because a worktree or
+a sandbox exists only on its own host. All of these are refused before the
+handoff row is written, so nothing is ended.
+
+**The host launcher site (CC-951).** A machine with no live predecessor on it
+(basement → Mac) is reached through a host launcher: a connection of its own
+that sends `host_hello` with its host, platform and the surfaces it can open.
+The client that sends it is `agent-chat host serve` (below). The broker keeps launchers in `HostDirectory`
+(`broker/host-directory.ts`), one per machine and presence-only: an entry goes
+when its connection closes. The first live launcher holds its machine, and a
+second connection naming the same machine (in any case) is refused while the
+holder is connected, so it cannot take over that machine's probes and launches.
+When `config.json` sets `machines`, only those hostnames may be announced. The
+session guard is per connection: a registered connection cannot send
+`host_hello`, and a launcher's connection cannot register. A session can still
+open a second connection, so the trust boundary is the first-wins rule and the
+`machines` list, on top of the OS account.
+
+Before the handoff is written, teleport refuses a surface the launcher's
+platform or its announced surfaces cannot run, and a cwd or config dir that is
+not an absolute, normalised path strictly under the home directory (shared
+across this deployment's machines) or that sits in a credential directory. It
+then sends `host_probe` with the cwd, config dir and surface, and refuses with
+the launcher's own reason (a missing path) or "did not answer within 10s". The
+launcher also refuses, at the probe and again at launch, a cwd its account's
+`.claude.json` (the config dir's, or `~/.claude.json`) can be read and does not
+trust, since the successor would sit on the workspace trust prompt with nobody
+to answer it (CC-1081). It never seeds trust: the owner runs `claude` there once
+and accepts it. An unreadable config launches as before. At
+the end of the countdown the paths are checked again, the successor's row is
+recorded here, and its launch (with that cwd and config dir) goes out as
+`host_launch`. A refusal, a timeout or a launcher disconnect releases the
+successor and keeps the predecessor. Once the successor attaches, the
+predecessor is ended successor first, locally or by its own `endSelf`. A
+successor on another machine holds no agent slot here, so the predecessor's
+slot is released when it stands down.
+
+A request is held as in flight from its preflight until it is pending or
+refused, so a second teleport for the same session sent during the probe's wait
+is refused as already teleporting. After the probe, a predecessor that no
+longer holds its name on a live connection, from the same Claude Code pid it
+had at preflight, gets no handoff.
+
+**`agent-chat host serve|list|install` (CC-951 g2).** `host serve`
+(`server/host-launcher.ts`) opens its own connection to the broker socket,
+announces `os.hostname()` (or `--host`), its platform, and the surfaces it can
+open (iTerm2 only on macOS, `tmux-window` only where `tmux` runs, `headless`
+always), and reconnects every 5s after a drop, so a broker restart does not
+strand it. It never autostarts a broker. The broker checked the paths only
+lexically, so the launcher resolves the cwd and config dir through realpath on
+its own disk and refuses one that is missing, resolves into a credential
+directory (compared case-insensitively, which fails closed), or resolves outside
+its home. It then runs `checkLaunch` (the same
+allowlist as the caller path) and builds the plan with the spec's cwd and
+`CLAUDE_CONFIG_DIR` set to the spec's config dir, never its own, and always opens
+a new surface: a launcher never reuses a pane. `host list` asks the broker for
+the connected launchers. `host install` is print-only: it prints the kept-alive
+launchd plist (`dev.hjewkes.agent-chat-host-launcher`) on macOS, or the systemd
+--user unit on Linux, that runs `host serve`, with the path to write it to and
+the `launchctl bootstrap` or `systemctl --user enable --now` command. It writes
+and loads nothing, because installing a login job is the owner's step.
+
+A launch whose answer the broker never sees is retired there (the broker keeps
+the predecessor), so the launcher makes sure that successor never runs as a
+live identity. It answers within 45s, before the broker's 60s window; a surface
+that has not opened by then gets a refusal. A launch that did open but whose
+answer cannot be delivered (the connection closed) is treated the same way. In
+both cases the successor is marked superseded on the launcher's machine, so the
+stale-session guard blocks its prompts, and the broker refuses the retired
+identity's registration, so it never holds the name. Its window stays open for
+the human to close.
+
+**`agent-chat teleport request <name> [--surface <s>] [--to <m>]` (CC-951 c).**
+The owner's way to move a seat, and a request, not a force: the broker resolves a
+teleport's subject from the caller's own connection, so the CLI sends no
+`teleport` frame. It checks the surface against the five names and `--to`
+against the `machines` aliases or a hostname's characters, and sends nothing
+when either fails. Otherwise it sends the session one message as the human
+(`human_send`) asking it to write its State at teleport section and call
+`agent_teleport` with those arguments. The destination, surface and path checks
+above then run as for any teleport. A wedged seat that cannot take a turn
+needs the owner's own hand, not this verb.
+
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
 returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same
@@ -356,6 +469,85 @@ being free. That would need its own naming answer again: either the
 generation-suffix workaround this revision deleted, or a broker-only rename
 door, or something not yet designed. Do not assume the current naming
 decision still holds once an overlap exists.
+
+**Reopened by CC-951: successor first, on the local path.** The owner asked
+that the old session end only after the new one registers, so this section
+was reopened and the overlap came back. It is kept short, and the eviction
+race above is now the readiness gate on purpose:
+
+1. The broker launches the successor while the predecessor is still running.
+   `relaunch` keeps the predecessor's supervisor entry (`successorFirst`).
+2. The successor registers under the base name. `BrokerCore` passes
+   `Registry.register` a `succeeds` argument. That is the successor's own
+   `teleport_from`, read from the log and only while its identity is still
+   `spawning`. It is never a frame field. The registry then evicts the holder
+   whose `agentId` matches, the same way it does for a resume. The detach row
+   reads `superseded by teleport successor`.
+3. On the successor's `agent_attached`, the predecessor is stood down. Its
+   supervisor entry is dropped, its host pid is signalled, and it is retired.
+   The severed predecessor's MCP server may restart and re-register, and that
+   is refused, because its name is held by a different `agentId`.
+4. If the successor does not attach within `LAND_WINDOW_MS`, or its launch
+   fails, there are two cases.
+   - **The predecessor is still running.** The successor's row is retired
+     unused. The successor itself is stopped: its headless process, or the
+     surface the broker opened for it. The predecessor gets back its slot and
+     its stale-session marker is cleared. It was never signalled, and it is
+     told that it is still live.
+   - **The predecessor has already ended.** The predecessor is retired. The
+     successor's row is kept, so its relaunch script can still start it, and
+     the human is told how. This is the same outcome as a failed v0 teleport.
+
+   A retry that is skipped because the successor's run-agent is already
+   running is not a failure. The broker keeps waiting for the attach.
+
+While a successor is starting, the predecessor's supervisor entry is marked
+`teleporting`. A headless predecessor usually exits on its own at the end of
+its turn. That exit records `agent_exited` and nothing else. The completion
+hook, the report check and auto-retire are skipped, and its slot stays with
+the successor. The teleport then knows the predecessor has gone.
+
+The "dead bus" state above still exists. It lasts from the eviction to the
+SIGTERM, which is the same tick. Pane reuse stays end-first (§4.3, CC-402): a
+command typed into a pane whose Claude Code is still alive is swallowed. So a
+predecessor with an anchor and no requested surface is ended before its
+successor launches, as before.
+
+**A predecessor on another host (CC-951 f).** The broker cannot signal a process
+on another host, so a remote predecessor ends itself. Its MCP process waits on
+`teleport_plan`, and the broker answers `endSelf` when the successor attaches.
+The caller then ends its own Claude Code and writes no launch files. Two moves
+work this way:
+
+- **To the broker's host** (`to` names it). The broker checks that the
+  predecessor's cwd and config dir exist on its own host before it writes the
+  handoff, and refuses otherwise with nothing ended. It then launches the
+  successor itself, on its own platform's surface and without the remote
+  pane's anchor.
+- **A new surface on the caller's own host** (`surface` given, no `to`). The
+  spec carries `successorFirst`. The helper launches at once (`--now`) instead
+  of waiting for the predecessor's pid to exit. After the broker accepts the
+  report, the caller asks for a second plan, which is the `endSelf`. With no
+  surface given, the CC-913 order stays: the predecessor ends first, and the
+  helper launches the successor once its pid exits.
+
+The successor's registration evicts the predecessor's connection. The `endSelf`
+reply must reach the predecessor before that close: after the fatal frame its
+MCP process exits, and nothing on its host can end its Claude Code any more. So
+the socket ends an evicted connection one tick after the registration. The MCP
+server also exits one tick after a fatal frame, so an `endSelf` read in the same
+chunk still runs first. If the successor never attaches, the plan answers
+`ok: false`, and the predecessor is told it is still live.
+
+`endSelf` goes only to a predecessor that is still waiting and can act on it.
+The caller's MCP process sends `endsSelf` on its `teleport` frame. Without it,
+which means an older build, a move to the broker's host is refused before the
+handoff, and a requested surface keeps the CC-913 order. Such a build would be
+evicted with its Claude Code still running. The caller's `teleport_plan` wait
+lasts 7 minutes, which outlasts the countdown plus the broker's 5-minute
+`LAND_WINDOW_MS` attach wait. The `endSelf` plan is re-armed before the launch
+report is acknowledged, so the caller's second wait cannot get the launch plan
+back.
 
 ---
 
@@ -469,20 +661,21 @@ treat a post-teleport stall as a permission stall until proven otherwise.
 
 ## 8. (c) What else carries across
 
-| Thing                                | Carries?                        | How, and the failure if not                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Handoff text                         | yes                             | The descendant's brief, delivered as its first turn.                                                                                                                                                                                                                                                                                                                                                          |
-| Profile, model, tool lists, surface  | yes, pinned                     | No parameter to change them (§5).                                                                                                                                                                                                                                                                                                                                                                             |
-| cwd / worktree                       | yes                             | The predecessor's _allocated_ cwd, not a re-allocation (§9).                                                                                                                                                                                                                                                                                                                                                  |
-| Tags                                 | yes                             | Read from the predecessor's live registry entry via `Registry.tagsOf`, passed as `AGENT_CHAT_TAGS`. Tags are registry-only and ephemeral; the predecessor is connected when it teleports, so they are readable exactly then.                                                                                                                                                                                  |
-| Subscriptions                        | yes                             | Same source, passed as `AGENT_CHAT_SUBSCRIPTIONS`, applied at the descendant's own registration before its first turn. Needs a small `Registry.subscriptionsOf(conn)` accessor — `Entry.subscriptions` exists, nothing exposes it today.                                                                                                                                                                      |
-| Registered name                      | **yes**                         | The descendant registers under the predecessor's base name once the predecessor's connection is fully closed (§5.1). Resolved D1.                                                                                                                                                                                                                                                                             |
-| Lineage (generation, predecessor id) | new, not carried but advertised | `meta.generation`/`meta.teleport_from` on the descendant's spawn row, projected into the roster as `gen=`/`from=` (§10.1). Not a v1 gap — a deliberate, broker-derived addition that replaces "peers address a name that stops resolving" as the way lineage is visible.                                                                                                                                      |
-| Open human-queue questions           | **no** — blocked instead        | `agent_teleport` refuses while any remain (§4.1 step 1). Transferring them would require rewriting the `actor` of logged rows, which an append-only log will not do, and leaving them would silently orphan the human's answers.                                                                                                                                                                              |
-| Inbox                                | no                              | `EventLog.inboxFor` keys on `target` name. Unread messages to the predecessor stay addressed to it. The predecessor should drain and summarise them in the handoff; nothing enforces that.                                                                                                                                                                                                                    |
-| File-ownership claims                | follows isolation               | Claims are a lease held by presence — `file-ownership.ts` builds the manifest from currently-connected agents. With no overlap (§4), the predecessor's connection is gone before the descendant's allocation exists, so there is no window where both are simultaneously counted as claimants — the descendant re-declares them via its inherited allocation (§9), it does not race the predecessor for them. |
-| Terminal anchor                      | yes, incidentally               | `terminalAnchor()` is read by the descendant's own MCP process from its own environment.                                                                                                                                                                                                                                                                                                                      |
-| Transcript / conversation            | **no, and deliberately**        | A clean context window is the feature.                                                                                                                                                                                                                                                                                                                                                                        |
+| Thing                                | Carries?                        | How, and the failure if not                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Handoff text                         | yes                             | The descendant's brief, delivered as its first turn.                                                                                                                                                                                                                                                                                                                                                                                    |
+| Profile, model, tool lists, surface  | yes, pinned                     | No parameter to change them (§5).                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Launch flags (CC-951)                | yes, allowlisted                | `--channels` targets beside agent-chat's own, `--permission-mode` (default, acceptEdits, plan or auto; never a bypass) and `--effort` when the profile names none. The broker reads a local predecessor's argv with `ps`; a caller on another host reads its own and sends it as `launchSeen`, which the broker re-checks and the caller's launch checks a third time in `checkLaunch`. A headless successor stays pinned to `default`. |
+| cwd / worktree                       | yes                             | The predecessor's _allocated_ cwd, not a re-allocation (§9).                                                                                                                                                                                                                                                                                                                                                                            |
+| Tags                                 | yes                             | Read from the predecessor's live registry entry via `Registry.tagsOf`, passed as `AGENT_CHAT_TAGS`. Tags are registry-only and ephemeral; the predecessor is connected when it teleports, so they are readable exactly then.                                                                                                                                                                                                            |
+| Subscriptions                        | yes                             | Same source, passed as `AGENT_CHAT_SUBSCRIPTIONS`, applied at the descendant's own registration before its first turn. Needs a small `Registry.subscriptionsOf(conn)` accessor — `Entry.subscriptions` exists, nothing exposes it today.                                                                                                                                                                                                |
+| Registered name                      | **yes**                         | The descendant registers under the predecessor's base name once the predecessor's connection is fully closed (§5.1). Resolved D1.                                                                                                                                                                                                                                                                                                       |
+| Lineage (generation, predecessor id) | new, not carried but advertised | `meta.generation`/`meta.teleport_from` on the descendant's spawn row, projected into the roster as `gen=`/`from=` (§10.1). Not a v1 gap — a deliberate, broker-derived addition that replaces "peers address a name that stops resolving" as the way lineage is visible.                                                                                                                                                                |
+| Open human-queue questions           | **no** — blocked instead        | `agent_teleport` refuses while any remain (§4.1 step 1). Transferring them would require rewriting the `actor` of logged rows, which an append-only log will not do, and leaving them would silently orphan the human's answers.                                                                                                                                                                                                        |
+| Inbox                                | no                              | `EventLog.inboxFor` keys on `target` name. Unread messages to the predecessor stay addressed to it. The predecessor should drain and summarise them in the handoff; nothing enforces that.                                                                                                                                                                                                                                              |
+| File-ownership claims                | follows isolation               | Claims are a lease held by presence — `file-ownership.ts` builds the manifest from currently-connected agents. With no overlap (§4), the predecessor's connection is gone before the descendant's allocation exists, so there is no window where both are simultaneously counted as claimants — the descendant re-declares them via its inherited allocation (§9), it does not race the predecessor for them.                           |
+| Terminal anchor                      | yes, incidentally               | `terminalAnchor()` is read by the descendant's own MCP process from its own environment.                                                                                                                                                                                                                                                                                                                                                |
+| Transcript / conversation            | **no, and deliberately**        | A clean context window is the feature.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 **"The right files auto-loaded"** deserves honesty: there is no file-loading
 mechanism in the launch path. The levers are `--add-dir` (via

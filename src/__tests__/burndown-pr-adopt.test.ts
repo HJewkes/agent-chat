@@ -836,6 +836,22 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     expect(shepherdListed(exec)).toEqual(listing(['acme/widgets#7'], ['agent-chat/sa-t-2']))
   })
 
+  it('lists an open PR whose only run is cancelled, so the owner’s cancel is not undone (TP-2516)', () => {
+    const exec: Runner = (_bin, args) => ({
+      status: 0,
+      stdout: args.includes('--all')
+        ? JSON.stringify([
+            { repo: 'Acme/Widgets', pr: 7, branch: 'agent-chat/sa-t-1-widget', phase: 'cancelled' },
+          ])
+        : '[]',
+    })
+    const f = fake({ pulls: [pull()], tasks: [task()], listed: shepherdListed(exec) })
+
+    tick(f)
+
+    expect(f.registered).toEqual([])
+  })
+
   it('names a checkout’s GitHub repo from its origin, ssh or https', () => {
     const at =
       (url: string): Runner =>

@@ -6,8 +6,10 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   BODY_FILE_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
+  PROBE_SANDBOX_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
+  REVIEW_TREE_RULE,
   REVIEWER_BODY_FILE_RULE,
 } from '../agents/return-contract-blocks.js'
 import { checkCommand, guardContext, type GuardContext } from '../leak-guard/pretool.js'
@@ -61,7 +63,9 @@ const PLACEHOLDERS: Record<string, string> = {
   '<f>': 'pr-body.md',
   '<t>': 'T',
   '<rev>': 'HEAD',
+  '<dir>': '"$dir"',
   '<path>': 'README.md',
+  '<literal path>': 'README.md',
   '#<n>': '#1',
   '<initiative>': 'demo',
   '<your name>': 'tc-demo',
@@ -160,8 +164,36 @@ describe('the repo profile templates', () => {
     expect(prelude).toContain(QUOTE_RULE)
   })
 
+  // CC-713. Mutation caught: deleting the sentence from profiles/bd-reviewer.json.
+  it('bd-reviewer carries the probe-sandbox rule', () => {
+    const file = path.resolve(import.meta.dirname, '../../profiles/bd-reviewer.json')
+    const prelude = (JSON.parse(fs.readFileSync(file, 'utf8')) as { promptPrelude: string }).promptPrelude
+    expect(prelude).toContain(PROBE_SANDBOX_RULE)
+  })
+
   it('has the implementer delete its pr-ready file and the reviewer write none', () => {
     expect(BODY_FILE_RULE).toContain('deleted after')
     expect(REVIEWER_BODY_FILE_RULE).toContain('write no file')
+  })
+})
+
+// CC-1184: base, old and head trees each installed per review exhausted /tmp inodes.
+describe('one installed checkout per review', () => {
+  it('the reviewer block teaches an uninstalled base tree and keeps the stash ban', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEW_TREE_RULE)
+    expect(REVIEW_TREE_RULE).toContain('git worktree add --detach')
+    expect(REVIEW_TREE_RULE).toContain('without installing')
+    expect(REVIEW_TREE_RULE).toContain('never `git stash`')
+    expect(REVIEW_TREE_RULE).toContain('Remove trees at verdict')
+  })
+
+  it('the orchestration skill says the same in its PR-gating bullet', () => {
+    const file = path.resolve(
+      import.meta.dirname,
+      '../../plugins/agent-chat/skills/agent-orchestration/SKILL.md',
+    )
+    const bullet = fs.readFileSync(file, 'utf8').split('- PR gating:')[1]?.split('\n- ')[0] ?? ''
+    expect(bullet.replace(/\s+/g, ' ')).toContain('one installed checkout per review')
+    expect(bullet).toContain('git worktree add --detach')
   })
 })

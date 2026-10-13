@@ -1,5 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  resolveSeatPolicy,
+  type CharterPolicy as CoordinatorCharter,
+  type SeatConfig,
+} from '@titan-design/coordinator'
 import { parse } from 'yaml'
 import { z } from 'zod'
 import { activeWorkRoot } from '../active-work.js'
@@ -40,10 +45,11 @@ const Defaults = z.looseObject({
   size: z.object({ le3: z.number(), le8: z.number(), gt8: z.number() }),
   stop_short_factor: z.number(),
   gate_free_bonus: z.number().positive().optional(),
-  worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
   /** CC-861: idle days before the tick flags a seat's unregistered PR. */
   stale_pr_days: z.number().int().nonnegative().optional(),
+  /** CC-317: thousands of context tokens past which a seat teleports itself. */
+  teleport_k: z.number().optional(),
 })
 
 // An unset human_uses reads as true, which keeps the stricter five_hour ceiling.
@@ -107,10 +113,18 @@ const Seat = z.looseObject({
   scope_tags: orEmpty(z.array(z.string()), []),
   /** CC-779: a file under the autonomy root whose task IDs are in scope whatever their tags. */
   backlog: z.string().min(1).optional(),
+  /** CC-1128: the accepted factory plan, relative to the autonomy root or absolute; its section 2 ids are in scope. */
+  plan_file: z.string().min(1).optional(),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
+  /** TP-1974 a: hard stops this seat adds to the charter's; a seat can never remove one. */
+  extra_hard_stops: orEmpty(z.array(z.string()), []),
+  /** TP-1974 a: charter defaults this seat overrides; `stop_short_factor` may only go down. */
+  defaults: Defaults.partial().optional(),
   stale_pr_days: z.number().int().nonnegative().optional(),
   pool: z.string().optional(),
+  /** CC-1145: the pool the tick bills last in `poolPick: enforce`, after the pick's order and the home pool. */
+  overflow_pool: z.string().optional(),
   /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
   cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
   spend: orEmpty(
@@ -132,7 +146,9 @@ export interface Policy {
   charter: CharterPolicy
   seats: Record<string, SeatPolicy>
   seat: SeatPolicy
-  /** The charter's defaults with the seat's `kind_weights` and `share_caps` merged over them key by key. */
+  /** The charter's hard stops plus the seat's `extra_hard_stops`, as coordinator `resolveSeatPolicy` unions them. */
+  hardStops: string[]
+  /** The charter's defaults with the seat's overrides, as coordinator `resolveSeatPolicy` merges them. */
   defaults: ScoringDefaults
 }
 
@@ -156,14 +172,21 @@ export function dormantInitiatives(seat: SeatPolicy): Set<string> {
   return new Set(seat.repos.filter(r => r.live_after !== undefined).flatMap(r => r.initiatives))
 }
 
-/** score.py merges only these two keys; every other default is charter-only. */
-export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): ScoringDefaults {
-  return {
-    ...charter.defaults,
-    kind_weights: { ...charter.defaults.kind_weights, ...seat.kind_weights },
-    share_caps: { ...charter.defaults.share_caps, ...seat.share_caps },
-  }
+/**
+ * TP-1974 a: one seat's hard stops and scoring defaults through coordinator `resolveSeatPolicy`. It reads only the
+ * charter's `hard_stops` and `defaults` and the seat's `extra_hard_stops`, `defaults`, `kind_weights` and `share_caps`,
+ * which agent-chat's schemas carry without coordinator's full v1 envelope, hence the casts.
+ */
+export function resolveSeat(
+  charter: CharterPolicy,
+  seat: SeatPolicy,
+): Pick<Policy, 'hardStops' | 'defaults'> {
+  const resolved = resolveSeatPolicy(charter as unknown as CoordinatorCharter, seat as unknown as SeatConfig)
+  return { hardStops: resolved.hard_stops, defaults: resolved.defaults as unknown as ScoringDefaults }
 }
+
+export const mergeDefaults = (charter: CharterPolicy, seat: SeatPolicy): ScoringDefaults =>
+  resolveSeat(charter, seat).defaults
 
 export const defaultAutonomyRoot = (root = activeWorkRoot()): string => currentAutonomyRoot(root)
 
@@ -178,7 +201,7 @@ export function loadPolicy(root: string, seatName: string): Policy {
   )
   checkSeatPrefixes(seats)
   const seat = seats[seatName] as SeatPolicy
-  return { charter, seats, seat, defaults: mergeDefaults(charter, seat) }
+  return { charter, seats, seat, ...resolveSeat(charter, seat) }
 }
 
 /**

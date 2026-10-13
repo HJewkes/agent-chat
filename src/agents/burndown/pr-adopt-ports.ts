@@ -109,7 +109,7 @@ export function changedFiles(target: ShepherdTarget, exec: Runner): ChangedFile[
   return files
 }
 
-const jsonLines = (stdout: string): unknown[] =>
+export const jsonLines = (stdout: string): unknown[] =>
   stdout
     .split('\n')
     .filter(line => line.trim() !== '')

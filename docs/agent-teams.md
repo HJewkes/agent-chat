@@ -779,6 +779,57 @@ launch. Three reasons, all of them load-bearing:
 3. **One budget.** The semaphore and the depth cap (§11.3) need exactly one
    enforcement point. Per-session enforcement is not enforcement.
 
+**Spawning from another host (CC-1059).** When the requester's MCP process runs on
+another host from the broker (a Mac reaching basement's broker through the tunnel),
+the broker still owns the identity, the slot and every row, but it cannot read that
+host's disk or open its terminal. A requester that sends `launchesHere` launches on
+its own host by default; `host` (an alias from config `machines`, or a hostname)
+picks another, and a host with no way to launch there is refused, naming the known
+machines. For that caller site the broker runs only host-neutral gates (name,
+profile, role, seat gates, escalation, rate, brief lint, account policy) plus the
+lexical cwd policy against the requester's home, and picks the surface by the
+requester's OS. An explicit surface that OS cannot run is refused, never replaced.
+It writes `agent_spawned` with `host` and `site: caller` and returns a host-neutral
+`RemoteLaunch`. The requester checks the cwd and account on its own disk, writes
+the launch, reports ready, opens the surface only after the ack, and reports
+placed. A refused or failed report, no ready report within a minute, or no
+registration within the attach ceiling, retires the identity and frees its slot
+(`src/agents/remote-spawn.ts`). v1 refuses worktree and file-ownership isolation,
+an assigned worktree, `owns`, `claim_paths`, `inherit: context` and
+`resume_session` on the caller site: each needs that host's git or transcripts.
+`host: <broker host>` launches on the broker as before. A requester without
+`launchesHere` (an older build) keeps today's broker launch.
+
+On the wire, `spawn_result` carries `launch` and `host` for a caller-site spawn.
+The requester answers with `spawn_launched {agentId, ok, reason?}` (ready, or
+refused on its host), and an ok `spawn_launched_result` is its only go to open the
+surface. Then it sends `spawn_placed`, whose `spawn_placed_result` (the
+`spawn_result` shape) comes once the agent registers, fails, or the attach window
+passes. The socket accepts both reports only from the connection that received the
+launch. A session's host comes from its registration and never its frame. Only the
+CLI, which holds no registration, names its own with `callerHost`.
+
+Both clients run that half (`src/server/caller-spawn.ts`): the `agent_spawn` tool,
+whose `host` argument picks the machine, and `agent-chat agent spawn --host
+<machine>`. Each sends `launchesHere`, its OS and home, and returns the
+`spawn_placed_result` verdict in place of the pending `spawn_result`, naming the
+host (`Spawned "x" (id) on mac`). A lost `spawn_placed_result` is reported as
+placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
+exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
+the old placement.
+
+Once registered, an agent on another host is known by its spawn row's `host`, which
+`agent_list` shows. The broker can read neither its pids nor its Claude Code session
+records, so a detach that outlasts the settle window is the exit: `agent_exited` is
+inferred with a body naming the host, and the slot taken at spawn is released. A
+reattach after that reopens the row and takes a slot again. Retire cannot signal a
+pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
+connection, and that MCP process ends its own Claude Code when the id is its own
+(`src/server/end-self.ts`). The `agent_retired` row says `reaped:
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
+
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
 A spawned agent starts from its brief and nothing else, so in practice every
@@ -1078,6 +1129,23 @@ every read-only profile kept a shell. Note the supervisor consumes only
 `profile.*` via the launch plan, so returning a deny list from a strategy alone
 changes nothing.
 
+**Symlinked active-work dirs are granted after allocation (CC-236).** Claude Code
+prompts for a Write whose path is lexically inside the cwd but resolves outside
+every working directory, even under a bare `Write` allow rule. A headless worker
+cannot answer that prompt. Its turn ends BLOCKED. A workspace whose top-level
+`sources` links into the active-work root hit exactly this. So once `allocate` has
+run, `withLinkedDirs` (`agents/linked-dirs.ts`) adds the realpath of each
+top-level cwd symlink that resolves under the active-work root and outside the
+cwd to `allocation.addDirs`. It also appends `<cwd>/<link> is <real>; write there
+by either path` to the brief note. Links to anywhere else, such as sibling repos,
+are not granted, so a read-only verifier's write reach does not grow. The grant is
+written to runtime state before launch, so resume and teleport inherit it. Then
+`crossingBriefPaths` (`agents/brief-paths.ts`) checks each file path the brief
+names under the cwd. If one still resolves through an ungranted symlink to
+somewhere outside the cwd, `spawn_result.warnings` gets a line naming the path
+and its real target. The warning is advisory and never refuses the spawn. A
+worktree allocation's cwd normally holds no such links, so it gets no grant.
+
 #### 7.3 Composition
 
 `toolset-limited` is really a decorator over any of the others. The interface
@@ -1154,6 +1222,12 @@ spawn request
 fails, the identity exists in a `spawning` state with a failure appended — which
 is what you want when debugging why a pane never opened. The reverse order loses
 failed spawns entirely.
+
+**On Linux each launch gets its own TMPDIR** (CC-901), `/tmp/ac-<name>-<launcher pid>`,
+removed when `run-agent` exits and by the broker's sweep. A reviewer spawn (CC-1184) gets it
+on disk instead, at `~/.cache/agent-chat/tmp/ac-<name>-<launcher pid>`, with the same exit
+removal and sweep. Its review checkouts under `$TMPDIR/<name>` each carry an install, and a
+few at once fill the inodes of the 1M-inode /tmp tmpfs. Implementers and macOS are unchanged.
 
 #### 8.1 Exit detection differs by surface, and presence papers over it
 
@@ -1410,6 +1484,12 @@ and for an agent that has not exited. A row with `presence: "exited"` and `infer
 does not prove the process stopped writing: a reboot or a dead launcher can leave a
 reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
 
+`agent ls` shows each live agent's context fill against its role's retire threshold, as
+`ctx=212k/200k` (CC-290). The thresholds are `DEFAULT_CONTEXT_HINTS`, overridable by
+`contextHints` in config. `retire-due` follows when the agent is past its threshold and has
+sent a `Status:` or `Verdict:` report to its spawner, or to `tick.reportTo` for a burndown
+spawn. `--json` rows carry `contextK`, `retireK` and `retireDue`, each null when unread.
+
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
 cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,
@@ -1449,6 +1529,18 @@ rules, so a tree another agent works in, a dirty tree, or an unpushed one stays.
 the agent. Neither step deletes the branch. An agent with no tree, such as a reviewer, is only
 retired. The park and the retire write their usual seat-journal lines. A kept agent is logged as
 `auto_retire_kept` with the reason, and a retired one as `auto_retired`.
+
+Park at exit (CC-1039) is on by default. When a spawned agent that is not a reviewer exits
+normally, the broker parks its allocated tree under the `agent park` rules without waiting for CI
+and without the CC-921 opt-in. Normally means the exit did not fail, was not cancelled, and is not
+about to be resumed for a pending background task. The branch is kept, and `agent resume`
+re-creates the tree for a fix round. A tree counts as pushed when origin's current branches, read
+with `ls-remote`, contain HEAD under any name, so a PR head pushed under another branch name
+counts too. A dirty tree, an unpushed commit, a process still in the tree, another unretired
+tenant, or a held burndown claim in any phase but `awaiting-merge` or `shepherding` keeps the tree.
+A kept tree is logged as `implementer_park_kept` with the reason, and a parked one as
+`implementer_parked`. Set `"autoPark": { "onExit": false }` in `~/.agent-chat/config.json` to turn
+it off. The key is read on each exit. This replaces CC-276's practice of parking once CI is green.
 
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan

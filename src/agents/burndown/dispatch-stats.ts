@@ -1,10 +1,12 @@
 import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
+import { inferWorkRole } from '../spawn-provenance.js'
 import type { Ledger } from './ledger.js'
 import { NO_DISPATCH_PREFIX } from './no-dispatch.js'
 import { BRIEF_SOURCES, type BriefSource } from './task-tags.js'
 import type { VerdictObservation } from './waste.js'
 import {
   TICK_SUMMARY_VERSION,
+  type NamedRefusal,
   type RegisterCounts,
   type SeatSummary,
   type TickSummaryRow,
@@ -49,15 +51,32 @@ export interface ReadyFloor {
   longestBelowMinutes: number
 }
 
+/** CC-965: implementer spawns split by spawner; fix rounds are counted apart and stay out of `handShare`. */
+export interface ImplementerCounts {
+  tick: number
+  hand: number
+  fixRound: number
+  /** `hand / (tick + hand)`, to two places; null when the seat spawned no implementer. */
+  handShare: number | null
+}
+
 export interface SeatDispatchStats {
   seat: string
   since: string
-  spawns: { tick: number; hand: number; tickPerHour: number; handPerHour: number; lastTickAt: string | null }
+  spawns: {
+    tick: number
+    hand: number
+    tickPerHour: number
+    handPerHour: number
+    lastTickAt: string | null
+    implementers: ImplementerCounts
+  }
   queue: { depth: number; p50Minutes: number | null; maxMinutes: number | null }
   ready: Pick<SeatSummary, 'ready' | 'unbriefed' | 'stale'> | null
   readyFloor: ReadyFloor
   caps: SeatSummary['roles'] | null
   refusals: RefusalMix | null
+  trust: NamedRefusal[] | null
   registrations: RegisterCounts
   tick: {
     lastAt: string | null
@@ -119,6 +138,21 @@ export function spawnCounts(
     }
   }
   return counts
+}
+
+const round2 = (n: number): number => Math.round(n * 100) / 100
+
+/** The window's implementer spawns, tick against hand as `spawnCounts` splits them, fix rounds set apart. */
+export function implementerCounts(log: string | undefined, sinceMs: number): ImplementerCounts {
+  const counts = { tick: 0, hand: 0, fixRound: 0 }
+  for (const r of foldDispatch(log ?? '').records) {
+    if (r.spawner === null || r.ts === null || Date.parse(r.ts) < sinceMs) continue
+    const role = inferWorkRole(r.profile ?? '', r.agent)
+    if (role.startsWith('fix-round-')) counts.fixRound += 1
+    else if (role === 'implementer') counts[r.spawner === 'burndown' ? 'tick' : 'hand'] += 1
+  }
+  const total = counts.tick + counts.hand
+  return { ...counts, handShare: total === 0 ? null : round2(counts.hand / total) }
 }
 
 /** The seat's `queued` claims, aged from when they entered the queue. */
@@ -229,7 +263,7 @@ export function readyFloor(rows: readonly TickSummaryRow[], seat: string, floor:
   }
 }
 
-const perHour = (n: number, windowMs: number): number => Math.round((n / (windowMs / HOUR_MS)) * 100) / 100
+const perHour = (n: number, windowMs: number): number => round2(n / (windowMs / HOUR_MS))
 
 interface Window {
   sinceMs: number
@@ -240,7 +274,8 @@ interface Window {
 }
 
 function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDispatchStats {
-  const spawns = spawnCounts(ports.dispatchLog(seat), w.sinceMs)
+  const log = ports.dispatchLog(seat)
+  const spawns = spawnCounts(log, w.sinceMs)
   const last = w.rows.at(-1)
   const summary = last?.seats[seat]
   const fromRow: RefusalMix | undefined =
@@ -254,6 +289,7 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
       ...spawns,
       tickPerHour: perHour(spawns.tick, w.windowMs),
       handPerHour: perHour(spawns.hand, w.windowMs),
+      implementers: implementerCounts(log, w.sinceMs),
     },
     queue: queueAges(w.ledger, seat, ports.now),
     ready:
@@ -263,10 +299,14 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
     readyFloor: readyFloor(w.rows, seat, w.floor),
     caps: summary?.roles ?? null,
     refusals: fromRow ?? latestJournalRefusals(ports, seat, w.sinceMs),
+    trust: summary === undefined ? null : (summary.trust ?? []),
     registrations: sumRegistrations(w.rows, seat),
     tick: tickHealth(ports, last, seat),
   }
 }
+
+/** CC-967: the ready depth a seat should hold, twice the config's `maxAgents`; CC-986 plans below it. */
+export const readyFloorFor = (maxAgents: number): number => 2 * maxAgents
 
 /** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
 export function dispatchStats(
@@ -280,7 +320,7 @@ export function dispatchStats(
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
-    floor: floor ?? 2 * ports.maxAgents(),
+    floor: floor ?? readyFloorFor(ports.maxAgents()),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
 }
@@ -301,8 +341,15 @@ function refusalsLine(mix: RefusalMix | null): string {
   return `${listed} (${mix.source} ${mix.at})`
 }
 
+const trustLine = (t: NamedRefusal): string =>
+  `${t.initiative}${t.task === undefined ? '' : ` ${t.task}`}: ${t.reason}`
+
 function floorLine(f: ReadyFloor): string {
   return `${f.below} of ${f.ticks} ticks below ${f.floor}, min ${dash(f.min)}, p50 ${dash(f.p50)}, longest ${f.longestBelowMinutes}m`
+}
+
+function handShareLine({ tick, hand, fixRound, handShare }: ImplementerCounts): string {
+  return `${dash(handShare)} (hand ${hand}, tick ${tick}, fix rounds ${fixRound})`
 }
 
 function tickLine({ tick, spawns }: SeatDispatchStats): string {
@@ -319,11 +366,13 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
     return [
       `${s.seat} (since ${s.since})`,
       `  spawns/h       tick ${spawns.tickPerHour} (${spawns.tick}), hand ${spawns.handPerHour} (${spawns.hand})`,
+      `  hand share     ${handShareLine(spawns.implementers)}`,
       `  queue          ${queue.depth} queued, age p50 ${dash(queue.p50Minutes)}m, max ${dash(queue.maxMinutes)}m`,
       `  ready depth    ${ready === null ? '-' : `ready ${ready.ready}, unbriefed ${ready.unbriefed}, stale ${ready.stale}`}`,
       `  ready floor    ${floorLine(s.readyFloor)}`,
       `  cap use        ${capsLine(s.caps)}`,
       `  refusals       ${refusalsLine(s.refusals)}`,
+      ...(s.trust ?? []).map(t => `  trust          ${trustLine(t)}`),
       `  registrations  ok ${reg.ok}, refused ${reg.refused}, failed ${reg.failed}`,
       `  tick           ${tickLine(s)}`,
     ]

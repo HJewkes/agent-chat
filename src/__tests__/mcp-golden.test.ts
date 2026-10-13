@@ -250,6 +250,23 @@ const CHAT_ASK_CASES: CallCase[] = [
     args: { text: 'what now?' },
     reply: sent({}),
   },
+  {
+    label: 'v2 meta, options with descriptions',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: {
+      text: 'which store?',
+      header: 'Pick the store',
+      options: ['sqlite', { label: 'postgres', description: 'needs a server' }],
+      default: 'sqlite',
+      door: 'two-way',
+      category: 'tech_design',
+      initiative: 'titan-platform',
+      blocking: 'continue',
+      reversible: 'swap the adapter back',
+    },
+    reply: sent({}),
+  },
   { label: 'text blank', tool: 'chat_ask', registeredAs: 'me', args: { text: '   ' } },
   {
     label: 'refused by the broker',
@@ -611,6 +628,8 @@ const AGENT_SPAWN_CASES: CallCase[] = [
   spawnCase('return_contract none', { ...SPAWN_ARGS, return_contract: 'none' }, { reply: spawned() }),
   spawnCase('return_contract misspelled', { ...SPAWN_ARGS, return_contract: 'off' }),
   spawnCase('task and role', { ...SPAWN_ARGS, task: 'CC-1', role: 'reviewer' }, { reply: spawned() }),
+  spawnCase('host named', { ...SPAWN_ARGS, host: 'mac' }, { reply: spawned({ host: 'mac' }) }),
+  spawnCase('host blank', { ...SPAWN_ARGS, host: '  ' }, { reply: spawned() }),
   spawnCase('role a numbered fix round', { ...SPAWN_ARGS, role: 'fix-round-2' }, { reply: spawned() }),
   spawnCase('role outside the vocabulary', { ...SPAWN_ARGS, role: 'boss' }),
   spawnCase('surface blank', { ...SPAWN_ARGS, surface: '  ' }),
@@ -725,6 +744,34 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
     tool: 'agent_teleport',
     registeredAs: 'me',
     args: { handoff: 'h', reason: 'refresh' },
+    reply: teleported(),
+  },
+  {
+    label: 'onto a named surface',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', surface: 'tmux-window' },
+    reply: teleported(),
+  },
+  {
+    label: 'unknown surface',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', surface: 'bogus' },
+    reply: teleported(),
+  },
+  {
+    label: 'onto another machine',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', to: 'basement' },
+    reply: teleported(),
+  },
+  {
+    label: 'blank machine',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', to: ' ' },
     reply: teleported(),
   },
 ]
@@ -869,12 +916,17 @@ const CHAT_STATUS_CASES: CallCase[] = [
   },
 ]
 
-/** Fields `register` reads from this process and its checkout; they vary by machine, so the golden omits them. */
-const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build']
+/** Fields a frame reads from this process and its checkout; they vary by machine, so the golden omits them. */
+const PROCESS_FIELDS: Partial<Record<ClientMessage['t'], string[]>> = {
+  register: ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build'],
+  teleport: ['hostPlatform', 'launchSeen'],
+  spawn: ['hostPlatform', 'callerHome'],
+}
 
 function frameLine(frame: ClientMessage): string {
-  if (frame.t !== 'register') return JSON.stringify(frame)
-  const kept = Object.entries(frame).filter(([key]) => !PROCESS_FIELDS.includes(key))
+  const omitted = PROCESS_FIELDS[frame.t]
+  if (omitted === undefined) return JSON.stringify(frame)
+  const kept = Object.entries(frame).filter(([key]) => !omitted.includes(key))
   return `${JSON.stringify(Object.fromEntries(kept))} (process fields omitted)`
 }
 

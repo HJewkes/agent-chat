@@ -27,6 +27,8 @@ interface Wire {
 let dir: string
 let core: BrokerCore
 let server: SocketServer
+/** The names the owner runs as seats; a test deletes one to stop it. */
+let seats: Set<string>
 
 const wire = (): Wire => {
   const frames: ServerMessage[] = []
@@ -59,10 +61,11 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   at(T0 - 35 * MINUTE)
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-hold-'))
+  seats = new Set([SEAT])
   core = new BrokerCore((conn, message) => void conn.write(JSON.stringify({ t: 'deliver', message })), {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
-    isSeat: name => name === SEAT,
+    isSeat: name => seats.has(name),
   })
   server = new SocketServer(core)
 })
@@ -224,6 +227,25 @@ describe('the dark-seat hold', () => {
     expect(result).toMatchObject({ ok: false, reason: `no active session named "${SEAT}"` })
   })
 
+  // CC-345. Catches: darkSeat gated on holdable alone, so stopping the seat strands what it was held.
+  it('pushes held messages to a seat the owner stopped before it returned', () => {
+    seatGoesDark()
+    send(join('rev-one'), SEAT, 'Verdict: MERGE')
+    seats.delete(SEAT)
+
+    expect(pushed(join(SEAT)).map(m => m.text)).toEqual(['Verdict: MERGE'])
+  })
+
+  // CC-345. Catches: darkSeat returning the episode with no held row, replaying a non-seat's inbox.
+  it('still pushes nothing to a returning non-seat that never had a held message', () => {
+    const worker = join('impl-two')
+    at(T0)
+    core.drop(worker.conn)
+    core.append({ kind: 'message', actor: 'rev-one', target: 'impl-two', body: 'left for chat_inbox' })
+
+    expect(pushed(join('impl-two'))).toEqual([])
+  })
+
   it('stops holding once the seat has registered again, even with an older deregister on record', () => {
     seatGoesDark()
     join(SEAT)
@@ -241,7 +263,7 @@ describe('a seat the broker never deregistered (CC-326)', () => {
     core = new BrokerCore((conn, message) => void conn.write(JSON.stringify({ t: 'deliver', message })), {
       events: new EventLog(path.join(dir, 'events.db')),
       registry: new Registry<Conn>(),
-      isSeat: name => name === SEAT,
+      isSeat: name => seats.has(name),
     })
     server = new SocketServer(core)
   }
@@ -259,6 +281,22 @@ describe('a seat the broker never deregistered (CC-326)', () => {
     const back = join(SEAT)
     expect(pushed(back).map(m => m.text)).toEqual(['Verdict: MERGE'])
     expect(core.events.darkSince(SEAT)).toBeUndefined()
+  })
+
+  // CC-345. Catches: darkSince falling back to the newest boot, past the rows held in the first.
+  it('delivers a report held before a second restart when the seat registers', () => {
+    join(SEAT)
+    at(T0)
+    brokerRestarts()
+    at(T0 + 3 * MINUTE)
+    expect(send(join('rev-one'), SEAT, 'Verdict: MERGE')).toMatchObject({ ok: true, held: true })
+    at(T0 + 9 * MINUTE)
+    brokerRestarts()
+
+    expect(core.events.darkSince(SEAT)?.at).toBe(T0)
+    const back = pushed(join(SEAT))
+    expect(back.map(m => m.text)).toEqual(['Verdict: MERGE'])
+    expect(back[0]).not.toHaveProperty('dark_id')
   })
 
   it('does not push again what the seat received before the restart', () => {
@@ -286,6 +324,32 @@ describe('a seat the broker never deregistered (CC-326)', () => {
 
     core.drop(join(SEAT).conn)
     expect(readPresence(path.join(dir, 'events.db'), SEAT).openRegister).toBeUndefined()
+  })
+})
+
+describe('a seat that returns through readopt', () => {
+  const SESSION = 'session-seat-hub'
+
+  // CC-345. Catches: handleReadopt registering the seat without pushing its held messages.
+  it('pushes what was held while it was dark', () => {
+    const seat = wire()
+    server.handleMessage(seat.conn, {
+      t: 'register',
+      name: SEAT,
+      workingOn: 'testing',
+      cwd: '/tmp',
+      pid: 1,
+      sessionId: SESSION,
+    })
+    at(T0)
+    core.drop(seat.conn)
+    send(join('rev-one'), SEAT, 'Verdict: MERGE')
+
+    const back = wire()
+    server.handleMessage(back.conn, { t: 'readopt', sessionId: SESSION, cwd: '/tmp', pid: 2 })
+
+    expect(back.frames[0]).toMatchObject({ t: 'register_result', ok: true, name: SEAT })
+    expect(pushed(back).map(m => m.text)).toEqual(['Verdict: MERGE'])
   })
 })
 

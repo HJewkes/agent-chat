@@ -1,10 +1,16 @@
 import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
-import { TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
+import { SURFACE_NAMES, TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
 import { hostIdentity } from '../host.js'
-import { hostRemoteControl } from '../../broker/host-channels.js'
+import {
+  hostCarriedFlags,
+  hostRemoteControl,
+  isCarriedModel,
+  type CarriedFlags,
+} from '../../broker/host-channels.js'
+import { observedModel } from '../../agents/transcript.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
@@ -22,6 +28,24 @@ function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>)
 }
 
 /**
+ * CC-1166: a broker on another host cannot read this session's transcript, so this process reports
+ * the model it ran on. The observed model wins over argv `--model`, as in `baseConfig`, because a
+ * `/model` switch changes it after launch.
+ */
+export function launchSeenWithModel(
+  argv: CarriedFlags | undefined,
+  sessionId: string | undefined,
+): CarriedFlags | undefined {
+  const observed =
+    sessionId === undefined
+      ? undefined
+      : observedModel(process.cwd(), sessionId, process.env.CLAUDE_CONFIG_DIR)
+  const model = observed !== undefined && isCarriedModel(observed) ? observed : argv?.model
+  if (model === undefined) return argv
+  return { ...(argv ?? { channels: [] }), model }
+}
+
+/**
  * Hand off and end this session. Nothing here names the subject: the broker resolves it from this
  * connection's own registry entry, which makes "teleport someone else" unrepresentable.
  */
@@ -36,7 +60,7 @@ export const agentTeleport = defineTool({
     'and not a subagent: your transcript does not come with you, the handoff below is all your ' +
     'successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 ' +
     'seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. ' +
-    'Answer or dismiss any open questions to the human first — teleport refuses while any are open.',
+    'Answer each open question to the human or name its id in the handoff; teleport refuses otherwise.',
   args: z.object({
     handoff: requiredString('handoff').describe(
       'Everything your successor needs, written by you, stored verbatim, 8 KB max (refused, not ' +
@@ -73,17 +97,36 @@ export const agentTeleport = defineTool({
           'from the handoff first, so restate that question in the handoff.',
       )
       .optional(),
+    surface: z
+      .enum(SURFACE_NAMES)
+      .describe(
+        'Optional. Omit for your seat or current surface when the destination runs it, else its OS ' +
+          'default (tmux-window on Linux, iterm-tab on macOS). One it cannot run is refused.',
+      )
+      .optional(),
+    to: z
+      .string()
+      .describe(
+        'Optional. Omit to stay on this machine; else a machine alias from the broker config, or a ' +
+          'hostname. Unknown or unreachable is refused and never ends you.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested, remote_control: remoteControl, reason }, ctx) {
+  async run(
+    { handoff, model: requested, remote_control: remoteControl, reason, surface, to: destination },
+    ctx,
+  ) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
         'have one yet.'
       )
     const model = present(requested)
+    const to = present(destination)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
+    const launchSeen = launchSeenWithModel(hostCarriedFlags(hostIdentity().hostPid), hostIdentity().sessionId)
     const res = (await ctx.broker.request(
       {
         t: 'teleport',
@@ -92,6 +135,13 @@ export const agentTeleport = defineTool({
         ...(remoteControl === undefined ? {} : { remoteControl }),
         ...(seen ? { remoteControlSeen: true } : {}),
         ...(reason === undefined ? {} : { reason }),
+        ...(surface === undefined ? {} : { surface }),
+        // CC-951: a broker on another host picks this session's default surface by its OS, not its own.
+        hostPlatform: process.platform,
+        ...(launchSeen === undefined ? {} : { launchSeen }),
+        ...(to === undefined ? {} : { to }),
+        // CC-951: this build ends its own Claude Code on `endSelf`, so the broker may route it successor first.
+        endsSelf: true,
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

@@ -14,6 +14,7 @@ import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity, hostMarker, isLaunchedProcess } from './host.js'
+import { endSelfHandler } from './end-self.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
@@ -503,11 +504,21 @@ export async function startMcpServer(): Promise<void> {
   // A superseded session has nothing left to do: a newer process holds its
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
+  // CC-951: a tick later, so an `endSelf` read just ahead of the fatal frame ends Claude Code first.
+  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
+  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
+  const onEndSelf = endSelfHandler({
+    ownAgentId: spawned?.agentId,
+    hostPid: hostIdentity().hostPid,
+    log: logEvent,
+  })
   const broker = new BrokerClient(
     deliver,
-    () => process.exit(0),
+    () => void setImmediate(() => process.exit(0)),
     deliverSystemEvents,
     deliverPermissionVerdict,
+    undefined,
+    { onEndSelf },
   )
   const online = await reachBroker(broker)
 
@@ -516,8 +527,6 @@ export async function startMcpServer(): Promise<void> {
   // to call chat_register would make peer reachability depend on it complying
   // with an instruction — a race that will sometimes lose, and which fails by
   // leaving the agent invisible to everyone told to talk to it.
-  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
-  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
   const spawnedRegistered = spawned !== undefined && online && (await registerSpawned(broker, spawned))
   if (spawned && !spawnedRegistered) retryRegistration(broker, spawned)
 

@@ -1,4 +1,5 @@
-import { GIT_BUILTINS } from './git-alias.js'
+import { GIT_BUILTINS, GIT_VALUE_OPTS } from './git-alias.js'
+import { CLONE_CONFIG, optionSpans } from './git-scripts.js'
 import { LIVE, NAME, unmark } from './shell-words.js'
 
 /**
@@ -11,7 +12,6 @@ const HOOK_RUNNING = new Set(
   `am bisect checkout cherry-pick clone commit fetch gc hook maintenance merge pull push rebase
   receive-pack revert stash switch worktree`.split(/\s+/),
 )
-const VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 // A glob or brace word may expand to several words, one of them an option; a bare `$VAR` is one word.
 const GLOBBED = new RegExp(`${LIVE}[*?[{(]`)
 // What one word may expand to without becoming several: a plain scalar, a tilde, or a substitution inside quotes.
@@ -21,21 +21,25 @@ const SCALAR = new RegExp(
 )
 const CONFIG_ENV_OPT = '--config-env='
 
-/** One `-c` or `--config-env` value: its resolved word, and its marked source, where LIVE precedes what the shell expands. */
-interface ConfigWord {
+/**
+ * One `-c`, `--config` or `--config-env` value: its resolved word, its marked source, where LIVE
+ * precedes what the shell expands, and the index of the word that holds it, if one does.
+ */
+export interface ConfigWord {
   resolved: string | undefined
   marked: string
   fromEnv: boolean
+  index?: number
 }
 
 /** The part of a value that names the key: before the first `=` for `-c`, before the last for `--config-env`. */
-function keyOf(marked: string, fromEnv: boolean): string {
+export function keyOf(marked: string, fromEnv: boolean): string {
   const eq = fromEnv ? marked.lastIndexOf('=') : marked.indexOf('=')
   return eq < 0 ? marked : marked.slice(0, eq)
 }
 
 /** A `-c` key that is not literal, or a `--config-env` key or variable name that is not. */
-function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
+export function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
   if (resolved !== undefined) return false
   if (!marked.includes('=') || keyOf(marked, fromEnv).includes(LIVE)) return true
   return fromEnv && marked.slice(marked.lastIndexOf('=') + 1).includes(LIVE)
@@ -52,31 +56,37 @@ export const expandsToWords = (marked: string, splits: readonly string[]): boole
 /** A word that may expand to options, whatever else it holds. */
 const UNKNOWN: ConfigWord = { resolved: undefined, marked: LIVE, fromEnv: false }
 
-/** The `-c` or `--config-env` word at `i`, attached to its option or in the word after it. */
+/** The value glued to an option at `i` after `cut` characters. */
+const glued = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  i: number,
+  cut: number,
+  fromEnv: boolean,
+): { word: ConfigWord; width: number } => ({
+  word: { resolved: resolved[i]?.slice(cut), marked: (marked[i] as string).slice(cut), fromEnv, index: i },
+  width: 1,
+})
+
+/** The `-c` or `--config-env` word at `i` in git's own options, attached to its option or in the word after it. */
 function configWord(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
   i: number,
 ): { word: ConfigWord; width: number } | undefined {
   const raw = unmark(marked[i] as string)
-  const word = resolved[i]
   if (raw === '-c' || raw === '--config-env')
     return {
-      word: { resolved: resolved[i + 1], marked: marked[i + 1] ?? '', fromEnv: raw !== '-c' },
+      word: {
+        resolved: resolved[i + 1],
+        marked: marked[i + 1] ?? '',
+        fromEnv: raw === '--config-env',
+        index: i + 1,
+      },
       width: 2,
     }
-  if (raw.startsWith(CONFIG_ENV_OPT)) {
-    const cut = CONFIG_ENV_OPT.length
-    return {
-      word: { resolved: word?.slice(cut), marked: (marked[i] as string).slice(cut), fromEnv: true },
-      width: 1,
-    }
-  }
-  if (!/^-c./.test(raw)) return undefined
-  return {
-    word: { resolved: word?.slice(2), marked: (marked[i] as string).slice(2), fromEnv: false },
-    width: 1,
-  }
+  if (raw.startsWith(CONFIG_ENV_OPT)) return glued(resolved, marked, i, CONFIG_ENV_OPT.length, true)
+  return /^-c./.test(raw) ? glued(resolved, marked, i, 2, false) : undefined
 }
 
 /**
@@ -102,13 +112,80 @@ function scanOptions(
     }
     if (splittable(i)) words.push(UNKNOWN)
     const config = configWord(resolved, marked, i)
-    const takesValue = config?.width === 2 || VALUE_OPTS.has(raw)
+    const takesValue = config?.width === 2 || GIT_VALUE_OPTS.has(raw)
     if (takesValue && splittable(i + 1)) words.push(UNKNOWN)
     if (config) words.push(config.word)
     if (takesValue) i++
   }
   return { words, at: i }
 }
+
+/** The marked text from the `offset`th visible character on, keeping the LIVE before a character the shell expands. */
+function markedFrom(marked: string, offset: number): string {
+  let seen = 0
+  for (let k = 0; k < marked.length; k++) {
+    const start = k
+    if (marked[k] === LIVE) k++
+    if (seen === offset) return marked.slice(start)
+    seen++
+  }
+  return ''
+}
+
+/** An option word whose name part, before any `=`, the shell expands, such as `-q$X` or `--con"$Y"`. */
+function optionNameLive(marked: string): boolean {
+  if (!unmark(marked).startsWith('-')) return false
+  const live = marked.indexOf(LIVE)
+  const eq = marked.indexOf('=')
+  return live >= 0 && (eq < 0 || live < eq)
+}
+
+/**
+ * The config words `git clone` applies to the new repository before it fetches or checks out, so
+ * a program they set runs in the same call (TP-636). They are read by git's parse-options rules,
+ * the same reader as TP-634's script options: a short cluster such as `-qc <v>` or `-qc<v>`, and any
+ * prefix of `--config`, as `--conf <v>` or `--conf=<v>`. A word that may hide one but cannot be read
+ * exactly, because the shell may split it or expands its option name, is UNKNOWN.
+ */
+function cloneConfigWords(
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+  at: number,
+): ConfigWord[] {
+  if (resolved[at] !== 'clone') return []
+  const plain = marked.map(unmark)
+  const spans = optionSpans(plain, at, CLONE_CONFIG)
+  const words: ConfigWord[] = spans.map(({ from, offset }) => ({
+    resolved: resolved[from]?.slice(offset),
+    marked: markedFrom(marked[from] as string, offset),
+    fromEnv: false,
+    index: from,
+  }))
+  const read = new Set(spans.map(span => span.from))
+  for (let i = at + 1; i < marked.length && plain[i] !== '--'; i++) {
+    const word = marked[i] as string
+    if (!read.has(i) && (expandsToWords(word, splits) || optionNameLive(word))) words.push(UNKNOWN)
+  }
+  return words
+}
+
+/** Every config word this git invocation receives: git's own options, then those its subcommand applies. */
+function invocationConfig(
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): { words: ConfigWord[]; at: number } {
+  const { words, at } = scanOptions(resolved, marked, splits)
+  return { words: [...words, ...cloneConfigWords(resolved, marked, splits, at)], at }
+}
+
+/** Every `-c`, `--config` and `--config-env` word this git invocation receives. */
+export const configWords = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): ConfigWord[] => invocationConfig(resolved, marked, splits).words
 
 /** Whether git's options hold a config word the guard cannot read, whatever the subcommand. */
 export const hasUnreadableOption = (
@@ -123,7 +200,7 @@ export function hasUnreadableConfig(
   marked: readonly string[],
   splits: readonly string[],
 ): boolean {
-  const { words, at } = scanOptions(resolved, marked, splits)
+  const { words, at } = invocationConfig(resolved, marked, splits)
   // The words the shell splits may hide `-c` before the visible subcommand, so that one is not trusted.
   if (words.includes(UNKNOWN)) return true
   if (!words.some(unreadable)) return false

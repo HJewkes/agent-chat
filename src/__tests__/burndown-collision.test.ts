@@ -9,6 +9,7 @@ import type { Contract } from '../agents/burndown/report.js'
 import {
   collision,
   collisionCheck,
+  coveredIds,
   namesId,
   readOpenPrs,
   readSubjects,
@@ -17,6 +18,8 @@ import {
   type CollisionWork,
 } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
+
+const AC613_MESSAGE = path.join(import.meta.dirname, 'fixtures', 'ac613-commit-message.txt')
 
 /** The CC-202 collision check: a table per kind over plain facts, and the readers over a real git repo or a stub `gh`. */
 
@@ -29,6 +32,7 @@ const facts = (over: Partial<CollisionFacts> = {}): CollisionFacts => ({
   claims: [],
   ours: new Set(),
   held: [],
+  heldOwns: [],
   ...over,
 })
 
@@ -129,6 +133,58 @@ describe('collision', () => {
   })
 })
 
+describe('file-overlap exempts the Version Packages PR and .changeset/ paths (CC-975)', () => {
+  it('skips an open changeset-release PR without reading its files', () => {
+    const read: number[] = []
+    const prFiles = (n: number) => {
+      read.push(n)
+      return undefined
+    }
+    const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
+    const result = collision(w, facts({ prs: [pr(1053, { branch: 'changeset-release/main' })], prFiles }))
+    expect(result).toBeUndefined()
+    expect(read).toEqual([])
+  })
+
+  it('does not refuse a changeset glob against a feature PR adding a changeset', () => {
+    const w = work('TP-1', { owns: ['.changeset/*.md'] })
+    const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/other.md'] }))
+    expect(result).toBeUndefined()
+  })
+
+  it('still refuses a source file an ordinary open PR touches', () => {
+    const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
+    const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/tp-x.md', 'src/a.ts'] }))
+    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts' })
+  })
+})
+
+describe('open-pr ignores the Version Packages PR (CC-1152)', () => {
+  const release = pr(1152, {
+    branch: 'changeset-release/main',
+    title: 'Version Packages',
+    body: '- TP-737 a',
+  })
+
+  it('does not refuse a task named only in a changeset-release PR body', () => {
+    expect(collision(work('TP-737'), facts({ prs: [release] }))).toBeUndefined()
+  })
+
+  it('still refuses on an ordinary PR naming the task alongside the release PR', () => {
+    const ordinary = pr(8, { branch: 'agent-chat/bd-tp-737-a', title: 'Fix the scorer' })
+    const result = collision(work('TP-737'), facts({ prs: [release, ordinary] }))
+    expect(result).toEqual({
+      kind: 'open-pr',
+      reason: '#8 (agent-chat/bd-tp-737-a) names TP-737: Fix the scorer',
+    })
+  })
+
+  it('does not exempt a branch that merely contains changeset-release', () => {
+    const lookalike = pr(9, { branch: 'fix/changeset-release-notes', body: 'Closes TP-737.' })
+    expect(collision(work('TP-737'), facts({ prs: [lookalike] }))?.kind).toBe('open-pr')
+  })
+})
+
 describe('readSubjects over a real repository', () => {
   let repo: string
   const git = (...args: string[]): string =>
@@ -170,6 +226,19 @@ describe('readSubjects over a real repository', () => {
     expect(collision(work(id), facts({ subjects }))?.kind).toBe(kind)
   })
 
+  it.each(['CC-695', 'CC-685', 'CC-666', 'CC-294'])(
+    "%s is landed: ac#613's Covers clause names it (CC-1068)",
+    id => {
+      git('commit', '--allow-empty', '-q', '-F', AC613_MESSAGE)
+      git('push', '-q', 'origin', 'main')
+
+      const refusal = collision(work(id), facts({ subjects: readSubjects(repo, 'main') }))
+
+      expect(refusal?.kind).toBe('landed')
+      expect(refusal?.reason).toContain('[covers')
+    },
+  )
+
   it('fetches the default branch first, so a landing the local ref has not seen counts', () => {
     commit('Land the pager (R-9) (#20)')
     git('push', '-q', 'origin', 'main')
@@ -186,6 +255,31 @@ describe('readSubjects over a real repository', () => {
 
   it('reports an unreadable ref as undefined rather than as no subjects', () => {
     expect(readSubjects(repo, 'no-such-branch')).toBeUndefined()
+  })
+})
+
+describe('coveredIds', () => {
+  it.each([
+    ['Covers CC-1, CC-2 and CC-3.', ['CC-1', 'CC-2', 'CC-3']],
+    ['Slice 1 of X. Also covers TP-4 & TP-5.', ['TP-4', 'TP-5']],
+    ['- Covers: R-9', ['R-9']],
+    ['Refs: CC-826, #613', []],
+    ['Partly covers CC-9', []],
+    ['Leaves R-48 for later', []],
+    ['accepted pairs from CC-695', []],
+    ['This covers CC-7', []],
+    ['The old suite Covers CC-8 only in part', []],
+  ])('%j gives %j', (body, ids) => {
+    expect(coveredIds(body)).toEqual(ids)
+  })
+
+  it("reads ac#613's body as covering exactly its four ids, not its prose or Refs", () => {
+    expect(coveredIds(fs.readFileSync(AC613_MESSAGE, 'utf8'))).toEqual([
+      'CC-695',
+      'CC-685',
+      'CC-666',
+      'CC-294',
+    ])
   })
 })
 
@@ -447,5 +541,60 @@ describe('collision: an agent that exited less than one tick ago (CC-946)', () =
 
   it('lets a task through when the exited agent carries another id', () => {
     expect(collision(work('CC-9'), facts({ recentlyExited: ['sa-cc-90'] }))).toBeUndefined()
+  })
+})
+
+describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
+  const claim = (over: Partial<Claim> = {}): Claim => ({
+    taskId: 'CC-1',
+    initiative: 'alpha',
+    spawnedAt: '2026-10-10T09:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-10-10T09:00:00.000Z',
+    slice: 'a',
+    owns: ['src/a/**'],
+    worktree: '/repo/.worktrees/sa-cc-1-a',
+    ...over,
+  })
+  const check = (claims: Claim[], owns: string[], repo = '/repo') => {
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims }, { names: [], claims: [] }, exec)
+    return run(repo, work('CC-2', { owns }))
+  }
+
+  it("refuses a task whose owns overlap a dispatched claim's owns in the same repo", () => {
+    const result = check([claim()], ['src/a/x.ts'])
+
+    expect(result).toEqual({ kind: 'file-overlap', reason: "src/a/x.ts is under CC-1 slice a's owns" })
+  })
+
+  it('passes a task whose owns are disjoint, so two tasks run in one repo', () => {
+    expect(check([claim()], ['src/b.ts'])).toBeUndefined()
+  })
+
+  it('never refuses against a queued claim, so two queued claims cannot block each other', () => {
+    expect(check([claim({ phase: 'queued' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it("ignores a done claim's owns", () => {
+    expect(check([claim({ phase: 'done' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it('ignores a claim whose worktree is in another repo', () => {
+    expect(check([claim({ worktree: '/other/.worktrees/sa-cc-1-a' })], ['src/a/x.ts'])).toBeUndefined()
+  })
+
+  it("takes a worktree-less claim's repo from its plan", () => {
+    const planned = claim({ worktree: undefined, repo: '/repo' })
+
+    expect(check([planned], ['src/a/x.ts'])?.kind).toBe('file-overlap')
+    expect(check([planned], ['src/a/x.ts'], '/other')).toBeUndefined()
+  })
+
+  it("never refuses a work on its own held claim's owns", () => {
+    expect(check([claim({ taskId: 'CC-2', slice: undefined })], ['src/a/x.ts'])).toBeUndefined()
   })
 })

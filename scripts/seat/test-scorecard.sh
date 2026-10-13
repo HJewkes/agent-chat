@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fixture test for bin/scorecard: each of the eleven rows, the --json form, and a missing source printing 'not measured'.
+# Fixture test for bin/scorecard: each of the twelve rows, the --json form, and a missing source printing 'not measured'.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/seat-test-scorecard.XXXXXX")
@@ -31,6 +31,7 @@ expect "time red is the median of thawed episodes" "Time main stays red" "median
 expect "first-pass FIX_FIRST counts the first non-WAIT verdict per PR in the window" "First-pass FIX_FIRST share" "50.0 percent (3 of 6)"
 expect "mechanical share is n/a while no FIX_FIRST carries a Class line" "Mechanical first-blocker share" "n/a (no Class line yet; 3 unclassified of 3 FIX_FIRST rounds)"
 expect "mechanical share carries the hand-checked baseline" "Mechanical first-blocker share" "baseline 6.9 percent (21 of 305"
+expect "verdict shape flags the fixture FIX_FIRSTs and the re-review that predate the lines" "Verdict shape" "3 of 3 FIX_FIRST lack Defect class; 1 of 1 re-reviews lack Earlier findings"
 expect "seat merge share excludes PRs Shepherd merged" "Share of merges by seat merge script" "50.0 percent (2 of 4)"
 expect "waiting row counts pending approvals older than 60 minutes" "Approved and waiting over 60 minutes" "1 PRs over 60 min, oldest 28 hours"
 expect "coordinator spawns count milestone dispatches by seat" "Coordinator spawns for milestone tasks" "75.0 percent (3 of 4)"
@@ -39,7 +40,7 @@ expect "each row carries its baseline" "Register to merge" "baseline median 15.0
 
 json=$("$here/scorecard" --json 2>&1)
 n=$(printf '%s' "$json" | python3 -c 'import json,sys; r=json.load(sys.stdin)["rows"]; print(len(r), all(x["measured"] for x in r))')
-[ "$n" = "11 True" ] && report "json form has eleven measured rows" ok || report "json form has eleven measured rows" "$n"
+[ "$n" = "12 True" ] && report "json form has twelve measured rows" ok || report "json form has twelve measured rows" "$n"
 
 # Class lines: a repeat at the same actor, PR and Head counts once; a second reviewer is its own round
 verdict() { printf "(1791050000000,'message','%s','Verdict: FIX_FIRST\nPR: o/proj#%s\nHead: %s%b')" "$1" "$2" "$3" "${4:+\nClass: $4}"; }
@@ -49,6 +50,27 @@ verdict() { printf "(1791050000000,'message','%s','Verdict: FIX_FIRST\nPR: o/pro
 } | sqlite3 "$scratch/classes.db"
 out=$(SCORECARD_EVENTS_DB="$scratch/classes.db" "$here/scorecard" 2>&1)
 expect "mechanical share counts deduped classified rounds and reports unclassified" "Mechanical first-blocker share" "60.0 percent (3 of 5) of classified; 1 unclassified of 6 FIX_FIRST rounds"
+mkdir "$scratch/agent-chat-home"; cp "$scratch/classes.db" "$scratch/agent-chat-home/events.db"
+out=$(unset SCORECARD_EVENTS_DB; AGENT_CHAT_HOME="$scratch/agent-chat-home" HOME="$scratch/no-home" "$here/scorecard" 2>&1)
+expect "the events db defaults to AGENT_CHAT_HOME" "Mechanical first-blocker share" "60.0 percent (3 of 5) of classified; 1 unclassified of 6 FIX_FIRST rounds"
+
+# Verdict shape (CC-1079): Class alone is not a Defect class, a first review is not a re-review, a later head is,
+# a repeat at the same actor, PR and Head counts once, and a bare Earlier findings label with no items is flagged
+shape() { printf "(1791050000000,'message','%s','Verdict: %s\nPR: o/proj#%s\nHead: %s%b')" "$1" "$2" "$3" "$4" "${5:+\n$5}"; }
+dc='Defect class: unvalidated input at the parser boundary'
+{ echo "create table events (id integer primary key autoincrement, ts integer not null, kind text not null, actor text not null, target text, msg_id text, ref text, body text, meta text);"
+  echo "insert into events (ts, kind, actor, body) values $(shape rv FIX_FIRST 20 h1 "$dc"), $(shape rv FIX_FIRST 20 h2 "$dc"),"
+  echo " $(shape rv2 MERGE 20 h3 'Earlier findings:\n- not fixed: parser check'), $(shape rv FIX_FIRST 21 k),"
+  echo " $(shape rv FIX_FIRST 21 k), $(shape rv2 FIX_FIRST 21 k "$dc"), $(shape rv FIX_FIRST 22 m 'Class: defect'),"
+  echo " $(shape rv WAIT 22 m2), $(shape rv MERGE 22 m2 'Earlier findings: none found'), $(shape rv FIX_FIRST 23 n "$dc"),"
+  echo " $(shape rv MERGE 23 n2 'Earlier findings:');"
+} | sqlite3 "$scratch/shape.db"
+out=$(SCORECARD_EVENTS_DB="$scratch/shape.db" "$here/scorecard" 2>&1)
+expect "verdict shape counts deduped FIX_FIRST without Defect class and re-reviews without a checklist" "Verdict shape" "2 of 6 FIX_FIRST lack Defect class; 2 of 4 re-reviews lack Earlier findings"
+sqlite3 "$scratch/merges.db" "create table events (id integer primary key autoincrement, ts integer not null, kind text not null, actor text not null, target text, msg_id text, ref text, body text, meta text);
+insert into events (ts, kind, actor, body) values $(shape rv MERGE 30 p);"
+out=$(SCORECARD_EVENTS_DB="$scratch/merges.db" "$here/scorecard" 2>&1)
+expect "verdict shape is n/a with no FIX_FIRST and no re-review" "Verdict shape" "n/a (no FIX_FIRST and no re-review in the window)"
 
 low=$(SCORECARD_LOGS="$fx/logs-lowcov" "$here/scorecard" 2>&1)
 case "$(printf '%s\n' "$low" | grep '^SCORECARD Cost per merged PR:')" in
@@ -72,7 +94,7 @@ expect "the task root defaults to ACTIVE_ROOT" "Task ready to merged" "median 63
 export SCORECARD_FACTORY_DB="$scratch/missing.db" SCORECARD_EVENTS_DB="$scratch/missing-events.db" SCORECARD_LOGS="$scratch/none"
 out=$("$here/scorecard" 2>&1)
 missing=$(printf '%s\n' "$out" | grep -c ': not measured')
-[ "$missing" -eq 11 ] && report "missing sources print not measured on every row" ok || report "missing sources print not measured on every row" "$missing rows"
+[ "$missing" -eq 12 ] && report "missing sources print not measured on every row" ok || report "missing sources print not measured on every row" "$missing rows"
 case "$out" in *": 0 "*|*": 0.00"*) report "missing sources never print 0" "found a zero" ;; *) report "missing sources never print 0" ok ;; esac
 
 out=$(unset AUTONOMY_ROOT ACTIVE_ROOT SCORECARD_LOGS SCORECARD_TASKS; "$here/scorecard" 2>&1); rc=$?

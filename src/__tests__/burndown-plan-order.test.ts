@@ -278,6 +278,23 @@ describe('planOrder readiness', () => {
     expect(tagErrors).toEqual([])
   })
 
+  it('CC-306: ranks ready work above a reconciled task waiting on an open owner task, until that task closes', () => {
+    const reconciled = task('RC-1', ['reconciled', 'dep:RC-9'], { severity: 'critical', priority: 1 })
+    const ready = task('RC-2', [], { severity: 'low', priority: 9 })
+    const owner = task('RC-9', ['kind:owner'])
+    const ownerExcluded = (tasks: ScoredTask[]) => {
+      const { rows } = scoreAll(tasks, WEIGHTS, DEFAULTS, { tags: ['kind:owner'] }, [], TODAY)
+      return { ...inputFor(tasks), rows }
+    }
+
+    const open = planOrder(ownerExcluded([reconciled, ready, owner]))
+    const closed = planOrder({ ...ownerExcluded([reconciled, ready]), knownIds: ['RC-9'] })
+
+    expect(ids(open.order)).toEqual(['RC-2'])
+    expect(open.refused).toEqual({ 'dep-blocked': 1 })
+    expect(ids(closed.order)).toEqual(['RC-1', 'RC-2'])
+  })
+
   it('fails closed on a dep: naming no known task: refused as unknown-dep and listed in tagErrors', () => {
     const tasks = [task('UD-1'), task('UD-2', ['dep:UD-99']), task('UD-3', ['dep:UD-2'])]
 

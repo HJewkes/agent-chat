@@ -21,8 +21,11 @@ import {
   hookSettingsPath,
   planPath,
   readLaunchPlan,
+  selfGrantRootOf,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
+import type { CreatedWorktree } from '../agents/resume-session.js'
+import { linkedWorktreeRoot, REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import { launchEnv, oscTitle } from '@titan-design/agent-surface'
 import { terminalAnchor } from '../server/anchor.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
@@ -412,9 +415,16 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat approve:*)',
       'Bash(agent-chat inbox:*)',
       'Bash(agent-chat ask:*)',
+      'Bash(agent-chat teleport:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
+
+    for (const profile of BUILTIN_PROFILES.filter(p =>
+      p.disallowedTools?.includes('Bash(agent-chat send:*)'),
+    )) {
+      expect(profile.disallowedTools).toContain('Bash(agent-chat teleport:*)')
+    }
 
     for (const name of ['explorer', 'reviewer']) {
       const denied = flag(
@@ -865,6 +875,25 @@ describe('the PermissionRequest hook (CC-144)', () => {
     )
   })
 
+  it('passes a self-grant root to the hook shell-quoted, and leaves the command unchanged without one', () => {
+    const command = (root?: string): string | undefined =>
+      (
+        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001', root) as {
+          hooks: { PermissionRequest: { hooks: { command: string }[] }[] }
+        }
+      ).hooks.PermissionRequest[0]?.hooks[0]?.command
+
+    expect(command('/w t')).toMatch(/ permission-hook --deadline 1790 --self-grant-skills '\/w t'$/)
+    expect(command(undefined)).toBe(
+      (
+        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001') as {
+          hooks: { PermissionRequest: { hooks: { command: string }[] }[] }
+        }
+      ).hooks.PermissionRequest[0]?.hooks[0]?.command,
+    )
+    expect(command(undefined)).not.toContain('--self-grant-skills')
+  })
+
   it('writes the settings file owner-only beside the plan, with the permission hook only for a print run', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
     const read = (): string => fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
@@ -875,6 +904,143 @@ describe('the PermissionRequest hook (CC-144)', () => {
 
     expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(read()).toContain('"timeout": 1800')
+  })
+})
+
+describe('arming the repo skill self-grant (CC-694)', () => {
+  const optedIn = profile({ allowedTools: ['Read', 'Write', 'Edit', REPO_SKILLS_RULE] })
+
+  /** A linked worktree made by `git worktree add`, so git itself registers it. */
+  function linkedWorktree(): CreatedWorktree {
+    const repo = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'repo-'))
+    const git = (...args: string[]): void => {
+      spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        stdio: 'ignore',
+      })
+    }
+    git('init', '-q')
+    git('commit', '-q', '--allow-empty', '-m', 'init')
+    const root = path.join(repo, 'wt')
+    git('worktree', 'add', '-q', root)
+    return { worktree: fs.realpathSync(root), gitRoot: repo }
+  }
+
+  /** A hand-written common dir whose layout git accepts, made by nothing agent-chat ran (CC-1110). */
+  function forgedWorktree(): string {
+    const base = fs.mkdtempSync(path.join(fs.realpathSync(tmpdir()), 'forged-'))
+    const fake = path.join(base, 'fake')
+    const admin = path.join(fake, 'worktrees', 'w')
+    const cwd = path.join(base, 'cwd')
+    for (const dir of [path.join(fake, 'objects'), path.join(fake, 'refs'), admin, cwd])
+      fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(fake, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(admin, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(admin, 'commondir'), '../..\n')
+    fs.writeFileSync(path.join(admin, 'gitdir'), `${path.join(cwd, '.git')}\n`)
+    fs.writeFileSync(path.join(cwd, '.git'), `gitdir: ${admin}\n`)
+    return cwd
+  }
+
+  it('arms the root when cwd is the worktree agent-chat recorded creating', () => {
+    const created = linkedWorktree()
+    const cwd = created.worktree
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBe(cwd)
+  })
+
+  it('does not arm a forged common dir at the recorded path', () => {
+    const cwd = forgedWorktree()
+    const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+  })
+
+  it('does not arm a real worktree of a different repository than the record names', () => {
+    const cwd = linkedWorktree().worktree
+    const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+  })
+
+  it('does not arm a recorded path that is now a symlink, even to a real worktree of the repo', () => {
+    const real = linkedWorktree()
+    const cwd = path.join(fs.realpathSync(tmpdir()), 'link')
+    fs.symlinkSync(real.worktree, cwd)
+
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { ...real, worktree: cwd }),
+    ).toBeUndefined()
+  })
+
+  it('does not arm a forged common dir at the spawn cwd', () => {
+    const cwd = forgedWorktree()
+
+    expect(linkedWorktreeRoot(cwd)).toBe(cwd)
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+  })
+
+  it('does not arm when cwd differs from the created worktree', () => {
+    const cwd = forgedWorktree()
+
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), linkedWorktree()),
+    ).toBeUndefined()
+  })
+
+  it('does not arm a linked worktree agent-chat has no record of creating', () => {
+    const cwd = linkedWorktree().worktree
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+  })
+
+  it('does not arm a profile without the rule', () => {
+    const created = linkedWorktree()
+
+    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd: created.worktree })), created)).toBeUndefined()
+  })
+
+  it('does not arm a main checkout, whose .git is a directory', () => {
+    const cwd = fs.realpathSync(tmpdir())
+    fs.mkdirSync(path.join(cwd, '.git'))
+
+    expect(
+      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { worktree: cwd, gitRoot: cwd }),
+    ).toBeUndefined()
+  })
+
+  it('does not read the rule from the brief', () => {
+    const created = linkedWorktree()
+    const plan = buildLaunchPlan(
+      input({ cwd: created.worktree, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }),
+    )
+
+    expect(selfGrantRootOf(plan, created)).toBeUndefined()
+  })
+
+  it('puts the root on the hook command in the written settings file', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    const created = linkedWorktree()
+    const cwd = created.worktree
+
+    writeLaunchFiles(
+      buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
+      {},
+      created,
+    )
+
+    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain(`--self-grant-skills '${cwd}'`)
+  })
+
+  it('leaves the hook command unarmed when no created worktree is passed', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    const cwd = linkedWorktree().worktree
+
+    writeLaunchFiles(
+      buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
+      {},
+    )
+
+    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).not.toContain('--self-grant-skills')
   })
 })
 
@@ -1129,5 +1295,35 @@ describe('continueStarted (CC-488)', () => {
     const plan = stored({ forkFrom: '/projects/parent.jsonl' })
 
     expect(continueStarted(plan, () => true)).toEqual(plan)
+  })
+})
+
+/** CC-951: flags a teleport successor carries from its predecessor. */
+describe('carried launch flags', () => {
+  const channelsOf = (args: string[]): string[] => {
+    const at = args.indexOf('--channels')
+    const end = args.findIndex((arg, i) => i > at && arg.startsWith('-'))
+    return args.slice(at + 1, end < 0 ? undefined : end)
+  }
+
+  it("lists a carried channel after agent-chat's own, without naming agent-chat twice", () => {
+    const plan = buildLaunchPlan(
+      input({ channels: ['plugin:agent-chat@agent-chat-local', 'plugin:voltras-channel@x'] }),
+    )
+
+    expect(channelsOf(plan.args)).toEqual(['plugin:agent-chat@agent-chat-local', 'plugin:voltras-channel@x'])
+  })
+
+  it('emits a carried permission mode on an interactive surface', () => {
+    const plan = buildLaunchPlan(input({ surface: 'tmux-window', permissionMode: 'auto' }))
+
+    expect(flag(plan.args, '--permission-mode')).toBe('auto')
+  })
+
+  it('keeps a headless run pinned to default whatever was carried', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless', permissionMode: 'auto' }))
+
+    expect(plan.args.filter(arg => arg === '--permission-mode')).toHaveLength(1)
+    expect(flag(plan.args, '--permission-mode')).toBe('default')
   })
 })

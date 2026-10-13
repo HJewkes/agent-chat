@@ -5,6 +5,7 @@
  * (relay R-63) so a task cannot steer its own review.
  */
 
+import { PROBE_SANDBOX_RULE } from '../return-contract-blocks.js'
 import { MAX_SLICE_POINTS } from './slice-lint.js'
 import type { StallCode } from './stall-code.js'
 
@@ -198,11 +199,14 @@ function workerScope(t: TaskBrief): string {
 
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
- * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.2 kB, reviewer 2.4 kB), plus headroom.
+ * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.6 kB),
+ * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence,
+ * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, and CC-987 the planner budget by the
+ * 234-byte publish-split rule.
  */
 export const WORKER_BRIEF_MAX_BYTES = 12_000
-export const PLANNER_BRIEF_MAX_BYTES = 11_000
-export const REVIEWER_BRIEF_MAX_BYTES = 2_500
+export const PLANNER_BRIEF_MAX_BYTES = 11_600
+export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
   return [
@@ -233,9 +237,14 @@ function slicesRequirement(): string {
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
+    'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
-    'The tick lints this block; a plan without it, or failing the lint, stalls.'
+    'The tick lints this block; a plan without it, or failing the lint, stalls. ' +
+    "A publish or release step is never a slice: file it as its own task tagged ops:publish whose done_when is 'publish <package> at <version>', " +
+    'with dep: on the build task; the consumer work is another task with dep: on the publish task. ' +
+    'For kind security or a guard area (tool-guard, egress-scan, auth, credentials, allow/deny lists), keep each slice under about 400 non-generated lines ' +
+    'and put a parser, matcher or list change in its own slice, apart from its wiring; Shepherd flags a larger one at open.'
   )
 }
 
@@ -398,7 +407,7 @@ export function reviewerBrief(r: ReviewerBrief): string {
       'Report what changed, whether it does what the branch appears to intend, correctness and security ' +
       'concerns, and anything a human must decide before merge.',
     '## Constraints',
-    'Do not modify the code. You are unattended: never wait for an answer.',
+    `Do not modify the code. You are unattended: never wait for an answer. ${PROBE_SANDBOX_RULE}`,
     ...verifyBlock(r.verifySteps),
     '## Report',
     reportContract(r.reportTo, '`Verdict: APPROVE | CHANGES`'),

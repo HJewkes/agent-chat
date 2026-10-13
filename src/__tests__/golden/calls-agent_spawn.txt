@@ -18,7 +18,7 @@ args: {"profile":"explorer","brief":"b"}
 
 === agent_spawn: minimal
 args: {"name":"scout","profile":"explorer","brief":"read the log"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -28,7 +28,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: minimal, spawner has no config dir
 args: {"name":"scout","profile":"explorer","brief":"read the log"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -38,7 +38,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log"}
 
 === agent_spawn: every override set
 args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"iterm-pane","isolation":"worktree","cwd":"/work/repo","briefing":"claude-channels","worktree":"/work/repo/.worktrees/x","owns":["src/broker/**","src/protocol.ts"],"inherit":"context","config_dir":"/home/me/.claude-profiles/agents","resume_session":"uuid-1","predecessor":"old-scout"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","configDir":"/home/me/.claude-profiles/agents","spawnerConfigDir":"/home/me/.claude","surface":"iterm-pane","isolation":"worktree","cwd":"/work/repo","briefing":"claude-channels","worktree":"/work/repo/.worktrees/x","owns":["src/broker/**","src/protocol.ts"],"inherit":"context","resumeSession":"uuid-1","predecessor":"old-scout"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","configDir":"/home/me/.claude-profiles/agents","spawnerConfigDir":"/home/me/.claude","surface":"iterm-pane","isolation":"worktree","cwd":"/work/repo","briefing":"claude-channels","worktree":"/work/repo/.worktrees/x","owns":["src/broker/**","src/protocol.ts"],"inherit":"context","resumeSession":"uuid-1","predecessor":"old-scout","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -48,7 +48,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank cwd
 args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -58,7 +58,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank briefing
 args: {"name":"scout","profile":"explorer","brief":"read the log","briefing":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -68,7 +68,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank worktree
 args: {"name":"scout","profile":"explorer","brief":"read the log","worktree":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -78,7 +78,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank config_dir
 args: {"name":"scout","profile":"explorer","brief":"read the log","config_dir":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -88,7 +88,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank resume_session
 args: {"name":"scout","profile":"explorer","brief":"read the log","resume_session":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -98,7 +98,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank predecessor
 args: {"name":"scout","profile":"explorer","brief":"read the log","predecessor":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -108,7 +108,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: blank task
 args: {"name":"scout","profile":"explorer","brief":"read the log","task":"   "}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -118,7 +118,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: every optional string blank
 args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":"","task":""}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -128,7 +128,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: owns trimmed, blanks dropped
 args: {"name":"scout","profile":"explorer","brief":"read the log","owns":[" a ",""]}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["a"]}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["a"],"launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -138,7 +138,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: owns []
 args: {"name":"scout","profile":"explorer","brief":"read the log","owns":[]}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -151,7 +151,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/g
 [
   {
     "type": "text",
-    "text": "Error: owns may name at most 24 globs; got 25"
+    "text": "Error: owns may name at most 24 globs; got 25; claim a directory (dir/**) or a prefix glob (dir/name*) instead"
   }
 ]
 
@@ -202,7 +202,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","inherit":"eve
 
 === agent_spawn: remote_control on
 args: {"name":"scout","profile":"explorer","brief":"read the log","remote_control":true}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":true}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":true,"launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -212,7 +212,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: remote_control off
 args: {"name":"scout","profile":"explorer","brief":"read the log","remote_control":false}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":false}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":false,"launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -231,7 +231,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","remote_contro
 
 === agent_spawn: return_contract none
 args: {"name":"scout","profile":"explorer","brief":"read the log","return_contract":"none"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","returnContract":"none"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","returnContract":"none","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -250,7 +250,27 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","return_contra
 
 === agent_spawn: task and role
 args: {"name":"scout","profile":"explorer","brief":"read the log","task":"CC-1","role":"reviewer"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","task":"CC-1","workRole":"reviewer"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","task":"CC-1","workRole":"reviewer","launchesHere":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: host named
+args: {"name":"scout","profile":"explorer","brief":"read the log","host":"mac"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","host":"mac","launchesHere":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1) on mac. It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: host blank
+args: {"name":"scout","profile":"explorer","brief":"read the log","host":"  "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -260,7 +280,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: role a numbered fix round
 args: {"name":"scout","profile":"explorer","brief":"read the log","role":"fix-round-2"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","workRole":"fix-round-2"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","workRole":"fix-round-2","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -333,7 +353,7 @@ args: {"name":"scout","profile":7,"brief":"read the log"}
 
 === agent_spawn: refused by the broker
 args: {"name":"scout","profile":"explorer","brief":"read the log"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -343,7 +363,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: resumed with no transcript found
 args: {"name":"scout","profile":"explorer","brief":"read the log","resume_session":"uuid-2"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","resumeSession":"uuid-2"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","resumeSession":"uuid-2","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -353,7 +373,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: worktree cut from origin
 args: {"name":"scout","profile":"explorer","brief":"read the log","isolation":"worktree"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","isolation":"worktree"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","isolation":"worktree","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -363,7 +383,7 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
 
 === agent_spawn: worktree fell back to local HEAD
 args: {"name":"scout","profile":"explorer","brief":"read the log","isolation":"worktree"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","isolation":"worktree"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","isolation":"worktree","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",

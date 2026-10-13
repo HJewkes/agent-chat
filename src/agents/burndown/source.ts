@@ -7,6 +7,8 @@ import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
+import { PRIOR_ROUTINGS } from './prior-route.js'
+import { STACK_MODES } from './stack.js'
 import { BRIEF_GATES, type Initiative, type Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
@@ -55,6 +57,7 @@ export function parseTask(text: string, fallbackId: string): Task {
     status: s.status,
     priority: numberOr(s.priority),
     estimate: numberOr(s.estimate),
+    notes: s.notes === '' ? undefined : s.notes,
     doneWhen: s.done_when === '' || s.done_when === 'null' ? undefined : s.done_when,
   }
   const defined = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined))
@@ -132,6 +135,13 @@ export const TickConfigSchema = z.object({
     .object({ enabled: z.boolean().default(false) })
     .strict()
     .default({ enabled: false }),
+  /** CC-638: route the implementer by the task-time prior; `shadow` only notes it. Flipping it is an owner step. */
+  priorRouting: z.enum(PRIOR_ROUTINGS).default('off'),
+  /** CC-1158: stack a slice on its unmerged parent's PR; `shadow` only notes it. Off until the scratch-repo proof is green. */
+  stack: z
+    .object({ mode: z.enum(STACK_MODES).default('off') })
+    .strict()
+    .default({ mode: 'off' }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
   /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */

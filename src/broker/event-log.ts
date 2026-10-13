@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
-import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type {
   DecidedItem,
@@ -18,6 +17,8 @@ import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
+import { newMsgId } from './msg-id.js'
+import { SEAT_HOLD_MARK } from './seat-hold.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -164,7 +165,8 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 
 export const BUSY_TIMEOUT_MS = 5_000
 
-export const newMsgId = (): string => randomUUID().slice(0, 8)
+/** CC-1188: temporary, for registry, supervisor and teleport until slice b mints them through the log. */
+export { newMsgId } from './msg-id.js'
 
 const citationOf = (meta: Record<string, string>): DecisionCitation => ({
   precedent: meta.precedent ?? '',
@@ -268,6 +270,18 @@ function restrictToOwner(file: string): void {
   fs.chmodSync(path.dirname(file), 0o700)
 }
 
+const toLogged = (row: Row): LoggedEventRow => ({
+  id: row.id,
+  kind: row.kind as EventKind,
+  ts: row.ts,
+  actor: row.actor,
+  target: row.target,
+  msgId: row.msg_id,
+  ref: row.ref,
+  body: row.body,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
+
 export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
   private readonly noticeTtlMs: () => number
@@ -292,8 +306,23 @@ export class EventLog implements EventStore {
     return this.db
   }
 
+  /**
+   * CC-1187: an 8-hex id repeats about 7% of the time across 25,000 rows, and a repeat of a
+   * resolved id makes the new item born closed. The `ref` check covers resolutions whose
+   * item was never logged under that id. A caller that needs the id before it appends uses
+   * this; the id is checked, not reserved, so two mints before either is written can match
+   * (about 2^-32 a pair).
+   */
+  mintMsgId(): string {
+    const taken = this.db.prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? OR ref = ? LIMIT 1`)
+    for (;;) {
+      const msgId = newMsgId()
+      if (!taken.get(msgId, msgId)) return msgId
+    }
+  }
+
   append(input: AppendInput): { id: number; msgId: string } {
-    const msgId = input.msgId ?? newMsgId()
+    const msgId = input.msgId ?? this.mintMsgId()
     const stmt = this.db.prepare(
       `INSERT INTO events (ts, kind, actor, target, msg_id, ref, body, meta)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -455,6 +484,28 @@ export class EventLog implements EventStore {
     return row?.ts
   }
 
+  /** CC-1056: every block and unblock row up to `until`, oldest first, for pairing into intervals. */
+  seatBlockRows(since: number, until: number): LoggedEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events WHERE kind IN ('seat_blocked', 'seat_unblocked', 'seat_activity')
+         AND ts >= ? AND ts <= ? ORDER BY id ASC`,
+      )
+      .all(since, until) as unknown as Row[]
+    return rows.map(toLogged)
+  }
+
+  /** CC-1056: whether the session's latest block row opened a block or closed one. */
+  lastSeatBlockKind(ref: string): EventKind | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT kind FROM events WHERE ref = ? AND kind IN ('seat_blocked', 'seat_unblocked')
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(ref) as { kind: EventKind } | undefined
+    return row?.kind
+  }
+
   darkSince(name: string): { id: number; at: number } | undefined {
     const row = this.db
       .prepare(
@@ -464,7 +515,31 @@ export class EventLog implements EventStore {
       .get(name) as { id: number; ts: number; kind: string } | undefined
     if (row?.kind === 'deregistered') return { id: row.id, at: row.ts }
     // CC-326: a register from before this log was opened was never closed, so the name is dark since then.
-    return row !== undefined && row.id <= this.opened.id ? this.opened : undefined
+    if (row === undefined || row.id > this.opened.id) return undefined
+    return this.heldEpisode(name, row.id) ?? this.opened
+  }
+
+  /** CC-345: the episode the first held row after `afterId` recorded, so a later boot does not move it. */
+  private heldEpisode(name: string, afterId: number): { id: number; at: number } | undefined {
+    const held = this.db
+      .prepare(
+        `SELECT json_extract(meta, '$.dark_id') AS darkId, json_extract(meta, '$.dark_at') AS darkAt
+         FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? ORDER BY id ASC LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK) as { darkId: string | null; darkAt: string | null } | undefined
+    if (held === undefined || held.darkId === null || held.darkAt === null) return undefined
+    return { id: Number(held.darkId), at: Number(held.darkAt) }
+  }
+
+  hasHeldSince(name: string, afterId: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK)
+    return row !== undefined
   }
 
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
@@ -626,6 +701,46 @@ export class EventLog implements EventStore {
   }
 
   /**
+   * CC-1089: answers and decisions to `refs` written after row `afterId`, oldest first.
+   *
+   * A teleport successor reads this for the questions its predecessor restated: an
+   * answer pushed to the dying predecessor closes the question, so `openQuestions`
+   * drops it and only this says what the answer was.
+   */
+  answersTo(refs: string[], afterId: number): DeliveredMessage[] {
+    if (refs.length === 0) return []
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE kind IN ('answer','decided') AND id > ? AND ref IN (${refs.map(() => '?').join(',')})
+         ORDER BY id ASC`,
+      )
+      .all(afterId, ...refs) as unknown as Row[]
+    return rows.map(toMessage)
+  }
+
+  /**
+   * CC-1140: answers and decisions to `name`'s own questions written after row `afterId`, oldest first.
+   *
+   * `agentId` scopes it to the identity that asked: a question filed while another
+   * agent held the name is skipped. A question with no attached identity before it
+   * matches on the name alone.
+   */
+  answersToAskerSince(name: string, afterId: number, agentId?: string): DeliveredMessage[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM events a JOIN events q ON q.msg_id = a.ref AND q.kind = 'question' AND q.actor = ?
+         WHERE a.kind IN ('answer','decided') AND a.target = ? AND a.id > ?
+           AND (? IS NULL OR COALESCE((
+             SELECT x.ref FROM events x WHERE x.kind = 'agent_attached' AND x.actor = q.actor AND x.id < q.id
+             ORDER BY x.id DESC LIMIT 1), ?) = ?)
+         ORDER BY a.id ASC`,
+      )
+      .all(name, name, afterId, agentId ?? null, agentId ?? null, agentId ?? null) as unknown as Row[]
+    return rows.map(toMessage)
+  }
+
+  /**
    * Peer traffic that landed in `name`'s inbox since `since`.
    *
    * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so
@@ -782,17 +897,7 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(`SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`)
       .all(afterId, limit) as unknown as Row[]
-    return rows.map(row => ({
-      id: row.id,
-      kind: row.kind as EventKind,
-      ts: row.ts,
-      actor: row.actor,
-      target: row.target,
-      msgId: row.msg_id,
-      ref: row.ref,
-      body: row.body,
-      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
-    }))
+    return rows.map(toLogged)
   }
 
   latestId(): number {

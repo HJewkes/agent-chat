@@ -73,6 +73,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
   'Bash(agent-chat ask:*)',
+  'Bash(agent-chat teleport:*)',
 ]
 
 /**
@@ -290,6 +291,12 @@ const DERIVED_DENIES: DerivedDeny[] = [
     when: [APPROVE_DENY],
     why: 'the file denies approve, and ask puts a question to the human under a service label',
   },
+  {
+    // CC-951: `teleport request` sends a from="human" message, the same door `send` closes.
+    deny: 'Bash(agent-chat teleport:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and teleport request sends a message as the human',
+  },
 ]
 
 const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
@@ -385,6 +392,20 @@ export function parseProfile(
   }
 }
 
+const PROFILE_NAME_MAX = 128
+const CONTROL = /[\u0000-\u001f\u007f]/
+
+/** CC-1059: a name becomes a path under the profiles dir, so one that could leave it is refused. */
+export function profileNameRefusal(name: string): string | undefined {
+  const plain =
+    name !== '' &&
+    name.length <= PROFILE_NAME_MAX &&
+    !/[/\\]/.test(name) &&
+    !name.includes('..') &&
+    !CONTROL.test(name)
+  return plain ? undefined : `the profile name ${JSON.stringify(name)} is not a plain name`
+}
+
 /**
  * Resolve a profile BY NAME ONLY. A spawn request names a profile; it never
  * carries a profile body. That single rule is what keeps a spawn request from
@@ -392,6 +413,8 @@ export function parseProfile(
  * variant of this function that takes a profile object.
  */
 export function loadProfile(name: string, dir: string = profilesDir()): AgentProfile | { error: string } {
+  const refused = profileNameRefusal(name)
+  if (refused !== undefined) return { error: refused }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
     let parsed: unknown
@@ -400,12 +423,46 @@ export function loadProfile(name: string, dir: string = profilesDir()): AgentPro
     } catch (err) {
       return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
     }
-    return parseProfile(name, parsed, file)
+    const profile = parseProfile(name, parsed, file)
+    return 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir))
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
-  if (builtin) return builtin
+  if (builtin) return withWorkerConfigDenies(builtin, path.dirname(dir))
   return { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` }
+}
+
+const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']
+
+/**
+ * CC-1094: the edit-tool rules that keep a worker out of `<agentHome>/profiles`
+ * and the top-level config json. A worker that rewrote either could drop every
+ * other deny it carries. Empty for a home holding a comma, because deny lists
+ * travel comma-joined and a split rule would deny the wrong thing.
+ */
+export function workerConfigDenies(agentHome: string): string[] {
+  if (agentHome.includes(',')) return []
+  const root = `/${path.resolve(agentHome)}`
+  return [`${root}/profiles/**`, `${root}/*.json`].flatMap(target =>
+    CONFIG_EDIT_TOOLS.map(tool => `${tool}(${target})`),
+  )
+}
+
+/**
+ * Every non-coordinator gets the rules, builtins included, and `allowedTools`
+ * cannot opt out. Silent, unlike `DERIVED_DENIES`: no file can avoid them, so a
+ * warning on every worker spawn would only be noise.
+ */
+function withWorkerConfigDenies(profile: AgentProfile, agentHome: string): AgentProfile {
+  if (roleOf(profile) === 'coordinator') return profile
+  const denied = profile.disallowedTools ?? []
+  const rules = workerConfigDenies(agentHome)
+  if (rules.length === 0) {
+    const warning = `${profile.name}: agent-chat home ${agentHome} contains a comma, so no edit deny guards its profiles or config`
+    return { ...profile, warnings: [...(profile.warnings ?? []), warning] }
+  }
+  const added = rules.filter(rule => !denied.includes(rule))
+  return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
 }
 
 export function listProfileNames(dir: string = profilesDir()): string[] {

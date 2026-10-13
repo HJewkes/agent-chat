@@ -1,3 +1,4 @@
+import os from 'node:os'
 import type { AgentIdentity } from '../protocol.js'
 import {
   findTargets,
@@ -11,7 +12,7 @@ import {
   type ProcessTable,
   type ReapReport,
 } from './orphan-reap.js'
-import { realTmpFs, realTmpProcessTable, sweepAgentTmpDirs } from './agent-tmpdir.js'
+import { diskTmpRoot, realTmpFs, realTmpProcessTable, sweepAgentTmpDirs, TMP_ROOT } from './agent-tmpdir.js'
 
 export const ORPHAN_SWEEP_MS = 60_000
 
@@ -80,6 +81,7 @@ export function startOrphanSweep(
     uid: process.getuid?.() ?? -1,
     self: process.pid,
     announced: new Set<string>(),
+    roots: [TMP_ROOT, diskTmpRoot(os.homedir())],
   }
   let running = false
   const timer = setInterval(() => {

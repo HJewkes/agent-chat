@@ -3,6 +3,7 @@ import path from 'node:path'
 import { planPathFor } from './brief.js'
 import type { Step } from './execute.js'
 import type { Claim, Ledger } from './ledger.js'
+import type { DispatchRecord } from '../seats/dispatch-record.js'
 import { readSlices, type PlannedSlice } from './report.js'
 
 /**
@@ -56,13 +57,35 @@ export function sliceClaims(parent: Parent, slices: readonly PlannedSlice[], now
 export const seedSteps = (seeds: readonly Claim[] = []): Step[] =>
   seeds.length === 0 ? [] : [{ kind: 'ledger', actions: [{ kind: 'add', claims: [...seeds] }] }]
 
-export type Seeding = { claims: Claim[]; plan: string } | { blocked: string }
+/** `warnings` are the slice lint's advisory lines (CC-1155); they never block seeding. */
+export type Seeding = { claims: Claim[]; plan: string; warnings: string[] } | { blocked: string }
+
+/** The slice agents already run for a task, by name (CC-1121 b). */
+export type SliceRuns = (taskId: string) => string[]
+
+const escaped = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * CC-1121 b: the `<prefix>-<id>-<slice>` agents a seat's dispatch log records for `taskId`. A slice
+ * run by hand leaves no ledger claim, so only this log shows that seeding it would run it again.
+ */
+export function sliceRunsIn(records: readonly DispatchRecord[], taskId: string, prefix: string): string[] {
+  const name = new RegExp(`^${escaped(prefix)}-${escaped(taskId.toLowerCase())}-[a-z]$`)
+  const agents = records.filter(r => r.task === taskId && name.test(r.agent)).map(r => r.agent)
+  return [...new Set(agents)]
+}
 
 /**
  * The task's slices from its plan file, why the plan blocks it, or undefined when there is no
  * plan file and the planner runs as before. A task whose slices already ran, or had one released, is not seeded twice.
  */
-export function seedSlices(parent: Parent, plan: PlanFile, ledger: Ledger, now: Date): Seeding | undefined {
+export function seedSlices(
+  parent: Parent,
+  plan: PlanFile,
+  ledger: Ledger,
+  now: Date,
+  ranOffLedger?: SliceRuns,
+): Seeding | undefined {
   if (plan.text === undefined) return undefined
   const seeded =
     ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined) ||
@@ -71,8 +94,13 @@ export function seedSlices(parent: Parent, plan: PlanFile, ledger: Ledger, now: 
     return {
       blocked: `${plan.path}: slices of ${parent.taskId} were already queued; close the task or replan it`,
     }
+  const ran = ranOffLedger?.(parent.taskId) ?? []
+  if (ran.length > 0)
+    return {
+      blocked: `${plan.path}: slice agents of ${parent.taskId} already ran outside the ledger (${ran.join(', ')}); seed by hand or close the task`,
+    }
   const read = readSlices(plan.text)
   return read.slices === undefined
     ? { blocked: `${plan.path}: ${read.problems.join('; ')}` }
-    : { claims: sliceClaims(parent, read.slices, now), plan: plan.path }
+    : { claims: sliceClaims(parent, read.slices, now), plan: plan.path, warnings: read.warnings }
 }

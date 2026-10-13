@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
+import { HARD_STOPS, type HardStopClass } from '@titan-design/coordinator'
 
 /**
- * CC-974: the human ops a task or slice may declare, and the one copy of the patterns that spot
- * them in prose. The patterns are the union of eligibility's HUMAN_ONLY and score's
- * HARD_STOP_PATTERNS, moved verbatim. They run as a brief-time lint, never as the dispatch decision.
+ * CC-974: the human ops a task or slice may declare, and the patterns that spot them in prose. Each
+ * hard-stop pattern comes from coordinator HARD_STOPS (TP-1974 b). They run as a brief-time lint,
+ * never as the dispatch decision.
  */
 
 export const OPS = [
@@ -14,31 +15,17 @@ export const OPS = [
   'spend',
   'force-push',
   'ruleset-write',
+  'dotfiles-merge',
+  'message',
+  'personal-data',
 ] as const
 export type Op = (typeof OPS)[number]
 
 /** Ops a person does. `publish` is left out: the `release-through-ci` grant unlocks it. */
 export const HUMAN_OPS: readonly Op[] = OPS.filter(op => op !== 'publish')
 
-export const OP_PATTERNS: Record<Op, RegExp[]> = {
-  deploy: [
-    /\bdeploy(s|ed|ing)?\b|\bwrangler\b|launchd install/i,
-    /\bdeploy(s|ed|ing)?\b|\bwrangler\b/i,
-    /launchd install|burndown install/i,
-  ],
-  restart: [/\brestart(s|ed|ing)? (the )?broker\b|\bbroker restart\b|restart window/i],
-  'config-edit': [/CLAUDE\.md|settings\.json|~\/\.agent-chat\//i],
-  publish: [
-    /\bnpm publish|first publish|publish(es|ed)? to npm|version packages/i,
-    /\bmove (the )?v1\b|cut a (release )?tag|tag push/i,
-  ],
-  spend: [/\b(purchase|pay for|spend money)\b/i, /\b(purchase|pay for|spend money|submit (the )?order)\b/i],
-  'force-push': [/force-push|reset --hard/i],
-  'ruleset-write': [/ruleset|branch protection/i],
-}
-
-/** The charter's hard-stop names, each mapped to the op that declares it. */
-export const HARD_STOP_OPS: Record<string, Op> = {
+/** Every charter hard-stop class, each mapped to the op that declares it. */
+export const HARD_STOP_OPS: Record<HardStopClass, Op> = {
   'broker-restart': 'restart',
   deploy: 'deploy',
   'launchd-install': 'deploy',
@@ -48,7 +35,23 @@ export const HARD_STOP_OPS: Record<string, Op> = {
   'npm-publish': 'publish',
   'ruleset-write': 'ruleset-write',
   'tag-move': 'publish',
+  'dotfiles-merge': 'dotfiles-merge',
+  'third-party-message': 'message',
+  'personal-data': 'personal-data',
 }
+
+/** Patterns no hard-stop class carries, by the op they serve. */
+const EXTRA_PATTERNS: Partial<Record<Op, RegExp[]>> = {
+  // The release GRANTABLE lint: any publish, tag push or release cut, not only to npm.
+  publish: [/\b(publish(es|ed|ing)?|tag push|cut a release)\b/i],
+}
+
+const classPatterns = (op: Op): RegExp[] =>
+  HARD_STOPS.filter(stop => HARD_STOP_OPS[stop.name] === op).map(stop => stop.pattern)
+
+export const OP_PATTERNS: Record<Op, RegExp[]> = Object.fromEntries(
+  OPS.map(op => [op, [...classPatterns(op), ...(EXTRA_PATTERNS[op] ?? [])]]),
+) as Record<Op, RegExp[]>
 
 export interface OpsHit {
   op: Op
@@ -89,6 +92,22 @@ export function opsLint(doneWhen: string, tags: readonly string[]): OpsHit[] {
   const declared = new Set(declaredOps(tags))
   return opsHits(doneWhen).filter(hit => !declared.has(hit.op))
 }
+
+const PACKAGE = String.raw`[@\w][\w@./-]*`
+
+/** The whole done_when is one publish of one or more packages at a semver, and nothing else. */
+const PUBLISH_ONLY = new RegExp(
+  String.raw`^\s*publish\s+${PACKAGE}(\s*(,|\band\b)\s*${PACKAGE})*\s+at\s+v?\d+\.\d+\.\d+\.?\s*$`,
+  'i',
+)
+
+/**
+ * CC-987: why `doneWhen` is not one publish ("publish <package> at <version>"); undefined when it is.
+ * Only a publish-only task waits on the release grant, so its build and consumer work are their own tasks.
+ * The shape is matched over the whole text, so any other clause fails closed.
+ */
+export const publishOnlyProblem = (doneWhen: string): string | undefined =>
+  PUBLISH_ONLY.test(doneWhen) ? undefined : `its done_when is not exactly 'publish <package> at <version>'`
 
 /** A task a person does: burndown routes it and never dispatches it. */
 export const isHumanStep = (tags: readonly string[]): boolean =>

@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS } from '../burndown/shepherd.js'
-import { childEnv } from '../burndown/exec.js'
+import { childEnv, describeExecFailure } from '../burndown/exec.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { ParkTarget } from './park.js'
 
@@ -21,6 +22,8 @@ export interface ShepherdRun {
   names: string[]
   /** CC-950: the implementer alone, since Shepherd replaces it with a successor but resumes a reviewer by name. */
   implementer: string | null
+  /** CC-754: Shepherd's phase; `fixing` holds from an implementer wake until a new head arrives. */
+  phase: string
 }
 
 export interface ShepherdSkipPort {
@@ -61,6 +64,34 @@ export async function shepherdSkip(
   }
 }
 
+const FIX_ROUND_PHASE = 'fixing'
+
+/**
+ * CC-754: why `agent`'s tree must not be parked now, or undefined when it may be. A run in a fix round has
+ * queued (or is about to queue) a wake for its implementer; parking would leave that wake a missing cwd.
+ */
+export async function fixRoundBlocker(
+  port: ShepherdSkipPort,
+  agent: AgentIdentity,
+  target: ParkTarget | undefined,
+): Promise<string | undefined> {
+  let runs: ShepherdRun[]
+  try {
+    runs = await port.activeRuns()
+  } catch (err) {
+    return `Shepherd could not be read (${firstLine(err)}), so a fix round for its PR cannot be ruled out`
+  }
+  const branches = new Set([`agent-chat/${agent.name}`, ...(target ? [target.branch] : [])])
+  const fixing = runs.find(
+    r =>
+      r.phase === FIX_ROUND_PHASE &&
+      ((r.branch !== null && branches.has(r.branch)) || r.implementer === agent.name),
+  )
+  if (fixing === undefined) return undefined
+  const branch = fixing.branch ?? target?.branch ?? `agent-chat/${agent.name}`
+  return `Shepherd run for ${branch} is in a fix round (phase fixing); parking would strand its wake`
+}
+
 const execFileAsync = promisify(execFile)
 const READ_TIMEOUT_MS = 15_000
 /** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
@@ -80,17 +111,42 @@ export function parseActiveRuns(stdout: string): ShepherdRun[] {
       branch: text(row.branch) ?? null,
       names: [row.implementer, row.reviewer].map(text).filter((n): n is string => n !== undefined),
       implementer: text(row.implementer) ?? null,
+      phase: String(row.phase),
     }))
 }
 
-async function readActiveRuns(): Promise<ShepherdRun[]> {
-  const { stdout } = await execFileAsync(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
-    env: childEnv(),
-    encoding: 'utf8',
-    timeout: READ_TIMEOUT_MS,
-    maxBuffer: STATUS_MAX_BYTES,
-  })
-  return parseActiveRuns(stdout)
+export interface ReadActiveRunsOptions {
+  bin?: string
+  timeoutMs?: number
+}
+
+/**
+ * CC-1096: runs in HOME, since the broker's own cwd can be a removed agent tree, and a failure
+ * names exit or signal, timeout, elapsed ms, cwd and stderr instead of "Command failed: <argv>".
+ */
+export async function readActiveRuns({
+  bin = SHEPHERD_BIN,
+  timeoutMs = READ_TIMEOUT_MS,
+}: ReadActiveRunsOptions = {}): Promise<ShepherdRun[]> {
+  const cwd = homedir()
+  const started = performance.now()
+  let stdout: string
+  try {
+    ;({ stdout } = await execFileAsync(bin, SHEPHERD_STATUS_ARGS, {
+      cwd,
+      env: childEnv(),
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: STATUS_MAX_BYTES,
+    }))
+  } catch (err) {
+    throw new Error(describeExecFailure(err, { cwd, elapsedMs: performance.now() - started }))
+  }
+  try {
+    return parseActiveRuns(stdout)
+  } catch (err) {
+    throw new Error(`parsed ${stdout.length} bytes: ${(err as Error).message}`.split('\n')[0])
+  }
 }
 
 /** A repo with no origin has nowhere to hold a PR; otherwise `gh` answers, and its failure rejects. */
@@ -107,6 +163,6 @@ async function readOpenPr(gitRoot: string, branch: string): Promise<boolean> {
 
 /** The broker's production reads; tests pass a fake. */
 export const cliShepherdSkipPort: ShepherdSkipPort = {
-  activeRuns: readActiveRuns,
+  activeRuns: () => readActiveRuns(),
   hasOpenPr: readOpenPr,
 }

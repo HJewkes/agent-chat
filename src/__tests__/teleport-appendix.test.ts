@@ -136,6 +136,60 @@ describe('the inbox and the human queue', () => {
   })
 })
 
+describe('restated questions answered during the hop', () => {
+  /** A question by lead, then the handoff row that restated it, as `Teleport.begin` writes them. */
+  function restatedAsk(text: string): { question: string; handoffId: number } {
+    const { msgId: question } = core.append({ kind: 'question', actor: 'lead', target: 'human', body: text })
+    const { id: handoffId } = core.append({
+      kind: 'agent_handoff',
+      actor: 'lead',
+      body: `still waiting on ${question}`,
+      meta: { questions: question },
+    })
+    return { question, handoffId }
+  }
+
+  const factsAfter = (handoffId: number, restated: string[]) =>
+    appendixFacts(core.agents, core.events, {
+      name: 'lead',
+      since: 0,
+      sessionId: SESSION,
+      restated,
+      handoffId,
+      autonomyRoot: root,
+      activeWorkRoot: activeWork,
+    })
+
+  it('lists a restated question answered after the handoff, with the answer', () => {
+    const { question, handoffId } = restatedAsk('Merge the release now?')
+    core.append({ kind: 'answer', actor: 'human', target: 'lead', ref: question, body: 'yes, \nship it' })
+
+    const text = renderAppendix(factsAfter(handoffId, [question]))
+
+    expect(text).toContain(`Answered while you were starting: ${question}: yes, ship it`)
+    expect(text).toContain('Open chat_ask questions: none.')
+  })
+
+  it('omits an answer written before the handoff', () => {
+    const { msgId: question } = core.append({ kind: 'question', actor: 'lead', target: 'human', body: 'q' })
+    core.append({ kind: 'answer', actor: 'human', target: 'lead', ref: question, body: 'early answer' })
+    const { id: handoffId } = core.append({ kind: 'agent_handoff', actor: 'lead', body: question })
+
+    expect(renderAppendix(factsAfter(handoffId, [question]))).not.toContain('early answer')
+  })
+
+  it('omits answers to questions that were not restated', () => {
+    const { question, handoffId } = restatedAsk('Merge the release now?')
+    const { msgId: other } = core.append({ kind: 'question', actor: 'lead', target: 'human', body: 'other' })
+    core.append({ kind: 'answer', actor: 'human', target: 'lead', ref: other, body: 'unrelated answer' })
+
+    const text = renderAppendix(factsAfter(handoffId, [question]))
+
+    expect(text).not.toContain('unrelated answer')
+    expect(text).not.toContain('Answered while you were starting')
+  })
+})
+
 describe('the queue file', () => {
   const writeSeat = (name: string, frontmatter: string): void =>
     fs.writeFileSync(path.join(root, 'seats', `${name}.md`), `---\n${frontmatter}\n---\nprose\n`)

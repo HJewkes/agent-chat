@@ -3,8 +3,8 @@ import path from 'node:path'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
-import { readLedger, heldClaims, type Claim } from '../burndown/ledger.js'
-import { burndownOverridePath, burndownSettingsPath } from '../../paths.js'
+import { readLedger, heldClaims, type Claim, type SeatState } from '../burndown/ledger.js'
+import { burndownLedgerPath, burndownOverridePath, burndownSettingsPath } from '../../paths.js'
 import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-store.js'
 import { readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
@@ -21,6 +21,8 @@ export type SeatSpawnRead =
 export interface SeatSpawnReadDeps {
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   loadDoc: () => WatchdogDoc
+  /** CC-1099: the seat's burndown ledger state, whose samples `seatSpend` prefers to the watchdog meters; absent, the meters stand alone. */
+  seatState?: (seat: string) => SeatState | undefined
   home: string
 }
 
@@ -35,6 +37,7 @@ export interface SeatSpawnRequest {
 const defaultDeps: SeatSpawnReadDeps = {
   readBudget: readAccountBudget,
   loadDoc: () => loadDoc(),
+  seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
   home: os.homedir(),
 }
 
@@ -46,6 +49,18 @@ export const poolForConfigDir = (pools: ReadonlyMap<string, Pool>, configDir: st
 function savedDoc(load: () => WatchdogDoc): WatchdogDoc | undefined {
   try {
     return load()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The seat's ledger state as the tick keyed it; `seatSpend` matches its config dir against the pool's (CC-1118).
+ * An unreadable ledger leaves the meters to stand alone rather than refusing the spawn.
+ */
+function ledgerState(deps: SeatSpawnReadDeps, seat: string): SeatState | undefined {
+  try {
+    return deps.seatState?.(seat)
   } catch {
     return undefined
   }
@@ -80,6 +95,8 @@ export function readSeatSpawn(
     resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
     runMeter: meters.run,
     dayMeter: meters.day,
+    seatState: ledgerState(deps, seat.name),
+    home: deps.home,
     now: spawn.now,
   }
   return { kind: 'gate', input }

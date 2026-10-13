@@ -13,13 +13,14 @@ import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
+import { EventLog, isReport, isTerminalReport } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 import { ClaimLedger } from './claims.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
+import { TELEPORT_GAP_MS, midTeleport } from './teleport-window.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
@@ -108,16 +109,25 @@ export class BrokerCore<C = Conn> {
   private readonly isSeat: (name: string) => boolean
   /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
   private readonly stranded = new Map<string, DeliveredMessage[]>()
+  /** CC-1140: the log id a non-seat name went dark at, read as it registers, until its missed answers are pushed. */
+  private readonly missedSince = new Map<string, number>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
-    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
+    this.events = options.events ?? new EventLog(options.dbPath)
+    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs, () =>
+      this.mintMsgId(),
+    )
     this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
-    this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
     this.agents = new AgentLog(this.events)
     this.startedAt = Date.now()
+  }
+
+  /** CC-1188: a log-checked id for a caller that needs one before it appends, or never logs it. */
+  mintMsgId(): string {
+    return this.events.mintMsgId()
   }
 
   /**
@@ -192,10 +202,14 @@ export class BrokerCore<C = Conn> {
     // holder. A session id is merely evidence of which Claude Code process this
     // is, and letting it evict would turn the name lease — the property that makes
     // "held by another session" mean anything — into a claim anyone can make.
-    const result = this.registry.register(conn, msg)
+    const missedSince = this.answersMissedSince(msg.name)
+    const result = this.registry.register(conn, msg, this.teleportPredecessor(msg.agentId))
     logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
     if (!result.ok) return { ok: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
-    if (result.evicted !== undefined) this.supersede(msg.name, msg.agentId, result.evicted, evict)
+    if (missedSince === undefined) this.missedSince.delete(msg.name)
+    else this.missedSince.set(msg.name, missedSince)
+    if (result.evicted !== undefined)
+      this.supersede(msg.name, msg.agentId, result.evictedAgentId, result.evicted, evict)
 
     this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
     this.noteWorkingOnCollision(msg)
@@ -274,15 +288,32 @@ export class BrokerCore<C = Conn> {
     })
   }
 
+  /**
+   * CC-951: the predecessor a still-spawning teleport successor may evict, so the
+   * old session ends only once the new one holds the name. Spawning only: once
+   * attached, the successor's id is an ordinary one again.
+   */
+  private teleportPredecessor(agentId: string | undefined): string | undefined {
+    const identity = agentId === undefined ? undefined : this.agents.get(agentId)
+    return identity?.state === 'spawning' ? identity.teleportFrom : undefined
+  }
+
   /** A takeover displaced a live connection: record the detach and close it. */
-  private supersede(name: string, agentId: string | undefined, evicted: C, evict?: (conn: C) => void): void {
+  private supersede(
+    name: string,
+    agentId: string | undefined,
+    evictedAgentId: string | undefined,
+    evicted: C,
+    evict?: (conn: C) => void,
+  ): void {
+    const reason = evictedAgentId === agentId ? 'superseded by resume' : 'superseded by teleport successor'
     // The predecessor's own close handler would append this too, but it may not
     // have fired yet and the entry is already gone — so record it here, and let
     // drop() find nothing left to record when it does fire.
-    if (agentId !== undefined)
-      this.append({ kind: 'agent_detached', actor: name, ref: agentId, body: 'superseded by resume' })
+    if (evictedAgentId !== undefined)
+      this.append({ kind: 'agent_detached', actor: name, ref: evictedAgentId, body: reason })
     this.strand(name, this.reports.forget(evicted))
-    logEvent('deregistered', { name, reason: 'superseded by resume' })
+    logEvent('deregistered', { name, reason })
     evict?.(evicted)
   }
 
@@ -332,28 +363,68 @@ export class BrokerCore<C = Conn> {
     const unpushed = this.reports.forget(conn)
     if (!name || !entry) return
     this.strand(name, unpushed)
-    // Claims are leases held by presence, so they end here rather than needing
-    // to be reaped: an agent that dies mid-task stops blocking its peers at
-    // once, and there is no such thing as a stale claim (CC-56).
-    this.claims.releaseAll(name)
+    this.releaseClaims(name)
     logEvent('deregistered', { name, reason: 'connection closed' })
     this.append({ kind: 'deregistered', actor: name, body: entry.workingOn, meta: { status: entry.status } })
     if (entry.agentId !== undefined)
       this.append({ kind: 'agent_detached', actor: name, ref: entry.agentId, body: 'connection closed' })
   }
 
+  /**
+   * Claims are leases held by presence, so they end with the connection rather
+   * than needing to be reaped: an agent that dies mid-task stops blocking its
+   * peers at once (CC-56). A teleport is the exception (CC-397): the successor
+   * keeps the name, so it keeps the claims too, unless it never arrives.
+   */
+  private releaseClaims(name: string): void {
+    if (!midTeleport(this.events, name, Date.now())) {
+      this.claims.releaseAll(name)
+      return
+    }
+    logEvent('claims_kept_for_teleport', { name })
+    const gap = setTimeout(() => {
+      if (this.registry.connFor(name) !== undefined) return
+      this.claims.releaseAll(name)
+      logEvent('claims_released_after_teleport_gap', { name })
+    }, TELEPORT_GAP_MS)
+    gap.unref()
+  }
+
   private strand(name: string, unpushed: DeliveredMessage[]): void {
     if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
   }
 
-  /** Push `name`'s new connection the reports its last one closed on, once (CC-321). */
+  /**
+   * CC-1140: where a name registering out of the dark starts missing answers. A seat
+   * or teleport is skipped: `deliverHeld` already pushes its answers.
+   */
+  private answersMissedSince(name: string): number | undefined {
+    if (this.darkSeat(name) !== undefined) return undefined
+    return this.events.darkSince(name)?.id
+  }
+
+  /**
+   * Push `name`'s new connection the reports its last one closed on (CC-321), and the
+   * answers to its own questions recorded while it was dark (CC-1140), once.
+   */
   deliverStranded(name: string): void {
+    this.deliverMissedAnswers(name)
     const unpushed = this.stranded.get(name)
     const conn = this.registry.connFor(name)
     if (unpushed === undefined || conn === undefined) return
     this.stranded.delete(name)
     this.reports.resend(conn, unpushed)
     logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+  }
+
+  private deliverMissedAnswers(name: string): void {
+    const afterId = this.missedSince.get(name)
+    const conn = this.registry.connFor(name)
+    if (afterId === undefined || conn === undefined) return
+    this.missedSince.delete(name)
+    const missed = this.events.answersToAskerSince(name, afterId, this.registry.entryFor(conn)?.agentId)
+    for (const message of missed) this.reports.now(conn, message)
+    if (missed.length > 0) logEvent('missed_answers_delivered', { name, count: missed.length })
   }
 
   /** Deliver to a named session if it happens to be connected right now. */
@@ -412,8 +483,9 @@ export class BrokerCore<C = Conn> {
   }
 
   /**
-   * CC-320: keep a message for a dark seat. Undefined when `to` is not one, so the
-   * send fails as before; `ok: false` when the hold is full or the seat is dark too long.
+   * CC-320: keep a message for a dark seat, or (CC-301) for any name mid-teleport. Undefined
+   * when `to` is neither, so the send fails as before; `ok: false` when the hold is full or
+   * the name is dark too long.
    */
   holdForSeat(
     from: string,
@@ -421,8 +493,9 @@ export class BrokerCore<C = Conn> {
     text: string,
     inReplyTo?: string,
     source?: WakeSource,
+    sendMeta?: Record<string, string>,
   ): SeatHoldResult | undefined {
-    if (!this.isSeat(to)) return undefined
+    if (!this.holdable(to)) return undefined
     const verdict = holdVerdict(this.events, to, Date.now())
     if (verdict === undefined) return undefined
     if (!verdict.hold) return { ok: false, reason: verdict.reason }
@@ -432,7 +505,14 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
+      meta: {
+        ...sendMeta,
+        held: SEAT_HOLD_MARK,
+        // CC-345: the episode survives a later boot, which would otherwise restart it at the new log opening.
+        dark_id: String(verdict.dark.id),
+        dark_at: String(verdict.dark.at),
+        ...(source === undefined ? {} : { source }),
+      },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
@@ -474,19 +554,18 @@ export class BrokerCore<C = Conn> {
     text: string,
     inReplyTo?: string,
     source?: WakeSource,
+    sendMeta?: Record<string, string>,
   ): SeatForwardResult | undefined {
-    const held = this.holdForSeat(from, steward, text, inReplyTo, source)
+    const held = this.holdForSeat(from, steward, text, inReplyTo, source, sendMeta)
     return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
   }
 
   private pushForward(forward: SeatForward): SeatForwardResult {
     const { from, to, steward, text, inReplyTo, source } = forward
-    const msgId = newMsgId()
-    this.append({
+    const { msgId } = this.append({
       kind: 'message',
       actor: from,
       target: steward,
-      msgId,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
       meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
@@ -503,9 +582,19 @@ export class BrokerCore<C = Conn> {
     return { steward, msgId, held: false }
   }
 
-  /** The log id of the dark episode seat `name` is in, read before it registers. */
+  /**
+   * The log id of the dark episode seat `name` is in, read before it registers. CC-345: a name
+   * no longer holdable, such as a seat stopped while dark, still gets the mail it was held.
+   */
   darkSeat(name: string): number | undefined {
-    return this.isSeat(name) ? this.events.darkSince(name)?.id : undefined
+    const dark = this.events.darkSince(name)
+    if (dark === undefined) return undefined
+    return this.holdable(name) || this.events.hasHeldSince(name, dark.id) ? dark.id : undefined
+  }
+
+  /** CC-301: a teleport's successor keeps the name, so a send in the gap waits for it like a seat's. */
+  private holdable(name: string): boolean {
+    return this.isSeat(name) || midTeleport(this.events, name, Date.now())
   }
 
   /** Push what landed in a seat's inbox during the dark episode it just registered out of, oldest first. */
@@ -536,24 +625,23 @@ export class BrokerCore<C = Conn> {
       overrules: decision.msgId,
       overruled_decider: decision.by,
     }
+    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
+    const written = this.append({
+      kind: 'answer',
+      actor: HUMAN,
+      target: author,
+      ref: msgId,
+      body: text,
+      meta: { ...overrule, channel },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: HUMAN,
       text: overrule ? overruleText(text, overrule) : text,
       inReplyTo: msgId,
       ...(overrule ? { event: 'overrule' } : {}),
       at: Date.now(),
     }
-    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
-    this.append({
-      kind: 'answer',
-      actor: HUMAN,
-      target: author,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...overrule, channel },
-    })
 
     const live = this.deliverTo(author, message)
     logEvent('route', {
@@ -582,8 +670,16 @@ export class BrokerCore<C = Conn> {
     const check = checkDecision(question.text, text, citation)
     if (!check.ok) return check
 
+    const written = this.append({
+      kind: 'decided',
+      actor: decider,
+      target: question.from,
+      ref: msgId,
+      body: text,
+      meta: { ...citation },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: decider,
       text: decidedText(text, decider, citation),
       inReplyTo: msgId,
@@ -591,15 +687,6 @@ export class BrokerCore<C = Conn> {
       event: 'decided',
       at: Date.now(),
     }
-    this.append({
-      kind: 'decided',
-      actor: decider,
-      target: question.from,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...citation },
-    })
     const live = this.deliverTo(question.from, message)
     logEvent('route', {
       kind: 'decided',
@@ -646,24 +733,23 @@ export class BrokerCore<C = Conn> {
     }
 
     this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
-    const message: DeliveredMessage = {
-      msgId: newMsgId(),
-      from: request.composer,
-      text: request.text,
-      provenance: 'human-endorsed',
-      at: Date.now(),
-    }
-    this.append({
+    const written = this.append({
       kind: 'message',
       actor: request.composer,
       target: request.recipient,
-      msgId: message.msgId,
       body: request.text,
       // `endorsed_from` rather than `ref`: the recipient never saw the request,
       // so surfacing it as an in-reply-to would show them a thread they were not
       // part of. The audit trail wants the edge; the conversation does not.
       meta: { provenance: 'human-endorsed', endorsed_from: msgId },
     })
+    const message: DeliveredMessage = {
+      msgId: written.msgId,
+      from: request.composer,
+      text: request.text,
+      provenance: 'human-endorsed',
+      at: Date.now(),
+    }
 
     const live = this.deliverTo(request.recipient, message)
     logEvent('route', {

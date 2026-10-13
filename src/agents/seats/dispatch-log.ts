@@ -15,7 +15,8 @@ import type { RetireOutcome } from './retire-outcome.js'
 import { retireSeatOutcome } from './retire-seat-outcome.js'
 import type { ShepherdRow } from '../burndown/shepherd.js'
 import { parseTaskTags, type BriefSource } from '../burndown/task-tags.js'
-import { taskOf } from './journal-line.js'
+import { shepherdPrRef, taskOf } from './journal-line.js'
+import type { SeatJournal } from './journal.js'
 import { readText } from './io.js'
 import { seatOf, type SeatFile } from './seat-of.js'
 
@@ -47,6 +48,8 @@ export interface DispatchLogDeps {
   stat?: (file: string) => fs.Stats
   /** TP-1570: every Shepherd row, undefined when unread; without it no `merged` or `done` row is written. */
   shepherd?: () => Promise<ShepherdRow[] | undefined>
+  /** CC-316: where `ended` writes the seat's `merged` journal line, so a Shepherd merge of hand-dispatched work gets one too. */
+  journal?: SeatJournal
 }
 
 const UNAVAILABLE = 'seat_dispatch_unavailable'
@@ -104,15 +107,15 @@ export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatD
     abandoned: spawn => write(spawn, abandonedRow),
     retired: (spawn, sessionId, spend, outcome) =>
       write(spawn, run => retiredRow(run, sessionId, spend, outcome)),
-    ...(deps.shepherd === undefined ? {} : { ended: endedWriter(context, deps.shepherd, deps.now) }),
+    ...(deps.shepherd === undefined ? {} : { ended: endedWriter(context, deps.shepherd, deps) }),
   }
 }
 
-/** Reads Shepherd only for a seat's agent; a failed read is logged once and writes nothing. Never throws. */
+/** Reads Shepherd only for a seat's agent; a failed read is logged once and writes nothing. Journals `merged` after its row, which the journal dedupes. Never throws. */
 function endedWriter(
   ctx: WriteContext,
   shepherd: () => Promise<ShepherdRow[] | undefined>,
-  now: (() => Date) | undefined,
+  { now, journal }: DispatchLogDeps,
 ): (spawn: SpawnFacts, outcome: RetireOutcome) => Promise<void> {
   return async ({ agent, spawner }, outcome) => {
     try {
@@ -125,6 +128,9 @@ function endedWriter(
       const ts = (now?.() ?? new Date()).toISOString()
       const row: EndedRow = { ts, task: target.task, agent, ...ended, by: 'agent-chat' }
       appendTo(ctx, target, row, text => hasOutcomeRow(text, agent, ended.outcome))
+      if (ended.outcome !== 'merged') return
+      const pr = shepherdPrRef(ended.pr, ended.head)
+      journal?.({ event: 'merged', agent, ...(pr === undefined ? {} : { pr }) })
     } catch (err) {
       ctx.once(UNAVAILABLE, UNAVAILABLE, { reason: err instanceof Error ? err.message : String(err) })
     }
@@ -159,19 +165,35 @@ interface Target {
   refuse: (reason?: string) => void
 }
 
-function targetOf(ctx: WriteContext, agent: string, spawner: string | undefined): Target | undefined {
+function targetOf(
+  ctx: WriteContext,
+  agent: string,
+  spawner: string | undefined,
+  unseated: (ctx: WriteContext, agent: string) => Target | undefined = () => undefined,
+): Target | undefined {
   const unreadable = (seat: string): void => ctx.once(`${UNREADABLE}:${seat}`, UNREADABLE, { seat })
   const match = seatOf(ctx.root, agent, spawner, unreadable)
   if (match.kind === 'ambiguous') {
     ctx.once(`${AMBIGUOUS}:${match.prefix}`, AMBIGUOUS, { prefix: match.prefix, seats: match.seats })
     return undefined
   }
-  if (match.kind === 'none') return undefined
+  if (match.kind === 'none') return unseated(ctx, agent)
   const seat = match.seat.seat.name
   const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
   const file = dispatchLogPath(ctx.root, match.seat)
   if (file === undefined) return void refuse()
   return { file, task: taskOf(agent, match.seat.seat.prefix) ?? null, seat, refuse }
+}
+
+/** TP-2529: Shepherd's `rv-*` reviewers match no seat; their dispatched and retired rows go to `logs/shepherd/`. */
+const SHEPHERD_REVIEWER = 'rv-'
+const SHEPHERD_LOG = path.join('logs', 'shepherd', 'dispatch.jsonl')
+
+function shepherdReviewerTarget(ctx: WriteContext, agent: string): Target | undefined {
+  if (!agent.startsWith(SHEPHERD_REVIEWER)) return undefined
+  const seat = 'shepherd'
+  const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
+  return { file: path.join(ctx.root, SHEPHERD_LOG), task: null, seat, refuse }
 }
 
 function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: string) => boolean): void {
@@ -184,7 +206,7 @@ function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: stri
 }
 
 function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run: DispatchRun) => Row): void {
-  const target = targetOf(ctx, spawn.agent, spawn.spawner ?? undefined)
+  const target = targetOf(ctx, spawn.agent, spawn.spawner ?? undefined, shepherdReviewerTarget)
   if (target === undefined) return
   const { spawnedAs, ...facts } = spawn
   const attribution = spawnedAs === undefined ? {} : { spawner: spawnedAs, seat: target.seat }

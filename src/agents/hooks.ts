@@ -1,8 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import { hooksPath } from '../paths.js'
+import { withPinnedGitProtocols } from '../git.js'
 import { logEvent } from '../broker/log.js'
+import { existingDirOr } from './stable-cwd.js'
 
 /**
  * CC-71: a generic agent-lifecycle extension point, modeled directly on
@@ -62,10 +65,15 @@ export interface HookProcess {
   on: (event: 'error', listener: (err: Error) => void) => void
 }
 
-export type HookSpawnFn = (command: string) => HookProcess
+export type HookSpawnFn = (command: string, cwd: string) => HookProcess
 
-function defaultSpawn(command: string): HookProcess {
-  return spawn(command, { shell: true, stdio: ['pipe', 'ignore', 'pipe'] }) as unknown as HookProcess
+function defaultSpawn(command: string, cwd: string): HookProcess {
+  return spawn(command, {
+    shell: true,
+    cwd,
+    env: withPinnedGitProtocols(),
+    stdio: ['pipe', 'ignore', 'pipe'],
+  }) as unknown as HookProcess
 }
 
 /**
@@ -84,9 +92,11 @@ export function runHooks(
   if (!commands || commands.length === 0) return
   const spawnFn = opts.spawn ?? defaultSpawn
   const body = JSON.stringify(payload)
+  // The agent's tree is often gone by on_complete; inheriting the broker's cwd is no safer (CC-1096).
+  const cwd = existingDirOr(payload.cwd, os.homedir())
   for (const command of commands) {
     try {
-      const child = spawnFn(command)
+      const child = spawnFn(command, cwd)
       child.on('error', err => logEvent('hook_failed', { event, command, error: String(err) }))
       child.stderr?.on('data', (chunk: Buffer) =>
         logEvent('hook_stderr', { event, command, chunk: chunk.toString('utf8').slice(0, 500) }),

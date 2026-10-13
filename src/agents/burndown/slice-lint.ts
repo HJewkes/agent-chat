@@ -1,3 +1,4 @@
+import { patternsOverlap } from '../../broker/claims.js'
 import { HUMAN_OPS, opsHits } from './ops.js'
 import type { PlannedSlice } from './report.js'
 
@@ -28,6 +29,12 @@ const RULES: Rule[] = [
     (s.ops ?? [])
       .filter(op => HUMAN_OPS.includes(op))
       .map(op => `slice ${s.n}: declares ${op}; split it into a kind:operator or kind:owner task`),
+  s =>
+    (s.ops ?? []).includes('publish')
+      ? [
+          `slice ${s.n}: declares publish; a publish is its own task (ops:publish, done_when "publish <pkg> at <version>", dep: on the build task), not a slice`,
+        ]
+      : [],
 ]
 
 /**
@@ -86,4 +93,72 @@ function dependencyCycle(slices: readonly PlannedSlice[]): string[] {
     if (cycle !== undefined) return [`slice ${cycle[0]}: dependency cycle ${cycle.join(' -> ')}`]
   }
   return []
+}
+
+/**
+ * CC-1155: advisory lines that never block seeding. A `dependsOn` edge between slices whose owns share
+ * no file serialises work that could run in parallel unless `dependsWhy` names the semantic reason, and
+ * a linear chain of three or more over disjoint owns is flagged whatever `dependsWhy` says.
+ */
+export function sliceWarnings(slices: readonly PlannedSlice[]): string[] {
+  const byName = new Map(slices.map(s => [s.n, s]))
+  return [
+    ...slices.flatMap(s => unexplainedEdges(s, byName)),
+    ...disjointChains(slices, byName),
+    ...slices.flatMap(undeclaredPublish),
+  ]
+}
+
+/** CC-987: a publish mention with no `ops` field may be subject matter, so it warns rather than fails. */
+function undeclaredPublish(slice: PlannedSlice): string[] {
+  if (slice.ops !== undefined) return []
+  const hit = opsHits(slice.doneWhen ?? '').find(h => h.op === 'publish')
+  if (hit === undefined) return []
+  return [
+    `slice ${slice.n}: doneWhen mentions publish ('${hit.text}'); if this slice publishes, move it to its own task; else add "ops": []`,
+  ]
+}
+
+type ByName = ReadonlyMap<string, PlannedSlice>
+
+const disjoint = (a: PlannedSlice, b: PlannedSlice): boolean =>
+  !a.owns.some(own => b.owns.some(other => patternsOverlap(own, other)))
+
+function unexplainedEdges(slice: PlannedSlice, byName: ByName): string[] {
+  if ((slice.dependsWhy ?? '').trim() !== '') return []
+  return slice.dependsOn
+    .filter(dep => {
+      const target = byName.get(dep)
+      return target !== undefined && disjoint(slice, target)
+    })
+    .map(
+      dep =>
+        `slice ${slice.n}: depends on ${dep} but their owns are disjoint; set dependsOn [] or say why in dependsWhy`,
+    )
+}
+
+/** Each maximal run back from a slice nothing depends on, through slices that each depend on exactly one. */
+function disjointChains(slices: readonly PlannedSlice[], byName: ByName): string[] {
+  const depended = new Set(slices.flatMap(s => s.dependsOn))
+  return slices
+    .filter(s => !depended.has(s.n))
+    .map(tail => chainEndingAt(tail, byName))
+    .filter(
+      chain => chain.length >= 3 && chain.every((s, i) => chain.slice(i + 1).every(t => disjoint(s, t))),
+    )
+    .map(
+      chain =>
+        `slices ${chain.map(s => s.n).join(' -> ')} form a linear chain over disjoint owns; check each edge is real`,
+    )
+}
+
+function chainEndingAt(tail: PlannedSlice, byName: ByName): PlannedSlice[] {
+  const chain = [tail]
+  let current: PlannedSlice | undefined = tail
+  while (current.dependsOn.length === 1) {
+    current = byName.get(current.dependsOn[0] as string)
+    if (current === undefined || chain.includes(current)) break
+    chain.unshift(current)
+  }
+  return chain
 }

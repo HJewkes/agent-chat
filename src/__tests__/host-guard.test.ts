@@ -9,6 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { logPath } from '../paths.js'
+import type { SurfaceName } from '../protocol.js'
 
 /**
  * CC-880 — the broker runs on one machine while sessions may reach it from
@@ -118,7 +119,7 @@ describe('a teleport the broker cannot complete', () => {
     return core.registry.entryFor(conn)?.agentId as string
   }
 
-  const teleport = (agentId: string, host: string | undefined) =>
+  const teleport = (agentId: string, host: string | undefined, surface?: SurfaceName) =>
     supervisor.teleport({
       subject: {
         agentId,
@@ -130,6 +131,7 @@ describe('a teleport the broker cannot complete', () => {
         ...(host === undefined ? {} : { host }),
       },
       handoff: 'carry on',
+      ...(surface === undefined ? {} : { surface }),
     })
 
   const humanNotices = () => core.events.humanQueue().filter(item => item.text.includes('teleport'))
@@ -156,17 +158,16 @@ describe('a teleport the broker cannot complete', () => {
     expect(signals).toEqual([])
   })
 
-  it('errors on an iTerm surface this platform lacks, notifies once, and keeps the predecessor', async () => {
+  /** CC-951: an adopted session's default is the OS's own now, so only an explicit iTerm ask can miss. */
+  it('refuses an iTerm surface this platform lacks to the caller, and keeps the predecessor', async () => {
     const agentId = adopt(os.hostname())
-    core.append({ kind: 'agent_spawned', actor: 'human', target: 'x', msgId: 'other', body: 'b' })
-    vi.spyOn(supervisor as unknown as { resolve: () => string }, 'resolve').mockReturnValue('iterm-pane')
 
-    const result = await teleport(agentId, os.hostname())
+    const result = await teleport(agentId, os.hostname(), 'iterm-pane')
     await vi.advanceTimersByTimeAsync(60_000)
 
     expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(/macOS|iterm/i)
-    expect(humanNotices()).toHaveLength(1)
+    expect(result.reason).toMatch(/iterm-pane.*macOS/)
+    expect(humanNotices()).toHaveLength(0)
     expect(signals).toEqual([])
   })
 })

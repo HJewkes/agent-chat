@@ -15,7 +15,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/build-guard.mjs && tsc",
     "postbuild": "chmod +x dist/cli.js",
     "pretest": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && npm run typecheck:dashboard",
@@ -24,7 +24,7 @@
     "verify": "npm run format:check && npm run audit:spawn-doors && npm run typecheck && npm run build && node dist/cli.js suite-slot -- vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build:dashboard": "vite build --config src/dashboard/vite.config.ts",
+    "build:dashboard": "node scripts/build-guard.mjs && vite build --config src/dashboard/vite.config.ts",
     "typecheck:dashboard": "tsc -p src/dashboard",
     "prepare": "titan-egress-scan install-hook || echo \"egress-scan: pre-push hook not installed; run npm ci, then npm run prepare\""
   },
@@ -34,7 +34,9 @@
     "@titan-design/agent-lifecycle": "^0.1.5",
     "@titan-design/agent-protocol": "^0.5.0",
     "@titan-design/agent-surface": "^0.3.0",
+    "@titan-design/coordinator": "^0.4.2",
     "@titan-design/daemon": "^0.3.1",
+    "@titan-design/egress-scan": "0.6.1",
     "@titan-design/matrix-bus": "^0.1.0",
     "@titan-design/owner-queue": "^0.1.0",
     "@titan-design/queue-mirror": "^0.2.0",
@@ -52,7 +54,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@titan-design/egress-scan": "0.6.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

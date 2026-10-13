@@ -9,12 +9,15 @@ import type { ReturnContract } from './types.js'
  * contract for every later spawn. A change here needs a build and a restart.
  */
 
-/** A block is paid for on every contracted spawn, so it stays a paragraph. */
-export const MAX_BLOCK_CHARS = 2450
+/**
+ * A block is paid for on every contracted spawn, so it stays a paragraph. CC-1184 raised it from 2450
+ * for `REVIEW_TREE_RULE`: concurrent reviewers each installing base, old and head trees filled /tmp.
+ */
+export const MAX_BLOCK_CHARS = 2600
 
 const NEVER_PARK =
-  'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
-  'turn end and the task dies with it.'
+  'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
+  'end, killing it.'
 
 /** CC-647: a logging shim named gh resolved gh to itself and forked until swap ran out. */
 const SHIM_RULE =
@@ -43,22 +46,39 @@ export const PR_READY_RULE =
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
 
+/**
+ * CC-311: Claude Code cannot resolve a write target that holds a variable, so it asks, and a headless
+ * reviewer parks on that prompt until the hook's deadline. The same edit on a literal path ran unprompted.
+ */
+export const MUTANT_RULE =
+  "Mutants: in your own tree under `$TMPDIR/<your name>`, `sed -i.bak '<edit>' <literal path>`, then " +
+  '`git checkout -- <literal path>`. Never put `$VAR`, a glob on a variable or `$(...)` in a write ' +
+  'target: it raises a permission prompt nobody answers.'
+
+/**
+ * CC-713: a reviewer piped a bypass probe to bash from a shared main checkout, and it ran a real
+ * `git push origin HEAD:main`. The burndown reviewer brief and the bd-reviewer prelude carry it too.
+ */
+export const PROBE_SANDBOX_RULE =
+  'Run a probe that may use git, network or destructive commands only in a scratch repo under ' +
+  '$TMPDIR/<your name> whose origin is a local bare repo (git init --bare); never in a real ' +
+  'checkout, never against a real remote, never piped to a shell from a real checkout.'
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
-  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, put no real data',
-  'in code, fixtures, PR text, comments: task lists, charter or seat files,',
-  '/Users paths, emails, private-repo IDs or text.',
-  'Stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
-  'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
+  'Check `gh api repos/<owner>/<repo> --jq .visibility`. If public, no real data in code, fixtures,',
+  'PR text, comments: task lists, charter or seat files, /Users paths, emails, private-repo IDs/text.',
+  'Stop if `git log origin/<default> --grep <ID>` shows it landed.',
+  'Branch from origin/<default>; check `git log origin/<default>..`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
   'Scratch: worktree or `$TMPDIR/<your name>`.',
   PR_READY_RULE,
   BODY_FILE_RULE,
   'gh-write is the only write path; verify each. None: BLOCKED.',
   QUOTE_RULE,
-  'On a 403 rate limit with quota left, retry once in 5 minutes.',
+  '403 rate limit, quota left: retry once in 5 minutes.',
 ]
 
 const SHEPHERD_HANDOFF = [
@@ -78,10 +98,9 @@ const OWN_CI_WAIT = [
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
   SHIM_RULE,
-  'Only when the brief asks for a load test: record the PID of each burner, kill only those, never by',
-  'name pattern; confirm with `pgrep` none survive.',
+  'Load test only if the brief asks: kill only burner PIDs you recorded, not by name; `pgrep` shows none left.',
   'A PR narrowing a timeout reports per-case CI times.',
-  'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
+  'Not done at "PR opened": your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
   'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
@@ -90,7 +109,8 @@ const IMPLEMENTER_RULES = [
 const ciTail = (ciAt: string): string[] => [
   `${ciAt}, never "green" alone. \`gh run watch\` covers only one`,
   'workflow; a skipped check (std / compat) is no failure, and "required" means the required contexts on',
-  'the default branch.',
+  'the default branch. Then `Concerns:` (what <spawner> must act on, or none; DONE_WITH_CONCERNS needs',
+  'one) and `Notes:` (the rest).',
 ]
 
 const implementerBlock = (handoff: string[], ciAt: string): string =>
@@ -104,6 +124,17 @@ export const IMPLEMENTER_WITHOUT_SHEPHERD = implementerBlock(
   'as it stands at the final head after the wait',
 )
 
+/** TP-2498: non-blocking work goes here and Shepherd files it as tasks, so nits stop costing a round. */
+export const FOLLOW_UPS_RULE =
+  'Optional, after blocking items: `Follow-ups:` then `- <title> | <done_when> | low|medium|high` per ' +
+  'task; never blocks MERGE.'
+
+/** CC-1184: three installed trees per review exhausted /tmp inodes on Linux; one install is enough. */
+export const REVIEW_TREE_RULE =
+  'One installed checkout per review, under `$TMPDIR/<your name>`: read base/old code via ' +
+  '`git show <rev>:<path>`, `git diff` or `git worktree add --detach <dir> <rev>` without installing; ' +
+  'never `git stash` (refs/stash is shared). Remove trees at verdict.'
+
 const REVIEWER = [
   `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
   'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
@@ -116,12 +147,19 @@ const REVIEWER = [
   'one failed. A skipped check (std / compat) is not a failure. WAIT only for a clean review whose',
   'required checks have not finished. On FIX_FIRST add a fourth line naming the first blocker:',
   'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
-  'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
-  'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  'then one line `Defect class: <what the blocking items share; the one boundary where a single fix',
+  'covers them all>`. On a re-review (brief, PR comments or commits show an earlier FIX_FIRST) add',
+  '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
+  '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
+  '`Earlier findings: none found`.',
+  PROBE_SANDBOX_RULE,
+  REVIEW_TREE_RULE,
+  MUTANT_RULE,
   SHIM_RULE,
   REVIEWER_BODY_FILE_RULE,
   QUOTE_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
+  FOLLOW_UPS_RULE,
 ].join('\n')
 
 export const RETURN_CONTRACT_BLOCKS: Readonly<Record<ReturnContract, string>> = {

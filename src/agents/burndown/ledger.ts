@@ -5,6 +5,7 @@ import { logEvent } from '../../broker/log.js'
 import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
 import { Contract } from './report.js'
+import { STALE_CLASSES } from './stale-claim.js'
 import { STALL_CODES } from './stall-code.js'
 
 /**
@@ -34,6 +35,10 @@ export type Phase = (typeof PHASES)[number]
 export const AGENT_PHASES = ['planning', 'implementing', 'reviewing'] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
+/** CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. */
+const StackedOn = z.object({ taskId: z.string(), slice: z.string(), pr: z.string(), branch: z.string() })
+export type StackedOn = z.infer<typeof StackedOn>
+
 const Claim = z.object({
   taskId: z.string(),
   initiative: z.string(),
@@ -47,8 +52,12 @@ const Claim = z.object({
   slice: z.string().optional(),
   /** Slices of the same task that must reach `done` first. */
   dependsOn: z.array(z.string()).optional(),
+  /** CC-1158: set when the slice was admitted before its one unmet `dependsOn` merged, stacked on that parent. */
+  stackedOn: StackedOn.optional(),
   /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
   owns: z.array(z.string()).optional(),
+  /** CC-1150 f: the files the tick added to `owns` when the PR touched them outside its slice; the reviewer judges scope. */
+  ownsAmended: z.array(z.string()).optional(),
   /** The repo the slice's plan names; it outranks the task's tags (CC-946). */
   repo: z.string().optional(),
   /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
@@ -77,6 +86,17 @@ const Claim = z.object({
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
   /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
   stallCode: z.enum(STALL_CODES).optional(),
+  /** CC-1150 b: when `stalledReason` was set, for the reported stall age only; absent on a stall from before it. */
+  stalledAt: z.string().optional(),
+  /** CC-1150 b: the class of a stall whose agent is gone and the action proposed for it, told to the seat once. */
+  stale: z
+    .object({
+      class: z.enum(STALE_CLASSES),
+      proposed: z.string(),
+      since: z.string(),
+      until: z.string().optional(),
+    })
+    .optional(),
   /** A ladder rung-1 respawn under way (CC-660): set as its agents are retired and cleared by the successor's spawn intent, so a refused spawn is undone back to it. */
   respawn: z.object({ code: z.enum(STALL_CODES), occurrence: z.string() }).optional(),
   /**
@@ -177,6 +197,8 @@ const NoDispatchMark = z.object({ key: z.string(), at: z.string() })
 
 const SeatState = z.object({
   samples: z.array(SeatSample),
+  /** Config dir the samples were read from (CC-1080); samples of another pool never share a series. Absent on old ledgers. */
+  configDir: z.string().optional(),
   noDispatch: NoDispatchMark.optional(),
   /** Ticks in a row on which nothing in the seat's scope was eligible (CC-864); absent after a dispatch or a stop. */
   exhaustedTicks: z.number().int().positive().optional(),
@@ -356,6 +378,13 @@ export const ledgerImplementers = (ledger: Ledger, seat: string): number =>
       (c.phase === 'implementing' || (c.phase === 'spawning' && c.nextPhase === 'implementing')),
   ).length
 
+/** CC-1098: how many claims the ledger may hold beyond the agents actually running before the count is flagged. */
+export const SLOT_MISMATCH_TOLERANCE = 3
+
+/** CC-1098: the flag shown beside a role count whose ledger runs more than the tolerance ahead of its live agents. */
+export const slotMismatch = (ledger: number, live: number): string | undefined =>
+  ledger - live > SLOT_MISMATCH_TOLERANCE ? `MISMATCH ledger ${ledger} vs ${live} live` : undefined
+
 export function isStalled(claim: Claim, now: Date): boolean {
   if (claim.stalledReason !== undefined) return true
   const timeout = PHASE_TIMEOUT_MS[claim.phase]
@@ -374,21 +403,29 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
+/** CC-1158: the parent a queued slice may stack on for its one unmet dependency `dep`, else undefined. */
+export type StackPredicate = (child: Claim, dep: string) => StackedOn | undefined
+
 /**
  * Queued slices whose dependencies are all done or released, whose task is not in `held`, and that no
- * hand-dispatched PR is linked to (CC-978), in ledger order.
+ * hand-dispatched PR is linked to (CC-978), in ledger order. With `stack` (CC-1158), a slice with exactly
+ * one unmet dependency is ready too when `stack` admits it, and comes back carrying `stackedOn`.
  */
-export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
+export function readySlices(
+  ledger: Ledger,
+  held: ReadonlyMap<string, unknown> = new Map(),
+  stack?: StackPredicate,
+): Claim[] {
   const met = (taskId: string, slice: string): boolean =>
     ledger.slicesReleased?.[taskId]?.includes(slice) === true ||
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
-  return ledger.claims.filter(
-    c =>
-      c.phase === 'queued' &&
-      c.pr === undefined &&
-      !held.has(c.taskId) &&
-      (c.dependsOn ?? []).every(dep => met(c.taskId, dep)),
-  )
+  return ledger.claims.flatMap(c => {
+    if (c.phase !== 'queued' || c.pr !== undefined || held.has(c.taskId)) return []
+    const unmet = (c.dependsOn ?? []).filter(dep => !met(c.taskId, dep))
+    if (unmet.length === 0) return [c]
+    const parent = unmet.length === 1 && stack !== undefined ? stack(c, unmet[0] as string) : undefined
+    return parent === undefined ? [] : [{ ...c, stackedOn: parent }]
+  })
 }
 
 export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number }
@@ -412,6 +449,12 @@ export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>):
   } finally {
     if (readHolder(lock) === process.pid) fs.rmSync(lock, { force: true })
   }
+}
+
+/** CC-1111: the live pid holding `<file>.lock`, or undefined when no live process does; takes nothing. */
+export function ledgerLockHolder(file: string): number | undefined {
+  const holder = readHolder(`${file}.lock`)
+  return holder !== undefined && isAlive(holder) ? holder : undefined
 }
 
 /** Link-in a complete pid file, which fails atomically when the lock exists; returns the holder then. */

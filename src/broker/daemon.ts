@@ -4,6 +4,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { burndownConfigPath, burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
+import { repoVisibilityReader } from '../agents/brief-lint.js'
 import {
   resolveOrphanReapKill,
   resolveAgentSlots,
@@ -13,6 +14,7 @@ import {
   resolveProcessGuardMode,
   resolveProcessKillBytes,
   resolveAutoRetireOnReport,
+  resolveAutoParkOnExit,
 } from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
@@ -21,6 +23,7 @@ import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
 import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
+import { burndownTreeHold } from '../agents/burndown/tree-hold.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
 import {
@@ -30,6 +33,7 @@ import {
   type OverlapRequest,
   type SeatSpawnRequest,
 } from '../agents/seats/spawn-gate-read.js'
+import { readReviewerAccount } from '../agents/reviewer-account-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
@@ -50,6 +54,8 @@ import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
 import { clearLaunchIdentity } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
+import { startBurndownKick } from './burndown-kick.js'
+import { brokerJobKick } from './job-kick.js'
 import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { startProcessGuard } from '../agents/process-guard-monitor.js'
 import { deliver, SocketServer } from './socket.js'
@@ -110,6 +116,9 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
     resolveOrphanReapKill,
   )
   const stopProcessGuard = isEphemeralHome(home()) ? () => undefined : startBrokerProcessGuard()
+  const burndownKick = isEphemeralHome(home()) ? undefined : startBurndownKick(core)
+  const stopBurndownKick = burndownKick?.stop ?? (() => undefined)
+  socketServer.attachJobKick(brokerJobKick(burndownKick?.kicker))
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -143,6 +152,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopAgeOut()
       stopOrphanSweep()
       stopProcessGuard()
+      stopBurndownKick()
     },
   })
 
@@ -258,15 +268,26 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const core = new BrokerCore(deliver, { events, ...(ephemeral ? {} : { isSeat: isWatchedSeat }) })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
-  // CC-316, CC-331, CC-288, CC-606: the same rule for the seat journal, dispatch log, spawn budget gate and pool pick, which read the real autonomy root.
+  // CC-316, CC-331, CC-288, CC-606, CC-1078: the same rule for the seat journal, dispatch log, spawn budget gate, reviewer account gate and pool pick, which read the real autonomy root.
+  // CC-316: one journal for the supervisor's lines and the ended writer's merged line, so both dedupe through one latch.
+  const sharedJournal = seatJournal(defaultAutonomyRoot())
   const journal = ephemeral
     ? {}
     : {
-        seatJournal: seatJournal(defaultAutonomyRoot()),
-        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), { shepherd: () => shepherdRowsAsync() }),
+        seatJournal: sharedJournal,
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), {
+          shepherd: () => shepherdRowsAsync(),
+          journal: sharedJournal,
+        }),
         shepherdSkip: cliShepherdSkipPort,
         autoRetireOnReport: resolveAutoRetireOnReport,
+        autoParkOnExit: resolveAutoParkOnExit,
+        burndownTreeHold: (tree: string) => burndownTreeHold(burndownLedgerPath(), tree),
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
+        reviewerAccount: {
+          read: (configDir: string, nowMs: number) =>
+            readReviewerAccount(defaultAutonomyRoot(), configDir, nowMs),
+        },
         seatOverlap: {
           mode: resolveSeatSpawnMode,
           read: (spawn: OverlapRequest) =>
@@ -295,6 +316,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     {
       semaphore: newAgentSlots(),
       machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      repoVisibility: repoVisibilityReader(),
       ...(ledger === undefined ? {} : { ledger }),
       ...journal,
     },

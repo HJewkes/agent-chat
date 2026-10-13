@@ -316,9 +316,11 @@ Every other command goes to the real gh with its argv untouched, writes included
 
 ## Restart window
 
-`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when a `git push`, `git-remote-http*`, `seat-merge`, `bin/merge`, `gh pr merge` or `agent-chat gh-write` process is running (it names the pids), or when the checkout behind the installed `agent-chat` is not a clean `main`. It then runs `git pull --ff-only origin main`, `npm ci` and `npm run build` in that checkout, and only then `agent-chat service restart`, which itself refuses on an unanswered ask or a mid-spawn agent. Last it checks `broker.log` (and the rotated `broker.log.1`) for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It accepts no `--force`, and running it needs the owner's approval of the day's window. `AGENT_CHAT_HOME` moves the log directory.
+`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when a `git push`, `git-remote-http*`, `seat-merge`, `bin/merge`, `gh pr merge` or `agent-chat gh-write` process is running (it names the pids), or when the checkout behind the installed `agent-chat` is not a clean `main`. It then runs `git pull --ff-only origin main`, `npm ci` and `npm run build` in that checkout, and only then `agent-chat service restart`, which itself refuses on a mid-spawn agent. Last it checks `broker.log` (and the rotated `broker.log.1`) for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It accepts no `--force`, and running it needs the owner's approval of the day's window. `AGENT_CHAT_HOME` moves the log directory.
 
 Exit codes: `0` prints `restart-window OK`. `1` means a pre-check or the restart guard refused and the broker was not touched. `2` means a post-check failed. `3` means the restart failed and the broker may be down; the script prints `BROKER MAY BE DOWN: run agent-chat service start`. `4` means pull, install or build failed and the broker was not touched.
+
+`npm run build` and `npm run build:dashboard` refuse in the main checkout (a `.git` directory), because its `dist/` is what the live broker and every spawn run. Build in a worktree instead. Worktrees (a `.git` file), CI (`CI` set) and this script's staging copy (no `.git`) build as usual. Inside an approved restart window, `AGENT_CHAT_BUILD_IN_MAIN=1 npm run build` builds the main checkout. The guard prevents accidents and is not a security boundary: `npx tsc` skips it.
 
 ## Tests
 
@@ -423,6 +425,22 @@ and any spawn while free memory (`kern.memorystatus_level`) is below
 `~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
 refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
+
+**Every stop in one read.** `agent-chat machine status --json` reports operator
+HOLDs (the stop file `~/.agent-chat/operator.hold`, and chat HOLDs: a broadcast or
+a fan-out to two or more seats by one of `machineHoldOperators` in `config.json`,
+default `["tp-operator"]`, whose first sentence carries `HOLD`, `STOP ALL`,
+`MACHINE STOP`, `STEP-BACK` or `REBOOT NOTICE`/`QUIET`, standing until such a send
+starts with `LIFT`, `CLEAR` or "hold LIFTED", at most 24 h), the owner's stopped
+seats, and the machine-stop readings. A fan-out counts by the seats it named in
+`broker.log`, so one that reached a single seat still holds the machine. An
+operator's lift, DM included, lifts the newest hold on each seat it went to; a
+fan-out hold ends when its last seat is lifted, never because a seat left the bus,
+and a broadcast hold ends only on a broadcast lift. An operator's DM HOLD
+stops one seat, not the machine, and any other agent's message never holds or lifts. Its
+`stopped` field is true for a hold, the machine stop or an unreadable source; an
+owner stop holds only its seat. A consumer off the bus, such as Shepherd, reads
+this instead of parsing chat.
 
 ## Not built yet
 

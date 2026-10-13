@@ -38,9 +38,18 @@ const SAFE_ON_THREADS: Record<string, string> = {
 
 const relative = (file: string): string => path.relative(ROOT, path.join(TESTS_DIR, file))
 
+const HELPER_IMPORT = /from\s+'\.\/helpers\/([\w.-]+)\.js'/g
+
+const sourceWritesThenExecs = (source: string): boolean => EXECUTABLE_MODE.test(source) && EXECS.test(source)
+
+// A helper that writes and spawns makes every importer exec a script it wrote (CC-1115).
 function writesThenExecs(file: string): boolean {
   const source = fs.readFileSync(path.join(TESTS_DIR, file), 'utf8')
-  return EXECUTABLE_MODE.test(source) && EXECS.test(source)
+  if (sourceWritesThenExecs(source)) return true
+  return [...source.matchAll(HELPER_IMPORT)].some(([, name]) => {
+    const helper = path.join(TESTS_DIR, 'helpers', `${name}.ts`)
+    return fs.existsSync(helper) && sourceWritesThenExecs(fs.readFileSync(helper, 'utf8'))
+  })
 }
 
 describe('vitest pool assignment for tests that exec a script they wrote', () => {
@@ -69,6 +78,15 @@ describe('vitest pool assignment for tests that exec a script they wrote', () =>
     const missed = EXEC_SCRIPT_FILES.filter(file => !writesThenExecs(path.basename(file)))
 
     expect(missed, 'the detector no longer recognizes these files').toEqual([])
+  })
+
+  it('detects a file that writes and execs a script only through a helper', () => {
+    const file = 'leak-git-shim-alias-source.test.ts'
+    const source = fs.readFileSync(path.join(TESTS_DIR, file), 'utf8')
+
+    expect(sourceWritesThenExecs(source)).toBe(false)
+    expect(writesThenExecs(file)).toBe(true)
+    expect(writesThenExecs('helpers/git-shim-fixture.ts')).toBe(true)
   })
 
   it('names only forks files that exist', () => {

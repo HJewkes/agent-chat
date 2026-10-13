@@ -42,16 +42,24 @@ const ACCEPTED: Ack = { t: 'teleport_launched_result', ok: true }
 
 type LandAnswer = Extract<ServerMessage, { t: 'teleport_land_failed_result' }>
 
+type Plan = Extract<ServerMessage, { t: 'teleport_plan' }>
+const END_SELF: Plan = { t: 'teleport_plan', ok: true, endSelf: true }
+
+/** `later` answers each plan wait after the first, in order (CC-951). */
 function fakeBroker(
   launch: RemoteLaunch | undefined,
   ack: Ack | Error = ACCEPTED,
   land?: LandAnswer | Error,
+  later: Plan[] = [],
 ) {
   const sent: ClientMessage[] = []
+  let waits = 0
   return {
     sent,
     request: async (message: ClientMessage): Promise<ServerMessage> => {
       sent.push(message)
+      if (message.t === 'teleport_plan_wait' && waits++ > 0)
+        return later.shift() ?? { t: 'teleport_plan', ok: false, reason: 'no further plan' }
       if (message.t === 'teleport_plan_wait')
         return launch === undefined
           ? { t: 'teleport_plan', ok: false, reason: 'aborted by the human' }
@@ -222,6 +230,48 @@ describe('a caller-side teleport', () => {
     expect(reports(broker.sent)).toEqual([])
   })
 
+  // CC-951 f: the broker launched the successor on its own host, and it attached.
+  it('ends its parent once on endSelf, and writes no launch files', async () => {
+    const sent: ClientMessage[] = []
+    const broker = { request: async (message: ClientMessage) => (sent.push(message), END_SELF) }
+    const { steps, written, deps } = recordingDeps()
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    expect(steps).toEqual(['end 4321'])
+    expect(written).toEqual([])
+    expect(fs.readdirSync(callerHome)).toEqual([])
+    expect(sent.map(m => m.t)).toEqual(['teleport_plan_wait'])
+  })
+
+  describe('opening a new surface successor first (CC-951)', () => {
+    const FIRST: RemoteLaunch = { ...SPEC, surface: 'iterm-window', successorFirst: true }
+
+    it('launches, then ends its parent only on the endSelf that follows the attach', async () => {
+      const broker = fakeBroker(FIRST, ACCEPTED, undefined, [END_SELF])
+      const { steps, deps } = recordingDeps()
+
+      await runCallerTeleport(broker, 4321, deps)
+
+      expect(steps).toEqual(['write abcd1234', 'arm iterm-window 4321', `go ${SPEC.landToken}`, 'end 4321'])
+      expect(broker.sent.map(m => m.t)).toEqual([
+        'teleport_plan_wait',
+        'teleport_launched',
+        'teleport_plan_wait',
+      ])
+    })
+
+    it('stays live when its successor never attaches', async () => {
+      const refused: Plan = { t: 'teleport_plan', ok: false, reason: 'its successor did not register' }
+      const broker = fakeBroker(FIRST, ACCEPTED, undefined, [refused])
+      const { steps, deps } = recordingDeps()
+
+      await runCallerTeleport(broker, 4321, deps)
+
+      expect(steps).not.toContain('end 4321')
+    })
+  })
+
   it('refuses to launch when it does not know which process to end', async () => {
     const broker = fakeBroker(SPEC)
     const { steps, deps } = recordingDeps()
@@ -242,6 +292,8 @@ describe('what a caller takes from the broker', () => {
       'a profile value that reads as a flag',
       { profile: { ...SPEC.profile, model: '--dangerously-skip-permissions' } },
     ],
+    ['a carried channel that reads as a flag', { channels: ['-x'] }],
+    ['a carried permission mode outside the allowlist', { permissionMode: 'bypassPermissions' }],
   ])('refuses %s and writes nothing', async (_case, over) => {
     const broker = fakeBroker({ ...SPEC, ...over } as RemoteLaunch)
     const { steps, deps } = recordingDeps()
@@ -286,6 +338,18 @@ describe('what a caller takes from the broker', () => {
     expect(written[0]?.plan.args.includes('--remote-control')).toBe(expected)
   })
 
+  it('carries the channels and permission mode the broker sent into the argv', async () => {
+    const spec = { ...SPEC, channels: ['plugin:voltras-channel@x'], permissionMode: 'auto' }
+    const broker = fakeBroker(spec)
+    const { written, deps } = recordingDeps()
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    const args = written[0]?.plan.args ?? []
+    expect(args).toContain('plugin:voltras-channel@x')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('auto')
+  })
+
   it('never takes env or MCP servers from the profile the broker sent', async () => {
     const hostile = {
       ...SPEC,
@@ -297,6 +361,19 @@ describe('what a caller takes from the broker', () => {
     await runCallerTeleport(broker, 4321, deps)
 
     expect(JSON.stringify(written[0])).not.toContain('/evil')
+  })
+
+  // CC-1059: the spawn executor reads cwd and account from the spec; a teleport carries neither.
+  it("runs a spec with no cwd or account in this process's own cwd and account", async () => {
+    const broker = fakeBroker(SPEC)
+    const { written, deps } = recordingDeps({
+      local: { cliEntry: '/caller/app/dist/cli.js', cwd, env: { CLAUDE_CONFIG_DIR: '/caller/.claude-x' } },
+    })
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    expect(written[0]?.plan.cwd).toBe(cwd)
+    expect(written[0]?.plan.env.CLAUDE_CONFIG_DIR).toBe('/caller/.claude-x')
   })
 })
 
@@ -380,6 +457,17 @@ describe("landing a cross-host successor in its predecessor's pane", () => {
     )
   })
 
+  it('opens a successor-first surface at once, never in the pane or after an exit (CC-951)', async () => {
+    const { steps, deps } = landDeps({ livePolls: 0 })
+
+    await landSuccessor(
+      { surface: 'iterm-window', plan: PLAN, hostPid: 4321, anchor: ANCHOR, now: true },
+      deps,
+    )
+
+    expect(steps).toEqual([`launch iterm-window beside ${ANCHOR}`])
+  })
+
   it('launches without an anchor only after the predecessor exits', async () => {
     const { steps, deps } = landDeps({ livePolls: 2 })
 
@@ -417,14 +505,14 @@ describe('the armed helper process', () => {
     "process.stdin.on('end', () => fs.writeFileSync(process.env.LAND_OUT, JSON.stringify({ argv: process.argv.slice(2), got })))",
   ].join('\n')
 
-  async function armRecorder() {
+  async function armRecorder(over: Partial<RemoteLaunch> = {}) {
     fs.mkdirSync(path.join(callerHome, 'agents', SPEC.agentId), { recursive: true })
     const script = path.join(cwd, 'recorder.mjs')
     const out = path.join(cwd, 'out.json')
     fs.writeFileSync(script, RECORDER)
     const armed = await armHelper(
       { cliEntry: script, cwd, env: { ...process.env, LAND_OUT: out } },
-      { ...SPEC, anchor: ANCHOR },
+      { ...SPEC, anchor: ANCHOR, ...over },
       4321,
     )
     return { armed, out }
@@ -445,6 +533,14 @@ describe('the armed helper process', () => {
       argv: ['teleport-land', SPEC.agentId, '--pid=4321', '--surface=iterm-tab', `--anchor=${ANCHOR}`],
       got: 'go tok-123\n',
     })
+  })
+
+  it('is told to launch at once for a successor-first spec (CC-951)', async () => {
+    const { armed, out } = await armRecorder({ successorFirst: true })
+
+    armed.go('tok-123')
+
+    expect(await settle(out)).toMatchObject({ argv: expect.arrayContaining(['--now']) })
   })
 
   it('never hears go once disarmed', async () => {

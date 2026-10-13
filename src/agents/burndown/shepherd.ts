@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
-import { childEnv, run, type Runner, type RunResult } from './exec.js'
+import { childEnv, describeExecFailure, run, type Runner, type RunResult } from './exec.js'
 
 /**
  * Burndown's only door to Shepherd, the factory's PR-shepherding service: the
@@ -79,6 +80,8 @@ export type ShepherdRow = Omit<z.infer<typeof Row>, 'phase'> & {
 type Log = (event: string, detail: Record<string, unknown>) => void
 
 export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
+/** TP-2516: the bare form leaves out done, failed and cancelled runs; these readers need them. */
+export const SHEPHERD_STATUS_ALL_ARGS = [...SHEPHERD_STATUS_ARGS, '--all']
 
 /**
  * Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is
@@ -86,28 +89,38 @@ export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
  * skipped and an unknown phase kept as `unknown`, each logged once per read.
  */
 export function shepherdRows(exec: Runner = run, log: Log = logEvent): ShepherdRow[] | undefined {
-  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ALL_ARGS)
   return result.status === 0 ? parseShepherdRows(result.stdout, log) : undefined
 }
 
 const STATUS_TIMEOUT_MS = 15_000
-/** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
+/** With `--all` Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
 const STATUS_MAX_BYTES = 64 * 1024 * 1024
 
-/** CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session. */
+/**
+ * CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session.
+ * CC-1096: runs in HOME, since the broker's cwd can be a removed tree, and logs why a read failed.
+ */
 export async function shepherdRowsAsync(
   log: Log = logEvent,
   timeoutMs = STATUS_TIMEOUT_MS,
+  bin = SHEPHERD_BIN,
 ): Promise<ShepherdRow[] | undefined> {
+  const cwd = homedir()
+  const started = performance.now()
   try {
-    const { stdout } = await promisify(execFile)(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
+    const { stdout } = await promisify(execFile)(bin, SHEPHERD_STATUS_ALL_ARGS, {
+      cwd,
       env: childEnv(),
       encoding: 'utf8',
       timeout: timeoutMs,
       maxBuffer: STATUS_MAX_BYTES,
     })
     return parseShepherdRows(stdout, log)
-  } catch {
+  } catch (err) {
+    log('shepherd_status_failed', {
+      error: describeExecFailure(err, { cwd, elapsedMs: performance.now() - started }),
+    })
     return undefined
   }
 }
@@ -265,7 +278,7 @@ export interface ShepherdListing {
 
 /** Undefined when Shepherd is down or the answer is not a JSON array. */
 export function shepherdListed(exec: Runner = run): ShepherdListing | undefined {
-  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ALL_ARGS)
   if (result.status !== 0) return undefined
   let parsed: unknown
   try {

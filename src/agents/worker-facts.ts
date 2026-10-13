@@ -40,9 +40,16 @@ export interface CompletionPayload extends ExitFacts {
 }
 
 /** `<prefix>-<task id>-<slug>`: the first `letters-digits` pair after the prefix, upper-cased. */
-const TASK_ID = /^[a-z0-9]+-([a-z]+-\d+)(?:-|$)/i
+const TASK_ID = /^[a-z0-9]+-(([a-z]+)-\d+)(?:-|$)/i
 
-export const taskIdOf = (name: string): string | null => TASK_ID.exec(name)?.[1]?.toUpperCase() ?? null
+/** A reviewer named `rv-pr-436` carries a PR number, not a task id. */
+const NOT_A_TASK_PREFIX = new Set(['pr'])
+
+export function taskIdOf(name: string): string | null {
+  const match = TASK_ID.exec(name)
+  if (match?.[1] === undefined || NOT_A_TASK_PREFIX.has(match[2]?.toLowerCase() ?? '')) return null
+  return match[1].toUpperCase()
+}
 
 const ELLIPSIS = '…'
 
@@ -59,11 +66,16 @@ function reportOf(report: CompletionInput['report']): WorkerFacts['report'] {
 
 function prOf(report: CompletionInput['report']): WorkerFacts['pr'] {
   const ref = report === undefined ? null : reportPr(report.text)
-  const [repo, number] = ref?.split('#') ?? []
-  return repo === undefined || number === undefined ? null : { repo, number: Number(number) }
+  const [repo, digits] = ref?.split('#') ?? []
+  const number = Number(digits)
+  return repo === undefined || !Number.isSafeInteger(number) || number <= 0 ? null : { repo, number }
 }
 
-/** The same transcript sum the retire row records; input is every non-output class. */
+/**
+ * The same transcript sum the retire row records; input is every non-output class. It covers every
+ * generation of a resumed session, not just the run since `runStartedAt`: counting one generation
+ * would need a transcript offset the supervisor does not keep, and would disagree with the retire row.
+ */
 function spendOf(spend: TranscriptSpendRead | undefined): Pick<WorkerFacts, 'tokens' | 'costUsd'> {
   if (spend === undefined || !spend.ok) return { tokens: null, costUsd: null }
   const output = spend.usage.output

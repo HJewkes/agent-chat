@@ -12,6 +12,7 @@ import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
+import type { ChatLine } from './operator-stops.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
 
@@ -46,6 +47,10 @@ function ifPresent<T>(read: () => T): T | undefined {
     throw err
   }
 }
+
+/** A file's text, or undefined only when it is missing; EACCES, EISDIR and the rest throw. */
+export const readTextIfPresent = (file: string): string | undefined =>
+  ifPresent(() => fs.readFileSync(file, 'utf8'))
 
 /** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
 const SCORER_TOP = 1000
@@ -95,6 +100,10 @@ export type SeatRecord = SeatState & {
   teleportFailed?: string
   /** CC-959: the latest session a wake was refused on, so each is raised once. */
   staleRefused?: string
+  /** CC-959: the possible live pane whose hold outran its cap, so each is raised once. */
+  paneHeld?: string
+  /** CC-344: the dark episode whose "seat is live" resume refusal was raised, so each episode is raised once. */
+  liveRefused?: string
   /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
   spawningFlagged?: string[]
   /** CC-862: the last heartbeat slot and pause reset the watchdog acted on. */
@@ -119,6 +128,8 @@ export interface WatchdogDoc {
   attended?: string[]
   /** CC-598, CC-693: the service cause each attended seat was last told; a seat absent was told of none. */
   serviceHeard?: Record<string, string>
+  /** CC-1057: the open seat blocks tp-operator was paged for, as `<session>@<since>`; pruned when a block closes. */
+  blockPaged?: string[]
 }
 
 const isCauseMap = (value: unknown): value is Record<string, string> =>
@@ -126,6 +137,9 @@ const isCauseMap = (value: unknown): value is Record<string, string> =>
   value !== null &&
   !Array.isArray(value) &&
   Object.values(value).every(cause => typeof cause === 'string')
+
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(item => typeof item === 'string')
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
@@ -162,6 +176,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
     ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
+    ...(isStringList(doc.blockPaged) ? { blockPaged: doc.blockPaged } : {}),
   }
 }
 
@@ -200,6 +215,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
     ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
+    ...(isStringList(doc.blockPaged) ? { blockPaged: doc.blockPaged } : {}),
   }
 }
 
@@ -297,6 +313,70 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
   } finally {
     db.close()
   }
+}
+
+/**
+ * CC-957: every message and broadcast since `sinceMs`, one row per message with the seats it went to
+ * (a send logs a row per recipient; no seat name holds a comma). No keyword filter: `broadcastHolds` alone decides which sends
+ * may hold the machine and what they say. A day is about 2k rows. Throws when events.db cannot be read.
+ * `actor` and `body` are bare columns beside the aggregates, so SQLite takes them from any row of the
+ * group; every row of one msg_id carries the same sender and body.
+ */
+export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
+  const db = openEvents(dbPath)
+  try {
+    const rows = db
+      .prepare(
+        "SELECT MIN(ts) AS ts, actor, msg_id, body, MAX(kind = 'broadcast') AS broadcast, " +
+          "GROUP_CONCAT(DISTINCT target) AS targets FROM events WHERE kind IN ('message', 'broadcast') " +
+          'AND ts >= ? GROUP BY COALESCE(msg_id, id) ORDER BY MIN(id)',
+      )
+      .all(sinceMs) as unknown as ChatRow[]
+    return rows.map(row => ({
+      ts: row.ts,
+      actor: row.actor,
+      msgId: row.msg_id,
+      body: row.body ?? '',
+      broadcast: row.broadcast === 1,
+      targets: row.targets?.split(',') ?? [],
+    }))
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * CC-957: the seats each multicast named, by msg id, from broker.log route rows (`to` is the names
+ * joined with ", "). events.db logs only the seats a send reached. A broadcast ('*') or tag send
+ * names no list. Throws when a log exists but cannot be read.
+ */
+export function readRouteAddressees(logTexts: readonly (string | undefined)[]): Map<string, string[]> {
+  const named = new Map<string, string[]>()
+  for (const text of logTexts)
+    for (const line of (text ?? '').split('\n')) {
+      if (!line.includes('"event":"route"')) continue
+      const row = parseRoute(line)
+      if (row !== undefined && row.to.includes(', ')) named.set(row.msgId, row.to.split(', '))
+    }
+  return named
+}
+
+function parseRoute(line: string): { msgId: string; to: string } | undefined {
+  try {
+    const { msgId, to } = JSON.parse(line) as { msgId?: unknown; to?: unknown }
+    return typeof msgId === 'string' && typeof to === 'string' ? { msgId, to } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface ChatRow {
+  ts: number
+  actor: string
+  msg_id: string | null
+  body: string | null
+  broadcast: number
+  targets: string | null
 }
 
 /** The owner seat's messages since `sinceMs` that mention a restart. Throws when events.db cannot be read. */

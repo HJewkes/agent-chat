@@ -2,6 +2,7 @@ import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
+import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
@@ -127,6 +128,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // The role the child's context hint is tuned to (CC-128); absent means a human-started session.
   AGENT_CHAT_PROFILE: input.profile.name,
+  // The leak guard keys its agent-chat config guard on this (CC-1094); AGENT_CHAT_ keeps a profile from setting it.
+  AGENT_CHAT_ROLE: roleOf(input.profile),
   // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // Defaults chosen by whoever spawned it, applied on that first registration —
@@ -179,6 +182,11 @@ function settingSourceArgs(input: LaunchPlanInput): string[] {
   return sources === undefined ? [] : ['--setting-sources', sources.join(',')]
 }
 
+/** agent-chat's plugin first, then any carried target it does not already name. */
+const channelTargets = (input: LaunchPlanInput): string[] => [
+  ...new Set([`plugin:${AGENT_CHAT_PLUGIN}`, ...(input.channels ?? [])]),
+]
+
 export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const surface = input.surface ?? input.profile.surface
   const interactive = isInteractiveSurface(surface)
@@ -220,7 +228,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // durable, addressable peer. Matches the flag active-work's own launcher
     // passes for a human-started session (`aw`'s buildChannelArgs).
     '--channels',
-    `plugin:${AGENT_CHAT_PLUGIN}`,
+    ...channelTargets(input),
   ]
   // Note what an inherited posture costs: agent-chat's own tools stop being
   // allowlisted here and fall back to the session's ordinary permission rules,
@@ -276,6 +284,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     //
     // `--remote-control [name]` takes an OPTIONAL name, so it goes last among the
     // options: directly before `--`, or at the very end, nothing can be read as its name.
+    if (input.permissionMode !== undefined) args.push('--permission-mode', input.permissionMode)
     if (input.remoteControl === true && !print) args.push('--remote-control')
     if (input.resume !== true) args.push('--', input.brief)
     else if (input.resumeMessage) args.push('-p', '--', input.resumeMessage)

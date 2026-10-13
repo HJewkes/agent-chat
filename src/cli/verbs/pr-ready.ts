@@ -3,16 +3,20 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
+import { withPinnedGitProtocols } from '../../git.js'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
 import {
   basementCommandText,
+  describeDeferred,
   describeExit,
+  describeRun,
   infraFailure,
   routeChecks,
   runOnBasement,
   type BasementTarget,
 } from './pr-ready-basement.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
+import { hasPrivacyTest, privacyStep } from './pr-ready-privacy.js'
 
 export interface RunResult {
   code: number
@@ -22,8 +26,8 @@ export interface RunResult {
 /** Runs one command with no shell. Injected so tests record every call and need no network. */
 export type Run = (cmd: string, args: string[], cwd: string) => Promise<RunResult>
 
-/** Calls `onSignal` on SIGINT or SIGTERM; returns the function that removes the handlers. */
-export type Trap = (onSignal: () => void) => () => void
+/** Calls `onSignal` with the exit code on SIGINT or SIGTERM; returns the function that removes the handlers. */
+export type Trap = (onSignal: (exitCode: number) => void) => () => void
 
 export interface PrReadyOptions {
   title?: string
@@ -51,6 +55,8 @@ export interface PrReadyDeps {
 interface StepOutcome {
   ok: boolean
   reason?: string
+  /** Printed one per line after the step line. */
+  details?: string[]
 }
 
 interface Command {
@@ -166,12 +172,12 @@ async function gitDirOf(run: Run, cwd: string): Promise<string> {
 /** A SIGINT or SIGTERM mid-rebase aborts the rebase before the process exits. */
 async function trappedRebaseStep(deps: PrReadyDeps, base: string): Promise<StepOutcome> {
   const gitDir = await gitDirOf(deps.run, deps.cwd)
-  const release = deps.trap(() => {
+  const release = deps.trap(exitCode => {
     const state = abortRebaseSync(deps.cwd, gitDir)
       ? 'rebase aborted'
       : 'a rebase is still in progress, abort it by hand'
     deps.out(`FAIL rebase: interrupted; ${state}`)
-    deps.out('PR-READY FAIL')
+    deps.out(`PR-READY FAIL exit=${exitCode}`)
   })
   try {
     return await rebaseStep(deps.run, deps.cwd, base, gitDir)
@@ -307,10 +313,12 @@ async function basementChecks(
   const results = await runOnBasement(run, cwd, target, scripts)
   const codes = results.map(describeExit).join(', ')
   for (const result of results.filter(r => r.code !== 0)) err(result.output.trimEnd())
+  const details = results.map(describeRun)
   const infra = results.map(infraFailure).find(reason => reason !== undefined)
-  if (infra) return { reasons: [`${infra} (${codes})`], codes }
+  if (infra) return { reasons: [`${infra} (${codes})`], codes, details }
   const failed = results.filter(r => r.code !== 0).map(r => basementCommandText(target, r.script))
-  return { reasons: failed.length > 0 ? [`failed on basement: ${failed.join('; ')} (${codes})`] : [], codes }
+  const reasons = failed.length > 0 ? [`failed on basement: ${failed.join('; ')} (${codes})`] : []
+  return { reasons, codes, details }
 }
 
 export async function checksStep(
@@ -331,14 +339,19 @@ export async function checksStep(
   if (route.kind === 'deferred')
     return {
       ok: problems.length === 0,
-      reason: [`deferred to basement after push: ${route.commands.join('; ')}`, ...problems].join('; '),
+      reason: [
+        `deferred to basement after push: ${route.runs.map(r => r.command).join('; ')}`,
+        ...problems,
+      ].join('; '),
+      details: route.runs.map(describeDeferred),
     }
   if (route.kind === 'local' && route.warning) err(`warning: ${route.warning}`)
   const remote =
     route.kind === 'remote' ? await basementChecks(run, cwd, route.target, scripts, err) : undefined
   const reasons = [...(remote?.reasons ?? (await localChecks(run, cwd, commands, err))), ...problems]
-  if (reasons.length > 0) return { ok: false, reason: reasons.join('; ') }
-  return remote ? { ok: true, reason: `basement ${remote.codes}` } : { ok: true }
+  const details = remote?.details ?? []
+  if (reasons.length > 0) return { ok: false, reason: reasons.join('; '), details }
+  return remote ? { ok: true, reason: `basement ${remote.codes}`, details } : { ok: true }
 }
 
 /** Never a bare `npx changeset`: without `--no-install` npx downloads an unrelated package of that name. */
@@ -378,6 +391,7 @@ function reporter(out: (line: string) => void) {
   return (step: string, outcome: StepOutcome): boolean => {
     const suffix = outcome.reason ? `: ${outcome.reason}` : ''
     out(outcome.ok ? `ok ${step}${suffix}` : `FAIL ${step}${suffix}`)
+    outcome.details?.forEach(out)
     return outcome.ok
   }
 }
@@ -392,14 +406,15 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 }
 
 /**
- * Order: clean tree, base, rebase, checks, changeset, scan. A dirty tree or a failed rebase stops the
- * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
+ * Order: clean tree, base, rebase, checks, privacy (agent-chat only), changeset, scan. A dirty tree
+ * or a failed rebase stops the run, since the checks would not see the tree that merges. Exit 0 only
+ * when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
   const { run, cwd } = deps
   const report = reporter(deps.out)
   const step = async (name: string, fn: () => Promise<StepOutcome>) => report(name, await guarded(fn))
-  const fail = (): number => (deps.out('PR-READY FAIL'), 1)
+  const fail = (): number => (deps.out('PR-READY FAIL exit=1'), 1)
   let base = ''
   const resolveBase = async (): Promise<StepOutcome> => {
     base = await defaultBaseRef(run, cwd)
@@ -414,18 +429,19 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
+  if (hasPrivacyTest(cwd)) ok = (await step('privacy', () => privacyStep(run, cwd, deps.err))) && ok
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()
   const head = await run('git', ['rev-parse', 'HEAD'], cwd)
   const caveat = nothingToScan(opts) ? ' (scan skipped: no body file)' : ''
-  deps.out(`PR-READY OK ${head.output.trim()}${caveat}`)
+  deps.out(`PR-READY OK exit=0 ${head.output.trim()}${caveat}`)
   return 0
 }
 
 export const spawnRun: Run = (cmd, args, cwd) =>
   new Promise(resolve => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(cmd, args, { cwd, env: withPinnedGitProtocols(), stdio: ['ignore', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk))
@@ -448,7 +464,7 @@ export function signalTrap(target: SignalTarget = process): Trap {
   return onSignal => {
     const listeners = SIGNAL_EXIT_CODES.map(([signal, code]) => {
       const listener = () => {
-        onSignal()
+        onSignal(code)
         target.exit(code)
       }
       target.once(signal, listener)

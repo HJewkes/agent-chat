@@ -11,14 +11,17 @@ import {
   type LadderRecord,
   type Ledger,
 } from './ledger.js'
+import type { Adjudication } from './owns-adjudicate.js'
+import type { ClaimPr } from './pr-state.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
 import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
+import { classifyStale } from './stale-claim.js'
 import type { ActivityRead } from './stall.js'
-import { parkUpdate, type StallCode } from './stall-code.js'
+import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -37,7 +40,7 @@ export interface Observation {
   report?: Report
   /** Messages to the parked worker since the claim's inbox cursor. */
   inbox?: InboxMessage[]
-  /** CC-939: whether a finished briefer's task now carries `brief:proposed`. */
+  /** CC-939: whether a finished briefer's task now carries `brief:proposed`, or (CC-1076) its approval. */
   proposed?: boolean
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
@@ -48,12 +51,19 @@ export interface Observation {
   /** A live implementer's worktree HEAD and uncommitted hash (CC-659); read, not yet acted on. */
   progress?: Progress | 'unreadable'
   diff?: { reviewable: boolean; reason: string }
+  /**
+   * CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns
+   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before.
+   */
+  owned?: { outside: string[]; adjudicated?: Adjudication } | 'unreadable'
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
   spend?: { claim: ClaimSpend; cap: number }
   /** CC-673: an implementer that exited with no status line: its branch's open PR and commits ahead. */
   exitedWork?: ExitedWork | 'unreadable'
+  /** CC-1054: what GitHub says about an implementing or stalled claim's PR, by its record or its agents' branches; only a merge acts. */
+  prState?: ClaimPr | 'unreadable'
 }
 
 export type SpawnContext =
@@ -117,8 +127,31 @@ export function advance(
   observations: ReadonlyMap<string, Observation>,
   now: Date,
 ): Action[] {
-  return claims.flatMap(claim => advanceClaim(claim, observations.get(claimKey(claim)) ?? {}, now))
+  return claims.flatMap(claim => {
+    const obs = observations.get(claimKey(claim)) ?? {}
+    return withStale(claim, obs, now, advanceClaim(claim, obs, now))
+  })
 }
+
+/**
+ * CC-1150 b: a claim left stalled with its agent gone and no respawn pending is classified on the first tick that
+ * sees it, with no age gate, so the seat hears what it waits on. It never releases or finishes the claim.
+ */
+function withStale(claim: Claim, obs: Observation, now: Date, actions: Action[]): Action[] {
+  if (claim.respawn !== undefined || !agentGone(claim, obs)) return actions
+  if (actions.some(a => a.kind !== 'update')) return actions
+  const at = now.toISOString()
+  const after = actions.reduce<Claim>((c, a) => (a.kind === 'update' ? patched(c, a.patch, at) : c), claim)
+  if (after.phase === 'done' || after.stalledReason === undefined || after.stale !== undefined) return actions
+  if (ladderFirst(claim, after)) return actions
+  const { class: cls, proposed, until } = classifyStale(after, obs)
+  const stale = { class: cls, proposed, since: at, ...(until === undefined ? {} : { until }) }
+  return [...actions, update(claim, { stale })]
+}
+
+/** A stall this tick opened with a ladder code is the ladder's to respawn or release first; it is classified next tick. */
+const ladderFirst = (claim: Claim, after: Claim): boolean =>
+  claim.stalledReason === undefined && after.stallCode !== undefined && LADDER_CODES.includes(after.stallCode)
 
 type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
@@ -136,8 +169,13 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done') return []
   const merged = MERGES.has(claim.phase) ? landedRun(obs.shepherd) : undefined
-  if (merged !== undefined) return mergedPr(claim, merged)
-  if (claim.stalledReason !== undefined) return linkPr(claim, obs)
+  if (merged !== undefined) return mergedPr(claim, prRef(merged), merged.headSha)
+  const settled = settledOnGitHub(claim, obs)
+  if (settled !== undefined) return settled
+  if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
+  const shepherds = exitedToShepherd(claim, obs)
+  if (shepherds !== undefined) return shepherds
+  if (claim.stalledReason !== undefined) return relink(claim, obs) ?? linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
   if (claim.respawn !== undefined) return []
@@ -153,6 +191,23 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
         )
       : stall(claim, `${claim.phase} past its timeout`, 'stalled', 'phase-timeout'),
   ]
+}
+
+const UNSTALLED: ClaimPatch = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
+
+/**
+ * CC-669: a fresh read with nothing outside owns clears the stall, and the claim moves on this tick; a re-read, not
+ * a retry. CC-1150 f: so does an amend. An escalation rewrites the stall only when its cause changed.
+ */
+function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
+  if (obs.owned === undefined || obs.owned === 'unreadable') return []
+  const moveOn: Resume = (c, o) => [update(c, UNSTALLED), ...advanceClaim({ ...c, ...UNSTALLED }, o, now)]
+  const held = fenced(claim, obs, moveOn)
+  if (held === undefined) return moveOn(claim, obs) ?? []
+  const [restall] = held
+  const same =
+    held.length === 1 && restall?.kind === 'update' && restall.patch.stalledReason === claim.stalledReason
+  return same ? [] : held
 }
 
 /** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
@@ -208,8 +263,11 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine, 'failed')]
   const pr = report?.pr ?? claim.pr
-  if (report?.status === 'DONE' && pr !== undefined)
-    return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
+  const handsOff = handsOffPr(report) && pr !== undefined
+  const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs, afterWorker) : undefined
+  if (held !== undefined) return held
+  if (handsOff)
+    return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport }, obs.shepherd?.row)
   const silent = report === undefined || report.status === 'unknown'
   const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
   if (adopted !== undefined) return adopted
@@ -221,6 +279,94 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   return [
     stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
   ]
+}
+
+/** CC-1074: a worker that finished DONE or DONE_WITH_CONCERNS and names a PR goes to Shepherd rather than a reviewer. */
+const handsOffPr = (report: Report | undefined): boolean =>
+  report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS'
+
+/**
+ * CC-1074: a stall `afterWorker` left on a finished worker whose PR is known, from its report or a Shepherd run
+ * it registered itself, clears and goes to Shepherd. A coded stall is a deliberate hold and a BLOCKED report a
+ * question, so both stay; undefined falls back to `linkPr`.
+ */
+function relink(claim: Claim, obs: Observation): Action[] | undefined {
+  const { report } = obs
+  if (claim.phase !== 'implementing' || claim.stallCode !== undefined || !finished(obs)) return undefined
+  if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT') return undefined
+  const row = obs.shepherd?.row
+  const run = row !== undefined && !ENDED.has(row.phase) ? row : undefined
+  const reported = handsOffPr(report) ? (report?.pr ?? claim.pr) : undefined
+  const pr = reported ?? (run === undefined ? undefined : (claim.pr ?? prRef(run)))
+  if (pr === undefined) return undefined
+  const cleared: ClaimPatch = {
+    stalledReason: undefined,
+    stalledClass: undefined,
+    ...(report === undefined ? {} : { lastReport: report.firstLine }),
+  }
+  return fenced(claim, obs, relink) ?? handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+}
+
+/**
+ * CC-1098: an implementer whose agent exited, or left a complete roster, while Shepherd holds an open run for its
+ * PR is Shepherd's, so its claim stops counting as an implementer. A question, a deliberate hold or a pending
+ * respawn stays where it is; undefined falls through to the phase's own step.
+ */
+function exitedToShepherd(claim: Claim, obs: Observation): Action[] | undefined {
+  if (claim.phase !== 'implementing' || claim.respawn !== undefined || !agentGone(claim, obs))
+    return undefined
+  if (claim.stallCode !== undefined && !LADDER_CODES.includes(claim.stallCode)) return undefined
+  const { report, shepherd } = obs
+  if (report?.parked !== undefined || report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
+    return undefined
+  const run = shepherd?.row !== undefined && !ENDED.has(shepherd.row.phase) ? shepherd.row : undefined
+  const reported = handsOffPr(report) ? report?.pr : undefined
+  const pr = run === undefined ? undefined : (reported ?? claim.pr ?? prRef(run))
+  if (pr === undefined) return undefined
+  const cleared: ClaimPatch = {
+    stalledReason: undefined,
+    stalledClass: undefined,
+    stallCode: undefined,
+    ...(report === undefined ? {} : { lastReport: report.firstLine }),
+  }
+  return (
+    fenced(claim, obs, exitedToShepherd) ??
+    handOff(claim, pr, claim.agentName ?? workerOf(claim), cleared, run)
+  )
+}
+
+/** An agent with no roster row was retired and pruned; `observe` reports a missing row on a partial roster as unread. */
+const agentGone = (claim: Claim, obs: Observation): boolean =>
+  finished(obs) || (obs.agent === undefined && claim.agentName !== undefined)
+
+/** The step a fence hands back to once an amend leaves nothing outside owns. */
+type Resume = (claim: Claim, obs: Observation) => Action[] | undefined
+
+/**
+ * CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits.
+ * CC-1150 f: an amend adds the files to `owns` and resumes the step this tick; an escalation names its cause.
+ */
+function fenced(claim: Claim, obs: Observation, resume: Resume): Action[] | undefined {
+  const { owned } = obs
+  if (owned === undefined) return undefined
+  if (owned === 'unreadable') return []
+  const [first, ...rest] = owned.outside
+  if (first === undefined) return undefined
+  const verdict = owned.adjudicated
+  if (verdict?.kind === 'amend') return amended(claim, obs, verdict.files, resume)
+  const more = rest.length === 0 ? '' : ` (+${rest.length} more)`
+  const cause = verdict === undefined ? '' : `; not amended: ${verdict.reason}`
+  return [
+    parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns${cause}`),
+  ]
+}
+
+function amended(claim: Claim, obs: Observation, files: string[], resume: Resume): Action[] {
+  const patch = {
+    owns: [...(claim.owns ?? []), ...files],
+    ownsAmended: [...(claim.ownsAmended ?? []), ...files],
+  }
+  return [update(claim, patch), ...(resume({ ...claim, ...patch }, { ...obs, owned: { outside: [] } }) ?? [])]
 }
 
 /**
@@ -269,6 +415,7 @@ const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'can
 const MERGES: ReadonlySet<Claim['phase']> = new Set([
   'queued',
   'implementing',
+  'reviewing',
   'awaiting-merge',
   'shepherding',
 ])
@@ -286,13 +433,24 @@ function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
 const prRef = (row: ShepherdRow): string | undefined =>
   row.pr === null ? undefined : `${row.repo}#${row.pr}`
 
+/**
+ * CC-1054: a PR GitHub reports merged finishes the claim, whatever its stall says. An open PR is Shepherd's,
+ * and a claim with no PR is left to the ladder and the owner, which know whether it may be released.
+ */
+function settledOnGitHub(claim: Claim, obs: Observation): Action[] | undefined {
+  const pr = obs.prState
+  return pr !== undefined && pr !== 'unreadable' && pr.kind === 'merged'
+    ? mergedPr(claim, pr.pr, pr.head)
+    : undefined
+}
+
 /** A queued claim ran no agent, so it has none to retire. */
-function mergedPr(claim: Claim, row: ShepherdRow): Action[] {
-  const pr = claim.pr ?? prRef(row)
+function mergedPr(claim: Claim, found: string | undefined, head: string | null): Action[] {
+  const pr = claim.pr ?? found
   const finish = update(claim, {
     phase: 'done',
     ...(pr === undefined ? {} : { pr }),
-    ...(row.headSha === null ? {} : { prHead: row.headSha }),
+    ...(head === null ? {} : { prHead: head }),
     stalledReason: undefined,
     stalledClass: undefined,
     stallCode: undefined,
@@ -330,15 +488,23 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
   return claim.phase === 'awaiting-merge' ? [update(claim, { phase: 'shepherding' })] : []
 }
 
-/** A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. */
-function handOff(claim: Claim, pr: string, implementer: string, patch: ClaimPatch): Action[] {
+/**
+ * A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. A run Shepherd
+ * already holds open, such as one the agent registered itself, is not registered again (CC-1074).
+ */
+function handOff(
+  claim: Claim,
+  pr: string,
+  implementer: string,
+  patch: ClaimPatch,
+  held?: ShepherdRow,
+): Action[] {
   const target = shepherdTarget(pr)
   if (target === undefined) return [stall(claim, `${pr} is not a GitHub PR Shepherd can take`, 'failed')]
+  const moved = update(claim, { ...patch, phase: 'shepherding', pr })
+  if (held !== undefined && !ENDED.has(held.phase)) return [moved]
   const registration = { target, task: `${claim.initiative}/${claim.taskId}`, implementer }
-  return [
-    update(claim, { ...patch, phase: 'shepherding', pr }),
-    { kind: 'register', key: keyOf(claim), registration },
-  ]
+  return [moved, { kind: 'register', key: keyOf(claim), registration }]
 }
 
 /** The worker the claim's next successor takes over from: the latest successor, else the original. */
@@ -467,8 +633,15 @@ const restarts = (claim: Claim, patch: ClaimPatch): boolean =>
   (patch.phase !== undefined && patch.phase !== claim.phase) ||
   (patch.agentName !== undefined && patch.agentName !== claim.agentName)
 
-const patched = (claim: Claim, patch: ClaimPatch, at: string): Claim => ({
-  ...claim,
-  ...patch,
-  phaseAt: restarts(claim, patch) ? at : claim.phaseAt,
-})
+/** CC-1150 b: a new stall stamps `stalledAt` once; clearing the stall, or a new phase or agent, drops it and `stale`. */
+function patched(claim: Claim, patch: ClaimPatch, at: string): Claim {
+  const restart = restarts(claim, patch)
+  const { stalledAt, stale, ...next } = { ...claim, ...patch, phaseAt: restart ? at : claim.phaseAt }
+  if (next.stalledReason === undefined) return next
+  const since = claim.stalledReason === undefined ? at : stalledAt
+  return {
+    ...next,
+    ...(since === undefined ? {} : { stalledAt: since }),
+    ...(stale === undefined || restart ? {} : { stale }),
+  }
+}

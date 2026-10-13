@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PROBE_SANDBOX_RULE } from '../agents/return-contract-blocks.js'
 import {
   ANSWER_TEXT_MAX_BYTES,
   briefWriterBrief,
@@ -48,6 +49,13 @@ describe('reviewer brief', () => {
       expect(brief).not.toContain(word)
     expect(brief).toContain('bd-cc-900')
     expect(brief).toMatch(/^.*Verdict: APPROVE \| CHANGES/m)
+  })
+
+  // CC-713. Mutation caught: omitting the rule from the brief's Constraints.
+  it('tells the reviewer probes run only in a scratch repo with a local bare origin', () => {
+    const brief = reviewerBrief({ ...task(), implementer: 'bd-cc-900' })
+
+    expect(brief).toContain(PROBE_SANDBOX_RULE)
   })
 })
 
@@ -104,6 +112,13 @@ describe('planner brief', () => {
       expect(brief).toContain(op)
     }
   })
+
+  it('requires dependsOn [] for disjoint owns unless dependsWhy says why (CC-1155)', () => {
+    const brief = plannerBrief(task())
+
+    expect(brief).toContain('`dependsWhy`')
+    expect(brief).toContain('otherwise leave `dependsOn` empty')
+  })
 })
 
 describe('brief writer brief (CC-939)', () => {
@@ -114,6 +129,22 @@ describe('brief writer brief (CC-939)', () => {
     expect(brief).toContain('brief:proposed=<today>')
     expect(brief).toContain('`burndown-slices`')
     expect(brief).toContain('Tagged: brief:proposed=<date>')
+  })
+
+  it('states the security slice cap and the parser-versus-wiring split in both plan briefs (TP-2395)', () => {
+    for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
+      expect(brief).toContain('kind security or a guard area')
+      expect(brief).toContain('400 non-generated lines')
+      expect(brief).toContain('apart from its wiring')
+    }
+  })
+
+  it('makes a publish its own dep-linked task in both plan briefs (CC-987)', () => {
+    for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
+      expect(brief).toContain('its own task tagged ops:publish')
+      expect(brief).toContain("'publish <package> at <version>'")
+      expect(brief).toContain('dep: on the publish task')
+    }
   })
 
   it('fits PLANNER_BRIEF_MAX_BYTES for an oversized task', () => {

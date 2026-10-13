@@ -435,11 +435,19 @@ describe('a seat against its concurrency caps', () => {
   it("shows the burndown ledger's implementer count beside the live one when they differ (CC-978)", async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
 
-    const differs = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+    const differs = await statusReport(deps({ ledgerImplementers: () => 4 }), SEAT, false)
     const same = await statusReport(deps({ ledgerImplementers: () => 1 }), SEAT, false)
 
-    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 5)  ss-al-1')
+    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 4)  ss-al-1')
     expect(same.lines[1]).toBe('implementers  1/2  ss-al-1')
+  })
+
+  it('flags a ledger more than 3 claims ahead of the live implementers (CC-1098)', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+
+    const report = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+
+    expect(report.lines[1]).toBe('implementers  1/2 (ledger 5)  MISMATCH ledger 5 vs 1 live  ss-al-1')
   })
 
   it('counts a detached implementer as active and names it as detached', async () => {
@@ -956,6 +964,60 @@ describe("the seat's spend caps", () => {
 
     expect(budget.stop).toContain('day spend 11 points')
     expect(budget.spendSince).toBe(new Date(at(7, 30)).toISOString())
+  })
+})
+
+describe("the seat's spend through the tick's meter (CC-1099)", () => {
+  const stopOf = (why: string): string => `BUDGET-PAUSE pool ${POOL}: ${why}`
+  const RUN_STOP = stopOf("run spend 21 points at or above the seat's per_run_points 20")
+  const ledgerState = (configDir: string) => ({ samples: [{ at: at(8), sevenDay: 20 }], configDir })
+
+  beforeEach(() => {
+    writeAutonomy({ spend: { per_run_points: 20, per_day_points: 100 } })
+    doc.pools[POOL] = { since: at(7), last: 40, spent: 0 }
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: { since: at(9), last: 40, spent: 2 } }
+  })
+
+  it("stops on the ledger's run spend when the watchdog meters read below the per_run cap", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState('~/pool') })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it("stops on the ledger's run spend when the charter writes ~/ and the ledger key is absolute (CC-1118)", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState(path.join(tmp, 'pool')) })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it("stops on the ledger's run spend when the charter is absolute and the ledger key is ~/ (CC-1118)", async () => {
+    writeAutonomy({ spend: { per_run_points: 20, per_day_points: 100 }, configDir: path.join(tmp, 'pool') })
+
+    const { budget } = await status({ seatSamples: () => ledgerState('~/pool') })
+
+    expect(budget.stop).toBe(RUN_STOP)
+  })
+
+  it('keeps the watchdog meter figure when no ledger samples are wired', async () => {
+    const { budget } = await status()
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it("counts from the meters when the ledger's samples were read from another pool's account", async () => {
+    const { budget } = await status({ seatSamples: () => ledgerState('~/other-pool') })
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it('counts from the meters when the ledger cannot be read', async () => {
+    const unreadable = (): never => {
+      throw new Error('burndown.json is not valid JSON')
+    }
+
+    const { budget } = await status({ seatSamples: unreadable })
+
+    expect(budget.stop).toBeNull()
   })
 })
 

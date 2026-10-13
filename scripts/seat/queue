@@ -1,15 +1,28 @@
 #!/bin/sh
-# Edit a seat's queue file in place (charter section 4): done, park, add, move.
+# Edit a seat's queue file in place (charter section 4): done, park, add, move, set, replace.
 set -eu
 usage() {
   cat >&2 <<USAGE
-usage: bin/queue <seat> done <TASK> [--pr N]
-       bin/queue <seat> park <TASK>
-       bin/queue <seat> add <section> <text...>
-       bin/queue <seat> move <TASK> <section>
+usage: bin/queue <seat> done <KEY> [--pr N]
+       bin/queue <seat> park <KEY>
+       bin/queue <seat> add [--top] <section> <text...>
+       bin/queue <seat> move <KEY> <section>
+       bin/queue <seat> set <KEY> <text...>
+       bin/queue <seat> replace <old> <new> [<old> <new>...]
+       bin/queue <seat> replace -     (blocks on stdin: <<< old lines === new lines >>>)
 TASK must be the leading id of the item: the first token after the list marker
-(optionally in ** and followed by :), like TP-487 or agent-chat#234.
-The 5,000 limit on a queue file counts bytes, not characters.
+(optionally in ** and followed by :), like TP-487 or agent-chat#234, or a backlog
+pointer id like tc-131 or tc-130.2 (CC-760).
+KEY is a TASK, or <section>:<n> for the item numbered n in that section (morning:208).
+done by TASK looks in In flight and Next only; a backlog id or a <section>:<n> KEY
+works in any section.
+set rewrites one item, sub-lines included, keeping its "- " or "n. " marker.
+add --top puts the item first in the section instead of last.
+replace swaps exact text: each old must occur exactly once when its pair applies;
+pairs apply in order and nothing is written unless all match. An empty new deletes.
+In the stdin form, <<<, === and >>> are whole lines; text between them is literal.
+The 5,000 limit on a queue file counts bytes, not characters; every write
+reports the new size on stderr.
 USAGE
   exit 2
 }
@@ -24,7 +37,7 @@ file="$root/queues/$seat.md"
 case "$seat" in */*|"") fail "bad seat name '$seat'" ;; esac
 [ -f "$file" ] || fail "no queue file for seat '$seat' ($file)"
 
-pr=
+pr= top=
 case "$verb" in
   done)
     task=$1 arg=
@@ -35,7 +48,14 @@ case "$verb" in
     fi ;;
   park) [ "$#" -eq 1 ] || usage; task=$1 arg= ;;
   move) [ "$#" -eq 2 ] || usage; task=$1 arg=$2 ;;
-  add) [ "$#" -ge 2 ] || usage; task= arg=$1; shift; text="$*" ;;
+  add)
+    if [ "$1" = --top ]; then top=1; shift; fi
+    [ "$#" -ge 2 ] || usage; task= arg=$1; shift; text="$*" ;;
+  set) [ "$#" -ge 2 ] || usage; task=$1 arg=; shift; text="$*" ;;
+  replace)
+    task= arg=
+    if [ "$1" = - ]; then [ "$#" -eq 1 ] || usage
+    else [ $(($# % 2)) -eq 0 ] || usage; fi ;;
   *) usage ;;
 esac
 
@@ -64,10 +84,11 @@ function build(  i, b) {
   }
   nblk = b
 }
+function isbacklog(s) { return s ~ /^[a-z][a-z]?[a-z]?-[0-9]+(\.[0-9]+)?$/ }
 function leadid(s,  t, rest) {
   sub(/^(- |[0-9]+\. )/, "", s)
   sub(/^\*\*/, "", s)
-  if (!match(s, /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)/)) return ""
+  if (!match(s, /^([A-Z][A-Z0-9]*-[0-9]+|[a-z][a-z]?[a-z]?-[0-9]+(\.[0-9]+)?|[A-Za-z0-9_.-]+#[0-9]+)/)) return ""
   t = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1)
   return rest ~ /^(\*\*)?:?(\*\*)?([ \t]|$)/ ? t : ""
 }
@@ -86,12 +107,19 @@ function hasword(t, tok, strict,  s, p, abs, before, after) {
   }
   return 0
 }
+function keyed(b) { return bsec[b] == keysec && index(L[bs[b]], keynum ". ") == 1 }
 function find(scope,  b, c) {
   for (b = 1; b <= nblk; b++)
-    if ((!scope || head[bsec[b]] ~ /^(inflight|next)/) && lead[b] == task) hit[++c] = b
+    if (keysec ? keyed(b) : (!scope || head[bsec[b]] ~ /^(inflight|next)/) && lead[b] == task) hit[++c] = b
   return c
 }
+function resolvekey() {
+  if (keynum == "") return
+  keysec = secidx(keyname)
+  if (!keysec) die("unknown section '" keyname "' in " task)
+}
 function nomatch(where,  i, ls) {
+  if (keysec) die("no item " keynum ". in section " substr(L[hstart[keysec]], 4))
   for (i = 1; i <= n; i++) if (hasword(L[i], task, 1)) ls = ls (ls == "" ? "" : ",") i
   if (ls == "") die("no item " where " names " task)
   die(task " is not the leading id of any item " where "; it appears at line(s) " ls)
@@ -114,7 +142,8 @@ function place(s, body,  i, pos, pre) {
   for (i = hstart[s] + 1; i <= n && sec[i] == s; i++) if (L[i] == "none") del[i] = 1
   pos = hstart[s]
   for (i = hstart[s] + 1; i <= n && sec[i] == s; i++) if (!del[i] && !isblank(L[i])) pos = i
-  if (pos == hstart[s]) {
+  if (top) pos = hstart[s]
+  if (top || pos == hstart[s]) {
     if (pos < n && sec[pos + 1] == s && isblank(L[pos + 1]) && !del[pos + 1]) pos++
     else pre = "\n"
   }
@@ -126,9 +155,10 @@ function take(b, s,  i, body) {
   drop(b)
   place(s, body)
 }
-function doneverb(  c, i, k) {
-  c = find(1)
-  if (!c) nomatch("in In flight or Next")
+function doneverb(  c, i, k, any) {
+  any = isbacklog(task)
+  c = find(!any)
+  if (!c) nomatch(any ? "anywhere" : "in In flight or Next")
   for (i = 1; i <= c; i++)
     if (pr != "" && !hasword(btext(hit[i]), "#" pr, 0)) die("item naming " task " does not mention #" pr)
   for (i = 1; i <= c; i++) {
@@ -150,7 +180,48 @@ function addverb(  s) {
   if (text ~ /^[ \t]*$/) die("add needs item text")
   place(s, text "\n")
 }
+function setverb(  c, b, marker, i) {
+  if (text ~ /^[ \t]*$/) die("set needs item text")
+  c = find(0)
+  if (!c) nomatch("anywhere")
+  if (c > 1) die(task " names " c " items; refusing to set")
+  b = hit[1]
+  match(L[bs[b]], /^(- |[0-9]+\. )/); marker = substr(L[bs[b]], 1, RLENGTH)
+  for (i = bs[b] + 1; i <= be[b]; i++) del[i] = 1
+  L[bs[b]] = marker text
+}
+function readtext(  c, i, line) {
+  if ((getline line < pairs) <= 0) return 0
+  c = line + 0; rtext = ""
+  for (i = 1; i <= c; i++) {
+    if ((getline line < pairs) <= 0) die("replace pairs file is truncated")
+    rtext = rtext (i > 1 ? "\n" : "") line
+  }
+  return 1
+}
+function occurs(s, t,  c, p, from) {
+  from = 1
+  while ((p = index(substr(s, from), t)) > 0) { c++; from += p }
+  return c
+}
+function quoted(t) { t = substr(t, 1, 40); gsub(/\n/, "⏎", t); return "\"" t "\"" }
+function replaceverb(  i, s, old, rep, c, p) {
+  for (i = 1; i <= n; i++) s = s L[i] "\n"
+  while (readtext()) {
+    old = rtext
+    if (!readtext()) die("replace needs old and new text in pairs")
+    rep = rtext
+    if (old == "") die("replace refuses an empty old text")
+    c = occurs(s, old)
+    if (!c) die("no match for " quoted(old))
+    if (c > 1) die(quoted(old) " matches " c " times")
+    p = index(s, old)
+    s = substr(s, 1, p - 1) rep substr(s, p + length(old))
+  }
+  replaced = s
+}
 function emit(  i) {
+  if (verb == "replace") { printf "%s", replaced; return }
   for (i = 1; i <= n; i++) {
     if (!del[i]) print L[i]
     if (i in after) printf "%s", after[i]
@@ -159,29 +230,67 @@ function emit(  i) {
 BEGIN {
   verb = ENVIRON["Q_VERB"]; task = ENVIRON["Q_TASK"]; arg = ENVIRON["Q_ARG"]
   pr = ENVIRON["Q_PR"]; text = ENVIRON["Q_TEXT"]; removed = ENVIRON["Q_REMOVED"]
-  if (verb != "add" && task !~ /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)$/) die("'" task "' is not a task id like TP-487")
+  pairs = ENVIRON["Q_PAIRS"]; top = ENVIRON["Q_TOP"]
+  if (match(task, /^[A-Za-z][A-Za-z -]*:[0-9]+$/)) {
+    keyname = substr(task, 1, index(task, ":") - 1); keynum = substr(task, length(keyname) + 2) + 0
+  } else if (verb != "add" && verb != "replace" && !isbacklog(task) && task !~ /^([A-Z][A-Z0-9]*-[0-9]+|[A-Za-z0-9_.-]+#[0-9]+)$/) die("'" task "' is not a task id like TP-487")
 }
 { L[++n] = $0 }
 END {
   if (failed) exit 1
-  parse(); build()
+  parse(); build(); resolvekey()
   if (verb == "done") doneverb()
   else if (verb == "park") { arg = "morning"; moveverb(1) }
   else if (verb == "move") moveverb(0)
+  else if (verb == "replace") replaceverb()
+  else if (verb == "set") setverb()
   else addverb()
   if (!failed) emit()
 }
 AWK
 )
 
+# Stdin blocks become the counted form below; a malformed stream is a usage error.
+BLOCKS=$(cat <<'AWK'
+function bad(m) { print "bin/queue: " m > "/dev/stderr"; failed = 1; exit 2 }
+function flush() { print (nb ? nb : 1); printf "%s", (nb ? buf : "\n"); buf = ""; nb = 0 }
+state == 0 && $0 == "<<<" { state = 1; next }
+state == 0 { if ($0 !~ /^[ \t]*$/) bad("stdin line " NR " is outside a <<< ... >>> block"); next }
+state == 1 && $0 == "===" { flush(); state = 2; next }
+state == 2 && $0 == ">>>" { flush(); state = 0; blocks++; next }
+{ buf = buf $0 "\n"; nb++ }
+END {
+  if (failed) exit 2
+  if (state) bad("unterminated block on stdin: missing " (state == 1 ? "===" : ">>>"))
+  if (!blocks) bad("replace - read no <<< ... >>> block on stdin")
+}
+AWK
+)
+
+# Each text goes to the pairs file as its line count, then its lines, so the main
+# program reads it with getline and no escape processing touches it.
+write_pairs() {
+  if [ "$1" = - ]; then awk "$BLOCKS" > "$pairs" || exit 2; return; fi
+  for t in "$@"; do
+    printf '%s\n' "$t" | wc -l | tr -d ' '
+    printf '%s\n' "$t"
+  done > "$pairs"
+}
+
 lock="$file.lock"
 locked=
 cleanup() {
-  rm -f "${tmp:-}" "${removed:-}"
+  rm -f "${tmp:-}" "${removed:-}" "${pairs:-}"
   [ -z "$locked" ] || rmdir "$lock" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
+
+pairs=
+if [ "$verb" = replace ]; then
+  pairs=$(mktemp "${TMPDIR:-/tmp}/queue-pairs.XXXXXX")
+  write_pairs "$@"
+fi
 
 lock_age() {
   m=$(stat -c %Y "$lock" 2>/dev/null) || m=$(stat -f %m "$lock" 2>/dev/null) || return 1
@@ -206,11 +315,12 @@ cp -p "$file" "$tmp"
 removed=$(mktemp "${TMPDIR:-/tmp}/queue-removed.XXXXXX")
 sum=$(cksum < "$file")
 
-Q_VERB=$verb Q_TASK=$task Q_ARG=$arg Q_PR=$pr Q_TEXT=${text:-} Q_REMOVED=$removed \
+Q_VERB=$verb Q_TASK=$task Q_ARG=$arg Q_PR=$pr Q_TEXT=${text:-} Q_REMOVED=$removed Q_PAIRS=$pairs Q_TOP=$top \
   awk "$PROG" "$file" > "$tmp" || exit 1
 
 bytes=$(wc -c < "$tmp" | tr -d ' ')
 [ "$bytes" -le 5000 ] || fail "result would be $bytes bytes, over the 5,000 limit; nothing written"
 [ "$sum" = "$(cksum < "$file")" ] || fail "$file changed while it was being edited; nothing written"
 mv "$tmp" "$file"
+echo "bin/queue: $bytes of 5000 bytes" >&2
 cat "$removed"

@@ -23,9 +23,79 @@ export interface RemoteLaunch {
   tags?: string[]
   subscriptions?: Subscription[]
   remoteControl?: boolean
+  /** CC-951: carried channel targets; the caller's host checks each one before it reaches an argv. */
+  channels?: string[]
+  /** CC-951: carried permission mode, checked against the same allowlist on the caller's host. */
+  permissionMode?: string
   anchor?: string
   /** CC-913: this landing's secret; the only proof a later `teleport_land_failed` came from the caller that armed it. */
   landToken?: string
+  /** CC-951: launch now, not after the predecessor exits, and end it only on a later `endSelf` plan. */
+  successorFirst?: true
+  /** CC-951: set only for a host launcher, which has no predecessor of its own to take these from. */
+  cwd?: string
+  /** CC-951: the account the predecessor spent, which must exist on the launcher's machine. */
+  configDir?: string
+  /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
+  configDirUnset?: true
+}
+
+/** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
+export interface HostProbe {
+  cwd: string
+  configDir?: string
+  surface: PackageSurfaceName
+}
+
+/** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
+export const JOB_KICK_NAMES = ['burndown_tick', 'seats_watchdog', 'seats_heartbeat_check'] as const
+export type JobKickName = (typeof JOB_KICK_NAMES)[number]
+
+/** CC-951: a connected host launcher, as `hosts` lists it. */
+export interface HostLauncherInfo {
+  host: string
+  platform: string
+  surfaces: PackageSurfaceName[]
+  connectedAt: number
+}
+
+/** What a spawn, resume or retire answers with, and a remote spawn's placement (CC-1059) too. */
+export interface SpawnResultFields {
+  ok: boolean
+  agentId?: string
+  name?: string
+  reason?: string
+  /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
+  code?:
+    | 'surface_refused'
+    | 'spawn_rate_limit'
+    | 'machine_headless_limit'
+    | 'machine_memory_floor'
+    | 'seat_budget_stop'
+    | 'seat_spawn_overlap'
+    | 'seat_hand_reserve'
+    | 'reviewer_account_limit'
+    | 'broker_draining'
+  /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
+  retryable?: boolean
+  /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
+  retryAfterMs?: number
+  warnings?: string[]
+  /**
+   * The profile's own deny list, echoed back on success. CC-29's finding:
+   * a toolset-confined agent cannot report being stuck — the tool is absent
+   * from its schema, not refused — so the only place this is knowable with
+   * certainty is here, at spawn time, before the agent can fail silently.
+   */
+  disallowedTools?: string[]
+  /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
+  transcript?: { path: string; found: boolean }
+  /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
+  base?: { ref: string; sha: string }
+  /** CC-1059: recorded, not launched: the requester launches this on `host`, then reports `spawn_launched`. */
+  launch?: RemoteLaunch
+  /** CC-1059: the host the agent launches on, when that is not the broker's. */
+  host?: string
 }
 
 /** A profile without the fields that run something or set the environment on the caller's host. */
@@ -294,6 +364,12 @@ export const EVENT_KINDS = [
   // only by the broker for the one configured decider identity. It leaves the
   // question open so the human can still overrule it with `answer`.
   'decided',
+  // CC-1056: the M0 criterion-3 instrument. Written by the seat's tool hooks, never by the broker.
+  'seat_blocked',
+  'seat_unblocked',
+  'seat_activity',
+  // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
+  'seat_ask_denied',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -347,6 +423,10 @@ export interface ExperimentArm {
   id: string
   arm: string
 }
+
+/** CC-168: why a follow-up message was sent, recorded on its message rows for the experiment tables. */
+export const FOLLOWUP_KINDS = ['fix', 'rebase', 'extension', 'review'] as const
+export type FollowupKind = (typeof FOLLOWUP_KINDS)[number]
 
 export interface Subscription {
   selector: SubscriptionSelector
@@ -452,7 +532,27 @@ export interface ItemShape {
   recommended?: string | undefined
   /** What happens if nobody answers: the default taken, or "parked". */
   onNoAnswer?: string | undefined
+  /** A one-line title for the queue, at most 80 characters. */
+  header?: string | undefined
+  /** One per option, same order; `""` where an option has none. */
+  optionDescriptions?: string[] | undefined
+  /** Whether the answer is cheap to undo. Readers treat an absent door as one-way. */
+  door?: AskDoor | undefined
+  /** The option taken if nobody answers; dropped unless it is one of the options. */
+  default?: string | undefined
+  /** Precedent vocabulary, such as `tech_design` or `merge_gate`. */
+  category?: string | undefined
+  initiative?: string | undefined
+  /** Whether the asker carries on meanwhile or is parked on the answer. */
+  blocking?: AskBlocking | undefined
+  /** One line on how to undo the answer. */
+  reversible?: string | undefined
 }
+
+export const ASK_DOORS = ['one-way', 'two-way'] as const
+export type AskDoor = (typeof ASK_DOORS)[number]
+export const ASK_BLOCKING = ['continue', 'parked'] as const
+export type AskBlocking = (typeof ASK_BLOCKING)[number]
 
 /** A question the decider answered, shown to the human for audit. */
 export interface DecidedItem {
@@ -744,7 +844,17 @@ export type ClientMessage =
    * charged the same way — a tag is a way of naming recipients, not a cheaper
    * fanout. A tag nothing carries is a FAILURE, not a silent no-op.
    */
-  | { t: 'send'; to?: string | string[]; toTag?: string; text: string; inReplyTo?: string }
+  | {
+      t: 'send'
+      to?: string | string[]
+      toTag?: string
+      text: string
+      inReplyTo?: string
+      /** CC-168: recorded on every message row the send writes; both fields must be non-empty. */
+      experiment?: ExperimentArm
+      /** CC-168: recorded on every message row the send writes. */
+      followupKind?: FollowupKind
+    }
   /**
    * Add or remove tags, on yourself or on a peer (CC-13).
    *
@@ -844,6 +954,20 @@ export type ClientMessage =
   /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
   | { t: 'permission_hook_withdrawn'; msgId: string }
   /**
+   * The hook allowed a call itself under a standing grant (CC-694) and records it.
+   *
+   * Same caller rule as `permission_hook`. The broker appends a closed
+   * `approval_request` (`meta.source = 'self-grant'`) and its `allow` resolution,
+   * so the queue never shows it, and answers with `permission_hook_result`.
+   */
+  | {
+      t: 'permission_self_granted'
+      session: string
+      toolName: string
+      toolInput: unknown
+      grant: 'repo-skills'
+    }
+  /**
    * A process that is not a session asks the human a question under a label (CC-169).
    *
    * Same caller rule as `permission_hook`: an UNREGISTERED connection only, and
@@ -887,6 +1011,13 @@ export type ClientMessage =
        * hold in the same worktree.
        */
       owns?: string[]
+      /**
+       * CC-952: path globs, relative to the agent's own worktree, the broker
+       * claims as a `files` claim held by the agent's name, so the burndown tick
+       * sees them before the agent registers. Unlike `owns` it isolates nothing
+       * and is accepted with a worktree profile.
+       */
+      claimPaths?: string[]
       /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
@@ -961,8 +1092,26 @@ export type ClientMessage =
       workRole?: string
       /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
       override?: 'fix-round'
+      /** CC-1059: the requester's own OS, sent by its process and never by the model; picks a remote surface. */
+      hostPlatform?: string
+      /** CC-1059: the requester can launch a spawn on its own host; absent is an older client, launched here. */
+      launchesHere?: true
+      /** CC-1059: the machine to launch on, a config `machines` alias or a hostname. */
+      host?: string
+      /** CC-1059: the CLI's own hostname. Read only from an unregistered connection; a session's comes from its registration. */
+      callerHost?: string
+      /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
+      callerHome?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
+  /**
+   * CC-1059: the requester checked and wrote a remote spawn's `launch` on its host (`ok`), or refused
+   * it there. Accepted only from the connection that received the launch; an ok ack lets it open the
+   * surface, anything else retires the identity.
+   */
+  | { t: 'spawn_launched'; agentId: string; ok: boolean; reason?: string }
+  /** CC-1059: the requester opened the surface, or could not. Answered once the agent registers or the attach window passes. */
+  | { t: 'spawn_placed'; agentId: string; ok: boolean; reason?: string }
   /**
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
@@ -984,8 +1133,10 @@ export type ClientMessage =
    * and forcing it is a human deciding to throw work away.
    * CC-218: `caller` is the retiring session's AGENT_CHAT_NAME, which the one-shot CLI
    * connection cannot register; absent means a person at a terminal.
+   * CC-959: `agentId` retires that row only, and only while it still holds `name` and is not live.
+   * The reply then echoes it, so a caller can tell a broker that ignored it and retired by name.
    */
-  | { t: 'retire'; name: string; force?: boolean; caller?: string }
+  | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
@@ -1010,6 +1161,16 @@ export type ClientMessage =
       /** CC-883: the caller's own read of its Claude Code argv, which a broker on another host cannot make. */
       remoteControlSeen?: boolean
       reason?: TeleportReason
+      /** CC-951: the successor's surface; refused when its destination cannot run it. */
+      surface?: SurfaceName
+      /** CC-951: the caller's own OS, sent by its MCP process and never by the model. */
+      hostPlatform?: string
+      /** CC-951: launch flags the caller read from its own argv, which a broker on another host cannot. */
+      launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string; model?: string }
+      /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
+      to?: string
+      /** CC-951: the caller's MCP process ends its own Claude Code on an `endSelf` plan; an older one does not. */
+      endsSelf?: boolean
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
@@ -1048,6 +1209,21 @@ export type ClientMessage =
    * is no field to ask for it.
    */
   | { t: 'background' }
+  /**
+   * CC-951: a host launcher announces the machine it launches on. Refused from a registered
+   * session connection: a launcher is its own connection, never a session's.
+   */
+  | { t: 'host_hello'; host: string; platform: string; surfaces: string[] }
+  /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
+  | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
+  | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
+  /** CC-951: the connected host launchers. */
+  | { t: 'hosts' }
+  /**
+   * CC-1151: run one of the broker's jobs now, in the broker's own env. The frame names the job and,
+   * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
+   */
+  | { t: 'job_kick'; job: JobKickName; seat?: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */
@@ -1141,6 +1317,11 @@ export type ServerMessage =
    * answered in the terminal is simply ignored there.
    */
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  /**
+   * CC-1059: retire of an agent on another host. A push to that agent's own connection, since the
+   * broker cannot signal a pid there; its MCP process ends its own Claude Code when `agentId` is its own.
+   */
+  | { t: 'end_self'; agentId: string; reason: string }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
@@ -1165,36 +1346,11 @@ export type ServerMessage =
    * requesting model — "you are sharing a checkout with bob" is something it
    * should be told even though the spawn succeeded.
    */
-  | {
-      t: 'spawn_result'
-      ok: boolean
-      agentId?: string
-      name?: string
-      reason?: string
-      /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
-      code?:
-        | 'surface_refused'
-        | 'spawn_rate_limit'
-        | 'machine_headless_limit'
-        | 'machine_memory_floor'
-        | 'seat_budget_stop'
-        | 'seat_spawn_overlap'
-        | 'seat_hand_reserve'
-      /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
-      retryable?: boolean
-      warnings?: string[]
-      /**
-       * The profile's own deny list, echoed back on success. CC-29's finding:
-       * a toolset-confined agent cannot report being stuck — the tool is absent
-       * from its schema, not refused — so the only place this is knowable with
-       * certainty is here, at spawn time, before the agent can fail silently.
-       */
-      disallowedTools?: string[]
-      /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
-      transcript?: { path: string; found: boolean }
-      /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
-      base?: { ref: string; sha: string }
-    }
+  | ({ t: 'spawn_result' } & SpawnResultFields)
+  /** CC-1059: an ok ack to `spawn_launched` is the requester's go to open the surface; nothing else is. */
+  | { t: 'spawn_launched_result'; ok: boolean; reason?: string }
+  /** CC-1059: the remote spawn's final verdict, sent once it registers, fails, or the attach window passes. */
+  | ({ t: 'spawn_placed_result' } & SpawnResultFields)
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
   | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
   /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
@@ -1227,9 +1383,17 @@ export type ServerMessage =
       /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
       remote?: boolean
     }
-  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
+  /** CC-951: `endSelf` means the successor attached, so the caller ends its own Claude Code. */
+  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
+  | { t: 'host_hello_result'; ok: boolean; reason?: string }
+  /** CC-951: broker -> launcher; does `cwd`, `configDir` and `surface` work on its machine. */
+  | { t: 'host_probe'; id: string; probe: HostProbe }
+  /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
+  | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
+  | { t: 'job_kick_result'; ok: boolean; detail: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the
@@ -1311,6 +1475,8 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-1059: the machine the spawn launched on; absent on rows written before it was recorded. */
+  host?: string
   /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
   provisionalName?: true
   /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
@@ -1374,7 +1540,7 @@ export interface RetireResult {
   reason?: string
 }
 
-export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>
+export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict' | 'end_self'>
 
 /**
  * Frames a stream of newline-delimited JSON. Returned callback is fed raw chunks.

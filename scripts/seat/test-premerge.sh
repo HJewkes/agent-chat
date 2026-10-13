@@ -127,12 +127,43 @@ check "7b fenced test output before a later verdict block is not a verdict" 0 "^
 ok_case; add_body coord-a msg0024 "$(printf '```\nreviewer wrote:\nVerdict: MERGE\nPR: %s#%s\n```\nnoted' "$R" "$N")"; run
 check "7b coordinator's fenced quote of a verdict is not a verdict" 0 "^OK .*msg=msg0001"
 
+# 7c: with no counting chat verdict, a held Shepherd run's timeline verdict counts (CC-817)
+SR=seat-9-shepherd-review
+# timeline <held json or null> <verdict> <head>...: writes the stub's timeline, verdict entries oldest first.
+timeline() {
+  local held=$1 v e=(); shift
+  while [ $# -ge 2 ]; do
+    e+=("$(jq -nc --arg v "$1" --arg h "$2" --arg r "$SR" '{kind:"verdict",stepId:"sh-await-verdict:\($h)",verdict:$v,headSha:$h,locator:null,reviewer:$r}')")
+    shift 2
+  done
+  v=$(printf '%s\n' '{"kind":"step","stepId":"ci-wait:1"}' "${e[@]}" | jq -sc .)
+  jq -nc --argjson held "$held" --argjson entries "$v" '{row:{held:$held},entries:$entries}' > "$W/case/timeline.json"
+}
+HELD='{"reason":"visual-gate2"}'
+new_case "$CLEAN"; timeline "$HELD" MERGE "$SHA"; run
+check "7c held run with only a Shepherd MERGE at the head" 0 "^OK .*actor=shepherd:$SR msg=sh-await-verdict:$SHA"
+grep -q "^  verdict: shepherd:$SR sh-await-verdict:$SHA Verdict: MERGE head=$SHA" <<<"$out" && echo "PASS 7c verdict line names the reviewer" && pass=$((pass+1)) \
+  || { echo "FAIL 7c verdict line names the reviewer: $out"; failn=$((failn+1)); }
+new_case "$CLEAN"; timeline "$HELD" MERGE "$MAINSHA"; run
+check "7c held run with a Shepherd MERGE at another head" 1 "^FAIL .*latest MERGE verdict head $MAINSHA != reviewed $SHA"
+new_case "$CLEAN"; timeline "$HELD" MERGE "$SHA" FIX_FIRST "$SHA" none "$SHA"; run
+check "7c newest Shepherd FIX_FIRST beats an older MERGE, none is skipped" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
+new_case "$CLEAN"; timeline null MERGE "$SHA"; run
+check "7c Shepherd MERGE on an unheld run" 1 "^FAIL .*no verdict from a reviewer"
+new_case "$CLEAN"; run;                                     check "7c titan-factory exits 1" 1 "^FAIL .*no verdict from a reviewer"
+new_case "$CLEAN"; timeline "$HELD" MERGE "$SHA"; add_verdict seat-9-review msg0025 FIX_FIRST "$SHA"; run
+check "7c a counting chat verdict wins over Shepherd's" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
+
 # 8: arguments are validated before use
 out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check "8 bad repo" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7x "$SHA" "$W/clone" 2>&1); rc=$?;             check "8 bad PR number" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 abc123 "$W/clone" 2>&1); rc=$?;              check "8 short head sha" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 "$CLEAN" "$W/clone" "zz$CLEAN" 2>&1); rc=$?; check "8 bad reviewed head" 2 "^bad argument"
 ok_case; out=$(env -u COORDINATORS "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "8 unset COORDINATORS" 2 "^COORDINATORS unset"
+# 8b: with EVENTS_DB unset, the events db is read from AGENT_CHAT_HOME (CC-835 portability)
+ok_case; mkdir -p "$W/agent-chat-home"; cp "$EVENTS_DB" "$W/agent-chat-home/events.db"
+out=$(env -u EVENTS_DB AGENT_CHAT_HOME="$W/agent-chat-home" HOME="$W/no-home" "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "8b AGENT_CHAT_HOME holds the events db" 0 "^OK .*actor=seat-9-review msg=msg0001"
 
 # 9: required contexts with spaces print intact
 ok_case; mut rules_branches_main.json '.[0].parameters.required_status_checks=[{"context":"build (20)"},{"context":"lint"}]'

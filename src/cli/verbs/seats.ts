@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -7,7 +8,8 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { gitChildEnv } from '../../git.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
-import { readAccountBudget } from '../../agents/budget.js'
+import { readAccountBudget, readBudget } from '../../agents/budget.js'
+import { hostIdentity } from '../../server/host.js'
 import {
   countLiveHeadless,
   machineStatus,
@@ -20,8 +22,10 @@ import {
   type MachineStatus,
 } from '../../agents/machine-guard.js'
 import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
-import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
+import { machineStop, type MachineStop, type MachineStopReadings } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
+import { EventLog } from '../../broker/event-log.js'
+import { seatBlockReport, type OpenBlock } from '../../seat-blocks.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
@@ -29,7 +33,15 @@ import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents
 import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
 import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
-import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
+import {
+  charterSeats,
+  isSeatName,
+  parsePools,
+  parseSeat,
+  seatSurfaceFor,
+} from '../../agents/seats/charter.js'
+import { chooseSurface } from '../../agents/surface-resolution.js'
+import { brokerHost } from '../../broker/host-guard.js'
 import {
   appendSeatLog,
   defaultAutonomyRoot,
@@ -77,6 +89,7 @@ import {
   type StatusDeps,
 } from '../../agents/seats/status.js'
 import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
+import { readWaitingPermission } from '../../agents/seats/waiting-permission.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -89,9 +102,16 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import {
+  notifyAsWatchdog,
+  sendAsOwner,
+  sendAsWatchdog,
+  withRunningBroker,
+  type Reply,
+} from './seat-broker.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
+import { respawnSeat } from './seat-respawn.js'
 import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -201,13 +221,43 @@ export async function wakeSeat(
     : { ok: false, detail: res.reason ?? 'resume refused' }
 }
 
-/** The seat file's `surface:` wins, since the agent record takes whatever surface the last resume used. */
-async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
-  const fromFile = seatSurface(readText(path.join(root, 'seats', `${seat}.md`)))
-  if (fromFile !== undefined) return { surface: fromFile, from: 'seat file' }
+/**
+ * CC-951: the watchdog resumes by teleport's rule, `chooseSurface`, so a mac-only seat surface
+ * lands a linux broker in tmux rather than in a refusal and a headless fallback. The seat file
+ * wins over the agent record, which takes whatever surface the last resume used, headless included.
+ */
+export function resumeSurface(
+  seatFile: string | undefined,
+  recorded: SurfaceName | undefined,
+  machine: string,
+  platform: NodeJS.Platform,
+): DeclaredSurface {
+  const fromFile = seatSurfaceFor(seatFile, machine)
+  const named = fromFile === undefined ? recorded : undefined
+  if (fromFile === undefined && named === undefined) return UNDECLARED
+  const choice = chooseSurface({ seatSurface: fromFile, recorded: named, platform })
+  // With nothing requested, chooseSurface always picks.
+  if (!choice.ok) return UNDECLARED
+  const source = fromFile === undefined ? 'agent record' : 'seat file'
+  if (choice.from !== 'platform') return { surface: choice.surface, from: source }
+  return {
+    surface: choice.surface,
+    from: `${platform} default; ${source} ${fromFile ?? named} cannot run here`,
+  }
+}
+
+async function recordedSurface(client: BrokerClient, seat: string): Promise<SurfaceName | undefined> {
   const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
-  const recorded = SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
-  return recorded === undefined ? UNDECLARED : { surface: recorded, from: 'agent record' }
+  return SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
+}
+
+/** The watchdog runs on the broker's host, so that host's seat entry and OS decide. */
+async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
+  const seatFile = readText(path.join(root, 'seats', `${seat}.md`))
+  const machine = brokerHost()
+  const recorded =
+    seatSurfaceFor(seatFile, machine) === undefined ? await recordedSurface(client, seat) : undefined
+  return resumeSurface(seatFile, recorded, machine, process.platform)
 }
 
 /** Undefined when events.db cannot be read, so the caller holds every seat rather than risk a restart window. */
@@ -225,6 +275,19 @@ function presence(seat: string): Presence | undefined {
     return readPresence(path.join(home(), 'events.db'), seat)
   } catch {
     return undefined
+  }
+}
+
+/** CC-1057: undefined when events.db cannot be read, so the pass pages nothing and keeps its dedupe. */
+function readOpenBlocks(nowMs: number): OpenBlock[] | undefined {
+  let log: EventLog | undefined
+  try {
+    log = new EventLog()
+    return seatBlockReport(log, nowMs, nowMs).open
+  } catch {
+    return undefined
+  } finally {
+    log?.close()
   }
 }
 
@@ -266,6 +329,11 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       return identity === undefined ? undefined : identityTranscript(identity).found
     },
     notifyHuman: notifyAsWatchdog,
+    relaunchSeat: async (seat, plan) =>
+      respawnSeat(client, seat, plan, await declaredSurface(client, root, seat)),
+    openBlocks: readOpenBlocks,
+    page: sendAsWatchdog,
+    seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
   }
 }
 
@@ -323,7 +391,8 @@ export const seatsWatchdogVerb = defineVerb({
     '`stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>": "<reason>"}}; ' +
     'delete the entry to re-enable), a seat at its spend stop, or any seat while the owner seat has ' +
     'announced a broker restart without "restart done". A latest journal line starting WRAP, PARKED ' +
-    'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. An ' +
+    'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. Pages ' +
+    'tp-operator once per live seat blocked on AskUserQuestion over 5 min (CC-1057). An ' +
     'unparsable seat-watchdog.json is an error and the run does nothing',
   args: z.object({
     dryRun: z.boolean().optional(),
@@ -495,20 +564,29 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machine: readMachineStatus,
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
+    seatSamples: seat => readLedger(burndownLedgerPath()).seats?.[seat],
+    waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
+    contextOf: agent => readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd),
+    selfContext: () => {
+      const { sessionId } = hostIdentity()
+      return sessionId === undefined ? null : readBudget(sessionId)
+    },
   }
 }
 
+/** The live memory, swap, pressure level and load readings the machine stop decides on. */
+export const readMachineStopReadings = (): MachineStopReadings => ({
+  memoryFreePercent: readMemoryPressure(),
+  load5: readLoad5(),
+  swapUsedPercent: swapPercent(readSwapUsage()),
+  pressureLevel: readPressureLevel(),
+})
+
 /** CC-431, CC-492: the live memory, swap, pressure level and load readings against the stop limits. */
-function readMachineStop(): MachineStop | null {
-  return machineStop(
-    {
-      memoryFreePercent: readMemoryPressure(),
-      load5: readLoad5(),
-      swapUsedPercent: swapPercent(readSwapUsage()),
-      pressureLevel: readPressureLevel(),
-    },
-    resolveMachineStopLimits(),
-  )
+export function readMachineStop(
+  readings: MachineStopReadings = readMachineStopReadings(),
+): MachineStop | null {
+  return machineStop(readings, resolveMachineStopLimits())
 }
 
 /** CC-406: the live readings the spawn guard decides on, for the `machine` block. */
@@ -635,6 +713,57 @@ export const seatsTickVerb = defineVerb({
   },
   async run({ seat, dryRun, root }) {
     return seatTickReport(dryRun === true, () => seatPlanOptions(seat, root))
+  },
+})
+
+/** `05:17 tick` or `05:1x SWARM`: a hand-typed clock the verb would double up (CC-1058). */
+const LEADING_CLOCK = /^\s*\d{1,2}:[0-5x\d]{1,2}\b/i
+
+const isSeatDir = (root: string, seat: string): boolean =>
+  fs.existsSync(path.join(root, 'seats', `${seat}.md`)) || fs.existsSync(path.join(root, 'logs', seat))
+
+function seatLogRefusal(root: string, seat: string, text: string): string | undefined {
+  if (!isSeatName(seat)) return `not a seat name: ${seat}`
+  if (!isSeatDir(root, seat)) return `no seat '${seat}' under ${root}`
+  if (text.trim() === '') return 'the entry is empty: usage: agent-chat seats log <seat> <text...>'
+  if (/[\r\n]/.test(text)) return 'one line per entry: the text holds a line break'
+  if (LEADING_CLOCK.test(text)) return 'drop the hand-typed time; the verb stamps it'
+  return undefined
+}
+
+/** CC-1058: the log verb's body; the stamp comes from `now`, never from the text. */
+export function seatLogReport(root: string, seat: string, words: string[], now: Date): Report {
+  const text = words.join(' ')
+  const refusal = seatLogRefusal(root, seat, text)
+  if (refusal !== undefined) return refused(new Error(refusal))
+  try {
+    return { ok: true, lines: [appendSeatLog(root, seat, now, text)] }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const seatsLogVerb = defineVerb({
+  name: 'seats.log',
+  description:
+    "append one line to a seat's journal (CC-1058): '<HH:MM> <text>' in " +
+    '<root>/logs/<seat>/<YYYY-MM-DD>.md, stamped from the machine clock in local time, and print the ' +
+    'file. Refuses and writes nothing on an unknown seat, a line break in the text, or text that opens ' +
+    "with a time ('10:00 standup moved' becomes 'standup moved to 10:00')",
+  args: z.object({
+    seat: requiredString('seat'),
+    text: z.array(z.string()),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat', 'text'],
+    options: {
+      root: { long: '--root', description: 'autonomy directory holding seats/ and logs/' },
+    },
+  },
+  async run({ seat, text, root }) {
+    return seatLogReport(root ?? defaultAutonomyRoot(), seat, text, new Date())
   },
 })
 
@@ -818,6 +947,7 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsTickVerb)
   addVerb(seats, seatsDispatchesVerb)
+  addVerb(seats, seatsLogVerb)
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)

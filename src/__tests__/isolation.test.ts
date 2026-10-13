@@ -18,12 +18,14 @@ import { matchPattern } from '../agents/isolation/file-ownership.js'
 import {
   createWorktreeStrategy,
   findGitRoot,
+  reattachWorktree,
   RECLAIM_GRACE_MS,
   WorktreeBudgetExhaustedError,
   WorktreeInUseError,
   worktreeStrategy,
 } from '../agents/isolation/worktree.js'
 import type { GitRunner } from '../agents/isolation/worktree.js'
+import { isReviewerTreeName } from '../agents/reviewer-tree.js'
 import type { Allocation, IsolationContext, LivePeer } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []
@@ -333,6 +335,80 @@ describe('worktree budget', () => {
   })
 })
 
+describe('reviewer worktree pool (CC-1040)', () => {
+  const reviewer = (repo: string, n: number): IsolationContext =>
+    ctxFor(repo, { agentName: `rv-o-r-${n}`, agentId: `ag-rv-${n}` })
+
+  const allocateReviewers = async (
+    strategy: ReturnType<typeof createWorktreeStrategy>,
+    repo: string,
+    count: number,
+  ) => {
+    for (let n = 1; n <= count; n++) await strategy.allocate(reviewer(repo, n))
+  }
+
+  it('eight reviewer trees leave the implementer budget free', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 1, reviewerBudget: 8 })
+    await allocateReviewers(strategy, repo, 8)
+
+    expect(refusalsIn(await strategy.check(ctxFor(repo)))).toEqual([])
+    await expect(strategy.allocate(ctxFor(repo))).resolves.toBeDefined()
+  })
+
+  it('a ninth reviewer is refused naming the reviewer pool', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 1, reviewerBudget: 8 })
+    await allocateReviewers(strategy, repo, 8)
+
+    expect(refusalsIn(await strategy.check(reviewer(repo, 9)))[0]).toMatch(
+      /reviewer worktree pool exhausted: 8\/8/,
+    )
+    const refused = await strategy.allocate(reviewer(repo, 9)).catch((err: unknown) => err)
+    expect(refused).toBeInstanceOf(WorktreeBudgetExhaustedError)
+    expect((refused as WorktreeBudgetExhaustedError).pool).toBe('reviewer')
+    expect((refused as Error).message).toMatch(/reviewer worktree pool exhausted: 8\/8/)
+  })
+
+  it('implementer trees do not consume reviewer slots', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 3, reviewerBudget: 1 })
+    await strategy.allocate(ctxFor(repo))
+    await strategy.allocate(ctxFor(repo, { agentName: 'bob', agentId: 'ag-2' }))
+
+    await expect(strategy.allocate(reviewer(repo, 1))).resolves.toBeDefined()
+  })
+
+  it('reads reviewerWorktreeBudget from config.json on every spawn', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-budget-'))
+    tmpdirs.push(home)
+    process.env.AGENT_CHAT_HOME = home
+    try {
+      const repo = makeRepo()
+      const strategy = createWorktreeStrategy({ budget: 1 })
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ reviewerWorktreeBudget: 1 }))
+      await strategy.allocate(reviewer(repo, 1))
+      await expect(strategy.allocate(reviewer(repo, 2))).rejects.toBeInstanceOf(WorktreeBudgetExhaustedError)
+
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ reviewerWorktreeBudget: 2 }))
+
+      await expect(strategy.allocate(reviewer(repo, 2))).resolves.toBeDefined()
+    } finally {
+      delete process.env.AGENT_CHAT_HOME
+    }
+  })
+})
+
+describe('isReviewerTreeName', () => {
+  it.each(['rv-o-r-4-1', 'impl-task-1-reviewer', 'RV-x'])('classifies %s as a reviewer tree', name => {
+    expect(isReviewerTreeName(name)).toBe(true)
+  })
+
+  it.each(['previewer-x', 'bd-cc-1-a-r0', 'driver', 'a-rv'])('classifies %s as an implementer tree', name => {
+    expect(isReviewerTreeName(name)).toBe(false)
+  })
+})
+
 describe('worktree re-allocation after a crash', () => {
   /** The crash path: work committed, the process died, release was never called. */
   const crashLeavingCommit = async (repo: string, ctx: IsolationContext): Promise<string> => {
@@ -395,10 +471,56 @@ describe('worktree re-allocation after a crash', () => {
   })
 })
 
+describe('a sibling tree whose branch extends the name (CC-1082)', () => {
+  /** Leaves `impl` parked with one commit and `impl-review` live beside it. */
+  const parkBesideLiveReviewer = async (repo: string) => {
+    const impl = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl' }))
+    const sha = commitIn(impl.cwd, 'work.ts')
+    git(['worktree', 'remove', '--force', impl.cwd], repo)
+    const review = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl-review' }))
+    return { implPath: impl.cwd, reviewPath: review.cwd, sha }
+  }
+
+  it('resumes the agent while its reviewer holds the -review branch', async () => {
+    const repo = makeRepo()
+    const { implPath, reviewPath, sha } = await parkBesideLiveReviewer(repo)
+
+    const again = await reattachWorktree({ gitRoot: repo, worktree: implPath, branch: 'agent-chat/impl' })
+
+    expect(again.cwd).toBe(implPath)
+    expect(again.ref?.reattached).toBe('local')
+    expect(git(['branch', '--show-current'], implPath)).toBe('agent-chat/impl')
+    expect(git(['rev-parse', 'HEAD'], implPath)).toBe(sha)
+    expect(git(['branch', '--show-current'], reviewPath)).toBe('agent-chat/impl-review')
+  })
+
+  it('allocates the agent onto its kept branch while its reviewer is live', async () => {
+    const repo = makeRepo()
+    const { sha } = await parkBesideLiveReviewer(repo)
+
+    const again = await worktreeStrategy.allocate(ctxFor(repo, { agentName: 'impl' }))
+
+    expect(again.ref?.reused).toBe('true')
+    expect(git(['rev-parse', 'HEAD'], again.cwd)).toBe(sha)
+  })
+
+  it('still refuses when another tree really holds the branch', async () => {
+    const repo = makeRepo()
+    const { implPath } = await parkBesideLiveReviewer(repo)
+    const other = path.join(repo, '.worktrees', 'other')
+    git(['worktree', 'add', other, 'agent-chat/impl'], repo)
+
+    const resumed = reattachWorktree({ gitRoot: repo, worktree: implPath, branch: 'agent-chat/impl' })
+
+    await expect(resumed).rejects.toBeInstanceOf(WorktreeInUseError)
+    await expect(resumed).rejects.toMatchObject({ worktreePath: other })
+  })
+})
+
 /** Hangs every fetch, then exits within 0.2s of the fetching git being killed so no child outlives the test. */
-const HANG_UNTIL_GIT_DIES = `#!/bin/sh
-git_pid=$(ps -o ppid= -p $PPID)
-while kill -0 $git_pid 2>/dev/null; do sleep 0.2; done
+/** git runs core.sshCommand as its own child; an ext:: remote is refused once GIT_ALLOW_PROTOCOL is pinned (CC-1095). */
+const HANG_UNTIL_PARENT_GIT_DIES = `#!/bin/sh
+while kill -0 $PPID 2>/dev/null; do sleep 0.2; done
 `
 
 describe('worktree branch base (CC-151)', () => {
@@ -505,9 +627,9 @@ describe('worktree branch base (CC-151)', () => {
   it('spends one timeout across every default-branch candidate, not one each', async () => {
     const local = makeRepo()
     const hang = path.join(tmp('iso-hang-'), 'hang.sh')
-    fs.writeFileSync(hang, HANG_UNTIL_GIT_DIES, { mode: 0o755 })
-    git(['config', 'protocol.ext.allow', 'always'], local)
-    git(['remote', 'add', 'origin', `ext::${hang}`], local)
+    fs.writeFileSync(hang, HANG_UNTIL_PARENT_GIT_DIES, { mode: 0o755 })
+    git(['config', 'core.sshCommand', hang], local)
+    git(['remote', 'add', 'origin', 'ssh://hang.invalid/r'], local)
     const strategy = createWorktreeStrategy({ fetchTimeoutMs: 1_500 })
 
     const started = Date.now()
@@ -923,6 +1045,116 @@ describe('worktree release after the work landed', () => {
 
     expect(await worktreeStrategy.release(ctx, alloc, { force: true })).toBe(true)
     expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+  })
+
+  /**
+   * CC-792. Once main edits a file the branch touched, the file check refuses a
+   * squash-merged branch; gh's merged head is then the only proof it landed.
+   */
+  describe('when gh reports the PR', () => {
+    const PATH = process.env.PATH
+    afterEach(() => {
+      process.env.PATH = PATH
+    })
+
+    /** A stand-in gh that prints `output` and exits with `code`. */
+    const fakeGh = (output: string, code = 0): void => {
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-gh-'))
+      tmpdirs.push(bin)
+      fs.writeFileSync(path.join(bin, 'out.json'), output)
+      const script = `#!/bin/sh\ncat '${path.join(bin, 'out.json')}'\nexit ${code}\n`
+      fs.writeFileSync(path.join(bin, 'gh'), script, { mode: 0o755 })
+      process.env.PATH = `${bin}${path.delimiter}${PATH}`
+    }
+
+    /** Squash-merged, remote branch deleted, then main edits a file the branch touched. */
+    const squashedThenEdited = async () => {
+      const repo = makeRepo()
+      withRemote(repo)
+      const ctx = ctxFor(repo)
+      const alloc = await worktreeStrategy.allocate(ctx)
+      const first = commitIn(alloc.cwd, 'feature.ts')
+      const tip = commitIn(alloc.cwd, 'more.ts')
+      git(['push', 'origin', 'agent-chat/alice'], alloc.cwd)
+      squashMerge(repo, 'agent-chat/alice')
+      fs.writeFileSync(path.join(repo, 'feature.ts'), 'later fix on main\n')
+      git(['commit', '-am', 'later fix'], repo)
+      git(['push', 'origin', 'main', ':agent-chat/alice'], repo)
+      git(['fetch', '--prune', 'origin'], repo)
+      return { repo, ctx, alloc, first, tip }
+    }
+
+    /** gh's view of the PR: `state`, the merged head, and the PR's commit oids. */
+    const prJson = (state: string, headRefOid: string, commits: readonly string[] | string): string =>
+      JSON.stringify({
+        state,
+        headRefOid,
+        commits: typeof commits === 'string' ? commits : commits.map(oid => ({ oid })),
+      })
+
+    /** update-branch's merge commit, pushed to the PR head but never fetched locally. */
+    const MOVED_HEAD = 'f'.repeat(40)
+
+    it('releases a squash-merged branch when gh reports the PR merged at its exact tip', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', tip, [first, tip]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+    })
+
+    it('refuses when a local commit follows the head gh reports merged', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      commitIn(alloc.cwd, 'after.ts')
+      fakeGh(prJson('MERGED', tip, [first, tip]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/^3 commit\(s\) not on [0-9a-f]{40}; work not landed on main/)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('releases a squash-merged branch whose tip is in the PR after the head moved past it', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', MOVED_HEAD, [first, tip, MOVED_HEAD]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+    })
+
+    it('refuses when a local commit outside the PR follows a moved head', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      commitIn(alloc.cwd, 'after.ts')
+      fakeGh(prJson('MERGED', MOVED_HEAD, [first, tip, MOVED_HEAD]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/^3 commit\(s\) not on [0-9a-f]{40}; /)
+      expect(refusalOf(alloc)).toMatch(/gh reports the PR as MERGED$/)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('refuses when gh reports a moved head with malformed commits', async () => {
+      const { repo, ctx, alloc } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', MOVED_HEAD, 'x'))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('refuses when gh fails', async () => {
+      const { ctx, alloc } = await squashedThenEdited()
+      fakeGh('', 1)
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/work not landed on main/)
+    })
+
+    it('refuses when gh reports the PR still open at the same tip', async () => {
+      const { ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('OPEN', tip, [first, tip]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/gh reports the PR as OPEN$/)
+    })
   })
 })
 

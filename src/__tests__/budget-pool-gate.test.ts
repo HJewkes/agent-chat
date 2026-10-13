@@ -111,7 +111,43 @@ describe('seat budget from the charter and seat file', () => {
       open: false,
       pool: 'pool-y',
       reason: 'BUDGET-PAUSE pool pool-y: no seven_day and five_hour reading for this pool',
+      gate: {
+        lever: 'pools.pool-y.reading',
+        value: null,
+        reading: null,
+        headroom: null,
+        source: 'account status reading',
+      },
+      noReading: true,
     })
+  })
+})
+
+describe('closures that say the pool has no reading (CC-466)', () => {
+  const windowless = (lastGood: AccountReading) =>
+    gatePool({
+      ...SEAT_B,
+      reading: { ageSeconds: 5, sevenDay: 40 },
+      lastGood,
+      history: [{ at: dayStart(at(15)) - HOUR, sevenDay: 40 }],
+      runStartAt: at(14).getTime(),
+      ctx: { now: at(15) },
+    })
+
+  it('flags a last good reading too old to stand in', () => {
+    const result = windowless({ ageSeconds: 3_601, sevenDay: 40, fiveHour: 10 })
+
+    expect(result).toMatchObject({ open: false, noReading: true })
+    expect(result.reason).toContain('the last good one is 3601s old')
+  })
+
+  it.each([
+    ['a borrowed window near its line', windowless({ ageSeconds: 600, sevenDay: 40, fiveHour: 75 })],
+    ['a stale reading', gate({ ageSeconds: 901 })],
+    ['a five_hour ceiling', gate({ fiveHour: 80 })],
+  ])('leaves %s unflagged', (_, result) => {
+    expect(result.open).toBe(false)
+    expect(result).not.toHaveProperty('noReading')
   })
 })
 
@@ -307,14 +343,32 @@ describe('per_day_points', () => {
     expect(gate({ now, runStartAt, history: day(20, 35), sevenDay: 37 }).open).toBe(true)
   })
 
-  it('pauses when no reading at or before 07:00 exists, even with no run cap', () => {
+  it("stays open under the cap with no reading at or before 07:00, counting from the day's first (CC-1190)", () => {
     const budget = { ...SEAT_B, spend: {} }
     const history = [{ at: at(7, 1).getTime(), sevenDay: 30 }]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 31 }).open).toBe(true)
+  })
+
+  it("pauses at the cap counting from the day's first reading, naming the fallback", () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [
+      { at: at(8).getTime(), sevenDay: 20 },
+      { at: at(12).getTime(), sevenDay: 30 },
+    ]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 38 }).reason).toBe(
+      "BUDGET-PAUSE pool pool-y: day spend 18 points since 08:00 (first sample; none at or before 07:00) at or above the pool pool-y's per_day_points 18",
+    )
+  })
+
+  it('pauses when the only reading is the current one, so no earlier reading exists', () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [{ at: now.getTime(), sevenDay: 31 }]
     const result = gate({ budget, now, runStartAt, history, sevenDay: 31 })
     expect(result).toEqual({
       open: false,
       pool: 'pool-y',
       reason: 'BUDGET-PAUSE pool pool-y: no seven_day reading at or before 07:00, so day spend unknown',
+      gate: { lever: 'spend.reading', value: null, reading: null, headroom: null, source: 'seats/<seat>.md' },
     })
   })
 

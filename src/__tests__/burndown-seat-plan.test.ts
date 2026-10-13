@@ -88,9 +88,9 @@ const claim = (taskId: string, patch: Partial<Claim> = {}): Claim => ({
 
 function inputs(rows: ScoreRow[], tasks: Task[], patch: Partial<SeatPlanInputs> = {}): SeatPlanInputs {
   const byInitiative = new Map<string, Task[]>()
-  for (const r of rows) {
-    const t = tasks.find(x => x.id === r.id)
-    if (t !== undefined) byInitiative.set(r.initiative, [...(byInitiative.get(r.initiative) ?? []), t])
+  for (const t of tasks) {
+    const initiative = rows.find(r => r.id === t.id)?.initiative ?? 'alpha'
+    byInitiative.set(initiative, [...(byInitiative.get(initiative) ?? []), t])
   }
   return {
     seat: SEAT,
@@ -297,7 +297,7 @@ describe('planSeat refusals', () => {
     expect(one('A-1', {}, {}, { ledger }).dispatch).toHaveLength(1)
   })
 
-  describe('implementing claims with no live agent and no PR (CC-978)', () => {
+  describe('held claims with no live agent (CC-978, CC-1098)', () => {
     const ledger: Ledger = {
       ...EMPTY_LEDGER,
       claims: [
@@ -308,12 +308,66 @@ describe('planSeat refusals', () => {
     }
     const liveAgent = (name: string | undefined) => name === 'sa-a-7'
 
-    it('leaves a dead claim with no PR out of the cap, and counts a live one and one with a PR', () => {
+    it('leaves a dead claim out of the cap even with its PR open, and counts the live one', () => {
       const plan = one('A-1', {}, {}, { ledger, liveAgent })
 
+      expect(plan.dispatch).toHaveLength(1)
+      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 4)')
+    })
+
+    it("refuses at the cap with the ledger's count beside the live one", () => {
+      const full = { ...ledger, claims: [...ledger.claims, claim('A-6', { agentName: 'sa-a-6' })] }
+      const plan = one(
+        'A-1',
+        {},
+        {},
+        { ledger: full, liveAgent: name => name === 'sa-a-7' || name === 'sa-a-6' },
+      )
+
       expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
-      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 3)')
-      expect(plan.notes).toContain('seat seat-a implementers used 2 (ledger 3)')
+      expect(plan.refusals[0]?.reason).toBe('seat seat-a holds 2 of 2 implementers (ledger 4)')
+    })
+
+    it("keeps a dead claim's task claimed, so the tick does not re-pick it", () => {
+      expect(one('A-9', {}, {}, { ledger, liveAgent }).dispatch).toEqual([])
+    })
+
+    it('counts a spawning claim whose agent has no row yet', () => {
+      const spawning = claim('A-6', { phase: 'spawning', nextPhase: 'implementing', agentName: 'sa-a-6' })
+      const plan = one(
+        'A-1',
+        {},
+        {},
+        { ledger: { ...ledger, claims: [...ledger.claims, spawning] }, liveAgent },
+      )
+
+      expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    })
+
+    it('leaves a dead planning claim out of the planner cap', () => {
+      const planning = {
+        ...EMPTY_LEDGER,
+        claims: [claim('A-7', { phase: 'planning', agentName: 'sa-a-7p' })],
+      }
+      const plan = one('A-1', {}, {}, { ledger: planning, liveAgent })
+
+      expect(plan.notes).toContain('seat seat-a planners used 0 (ledger 1)')
+    })
+
+    it('flags a ledger more than 3 ahead of the live agents', () => {
+      const dead = (n: number) => claim(`A-${n}`, { agentName: `sa-a-${n}` })
+      const stale = { ...EMPTY_LEDGER, claims: [dead(2), dead(3), dead(4), dead(5)] }
+
+      const plan = one('A-1', {}, {}, { ledger: stale, liveAgent: () => false })
+      const within = one(
+        'A-1',
+        {},
+        {},
+        { ledger: { ...stale, claims: stale.claims.slice(1) }, liveAgent: () => false },
+      )
+
+      expect(plan.notes).toContain('seat seat-a implementers used 1 (ledger 5) MISMATCH ledger 5 vs 1 live')
+      expect(within.notes).toContain('seat seat-a implementers used 1 (ledger 4)')
     })
 
     it('dispatches into the slot a dead claim no longer holds', () => {
@@ -645,7 +699,7 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
@@ -661,13 +715,42 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
     const plan = planSeat(inputs([], [task('A-1')], { ledger }))
 
     expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it('dispatches the first of two tasks whose owns overlap in one repo and refuses the second file-overlap (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/a/x.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-2',
+        kind: 'file-overlap',
+        reason: "src/a/x.ts is under sa-a-1-b's owns",
+      }),
+    ])
+  })
+
+  it('dispatches two tasks in one repo in one pass when their owns are disjoint (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/b.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-2'])
   })
 
   it("passes a ready slice's contracts to the collision check (CC-710)", () => {
@@ -1013,20 +1096,20 @@ describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
     ])
   })
 
-  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+  it('sends an implementer-routed task with no plan to a planner under on, naming the plan path (CC-986)', () => {
     const plan = brief('on', undefined)
 
-    expect(plan.dispatch).toEqual([])
-    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
-    expect(plan.refusals[0]?.reason).toContain(PLAN)
+    expect(plan.dispatch).toEqual([expect.objectContaining({ task: 'A-1', profile: 'bd-planner' })])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringContaining(PLAN)])
   })
 
-  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would plan it', () => {
     const plan = brief('shadow', undefined)
 
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
     expect(plan.refusals).toEqual([])
-    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-plan alpha A-1 \(seat seat-a\): no plan at /)])
   })
 
   it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
@@ -1134,7 +1217,7 @@ describe('planSeat ready order (CC-926)', () => {
       const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
 
       expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
-        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4, readyFloor: 8 },
       })
     })
 
@@ -1209,6 +1292,54 @@ describe('planSeat ready-slice placement (CC-946)', () => {
 
     expect(planned.dispatch).toEqual([])
     expect(kinds(planned)).toEqual([['A-1', 'blocked']])
+  })
+
+  describe('parent gate (CC-1121)', () => {
+    const seat = { ...SEAT, excludedTags: ['needs-decision', 'owner-review-round'] }
+    const afterMerge = [
+      claim('A-1', { phase: 'done', slice: 'a', pr: 'https://github.com/o/r/pull/1' }),
+      queued('A-1', { slice: 'b', dependsOn: ['a'] }),
+    ]
+    const withParent = (parent: Task[], over: Partial<SeatPlanInputs> = {}) =>
+      plan(afterMerge, [], { seat, tasks: new Map([['alpha', parent]]), ...over })
+
+    it('dispatches nothing for a needs-decision parent with brief:ready after slice a merged', () => {
+      const planned = withParent([task('A-1', { tags: ['needs-decision', 'brief:ready=2026-10-12'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+      expect(planned.refusals[0]?.reason).toMatch(/tagged needs-decision; its queued slices wait/)
+    })
+
+    it("holds a slice on a tag only the seat's excluded_tags name", () => {
+      const planned = withParent([task('A-1', { tags: ['owner-review-round'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice on a reserved tag the seat does not exclude', () => {
+      const bare = { ...SEAT, excludedTags: [] }
+
+      const planned = withParent([task('A-1', { tags: ['human-only'] })], { seat: bare })
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice whose parent is closed or missing', () => {
+      const closed = withParent([task('A-1', { status: 'done' })])
+      const missing = withParent([])
+
+      expect([closed.dispatch, missing.dispatch]).toEqual([[], []])
+      expect([kinds(closed), kinds(missing)]).toEqual([[['A-1', 'not-open']], [['A-1', 'not-open']]])
+    })
+
+    it('dispatches the next slice of an ungated parent', () => {
+      const planned = withParent([task('A-1')])
+
+      expect(planned.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
+    })
   })
 
   it("dispatches into the plan's repo over the initiative's first checkout", () => {

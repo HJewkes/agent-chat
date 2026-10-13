@@ -149,6 +149,35 @@
           "in_reply_to": {
             "type": "string",
             "description": "msg_id of the message being answered, if any"
+          },
+          "experiment": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The experiment this message belongs to, e.g. \"E3\"."
+              },
+              "arm": {
+                "type": "string",
+                "description": "The arm of that experiment the recipient runs."
+              }
+            },
+            "required": [
+              "id",
+              "arm"
+            ],
+            "additionalProperties": false,
+            "description": "Optional experiment and arm, recorded on the message rows. Pass it only for a message that is part of a planned experiment."
+          },
+          "followup_kind": {
+            "type": "string",
+            "enum": [
+              "fix",
+              "rebase",
+              "extension",
+              "review"
+            ],
+            "description": "Optional reason this message hands a recipient more work, recorded on the message rows: fix (repair its own output), rebase, extension (more scope) or review."
           }
         },
         "required": [
@@ -221,7 +250,7 @@
     },
     {
       "name": "chat_ask",
-      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions.",
+      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. Optional: header (<=80 chars); options as labels or {label, description}; default (a label); door (absent = one-way); category; initiative; blocking; reversible (how to undo); onNoAnswer.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -230,7 +259,6 @@
             "description": "The question, with enough context to answer it cold"
           },
           "kind": {
-            "description": "What sort of item this is, for grouping",
             "type": "string",
             "enum": [
               "decision",
@@ -243,19 +271,65 @@
             "description": "The task id you were working on",
             "type": "string"
           },
+          "header": {
+            "type": "string"
+          },
           "options": {
-            "description": "The choices, if the answer is one of a few",
             "type": "array",
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "recommended": {
             "description": "The answer you would pick; shown first",
             "type": "string"
           },
+          "default": {
+            "type": "string"
+          },
+          "door": {
+            "type": "string",
+            "enum": [
+              "one-way",
+              "two-way"
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "initiative": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "parked"
+            ]
+          },
+          "reversible": {
+            "type": "string"
+          },
           "onNoAnswer": {
-            "description": "What you will do if nobody answers, or \"parked\"",
             "type": "string"
           }
         },
@@ -489,7 +563,7 @@
           },
           "worktree": {
             "type": "string",
-            "description": "Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when something upstream decided where this task runs — a parent task, a wave plan — rather than letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because sibling agents may still be working in it. Do not pass a path you invented; if nobody assigned a worktree, omit this and let the profile decide."
+            "description": "Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when something upstream decided where this task runs, rather than letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because siblings may still use it. Do not pass a path you invented; if nobody assigned a worktree, omit this and let the profile decide."
           },
           "owns": {
             "type": "array",
@@ -515,7 +589,7 @@
           },
           "predecessor": {
             "type": "string",
-            "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
+            "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor; retire it yourself once this one registers."
           },
           "experiment": {
             "type": "object",
@@ -563,6 +637,10 @@
             "type": "string",
             "const": "fix-round",
             "description": "Set to \"fix-round\" when this spawn is a fix round on a task burndown has claimed or that is brief-ready; it passes the seat spawn gate, which otherwise warns or refuses."
+          },
+          "host": {
+            "type": "string",
+            "description": "Machine alias or hostname to launch on; default: yours."
           }
         },
         "required": [
@@ -574,7 +652,7 @@
     },
     {
       "name": "agent_teleport",
-      "description": "End this session and start a successor that boots from the CURRENT build, keeping your name, your peers, your tags and your working directory. Use it when your own instructions or the code you run on have moved since you started — the alternative is exiting (losing what you know) or staying useful and stale. BUILD FIRST: the successor execs whatever `npm run build` last produced, so a teleport that skips the build achieves nothing at real cost. This is not a resume and not a subagent: your transcript does not come with you, the handoff below is all your successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. Answer or dismiss any open questions to the human first — teleport refuses while any are open.",
+      "description": "End this session and start a successor that boots from the CURRENT build, keeping your name, your peers, your tags and your working directory. Use it when your own instructions or the code you run on have moved since you started — the alternative is exiting (losing what you know) or staying useful and stale. BUILD FIRST: the successor execs whatever `npm run build` last produced, so a teleport that skips the build achieves nothing at real cost. This is not a resume and not a subagent: your transcript does not come with you, the handoff below is all your successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. Answer each open question to the human or name its id in the handoff; teleport refuses otherwise.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -596,6 +674,21 @@
               "park"
             ],
             "description": "Optional. Omit for an ordinary teleport. Set \"park\" when you are idle waiting on the human and are handing off to a fresh session: your successor is told to ask your open question from the handoff first, so restate that question in the handoff."
+          },
+          "surface": {
+            "type": "string",
+            "enum": [
+              "headless",
+              "iterm-pane",
+              "iterm-tab",
+              "iterm-window",
+              "tmux-window"
+            ],
+            "description": "Optional. Omit for your seat or current surface when the destination runs it, else its OS default (tmux-window on Linux, iterm-tab on macOS). One it cannot run is refused."
+          },
+          "to": {
+            "type": "string",
+            "description": "Optional. Omit to stay on this machine; else a machine alias from the broker config, or a hostname. Unknown or unreachable is refused and never ends you."
           }
         },
         "required": [

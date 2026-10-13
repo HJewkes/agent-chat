@@ -3,6 +3,7 @@
 import './warnings.js'
 
 import { Command } from 'commander'
+import { brokerCwd } from '../agents/stable-cwd.js'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
@@ -26,19 +27,24 @@ import { digestVerb } from './verbs/digest.js'
 import { dismissVerb } from './verbs/dismiss.js'
 import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
+import { ghCallsVerb } from './verbs/gh-calls.js'
 import { handoffLastVerb } from './verbs/handoff-last.js'
 import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
+import { addHostCommands } from './verbs/host.js'
+import { addMachineCommands } from './verbs/machine.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
+import { teleportRequestVerb } from './verbs/teleport-request.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
+import { unknownCommand } from './unknown-command.js'
 import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
@@ -93,9 +99,9 @@ function addServiceCommands(program: Command): void {
   svc
     .command('stop')
     .description(
-      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered; --hold keeps auto-starts off for a while',
+      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn; --hold keeps auto-starts off for a while',
     )
-    .option('--force', 'stop even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'stop even if a mid-spawn agent would be lost')
     .option(
       '--hold <seconds>',
       `refuse broker starts, including auto-starts, for this long (at most ${MAX_HOLD_SECONDS})`,
@@ -112,10 +118,10 @@ function addServiceCommands(program: Command): void {
   svc
     .command('restart')
     .description(
-      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn or an ask is unanswered',
+      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn',
     )
     .option('-p, --port <port>', 'bind this port instead of the recorded one', port)
-    .option('--force', 'restart even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
   svc
@@ -198,6 +204,16 @@ function addAgentCommands(program: Command): void {
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
       agents.parseSurface,
     )
+    .option(
+      '--spawned-as <who>',
+      'shepherd or burndown: the automation this spawn is on behalf of',
+      agents.parseSpawnedAs,
+    )
+    .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
+    .option(
+      '--host <machine>',
+      'the machine to launch on, a configured alias or a hostname (default: this one)',
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
@@ -208,11 +224,13 @@ function addAgentCommands(program: Command): void {
 
   const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
   addVerb(teleport, teleportAbortVerb)
+  addVerb(teleport, teleportRequestVerb)
 
   const handoff = program.command('handoff').description('stored teleport handoffs').helpGroup(AGENTS)
   addVerb(handoff, handoffLastVerb)
 
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
+  addVerb(program, ghCallsVerb, { helpGroup: AGENTS })
 
   program
     .command('gh-write <gh-args...>')
@@ -296,7 +314,11 @@ function addAgentCommands(program: Command): void {
  * release because the README and `docs/ideas.md` name them.
  */
 function addHiddenCommands(program: Command): void {
-  program.command('broker', { hidden: true }).action(() => service.start({ foreground: true }))
+  // CC-1096: leave whatever agent tree started us, or every child inherits a cwd that parking removes.
+  program.command('broker', { hidden: true }).action(() => {
+    process.chdir(brokerCwd())
+    return service.start({ foreground: true })
+  })
 
   program.command('mcp', { hidden: true }).action(async () => {
     const { startMcpServer } = await import('../server/index.js')
@@ -314,7 +336,8 @@ function addHiddenCommands(program: Command): void {
     .requiredOption('--pid <pid>', "the predecessor's Claude Code, whose exit frees its pane")
     .requiredOption('--surface <surface>', 'where the successor runs')
     .option('--anchor <anchor>', "the predecessor's pane")
-    .action(async (id: string, options: { pid: string; surface: string; anchor?: string }) => {
+    .option('--now', 'launch at once, beside the running predecessor (CC-951)')
+    .action(async (id: string, options: { pid: string; surface: string; anchor?: string; now?: boolean }) => {
       const { runLandVerb } = await import('../server/caller-land.js')
       await runLandVerb(id, options)
     })
@@ -323,7 +346,11 @@ function addHiddenCommands(program: Command): void {
   program
     .command('permission-hook', { hidden: true })
     .option('--deadline <seconds>', 'give up and withdraw the prompt after this long', '1790')
-    .action(async (options: { deadline: string }) => {
+    .option(
+      '--self-grant-skills <root>',
+      "allow writes under this worktree's .claude/skills/<name>/ (CC-694)",
+    )
+    .action(async (options: { deadline: string; selfGrantSkills?: string }) => {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
@@ -343,6 +370,26 @@ function addHiddenCommands(program: Command): void {
     .action(async () => {
       const { leakPretool } = await import('./verbs/leak-pretool.js')
       await leakPretool()
+    })
+
+  // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
+  program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
+    const { seatHook } = await import('./verbs/seat-hook.js')
+    await seatHook(phase)
+  })
+
+  program
+    .command('seat-blocks', { hidden: true })
+    .description("each seat's blocked minutes over a window, and any block still open")
+    .option('--since <window>', 'window such as 90m, 24h or 7d', '24h')
+    .action(async (options: { since: string }) => {
+      const { seatBlocks } = await import('./verbs/seat-hook.js')
+      try {
+        console.log(seatBlocks(options).join('\n'))
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err))
+        process.exitCode = 1
+      }
     })
 
   addVerb(program, debugPsVerb, { hidden: true })
@@ -367,6 +414,8 @@ export function buildProgram(): Command {
   addMirrorCommands(program)
   addBurndownCommands(program)
   addSeatsCommands(program)
+  addMachineCommands(program)
+  addHostCommands(program)
   addDebugCommands(program)
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
@@ -382,5 +431,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     program.outputHelp()
     return
   }
+  const unknown = unknownCommand(program, argv.slice(2))
+  if (unknown !== undefined)
+    program.error(`error: unknown command '${unknown}'`, { exitCode: 1, code: 'commander.unknownCommand' })
   await program.parseAsync(argv)
 }

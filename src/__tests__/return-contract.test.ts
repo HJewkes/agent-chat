@@ -12,8 +12,11 @@ import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
 import {
   BODY_FILE_RULE,
+  FOLLOW_UPS_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
+  MUTANT_RULE,
+  PROBE_SANDBOX_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
@@ -220,6 +223,51 @@ describe('the check-run rule (CC-357)', () => {
     expect(text).toContain('commits/<head>/check-runs" --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
+  })
+})
+
+describe('the reviewer findings shape (CC-1079)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: deleting the Defect class sentence or renaming its label.
+  it('asks every FIX_FIRST for a Defect class line after Class', () => {
+    expect(text).toContain('then one line `Defect class: <what the blocking items share;')
+    expect(text.indexOf('Defect class:')).toBeGreaterThan(text.indexOf('Class: defect|'))
+  })
+
+  // Mutation caught: dropping the `- not fixed:` form, leaving only `fixed`.
+  it('asks every re-review for an Earlier findings checklist marking each item fixed or not fixed', () => {
+    expect(text).toContain('On a re-review')
+    expect(text).toContain('`Earlier findings:` then one short line per earlier blocking item')
+    expect(text).toContain('`- fixed: <item>`')
+    expect(text).toContain('`- not fixed: <item>`')
+    expect(text).toContain('`Earlier findings: none found`')
+  })
+})
+
+describe('the reviewer Follow-ups block (TP-2498)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: dropping "never blocks MERGE" or the one-line-per-task form.
+  it('names an optional Follow-ups block, one title | done_when | severity line per task, that never blocks MERGE', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(FOLLOW_UPS_RULE)
+    expect(text).toContain('`Follow-ups:` then `- <title> | <done_when> | low|medium|high` per task')
+    expect(text).toContain('never blocks MERGE')
+  })
+
+  // Mutation caught: placing the block ahead of the blocking items.
+  it('places the block after the blocking items', () => {
+    expect(text.indexOf('Follow-ups:')).toBeGreaterThan(text.indexOf('Then blocking items before nits.'))
+  })
+
+  // Mutation caught: adding the rule to a shared line (NEVER_PARK, SHIM_RULE) instead of the reviewer block.
+  it('leaves both implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain('Follow-ups:')
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain('Follow-ups:')
+  })
+
+  it('keeps the reviewer block within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })
 
@@ -611,23 +659,23 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
     expect(IMPLEMENTER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 
+  const BARE = [SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t']
+  const LIST_ITEMS = ['- Shepherd: none', '* Shepherd: none', '2. Shepherd: none']
+
   // Mutation caught: ignoring the marker hands the agent the register sentence again.
-  it.each([SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t'])(
-    'drops the register and no-wait text for the line %j',
-    async marker => {
-      const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
+  it.each([...BARE, ...LIST_ITEMS])('drops the register and no-wait text for the line %j', async marker => {
+    const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
 
-      const { text } = await delivered({ brief })
+    const { text } = await delivered({ brief })
 
-      const appended = flat(text.slice(brief.length))
-      expect(appended).not.toContain(REGISTER)
-      expect(appended).not.toContain('never wait on CI')
-      expect(appended).not.toContain('you do not wait for CI')
-      expect(appended).toContain('Do not run `titan-factory shepherd register`.')
-      expect(appended).toContain(CI_WAIT)
-      expect(appended).toContain('chat_send to coord')
-    },
-  )
+    const appended = flat(text.slice(brief.length))
+    expect(appended).not.toContain(REGISTER)
+    expect(appended).not.toContain('never wait on CI')
+    expect(appended).not.toContain('you do not wait for CI')
+    expect(appended).toContain('Do not run `titan-factory shepherd register`.')
+    expect(appended).toContain(CI_WAIT)
+    expect(appended).toContain('chat_send to coord')
+  })
 
   // Mutation caught: a substring test opts out a brief that only talks about the marker.
   it('keeps Shepherd for a brief that mentions the marker mid-sentence', async () => {
@@ -637,6 +685,18 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
 
     expect(text).toBe(`${brief}\n\n${block('implementer')}`)
   })
+
+  // Mutation caught: stripping any leading text, not just one list marker, opts these out.
+  it.each(['- note: Shepherd: none is for seats', '-Shepherd: none'])(
+    'keeps Shepherd for the line %j',
+    async line => {
+      const brief = `add the parser\n${line}`
+
+      const { text } = await delivered({ brief })
+
+      expect(text).toBe(`${brief}\n\n${block('implementer')}`)
+    },
+  )
 
   it('hands a brief without the marker the default block unchanged', async () => {
     const { text } = await delivered()
@@ -668,8 +728,29 @@ describe('the load-test rule (CC-473)', () => {
     ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
   ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
     expect(text).not.toContain('pkill')
-    expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
-    expect(flat(text)).toContain('kill only those, never by name pattern; confirm with `pgrep` none survive')
+    expect(flat(text)).toContain(
+      'Load test only if the brief asks: kill only burner PIDs you recorded, not by name; `pgrep` shows none left.',
+    )
+  })
+})
+
+describe('the Concerns and Notes lines (CC-399)', () => {
+  // Mutation caught: dropping the Concerns/Notes sentence, which let a DONE_WITH_CONCERNS carry only notes.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block splits action-needed Concerns from Notes, within the cap', (_which, block) => {
+    const text = flat(block)
+
+    expect(text).toContain('Then `Concerns:` (what <spawner> must act on, or none;')
+    expect(text).toContain('DONE_WITH_CONCERNS needs one)')
+    expect(text).toContain('and `Notes:` (the rest).')
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  it('leaves the reviewer block without either line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Concerns:')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toContain('Notes:')
   })
 })
 
@@ -690,6 +771,27 @@ describe('PR body path (CC-444, CC-725)', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
+describe('CC-311: reviewers run mutants on literal paths', () => {
+  it('gives the reviewer the mutant rule within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(MUTANT_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // Mutation caught: trimming the rule to "use sed -i", which is the form that stalled with $S/<file>.
+  it('names the literal-path edit, its restore, the tree and the forbidden write targets', () => {
+    expect(MUTANT_RULE).toContain("sed -i.bak '<edit>' <literal path>")
+    expect(MUTANT_RULE).toContain('git checkout -- <literal path>')
+    expect(MUTANT_RULE).toContain('$TMPDIR/<your name>')
+    expect(MUTANT_RULE).toContain('`$VAR`')
+    expect(MUTANT_RULE).toContain('`$(...)`')
+  })
+
+  it('leaves the implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain(MUTANT_RULE)
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain(MUTANT_RULE)
   })
 })
 
@@ -740,8 +842,10 @@ describe('CC-690: pr-ready, WAIT and the Class line', () => {
     expect(text).toMatch(/FIX_FIRST[^.]*Class:/)
   })
 
+  // CC-713. Mutation caught: dropping PROBE_SANDBOX_RULE from the REVIEWER array.
   it('runs risky probes only in a scratch repo whose origin is a local bare repo', () => {
-    expect(flat(RETURN_CONTRACT_BLOCKS.reviewer)).toContain('scratch repo whose origin is a local bare repo')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(PROBE_SANDBOX_RULE)
+    expect(PROBE_SANDBOX_RULE).toContain('local bare repo (git init --bare)')
   })
 
   it('stays under the cap with the reviewer under its own 1,200-character report limit named', () => {
