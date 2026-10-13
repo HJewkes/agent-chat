@@ -173,7 +173,7 @@ const PROTECTED_PATHS = [
   /^(audit|profiles|scripts|plugins|\.claude-plugin|\.github)\//,
   /(^|\/)\.claude\//,
   /(^|\/)\.agent-chat\//,
-  /^src\/(mirror\/|cli\/(agents|index|verbs\/(agent-resume|seat-broker|seat-respawn|seats|seats-heartbeat|watchdog-job|mirror))\.ts$)/,
+  /^src\/(mirror\/|cli\/(agents|index|verbs\/(agent-resume|port-agent|seat-broker|seat-respawn|seats|seats-heartbeat|watchdog-job|mirror))\.ts$)/,
   /^\.node-version$/,
   /(^|\/)systemd\//,
   /\.(service|timer|plist)$/,

@@ -15,6 +15,8 @@ export interface UnstallPorts {
   plan: PlanReader
   /** The files the worktree's branch changed against its base; undefined when git could not tell. */
   changedFiles: (cwd: string) => string[] | undefined
+  /** CC-1232: the claim's PR files, read when the worktree is parked; undefined when GitHub could not tell. */
+  prFiles?: (pr: string) => string[] | undefined
 }
 
 type Verdict = { refused: string } | { claim: Claim; owns: string[] }
@@ -50,15 +52,21 @@ function unstallVerdict(claim: Claim | undefined, what: string, ports: UnstallPo
     return { refused: `${what} is not stalled outside-owns (${claim.stallCode ?? 'not stalled'})` }
   const owns = planOwns(claim, ports.plan)
   if (typeof owns === 'string') return { refused: `${what}: ${owns}` }
-  const files = claim.worktree === undefined ? undefined : ports.changedFiles(claim.worktree)
+  const files = changedFilesOf(claim, ports)
   if (files === undefined)
     return {
-      refused: `${what}: cannot read its worktree's changes; unstall needs the worktree, release instead`,
+      refused: `${what}: cannot read its worktree's or its PR's changes; unstall needs one of them, release instead`,
     }
   const outside = outsideOwns(files, owns)
   if (outside.length > 0)
     return { refused: `${what} still touches ${outside.join(', ')} outside the plan's owns` }
   return { claim, owns }
+}
+
+/** The worktree's changes, else the PR's when the worktree is parked; undefined when neither can be read. */
+function changedFilesOf(claim: Claim, ports: UnstallPorts): string[] | undefined {
+  const files = claim.worktree === undefined ? undefined : ports.changedFiles(claim.worktree)
+  return files ?? (claim.pr === undefined ? undefined : ports.prFiles?.(claim.pr))
 }
 
 /** The slice's owns as its plan now has them, or why they cannot be read. */

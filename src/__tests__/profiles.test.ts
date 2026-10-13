@@ -43,6 +43,7 @@ describe('the triager profile (CC-650)', () => {
 
     for (const verb of ['spawn', 'resume', 'retire', 'background', 'surface', 'teleport'])
       expect(denied).toContain(`Bash(agent-chat agent ${verb}:*)`)
+    expect(denied).toContain('Bash(agent-chat port:*)')
     expect(denied).not.toContain('Bash(agent-chat agent:*)')
   })
 

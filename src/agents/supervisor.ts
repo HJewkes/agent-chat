@@ -52,7 +52,7 @@ import {
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
-import { loadProfile, recordedRole, roleOf } from './profiles.js'
+import { loadProfileSource, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -140,10 +140,11 @@ import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
-import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveMachines } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftMode } from '../config.js'
+import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -152,15 +153,23 @@ import {
   SEAT_BUDGET_STOP,
   SEAT_HAND_RESERVE,
   SEAT_SPAWN_OVERLAP,
+  SEAT_SPAWN_UNPREFIXED,
   handReserveOverflow,
   seatSpawnGate,
   spawnOverlap,
+  unprefixedSeatSpawn,
   type SeatBudgetRefusalCode,
   type SeatHandReserveRefusalCode,
   type SeatOverlapRefusalCode,
   type SeatSpawnMode,
+  type SeatUnprefixedRefusalCode,
 } from './seats/spawn-gate.js'
-import type { HandReserveFacts, OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
+import type {
+  HandReserveFacts,
+  OverlapFacts,
+  OverlapRequest,
+  SpawnerSeatFacts,
+} from './seats/spawn-gate-read.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
@@ -613,6 +622,8 @@ export interface SpawnRequest {
   parentAgentId?: string
   requestedBy: string
   forceReset?: boolean
+  /** CC-1158: the `origin/<branch>` a new worktree is cut from; absent, origin's default branch. */
+  baseRef?: string
   /** Applied at the spawned agent's own registration, before its first turn. */
   tags?: string[]
   subscriptions?: Subscription[]
@@ -642,6 +653,7 @@ export type SpawnRefusalCode =
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
   | SeatHandReserveRefusalCode
+  | SeatUnprefixedRefusalCode
   | typeof REVIEWER_ACCOUNT_LIMIT
 
 /** CC-1078: reads the five_hour window and ceiling of the account a reviewer spawn bills. Absent in tests, which own no account. */
@@ -660,6 +672,8 @@ export interface SeatOverlapReaders {
   read: (spawn: OverlapRequest) => OverlapFacts | undefined
   /** CC-936: the seat's hand reserve; absent where the seat reserves nothing. */
   handReserve?: (spawn: OverlapRequest) => HandReserveFacts | undefined
+  /** CC-965: the seat the spawner is, by its own name; absent where no spawner is checked. */
+  spawnerSeat?: (spawn: OverlapRequest) => SpawnerSeatFacts | undefined
 }
 
 /** CC-606: the pool pick's disk reader and its `poolPick` config mode, both read per spawn. */
@@ -815,6 +829,10 @@ export interface SupervisorOptions {
   processProbe?: ProcessProbe
   /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
+  /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
+  profileBaseline?: ProfileBaseline
+  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
+  profileDriftMode?: () => ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -836,6 +854,9 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   const { tokens, usd_est, usage, models, price_table } = read
   return { tokens, usd_est, usage, models, price_table }
 }
+
+/** Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`. */
+const isHumanSpawn = (req: SpawnRequest): boolean => req.requestedBy === HUMAN && req.spawnedAs === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1017,6 +1038,8 @@ export class Supervisor implements TeleportHost {
   private readonly hosts: LauncherSite | undefined
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
+  private readonly profileBaseline: ProfileBaseline
+  private readonly profileDriftMode: () => ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1046,6 +1069,8 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1573,6 +1598,36 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-965: a seat's implementer spawn named without the seat's prefix, which would escape its reserve and logs.
+   * Follows the overlap gate's mode: warn logs `seat_spawn_unprefixed` and spawns. An unreadable seat lets it through.
+   */
+  private unprefixedRefusal(req: SpawnRequest, profileName: string): string | undefined {
+    const gate = this.seatOverlap
+    const mode = gate?.mode() ?? 'off'
+    if (gate?.spawnerSeat === undefined || mode === 'off' || req.spawnedAs !== undefined) return undefined
+    try {
+      const seat = gate.spawnerSeat({ name: req.name, spawner: req.requestedBy, task: req.task })
+      if (seat === undefined) return undefined
+      const unprefixed = unprefixedSeatSpawn({
+        mode,
+        role: req.workRole ?? inferWorkRole(profileName, req.name),
+        override: req.override,
+        prefix: seat.prefix,
+        name: req.name,
+      })
+      if (unprefixed === undefined) return undefined
+      logEvent(SEAT_SPAWN_UNPREFIXED, { name: req.name, mode, requested_by: req.requestedBy })
+      return mode === 'refuse' ? unprefixed.reason : undefined
+    } catch (err) {
+      logEvent('seat_spawn_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+  }
+
+  /**
    * CC-932: a hand spawn of a task burndown has claimed or that is brief-ready. Warn mode logs
    * `seat_spawn_overlap` and lets it through; refuse mode returns the reason. The tick's and Shepherd's own
    * spawns carry `spawnedAs` and never pass through. An unreadable ledger lets the spawn through.
@@ -1769,6 +1824,30 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /**
+   * CC-1094: loads a profile for a launch. A profile file rewritten since broker start may have lost its
+   * denies to the agent that rewrote it, so an agent launch of it is flagged or, under `refuse`, refused.
+   * Only a human's own spawn accepts it. A resume or surface switch never does: the background
+   * auto-resume and the decider's CLI resume both arrive as HUMAN.
+   */
+  private loadCheckedProfile(
+    name: string,
+    by: string | undefined,
+    human: boolean,
+  ): AgentProfile | { error: string } {
+    const { profile, source } = loadProfileSource(name)
+    if ('error' in profile) return profile
+    const drift = this.profileBaseline.drift(profile.name, source)
+    if (drift === undefined) return profile
+    const refused = !human && this.profileDriftMode() === 'refuse'
+    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
+    if (refused)
+      return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
+    if (human) this.profileBaseline.accept(profile.name, source)
+    const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
+    return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
+  }
+
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
   private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
@@ -1959,7 +2038,7 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = loadProfile(req.profile)
+    const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
     const lineage: Lineage = {
       depth: this.depthOf(req.parentAgentId),
@@ -1971,6 +2050,8 @@ export class Supervisor implements TeleportHost {
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const reserve = this.handReserveRefusal(req, profile.name)
     if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
+    const unprefixed = this.unprefixedRefusal(req, profile.name)
+    if (unprefixed) return this.refuse(req, unprefixed, { code: SEAT_SPAWN_UNPREFIXED, retryable: false })
     const site = this.siteFor(req)
     if ('refusal' in site) return this.refuse(req, site.refusal)
     if (site.site === 'caller') return this.spawnRemote(req, profile, lineage, site)
@@ -2028,6 +2109,7 @@ export class Supervisor implements TeleportHost {
         ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
       },
       ...(req.forceReset ? { forceReset: true } : {}),
+      ...(req.baseRef === undefined ? {} : { baseRef: req.baseRef }),
     }
 
     const floor = floorWarning(isolationName, profile.isolation)
@@ -3485,7 +3567,7 @@ export class Supervisor implements TeleportHost {
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
     if (blocked) return { ok: false, reason: blocked, transcript }
-    const profile = loadProfile(identity.profile)
+    const profile = this.loadCheckedProfile(identity.profile, req.requestedBy, false)
     if ('error' in profile)
       return {
         ok: false,
@@ -3710,7 +3792,7 @@ export class Supervisor implements TeleportHost {
     const agent = identity as AgentIdentity
     const refused = req.to === 'interactive' ? this.checkSurfacer(agent, req) : undefined
     if (refused) return { ok: false, reason: refused }
-    const profile = loadProfile(agent.profile)
+    const profile = this.loadCheckedProfile(agent.profile, req.requestedBy, false)
     if ('error' in profile)
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
     if (agent.sessionId === '')

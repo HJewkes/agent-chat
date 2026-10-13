@@ -62,11 +62,16 @@ export function seatOf(
  * Throws when `seats/` is unreadable, so the caller decides how to fail.
  */
 export function isSeatOrSeatWorker(root: string, name: string): boolean {
-  if (isSeatName(name)) {
-    const text = readText(path.join(root, 'seats', `${name}.md`))
-    if (text !== undefined && parseSeat(name, text) !== undefined) return true
-  }
-  return seatOf(root, name).kind !== 'none'
+  return seatFileNamed(root, name) !== undefined || seatOf(root, name).kind !== 'none'
+}
+
+/** CC-965: the seat `name` itself, when its own seat file parses; by name, not by prefix as `seatOf` matches. */
+export function seatFileNamed(root: string, name: string): SeatFile | undefined {
+  if (!isSeatName(name)) return undefined
+  const text = readText(path.join(root, 'seats', `${name}.md`))
+  if (text === undefined) return undefined
+  const seat = parseSeat(name, text)
+  return seat === undefined ? undefined : { seat, text }
 }
 
 /** The owner runs an attended seat, so the charter's watchdog list never names it. */

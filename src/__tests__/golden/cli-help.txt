@@ -21,6 +21,8 @@ Commands:
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
+  port                       JSON envelope ports for the dispatch factory; none of them starts a
+                             broker
   machine                    operator HOLDs, owner stops and the machine stop
   host                       host launchers: machines a teleport can land a successor on
   debug                      diagnostics: sessions, history, routing
@@ -862,6 +864,103 @@ Options:
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
 
+=== agent-chat port
+Usage: agent-chat port [options] [command]
+
+JSON envelope ports for the dispatch factory; none of them starts a broker
+
+Options:
+  -h, --help                              display help for command
+
+Commands:
+  roster                                  print every agent row, retired ones included, and the slot
+                                          count as one JSON line
+  inbox-since [options] <name> <afterId>  print a session's messages after a cursor as one JSON
+                                          line; delivers nothing
+  queue                                   print the human queue as one JSON envelope line; never
+                                          starts a broker
+  files-claims                            print live names, recently exited agents and every files
+                                          claim as one JSON line
+  spawn [options]                         spawn from burndown's spawn frame on stdin as one JSON
+                                          envelope line; never starts a broker
+  retire <name>                           retire one agent as burndown does, as one JSON envelope
+                                          line; never starts a broker
+  resume [options] <name>                 resume an agent headless on a message from stdin, as one
+                                          JSON envelope line
+  send [options] [to]                     send or notify as burndown, text on stdin, as one JSON
+                                          envelope line; never starts a broker
+  help [command]                          display help for command
+
+=== agent-chat port roster
+Usage: agent-chat port roster [options]
+
+print every agent row, retired ones included, and the slot count as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port inbox-since
+Usage: agent-chat port inbox-since [options] <name> <afterId>
+
+print a session's messages after a cursor as one JSON line; delivers nothing
+
+Options:
+  --limit <value>  most messages to return (default 200)
+  -h, --help       display help for command
+
+=== agent-chat port queue
+Usage: agent-chat port queue [options]
+
+print the human queue as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port files-claims
+Usage: agent-chat port files-claims [options]
+
+print live names, recently exited agents and every files claim as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port spawn
+Usage: agent-chat port spawn [options]
+
+spawn from burndown's spawn frame on stdin as one JSON envelope line; never starts a broker
+
+Options:
+  --frame-stdin  read the spawn frame JSON from stdin
+  -h, --help     display help for command
+
+=== agent-chat port retire
+Usage: agent-chat port retire [options] <name>
+
+retire one agent as burndown does, as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port resume
+Usage: agent-chat port resume [options] <name>
+
+resume an agent headless on a message from stdin, as one JSON envelope line
+
+Options:
+  --message-stdin  read the wake message from stdin
+  -h, --help       display help for command
+
+=== agent-chat port send
+Usage: agent-chat port send [options] [to]
+
+send or notify as burndown, text on stdin, as one JSON envelope line; never starts a broker
+
+Options:
+  --as <sender>  the sender label; only burndown
+  --notify       file a notice on the human queue instead of messaging an agent
+  --task <id>    the task a notice is about (with --notify)
+  -h, --help     display help for command
+
 === agent-chat machine
 Usage: agent-chat machine [options] [command]
 
@@ -1300,15 +1399,23 @@ Usage: agent-chat ask [options] [text...]
 put a question to the human under a service label and print its msg_id
 
 Options:
-  --as <label>            the label answers are read back under
-  --text-stdin            read the question from stdin, not argv
-  --kind <kind>           one of decision, needs-grant, stalled, ready-to-merge
-  --task <id>             the task or gate the question is about
-  --option <value>        an answer to offer (repeatable)
-  --recommended <option>  the option you recommend
-  --on-no-answer <text>   what happens if nobody answers
-  --json                  print {"msgId": ...} instead of the bare id
-  -h, --help              display help for command
+  --as <label>                  the label answers are read back under
+  --text-stdin                  read the question from stdin, not argv
+  --kind <kind>                 one of decision, needs-grant, stalled, ready-to-merge
+  --task <id>                   the task or gate the question is about
+  --header <text>               a one-line title for the queue, at most 80 chars
+  --option <value>              an answer to offer (repeatable)
+  --option-description <value>  describes the --option at the same position (repeatable)
+  --recommended <option>        the option you recommend
+  --default <option>            the option taken if nobody answers
+  --door <door>                 one-way or two-way; absent is treated as one-way
+  --category <name>             decision category, e.g. tech_design
+  --initiative <slug>           the initiative the question belongs to
+  --blocking <mode>             continue or parked: is the asker waiting
+  --reversible <text>           one line on how to undo the answer
+  --on-no-answer <text>         what happens if nobody answers
+  --json                        print {"msgId": ...} instead of the bare id
+  -h, --help                    display help for command
 
 === agent-chat answers
 Usage: agent-chat answers [options] <name>

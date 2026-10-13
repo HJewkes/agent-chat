@@ -115,19 +115,20 @@ keeps one agent from filing a prompt, or an audit row, under another agent's nam
 The gate leaves these frames alone. Each one already refuses an unregistered
 connection, checks something other than "unregistered", or only reads.
 
-| Frame                                                                                                                        | Its own check                                                                                                                  |
-| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `send`, `broadcast`, `ask`, `notify`, `endorse`, `subscribe`, `unsubscribe`, `tag`, `claim`, `release`, `status`, `approval` | `SESSION_FRAMES`: each handler refuses or no-ops without a registered name                                                     |
-| `decided`                                                                                                                    | `handleDecided`: the connection's bound agent id must equal the configured decider's                                           |
-| `teleport`, `teleport_plan_wait`, `teleport_launched`, `background`                                                          | the subject is the connection's own durable identity (`registry.entryFor(conn)?.agentId`); refused without one                 |
-| `teleport_land_failed`                                                                                                       | `landFailed` requires the armed landing's token                                                                                |
-| `register`                                                                                                                   | registry name rules, plus `refuseLauncherRegister`; it creates a name, it does not use the human's authority                   |
-| `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it           |
-| `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                       |
-| `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host |
-| `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                          |
-| `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                  |
-| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate       |
+| Frame                                                                                                                        | Its own check                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`, `broadcast`, `ask`, `notify`, `endorse`, `subscribe`, `unsubscribe`, `tag`, `claim`, `release`, `status`, `approval` | `SESSION_FRAMES`: each handler refuses or no-ops without a registered name                                                                                                                                                                           |
+| `decided`                                                                                                                    | `handleDecided`: the connection's bound agent id must equal the configured decider's                                                                                                                                                                 |
+| `teleport`, `teleport_plan_wait`, `teleport_launched`, `background`                                                          | the subject is the connection's own durable identity (`registry.entryFor(conn)?.agentId`); refused without one                                                                                                                                       |
+| `teleport_land_failed`                                                                                                       | `landFailed` requires the armed landing's token                                                                                                                                                                                                      |
+| `register`                                                                                                                   | registry name rules, plus `refuseLauncherRegister`; it creates a name, it does not use the human's authority                                                                                                                                         |
+| `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it                                                                                                                                 |
+| `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                                                                                                                                             |
+| `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host                                                                                                                       |
+| `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                                                                                                                                                |
+| `job_kick`                                                                                                                   | `handleJobKick`: a closed job set; the request is rebuilt from `job` and `seat` alone; a seat must be at most 64 characters and have a seat file in the broker's own autonomy root; single flight per job and seat. It runs only what the timers run |
+| `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                                                                                                                                        |
+| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                             |
 
 ## Options weighed
 
@@ -206,13 +207,13 @@ an agent that calls an opt-out site from its own shell. Citations are at origin/
 `6031c17`:
 
 - **`PATH`.** The tick runs programs by bare name, through `childEnv`
-  (`src/agents/burndown/exec.ts:14-17`), which copies the whole environment and strips
+  (`src/exec.ts:14-17`), which copies the whole environment and strips
   only `AGENT_CHAT_NAME` and `AGENT_CHAT_AGENT_ID`. So the calling agent's `PATH` picks
   which binary answers:
   - `gh`, for PR state (`src/agents/burndown/pr-state.ts:68`, and the collision,
     leak-check, exited-adopt and pr-adopt ports);
   - `titan-factory`, for Shepherd's status (`SHEPHERD_BIN`,
-    `src/agents/burndown/shepherd.ts:14`, run at `:89`);
+    `src/shepherd-client.ts:15`, run at `:89`);
   - `active-work`, for task edits (`src/agents/burndown/brief-approve.ts:67`);
   - `git` (for example `src/agents/burndown/pr-adopt-ports.ts:61`).
 
@@ -281,7 +282,7 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   watchdog would be checked as that agent and would break.
 
   Options:
-  1. Strip the id for these callers, the way `childEnv` (`burndown/exec.ts`) already
+  1. Strip the id for these callers, the way `childEnv` (`src/exec.ts`) already
      strips it for the tick's subprocesses.
   2. Give them an exempt frame or source.
   3. Accept the refusal and document it.

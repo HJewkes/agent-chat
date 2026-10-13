@@ -13,6 +13,7 @@ import {
   renderSeatEvents,
   seatEvents,
   settleNotified,
+  markFlagged,
   type SeatEvent,
   type SeatEvents,
   type SpawnResult,
@@ -74,6 +75,8 @@ export interface SeatDiff {
   spawns: readonly SpawnResult[]
   /** Human-queue items to file; each filed key is added to the ledger's `humanFiled`. */
   human?: readonly HumanItem[]
+  /** CC-1049: the tick's slices-merged events, by seat. */
+  merged?: SeatEvents
 }
 
 export interface HumanItem {
@@ -82,8 +85,8 @@ export interface HumanItem {
   task?: string
 }
 
-function dueEvents({ seats, before, after, spawns }: SeatDiff): SeatEvents {
-  const all = foldBraked(seatEvents(before, after, spawns), before, after)
+function dueEvents({ seats, before, after, spawns, merged }: SeatDiff): SeatEvents {
+  const all = foldBraked(seatEvents(before, after, spawns, merged), before, after)
   return Object.fromEntries(Object.entries(all).filter(([seat]) => seats.includes(seat)))
 }
 
@@ -136,7 +139,7 @@ async function sendAll(
     })
     const told = events.flatMap(e => [e, ...(e.covers ?? [])])
     if (reply.ok || unknown) {
-      ledger = markReleaseDue(markNotified(ledger, seat, told), told, false)
+      ledger = markFlagged(markReleaseDue(markNotified(ledger, seat, told), told, false), told)
       journalEvents(told, ledger, deps.journal)
       ledger = reply.ok ? clearWake(ledger, seat) : ledger
       lines.push(

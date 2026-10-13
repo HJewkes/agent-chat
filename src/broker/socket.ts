@@ -19,7 +19,6 @@ import {
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
-import { newMsgId } from './event-log.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
@@ -405,6 +404,7 @@ export class SocketServer {
       ...(msg.worktree === undefined ? {} : { worktree: msg.worktree }),
       ...(msg.owns === undefined ? {} : { owns: msg.owns }),
       ...(msg.claimPaths === undefined ? {} : { claimPaths: msg.claimPaths }),
+      ...(typeof msg.baseRef === 'string' ? { baseRef: msg.baseRef } : {}),
       // Passed through rather than resolved here: WHOSE conversation a fork
       // copies is decided in the supervisor, from this requester's own registry
       // entry, so the refusals land in the log with every other spawn refusal.
@@ -1539,14 +1539,18 @@ export class SocketServer {
     }
     const { core } = this
     const target = core.registry.connFor(to)
-    const msgId = newMsgId()
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
       const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
       if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
-      core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
+      const { msgId } = core.append({
+        kind: 'route_failed',
+        actor: HUMAN,
+        target: to,
+        body: 'no active session',
+      })
       logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
       return reply(conn, {
         t: 'send_result',
@@ -1555,11 +1559,10 @@ export class SocketServer {
         reason: `no active session named "${to}"`,
       })
     }
-    core.append({
+    const { msgId } = core.append({
       kind: 'message',
       actor: HUMAN,
       target: to,
-      msgId,
       body: text,
       ...(source === undefined ? {} : { meta: { source } }),
     })

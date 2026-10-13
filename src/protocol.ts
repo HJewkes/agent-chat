@@ -74,6 +74,7 @@ export interface SpawnResultFields {
     | 'seat_budget_stop'
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'
+    | 'seat_spawn_unprefixed'
     | 'reviewer_account_limit'
     | 'broker_draining'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
@@ -532,7 +533,27 @@ export interface ItemShape {
   recommended?: string | undefined
   /** What happens if nobody answers: the default taken, or "parked". */
   onNoAnswer?: string | undefined
+  /** A one-line title for the queue, at most 80 characters. */
+  header?: string | undefined
+  /** One per option, same order; `""` where an option has none. */
+  optionDescriptions?: string[] | undefined
+  /** Whether the answer is cheap to undo. Readers treat an absent door as one-way. */
+  door?: AskDoor | undefined
+  /** The option taken if nobody answers; dropped unless it is one of the options. */
+  default?: string | undefined
+  /** Precedent vocabulary, such as `tech_design` or `merge_gate`. */
+  category?: string | undefined
+  initiative?: string | undefined
+  /** Whether the asker carries on meanwhile or is parked on the answer. */
+  blocking?: AskBlocking | undefined
+  /** One line on how to undo the answer. */
+  reversible?: string | undefined
 }
+
+export const ASK_DOORS = ['one-way', 'two-way'] as const
+export type AskDoor = (typeof ASK_DOORS)[number]
+export const ASK_BLOCKING = ['continue', 'parked'] as const
+export type AskBlocking = (typeof ASK_BLOCKING)[number]
 
 /** A question the decider answered, shown to the human for audit. */
 export interface DecidedItem {
@@ -998,6 +1019,8 @@ export type ClientMessage =
        * and is accepted with a worktree profile.
        */
       claimPaths?: string[]
+      /** CC-1158: the `origin/<branch>` a worktree spawn is cut from; a stacked slice names its parent's PR branch. */
+      baseRef?: string
       /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
@@ -1066,6 +1089,8 @@ export type ClientMessage =
        * session is already named by its registration; the row then records it in place of the human.
        */
       spawnedAs?: 'burndown' | 'shepherd'
+      /** CC-1206: the agent identity in the CLI caller's env; only lowers trust, read only from an unregistered connection. */
+      callerAgent?: string
       /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
       task?: string
       /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */

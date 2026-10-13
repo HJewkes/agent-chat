@@ -7,6 +7,7 @@
 
 import { PROBE_SANDBOX_RULE } from '../return-contract-blocks.js'
 import { MAX_SLICE_POINTS } from './slice-lint.js'
+import { shepherdTarget, targetRef } from './shepherd.js'
 import type { StallCode } from './stall-code.js'
 
 /** What every agent the tick spawns needs to know about where it runs and who hears its report. */
@@ -33,6 +34,8 @@ export interface TaskBrief extends Seat {
   slice?: { n: string; title: string; planPath: string }
   /** A branch a released earlier attempt left (CC-698); the worker reads it before starting over. */
   priorBranch?: string
+  /** CC-1158: the unmerged parent PR this slice is stacked on, and that PR's head branch. */
+  stackedOn?: { pr: string; branch: string }
 }
 
 export interface Answer {
@@ -127,6 +130,14 @@ const syncStep = (defaultBranch: string): string =>
   `First step, before reading code: \`git fetch origin && git merge --ff-only origin/${defaultBranch}\`. ` +
   'The worktree is cut from a local HEAD that can lag origin.'
 
+/**
+ * CC-1158 (decision 275): a rebase moves the fork point Shepherd restacks the child from, so only merges. The
+ * merge comes first because a broker that predates `baseRef` cuts the tree from the default branch instead.
+ */
+const stackedSyncStep = ({ pr, branch }: { pr: string; branch: string }): string =>
+  `First step: \`git fetch origin && git merge origin/${branch}\`; you are stacked on PR ${pr}. ` +
+  `Open with \`gh pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push.`
+
 const accountLine = (configDir: string): string =>
   `You run on the account at \`${configDir}\`. Your profile is a worker and cannot spawn agents; ` +
   'name any agent you need in your report.'
@@ -159,8 +170,10 @@ function shepherdStep(t: TaskBrief): string {
     t.slice === undefined
       ? '--task <initiative>/<ID>'
       : `--slice ${t.slice.n} --task ${t.initiative}/${t.taskId}`
+  const parent = t.stackedOn === undefined ? undefined : shepherdTarget(t.stackedOn.pr)
+  const after = parent === undefined ? '' : ` --after ${targetRef(parent)}`
   return (
-    `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target} ` +
+    `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target}${after} ` +
     '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
     '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
     '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
@@ -201,10 +214,10 @@ function workerScope(t: TaskBrief): string {
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
  * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.6 kB),
  * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence,
- * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, and CC-987 the planner budget by the
- * 234-byte publish-split rule.
+ * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, CC-987 the planner budget by the
+ * 234-byte publish-split rule, and CC-1158 the worker budget by 200 for a stacked slice's base and `--after`.
  */
-export const WORKER_BRIEF_MAX_BYTES = 12_000
+export const WORKER_BRIEF_MAX_BYTES = 12_200
 export const PLANNER_BRIEF_MAX_BYTES = 11_600
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
@@ -212,7 +225,7 @@ export function workerBrief(t: TaskBrief): string {
   return [
     '## Scope',
     workerScope(t),
-    syncStep(t.defaultBranch),
+    t.stackedOn === undefined ? syncStep(t.defaultBranch) : stackedSyncStep(t.stackedOn),
     '## Context',
     taskContext(t),
     ...workerTail(t),

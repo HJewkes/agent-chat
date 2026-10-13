@@ -1,4 +1,6 @@
+import { currentAutonomyRoot } from '../agents/autonomy-root.js'
 import { isSeatName } from '../agents/seats/charter.js'
+import { readSeatFile } from '../agents/seats/teleport-state.js'
 import { cliEntry } from '../paths.js'
 import { JOB_KICK_NAMES, type JobKickName } from '../protocol.js'
 import { kickCommand, kickEnv, launchDetached, type JobCommand, type Kicker } from './burndown-kick.js'
@@ -19,6 +21,9 @@ export interface JobKickResult {
 
 export type JobKick = (request: JobKickRequest) => JobKickResult
 
+/** CC-1183: bounds a kicked seat name before anything reads the disk for it. */
+export const MAX_SEAT_NAME = 64
+
 const isJobKickName = (value: unknown): value is JobKickName =>
   typeof value === 'string' && (JOB_KICK_NAMES as readonly string[]).includes(value)
 
@@ -28,6 +33,8 @@ export function jobKickRequest(frame: { job?: unknown; seat?: unknown }): JobKic
   if (!isJobKickName(job)) return `unknown job "${String(job)}"; one of ${JOB_KICK_NAMES.join(', ')}`
   if (job !== 'seats_heartbeat_check')
     return seat === undefined ? { job } : `${job} takes no seat; the broker runs its defaults`
+  if (typeof seat === 'string' && seat.length > MAX_SEAT_NAME)
+    return `seats_heartbeat_check seat names are at most ${MAX_SEAT_NAME} characters`
   if (typeof seat !== 'string' || !isSeatName(seat))
     return `seats_heartbeat_check needs a seat name, got "${String(seat)}"`
   return { job, seat }
@@ -49,6 +56,8 @@ export interface JobKickPorts {
   /** Starts one detached seat job and calls `done` when it ends; must not wait for it. */
   launch: (request: JobKickRequest, done: () => void) => void
   log: (event: string, detail: Record<string, unknown>) => void
+  /** CC-1183: whether the seat has a seat file, so heartbeat launches stay bounded by the seat book. */
+  knownSeat: (seat: string) => boolean
 }
 
 const flightKey = (request: JobKickRequest): string =>
@@ -66,14 +75,25 @@ export function jobKicker(ports: JobKickPorts): JobKick {
     return 'launched'
   }
   return request => {
+    if (request.job === 'seats_heartbeat_check' && !ports.knownSeat(request.seat))
+      return { ok: false, detail: `no seat file for "${request.seat}" in the broker's autonomy root` }
     const detail = start(request)
     ports.log('job_kick', { ...request, detail })
     return { ok: true, detail }
   }
 }
 
+/** Whether `root` holds a seat file for `seat`; `root` is resolved per kick so a config edit needs no restart. */
+export const seatInBook =
+  (root: () => string) =>
+  (seat: string): boolean =>
+    readSeatFile(root(), seat) !== undefined
+
 /** The broker's port. Without a kicker (an ephemeral home) a kick is recorded and nothing is launched. */
-export function brokerJobKick(kicker: Kicker | undefined): JobKick {
+export function brokerJobKick(
+  kicker: Kicker | undefined,
+  autonomyRoot: () => string = () => currentAutonomyRoot(),
+): JobKick {
   if (kicker === undefined) {
     return request => {
       const detail = 'accepted (ephemeral home: not launched)'
@@ -86,5 +106,6 @@ export function brokerJobKick(kicker: Kicker | undefined): JobKick {
     launch: (request, done) =>
       launchDetached(jobKickCommand(request, process.env), 'job-kick.log', 'job_kick_failed', done),
     log: logEvent,
+    knownSeat: seatInBook(autonomyRoot),
   })
 }

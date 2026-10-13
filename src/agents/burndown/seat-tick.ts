@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { resolvePoolPickMode } from '../../config.js'
 import { readAccountBudget } from '../budget.js'
-import { loadDoc, readTextIfPresent } from '../seats/io.js'
+import { loadDoc } from '../seats/io.js'
 import { readPace } from '../seats/pace-file.js'
 import { pickPool, poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
 import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
@@ -31,19 +31,13 @@ import {
 import { readyFloorFor } from './dispatch-stats.js'
 import { scoreAll, type ScoreRow } from './score.js'
 import { readScoredTasks } from './score-source.js'
+import type { Action } from './advance.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
-import {
-  parseFunds,
-  parsePools,
-  parseSeat,
-  seatInitiatives,
-  seatPools,
-  type FundsMap,
-} from '../seats/charter.js'
-import { dispatchLogPath } from '../seats/dispatch-log.js'
-import { foldDispatch } from '../seats/dispatch-record.js'
+import { parseFunds, parsePools, seatInitiatives, seatPools, type FundsMap } from '../seats/charter.js'
+import { run, type Runner } from './exec.js'
+import { branchPrReader, offLedgerRunsIn, seatDispatchRecords, type BranchPr } from './off-ledger-adopt.js'
 import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
 import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
@@ -293,6 +287,8 @@ export interface SeatPlanDeps {
   brief?: BriefDeps
   /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
   scopeTagAliases: TickConfig['scopeTagAliases']
+  /** CC-1158: admits a queued slice onto its one unmerged parent; absent, none stacks. */
+  stack?: PlanInputs['stack']
 }
 
 /**
@@ -331,6 +327,8 @@ export interface SeatsPlan {
   notes: string[]
   /** Slice claims seeded from seat-written plans (CC-927), for the tick to add to the ledger. */
   seeds: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices their seat cannot place. */
+  heals: Action[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -354,7 +352,13 @@ export interface Taken {
   charged: readonly string[]
 }
 
-export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
+export function planLoaded(
+  seat: LoadedSeat,
+  deps: SeatPlanDeps,
+  root: string,
+  taken: Taken,
+  peers?: readonly SeatDispatch[],
+) {
   const { charter, seats, defaults, hardStops } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
@@ -396,6 +400,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     collision: (repo, work, landedRepos) =>
       sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
     ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
+    ...(deps.stack === undefined ? {} : { stack: deps.stack }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
@@ -403,6 +408,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     sliceRuns: runs.sliceRuns,
     offPlanIds: readOffPlanIds(root),
     pathExists: diskPathExists,
+    ...(peers === undefined ? {} : { peers }),
     ...(prior.router === undefined ? {} : { priorRouter: prior.router }),
   })
   if (prior.note !== undefined) planned.notes.push(prior.note)
@@ -441,30 +447,37 @@ function fundedRows(seat: LoadedSeat, rows: ScoreRow[]): { rows: ScoreRow[]; unf
 
 /**
  * CC-1121 b: the seat's dispatch log as slice runs. A seat with no log yet ran none; a log that
- * cannot be read names none either, so seeding fails open with a note.
+ * cannot be read names none either, so seeding fails open with a note. CC-1233: each run carries
+ * its branch PR, read from GitHub across the seat's checkouts only when the task is seeded.
  */
 function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } {
   const { seat: name, prefix } = seat.dispatch
   const none = { sliceRuns: () => [] }
   if (seat.autonomyRoot === undefined) return none
   try {
-    const log = readSeatLog(seat.autonomyRoot, name)
-    if (log === undefined) return none
-    const { records } = foldDispatch(log)
-    return { sliceRuns: taskId => sliceRunsIn(records, taskId, prefix) }
+    const records = seatDispatchRecords(seat.autonomyRoot, name)
+    if (records === undefined) return none
+    const prOf = initiativePrReaders(seat.dispatch)
+    return {
+      sliceRuns: (taskId, initiative) =>
+        offLedgerRunsIn(records, sliceRunsIn(records, taskId, prefix), prOf(initiative)),
+    }
   } catch (err) {
     return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }
   }
 }
 
-/** The seat's dispatch log text, undefined when it does not exist yet; any other fault throws. */
-function readSeatLog(root: string, name: string): string | undefined {
-  const text = readTextIfPresent(path.join(root, 'seats', `${name}.md`))
-  const parsed = text === undefined ? undefined : parseSeat(name, text)
-  if (text === undefined || parsed === undefined) throw new Error(`${name} is not a seat`)
-  const file = dispatchLogPath(root, { seat: parsed, text })
-  if (file === undefined) throw new Error(`${name} dispatch_log resolves outside the root`)
-  return readTextIfPresent(file)
+/** CC-1233: one branch-PR reader per initiative, over its git checkouts only, made when a task of it is seeded. */
+export function initiativePrReaders(
+  { repos, nonGitRepos = [] }: Pick<SeatDispatch, 'repos' | 'nonGitRepos'>,
+  exec: Runner = run,
+): (initiative: string) => BranchPr {
+  const readers = new Map<string, BranchPr>()
+  return initiative => {
+    const checkouts = (repos[initiative] ?? []).filter(r => !nonGitRepos.includes(r))
+    if (!readers.has(initiative)) readers.set(initiative, branchPrReader(checkouts, exec))
+    return readers.get(initiative) as BranchPr
+  }
 }
 
 /**
@@ -612,6 +625,10 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
 export const localDate = (now: Date): string =>
   [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(n => String(n).padStart(2, '0')).join('-')
 
+/** CC-1228: the other seats this tick runs, where a slice its seat cannot place may go. */
+const peersOf = (seats: readonly LoadedSeat[], seat: LoadedSeat): SeatDispatch[] =>
+  seats.filter(s => s !== seat).map(s => s.dispatch)
+
 /** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
   const result: SeatsPlan = {
@@ -623,6 +640,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
     outcomes: [],
     notes: [],
     seeds: [],
+    heals: [],
   }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
@@ -630,12 +648,19 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
       // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
       const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
-      const { planned, tasks, skipped, plan } = planLoaded(seat, { ...deps, ledger }, root, taken)
+      const { planned, tasks, skipped, plan } = planLoaded(
+        seat,
+        { ...deps, ledger },
+        root,
+        taken,
+        peersOf(seats, seat),
+      )
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
       result.notes.push(...planned.notes)
       result.seeds.push(...planned.seeds)
+      result.heals.push(...planned.heals)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals, roles } = planned
@@ -725,7 +750,8 @@ const SCOPE_EXHAUSTED_REC =
 /** The owner queue as the tick sees it: its open items, and a deposit into it. */
 export interface OwnerQueuePort {
   open(): Promise<OwnerItem[]>
-  deposit(deposit: OwnerItemDeposit): Promise<void>
+  /** True when this call wrote the item; false when the deposit id was already in the queue, answered or not. */
+  deposit(deposit: OwnerItemDeposit): Promise<boolean>
 }
 
 const exhaustedKey = (seat: string): string => `scope-exhausted:${seat}`

@@ -73,6 +73,8 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-1023: the files of a silent exit's adopted PR, undefined when GitHub could not tell; absent reads nothing. */
+  prFiles?: (pr: string) => string[] | undefined
   /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
   prState?: (claim: Claim) => ClaimPr | undefined
   /**
@@ -267,26 +269,71 @@ async function observeClaim(
   }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
   if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0)
-    obs.owned = ownedRead(claim, deps, adjudicate, obs.report)
+    Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-    return withExitedWork(obs, claim.worktree, deps)
+    return withAdoptedPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
   }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
 }
 
+/**
+ * CC-1232: a stalled outside-owns claim is read against the plan's owns as they are now, so a widened plan clears the
+ * stall; the changed files come from the worktree, else from the PR when the worktree is parked. A list neither can
+ * give is unreadable, never nothing outside.
+ */
 function ownedRead(
   claim: Claim,
   deps: ObserveDeps,
   adjudicate: Adjudicator | undefined,
   report: Report | undefined,
+): Pick<Observation, 'owned' | 'planOwns'> {
+  const planOwns = claim.stallCode === 'outside-owns' ? currentPlanOwns(claim, deps) : undefined
+  const owned = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
+  const files = owned ?? (claim.pr === undefined ? undefined : deps.prFiles?.(claim.pr))
+  if (files === undefined) return { owned: 'unreadable' }
+  const judgedOwned = judged(claim, outsideOwns(files, planOwns ?? claim.owns ?? []), adjudicate, report)
+  return planOwns === undefined ? { owned: judgedOwned } : { owned: judgedOwned, planOwns }
+}
+
+/** The slice's owns in its plan now; undefined when the plan or the slice cannot be read, so the claim's own stand. */
+function currentPlanOwns(claim: Claim, deps: ObserveDeps): string[] | undefined {
+  const planPath = planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
+  const text = (deps.readFile ?? readFileOrUndefined)(planPath)
+  const slices = text === undefined ? undefined : readSlices(text).slices
+  const owns = slices?.find(s => s.n === claim.slice)?.owns
+  return owns === undefined || owns.length === 0 ? undefined : owns
+}
+
+function judged(
+  claim: Claim,
+  outside: string[],
+  adjudicate: Adjudicator | undefined,
+  report: Report | undefined,
 ): NonNullable<Observation['owned']> {
-  const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  if (files === undefined) return 'unreadable'
-  const outside = outsideOwns(files, claim.owns ?? [])
   if (outside.length === 0 || adjudicate === undefined) return { outside }
   return { outside, adjudicated: adjudicate(claim, outside, report) }
+}
+
+/**
+ * CC-1023: a silent exit's open PR carries what was pushed, which a worktree reset to its base no longer shows, so
+ * the owns read adds the PR's own files. Only for a claim with owns, so a claim that owns nothing reads no PR.
+ */
+function withAdoptedPrOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const { owned, exitedWork } = obs
+  if (typeof owned !== 'object' || typeof exitedWork !== 'object' || exitedWork.openPr === null) return obs
+  if (deps.prFiles === undefined) return obs
+  const files = deps.prFiles(exitedWork.openPr)
+  if (files === undefined) return { ...obs, owned: 'unreadable' }
+  const added = outsideOwns(files, claim.owns ?? []).filter(file => !owned.outside.includes(file))
+  if (added.length === 0) return obs
+  return { ...obs, owned: judged(claim, [...owned.outside, ...added], adjudicate, obs.report) }
 }
 
 /** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */

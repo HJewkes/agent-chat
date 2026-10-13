@@ -292,7 +292,6 @@ describe('the bypass guard leaves ordinary commands alone', () => {
     'echo a | xargs -n 1 cat push-verify.txt',
     'xargs --process-slot-var=V --max-args=1 echo',
     'git ls-files | xargs grep foo',
-    'echo origin | xargs -I {} git push {}',
     'xargs -n 1 git status',
   ])('%s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()

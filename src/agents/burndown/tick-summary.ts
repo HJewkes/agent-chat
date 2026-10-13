@@ -4,12 +4,15 @@ import { claimKey, type ClaimKey } from './advance.js'
 import { briefRefusal, type Task } from './eligibility.js'
 import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
+import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
+import { bindingOf, type Binding } from './gate-reading.js'
 import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 import type { Step } from './execute.js'
+import type { TickStep } from './step-timer.js'
 
 /**
  * CC-929 (item 179 S5): every real tick that runs appends one row to `burndown-ticks.jsonl`, built from what the
@@ -21,6 +24,17 @@ import type { Step } from './execute.js'
  *   registrations   {ok, refused, failed}: every Shepherd register the tick made, for its claims and for the
  *                   seat PRs it adopted (CC-861), seat or not
  *   seats           {[seat]: SeatSummary}, one per configured seat; empty outside seats mode
+ *   durationMs      CC-1192: the whole tick, monotonic ms
+ *   lockHeldMs      CC-1192: from taking the ledger lock to releasing it: every step but `config`, and the untimed
+ *                   work between steps
+ *   orphanQueues    CC-1226: [{seat, queued, ready, oldestMinutes}] for each seat that holds queued claims but
+ *                   has no plan this tick; absent when there is none or the tick did not pass its ledger
+ *   steps           CC-1192: [{name, ms}] per named stage in run order (`StepName` in step-timer.ts); `plan` holds
+ *                   the planning on both sides of `collision`; factory
+ *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
+ *                   decider-triage, T7 write-ledger and this row's write
+ *
+ * Rows from before CC-1192 lack durationMs, lockHeldMs and steps.
  *
  * SeatSummary:
  *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
@@ -40,6 +54,10 @@ import type { Step } from './execute.js'
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
  *   registrations   {ok, refused, failed} for the seat's claims and its adopted PRs
+ *   binding         CC-1097: {kind, initiative, task?, lever, value, reading, headroom, source} of the first refusal,
+ *                   in rank order, that a capacity lever made (role-cap, worktrees, slots, budget): the lever that
+ *                   bound the seat this tick; null when no capacity lever refused; absent when the seat was skipped.
+ *                   Rows from before CC-1097 lack it
  *   skipped         why the seat was not planned; absent when it was
  */
 
@@ -59,6 +77,7 @@ export interface SeatSummary {
   trust?: NamedRefusal[]
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
+  binding?: Binding | null
   skipped?: string
 }
 
@@ -73,7 +92,13 @@ export interface TickSummaryRow {
   ts: string
   registrations: RegisterCounts
   seats: Record<string, SeatSummary>
+  durationMs?: number
+  lockHeldMs?: number
+  steps?: TickStep[]
+  orphanQueues?: OrphanQueue[]
 }
+
+export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
 
 export interface RegisterRecord {
   seat?: string
@@ -92,6 +117,8 @@ export interface SummaryPlan {
 export interface SummaryInputs extends SummaryPlan {
   now: Date
   registrations: readonly RegisterRecord[]
+  /** CC-1226: the ledger the tick planned against; without it the row names no orphan queue. */
+  ledger?: Ledger
 }
 
 const noRegistrations = (): RegisterCounts => ({ ok: 0, refused: 0, failed: 0 })
@@ -172,16 +199,28 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
     ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
-    ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
+    ...(outcome.skipped === undefined
+      ? { binding: bindingOf(outcome.refusals) }
+      : { skipped: outcome.skipped }),
   }
 }
 
-export function tickSummary(inputs: SummaryInputs): TickSummaryRow {
+/** CC-1226: the seats that hold queued claims although no plan covered them this tick. */
+function orphansOf(inputs: SummaryInputs): OrphanQueue[] {
+  if (inputs.ledger === undefined) return []
+  const planned = new Set(inputs.outcomes.filter(o => o.skipped === undefined).map(o => o.seat))
+  return orphanQueues(inputs.ledger, planned, inputs.now)
+}
+
+export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickSummaryRow {
+  const orphans = orphansOf(inputs)
   return {
     v: TICK_SUMMARY_VERSION,
     ts: inputs.now.toISOString(),
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
+    ...(orphans.length === 0 ? {} : { orphanQueues: orphans }),
+    ...timings,
   }
 }
 

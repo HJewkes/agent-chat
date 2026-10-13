@@ -9,6 +9,8 @@ import {
   brokerJobKick,
   jobKicker,
   jobKickCommand,
+  MAX_SEAT_NAME,
+  seatInBook,
   type JobKickPorts,
   type JobKickRequest,
 } from '../broker/job-kick.js'
@@ -79,11 +81,22 @@ describe('job_kick frame', () => {
     ['a heartbeat check on a path', { job: 'seats_heartbeat_check', seat: '../x' }],
     ['a seat on a tick', { job: 'burndown_tick', seat: 'review' }],
     ['a seat on a watchdog', { job: 'seats_watchdog', seat: 'review' }],
+    [
+      'a seat name over the length bound',
+      { job: 'seats_heartbeat_check', seat: 'a'.repeat(MAX_SEAT_NAME + 1) },
+    ],
   ])('refuses %s', (_label, frame) => {
     const result = kick(frame)
 
     expect(result?.ok).toBe(false)
     expect(kicked).toEqual([])
+  })
+
+  it('accepts a seat name exactly at the length bound', () => {
+    const seat = 'a'.repeat(MAX_SEAT_NAME)
+
+    expect(kick({ job: 'seats_heartbeat_check', seat })?.ok).toBe(true)
+    expect(kicked).toEqual([{ job: 'seats_heartbeat_check', seat }])
   })
 
   it('refuses when no port is attached', () => {
@@ -134,7 +147,7 @@ describe('kicked job command', () => {
 })
 
 describe('job kicker', () => {
-  function harness(): {
+  function harness(seats: readonly string[] = ['a', 'b', 'review']): {
     ports: JobKickPorts
     launches: Array<() => void>
     ticks: number[]
@@ -150,6 +163,7 @@ describe('job kicker', () => {
       },
       launch: (_request, done) => launches.push(done),
       log: (event, detail) => logged.push({ event, ...detail }),
+      knownSeat: seat => seats.includes(seat),
     }
     return { ports, launches, ticks, logged }
   }
@@ -181,6 +195,29 @@ describe('job kicker', () => {
     expect(h.launches).toHaveLength(2)
   })
 
+  it('refuses a heartbeat check for a seat with no seat file and launches or logs nothing', () => {
+    const h = harness(['a'])
+    const kick = jobKicker(h.ports)
+
+    const result = kick({ job: 'seats_heartbeat_check', seat: 'ghost' })
+
+    expect(result.ok).toBe(false)
+    expect(h.launches).toHaveLength(0)
+    expect(h.logged).toEqual([])
+  })
+
+  it('starts no process for any of many distinct unknown seat names', () => {
+    const h = harness(['a'])
+    const kick = jobKicker(h.ports)
+
+    const results = Array.from({ length: 50 }, (_, i) =>
+      kick({ job: 'seats_heartbeat_check', seat: `junk-${i}` }),
+    )
+
+    expect(results.every(r => !r.ok)).toBe(true)
+    expect(h.launches).toHaveLength(0)
+  })
+
   it('sends a tick kick through the burndown kicker and logs a job_kick row naming the job', () => {
     const h = harness()
     const kick = jobKicker(h.ports)
@@ -199,5 +236,45 @@ describe('job kicker', () => {
       ok: true,
       detail: 'accepted (ephemeral home: not launched)',
     })
+  })
+})
+
+describe("the broker's seat book", () => {
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-seat-book-'))
+    fs.mkdirSync(path.join(root, 'seats', 'retired'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'seats', 'real.md'), '# real\n')
+    fs.writeFileSync(path.join(root, 'seats', 'retired', 'old.md'), '# old\n')
+  })
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('knows a seat with a seat file and no other name', () => {
+    const known = seatInBook(() => root)
+
+    expect(['real', 'fake', 'old', 'retired/old'].map(known)).toEqual([true, false, false, false])
+  })
+
+  it('reads the root on every kick, so a seat file added later is known without a restart', () => {
+    const known = seatInBook(() => root)
+    expect(known('late')).toBe(false)
+
+    fs.writeFileSync(path.join(root, 'seats', 'late.md'), '# late\n')
+
+    expect(known('late')).toBe(true)
+  })
+
+  it('refuses a live heartbeat kick for a seat missing from the root it is given', () => {
+    const kicker = { offer: () => undefined, request: () => 'launched', stop: () => undefined }
+    const kick = brokerJobKick(kicker, () => root)
+
+    const result = kick({ job: 'seats_heartbeat_check', seat: 'fake' })
+
+    expect(result.ok).toBe(false)
+    expect(result.detail).toContain('no seat file for "fake"')
   })
 })

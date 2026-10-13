@@ -417,6 +417,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
   const priorBranch = ctx.priorBranch?.(key)
   if (priorBranch !== undefined) t.priorBranch = priorBranch
+  if (d.stackedOn !== undefined) t.stackedOn = { pr: d.stackedOn.pr, branch: d.stackedOn.branch }
   const at = ctx.now.toISOString()
   const intent = {
     phase: 'spawning' as const,
@@ -429,6 +430,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     ...(d.worktree === undefined ? {} : { worktree: d.worktree }),
     ...(d.seat === undefined ? {} : { seat: d.seat }),
     ...(d.namePrefix === undefined ? {} : { namePrefix: d.namePrefix }),
+    ...(d.stackedOn === undefined ? {} : { stackedOn: d.stackedOn }),
   }
   const write: Action =
     d.slice === undefined
@@ -444,6 +446,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     taskId: d.task,
     ...(d.tier === undefined ? {} : { tier: d.tier }),
     ...(d.owns === undefined ? {} : { claimPaths: d.owns }),
+    ...(d.stackedOn === undefined ? {} : { baseRef: `origin/${d.stackedOn.branch}` }),
   })
   return [ledgerStep(write), { kind: 'spawn', key, frame }]
 }

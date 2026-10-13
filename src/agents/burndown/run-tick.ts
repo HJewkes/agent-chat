@@ -18,19 +18,37 @@ import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
-import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
+import { adoptSeatOf, changedFiles as prChangedFiles, diskAdoptPorts } from './pr-adopt-ports.js'
 import { claimPrReader } from './pr-state.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
-import { briefAnswered } from './brief-approve.js'
+import {
+  autoApprovePortsOn,
+  briefAnswered,
+  finishBriefRoutes,
+  recordBriefRoutes,
+  settleProposedBriefs,
+  type ApprovePorts,
+  type AutoApprovePorts,
+  type BriefRoute,
+  type SettledBriefs,
+} from './brief-approve.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
-import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
+import {
+  deciderVerdict,
+  recordRefusal,
+  wakeDecider,
+  type DeciderVerdict,
+  withRecordedBriefs,
+  type WakeDelivery,
+} from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
+import { doneIdsOnDisk, fileHumanSteps, humanStepSources } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
@@ -56,24 +74,39 @@ import {
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
-import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import { binaryGate, capGate, type GateReading } from './gate-reading.js'
+import {
+  BURNDOWN_CONFIG,
+  DEFAULT_NAME_PREFIX,
+  plan,
+  stackInputs,
+  type Capacity,
+  type Dispatch,
+  type PlanInputs,
+} from './plan.js'
+import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
-import type { SpawnResult } from './seat-events.js'
+import { mergedEvents } from './slices-complete.js'
+import type { SeatEvents, SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  localDate,
   watchdogUnusable,
   planSeats,
   scopeExhausted,
+  type LoadedSeat,
   type LoadedSeats,
   type SeatPlanDeps,
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
-import { seedSteps } from './seed-slices.js'
+import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import { healSteps } from './slice-repo.js'
+import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
 import { accountDir, readInitiatives, readTaskText, readTasks, type TickConfig } from './source.js'
@@ -102,6 +135,7 @@ import {
   tickSummary,
   tickSummaryWriter,
   type RegisterRecord,
+  type SummaryInputs,
   type SummaryPlan,
 } from './tick-summary.js'
 import { loadWorld, type World } from './tick.js'
@@ -152,6 +186,10 @@ export interface TickOptions {
   egress?: EgressRunner
   /** The owner-queue spool the scope-exhausted item is filed into; defaults to the console's inbox spool. */
   ownerQueueDir?: string
+  /** CC-1192: the monotonic ms clock the step timings read; defaults to `performance.now`. */
+  monotonic?: () => number
+  /** CC-1234: the `active-work task edit` that settles proposed briefs; a test injects one that edits its fixture. */
+  briefEdit?: ApprovePorts['edit']
 }
 
 interface ReaderFailure {
@@ -209,50 +247,85 @@ function clockOf({ clock, now }: TickOptions): () => Date {
 const stopCode = (config: TickConfig, paused: string | undefined): StopCode =>
   !config.enabled ? 'disabled' : paused !== undefined ? 'paused' : 'no-report-to'
 
-async function tickOnce(opts: TickOptions): Promise<TickResult> {
+type Gate = { done: TickResult } | { config: TickConfig; head: string[] }
+
+/** The config, pause and mode checks that run before the lock is taken. */
+function gateTick(opts: TickOptions): Gate {
   const resolved = loadResolvedConfig()
   const config = resolved.tick
   const paused = pauseOf(resolved)
   const stop = stopReason(config, paused)
   if (stop !== undefined && !opts.dryRun)
-    return { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } }
+    return { done: { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } } }
   const head = stop === undefined ? [] : [`${stop}; dry run proceeds anyway`]
   const conflict = modeConflict(config, readInitiatives(opts.root ?? activeWorkRoot()))
   if (conflict !== undefined)
-    return { lines: [...head, conflict], outcome: { kind: 'failed', errorClass: 'ModeConflict' } }
-  const locked = await withLedgerLock(burndownLedgerPath(), () => runTick(config, opts))
-  if (!locked.ran)
-    return {
-      lines: [...head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
-      outcome: { kind: 'skipped' },
-    }
-  return { lines: [...head, ...locked.value], outcome: { kind: 'ok' } }
+    return { done: { lines: [...head, conflict], outcome: { kind: 'failed', errorClass: 'ModeConflict' } } }
+  return { config, head }
 }
 
-async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
+/** CC-1192: the summary row is appended after the lock is released, so its write never counts as lock-held time. */
+async function tickOnce(opts: TickOptions): Promise<TickResult> {
+  const monotonic = opts.monotonic ?? (() => performance.now())
+  const started = monotonic()
+  const timer = stepTimer(monotonic)
+  const gate = await timer.time('config', () => gateTick(opts))
+  if ('done' in gate) return gate.done
+  const locked = await withLedgerLock(burndownLedgerPath(), async () => {
+    const lockedAt = monotonic()
+    const ran = await runTick(gate.config, opts, timer)
+    return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
+  })
+  if (!locked.ran)
+    return {
+      lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
+      outcome: { kind: 'skipped' },
+    }
+  const { lines, summary, lockHeldMs } = locked.value
+  if (summary !== undefined) {
+    const timings = { durationMs: Math.round(monotonic() - started), lockHeldMs, steps: timer.steps() }
+    appendTickSummary(tickSummary(summary, timings), opts.log ?? logEvent)
+  }
+  return { lines: [...gate.head, ...lines], outcome: { kind: 'ok' } }
+}
+
+interface Ran {
+  lines: string[]
+  /** A real tick's summary row inputs; a dry run has none. */
+  summary?: SummaryInputs
+}
+
+async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer): Promise<Ran> {
   const now = opts.now ?? new Date()
-  const ledger = readLedger(burndownLedgerPath())
-  const decided = await decide(config, opts, ledger, now)
-  const { steps, notes, decider } = decided
+  const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
+  const briefs = await timer.time('brief-approve', () => settleBriefs(config, opts, now))
+  const decided = await decide(config, opts, ledger, now, timer, briefs.routes)
+  const { steps, decider } = decided
+  const notes = [...briefs.lines, ...decided.notes]
   if (opts.dryRun) {
     const planned = applyActions(
       ledger,
       steps.flatMap(s => (s.kind === 'ledger' ? s.actions : [])),
       now,
     )
-    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [] }
-    return [
-      `burndown tick at ${now.toISOString()} (dry run)`,
-      ...steps.map(describe),
-      ...describeDecider(config, decider),
-      ...describeTriage(decided.triage),
-      ...describeSeatEvents(diff, now),
-      ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
-      ...notes,
-    ]
+    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [], merged: decided.merged }
+    return {
+      lines: [
+        `burndown tick at ${now.toISOString()} (dry run)`,
+        ...steps.map(describe),
+        ...describeDecider(config, decider),
+        ...describeTriage(decided.triage),
+        ...describeSeatEvents(diff, now),
+        ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
+        ...notes,
+      ],
+    }
   }
-  const lines = await actOn(config, opts, ledger, decided, now)
-  return [`burndown tick at ${now.toISOString()}`, ...lines, ...notes]
+  const acted = await actOn(config, opts, ledger, decided, now, timer)
+  return {
+    lines: [`burndown tick at ${now.toISOString()}`, ...acted.lines, ...notes],
+    summary: acted.summary,
+  }
 }
 
 /** Executes the steps, wakes the decider, scans claimed PRs for leaks, then tells each seat what changed, writing the ledger last. */
@@ -263,6 +336,7 @@ async function actOn(
   {
     steps,
     decider,
+    briefRoutes,
     triage,
     failures,
     unchecked,
@@ -273,54 +347,103 @@ async function actOn(
     reasons,
     adopt,
     summary,
+    humanStepSeats,
+    merged,
   }: Decided,
   now: Date,
-): Promise<string[]> {
+  timer: StepTimer,
+): Promise<Ran & { summary: SummaryInputs }> {
   const log = opts.log ?? logEvent
   const clock = clockOf(opts)
   logReasons(defaultAutonomyRoot(opts.root), reasons, clock, log)
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
-  const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
+  const exhausted = await timer.time('scope-exhausted', () =>
+    fileScopeExhausted(outcomes, seatStates, opts, now),
+  )
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
+  const routed = await fileSeatHumanSteps(humanStepSeats, config, opts)
   const spawns: SpawnResult[] = []
   const registrations: RegisterRecord[] = []
   const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
-  const executed = await execute(steps, sampled, {
-    ledgerFile: burndownLedgerPath(),
-    spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
-    retire: opts.broker.retire,
-    register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
-    prHead: target => prHeadOf(target, opts.exec ?? run),
-    log,
-    now,
-  })
-  logLadder(ledger, executed.ledger, log)
-  const adopted = adoptPrs(adopt, executed.ledger, opts, now, registrations)
-  const woken = await actOnTriage(
-    config,
-    triage,
-    await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
-    triageDeps(opts, log, now),
+  const executed = await timer.time('execute', () =>
+    execute(steps, sampled, {
+      ledgerFile: burndownLedgerPath(),
+      spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
+      retire: opts.broker.retire,
+      register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
+      prHead: target => prHeadOf(target, opts.exec ?? run),
+      log,
+      now,
+    }),
   )
-  const leaks = await leakCheck(woken.ledger, {
-    exec: opts.exec ?? run,
-    log,
+  logLadder(ledger, executed.ledger, log)
+  const adopted = await timer.time('adopt', () => adoptPrs(adopt, executed.ledger, opts, now, registrations))
+  const woken = await timer.time('decider-triage', async () =>
+    actOnTriage(
+      config,
+      triage,
+      await actOnDeciderAndBriefs(
+        config,
+        { decider, briefRoutes },
+        executed.ledger,
+        { broker: opts.broker, log, now },
+        opts,
+      ),
+      triageDeps(opts, log, now),
+    ),
+  )
+  const leaks = await timer.time('leak-check', () =>
+    leakCheck(woken.ledger, {
+      exec: opts.exec ?? run,
+      log,
+      seats: config.seats,
+      ...(opts.egress === undefined ? {} : { egress: opts.egress }),
+    }),
+  )
+  const diff = {
     seats: config.seats,
-    ...(opts.egress === undefined ? {} : { egress: opts.egress }),
-  })
-  const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
+    before: ledger,
+    after: leaks.ledger,
+    spawns,
+    human: leaks.human,
+    merged,
+  }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
-  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), {
-    ...told.ledger,
-    lastTickAt: now.toISOString(),
-    ...(serviceCheck === undefined ? {} : { serviceCheck }),
-  })
-  appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
-  return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+  const told = await timer.time('deliver', () =>
+    deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch }),
+  )
+  await timer.time('write-ledger', () =>
+    writeLedger(burndownLedgerPath(), {
+      ...told.ledger,
+      lastTickAt: now.toISOString(),
+      ...(serviceCheck === undefined ? {} : { serviceCheck }),
+    }),
+  )
+  return {
+    lines: [...routed, ...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines],
+    summary: { ...summary, now, registrations },
+  }
+}
+
+/** CC-974: files each seat's due kind:owner and kind:operator task into the owner queue, beside `fileScopeExhausted`. */
+async function fileSeatHumanSteps(
+  seats: readonly LoadedSeat[],
+  config: TickConfig,
+  opts: TickOptions,
+): Promise<string[]> {
+  if (seats.length === 0) return []
+  const root = opts.root ?? activeWorkRoot()
+  const done = memo(() => doneIdsOnDisk(root))
+  const log = opts.log ?? logEvent
+  return fileHumanSteps(
+    () => humanStepSources(seats, readInitiatives(root), root, config.scopeTagAliases, log),
+    id => done().has(id),
+    spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir()),
+    log,
+  )
 }
 
 /**
@@ -377,6 +500,15 @@ function adoptPrs(
   }
 }
 
+/** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
+export const prFilesReader =
+  (exec: Runner) =>
+  (pr: string): string[] | undefined => {
+    const target = shepherdTarget(pr)
+    const files = target === undefined ? undefined : prChangedFiles(target, exec)
+    return files?.flatMap(f => (f.previousPath === undefined ? [f.path] : [f.path, f.previousPath]))
+  }
+
 /** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
 function logReasons(
   autonomyRoot: string,
@@ -396,7 +528,14 @@ function logReasons(
 /** The tick's releases and its brake notice, each logged once. */
 function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
   for (const r of releasesSince(before, after))
-    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+    log('burndown_release', {
+      task: r.taskId,
+      slice: r.slice,
+      code: r.code,
+      reason: r.reason,
+      branch: r.branch,
+      n: r.n,
+    })
   const brake = brakeSince(before, after)
   if (brake === undefined) return
   const claims = brake.claims.map(c => c.key)
@@ -418,15 +557,33 @@ function recordingSpawn(
   }
 }
 
+const briefPorts = (opts: TickOptions): AutoApprovePorts => {
+  const ports = autoApprovePortsOn(opts.root ?? activeWorkRoot())
+  return opts.briefEdit === undefined ? ports : { ...ports, edit: opts.briefEdit }
+}
+
+/**
+ * CC-1234: approves each proposed brief whose plan lints before the world is read, so it can dispatch this tick.
+ * The failing ones become routes that ride the tick's one decider wake; a dry run only says so.
+ */
+function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): SettledBriefs {
+  return settleProposedBriefs(briefPorts(opts), {
+    today: localDate(now),
+    dryRun: opts.dryRun,
+    decider: config.decider !== undefined,
+  })
+}
+
 /** Wakes the decider, or records why not when the human has something to fix. */
 async function actOnDecider(
   config: TickConfig,
   verdict: DeciderVerdict | undefined,
   ledger: Ledger,
   deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
-): Promise<{ ledger: Ledger; lines: string[] }> {
+): Promise<{ ledger: Ledger; lines: string[]; delivery: WakeDelivery }> {
   const name = config.decider?.name
-  if (verdict === undefined || name === undefined) return { ledger, lines: [] }
+  if (verdict === undefined || name === undefined)
+    return { ledger, lines: [], delivery: { sent: false, reason: 'no decider configured' } }
   if (verdict.wake) {
     const write = (l: Ledger): void => writeLedger(burndownLedgerPath(), l)
     const woken = await wakeDecider(name, verdict.message, ledger, {
@@ -434,21 +591,50 @@ async function actOnDecider(
       write,
       ...deps,
     })
-    return { ledger: woken.ledger, lines: [woken.line] }
+    return { ledger: woken.ledger, lines: [woken.line], delivery: woken.delivery }
   }
-  if (!verdict.record) return { ledger, lines: [`decider ${name} not woken: ${verdict.reason}`] }
+  const line = `decider ${name} not woken: ${verdict.reason}`
+  const delivery = { sent: false as const, reason: verdict.reason }
+  if (!verdict.record) return { ledger, lines: [line], delivery }
   deps.log('burndown_decider_refused', { name, reason: verdict.reason })
-  return {
-    ledger: recordRefusal(ledger, verdict.reason, deps.now),
-    lines: [`decider ${name} not woken: ${verdict.reason}`],
-  }
+  return { ledger: recordRefusal(ledger, verdict.reason, deps.now), lines: [line], delivery }
 }
+
+/** CC-1234: the tick's one decider wake; its briefs' sends are recorded right before it and kept or dropped by how it ended. */
+async function actOnDeciderAndBriefs(
+  config: TickConfig,
+  { decider, briefRoutes }: { decider: DeciderVerdict | undefined; briefRoutes: readonly BriefRoute[] },
+  ledger: Ledger,
+  deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
+  opts: TickOptions,
+): Promise<{ ledger: Ledger; lines: string[] }> {
+  const ports = briefPorts(opts)
+  if (decider?.wake !== true) {
+    const acted = await actOnDecider(config, decider, ledger, deps)
+    const reason = decider?.wake === false ? decider.reason : 'no decider configured'
+    return { ledger: acted.ledger, lines: [...acted.lines, ...unsentBriefLines(briefRoutes, reason)] }
+  }
+  const { recorded, lines } = recordBriefRoutes(briefRoutes, ports)
+  const verdict = withRecordedBriefs(
+    decider,
+    recorded.map(route => route.section),
+    deps.now,
+  )
+  const acted = await actOnDecider(config, verdict, ledger, deps)
+  const finished = finishBriefRoutes(recorded, acted.delivery, ports)
+  return { ledger: acted.ledger, lines: [...lines, ...acted.lines, ...finished] }
+}
+
+const unsentBriefLines = (routes: readonly BriefRoute[], reason: string): string[] =>
+  routes.map(route => `brief ${route.taskId} not sent to the decider: ${reason}; retried next tick`)
 
 function describeDecider(config: TickConfig, verdict: DeciderVerdict | undefined): string[] {
   const name = config.decider?.name
   if (verdict === undefined || name === undefined) return []
   if (verdict.wake)
-    return [`would wake decider ${name} (headless) for ${verdict.waiting} waiting question(s)`]
+    return [
+      `would wake decider ${name} (headless) for ${verdict.waiting} waiting question(s) and ${verdict.briefs} proposed brief(s)`,
+    ]
   return [`decider ${name} not woken: ${verdict.reason}`]
 }
 
@@ -456,6 +642,8 @@ interface Decided {
   steps: Step[]
   notes: string[]
   decider?: DeciderVerdict
+  /** CC-1234: failing briefs that ride the decider wake, released when the decider is not woken. */
+  briefRoutes: readonly BriefRoute[]
   triage: TriagePlan
   failures: ReaderFailure[]
   unchecked: string[]
@@ -472,6 +660,10 @@ interface Decided {
   adopt: AdoptSeat[]
   /** What this tick's summary row reads from the plan (CC-929). */
   summary: SummaryPlan
+  /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
+  humanStepSeats: LoadedSeat[]
+  /** CC-1049: open tasks whose slices all merged, told once to the seat that holds them. */
+  merged: SeatEvents
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -487,10 +679,18 @@ function isRunning(roster: Roster, name: string): boolean {
 }
 
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
-async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now: Date): Promise<Decided> {
+async function decide(
+  config: TickConfig,
+  opts: TickOptions,
+  ledger: Ledger,
+  now: Date,
+  timer: StepTimer,
+  briefRoutes: readonly BriefRoute[],
+): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
-  const roster = await opts.broker.roster()
-  const world = loadWorld(now, root)
+  const roster = await timer.time('roster', () => opts.broker.roster())
+  const world = await timer.time('world', () => loadWorld(now, root))
+  const seating = timer.start('seats')
   const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
   if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
@@ -499,19 +699,23 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       : unusable !== undefined
         ? { loaded: [], skipped: config.seats.map(seat => ({ seat, reason: unusable })) }
         : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
+  seating.stop()
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
   const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])
-  const { observations, unread } = await observe(held, roster, {
-    proposed: (initiative, taskId) =>
-      briefAnswered(tasks.get(initiative)?.find(t => t.id === taskId)?.tags ?? []),
-    inboxSince: opts.broker.inboxSince,
-    root,
-    shepherdRows: shepherd,
-    landed: target => shepherdLanded(target, opts.exec ?? run),
-    exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
-    prState: claimPrReader(opts.exec ?? run),
-  })
+  const { observations, unread } = await timer.time('observe', () =>
+    observe(held, roster, {
+      proposed: (initiative, taskId) =>
+        briefAnswered(tasks.get(initiative)?.find(t => t.id === taskId)?.tags ?? []),
+      inboxSince: opts.broker.inboxSince,
+      root,
+      shepherdRows: shepherd,
+      landed: target => shepherdLanded(target, opts.exec ?? run),
+      exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+      prFiles: prFilesReader(opts.exec ?? run),
+      prState: claimPrReader(opts.exec ?? run),
+    }),
+  )
   const ctx = {
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
@@ -520,13 +724,23 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     tasks,
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
-  const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
+  const briefs = briefRoutes.map(route => route.section)
+  const decider = await timer.time('decider', () =>
+    deciderFor(config, opts, ledger, roster, capacity, now, briefs),
+  )
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
+  const planning = timer.start('plan')
   const laddered = ladderActions(
-    withFindings(advance(held, observations, now), held, observations, now, seat => {
-      const lookup = ctx.seat?.(seat)
-      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
-    }),
+    withFindings(
+      advance(held, observations, now, name => mayRun(roster, name)),
+      held,
+      observations,
+      now,
+      seat => {
+        const lookup = ctx.seat?.(seat)
+        return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+      },
+    ),
     held,
     ledger,
     {
@@ -539,7 +753,8 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   )
   const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
-  const planLedger = applyActions(ledger, kept, now)
+  const resynced = resyncQueuedSlices(applyActions(ledger, kept, now), diskPlanReader(root))
+  const planLedger = applyActions(ledger, [...kept, ...resynced.actions], now)
   const triage = triageFor(
     config,
     planLedger,
@@ -547,9 +762,12 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     { ...agents, agents: agents.agents - advanced.spawns },
     now,
   )
-  const { check, failures } = await tickCollision(planLedger, opts)
+  planning.stop()
+  const { check, failures } = await timer.time('collision', () => tickCollision(planLedger, opts))
+  const building = timer.start('plan')
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
+  const stacking = stackInputs(config.stack.mode, planLedger, backoffHeld(planLedger, now), shepherd)
   const planned = planNew(
     world,
     seats,
@@ -561,6 +779,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       orphan: (repo, name) => orphanAt(repo, name),
       collision: check,
       charged: advanced.charged,
+      ...(stacking.stack === undefined ? {} : { stack: stacking.stack }),
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
@@ -574,11 +793,13 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...laddered.notes,
+    ...resynced.notes,
     ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
     ...planned.notes,
+    ...stacking.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -588,7 +809,9 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...resyncSteps(resynced),
     ...seedSteps(planned.seeds),
+    ...healSteps(planned.heals),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
@@ -596,11 +819,14 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     .map(i => i.slug)
   const marked =
     seats === undefined ? undefined : dueReasons(planned.outcomes, samplesAfter(ledger, seats), now)
+  building.stop()
   return {
     steps,
     reasons: marked?.due ?? [],
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    humanStepSeats: seats?.loaded ?? [],
+    merged: seats === undefined ? {} : mergedEvents(ledger, dispatchCtx.tasks),
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
@@ -614,6 +840,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     skippedSeats: planned.skipped,
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
+    briefRoutes,
     ...(marked === undefined ? {} : { seatStates: marked.states }),
     ...(service === undefined ? {} : { serviceCheck: service.read }),
   }
@@ -635,9 +862,10 @@ function serviceGate(
   }
 }
 
-type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> & {
-  charged: readonly string[]
-}
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> &
+  Pick<PlanInputs, 'stack'> & {
+    charged: readonly string[]
+  }
 
 interface Planned {
   dispatch: Dispatch[]
@@ -650,6 +878,8 @@ interface Planned {
   notes: string[]
   /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
   seeds?: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices their seat cannot place. */
+  heals?: Action[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
@@ -722,6 +952,7 @@ async function deciderFor(
   roster: Roster,
   capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
   now: Date,
+  briefs: readonly string[],
 ): Promise<DeciderVerdict | undefined> {
   if (config.decider === undefined) return undefined
   return deciderVerdict({
@@ -733,6 +964,7 @@ async function deciderFor(
     capacity: capacity.agents,
     capacityReason: capacity.agentsReason,
     now,
+    briefs,
   })
 }
 
@@ -741,9 +973,9 @@ function triageFor(
   config: TickConfig,
   ledger: Ledger,
   roster: Roster,
-  capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
+  capacity: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   now: Date,
-): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason'> } {
+): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> } {
   const readiness = triageReadiness(config)
   const { agents: free, agentsReason } = capacity
   const verdicts = triageVerdicts({
@@ -768,7 +1000,7 @@ export function agentCapacity(
   config: TickConfig,
   claims: Claim[],
   roster: Roster,
-): Pick<Capacity, 'agents' | 'agentsReason'> {
+): Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> {
   const live = liveBurndownAgents(claims, roster, config.decider === undefined ? [] : [config.decider.name])
   const slots = roster.slots
   const free = slots === undefined ? 0 : slots.cap - slots.held - config.reserveSlots
@@ -776,15 +1008,31 @@ export function agentCapacity(
     slots === undefined
       ? 'broker reported no slot reading, so none are assumed free'
       : `broker slots ${slots.held}/${slots.cap} held, ${config.reserveSlots} kept free`
+  const agents = Math.max(0, Math.min(config.maxAgents - live, free))
   return {
-    agents: Math.max(0, Math.min(config.maxAgents - live, free)),
+    agents,
     agentsReason: `${live} of maxAgents ${config.maxAgents} burndown agents alive; ${broker}`,
+    agentsGate: room => agentsGate(config, live, slots, agents - room),
   }
 }
 
+/**
+ * CC-1097: the smaller of the two agent ceilings binds; broker slots bind when unread, as none are assumed free.
+ * `started` is what the tick took from `agents` before the refusal: decider, advance, triage and plan spawns.
+ */
+function agentsGate(config: TickConfig, live: number, slots: Roster['slots'], started: number): GateReading {
+  if (slots === undefined) return binaryGate('agentSlots', AGENT_SLOTS_SOURCE)
+  const used = slots.held + config.reserveSlots
+  return config.maxAgents - live <= slots.cap - used
+    ? capGate('burndown.maxAgents', config.maxAgents, live + started, BURNDOWN_CONFIG)
+    : capGate('agentSlots', slots.cap, used + started, AGENT_SLOTS_SOURCE)
+}
+
+const AGENT_SLOTS_SOURCE = '~/.agent-chat/config.json'
+
 function worktreeCapacity(
   config: TickConfig,
-  agents: Pick<Capacity, 'agents' | 'agentsReason'>,
+  agents: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   prefixes: readonly string[],
 ): Capacity {
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)

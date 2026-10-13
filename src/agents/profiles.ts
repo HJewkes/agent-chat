@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { profilesDir } from '../paths.js'
 import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
+import { PROBE_SANDBOX_RULE } from './return-contract-blocks.js'
 import {
   AGENT_ROLES,
   EFFORT_LEVELS,
@@ -81,8 +82,9 @@ const HUMAN_ONLY_CLI_DENY = [
  * which the broker counts as the human, so a worker with Bash could spawn or
  * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
  * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
+ * CC-1194: the `port` verbs spawn, resume and retire over the same connection.
  */
-const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)']
+const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)']
 
 /**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without
@@ -134,7 +136,9 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' },
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
-      'Do not fix what you find unless asked.',
+      'Do not fix what you find unless asked. ' +
+      // In the prelude, not only the contract block: CLI, resumed and return_contract none launches get no block.
+      PROBE_SANDBOX_RULE,
   },
   {
     name: 'implementer',
@@ -413,23 +417,40 @@ export function profileNameRefusal(name: string): string | undefined {
  * variant of this function that takes a profile object.
  */
 export function loadProfile(name: string, dir: string = profilesDir()): AgentProfile | { error: string } {
+  return loadProfileSource(name, dir).profile
+}
+
+/** `loadProfile`, plus the exact file text it parsed (absent for a builtin), so a check hashes what loaded. */
+export function loadProfileSource(
+  name: string,
+  dir: string = profilesDir(),
+): { profile: AgentProfile | { error: string }; source?: string } {
   const refused = profileNameRefusal(name)
-  if (refused !== undefined) return { error: refused }
+  if (refused !== undefined) return { profile: { error: refused } }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
+    let source: string
+    try {
+      source = fs.readFileSync(file, 'utf8')
+    } catch (err) {
+      return { profile: { error: `${name}: cannot read ${file} (${(err as Error).message})` } }
+    }
     let parsed: unknown
     try {
-      parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+      parsed = JSON.parse(source)
     } catch (err) {
-      return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
+      return { profile: { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }, source }
     }
     const profile = parseProfile(name, parsed, file)
-    return 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir))
+    return {
+      profile: 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir)),
+      source,
+    }
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
-  if (builtin) return withWorkerConfigDenies(builtin, path.dirname(dir))
-  return { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` }
+  if (builtin) return { profile: withWorkerConfigDenies(builtin, path.dirname(dir)) }
+  return { profile: { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` } }
 }
 
 const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']

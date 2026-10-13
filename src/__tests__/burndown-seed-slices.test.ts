@@ -201,7 +201,8 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
     const result = plan({ ...ON, ledger, readPlan: reader(planText(SLICES)) })
 
     expect(result.seeds).toEqual([])
-    expect(result.refusals.map(r => r.kind)).toEqual(['plan-blocked'])
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([])
   })
 
   it('reads no plan and dispatches the planner when the gate is off or shadow', () => {
@@ -238,33 +239,28 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
   })
 })
 
-describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b)', () => {
+describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b, CC-1233)', () => {
   const PARENT = { taskId: 'A-1', initiative: 'alpha', seat: 'seat-a', namePrefix: 'sa' }
   const PLAN = { path: PLAN_PATH, text: planText(SLICES) }
-  const OFF_LEDGER = `${PLAN_PATH}: slice agents of A-1 already ran outside the ledger (sa-a-1-a); seed by hand or close the task`
-
-  it('refuses to seed when a slice agent already ran by hand, naming it', () => {
-    const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () => ['sa-a-1-a'])
-
-    expect(result).toEqual({ blocked: OFF_LEDGER })
-  })
+  const MERGED = { agent: 'sa-a-1-a', slice: 'a', pr: { kind: 'merged' as const, pr: 'o/r#3', head: 'h3' } }
 
   it('seeds as before when no slice agent ran', () => {
     const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () => [])
 
-    expect(result).toEqual({ claims: expect.any(Array), plan: PLAN_PATH, warnings: [EDGE] })
+    expect(result).toEqual({ claims: expect.any(Array), plan: PLAN_PATH, warnings: [EDGE], notes: [] })
   })
 
-  it('refuses plan-blocked through planSeat when the seat log shows a slice run', () => {
-    const sliceRuns = vi.fn((taskId: string) => (taskId === 'A-1' ? ['sa-a-1-a'] : []))
+  it('seeds through planSeat when the seat log shows a slice run, adopting its merged PR', () => {
+    const sliceRuns = vi.fn((taskId: string) => (taskId === 'A-1' ? [MERGED] : []))
 
     const result = plan({ ...ON, readPlan: reader(planText(SLICES)), sliceRuns })
 
-    expect(result.seeds).toEqual([])
-    expect(result.dispatch).toEqual([])
-    expect(result.refusals).toEqual([
-      { initiative: 'alpha', task: 'A-1', kind: 'plan-blocked', reason: OFF_LEDGER },
+    expect(result.refusals).toEqual([])
+    expect(result.seeds.map(c => [c.slice, c.phase, c.pr])).toEqual([
+      ['a', 'done', 'o/r#3'],
+      ['b', 'queued', undefined],
     ])
+    expect(result.notes).toContain('adopted alpha A-1 slice a from sa-a-1-a as done with o/r#3')
   })
 })
 
