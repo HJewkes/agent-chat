@@ -113,6 +113,13 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     expect(operandMaySpellOption(pushedWord(word))).toBe(true)
   })
 
+  it.each([`${LIVE}main`, `main${LIVE}%`])(
+    'is true for a mark it cannot read, such as a word the splitter is unsure of: %j',
+    marked => {
+      expect(operandMaySpellOption(marked)).toBe(true)
+    },
+  )
+
   it.each([`${LIVE}$(x -y`, `${LIVE}\`x -y`])('is true for a substitution that never closes: %j', marked => {
     expect(operandMaySpellOption(marked)).toBe(true)
   })
@@ -127,6 +134,11 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     '`echo "\\`"`--no-verify',
     '$(: #)',
     'main$(cat <<E)',
+    '$(: `)`)--no-verify',
+    'main$(echo `)`)-x',
+    'main$((1))',
+    'main$(echo $X)',
+    '${a[$(x)]}',
   ])('is true for a substitution whose end the scanner may misplace: %s', word => {
     expect(operandMaySpellOption(pushedWord(word))).toBe(true)
   })

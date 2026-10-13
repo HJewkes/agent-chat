@@ -11,7 +11,7 @@ import { LIVE, NAME } from './shell-words.js'
 const DEFAULT_IFS = ' \t\n'
 // zsh flags, a name, a positional or a special parameter, and an optional subscript. `!` is left out, so
 // bash indirection such as ${!X:- -x} is never read and always denies.
-const HEAD = new RegExp(`^[=~^]*(?:${NAME}|\\d+|[@*#?$-])(?:\\[[^\\]]*\\])?`)
+const HEAD = new RegExp(`^[=~^]*(?:${NAME}|\\d+|[@*#?$-])(?:\\[[\\w@*#+,-]*\\])?`)
 // A special parameter must not run into a name (zsh reads `$#X` and `$+X` as one expansion), and a
 // name must not take a zsh subscript or modifier; such a `$` is read as an unknown expansion.
 const BARE_PARAMETER = new RegExp(`^\\$(?:${NAME}|\\d|[@*#?$!-](?![\\w{]))(?![\\[]|:[A-Za-z&])`)
@@ -105,27 +105,20 @@ function injectedOperand(rest: string): string | undefined {
   return patternEnd < 0 ? '' : afterOperator.slice(patternEnd + 1)
 }
 
-/** The index just past a `$(...)`, `$((...))` or backtick substitution at `at`, or undefined when it never closes. */
-function substitutionEnd(word: string, at: number): number | undefined {
-  if (word[at] === '`') {
-    const close = word.indexOf('`', at + 1)
-    return close < 0 ? undefined : close + 1
-  }
-  let depth = 0
-  for (let index = at + 1; index < word.length; index++) {
-    if (word[index] === '(') depth++
-    else if (word[index] === ')' && --depth === 0) return index + 1
-  }
-  return undefined
-}
-
-// Text that may make substitutionEnd disagree with the shell: a quoted or escaped close, a comment,
-// a nested `${`, a heredoc, or a `case` pattern's `)`. Any of these makes the substitution deny.
-const UNSCANNABLE_SUBSTITUTION = /["'\\#]|\$\{|<<|\bcase\b/
+// A `$(...)` or backtick substitution read in full: one plain command with no quote, escape, nested
+// expansion, paren, backtick, comment or redirect, whose first word does not open a compound command
+// (the splitter ends `$(case a in a) …` at the pattern's `)`). Any other may end elsewhere, so it denies.
+const PLAIN_COMMAND = String.raw`\s*(?!(?:case|if|for|while|until|select|function|time|coproc|repeat|foreach)\b)[\w\s.,/@%+=:-]*`
+const PLAIN_SUBSTITUTION = new RegExp(`^(?:\\$\\(${PLAIN_COMMAND}\\)|\`${PLAIN_COMMAND}\`)`)
+// The other marks that stay text: a glob, a leading `~` and a brace, which is judged on its own.
+const TEXT_MARK = /^[*?[~{]/
 
 const known = (end: number, unsafe: boolean): Expansion => ({ end, unsafe, unknown: false })
 
-/** The expansion at `at`, just after a LIVE mark, with the index past it; undefined for a glob or `~`, which stay text. */
+/**
+ * The expansion at `at`, just after a LIVE mark, with the index past it, or undefined for a mark that
+ * stays text. A mark it cannot read in full is an unsafe expansion to the end of the word.
+ */
 function readExpansion(word: string, at: number, ifs: string): Expansion | undefined {
   if (word.startsWith('${', at)) {
     const body = braceBody(word, at + 2)
@@ -133,15 +126,13 @@ function readExpansion(word: string, at: number, ifs: string): Expansion | undef
     return known(at + body.length + 3, mayInjectOption(body, ifs))
   }
   if (word.startsWith('$(', at) || word[at] === '`') {
-    const end = substitutionEnd(word, at)
-    const scanned = word.slice(at, end ?? word.length)
-    return end === undefined || UNSCANNABLE_SUBSTITUTION.test(scanned)
-      ? known(word.length, true)
-      : known(end, false)
+    const plain = PLAIN_SUBSTITUTION.exec(word.slice(at))
+    return plain ? known(at + plain[0].length, false) : known(word.length, true)
   }
   const bare = BARE_PARAMETER.exec(word.slice(at))
   if (bare) return known(at + bare[0].length, false)
-  return word[at] === '$' ? { end: at + 1, unsafe: false, unknown: true } : undefined
+  if (word[at] === '$') return { end: at + 1, unsafe: false, unknown: true }
+  return TEXT_MARK.test(word.slice(at)) ? undefined : known(word.length, true)
 }
 
 /** The marked word as text segments split around each expansion it holds. */
