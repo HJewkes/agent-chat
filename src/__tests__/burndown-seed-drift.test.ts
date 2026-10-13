@@ -72,8 +72,8 @@ describe('plan drift the tick applies', () => {
   it('never touches a removed slice that has an agent, a PR or is done, and names the live one', () => {
     const claims = [
       claim('a'),
-      claim('b', { phase: 'running', agentName: 'dm-1-b' }),
-      claim('c', { phase: 'queued', pr: 12 }),
+      claim('b', { phase: 'implementing', agentName: 'dm-1-b' }),
+      claim('c', { phase: 'queued', pr: 'https://github.com/demo/repo/pull/12' }),
       claim('d', { phase: 'done' }),
     ]
 
@@ -93,7 +93,7 @@ describe('plan drift the tick applies', () => {
   })
 
   it('applies the add and keeps the note for a live slice the plan removed', () => {
-    const { out, after } = resync([claim('a', { phase: 'running', agentName: 'dm-1-a' })], [slice('b')])
+    const { out, after } = resync([claim('a', { phase: 'implementing', agentName: 'dm-1-a' })], [slice('b')])
 
     expect(after.claims.map(c => c.slice)).toEqual(['a', 'b'])
     expect(out.notes.some(n => n.includes('slice a') && n.includes('to reseed'))).toBe(true)
