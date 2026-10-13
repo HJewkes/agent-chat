@@ -55,17 +55,17 @@ describe('repo headroom line', () => {
   ]
 
   it('prints active, parkable, non-seat, budget and free slots', () => {
-    expect(repoSummary(repoHeadroom('/repo', rows, 12, 100 * GB))).toBe(
-      '/repo: active 2, parkable 3, non-seat 1, budget 12, free 9',
+    expect(repoSummary(repoHeadroom('/repo', rows, 12, 8, 100 * GB))).toBe(
+      '/repo: active 2, parkable 3, non-seat 1, budget 12, free 9, reviewers 0/8',
     )
   })
 
   it('never reports negative free slots', () => {
-    expect(repoHeadroom('/repo', rows, 2, 100 * GB).free).toBe(0)
+    expect(repoHeadroom('/repo', rows, 2, 8, 100 * GB).free).toBe(0)
   })
 
   it('carries the same numbers in its JSON form as in the line', () => {
-    const parsed = JSON.parse(JSON.stringify(repoHeadroom('/repo', rows, 12, 100 * GB)))
+    const parsed = JSON.parse(JSON.stringify(repoHeadroom('/repo', rows, 12, 8, 100 * GB)))
     expect(parsed).toMatchObject({
       gitRoot: '/repo',
       active: 2,
@@ -73,9 +73,40 @@ describe('repo headroom line', () => {
       nonSeat: 1,
       budget: 12,
       free: 9,
+      reviewers: 0,
+      reviewerBudget: 8,
+      reviewerFree: 8,
     })
     expect(parsed.rows).toHaveLength(rows.length)
     expect(parsed.rows[0]).toMatchObject({ state: 'active', branch: 'agent-chat/a0', status: 'held' })
+  })
+})
+
+describe('reviewer pool headroom (CC-1040)', () => {
+  const rows = [
+    stateRow(swept('held', 'agent-chat/rv-o-r-1')),
+    stateRow(swept('held', 'agent-chat/seat-a-reviewer')),
+    stateRow(swept('held', 'agent-chat/impl-1')),
+  ]
+
+  it('charges live reviewer trees to the reviewer pool, not to implementer active slots', () => {
+    expect(repoHeadroom('/repo', rows, 3, 8, 100 * GB)).toMatchObject({
+      active: 1,
+      free: 2,
+      reviewers: 2,
+      reviewerBudget: 8,
+      reviewerFree: 6,
+    })
+  })
+
+  it('shows the reviewer pool in the summary line', () => {
+    expect(repoSummary(repoHeadroom('/repo', rows, 3, 8, 100 * GB))).toBe(
+      '/repo: active 1, parkable 0, non-seat 0, budget 3, free 2, reviewers 2/8',
+    )
+  })
+
+  it('never reports negative reviewer slots', () => {
+    expect(repoHeadroom('/repo', rows, 3, 1, 100 * GB).reviewerFree).toBe(0)
   })
 })
 
