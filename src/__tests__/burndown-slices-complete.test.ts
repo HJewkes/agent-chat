@@ -3,7 +3,8 @@ import type { Task } from '../agents/burndown/eligibility.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { seedSlices } from '../agents/burndown/seed-slices.js'
 import { deliverSeatEvents, type SeatSender } from '../agents/burndown/seat-deliver.js'
-import { mergedEvents, slicesMerged } from '../agents/burndown/slices-complete.js'
+import { releasedSlicesLanded } from '../agents/burndown/landed-sweep.js'
+import { mergedEvents, slicesMerged, slicesReleasedComplete } from '../agents/burndown/slices-complete.js'
 
 /** CC-1049: a parent whose every slice merged is told to its seat once, not refused plan-blocked each tick. */
 
@@ -47,7 +48,7 @@ describe('slicesMerged', () => {
     expect(slicesMerged(EMPTY_LEDGER, 'A-1')).toBe(false)
   })
 
-  it('is false when a slice was released, which CC-1227 handles', () => {
+  it('is false when a slice was released, which slicesReleasedComplete handles', () => {
     const ledger = ledgerOf([slice('a', 'done')], { slicesReleased: { 'A-1': ['b'] } })
 
     expect(slicesMerged(ledger, 'A-1')).toBe(false)
@@ -71,8 +72,8 @@ describe('seedSlices on a parent whose slices all merged', () => {
     expect(result).toEqual({ blocked: expect.stringContaining('already queued') })
   })
 
-  it('still refuses a parent with a released slice', () => {
-    const ledger = ledgerOf([slice('a', 'done')], { slicesReleased: { 'A-1': ['b'] } })
+  it('still refuses a parent with a released slice and a queued one', () => {
+    const ledger = ledgerOf([slice('a', 'queued')], { slicesReleased: { 'A-1': ['b'] } })
 
     expect(seedSlices(PARENT, PLAN, ledger, NOW)).toEqual({
       blocked: expect.stringContaining('already queued'),
@@ -136,5 +137,67 @@ describe('merged parents told to their seat', () => {
 
   it('does not tell a seat of a parent whose claims hold no seat', () => {
     expect(mergedEvents(ledgerOf([slice('a', 'done')]), tasks)).toEqual({})
+  })
+})
+
+describe('a parent whose slices are all done or released (CC-1227)', () => {
+  const released = (): Ledger => ledgerOf([slice('a', 'done')], { slicesReleased: { 'A-1': ['b'] } })
+
+  it('counts as complete when no slice is held', () => {
+    expect(slicesReleasedComplete(released(), 'A-1')).toBe(true)
+  })
+
+  it('is not complete while a slice is still held', () => {
+    const ledger = ledgerOf([slice('a', 'done'), slice('c', 'queued')], { slicesReleased: { 'A-1': ['b'] } })
+
+    expect(slicesReleasedComplete(ledger, 'A-1')).toBe(false)
+  })
+
+  it('is not complete when nothing was released', () => {
+    expect(slicesReleasedComplete(ledgerOf([slice('a', 'done')]), 'A-1')).toBe(false)
+  })
+
+  it('is no longer refused as already queued', () => {
+    expect(seedSlices(PARENT, PLAN, released(), NOW)).toEqual({ merged: true })
+  })
+
+  it('is told to the seat once, tagged slices:released', () => {
+    const tasks = new Map([['alpha', [task('A-1')]]])
+    const claims = [{ ...slice('a', 'done'), seat: 'seat-a' }]
+    const ledger = ledgerOf(claims, { slicesReleased: { 'A-1': ['b'] } })
+
+    const events = mergedEvents(ledger, tasks)
+    const told = mergedEvents({ ...ledger, slicesFlagged: events['seat-a']?.[0]?.flagged }, tasks)
+
+    expect(events['seat-a']?.[0]).toMatchObject({ kind: 'slices-merged', taskId: 'A-1 (slices:released)' })
+    expect(told).toEqual({})
+  })
+
+  it('is not flagged when the sweep will close it', () => {
+    const tasks = new Map([['alpha', [task('A-1')]]])
+    const claims = [{ ...slice('a', 'done'), seat: 'seat-a' }]
+    const ledger = ledgerOf(claims, { slicesReleased: { 'A-1': ['b'] } })
+
+    expect(mergedEvents(ledger, tasks, () => true)).toEqual({})
+  })
+})
+
+describe('releasedSlicesLanded', () => {
+  const reads = (subjects: string[]) => [{ repo: '/r', subjects }]
+
+  it('is true when a default-branch commit names the parent for each released slice', () => {
+    expect(releasedSlicesLanded('A-1', 2, reads(['A-1: one', 'A-1 b: two']), [])).toBe(true)
+  })
+
+  it('is false when fewer commits than released slices name the parent', () => {
+    expect(releasedSlicesLanded('A-1', 2, reads(['A-1: one']), [])).toBe(false)
+  })
+
+  it('is false when an open PR names the parent', () => {
+    expect(releasedSlicesLanded('A-1', 1, reads(['A-1: one']), ['A-1: open work'])).toBe(false)
+  })
+
+  it('is false when a repo could not be read', () => {
+    expect(releasedSlicesLanded('A-1', 1, [{ repo: '/r', subjects: undefined }], [])).toBe(false)
   })
 })
