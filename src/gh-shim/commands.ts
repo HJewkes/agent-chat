@@ -8,7 +8,7 @@ export class Unsupported extends Error {}
 
 export interface ShimIo {
   /** `gh api <path>` against REST, parsed; throws on a non-zero exit. */
-  api: (path: string) => unknown
+  api: (path: string) => Promise<unknown>
   currentBranch: () => string | undefined
   jq: (value: unknown, expr: string) => string
   out: (text: string) => void
@@ -33,42 +33,43 @@ export function repoPath(repo: string | undefined): string {
 const PULL_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/?$/
 
 /** REST's `head=` filter needs the owner, which the `{owner}` placeholder only yields through one read. */
-const ownerOf = (io: ShimIo, repo: string): string =>
+const ownerOf = async (io: ShimIo, repo: string): Promise<string> =>
   repo === PLACEHOLDER_REPO
-    ? String(asJson(asJson(io.api(`repos/${repo}`)).owner).login)
+    ? String(asJson(asJson(await io.api(`repos/${repo}`)).owner).login)
     : (repo.split('/')[0] as string)
 
-function pullByBranch(io: ShimIo, repo: string, branch: string): Json {
-  const query = `head=${encodeURIComponent(`${ownerOf(io, repo)}:${branch}`)}&per_page=1`
+async function pullByBranch(io: ShimIo, repo: string, branch: string): Promise<Json> {
+  const query = `head=${encodeURIComponent(`${await ownerOf(io, repo)}:${branch}`)}&per_page=1`
   for (const state of ['open', 'all']) {
-    const [pull] = io.api(`repos/${repo}/pulls?${query}&state=${state}`) as unknown[]
-    if (pull !== undefined) return io.api(`repos/${repo}/pulls/${String(asJson(pull).number)}`) as Json
+    const [pull] = (await io.api(`repos/${repo}/pulls?${query}&state=${state}`)) as unknown[]
+    if (pull !== undefined)
+      return (await io.api(`repos/${repo}/pulls/${String(asJson(pull).number)}`)) as Json
   }
   throw new Error(`no pull requests found for branch "${branch}"`)
 }
 
-function resolvePull(io: ShimIo, req: PrRequest): { repo: string; pull: Json } {
+async function resolvePull(io: ShimIo, req: PrRequest): Promise<{ repo: string; pull: Json }> {
   const url = req.selector?.match(PULL_URL)
   const repo = url ? (url[1] as string) : repoPath(req.repo)
   const number = url ? url[2] : req.selector?.match(/^#?(\d+)$/)?.[1]
-  if (number !== undefined) return { repo, pull: io.api(`repos/${repo}/pulls/${number}`) as Json }
+  if (number !== undefined) return { repo, pull: (await io.api(`repos/${repo}/pulls/${number}`)) as Json }
   const branch = req.selector ?? io.currentBranch()
   if (branch === undefined || branch.includes(':')) throw new Unsupported('pull selector')
-  return { repo, pull: pullByBranch(io, repo, branch) }
+  return { repo, pull: await pullByBranch(io, repo, branch) }
 }
 
 /** One page of a REST list; a total past the page means a failure could be cut off, so gh answers instead. */
-function onePage(io: ShimIo, path: string, key: string): unknown[] {
-  const body = asJson(io.api(path))
+async function onePage(io: ShimIo, path: string, key: string): Promise<unknown[]> {
+  const body = asJson(await io.api(path))
   const items = body[key] as unknown[]
   if (typeof body.total_count === 'number' && body.total_count > items.length) throw new Unsupported(path)
   return items
 }
 
-const commitChecks = (io: ShimIo, repo: string, sha: string): CommitChecks => ({
-  checkRuns: onePage(io, `repos/${repo}/commits/${sha}/check-runs?per_page=100`, 'check_runs'),
-  statuses: onePage(io, `repos/${repo}/commits/${sha}/status?per_page=100`, 'statuses'),
-  workflowRuns: asJson(io.api(`repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`))
+const commitChecks = async (io: ShimIo, repo: string, sha: string): Promise<CommitChecks> => ({
+  checkRuns: await onePage(io, `repos/${repo}/commits/${sha}/check-runs?per_page=100`, 'check_runs'),
+  statuses: await onePage(io, `repos/${repo}/commits/${sha}/status?per_page=100`, 'statuses'),
+  workflowRuns: asJson(await io.api(`repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`))
     .workflow_runs as unknown[],
 })
 
@@ -83,33 +84,57 @@ function emit(io: ShimIo, value: unknown, jq: string | undefined): void {
   io.out(jq === undefined ? `${JSON.stringify(value)}\n` : io.jq(value, jq))
 }
 
-function prView(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-view' }>): number {
-  requireFields(req.fields, f => f in PULL_FIELDS || f in SINGLE_PULL_FIELDS || EXTRA_PR_FIELDS.has(f))
-  const { repo, pull } = resolvePull(io, req)
-  const extras: Record<string, (p: Json) => unknown> = {
-    files: p =>
-      (io.api(`repos/${repo}/pulls/${String(p.number)}/files?per_page=100`) as unknown[]).map(changedFile),
-    statusCheckRollup: p => rollup(commitChecks(io, repo, String(asJson(p.head).sha))),
+/** Reads the requested async fields in pick's sorted order, so the REST calls keep their sequence. */
+async function resolveFields(
+  source: Json,
+  fields: readonly string[],
+  readers: Record<string, (s: Json) => Promise<unknown>>,
+): Promise<Record<string, (s: Json) => unknown>> {
+  const resolved: Record<string, (s: Json) => unknown> = {}
+  for (const field of [...fields].sort()) {
+    const read = readers[field]
+    if (read === undefined) continue
+    const value = await read(source)
+    resolved[field] = () => value
   }
+  return resolved
+}
+
+async function prView(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-view' }>): Promise<number> {
+  requireFields(req.fields, f => f in PULL_FIELDS || f in SINGLE_PULL_FIELDS || EXTRA_PR_FIELDS.has(f))
+  const { repo, pull } = await resolvePull(io, req)
+  const extras = await resolveFields(pull, req.fields, {
+    files: async p =>
+      ((await io.api(`repos/${repo}/pulls/${String(p.number)}/files?per_page=100`)) as unknown[]).map(
+        changedFile,
+      ),
+    statusCheckRollup: async p => rollup(await commitChecks(io, repo, String(asJson(p.head).sha))),
+  })
   emit(io, pick(pull, req.fields, { ...PULL_FIELDS, ...SINGLE_PULL_FIELDS, ...extras }), req.jq)
   return 0
 }
 
-function listPath(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-list' }>, repo: string): string {
+async function listPath(
+  io: ShimIo,
+  req: Extract<ShimRequest, { kind: 'pr-list' }>,
+  repo: string,
+): Promise<string> {
   const state = req.state === 'merged' ? 'closed' : req.state
   const params = [`state=${state}`, `per_page=${req.state === 'merged' ? 100 : req.limit}`]
   if (req.base !== undefined) params.push(`base=${encodeURIComponent(req.base)}`)
   if (req.head !== undefined) {
-    const head = req.head.includes(':') ? req.head : `${ownerOf(io, repo)}:${req.head}`
+    const head = req.head.includes(':') ? req.head : `${await ownerOf(io, repo)}:${req.head}`
     params.push(`head=${encodeURIComponent(head)}`)
   }
   return `repos/${repo}/pulls?${params.join('&')}`
 }
 
-function prList(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-list' }>): number {
+async function prList(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-list' }>): Promise<number> {
   requireFields(req.fields, f => f in PULL_FIELDS)
   const repo = repoPath(req.repo)
-  const pulls = (io.api(listPath(io, req, repo)) as Json[]).filter(p => req.state !== 'merged' || p.merged_at)
+  const pulls = ((await io.api(await listPath(io, req, repo))) as Json[]).filter(
+    p => req.state !== 'merged' || p.merged_at,
+  )
   emit(
     io,
     pulls.slice(0, req.limit).map(p => pick(p, req.fields, PULL_FIELDS)),
@@ -130,10 +155,10 @@ const CHECK_FIELDS = new Set<string>([
   'workflow',
 ])
 
-function prChecks(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-checks' }>): number {
+async function prChecks(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-checks' }>): Promise<number> {
   if (req.fields !== undefined) requireFields(req.fields, f => CHECK_FIELDS.has(f))
-  const { repo, pull } = resolvePull(io, req)
-  const entries = checkEntries(commitChecks(io, repo, String(asJson(pull.head).sha)))
+  const { repo, pull } = await resolvePull(io, req)
+  const entries = checkEntries(await commitChecks(io, repo, String(asJson(pull.head).sha)))
   if (req.fields !== undefined) {
     const table = Object.fromEntries([...CHECK_FIELDS].map(f => [f, (e: Json) => e[f]]))
     emit(
@@ -151,11 +176,11 @@ function prChecks(io: ShimIo, req: Extract<ShimRequest, { kind: 'pr-checks' }>):
   return checksExitCode(entries)
 }
 
-function runView(io: ShimIo, req: Extract<ShimRequest, { kind: 'run-view' }>): number {
+async function runView(io: ShimIo, req: Extract<ShimRequest, { kind: 'run-view' }>): Promise<number> {
   requireFields(req.fields, f => f in RUN_FIELDS || f === 'jobs')
   const repo = repoPath(req.repo)
-  const run = asJson(io.api(`repos/${repo}/actions/runs/${req.runId}`))
-  const jobs: Record<string, (r: Json) => unknown> = { jobs: () => runJobs(io, repo, req.runId) }
+  const run = asJson(await io.api(`repos/${repo}/actions/runs/${req.runId}`))
+  const jobs = await resolveFields(run, req.fields, { jobs: () => runJobs(io, repo, req.runId) })
   emit(io, pick(run, req.fields, { ...RUN_FIELDS, ...jobs }), req.jq)
   return 0
 }
@@ -163,13 +188,13 @@ function runView(io: ShimIo, req: Extract<ShimRequest, { kind: 'run-view' }>): n
 export function runRequest(io: ShimIo, req: ShimRequest): Promise<number> {
   switch (req.kind) {
     case 'pr-view':
-      return Promise.resolve(prView(io, req))
+      return prView(io, req)
     case 'pr-list':
-      return Promise.resolve(prList(io, req))
+      return prList(io, req)
     case 'pr-checks':
-      return Promise.resolve(prChecks(io, req))
+      return prChecks(io, req)
     case 'run-view':
-      return Promise.resolve(runView(io, req))
+      return runView(io, req)
     case 'run-watch':
       return runWatch(io, req, repoPath(req.repo))
   }
