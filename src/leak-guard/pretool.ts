@@ -194,6 +194,7 @@ export const REASONS = {
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
+  xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
 } as const
 
@@ -275,22 +276,24 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
   let at = 0
   let chdir = false
   let fed: Fed | undefined
-  let fedFrom = 0
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
   const assigns: string[] = []
-  const done = (): Unwrapped => {
-    if (fedCommand && at >= rest.length) return { reason: REASONS.hiddenCommand }
-    const reason = fedEnvReason(assigns.slice(fedFrom), fed)
-    return reason === undefined ? { words: rest.slice(at), chdir, assigns, fed } : { reason }
-  }
+  const done = (): Unwrapped =>
+    fedCommand && at >= rest.length
+      ? { reason: REASONS.hiddenCommand }
+      : { words: rest.slice(at), chdir, assigns, fed }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
+    // A command word xargs fills, behind any wrappers, is a command its input names.
+    if (fed !== undefined && head.includes(XARGS_ARGS)) return { reason: REASONS.hiddenCommand }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const next = wrapperEnd(rest, at, name)
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
+    if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
+      return { reason: REASONS.xargsWrapper }
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
@@ -303,9 +306,12 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       at = after.at
       fedCommand ||= at < rest.length
       fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
-      fedFrom = assigns.length
+      // Every wrapper and the command after this point parse the words as xargs fills them.
+      const { replace } = fed
+      if (replace !== undefined)
+        rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
     } else if (name === 'env') {
-      const env = unwrapEnv(rest, at + 1)
+      const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
@@ -314,26 +320,9 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
   }
 }
 
-/**
- * xargs puts the replace string into env's own words too, so an `env -u NAME` or `NAME=value` it may fill,
- * or whose name the guard cannot read, may unset or set GIT_CONFIG_*.
- */
-function fedEnvReason(envWords: readonly string[], fed: Fed | undefined): string | undefined {
-  if (fed === undefined) return undefined
-  const { replace } = fed
-  const filled = (word: string): boolean =>
-    (word.split('=')[0] as string).includes(LIVE) ||
-    (replace !== undefined && (replace === ANY_WORD || unmark(word).includes(replace)))
-  return envWords.some(filled) ? REASONS.gitConfigEnv : undefined
-}
-
-/** The words xargs runs: its fixed words with the ones it reads put where xargs puts them. */
-function stdinArgs(words: readonly string[], fed: Fed | undefined): string[] {
-  if (fed === undefined || words.length === 0) return [...words]
-  const { replace } = fed
-  const placed = replace === undefined ? words : words.map(word => placeFed(word, replace))
-  return fed.append ? [...placed, XARGS_ARGS] : [...placed]
-}
+/** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
+const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] =>
+  fed?.append === true && words.length > 0 ? [...words, XARGS_ARGS] : [...words]
 
 /**
  * A word with each copy of the replace string swapped for the unreadable words, keeping the rest of it
@@ -484,11 +473,28 @@ function splitString(a: string, next: string | undefined): { value: string; widt
 // env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
 const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
-function unwrapEnv(args: readonly string[], i: number): EnvRun {
+const ENV_VALUE_OPTIONS_FED = new Set(['-u', '--unset', '-C', '--chdir', '-P', '-S', '--split-string'])
+const nameOf = (word: string): string => word.split('=')[0] as string
+
+/**
+ * Behind xargs, an env word the guard cannot read may become any option: -i, -u GIT_CONFIG_COUNT,
+ * or -S with a command. Like an unreadable xargs option, it fails closed.
+ */
+function fedEnvWord(a: string, next: string | undefined): string | undefined {
+  if (!a.startsWith('-'))
+    return a.includes('=') && nameOf(a).includes(LIVE) ? REASONS.gitConfigEnv : undefined
+  const value = ENV_VALUE_OPTIONS_FED.has(a) ? (next ?? '') : ''
+  if (!a.includes(LIVE) && !value.includes(LIVE)) return undefined
+  return /^(?:-u|--unset)/.test(a) ? REASONS.gitConfigEnv : REASONS.xargsWrapper
+}
+
+function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
   let chdir = false
   const assigns: string[] = []
   for (; i < args.length; i++) {
     const a = args[i] as string
+    const fedReason = fed ? fedEnvWord(a, args[i + 1]) : undefined
+    if (fedReason !== undefined) return { reason: fedReason }
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
     if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
@@ -502,7 +508,7 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
       const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
-      const inner = unwrapEnv(words, 0)
+      const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
     }
@@ -513,7 +519,8 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       let at = i + 1
       for (; at < args.length && (args[at] as string).includes('='); at++) {
         const operand = args[at] as string
-        if (isGitConfigVar(operand.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+        if (isGitConfigVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
+          return { reason: REASONS.gitConfigEnv }
         assigns.push(operand)
       }
       return { words: args, at, chdir, assigns }
@@ -1697,7 +1704,6 @@ function checkSimple(
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
-  if (unwrapped.fed !== undefined && words[0]?.includes(XARGS_ARGS)) return REASONS.hiddenCommand
   const marked = words.slice(1)
   const head = resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {

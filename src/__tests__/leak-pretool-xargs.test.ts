@@ -157,7 +157,6 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -I% env -u% git push origin --',
     'xargs -I% env --unset=% git push origin --',
     'xargs -I% env -- %=0 git push origin --',
-    'xargs -I"$R" env -u x git push origin --',
     'xargs -I% env -u "$X" git push origin --',
     'xargs -I% env "$X"=0 git push origin --',
     'xargs env -u "$X" git push origin --',
@@ -194,8 +193,34 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -I% nice %',
     'xargs -I% %it push origin HEAD:x',
     'xargs -I"$R" ls',
+    'xargs -I"$R" env -u x git push origin --',
   ])('denies an xargs whose command word is filled from its input: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.hiddenCommand)
+  })
+
+  it.each([
+    `printf 'i\\n' | xargs -I% env -% git push origin --`,
+    `printf 'uGIT_CONFIG_COUNT\\n' | xargs -I% env -% git push origin --`,
+    `printf '%s\\n' 'Ssh -c "git push --no-verify origin HEAD:x"' | xargs -I% env -% true`,
+    'xargs -I% env -i% git push origin --',
+    'xargs -I% env -S% true',
+    'xargs -I% env -C% git push origin --',
+    'xargs -I% env --% git push origin --',
+    'xargs -I% env -C % git push origin --',
+    'xargs -I% env -P % git push origin --',
+    'xargs -I% nice -% git push origin --',
+    'xargs -I% nice -n % git push origin --',
+    'xargs -I% timeout % git push origin --',
+    'xargs -I% timeout -% 5 git push origin --',
+    'xargs -I% command -% git push origin --',
+  ])('denies a wrapper option word xargs fills: %s', command => {
+    const reason = checkCommand(command, ctx)
+    expect(reason).toBeDefined()
+    expect(reason).toBe(REASONS.xargsWrapper)
+  })
+
+  it('denies a fed unset glued to -u as a GIT_CONFIG_* unset', () => {
+    expect(checkCommand('xargs -I% env -u% git push origin --', ctx)).toBe(REASONS.gitConfigEnv)
   })
 
   it('denies a config write through the replace word', () => {
@@ -228,6 +253,10 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -I% echo %',
     'xargs -I% nice ls %',
     'xargs timeout 5 ls',
+    'xargs -I% env FOO=1 ls %',
+    'xargs -I% nice -n 5 ls %',
+    'xargs -I% env FOO=% ls',
+    'env -C "$dir" git log',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })
