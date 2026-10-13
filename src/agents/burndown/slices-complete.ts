@@ -9,12 +9,27 @@ import type { SeatEvent, SeatEvents } from './seat-events.js'
  * did not cover, and the owner is not asked for coordination work.
  */
 
-/** True when the task has slice claims and every one is done; a released slice is another case (CC-1227). */
+/** True when the task has slice claims and every one is done; a released slice is `slicesReleasedComplete`. */
 export function slicesMerged(ledger: Ledger, taskId: string): boolean {
   if (ledger.slicesReleased?.[taskId] !== undefined) return false
   const slices = ledger.claims.filter(c => c.taskId === taskId && c.slice !== undefined)
   return slices.length > 0 && slices.every(c => c.phase === 'done')
 }
+
+/**
+ * CC-1227: at least one slice is done and one was released, and no slice claim is held. Seeding adds every
+ * plan slice at once and a release drops its claim, so done claims plus released slices are the whole plan.
+ * A parent with no done claim stays refused: it has no claim to name its seat, so the tick could tell no one.
+ */
+export function slicesReleasedComplete(ledger: Ledger, taskId: string): boolean {
+  if ((ledger.slicesReleased?.[taskId] ?? []).length === 0) return false
+  const slices = ledger.claims.filter(c => c.taskId === taskId && c.slice !== undefined)
+  return slices.length > 0 && slices.every(c => c.phase === 'done')
+}
+
+/** A parent the seeder must not reseed: all its slices merged, or the rest were released. */
+export const slicesSettled = (ledger: Ledger, taskId: string): boolean =>
+  slicesMerged(ledger, taskId) || slicesReleasedComplete(ledger, taskId)
 
 export const mergedFlagKey = (initiative: string, taskId: string): string => `${initiative}/${taskId}`
 
@@ -23,16 +38,29 @@ export const MERGED_PER_EVENT = 15
 
 const isOpen = (task: Task): boolean => task.status === undefined || task.status === 'open'
 
-/** One `slices-merged` event per seat for its open tasks whose slices all merged and that it has not been told of. */
-export function mergedEvents(ledger: Ledger, tasks: ReadonlyMap<string, readonly Task[]>): SeatEvents {
+const RELEASED_TAG = 'slices:released'
+const releasedKey = (initiative: string, taskId: string): string =>
+  `${mergedFlagKey(initiative, taskId)}:released`
+
+/**
+ * One `slices-merged` event per seat for its open tasks whose slices all merged or were released and that it has
+ * not been told of. `closable` names a released parent the sweep closes, so it is not flagged (CC-1227).
+ */
+export function mergedEvents(
+  ledger: Ledger,
+  tasks: ReadonlyMap<string, readonly Task[]>,
+  closable: (initiative: string, taskId: string) => boolean = () => false,
+): SeatEvents {
   const told = new Set(ledger.slicesFlagged ?? [])
   const bySeat = new Map<string, { id: string; key: string }[]>()
   for (const [initiative, list] of tasks) {
-    for (const t of list.filter(t => isOpen(t) && slicesMerged(ledger, t.id))) {
-      const key = mergedFlagKey(initiative, t.id)
+    for (const t of list.filter(t => isOpen(t) && slicesSettled(ledger, t.id))) {
+      if (!slicesMerged(ledger, t.id) && closable(initiative, t.id)) continue
+      const key = slicesMerged(ledger, t.id) ? mergedFlagKey(initiative, t.id) : releasedKey(initiative, t.id)
       const seat = ledger.claims.find(c => c.taskId === t.id && c.initiative === initiative)?.seat
       if (seat === undefined || told.has(key)) continue
-      bySeat.set(seat, [...(bySeat.get(seat) ?? []), { id: t.id, key }])
+      const id = key.endsWith(':released') ? `${t.id} (${RELEASED_TAG})` : t.id
+      bySeat.set(seat, [...(bySeat.get(seat) ?? []), { id, key }])
     }
   }
   return Object.fromEntries(

@@ -6,7 +6,7 @@ import type { Step } from './execute.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
 import { readSlices, type PlannedSlice } from './report.js'
-import { slicesMerged } from './slices-complete.js'
+import { slicesSettled } from './slices-complete.js'
 
 /**
  * CC-927 (item 179 S3): a seat-written `sources/<ID>-plan.md` is the brief. A brief-ready task
@@ -91,7 +91,7 @@ export function seedSlices(
   ranOffLedger?: SliceRuns,
 ): Seeding | undefined {
   if (plan.text === undefined) return undefined
-  if (slicesMerged(ledger, parent.taskId)) return { merged: true }
+  if (slicesSettled(ledger, parent.taskId)) return { merged: true }
   const seeded =
     ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined && c.phase !== 'done') ||
     ledger.slicesReleased?.[parent.taskId] !== undefined
