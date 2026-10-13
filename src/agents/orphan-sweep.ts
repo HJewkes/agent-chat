@@ -12,12 +12,23 @@ import {
   type ProcessTable,
   type ReapReport,
 } from './orphan-reap.js'
-import { diskTmpRoot, realTmpFs, realTmpProcessTable, sweepAgentTmpDirs, TMP_ROOT } from './agent-tmpdir.js'
+import {
+  diskHarnessRoot,
+  diskTmpRoot,
+  realTmpFs,
+  realTmpProcessTable,
+  sweepAgentTmpDirs,
+  TMP_ROOT,
+} from './agent-tmpdir.js'
 
 export const ORPHAN_SWEEP_MS = 60_000
 
-/** /tmp for launches made before CC-1264, and the disk root every Linux launch now uses. */
-export const agentTmpSweepRoots = (home: string): string[] => [TMP_ROOT, diskTmpRoot(home)]
+/** /tmp for launches made before CC-1264, the disk root every Linux launch now uses, and the harness root (CC-1266). */
+export const agentTmpSweepRoots = (home: string): string[] => [
+  TMP_ROOT,
+  diskTmpRoot(home),
+  diskHarnessRoot(home),
+]
 
 export interface SweepDeps {
   roster: () => readonly AgentIdentity[]
