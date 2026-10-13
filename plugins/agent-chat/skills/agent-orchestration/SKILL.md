@@ -312,7 +312,9 @@ its context as the scarce resource, not the agents' time.
   PR's reviewer while it is warm; a new PR never reuses a reviewer. Retire the reviewer when
   its PR merges or closes. A reviewer reviews in a detached worktree at the head under
   `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
-  tree, and removes it at verdict. A reviewer never runs `git stash`, because refs/stash is
+  tree, and removes it at verdict. It keeps one installed checkout per review: base or old
+  code comes from `git show`, `git diff` or `git worktree add --detach` without install,
+  because every extra installed tree costs ~100k inodes on Linux's /tmp. A reviewer never runs `git stash`, because refs/stash is
   shared by every worktree: read a file at a revision with `git show <rev>:<path>`, or copy
   files into the session scratchpad. Read a diff yourself only where the judgement is the point
   (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
