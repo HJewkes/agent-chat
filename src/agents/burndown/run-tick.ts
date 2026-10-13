@@ -108,7 +108,14 @@ import {
   type SkippedSeat,
 } from './seat-tick.js'
 import { burndownRefusalsPath, refusalSnapshot, writeRefusalSnapshot } from './refusal-snapshot.js'
-import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import {
+  diskPlanReader,
+  pendingOffLedger,
+  resyncQueuedSlices,
+  resyncSteps,
+  seedSteps,
+} from './seed-slices.js'
+import { seatPrReader } from './off-ledger-adopt.js'
 import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
@@ -886,7 +893,12 @@ async function decide(
   )
   const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
-  const resynced = resyncQueuedSlices(applyActions(ledger, kept, now), diskPlanReader(root))
+  const resynced = resyncQueuedSlices(
+    applyActions(ledger, kept, now),
+    diskPlanReader(root),
+    now,
+    seatPrReader(seats?.loaded.map(s => s.dispatch) ?? [], opts.exec ?? run),
+  )
   const planLedger = applyActions(ledger, [...kept, ...resynced.actions], now)
   const triage = triageFor(
     config,
@@ -922,8 +934,10 @@ async function decide(
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
-  const closingParents =
+  const pending = pendingOffLedger(ledger, diskPlanReader(root))
+  const closingParents = (
     seats === undefined ? [] : landedReleasedParents(ledger, dispatchCtx.tasks, seats, opts)
+  ).filter(p => pending(p.initiative, p.id).length === 0)
   const closing = new Set(closingParents.map(p => mergedFlagKey(p.initiative, p.id)))
   const notes = [
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
@@ -965,7 +979,7 @@ async function decide(
     merged:
       seats === undefined
         ? {}
-        : mergedEvents(ledger, dispatchCtx.tasks, (i, id) => closing.has(mergedFlagKey(i, id))),
+        : mergedEvents(ledger, dispatchCtx.tasks, (i, id) => closing.has(mergedFlagKey(i, id)), pending),
     closing: closingParents,
     summary: {
       maxAgeDays: config.briefMaxAgeDays,

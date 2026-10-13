@@ -6,7 +6,7 @@ import { run, type Runner } from './exec.js'
 import { heldClaims, sameClaim, type Claim, type Ledger, type StackedOn } from './ledger.js'
 import { defaultBranch } from './observe.js'
 import { exemptFromOverlap, overlapExemptFor } from './overlap-exempt.js'
-import { DESTRUCTIVE_OPS, type Contract } from './report.js'
+import { DESTRUCTIVE_OPS, type AcceptedOverlap, type Contract } from './report.js'
 import { shepherdTarget } from './shepherd.js'
 import { GIT_BIN } from './review-diff.js'
 
@@ -41,6 +41,8 @@ export interface CollisionWork {
   contracts?: Contract[]
   /** CC-1158 c: the parent a stacked slice builds on; its PR's files are the child's own base, so file-overlap skips that PR. */
   stackedOn?: StackedOn
+  /** CC-1259: open-PR overlaps the planner accepted, each waiving one exact owns path for one PR only. */
+  overlapsAccepted?: AcceptedOverlap[]
 }
 
 /** A dispatch planned this tick with the work its collision check saw, so a later seat's check sees it too. */
@@ -182,7 +184,7 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
     const path = overlapping(
-      owns,
+      owns.filter(own => !accepted(work, pr.number, own)),
       files.filter(path => !isChangeset(path)),
     )
     if (path !== undefined)
@@ -190,6 +192,9 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
   }
   return undefined
 }
+
+const accepted = (work: CollisionWork, pr: number, path: string): boolean =>
+  (work.overlapsAccepted ?? []).some(a => a.pr === pr && a.path === path)
 
 /** Also the same-pass check: a seat passes the dispatches it has already accepted this pass as `held`. */
 export function liveOverlap(
