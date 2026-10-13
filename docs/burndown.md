@@ -34,6 +34,8 @@ agent-chat burndown tick --once [--dry-run]
 agent-chat burndown pause|resume [--by <who>]
                                         stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
+agent-chat burndown unstall <task> --slice <n>
+                                        reload an outside-owns slice's owns from its plan; keep its PR and agents
 agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
@@ -446,7 +448,11 @@ finished, to tell a merge from a stop. The tick no longer reads PRs through `gh`
   owner-gated there.
 
 A claim with a `stalledReason` keeps its task and worktree but never respawns; only
-`agent-chat burndown release <task>` clears it. `agent-chat doctor` reports the stalled
+`agent-chat burndown release <task>` clears it. `release` also retires the claim's agents. For an
+`outside-owns` stall whose plan owns have since been fixed, `agent-chat burndown unstall <task>
+--slice <n>` reloads the slice's owns from the plan and clears the stall in place when the
+branch fits them. It keeps the claim's PR, phase and agents and retires nobody, so the next tick
+hands the PR to Shepherd with the implementer as fixer. `agent-chat doctor` reports the stalled
 count.
 
 The tick can route a stall to a read-only triager before the owner hears about it. The exception
