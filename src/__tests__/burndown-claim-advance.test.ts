@@ -242,6 +242,25 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(readLedger(file()).slicesReleased).toBeUndefined()
   })
 
+  it('lets a whole-task release re-seed a task whose slices were all released, as the refusal advises', async () => {
+    for (const n of ['a', 'b', 'c']) await releaseTask('CC-1', retire, NOW, n)
+    const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
+    const parent = { taskId: 'CC-1', initiative: 'demo' }
+    expect(seedSlices(parent, plan, readLedger(file()), NOW)).toEqual({
+      blocked: expect.stringContaining('agent-chat burndown release CC-1 to reseed'),
+    })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(ledger.slicesReleased).toBeUndefined()
+    expect(ledger.releases).toBeUndefined()
+    expect(seedSlices(parent, plan, ledger, NOW)).toEqual({
+      blocked: expect.not.stringContaining('released'),
+    })
+  })
+
   it('refuses a slice with no held claim', async () => {
     const report = await releaseTask('CC-1', retire, NOW, 'z')
 
