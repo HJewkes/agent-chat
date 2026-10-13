@@ -25,6 +25,16 @@ describe('an unbraced zsh modifier in a shell word (CC-1290)', () => {
     '$X:gs/a/-b/',
     '"$X:&"',
     '$M:refs/heads/x',
+    '$?:s/0/-b/',
+    '"$?:s/0/-b/"',
+    '$*:s/a/-b/',
+    '$$:s/1/-b/',
+    '$#*:s/1/-b/',
+    '$@:s/a/-b/',
+    '$!:s/a/-b/',
+    '$-:s/a/-b/',
+    '$X[$Y[1]]:s/b/-b/',
+    '"$X[$Y[1]]:s/b/-b/"',
   ])('applies in %s', word => {
     expect(pushWordModifies(word)).toBe(true)
   })
@@ -40,11 +50,16 @@ describe('an unbraced zsh modifier in a shell word (CC-1290)', () => {
     '"$X:-x"',
     'main',
     "'$X:s/a/-b/'",
+    '$X:S',
   ])('does not apply in %s', word => {
     expect(pushWordModifies(word)).toBe(false)
   })
 
   it('fails closed on a quoted colon, which zsh leaves literal but marks the same', () => {
     expect(pushWordModifies("$X':s/a/b/'")).toBe(true)
+  })
+
+  it.each([...'aAcefFghlpPqQrstuwWxX&'])('applies with the modifier letter %s', letter => {
+    expect(pushWordModifies(`"$X:${letter}"`)).toBe(true)
   })
 })
