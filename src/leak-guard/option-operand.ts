@@ -111,7 +111,9 @@ function injectedOperand(rest: string): string | undefined {
 // A `$(...)` or backtick substitution read in full: one plain command with no quote, escape, nested
 // expansion, paren, backtick, comment or redirect, whose first word does not open a compound command
 // (the splitter ends `$(case a in a) …` at the pattern's `)`). Any other may end elsewhere, so it denies.
-const PLAIN_COMMAND = String.raw`(?!\s*(?:case|if|for|while|until|select|function|time|coproc|repeat|foreach)\b)[\w\s.,/@%+=:-]*`
+// Only a space or tab counts as a blank: a newline, like `;`, `&` or `|`, starts a command the keyword
+// lookahead never sees.
+const PLAIN_COMMAND = String.raw`(?![ \t]*(?:case|if|for|while|until|select|function|time|coproc|repeat|foreach)\b)[\w \t.,/@%+=:-]*`
 const PLAIN_SUBSTITUTION = new RegExp(`^(?:\\$\\(${PLAIN_COMMAND}\\)|\`${PLAIN_COMMAND}\`)`)
 // The other marks that stay text: a glob, a leading `~` and a brace, which is judged on its own.
 const TEXT_MARK = /^[*?[~{]/
