@@ -56,10 +56,13 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
+          set -eu
           runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=30" --jq '.workflow_runs')
-          echo "sha=$(node scripts/ci/egress-base.mjs "$BEFORE_SHA" "$GITHUB_SHA" <<<"$runs")" >> "$GITHUB_OUTPUT"
+          # Assigned on its own line so a node failure fails the step; inside
+          # `echo "sha=$(...)"` the exit status would be masked and sha left empty.
+          sha=$(node scripts/ci/egress-base.mjs "$GITHUB_SHA" <<<"$runs")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       # The PR head sha, not the merge ref, so GitHub's synthetic merge commit is not scanned.
       - name: Scan the pushed commits
         env:

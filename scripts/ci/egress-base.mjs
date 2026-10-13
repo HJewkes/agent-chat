@@ -7,15 +7,16 @@
 // newest commit whose main run succeeded, which covers every commit since the
 // last scan that actually completed, cancelled or failed runs included.
 //
-// Usage: egress-base.mjs <before-sha> <head-sha>, workflow runs as JSON on stdin
-// (newest first, as the API returns them). Falls back to <before-sha> when no
-// successful run's commit is an ancestor of <head-sha>.
+// Usage: egress-base.mjs <head-sha>, workflow runs as JSON on stdin (newest
+// first, as the API returns them). Exits 1 when no successful run's commit is an
+// ancestor of <head-sha>: the previous tip is not a trustworthy base, because a
+// rewritten or superseded history would leave commits unscanned.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
-const [before, head] = process.argv.slice(2)
-if (!before || !head) {
-  console.error('usage: egress-base.mjs <before-sha> <head-sha> < runs.json')
+const [head] = process.argv.slice(2)
+if (!head) {
+  console.error('usage: egress-base.mjs <head-sha> < runs.json')
   process.exit(2)
 }
 
@@ -29,7 +30,16 @@ function isAncestor(sha) {
 }
 
 const runs = JSON.parse(readFileSync(0, 'utf8'))
+if (!Array.isArray(runs)) {
+  console.error('egress-base: expected a JSON array of workflow runs')
+  process.exit(1)
+}
 const green = runs.find(
   run => run.conclusion === 'success' && run.head_sha !== head && isAncestor(run.head_sha),
 )
-process.stdout.write(`${green ? green.head_sha : before}\n`)
+if (!green) {
+  console.error('egress-base: no successful main run is an ancestor of the head; refusing to guess a base')
+  process.exit(1)
+}
+process.stdout.write(`${green.head_sha}
+`)

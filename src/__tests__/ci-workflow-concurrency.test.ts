@@ -71,6 +71,22 @@ describe('ci.yml egress-scan range on a main push', () => {
   })
 })
 
+describe('ci.yml base step', () => {
+  const script = (): string => {
+    const steps = workflow.jobs['egress-scan']?.steps ?? []
+    return (steps.find(step => step.id === 'base') as { run?: string } | undefined)?.run ?? ''
+  }
+
+  it('assigns the script output on its own line so its failure fails the step', () => {
+    expect(script()).toMatch(/^\s*set -eu\b/m)
+    expect(script()).toMatch(/^\s*sha=\$\(node scripts\/ci\/egress-base\.mjs /m)
+  })
+
+  it('never wraps the script in echo, which would mask its exit status', () => {
+    expect(script()).not.toMatch(/echo[^\n]*\$\(node /)
+  })
+})
+
 describe('egress-base.mjs', () => {
   let repo: string
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
@@ -88,11 +104,12 @@ describe('egress-base.mjs', () => {
     )
     return git('rev-parse', 'HEAD')
   }
-  const pick = (before: string, head: string, runs: unknown[]) =>
-    execFileSync('node', [BASE_SCRIPT, before, head], {
+  const pick = (head: string, runs: unknown): string =>
+    execFileSync('node', [BASE_SCRIPT, head], {
       cwd: repo,
       input: JSON.stringify(runs),
       encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
     }).trim()
 
   beforeEach(() => {
@@ -111,7 +128,7 @@ describe('egress-base.mjs', () => {
       { head_sha: cancelled, conclusion: 'cancelled' },
       { head_sha: green, conclusion: 'success' },
     ]
-    expect(pick(before, head, runs)).toBe(green)
+    expect(pick(head, runs)).toBe(green)
   })
 
   it('skips a commit whose run did not succeed even when it is the newest', () => {
@@ -122,13 +139,22 @@ describe('egress-base.mjs', () => {
       { head_sha: failed, conclusion: 'failure' },
       { head_sha: green, conclusion: 'success' },
     ]
-    expect(pick(failed, head, runs)).toBe(green)
+    expect(pick(head, runs)).toBe(green)
   })
 
-  it('falls back to the previous tip when no successful run is an ancestor', () => {
-    const before = commit('c1')
-    const head = commit('c2')
-    expect(pick(before, head, [{ head_sha: 'f'.repeat(40), conclusion: 'success' }])).toBe(before)
-    expect(pick(before, head, [])).toBe(before)
+  it('fails rather than fall back to the previous tip when no green ancestor exists', () => {
+    // A rewritten main: the only green run is on a commit the head does not descend from.
+    commit('x')
+    const head = commit('b')
+    const stranger = { head_sha: 'f'.repeat(40), conclusion: 'success' }
+    expect(() => pick(head, [stranger])).toThrow(/no successful main run/)
+    expect(() => pick(head, [])).toThrow(/no successful main run/)
+  })
+
+  it('fails on a runs payload that is not an array', () => {
+    const head = commit('c1')
+    for (const payload of [null, {}, 'garbage']) {
+      expect(() => pick(head, payload)).toThrow()
+    }
   })
 })
