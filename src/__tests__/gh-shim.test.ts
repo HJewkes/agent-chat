@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseRequest } from '../gh-shim/argv.js'
 import { writeGhShim } from '../gh-shim/install.js'
+import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -95,6 +96,8 @@ beforeEach(() => {
     FAKE_GH_LOG: logFile,
     FAKE_GH_FIXTURES: fixturesFile,
     XDG_STATE_HOME: path.join(dir, 'state'),
+    // Port 1 refuses at once, so a live Shepherd serve's ghBudget never gates these reads.
+    [GH_BUDGET_URL_ENV]: 'http://127.0.0.1:1/rpc/shepherd.ghBudget',
   }
 })
 

@@ -7,6 +7,7 @@ import type { GhCallLine } from '../gh-calls/log.js'
 import { parseIncluded } from '../gh-shim/call-log.js'
 import { callShape } from '../gh-shim/call-shape.js'
 import { writeGhShim } from '../gh-shim/install.js'
+import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -55,6 +56,8 @@ beforeEach(() => {
     PATH: [shimDir, fakeDir, '/usr/bin', '/bin'].join(':'),
     FAKE_GH_FIXTURES: path.join(dir, 'fixtures.json'),
     XDG_STATE_HOME: path.join(dir, 'state'),
+    // Port 1 refuses at once, so a live Shepherd serve's ghBudget never gates these reads.
+    [GH_BUDGET_URL_ENV]: 'http://127.0.0.1:1/rpc/shepherd.ghBudget',
     AGENT_CHAT_NAME: 'tc-test-agent',
   }
 })

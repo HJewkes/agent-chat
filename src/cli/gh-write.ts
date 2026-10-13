@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { resolveGhWriteGapMs } from '../config.js'
 import { defaultTermsFile, prepareGhWrite, scanDeps, type ScanDeps } from '../gh-write/scan.js'
 import { ghWrite, type GhResult, type ThrottleDeps } from '../gh-write/throttle.js'
+import { currentCooldowns, writeLane } from '../gh-shim/rate-limit.js'
 import { ghWriteLockPath, ghWriteStampPath } from '../paths.js'
 
 /**
@@ -26,11 +27,19 @@ export function runGh(args: string[]): Promise<GhResult> {
   })
 }
 
-async function coreRemaining(): Promise<number | undefined> {
-  const { code, stdout } = await runGh(['api', 'rate_limit', '--jq', '.resources.core.remaining'])
-  const remaining = Number.parseInt(stdout.toString(), 10)
-  return code === 0 && Number.isInteger(remaining) ? remaining : undefined
-}
+/**
+ * `/rate_limit` never shows the secondary limit (CC-1162), so the shared cooldown answers instead:
+ * 0 while a primary limit cools the REST lane, else unknown, which lets the write retry.
+ */
+export const stateCoreRemaining =
+  (env: NodeJS.ProcessEnv, now: () => number) => async (): Promise<number | undefined> =>
+    (await currentCooldowns(env, now())).rest?.class === 'primary' ? 0 : undefined
+
+/** When the shared cooldown on the write's lane ends; 0 when the lane is open. */
+export const stateCooldownEnd =
+  (env: NodeJS.ProcessEnv, now: () => number) =>
+  async (args: string[]): Promise<number> =>
+    (await currentCooldowns(env, now()))[writeLane(args)]?.until ?? 0
 
 /** Scans the text gh would post and refuses with exit 1 before gh starts on a finding. */
 export async function runGhWrite(args: string[], scan: ScanDeps, throttle: ThrottleDeps): Promise<GhResult> {
@@ -49,7 +58,8 @@ export async function ghWriteCommand(args: string[]): Promise<void> {
     now: Date.now,
     sleep: ms => sleep(ms),
     runGh,
-    coreRemaining,
+    coreRemaining: stateCoreRemaining(process.env, Date.now),
+    cooldownEnd: stateCooldownEnd(process.env, Date.now),
     notice: line => process.stderr.write(`${line}\n`),
     lockDir: ghWriteLockPath(),
     stampPath: ghWriteStampPath(),
