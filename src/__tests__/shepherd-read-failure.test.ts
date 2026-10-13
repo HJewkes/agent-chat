@@ -2,8 +2,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { describeExecFailure } from '../agents/burndown/exec.js'
-import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
+import { describeExecFailure } from '../exec.js'
+import { shepherdRowsAsync } from '../shepherd-client.js'
 import { readActiveRuns, shepherdSkip, type ShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import type { AgentIdentity } from '../protocol.js'
 
