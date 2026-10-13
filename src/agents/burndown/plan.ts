@@ -16,6 +16,7 @@ import {
   type Task,
 } from './eligibility.js'
 import { backoffHeld, type Hold } from './backoff.js'
+import { capGate, type GateReading } from './gate-reading.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import {
   heldClaims,
@@ -83,6 +84,8 @@ export interface Capacity {
   /** New agents this run may still start, after `maxAgents` and the broker's free slots. */
   agents: number
   agentsReason: string
+  /** CC-1097: the agent ceiling that binds with `room` of `agents` left to start (0 or less when refused). */
+  agentsGate: (room: number) => GateReading
   worktrees: (repo: string) => WorktreeUse
 }
 
@@ -397,13 +400,22 @@ export function stackInputs(
   return { stack: (child, dep) => stackable(child, dep, ledger, read), notes: [] }
 }
 
+const WORKTREE_BUDGET_SOURCE = '~/.agent-chat/config.json'
+/** Where the tick's own ceilings (`maxAgents`, `maxWorktreesPerRepo`) are set. */
+export const BURNDOWN_CONFIG = 'burndown.config.json'
+
 export function capacityRefusal(
   d: Pick<Dispatch, 'repo' | 'worktree'>,
   capacity: Capacity | undefined,
   tally: Tally,
-): Pick<Refusal, 'kind' | 'reason'> | undefined {
+): Pick<Refusal, 'kind' | 'reason' | 'gate'> | undefined {
   if (capacity === undefined) return undefined
-  if (tally.agents >= capacity.agents) return { kind: 'slots', reason: capacity.agentsReason }
+  if (tally.agents >= capacity.agents)
+    return {
+      kind: 'slots',
+      reason: capacity.agentsReason,
+      gate: capacity.agentsGate(capacity.agents - tally.agents),
+    }
   if (d.worktree === undefined) return undefined
   const use = capacity.worktrees(d.repo)
   const added = tally.worktrees.get(d.repo) ?? 0
@@ -414,11 +426,13 @@ export function capacityRefusal(
       reason:
         `${use.total + added} worktrees under ${where}: implementer pool full ` +
         `(${use.reviewers ?? 0} reviewer trees not counted); the tick stops at ${use.totalCeiling} (budget less reserve)`,
+      gate: capGate('worktreeBudget', use.totalCeiling, use.total + added, WORKTREE_BUDGET_SOURCE),
     }
   if (use.ours + added >= use.oursCeiling)
     return {
       kind: 'worktrees',
       reason: `implementer pool: ${use.ours + added} burndown worktrees under ${where}; maxWorktreesPerRepo is ${use.oursCeiling}`,
+      gate: capGate('burndown.maxWorktreesPerRepo', use.oursCeiling, use.ours + added, BURNDOWN_CONFIG),
     }
   return undefined
 }
