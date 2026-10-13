@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Refusal } from '../agents/burndown/eligibility.js'
 import { isOffPlan, readOffPlanIds } from '../agents/burndown/off-plan.js'
+import { renderClassFile } from '../agents/burndown/plan-class.js'
 import { offPlanRefusals, planningCandidates } from '../agents/burndown/planning-supply.js'
 import { parseTask } from '../agents/burndown/source.js'
 
@@ -50,6 +51,21 @@ describe('readOffPlanIds', () => {
       'off-plan-2026-10-09.md': '- X-3 and X-4\n',
     })
     expect([...readOffPlanIds(root)].sort()).toEqual(['X-3', 'X-4'])
+  })
+
+  it('reads only the off and ambiguous rows of a plan-class v1 file', () => {
+    const v1 = renderClassFile('classes', [
+      { class: 'on', id: 'X-1', initiative: 'a', detail: 'P3', ask: '-' },
+      { class: 'off', id: 'X-2', initiative: 'a', detail: 'no section-2 id or link', ask: '-' },
+      { class: 'ambiguous', id: 'X-3', initiative: 'a', detail: 'mentions X-1', ask: 'm-1' },
+    ])
+    const root = reviewDir({ 'off-plan-2026-10-13.md': v1 })
+    expect([...readOffPlanIds(root)].sort()).toEqual(['X-2', 'X-3'])
+  })
+
+  it('still reads every id of a legacy file, the dependency column included', () => {
+    const root = reviewDir({ 'off-plan-2026-10-12.md': 'claude-channels|CC-1026|seat env|CC-1025\n' })
+    expect([...readOffPlanIds(root)].sort()).toEqual(['CC-1025', 'CC-1026'])
   })
 
   it('returns no ids when the file or directory is missing', () => {
