@@ -134,9 +134,14 @@ const syncStep = (defaultBranch: string): string =>
  * CC-1158 (decision 275): a rebase moves the fork point Shepherd restacks the child from, so only merges. The
  * merge comes first because a broker that predates `baseRef` cuts the tree from the default branch instead.
  */
-const stackedSyncStep = ({ pr, branch }: { pr: string; branch: string }): string =>
+const stackedSyncStep = ({ pr, branch }: { pr: string; branch: string }, defaultBranch: string): string =>
   `First step: \`git fetch origin && git merge origin/${branch}\`; you are stacked on PR ${pr}. ` +
-  `Open with \`gh pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push.`
+  `Open with \`gh pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push. ` +
+  mergedParentLine(pr, defaultBranch)
+
+/** The parent can merge, and its branch be deleted, before the child opens its PR. */
+const mergedParentLine = (pr: string, defaultBranch: string): string =>
+  `If PR ${pr} has merged, \`git merge origin/${defaultBranch}\` and open with \`--base ${defaultBranch}\`, without \`--after\`.`
 
 const accountLine = (configDir: string): string =>
   `You run on the account at \`${configDir}\`. Your profile is a worker and cannot spawn agents; ` +
@@ -172,9 +177,10 @@ function shepherdStep(t: TaskBrief): string {
       : `--slice ${t.slice.n} --task ${t.initiative}/${t.taskId}`
   const parent = t.stackedOn === undefined ? undefined : shepherdTarget(t.stackedOn.pr)
   const after = parent === undefined ? '' : ` --after ${targetRef(parent)}`
+  const merged = t.stackedOn === undefined ? '' : `${mergedParentLine(t.stackedOn.pr, t.defaultBranch)} `
   return (
     `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target}${after} ` +
-    '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
+    `--implementer <your agent name> --kind <correctness|security|feature|refactor>\`. ${merged}Report \`PR: <url>\`, ` +
     '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
     '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
   )
@@ -225,7 +231,7 @@ export function workerBrief(t: TaskBrief): string {
   return [
     '## Scope',
     workerScope(t),
-    t.stackedOn === undefined ? syncStep(t.defaultBranch) : stackedSyncStep(t.stackedOn),
+    t.stackedOn === undefined ? syncStep(t.defaultBranch) : stackedSyncStep(t.stackedOn, t.defaultBranch),
     '## Context',
     taskContext(t),
     ...workerTail(t),
