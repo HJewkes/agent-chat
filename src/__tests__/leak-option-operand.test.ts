@@ -3,7 +3,7 @@ import { operandMaySpellOption } from '../leak-guard/option-operand.js'
 import { parseShell } from '../leak-guard/shell-words.js'
 
 const pushedWord = (word: string): string => {
-  const marked = parseShell(`git push origin ${word}`)[0]?.marked[3]
+  const marked = parseShell(`git push origin ${word}`).find(command => command.words[1] === 'push')?.marked[3]
   if (marked === undefined) throw new Error(`no fourth word in: ${word}`)
   return marked
 }
@@ -63,6 +63,41 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
   })
 
   it.each([
+    '${X:- }--no-verify',
+    '${X:-a }--no-verify',
+    '${X/#/ }--no-verify',
+    '${=X:- }--no-verify',
+    '${X:+ }--x',
+    '${X/#/ }--x',
+    '${X:-a b}--x',
+    '${X:-a b}-x',
+    '${X:-a\t-x}',
+    '"${X:-\t}"--x',
+    '"${X:-a\n-x}"',
+    '"${X:-\n}"--x',
+    '${X:- }${Y:- }--x',
+    '${X:-a}${Y:- -x}',
+    'main${X}${Y:- }-x',
+    '$X${Y:- }-x',
+    'main${X:-a}--zz',
+    '${X}-x',
+    '--no-veri${X:-fy}',
+    '$(x)${Y:- }-x',
+    '$X--no-verify',
+    '$(x)-y',
+    '`x`--no-verify',
+  ])('is true when the text around the expansion may start an option word: %s', word => {
+    expect(operandMaySpellOption(pushedWord(word))).toBe(true)
+  })
+
+  it('splits injected text on the IFS the line sets', () => {
+    const word = pushedWord('main${X:-a-n}')
+
+    expect(operandMaySpellOption(word)).toBe(false)
+    expect(operandMaySpellOption(word, 'a')).toBe(true)
+  })
+
+  it.each([
     'main',
     '${BRANCH}',
     '"${BRANCH:-main}"',
@@ -92,6 +127,11 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     '${X:-{a,b}}',
     '$X',
     "'${X:---no-verify}'",
+    '--force-with-lease=main:${SHA}',
+    '${BRANCH}/x',
+    'refs/heads/${B}:refs/heads/${B}',
+    '$(git branch --show-current)',
+    'a*-${B}',
   ])('is false for %s', word => {
     expect(operandMaySpellOption(pushedWord(word))).toBe(false)
   })
