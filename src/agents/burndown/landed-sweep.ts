@@ -66,6 +66,26 @@ export function readRecentSubjects(
   return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
+/**
+ * CC-1227: a default-branch commit for every slice, done or released, and no open PR title naming the parent.
+ * Slice commits carry the parent id and no slice letter, so the test is one distinct commit per slice. A
+ * `[covers ...]` line repeats its commit's subject and counts once.
+ */
+export function releasedSlicesLanded(
+  taskId: string,
+  slices: { done: number; released: number },
+  reads: readonly SubjectRead[],
+  openPrTitles: readonly string[],
+): boolean {
+  if (reads.some(read => read.subjects === undefined)) return false
+  if (openPrTitles.some(title => namesId(title, taskId))) return false
+  const commits = reads
+    .flatMap(read => read.subjects ?? [])
+    .filter(s => namesId(s, taskId))
+    .map(s => s.replace(/ \[covers [^\]]*\]$/, ''))
+  return slices.released > 0 && new Set(commits).size >= slices.done + slices.released
+}
+
 export interface LandedSweep {
   rows: LandedRow[]
   swept: number

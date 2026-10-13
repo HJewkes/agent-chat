@@ -23,6 +23,7 @@ describe('stall code precedence', () => {
       'retry-spent',
       'budget',
       'outside-owns',
+      'no-repo',
     ])
     expect(firstCode(['no-progress', 'retry-spent'])).toBe('retry-spent')
   })

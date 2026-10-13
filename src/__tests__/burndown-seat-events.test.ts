@@ -93,9 +93,10 @@ describe('seatEvents', () => {
     'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
     stale: { stale: { class: 'other', proposed: 'settle by hand', since: '2026-01-01T01:00:00.000Z' } },
-    // These two are told from a ledger diff, never from claim state.
+    // These are told from a ledger diff or the task's slices, never from one claim's state.
     released: {},
     brake: {},
+    'slices-merged': {},
     leak: {
       leak: {
         repo: 'example/repo',

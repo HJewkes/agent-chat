@@ -13,7 +13,8 @@ import { collisionCheck, type BrokerView } from '../../agents/burndown/collision
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
 import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
-import { tickFromDisk } from '../../agents/burndown/run-tick.js'
+import { prFilesReader, tickFromDisk } from '../../agents/burndown/run-tick.js'
+import { run } from '../../agents/burndown/exec.js'
 import {
   DEFAULT_WINDOW,
   briefSourceQuality,
@@ -447,6 +448,7 @@ export const burndownUnstallVerb = defineVerb({
     unstallSlice(task, slice, {
       plan: diskPlanReader(activeWorkRoot()),
       changedFiles: cwd => changedFiles(cwd),
+      prFiles: prFilesReader(run),
     }),
 })
 
