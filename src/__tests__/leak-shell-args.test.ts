@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { fillScriptArgs, type ScriptArgs } from '../leak-guard/shell-args.js'
 
 const args = (overrides: Partial<ScriptArgs>): ScriptArgs => ({
@@ -32,9 +36,12 @@ describe('sh -c positionals filled with their words (CC-1201)', () => {
     expect(filled('git push $2', { params: ['a'], more: false })).toEqual({ text: 'git push ' })
   })
 
-  it('leaves positionals inside single quotes and $-quoted strings alone', () => {
+  it('leaves positionals inside single quotes alone', () => {
     expect(filled("echo '$1' $1", { params: ['x'] })).toEqual({ text: "echo '$1' x" })
-    expect(filled("echo $'\\'$1' $1", { params: ['x'] })).toEqual({ text: "echo $'\\'$1' x" })
+  })
+
+  it("reads a $' inside double quotes as text, as every shell does", () => {
+    expect(filled(`echo "$'x" $1`, { params: ['a'] })).toEqual({ text: `echo "$'x" a` })
   })
 
   it('leaves an escaped dollar, $$ and $# alone', () => {
@@ -122,6 +129,14 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     ['source lib.sh; git push $1', 'source'],
     ['IFS=.; git push $1', 'IFS'],
     [': ${IFS:=.}; git push $1', 'IFS'],
+    ['export IF""S=.; git push $1', 'IFS'],
+    ['readonly IF\\S=.; git push $1', 'IFS'],
+    ['declare -n r=IF""S; r=.; git push $1', 'IFS'],
+    ['declare -n r=v; r=.; git push $1', 'nameref'],
+    ['typeset -rn r=v; git push $1', 'nameref'],
+    ['nameref r=v; git push $1', 'nameref'],
+    ["echo $'x' $1", 'ansi-c quoting'],
+    ["x=$'\\'\ngit push $1\n: \\'", 'ansi-c quoting'],
     ["# it's a comment\ngit push $1", 'comment'],
     ['git push "$(echo "\'")" $1', 'nested quoting'],
     ['git push "${x:-"\'"}" $1', 'nested quoting'],
@@ -153,3 +168,48 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     expect(filled('shift; git push $0', { zero: 'x' })).toEqual({ implicit: 'shift' })
   })
 })
+
+const SHELLS = ['dash', 'bash'].filter(shell => {
+  try {
+    execFileSync(shell, ['-c', ':'])
+    return true
+  } catch {
+    return false
+  }
+})
+
+// Each runs `git push` with `--no-verify` in a real shell, though its text never spells it out.
+const HIDDEN_SPLITS: [string, string, string[], string[]][] = [
+  ['export IF""S', 'export IF""S=.; git push $1', ['a.--no-verify'], ['dash', 'bash']],
+  ['readonly IF\\S', 'readonly IF\\S=.; git push $1', ['a.--no-verify'], ['dash', 'bash']],
+  ['a nameref to IFS', 'declare -n r=IF""S; r=.; git push $1', ['a.--no-verify'], ['bash']],
+  ["dash's $'", "x=$'\\'\ngit push $1\n: \\'", ['--no-verify'], ['dash']],
+]
+
+describe.skipIf(SHELLS.length === 0)(
+  'scripts that hide a split from the scan, against real shells (CC-1201)',
+  () => {
+    let bin: string
+    beforeAll(() => {
+      bin = fs.mkdtempSync(path.join(os.tmpdir(), 'cc1201-shell-args-'))
+      fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nprintf "[%s]" "$@"\n', { mode: 0o755 })
+    })
+    afterAll(() => fs.rmSync(bin, { recursive: true, force: true }))
+
+    const ran = (shell: string, script: string, params: string[]) =>
+      execFileSync(shell, ['-c', script, '_', ...params], {
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}` },
+        encoding: 'utf8',
+      })
+
+    it.each(HIDDEN_SPLITS)(
+      'returns implicit for %s, which pushes --no-verify',
+      (_, script, params, shells) => {
+        for (const shell of shells.filter(name => SHELLS.includes(name))) {
+          expect(ran(shell, script, params)).toContain('[--no-verify]')
+        }
+        expect(filled(script, { params })).toHaveProperty('implicit')
+      },
+    )
+  },
+)

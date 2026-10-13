@@ -51,7 +51,12 @@ const BOUNDARY = /[\s;&|()<>]/
 const WORD_START = /[\s;&|()]/
 
 // Words that rebind, read or re-run the arguments wherever they appear (`echo shift` over-denies).
-const READERS = new Set(['shift', 'getopts', 'eval', 'alias', 'trap'])
+const READERS = new Set(['shift', 'getopts', 'eval', 'alias', 'trap', 'nameref'])
+// A word whose dequoted form spells I, F and S in order may set IFS (`IF""S=.`, `declare -n r=IF""S`).
+const MAY_NAME_IFS = /I.*F.*S/s
+// A declaration with `-n` makes a nameref, through which an assignment reaches a variable the guard cannot name.
+const DECLARERS = new Set(['declare', 'typeset', 'local', 'export', 'readonly'])
+const NAMEREF_FLAG = /^[-+][A-Za-z]*n[A-Za-z]*$/
 // Words a command word may follow; `command` and `builtin` run a builtin such as `shift`.
 const PREFIXES = new Set(['{', '}', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
 const WRAPPERS = new Set(['command', 'builtin'])
@@ -73,9 +78,8 @@ export function fillScriptArgs(script: string, args: ScriptArgs): ScriptFill {
   return { text }
 }
 
-/** A reader the fill cannot follow: IFS, a function, or one of `commandReader`'s. */
+/** A reader the fill cannot follow: a function, or one of `commandReader`'s. */
 function implicitReader(script: string): string | undefined {
-  if (script.includes('IFS')) return 'IFS'
   if (FUNCTION_DEF.test(script)) return 'function'
   for (const cmd of parseShell(script)) {
     const reader = commandReader(cmd)
@@ -84,10 +88,12 @@ function implicitReader(script: string): string | undefined {
   return undefined
 }
 
-/** A reader word, a `set` that is not plain flags, `for NAME` without `in`, or a command word that expands. */
+/** A reader word, IFS, a nameref, a `set` that is not plain flags, `for NAME` without `in`, or a command word that expands. */
 function commandReader({ words, marked }: SimpleCommand): string | undefined {
   const reader = words.find(word => READERS.has(word))
   if (reader !== undefined) return reader
+  if (words.some(word => MAY_NAME_IFS.test(word))) return 'IFS'
+  if (words.some(word => DECLARERS.has(word)) && words.some(word => NAMEREF_FLAG.test(word))) return 'nameref'
   if (words.some((word, i) => word === 'set' && !plainSet(words.slice(i + 1)))) return 'set'
   const head = headIndex(words)
   if (head === undefined) return undefined
@@ -114,9 +120,10 @@ function plainSet(rest: readonly string[]): boolean {
 }
 
 /**
- * Every positional the script reads, outside single quotes and `$'...'` strings, with its span;
- * or why the scan cannot be trusted: a comment, a heredoc, an unclosed quote, or quoting nested in
- * a backtick, a double-quoted `$(...)` or a double-quoted `${...}`, which a flat scan misreads.
+ * Every positional the script reads, outside single quotes, with its span; or why the scan cannot
+ * be trusted: a comment, a heredoc, an unclosed quote, quoting nested in a backtick, a double-quoted
+ * `$(...)` or a double-quoted `${...}`, which a flat scan misreads, or a `$'...'` string, which dash
+ * reads as `$` and a single-quoted string.
  */
 function positionalUses(script: string): Use[] | string {
   const uses: Use[] = []
@@ -126,7 +133,7 @@ function positionalUses(script: string): Use[] | string {
     if (quote === "'") quote = c === "'" ? undefined : quote
     else if (c === '\\' || script.startsWith('$$', i)) i++
     else if (c === '`' || (quote === '"' && nestsQuotes(script, i))) return 'nested quoting'
-    else if (quote === undefined && script.startsWith("$'", i)) i = ansiEnd(script, i + 2)
+    else if (quote === undefined && script.startsWith("$'", i)) return 'ansi-c quoting'
     else if (quote === undefined && script.startsWith('<<', i)) return 'heredoc'
     else if (quote === undefined && c === '#' && wordStart(script, i)) return 'comment'
     else if (c === '"') quote = quote === '"' ? undefined : '"'
@@ -167,15 +174,6 @@ function useAt(script: string, start: number, quoted: boolean): Use | undefined 
   return other === null
     ? undefined
     : { start, end: start + other[0].length, name: '', quoted, modified: true }
-}
-
-/** The index of the `'` that closes a `$'...'` string opened before `from`. */
-function ansiEnd(script: string, from: number): number {
-  for (let j = from; j < script.length; j++) {
-    if (script[j] === '\\') j++
-    else if (script[j] === "'") return j
-  }
-  return script.length
 }
 
 const plain = (word: ScriptArg): ScriptArg => (word !== undefined && FILL_PLAIN.test(word) ? word : undefined)
