@@ -147,6 +147,10 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand('xargs -I{} git pu{} origin', ctx)).toBeDefined()
   })
 
+  it('denies a push BSD -J appends to when no word is the replace string', () => {
+    expect(checkCommand('xargs -J % git push origin HEAD:x', ctx)).toBe(REASONS.xargsPush)
+  })
+
   it('denies a config write through the replace word', () => {
     expect(checkCommand('xargs -I % git config %', ctx)).toBeDefined()
   })
@@ -160,6 +164,8 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -a "$X" git push origin --',
     'xargs -I {} git push origin -- {}',
     'xargs -- "$X"',
+    'xargs -J % git push origin -- HEAD:x',
+    'ls | xargs -P "$(nproc)" grep foo',
     `xargs -I{} sh -c 'git log {}'`,
     'xargs -I{} git push origin -- x{}y',
     'xargs git log',

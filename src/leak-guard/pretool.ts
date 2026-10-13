@@ -349,7 +349,8 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
 /** What one xargs option sets about how it feeds its command. */
 interface FeedOption {
   replace?: string | undefined
-  batches?: boolean
+  /** The option may make xargs append what it reads: a batch size, or BSD's -J. */
+  appends?: boolean
 }
 
 const BATCH_LONG = new Set(['--max-args', '--max-lines'])
@@ -365,10 +366,10 @@ function dropXargsOptions(
   splits: readonly string[],
 ): { at: number; fed: Fed } | undefined {
   let replace: string | undefined
-  let batches = false
+  let appends = false
   for (; i < words.length; i++) {
     const a = words[i] as string
-    if (a === '--') return { at: i + 1, fed: feed(replace, batches) }
+    if (a === '--') return { at: i + 1, fed: feed(replace, appends) }
     const option =
       !a.startsWith('-') || a === '-'
         ? undefined
@@ -382,10 +383,10 @@ function dropXargsOptions(
     if (!a.startsWith('-') || a === '-') break
     if (option === undefined) return undefined
     replace = option.replace ?? replace
-    batches ||= option.batches === true
+    appends ||= option.appends === true
     i += width
   }
-  return { at: Math.min(i, words.length), fed: feed(replace, batches) }
+  return { at: Math.min(i, words.length), fed: feed(replace, appends) }
 }
 
 /** Every word may be fed, and more appended: where the guard cannot read xargs' options. */
@@ -395,9 +396,9 @@ const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
 const mayResplit = (word: string, splits: readonly string[]): boolean =>
   word.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && expandsToWords(word, splits)
 
-const feed = (replace: string | undefined, batches: boolean): Fed => ({
+const feed = (replace: string | undefined, appends: boolean): Fed => ({
   replace,
-  append: replace === undefined || batches,
+  append: replace === undefined || appends,
 })
 
 function longFeed(option: string): FeedOption | undefined {
@@ -405,7 +406,7 @@ function longFeed(option: string): FeedOption | undefined {
   if (!XARGS_LONG_VALUE.has(name) && !XARGS_LONG_FLAG.has(name)) return undefined
   if (name === '--replace')
     return { replace: option.includes('=') ? replaceString(option.slice(name.length + 1)) : '{}' }
-  return { batches: BATCH_LONG.has(name) }
+  return { appends: BATCH_LONG.has(name) }
 }
 
 const longValueWords = (option: string): number =>
@@ -416,10 +417,11 @@ function clusterFeed(cluster: string, next: string | undefined): FeedOption {
   for (let k = 1; k < cluster.length; k++) {
     const letter = cluster[k] as string
     const glued = cluster.slice(k + 1)
+    // BSD -J appends when no word is exactly the replace string, so only GNU's -I is known never to append.
     if (letter === 'I' || letter === 'J')
-      return { replace: replaceString(glued === '' ? (next ?? '') : glued) }
+      return { replace: replaceString(glued === '' ? (next ?? '') : glued), appends: letter === 'J' }
     if (letter === 'i') return { replace: glued === '' ? '{}' : replaceString(glued) }
-    if ('nLl'.includes(letter)) return { batches: true }
+    if ('nLl'.includes(letter)) return { appends: true }
     if (XARGS_SHORT_VALUE.has(letter) || letter === 'e') return {}
   }
   return {}
