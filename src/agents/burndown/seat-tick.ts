@@ -293,6 +293,8 @@ export interface SeatPlanDeps {
   brief?: BriefDeps
   /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
   scopeTagAliases: TickConfig['scopeTagAliases']
+  /** CC-1158: admits a queued slice onto its one unmerged parent; absent, none stacks. */
+  stack?: PlanInputs['stack']
 }
 
 /**
@@ -396,6 +398,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     collision: (repo, work, landedRepos) =>
       sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
     ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
+    ...(deps.stack === undefined ? {} : { stack: deps.stack }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),

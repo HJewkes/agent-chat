@@ -17,7 +17,17 @@ import {
 } from './eligibility.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
-import { heldClaims, laneClaims, readySlices, type Claim, type Ledger } from './ledger.js'
+import {
+  heldClaims,
+  laneClaims,
+  readySlices,
+  type Claim,
+  type Ledger,
+  type StackedOn,
+  type StackPredicate,
+} from './ledger.js'
+import type { ShepherdRow } from './shepherd.js'
+import { stackable, stackReady, type StackMode } from './stack.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -53,6 +63,8 @@ export interface Dispatch {
   grants?: string[]
   /** CC-952: the slice's declared owns, claimed for the agent at spawn. */
   owns?: string[]
+  /** CC-1158: the unmerged parent a slice is stacked on; its worktree and PR start from the parent's branch. */
+  stackedOn?: StackedOn
 }
 
 /** Implementer worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
@@ -89,6 +101,8 @@ export interface PlanInputs {
   /** Why `work` collides with work landed, open or held in `repo` (CC-202), or undefined when it does not. */
   /** `landedRepos` are the other checkouts whose default branch also counts as landing the task (a seat's repos). */
   collision?: (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined
+  /** CC-1158: admits a queued slice onto its one unmerged parent under `stack.mode: on`; absent, none stacks. */
+  stack?: StackPredicate
 }
 
 export interface Plan {
@@ -187,6 +201,7 @@ interface Work {
   namePrefix?: string
   seat?: string
   contracts?: Contract[]
+  stackedOn?: StackedOn
 }
 
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
@@ -198,7 +213,7 @@ function nextWork(
   const tasks = inputs.tasks.get(initiative.slug) ?? []
   const held = backoffHeld(inputs.ledger, inputs.gate.now)
   const gated: Refusal[] = []
-  const ready = readySlices(inputs.ledger, held).filter(
+  const ready = readySlices(inputs.ledger, held, inputs.stack).filter(
     (c): c is Claim & { slice: string } => c.initiative === initiative.slug && c.slice !== undefined,
   )
   for (const slice of ready) {
@@ -229,6 +244,7 @@ function sliceWork(
     tags,
     owns: ready.owns ?? [],
     contracts: ready.contracts ?? [],
+    ...(ready.stackedOn === undefined ? {} : { stackedOn: ready.stackedOn }),
   }
   const collided = collisionOf(initiative, work, inputs, accepted)
   if (collided !== undefined) return { refusals: [collided] }
@@ -243,6 +259,7 @@ function sliceWork(
       profile: IMPLEMENTER_PROFILE,
       contracts: work.contracts,
       ...identity,
+      ...(ready.stackedOn === undefined ? {} : { stackedOn: ready.stackedOn }),
     },
     refusals: [],
   }
@@ -361,7 +378,23 @@ function place(
     reason,
     ...(work.namePrefix === undefined ? {} : { namePrefix: work.namePrefix }),
     ...(work.seat === undefined ? {} : { seat: work.seat }),
+    ...(work.stackedOn === undefined ? {} : { stackedOn: work.stackedOn }),
   }
+}
+
+/** CC-1158: under `on`, the predicate the planners stack slices with; under `shadow`, would-stack notes only. */
+export function stackInputs(
+  mode: StackMode,
+  ledger: Ledger,
+  held: ReadonlyMap<string, unknown>,
+  rows: () => readonly ShepherdRow[] | undefined,
+): { stack?: StackPredicate; notes: string[] } {
+  if (mode === 'off') return { notes: [] }
+  const read = rows()
+  if (read === undefined)
+    return { notes: [`stack ${mode}: shepherd status unread, so nothing stacks this tick`] }
+  if (mode === 'shadow') return { notes: stackReady(mode, ledger, held, read).notes }
+  return { stack: (child, dep) => stackable(child, dep, ledger, read), notes: [] }
 }
 
 export function capacityRefusal(

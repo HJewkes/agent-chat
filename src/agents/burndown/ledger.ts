@@ -35,8 +35,17 @@ export type Phase = (typeof PHASES)[number]
 export const AGENT_PHASES = ['planning', 'implementing', 'reviewing'] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
-/** CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. */
-const StackedOn = z.object({ taskId: z.string(), slice: z.string(), pr: z.string(), branch: z.string() })
+/**
+ * CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. `forkHead` is the
+ * parent head the child's worktree was cut from, recorded once the spawn answers, to diagnose a restack against.
+ */
+const StackedOn = z.object({
+  taskId: z.string(),
+  slice: z.string(),
+  pr: z.string(),
+  branch: z.string(),
+  forkHead: z.string().optional(),
+})
 export type StackedOn = z.infer<typeof StackedOn>
 
 const Claim = z.object({
