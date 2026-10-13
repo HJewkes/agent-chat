@@ -139,15 +139,32 @@ function segments(marked: string, ifs: string): Segment[] {
   return out
 }
 
+const BRACE_OPENER = `${LIVE}{`
+const BRACE_SEPARATOR = /,|\.\./
+
+/**
+ * Whether any unquoted `{` in `marked` may open a brace expansion: a `,` or `..` follows it, or no `}`
+ * does. Only `{` is marked, so a quoted `}` cannot be told from the closing one and the body is not parsed.
+ */
+function opensBraceExpansion(marked: string): boolean {
+  for (let at = marked.indexOf(BRACE_OPENER); at >= 0; at = marked.indexOf(BRACE_OPENER, at + 1)) {
+    const after = marked.slice(at + BRACE_OPENER.length)
+    if (!after.includes('}') || BRACE_SEPARATOR.test(after)) return true
+  }
+  return false
+}
+
 /**
  * Whether `marked`, a word holding an expansion, may become an option word once the shell expands
  * and splits it on `ifs` (the line's IFS when it sets one): an expansion that may inject one, or
  * text that starts the word or follows an expansion and starts with `-` or a glob. After a `$` form
- * it does not know, a `-` or glob anywhere in the text that follows counts.
+ * it does not know, a `-` or glob anywhere in the text that follows counts. A brace expansion makes
+ * each alternative a copy of the word around it, so with an expansion beside it any `-` counts.
  */
 export function operandMaySpellOption(marked: string, ifs = DEFAULT_IFS): boolean {
   const parts = segments(marked, ifs)
   if (parts.length === 1) return false
+  if (marked.includes('-') && opensBraceExpansion(marked)) return true
   return parts.some((part, index) => {
     if (!('text' in part)) return part.unsafe
     if (index === 0) return WORD_START.test(part.text) && !OPTION_WITH_VALUE.test(part.text)

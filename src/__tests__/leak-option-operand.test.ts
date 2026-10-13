@@ -111,6 +111,30 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     expect(operandMaySpellOption(marked)).toBe(true)
   })
 
+  it.each([
+    'main{a,$X}--zz',
+    'main$X{-f,a}',
+    'main$X{,-}-zz',
+    'main${X}{a,--no-verify}',
+    'main$=X{a,-f}',
+    'main${=X}{-f,a}',
+    'main$X{0..-1}',
+    'main{$X,-x}',
+    'main$X{a{b}c,-d}',
+    'main$X{a,b-',
+    'main$X{a-',
+    'main$X{a"}",-b}',
+  ])('is true for a brace expansion beside an expansion in a word holding a -: %s', word => {
+    expect(operandMaySpellOption(pushedWord(word))).toBe(true)
+  })
+
+  it.each(["'{a,-b}'${X}", 'main${X}{a}-x', 'main${X}{a,b}', '"{a,-b}"$X'])(
+    'is false for a quoted brace, a brace with no comma, or no -: %s',
+    word => {
+      expect(operandMaySpellOption(pushedWord(word))).toBe(false)
+    },
+  )
+
   it('splits injected text on the IFS the line sets', () => {
     const word = pushedWord('main${X:-a-n}')
 
