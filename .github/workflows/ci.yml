@@ -10,11 +10,11 @@ on:
   # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
-# A newer push cancels a superseded PR run; a push to main is never cancelled.
-# Each main push gets its own group (the run id) because a shared group still
-# cancels a pending run when a third arrives, even without cancel-in-progress.
+# A newer push cancels a superseded PR run. Main pushes share one group without
+# cancel-in-progress: a newer push replaces a queued run, a running one finishes.
+# Owner decision 319 (2026-10-13) reverses the old "every main push runs" choice for queued runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The whole grant. A called workflow can never hold more than its caller grants,
