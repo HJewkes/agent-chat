@@ -143,6 +143,7 @@ const broker: TickBroker = {
   retire: async () => ({ ok: true }),
   queue: async () => [],
   resume: async name => ({ ok: true, agentId: `id-${name}` }),
+  retireFinished: async () => ({ ok: true, plan: [], results: [] }),
   collisionView: async () => ({ names: [], claims: [] }),
   seatSender: async () => ({
     send: async () => ({ ok: true }),
@@ -178,6 +179,7 @@ const IN_LOCK_STEPS = [
   'plan',
   'collision',
   'scope-exhausted',
+  'daily-retire',
   'execute',
   'adopt',
   'decider-triage',

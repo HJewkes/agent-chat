@@ -26,6 +26,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/posix-shell-shebang.test.ts',
   'src/__tests__/spawn-attach-live.test.ts',
   'src/__tests__/burndown-watchdog-unusable.test.ts',
+  'src/__tests__/burndown-daily-retire.test.ts',
   'src/__tests__/worktree-setup.test.ts',
   'src/__tests__/restart-window.test.ts',
   'src/__tests__/restart-window-guard.test.ts',

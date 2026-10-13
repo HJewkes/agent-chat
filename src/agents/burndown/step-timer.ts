@@ -11,6 +11,7 @@ export type StepName =
   | 'plan'
   | 'collision'
   | 'scope-exhausted'
+  | 'daily-retire'
   | 'execute'
   | 'adopt'
   | 'decider-triage'
