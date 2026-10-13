@@ -404,6 +404,7 @@ export class SocketServer {
       ...(msg.worktree === undefined ? {} : { worktree: msg.worktree }),
       ...(msg.owns === undefined ? {} : { owns: msg.owns }),
       ...(msg.claimPaths === undefined ? {} : { claimPaths: msg.claimPaths }),
+      ...(typeof msg.baseRef === 'string' ? { baseRef: msg.baseRef } : {}),
       // Passed through rather than resolved here: WHOSE conversation a fork
       // copies is decided in the supervisor, from this requester's own registry
       // entry, so the refusals land in the log with every other spawn refusal.

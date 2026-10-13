@@ -18,7 +18,7 @@ import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
-import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
+import { adoptSeatOf, changedFiles as prChangedFiles, diskAdoptPorts } from './pr-adopt-ports.js'
 import { claimPrReader } from './pr-state.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
@@ -57,7 +57,15 @@ import {
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
-import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import {
+  DEFAULT_NAME_PREFIX,
+  plan,
+  stackInputs,
+  type Capacity,
+  type Dispatch,
+  type PlanInputs,
+} from './plan.js'
+import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
@@ -451,6 +459,15 @@ function adoptPrs(
   }
 }
 
+/** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
+const prFilesReader =
+  (exec: Runner) =>
+  (pr: string): string[] | undefined => {
+    const target = shepherdTarget(pr)
+    const files = target === undefined ? undefined : prChangedFiles(target, exec)
+    return files?.flatMap(f => (f.previousPath === undefined ? [f.path] : [f.path, f.previousPath]))
+  }
+
 /** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
 function logReasons(
   autonomyRoot: string,
@@ -470,7 +487,14 @@ function logReasons(
 /** The tick's releases and its brake notice, each logged once. */
 function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
   for (const r of releasesSince(before, after))
-    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+    log('burndown_release', {
+      task: r.taskId,
+      slice: r.slice,
+      code: r.code,
+      reason: r.reason,
+      branch: r.branch,
+      n: r.n,
+    })
   const brake = brakeSince(before, after)
   if (brake === undefined) return
   const claims = brake.claims.map(c => c.key)
@@ -595,6 +619,7 @@ async function decide(
       shepherdRows: shepherd,
       landed: target => shepherdLanded(target, opts.exec ?? run),
       exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+      prFiles: prFilesReader(opts.exec ?? run),
       prState: claimPrReader(opts.exec ?? run),
     }),
   )
@@ -610,10 +635,16 @@ async function decide(
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const planning = timer.start('plan')
   const laddered = ladderActions(
-    withFindings(advance(held, observations, now), held, observations, now, seat => {
-      const lookup = ctx.seat?.(seat)
-      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
-    }),
+    withFindings(
+      advance(held, observations, now, name => mayRun(roster, name)),
+      held,
+      observations,
+      now,
+      seat => {
+        const lookup = ctx.seat?.(seat)
+        return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+      },
+    ),
     held,
     ledger,
     {
@@ -640,6 +671,7 @@ async function decide(
   const building = timer.start('plan')
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
+  const stacking = stackInputs(config.stack.mode, planLedger, backoffHeld(planLedger, now), shepherd)
   const planned = planNew(
     world,
     seats,
@@ -651,6 +683,7 @@ async function decide(
       orphan: (repo, name) => orphanAt(repo, name),
       collision: check,
       charged: advanced.charged,
+      ...(stacking.stack === undefined ? {} : { stack: stacking.stack }),
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
@@ -670,6 +703,7 @@ async function decide(
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
     ...planned.notes,
+    ...stacking.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -729,9 +763,10 @@ function serviceGate(
   }
 }
 
-type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> & {
-  charged: readonly string[]
-}
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> &
+  Pick<PlanInputs, 'stack'> & {
+    charged: readonly string[]
+  }
 
 interface Planned {
   dispatch: Dispatch[]

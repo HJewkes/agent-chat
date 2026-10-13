@@ -114,4 +114,5 @@ const spawnReply = (res: Reply<'spawn_result'>): SpawnReply => ({
   ...(res.reason === undefined ? {} : { reason: res.reason }),
   ...(res.code === undefined ? {} : { code: res.code }),
   ...(res.retryable === undefined ? {} : { retryable: res.retryable }),
+  ...(res.base === undefined ? {} : { base: res.base }),
 })

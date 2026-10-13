@@ -110,6 +110,8 @@ export interface SeatPlanInputs {
   priorRouter?: PriorRouter
   /** CC-1107: project shares of the seat's whole-task picks; absent, the legacy order (decay, kind weights, share caps). */
   shares?: ProjectShares
+  /** CC-1158: admits a queued slice onto its one unmerged parent; absent, none stacks. */
+  stack?: PlanInputs['stack']
 }
 
 export interface SeatBriefGate {
@@ -249,7 +251,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
+  const slices = readySlices(inputs.ledger, walk.held, inputs.stack).filter(c => c.seat === inputs.seat.seat)
   // Rows are counted first: a taken slice claims its task, which would hide that task's row.
   const rowDepth = supplyDepth(order, walk)
   const depth = rowDepth + takeSlices(slices, walk, take)
@@ -794,6 +796,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   const dispatch = {
     ...dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk),
     ...(claim.owns?.length ? { owns: claim.owns } : {}),
+    ...(claim.stackedOn === undefined ? {} : { stackedOn: claim.stackedOn }),
   }
   const checked = sliceWork(claim, tags)
   const refused = blocker(dispatch, checked, 'implementers', walk)
@@ -827,6 +830,7 @@ const sliceWork = (claim: Claim, tags: string[]): CollisionWork => ({
   tags,
   owns: claim.owns ?? [],
   contracts: claim.contracts ?? [],
+  ...(claim.stackedOn === undefined ? {} : { stackedOn: claim.stackedOn }),
 })
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
