@@ -107,7 +107,7 @@ function scriptOf(word: ConfigWord): string | null | undefined {
 }
 
 /** A config word's key and value: the value undefined when the guard cannot read it, null when the word sets none. */
-function keyValue(word: ConfigWord): { key: string; value: string | null | undefined } | undefined {
+export function keyValue(word: ConfigWord): { key: string; value: string | null | undefined } | undefined {
   if (unreadable(word)) return undefined
   const kv = word.resolved ?? unmark(word.marked)
   const key = keyOf(kv, word.fromEnv)
@@ -275,7 +275,7 @@ const SUBMODULE_ADD = `q:[no-]quiet b:[no-]branch= f:[no-]force [no-]progress [n
   [no-]dissociate [no-]name= [no-]depth=`
 // `git clone`'s options, from `git clone -h` on git 2.53. `--recurse-submodules[=<pathspec>]` takes
 // its value only attached, so it reads as a flag.
-const CLONE_OPTIONS = optionSpec(
+export const CLONE_OPTIONS = optionSpec(
   `v:[no-]verbose q:[no-]quiet [no-]progress [no-]reject-shallow n:no-checkout checkout [no-]bare
   [no-]mirror l:[no-]local no-hardlinks hardlinks s:[no-]shared [no-]recurse-submodules [no-]recursive
   j:[no-]jobs= [no-]template= [no-]reference= [no-]reference-if-able= [no-]dissociate o:[no-]origin=
@@ -338,24 +338,32 @@ const PROTOCOL_SECTION = /^protocol(?:[."\s]|$)/i
 /** What a write enables for `ext::`; `option` when the guard cannot tell which word is the key, URL or verb. */
 export type ExtEnabler = 'protocol' | 'url' | 'option'
 
-/** What a `git config` call does with its words: sets a key, renames a section, or neither. */
-interface ConfigCall {
-  mode: 'set' | 'rename' | 'other'
-  positionals: (string | undefined)[]
-}
+/**
+ * How the guard reads a `git config` call (CC-1137): the key and value it sets, the section names
+ * of a rename (from, to, and any extra word git refuses), neither, or `option` when an option is
+ * one the guard cannot match. A word the guard cannot read is undefined.
+ */
+export type ConfigReading =
+  | { mode: 'set'; key: string | undefined; value: string | undefined }
+  | { mode: 'rename'; names: (string | undefined)[] }
+  | { mode: 'other' }
+  | { mode: 'option' }
 
-function configCall(parsed: ParsedArgs, named: string | undefined): ConfigCall {
+function configCall(parsed: ParsedArgs, named: string | undefined): ConfigReading {
   const { positionals } = parsed
   const reads = [...CONFIG_NON_WRITES].some(mode => isSet(parsed, mode))
-  if (reads || (named !== undefined && CONFIG_NON_WRITES.has(named))) return { mode: 'other', positionals }
-  const rename = isSet(parsed, 'rename-section') || named === 'rename-section'
-  return { mode: rename ? 'rename' : 'set', positionals }
+  if (reads || (named !== undefined && CONFIG_NON_WRITES.has(named))) return { mode: 'other' }
+  if (isSet(parsed, 'rename-section') || named === 'rename-section')
+    return { mode: 'rename', names: positionals }
+  if (positionals.length < 2) return { mode: 'other' }
+  return { mode: 'set', key: positionals[0], value: positionals[1] }
 }
 
 // git 2.53 names a `git config` subcommand only as its first word; `--file f set k v` is legacy.
-// The subcommand form stops at `--`. Legacy reads past a leading `--`; past one after an option git
-// stops, so reading on there only over-denies.
-const SUBCOMMAND_END: OptionsEnd = { atDashDash: true, atPositional: false }
+// The subcommand form stops at `--` and at its first positional, so `set k --bool` sets k to `--bool`
+// (CC-1137). Legacy reads past a leading `--`; past one after an option git stops, so reading on
+// there only over-denies.
+const SUBCOMMAND_END: OptionsEnd = { atDashDash: true, atPositional: true }
 const LEGACY_END: OptionsEnd = { atDashDash: false, atPositional: true }
 
 /** A `git config` call's subcommand, if its first word names one, and its options and positionals. */
@@ -378,13 +386,18 @@ function renameEnabler(names: readonly (string | undefined)[]): ExtEnabler | und
   return URL_SECTION.test(target) ? 'url' : undefined
 }
 
-function configEnabler(args: SubArgs): ExtEnabler | undefined {
+/** The guard's reading of a `git config` call's words, after `config`. */
+export function readConfigCall(args: SubArgs): ConfigReading {
   const { named, parsed } = parseConfig(args)
-  if (parsed === undefined) return 'option'
-  const { mode, positionals } = configCall(parsed, named)
-  if (mode === 'rename') return renameEnabler(positionals)
-  if (mode === 'other' || positionals.length < 2) return undefined
-  const [key, value] = positionals
+  return parsed === undefined ? { mode: 'option' } : configCall(parsed, named)
+}
+
+function configEnabler(args: SubArgs): ExtEnabler | undefined {
+  const call = readConfigCall(args)
+  if (call.mode === 'option') return 'option'
+  if (call.mode === 'rename') return renameEnabler(call.names)
+  if (call.mode === 'other') return undefined
+  const { key, value } = call
   if (key === undefined) return 'url'
   if (allowsExt(key, value)) return 'protocol'
   return URL_KEY.test(key) && value === undefined ? 'url' : undefined

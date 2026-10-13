@@ -331,9 +331,14 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `caffeinate`, `coproc`, zsh's `noglob`, `nocorrect` and `repeat <n>`, `if`/`then`
-and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
-`/usr/bin/nice` is stripped like `nice`.
+`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
+`if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
+`/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
+unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
+not know, an option word the shell expands, or a bare `-h` before another word (`--help` or `--host`,
+by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, so the guard checks
+`sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
+an expansion or xargs input among those words denies (CC-1209).
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -359,8 +364,9 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a program-running env var (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `MANPAGER` and kin, below) on a line that runs git: a plain literal assignment whose value a row above denies, or any other use but a read                             | git runs the value as a pager, editor or ssh command        |
 | an `ext::` transport in any git word or config value whose decoded shell command a row above denies (below)                                                                                                                                     | `protocol.ext.allow` lets `ext::` run a shell command       |
 | a gh alias whose body a row above denies, when `gh alias set` stores it or `gh <alias>` runs it; `gh alias import`, a body or argument the guard cannot read, or a line that writes gh config or moves its home (below)                         | `gh alias set x '!git push --no-verify'` runs git unseen    |
-| `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                               | a later git runs `ext::` as shell                           |
+| `GIT_ALLOW_PROTOCOL` listing `ext` on any line; unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                   | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
+| a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
@@ -386,6 +392,20 @@ parsed words, is or may be `git` or `gh`; put such a command on a line of its ow
 as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case pattern, a `[[ ]]`
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
+
+The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
+`echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
+command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
+function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
+`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. It is also denied when the
+expansion holds a nested `{` and zsh, which counts nested braces, finds the close past a blank, a
+quote or an operator, as in `${X:-{} #}`, or finds no close at all. `${X:-python{3,}}` keeps one
+word under either close and is not affected. A line that names `gh` (which
+includes `agent-chat gh-write`) is also denied for any other `${...}` that is not `${NAME}` or
+`${1}`: one with an operator such as `:-`, `#`, `%`, `/`, `^` or `,`, or with a leading `#` or `!`.
+`$x`, `${HOME}` and `${10}` stay allowed everywhere. Inside single quotes, as in `-b '${X:-y}'`, the
+expansion is plain text and allowed. To get past the rule, compute the value in an earlier Bash call,
+or write it out.
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
@@ -463,8 +483,8 @@ follow: `source ./env.sh; $x pnv` runs an alias unchecked when `env.sh` sets `x=
 would deny `$PYTHON -m pytest` and `$PAGER README` too, since the command string cannot tell
 them apart, and a sourced file can run `git push --no-verify` itself anyway. A word that git
 would not take as an alias name, one that starts with anything but a letter or holds anything
-but letters, digits and `-`, is never looked up. `echo pnv | xargs git` still runs an alias
-unchecked, because the subcommand comes from stdin.
+but letters, digits and `-`, is never looked up. `echo pnv | xargs git` is denied: the
+subcommand comes from stdin, so the guard reads it as a word it cannot resolve (below).
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
@@ -529,6 +549,38 @@ or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: 
 piped from another command, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
+
+### Words xargs adds (CC-1117)
+
+`xargs [options] git|gh <words>` runs that command with more words the guard cannot read: the
+ones it reads from stdin or `-a file`, appended after `<words>`, or, in replace mode (`-I R`,
+`-i[R]`, `--replace[=R]`, BSD `-J R`), put in place of each copy of the replace string. The guard
+strips `xargs` and its options like a wrapper and checks the command as if those words were an
+unquoted `"$@"`, so the rules above for a word the guard cannot read apply:
+
+- `git config` and `git remote add` or `set-url` deny, whatever the key:
+  `echo always | xargs git config protocol.ext.allow`, `echo core.hooksPath /x | xargs git config`,
+  `xargs git remote add o < urls`. So does `xargs git config --get`, a known false deny.
+- `git` or `gh` with no subcommand denies, since stdin names it and it may be an alias:
+  `echo config protocol.allow always | xargs git`, `echo pv | xargs gh`.
+- `git push` denies with its own reason, since stdin may hold `--no-verify`, unless a literal `--`
+  comes before the words xargs adds, with only value-less push flags before it:
+  `xargs git push origin --` and `xargs -I{} git push origin -- {}` pass, while `xargs git push`,
+  `xargs -I{} git push {}` and `xargs git push -o --` (where `--` may be the `-o` value) deny.
+- A git alias keeps the marks of the words around it, so `xargs git cfg` and `xargs git p` deny
+  when `cfg = config` and `p = push`, and a `!` alias that takes the words denies.
+
+GNU xargs drops a replace string on a later `-n`, `-L` or `-l` and appends instead; the guard does
+not track the order, so a batch option beside `-I` counts as appending too. An xargs option or
+replace string the guard cannot read (an expansion such as `"$X"`, which may be `-I--`) counts as
+filling every word and appending. An unknown long option denies. An xargs whose command word, or a
+wrapper option such as `env -u` or `nice -n`, comes from its input denies (`xargs nice`,
+`xargs -I% %`, `xargs -I% env -u% git push origin --`). In a `sh -c` script under xargs, only
+two spellings of the words xargs adds are read: the replace string, swapped in place, so
+`xargs -I{} sh -c 'git push origin {} --no-verify'` denies, and `"$@"`, so
+`xargs sh -c 'git push origin "$@"' _` denies as a fed push. A script that reads them through
+`$0` to `$9` or `$*` is not checked (CC-1201; see "Not covered" below). Reads such as `xargs git log`, `ls | xargs git add`, `xargs git status` and
+`xargs gh pr view` stay allowed.
 
 ### gh-write scans when it runs (CC-501 S1)
 
@@ -681,7 +733,12 @@ rule below on a line that may reach git: a plain literal assignment (prefix, `ex
 whose list names `ext`, in any case, denies, and any other use but a read denies, as in
 `GIT_ALLOW_PROTOCOL="$P" git fetch`. Unsetting it there (`unset`, `env -u`, `env --unset`) also
 denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh git fetch` stays
-allowed. A `git config` write, legacy or `git config set`, of `protocol.allow` or
+allowed. A literal list naming `ext` denies wherever it appears, on a script, make or npm line too
+(`GIT_ALLOW_PROTOCOL=ext make`, CC-1137 d), since nothing legitimate lists it. An unset, an unread
+value or a built name (`export $N=ext; make`) on a line that cannot reach git stays allowed and is
+left to the CC-1095 pin, which re-pins the list for every git the shim runs;
+`leak-git-shim-protocol.test.ts` shows a script's and a make rule's git refusing `ext::` under each.
+A `git config` write, legacy or `git config set`, of `protocol.allow` or
 `protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
 stay allowed. `git remote add` or `set-url` with a word the guard cannot read, and a `git config`
 write of `remote.<name>.url`, `.pushurl`, `.vcs` or `url.<base>.insteadOf` or `.pushInsteadOf` with
@@ -732,7 +789,8 @@ of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion
 name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
 `local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
 line that may reach git it denies as `programEnv`, after the line's other checks so a more
-specific reason wins. Words that `xargs` or `find -exec` add are not read here.
+specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
+that `find -exec` adds are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
@@ -1205,14 +1263,19 @@ so a bug in the guard cannot block every command an agent runs.
 
 Not covered, by design or by cost:
 
-- a script file (`bash push.sh`, `make push`, an npm script) or `xargs`, whose commands the guard
-  never sees;
+- a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
+  sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
-  `find -exec gh ...`, `sudo gh ...`, `watch gh ...`, `script -q /dev/null gh ...`. The guard
+  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`,
+  `script -q /dev/null gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
   when the command line names `git` or `gh`, so text set in an earlier tool call gets through;
+- a `sh -c` script that reads its arguments through `$0` to `$9` or `$*`, with or without xargs
+  (CC-1201): `xargs sh -c 'git push origin $0'`, `xargs sh -c 'git push origin "$1"' _` and
+  `sh -c 'git push origin $0' --no-verify` all pass. So do `xargs -I{} sh -c '{}'`, whose whole
+  script is the replace word, and a bare `xargs sh -c`, whose script comes from stdin;
 - a command word that is an expansion, when the group or verb after it is one too (`$G pr $V`);
 - text in a place the guard does not scan: the query string of a `gh api` path
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and

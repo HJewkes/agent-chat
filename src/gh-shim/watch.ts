@@ -5,8 +5,10 @@ import { asJson, runJob } from './fields.js'
 
 type Json = Record<string, unknown>
 
-export const runJobs = (io: ShimIo, repo: string, runId: string): Json[] =>
-  (asJson(io.api(`repos/${repo}/actions/runs/${runId}/jobs?per_page=100`)).jobs as unknown[]).map(runJob)
+export const runJobs = async (io: ShimIo, repo: string, runId: string): Promise<Json[]> =>
+  (asJson(await io.api(`repos/${repo}/actions/runs/${runId}/jobs?per_page=100`)).jobs as unknown[]).map(
+    runJob,
+  )
 
 const SYMBOLS: Record<string, string> = { success: '✓', skipped: '-', neutral: '-' }
 
@@ -23,17 +25,17 @@ export async function runWatch(
   req: Extract<ShimRequest, { kind: 'run-watch' }>,
   repo: string,
 ): Promise<number> {
-  let run = asJson(io.api(`repos/${repo}/actions/runs/${req.runId}`))
+  let run = asJson(await io.api(`repos/${repo}/actions/runs/${req.runId}`))
   const already = run.status === 'completed'
   while (run.status !== 'completed') {
     await io.sleep(req.intervalSec * 1000)
-    run = asJson(io.api(`repos/${repo}/actions/runs/${req.runId}`))
+    run = asJson(await io.api(`repos/${repo}/actions/runs/${req.runId}`))
   }
   const conclusion = String(run.conclusion ?? '')
   const label = `Run ${String(run.name)} (${req.runId})`
   if (already) io.out(`${label} has already completed with '${conclusion}'\n`)
   else {
-    io.out(`\nJOBS\n${runJobs(io, repo, req.runId).map(jobLine).join('')}\n`)
+    io.out(`\nJOBS\n${(await runJobs(io, repo, req.runId)).map(jobLine).join('')}\n`)
     io.out(`${conclusion === 'success' ? '✓' : 'X'} ${label} completed with '${conclusion}'\n`)
   }
   return req.exitStatus && conclusion !== 'success' ? 1 : 0

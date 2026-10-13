@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -105,5 +106,45 @@ describe('the agent git shim pinning GIT_ALLOW_PROTOCOL', () => {
     const run = runScript(fx, 'GIT_ALLOW_PROTOCOL=EXT:ssh::next:https git env')
 
     expect(run.stdout.trim()).toBe('ssh:https')
+  })
+})
+
+const hasMake = spawnSync('make', ['--version']).status === 0
+
+/** Writes a script that fetches the ext remote, and a one-rule Makefile that runs it. */
+function nestedFetch(fx: Fixture): void {
+  const dir = path.join(fx.work, '..')
+  fs.writeFileSync(path.join(dir, 'inner.sh'), 'git fetch x\n')
+  fs.writeFileSync(path.join(dir, 'fetch.mk'), 'all:\n\tsh ../inner.sh\n')
+}
+
+const LIFTED_LISTS = [
+  ['GIT_ALLOW_PROTOCOL=ext', 'GIT_ALLOW_PROTOCOL=ext'],
+  ['unset GIT_ALLOW_PROTOCOL', 'unset GIT_ALLOW_PROTOCOL;'],
+  ['an unread value', 'P=ext; GIT_ALLOW_PROTOCOL="$P"'],
+] as const
+
+// CC-1137 d: off a git line the guard leaves an unset or unread list to this pin, so a script's git must still refuse.
+describe("the pin under a script's own git (CC-1137 d)", () => {
+  it.each(LIFTED_LISTS)('refuses a nested script fetching ext:: under %s', (_label, prefix) => {
+    const { fx, marker } = extFixture()
+    nestedFetch(fx)
+
+    const run = runScript(fx, `${prefix} sh ../inner.sh`)
+
+    expect(run.stderr).toContain("transport 'ext' not allowed")
+    expect(run.status).not.toBe(0)
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it.skipIf(!hasMake).each(LIFTED_LISTS)('refuses make running that fetch under %s', (_label, prefix) => {
+    const { fx, marker } = extFixture()
+    nestedFetch(fx)
+
+    const run = runScript(fx, `${prefix} make -s -f ../fetch.mk`)
+
+    expect(run.stderr).toContain("transport 'ext' not allowed")
+    expect(run.status).not.toBe(0)
+    expect(fs.existsSync(marker)).toBe(false)
   })
 })

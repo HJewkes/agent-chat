@@ -1,0 +1,99 @@
+{
+  "v": 1,
+  "ts": "2026-10-13T12:00:00.000Z",
+  "agentChatSha": "0123456789abcdef0123456789abcdef01234567",
+  "ledgerSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "config": {
+    "enabled": true,
+    "maxAgents": 3,
+    "reserveSlots": 2,
+    "maxWorktreesPerRepo": 3,
+    "reserveWorktrees": 3,
+    "reportTo": "coord",
+    "exceptions": {
+      "route": {
+        "stalled": "owner",
+        "failed": "owner"
+      }
+    },
+    "ladder": {
+      "enabled": false
+    },
+    "priorRouting": "off",
+    "stack": {
+      "mode": "off"
+    },
+    "seats": ["seat-t"],
+    "briefGate": {},
+    "handReserve": {},
+    "scopeTagAliases": {
+      "spine": "milestone"
+    },
+    "briefMaxAgeDays": 14,
+    "shadowOut": true
+  },
+  "decisions": {
+    "steps": [
+      "would spawn st-dm-1-a as bd-implementer (headless) on /tmp/profiles/pool-t in /tmp/repo/.worktrees/st-dm-1-a; brief 1200 chars"
+    ],
+    "dispatches": [
+      {
+        "seat": "seat-t",
+        "initiative": "demo",
+        "task": "DM-1",
+        "slice": "a",
+        "profile": "bd-implementer",
+        "account": "pool-t",
+        "name": "st-dm-1-a"
+      }
+    ],
+    "refusals": [
+      {
+        "seat": "seat-t",
+        "initiative": "demo",
+        "task": "DM-2",
+        "kind": "role-cap",
+        "reason": "seat seat-t holds 1 of 1 implementers"
+      }
+    ],
+    "triage": [
+      {
+        "kind": "wait",
+        "taskId": "DM-3",
+        "occurrence": "stalled@2026-10-13T11:00:00.000Z",
+        "reason": "no triage account configured"
+      }
+    ],
+    "decider": {
+      "wake": true,
+      "waiting": 1,
+      "briefs": 1
+    },
+    "briefs": {
+      "approved": [
+        {
+          "slug": "demo",
+          "taskId": "DM-4"
+        }
+      ],
+      "routed": [
+        {
+          "slug": "demo",
+          "taskId": "DM-5"
+        }
+      ]
+    },
+    "closing": [
+      {
+        "initiative": "demo",
+        "id": "DM-6"
+      }
+    ],
+    "reasons": [
+      {
+        "seat": "seat-t",
+        "text": "dispatched nothing: every ready task is claimed"
+      }
+    ]
+  }
+}

@@ -16,6 +16,8 @@ export interface RepoPull {
   number: number
   state: string
   mergedAt: string | null
+  /** CC-1230: when GitHub closed it; null while open or when GitHub gave none. */
+  closedAt: string | null
   branch: string
   headSha: string
 }
@@ -30,12 +32,14 @@ export type ClaimPr =
   | { kind: 'merged'; pr: string; head: string }
   | { kind: 'open'; pr: string }
   /** CC-1150: the claim's recorded PR was closed unmerged, which is not the same as the agent leaving no PR. */
-  | { kind: 'closed'; pr: string }
+  /** CC-1230: `at` is GitHub's close time, omitted when it gave none, so a requeue can wait from the close. */
+  | { kind: 'closed'; pr: string; at?: string }
   | { kind: 'none' }
 
 const PAGE = 100
 
-const PULL_JQ = '.[] | {number, state, mergedAt: .merged_at, branch: .head.ref, headSha: .head.sha}'
+const PULL_JQ =
+  '.[] | {number, state, mergedAt: .merged_at, closedAt: .closed_at, branch: .head.ref, headSha: .head.sha}'
 
 /** The claim's recorded PR, else the PRs on its agents' branches (CC-1044: claims often carry no link). */
 export function claimPrState(claim: Claim, repo: string, read: RepoPulls | undefined): ClaimPr | undefined {
@@ -51,8 +55,13 @@ export function claimPrState(claim: Claim, repo: string, read: RepoPulls | undef
   if (merged !== undefined)
     return { kind: 'merged', pr: targetRef({ repo, pr: merged.number }), head: merged.headSha }
   const closed = recorded === undefined ? undefined : ours[0]
-  if (closed !== undefined) return { kind: 'closed', pr: targetRef({ repo, pr: closed.number }) }
+  if (closed !== undefined) return closedPr(repo, closed)
   return ours.length > 0 || read.complete ? { kind: 'none' } : undefined
+}
+
+function closedPr(repo: string, pull: RepoPull): ClaimPr {
+  const pr = targetRef({ repo, pr: pull.number })
+  return pull.closedAt === null ? { kind: 'closed', pr } : { kind: 'closed', pr, at: pull.closedAt }
 }
 
 /**
@@ -87,6 +96,7 @@ export function readRepoPulls(repo: string, exec: Runner): RepoPulls | undefined
       number: p.number,
       state: p.state,
       mergedAt: p.mergedAt ?? null,
+      closedAt: p.closedAt ?? null,
       branch: p.branch,
       headSha: p.headSha ?? '',
     })

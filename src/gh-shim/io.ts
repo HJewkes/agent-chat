@@ -68,7 +68,7 @@ export function processIo(realGh: string, jqBin: string | undefined, log: CallLo
   const out: string[] = []
   const err: string[] = []
   return {
-    api: apiPath => ghApi(realGh, apiPath, log),
+    api: async apiPath => ghApi(realGh, apiPath, log),
     currentBranch,
     jq: (value, expr) => {
       if (jqBin === undefined) throw new Error('jq not on PATH')

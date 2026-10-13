@@ -155,7 +155,7 @@ describe('file-overlap exempts the Version Packages PR and .changeset/ paths (CC
   it('still refuses a source file an ordinary open PR touches', () => {
     const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
     const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/tp-x.md', 'src/a.ts'] }))
-    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts' })
+    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts', pr: 7 })
   })
 })
 
