@@ -388,7 +388,7 @@ describe('routing a brief to the decider (CC-1234)', () => {
   const roster = (...agents: AgentIdentity[]): Roster => ({ agents })
 
   it('resumes an idle decider whose identity matches', () => {
-    expect(briefRouteRefusal('decider', 'agent-1', roster(row('parked')))).toBeUndefined()
+    expect(briefRouteRefusal('decider', 'agent-1', roster(row('exited')))).toBeUndefined()
   })
 
   it('waits for a decider that is already live', () => {
@@ -396,7 +396,7 @@ describe('routing a brief to the decider (CC-1234)', () => {
   })
 
   it('refuses when config names a different decider', () => {
-    expect(briefRouteRefusal('decider', 'agent-2', roster(row('parked')))).toContain('not woken')
+    expect(briefRouteRefusal('decider', 'agent-2', roster(row('exited')))).toContain('not woken')
   })
 
   it('fences the problems as data and caps how many it quotes', () => {
