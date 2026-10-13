@@ -361,6 +361,7 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a gh alias whose body a row above denies, when `gh alias set` stores it or `gh <alias>` runs it; `gh alias import`, a body or argument the guard cannot read, or a line that writes gh config or moves its home (below)                         | `gh alias set x '!git push --no-verify'` runs git unseen    |
 | `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                               | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
+| a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
@@ -463,8 +464,8 @@ follow: `source ./env.sh; $x pnv` runs an alias unchecked when `env.sh` sets `x=
 would deny `$PYTHON -m pytest` and `$PAGER README` too, since the command string cannot tell
 them apart, and a sourced file can run `git push --no-verify` itself anyway. A word that git
 would not take as an alias name, one that starts with anything but a letter or holds anything
-but letters, digits and `-`, is never looked up. `echo pnv | xargs git` still runs an alias
-unchecked, because the subcommand comes from stdin.
+but letters, digits and `-`, is never looked up. `echo pnv | xargs git` is denied: the
+subcommand comes from stdin, so the guard reads it as a word it cannot resolve (below).
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
@@ -529,6 +530,36 @@ or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: 
 piped from another command, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
+
+### Words xargs adds (CC-1117)
+
+`xargs [options] git|gh <words>` runs that command with more words the guard cannot read: the
+ones it reads from stdin or `-a file`, appended after `<words>`, or, in replace mode (`-I R`,
+`-i[R]`, `--replace[=R]`, BSD `-J R`), put in place of each copy of the replace string. The guard
+strips `xargs` and its options like a wrapper and checks the command as if those words were an
+unquoted `"$@"`, so the rules above for a word the guard cannot read apply:
+
+- `git config` and `git remote add` or `set-url` deny, whatever the key:
+  `echo always | xargs git config protocol.ext.allow`, `echo core.hooksPath /x | xargs git config`,
+  `xargs git remote add o < urls`. So does `xargs git config --get`, a known false deny.
+- `git` or `gh` with no subcommand denies, since stdin names it and it may be an alias:
+  `echo config protocol.allow always | xargs git`, `echo pv | xargs gh`.
+- `git push` denies with its own reason, since stdin may hold `--no-verify`, unless a literal `--`
+  comes before the words xargs adds, with only value-less push flags before it:
+  `xargs git push origin --` and `xargs -I{} git push origin -- {}` pass, while `xargs git push`,
+  `xargs -I{} git push {}` and `xargs git push -o --` (where `--` may be the `-o` value) deny.
+- A git alias keeps the marks of the words around it, so `xargs git cfg` and `xargs git p` deny
+  when `cfg = config` and `p = push`, and a `!` alias that takes the words denies.
+
+GNU xargs drops a replace string on a later `-n`, `-L` or `-l` and appends instead; the guard does
+not track the order, so a batch option beside `-I` counts as appending too. An xargs option or
+replace string the guard cannot read (an expansion such as `"$X"`, which may be `-I--`) counts as
+filling every word and appending. An unknown long option denies. An xargs whose command word, or a
+wrapper option such as `env -u` or `nice -n`, comes from its input denies (`xargs nice`,
+`xargs -I% %`, `xargs -I% env -u% git push origin --`). A `sh -c` script under xargs is read with
+the replace string swapped in place, so `xargs -I{} sh -c 'git push origin {} --no-verify'`
+denies. Reads such as `xargs git log`, `ls | xargs git add`, `xargs git status` and
+`xargs gh pr view` stay allowed.
 
 ### gh-write scans when it runs (CC-501 S1)
 
@@ -732,7 +763,8 @@ of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion
 name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
 `local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
 line that may reach git it denies as `programEnv`, after the line's other checks so a more
-specific reason wins. Words that `xargs` or `find -exec` add are not read here.
+specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
+that `find -exec` adds are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
@@ -1205,10 +1237,11 @@ so a bug in the guard cannot block every command an agent runs.
 
 Not covered, by design or by cost:
 
-- a script file (`bash push.sh`, `make push`, an npm script) or `xargs`, whose commands the guard
-  never sees;
+- a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
+  sees;
 - any other program that runs the command it is given and is not in the wrapper list above:
-  `find -exec gh ...`, `sudo gh ...`, `watch gh ...`, `script -q /dev/null gh ...`. The guard
+  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`,
+  `script -q /dev/null gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
