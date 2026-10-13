@@ -764,6 +764,10 @@ function seedFromPlan(
   if (seeding === undefined) return undefined
   if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
   if ('merged' in seeding) return { seeds: [] }
+  if ('pending' in seeding) {
+    walk.notes.push(...seeding.notes)
+    return { seeds: seeding.claims }
+  }
   walk.claimed.add(row.id)
   const slices = seeding.claims.map(c => c.slice).join(', ')
   walk.notes.push(
