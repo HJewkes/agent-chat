@@ -250,6 +250,23 @@ const CHAT_ASK_CASES: CallCase[] = [
     args: { text: 'what now?' },
     reply: sent({}),
   },
+  {
+    label: 'v2 meta, options with descriptions',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: {
+      text: 'which store?',
+      header: 'Pick the store',
+      options: ['sqlite', { label: 'postgres', description: 'needs a server' }],
+      default: 'sqlite',
+      door: 'two-way',
+      category: 'tech_design',
+      initiative: 'titan-platform',
+      blocking: 'continue',
+      reversible: 'swap the adapter back',
+    },
+    reply: sent({}),
+  },
   { label: 'text blank', tool: 'chat_ask', registeredAs: 'me', args: { text: '   ' } },
   {
     label: 'refused by the broker',

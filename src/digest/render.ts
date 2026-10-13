@@ -1,5 +1,5 @@
 import { renderMilestoneLine } from '../agents/burndown/milestone-report.js'
-import type { AccountSpend, Digest, NamedItem, QueueEntry, Reading } from './types.js'
+import type { AccountSpend, DecidedEntry, Digest, NamedItem, QueueEntry, Reading } from './types.js'
 
 /** Renders a collected digest as terminal text or markdown; the sections of design section 8 plus CC-266's unreported exits, empty ones named once at the end. */
 
@@ -64,6 +64,14 @@ function needsYou(d: Digest, s: Style): Section {
   return { title: `Needs you (${n})`, lines }
 }
 
+const decisionWeight = (e: DecidedEntry): string =>
+  [
+    e.confidence === undefined ? '' : `conf ${e.confidence.toFixed(2)}`,
+    e.principleIds === undefined ? '' : `principles ${e.principleIds.join(',')}`,
+  ]
+    .filter(part => part !== '')
+    .join(' · ')
+
 function decided(d: Digest, s: Style): Section {
   const lines: string[] = []
   for (const e of d.ledger.decided) {
@@ -71,6 +79,9 @@ function decided(d: Digest, s: Style): Section {
       `- ${e.questionId} for ${e.asker}, ${agoFrom(d.generatedAt, e.at)} by ${e.by} [${e.class}, ${e.basis}] ${e.state}`,
     )
     lines.push(`  Q: ${oneLine(e.question)}`, `  A: ${oneLine(e.answer)}`, `  cites: ${oneLine(e.precedent)}`)
+    const weight = decisionWeight(e)
+    if (weight !== '') lines.push(`  ${weight}`)
+    if (e.reversible !== undefined) lines.push(`  to undo: ${oneLine(e.reversible)}`)
     if (e.state === 'awaiting audit')
       lines.push(`  overrule: ${s.cmd(`agent-chat answer ${e.questionId} "..."`)}`)
   }

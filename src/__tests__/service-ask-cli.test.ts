@@ -145,21 +145,25 @@ describe('agent-chat ask and answers without a usable broker', () => {
   }, 30_000)
 })
 
+function recordingContext(sent: unknown[]): VerbContext {
+  return {
+    warnings: [],
+    format: 'human',
+    withBroker: async (fn: (b: unknown) => Promise<unknown>) =>
+      fn({
+        request: async (frame: unknown) => {
+          sent.push(frame)
+          return { t: 'service_ask_result', ok: true, msgId: 'q1' }
+        },
+      }),
+  } as unknown as VerbContext
+}
+
 describe('agent-chat ask item shape', () => {
   // Mutation caught: a repeated --option collapsing to its last value, or never reaching the frame.
   it('sends every --option, the task and the label in one service_ask frame', async () => {
     const sent: unknown[] = []
-    const ctx = {
-      warnings: [],
-      format: 'human',
-      withBroker: async (fn: (b: unknown) => Promise<unknown>) =>
-        fn({
-          request: async (frame: unknown) => {
-            sent.push(frame)
-            return { t: 'service_ask_result', ok: true, msgId: 'q1' }
-          },
-        }),
-    } as unknown as VerbContext
+    const ctx = recordingContext(sent)
     const args = cliArgs(askVerb, [['Merge', 'gate', '7?']], {
       as: 'factory-t',
       option: ['approve', 'decline'],
@@ -179,4 +183,79 @@ describe('agent-chat ask item shape', () => {
       }),
     ])
   })
+
+  // Mutation caught: pairing descriptions with options off by one.
+  it('pairs each --option-description with the --option at its position, and sends the v2 fields', async () => {
+    const sent: unknown[] = []
+    const args = cliArgs(askVerb, [['Store?']], {
+      as: 'factory-t',
+      option: ['sqlite', 'postgres', 'none'],
+      optionDescription: ['local file', 'a server'],
+      header: 'Pick the store',
+      door: 'two-way',
+      default: 'sqlite',
+      category: 'tech_design',
+      initiative: 'titan-platform',
+      blocking: 'parked',
+      reversible: 'swap the adapter back',
+    })
+
+    await askVerb.run(askVerb.args.parse(args), recordingContext(sent))
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        options: ['sqlite', 'postgres', 'none'],
+        optionDescriptions: ['local file', 'a server', ''],
+        header: 'Pick the store',
+        door: 'two-way',
+        default: 'sqlite',
+        category: 'tech_design',
+        initiative: 'titan-platform',
+        blocking: 'parked',
+        reversible: 'swap the adapter back',
+      }),
+    ])
+  })
+})
+
+describe('agent-chat ask v2 meta against a live broker', () => {
+  it('stores the v2 flags as queue meta', async () => {
+    const asked = await ask('factory-t', 'Store?', [
+      ...['--option', 'sqlite', '--option-description', 'local file', '--option', 'postgres'],
+      ...['--door', 'two-way', '--default', 'sqlite', '--header', 'Pick the store', '--blocking', 'parked'],
+    ])
+    const id = asked.stdout.trim()
+
+    const queue = await cli(['queue', '--json'])
+
+    expect(asked.code).toBe(0)
+    const item = (
+      JSON.parse(queue.stdout) as { items: Array<{ msgId: string; meta: Record<string, string> }> }
+    ).items.find(i => i.msgId === id)
+    expect(item?.meta).toMatchObject({
+      options: '["sqlite","postgres"]',
+      option_descriptions: '["local file",""]',
+      door: 'two-way',
+      default: 'sqlite',
+      header: 'Pick the store',
+      blocking: 'parked',
+    })
+  }, 30_000)
+
+  it('exits 2 on an --option-description with no matching --option, or a door outside its enum', async () => {
+    const unmatched = await ask('factory-t', 'Store?', [
+      '--option',
+      'a',
+      '--option-description',
+      'x',
+      '--option-description',
+      'y',
+    ])
+    const badDoor = await ask('factory-t', 'Store?', ['--door', 'sideways'])
+
+    for (const run of [unmatched, badDoor]) {
+      expect(run.code).toBe(2)
+      expect(run.stdout).toBe('')
+    }
+  }, 30_000)
 })

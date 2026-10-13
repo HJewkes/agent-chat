@@ -81,6 +81,9 @@ export interface LoggedEventRow extends AgentEventRow {
 export interface EventStore {
   append(input: AppendInput): { id: number; msgId: string }
 
+  /** The only way to get a new msg_id: a draw no row holds as `msg_id` or `ref` (CC-1188). */
+  mintMsgId(): string
+
   /** Everything addressed to `name`, oldest first. */
   inboxFor(name: string, limit: number): DeliveredMessage[]
 

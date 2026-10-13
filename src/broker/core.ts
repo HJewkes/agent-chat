@@ -13,7 +13,7 @@ import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
+import { EventLog, isReport, isTerminalReport } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
@@ -114,13 +114,20 @@ export class BrokerCore<C = Conn> {
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
-    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
+    this.events = options.events ?? new EventLog(options.dbPath)
+    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs, () =>
+      this.mintMsgId(),
+    )
     this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
-    this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
     this.agents = new AgentLog(this.events)
     this.startedAt = Date.now()
+  }
+
+  /** CC-1188: a log-checked id for a caller that needs one before it appends, or never logs it. */
+  mintMsgId(): string {
+    return this.events.mintMsgId()
   }
 
   /**
@@ -555,12 +562,10 @@ export class BrokerCore<C = Conn> {
 
   private pushForward(forward: SeatForward): SeatForwardResult {
     const { from, to, steward, text, inReplyTo, source } = forward
-    const msgId = newMsgId()
-    this.append({
+    const { msgId } = this.append({
       kind: 'message',
       actor: from,
       target: steward,
-      msgId,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
       meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
@@ -620,24 +625,23 @@ export class BrokerCore<C = Conn> {
       overrules: decision.msgId,
       overruled_decider: decision.by,
     }
+    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
+    const written = this.append({
+      kind: 'answer',
+      actor: HUMAN,
+      target: author,
+      ref: msgId,
+      body: text,
+      meta: { ...overrule, channel },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: HUMAN,
       text: overrule ? overruleText(text, overrule) : text,
       inReplyTo: msgId,
       ...(overrule ? { event: 'overrule' } : {}),
       at: Date.now(),
     }
-    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
-    this.append({
-      kind: 'answer',
-      actor: HUMAN,
-      target: author,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...overrule, channel },
-    })
 
     const live = this.deliverTo(author, message)
     logEvent('route', {
@@ -666,8 +670,16 @@ export class BrokerCore<C = Conn> {
     const check = checkDecision(question.text, text, citation)
     if (!check.ok) return check
 
+    const written = this.append({
+      kind: 'decided',
+      actor: decider,
+      target: question.from,
+      ref: msgId,
+      body: text,
+      meta: { ...citation },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: decider,
       text: decidedText(text, decider, citation),
       inReplyTo: msgId,
@@ -675,15 +687,6 @@ export class BrokerCore<C = Conn> {
       event: 'decided',
       at: Date.now(),
     }
-    this.append({
-      kind: 'decided',
-      actor: decider,
-      target: question.from,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...citation },
-    })
     const live = this.deliverTo(question.from, message)
     logEvent('route', {
       kind: 'decided',
@@ -730,24 +733,23 @@ export class BrokerCore<C = Conn> {
     }
 
     this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
-    const message: DeliveredMessage = {
-      msgId: newMsgId(),
-      from: request.composer,
-      text: request.text,
-      provenance: 'human-endorsed',
-      at: Date.now(),
-    }
-    this.append({
+    const written = this.append({
       kind: 'message',
       actor: request.composer,
       target: request.recipient,
-      msgId: message.msgId,
       body: request.text,
       // `endorsed_from` rather than `ref`: the recipient never saw the request,
       // so surfacing it as an in-reply-to would show them a thread they were not
       // part of. The audit trail wants the edge; the conversation does not.
       meta: { provenance: 'human-endorsed', endorsed_from: msgId },
     })
+    const message: DeliveredMessage = {
+      msgId: written.msgId,
+      from: request.composer,
+      text: request.text,
+      provenance: 'human-endorsed',
+      at: Date.now(),
+    }
 
     const live = this.deliverTo(request.recipient, message)
     logEvent('route', {

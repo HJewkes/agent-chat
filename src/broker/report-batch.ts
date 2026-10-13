@@ -1,5 +1,4 @@
 import type { DeliveredMessage } from '../protocol.js'
-import { newMsgId } from './event-log.js'
 import { logEvent } from './log.js'
 
 /**
@@ -34,6 +33,8 @@ export class ReportBatcher<C> {
   constructor(
     private readonly push: Push<C>,
     private readonly windowMs: () => number,
+    /** CC-1188: the log's collision-checked mint, so a batch id never repeats a logged one. */
+    private readonly mint: () => string,
   ) {}
 
   /** A report: held until its window ends. The first one starts the clock and later ones do not extend it. */
@@ -96,7 +97,7 @@ export class ReportBatcher<C> {
     const [first] = messages
     if (first === undefined) return
     // Unwritten reports stay held with no timer, so closing the connection hands them to its successor.
-    if (!this.written(conn, messages.length === 1 ? first : batchOf(messages)))
+    if (!this.written(conn, messages.length === 1 ? first : batchOf(messages, this.mint)))
       return void this.held.set(conn, { messages })
     if (messages.length > 1) logBatch(messages)
     for (const message of messages) this.remember(message.msgId, conn)
@@ -128,12 +129,12 @@ function logBatch(messages: readonly DeliveredMessage[]): void {
  * id. The headers are inside peer-written text and so can be imitated by it;
  * `batch` is the broker's own list and is what the recipient's attributes show.
  */
-export function batchOf(messages: readonly DeliveredMessage[]): DeliveredMessage {
+export function batchOf(messages: readonly DeliveredMessage[], mint: () => string): DeliveredMessage {
   const total = messages.length
   const senders = [...new Set(messages.map(m => m.from))].join(', ')
   const parts = messages.map((m, i) => `[${i + 1}/${total}] ${headerOf(m)}\n${m.text}`)
   return {
-    msgId: newMsgId(),
+    msgId: mint(),
     from: 'agent-chat',
     text:
       `${total} reports from peers (${senders}), delivered together. Each is that peer's own message: ` +

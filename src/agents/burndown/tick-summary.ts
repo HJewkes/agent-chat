@@ -10,6 +10,7 @@ import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 import type { Step } from './execute.js'
+import type { TickStep } from './step-timer.js'
 
 /**
  * CC-929 (item 179 S5): every real tick that runs appends one row to `burndown-ticks.jsonl`, built from what the
@@ -21,6 +22,15 @@ import type { Step } from './execute.js'
  *   registrations   {ok, refused, failed}: every Shepherd register the tick made, for its claims and for the
  *                   seat PRs it adopted (CC-861), seat or not
  *   seats           {[seat]: SeatSummary}, one per configured seat; empty outside seats mode
+ *   durationMs      CC-1192: the whole tick, monotonic ms
+ *   lockHeldMs      CC-1192: from taking the ledger lock to releasing it: every step but `config`, and the untimed
+ *                   work between steps
+ *   steps           CC-1192: [{name, ms}] per named stage in run order (`StepName` in step-timer.ts); `plan` holds
+ *                   the planning on both sides of `collision`; factory
+ *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
+ *                   decider-triage, T7 write-ledger and this row's write
+ *
+ * Rows from before CC-1192 lack durationMs, lockHeldMs and steps.
  *
  * SeatSummary:
  *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
@@ -73,7 +83,12 @@ export interface TickSummaryRow {
   ts: string
   registrations: RegisterCounts
   seats: Record<string, SeatSummary>
+  durationMs?: number
+  lockHeldMs?: number
+  steps?: TickStep[]
 }
+
+export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
 
 export interface RegisterRecord {
   seat?: string
@@ -176,12 +191,13 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   }
 }
 
-export function tickSummary(inputs: SummaryInputs): TickSummaryRow {
+export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickSummaryRow {
   return {
     v: TICK_SUMMARY_VERSION,
     ts: inputs.now.toISOString(),
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
+    ...timings,
   }
 }
 
