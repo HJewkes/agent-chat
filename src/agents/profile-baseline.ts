@@ -5,9 +5,12 @@ import path from 'node:path'
 export const PROFILE_DRIFT_MODES = ['flag', 'refuse'] as const
 export type ProfileDriftMode = (typeof PROFILE_DRIFT_MODES)[number]
 
-const digestOf = (file: string): string | undefined => {
+const digestOf = (source: string | undefined): string | undefined =>
+  source === undefined ? undefined : createHash('sha256').update(source).digest('hex')
+
+const readSource = (file: string): string | undefined => {
   try {
-    return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+    return fs.readFileSync(file, 'utf8')
   } catch {
     return undefined
   }
@@ -29,15 +32,19 @@ export class ProfileBaseline {
       return
     }
     for (const file of names) {
-      const digest = digestOf(path.join(dir, file))
+      const digest = digestOf(readSource(path.join(dir, file)))
       if (digest !== undefined) this.digests.set(file.slice(0, -'.json'.length), digest)
     }
   }
 
-  /** Why `name`'s file differs from the baseline, or undefined. A builtin with no file then or now never drifts. */
-  drift(name: string): string | undefined {
+  /**
+   * Why `source`, the file text `name` loaded from (absent for a builtin), differs from the baseline.
+   * The caller passes what it parsed, so a rewrite between the load and this check cannot slip by.
+   * A builtin with no file then or now never drifts.
+   */
+  drift(name: string, source: string | undefined): string | undefined {
     const file = path.join(this.dir, `${name}.json`)
-    const now = digestOf(file)
+    const now = digestOf(source)
     const then = this.digests.get(name)
     if (now === then) return undefined
     if (then === undefined) return `profile file ${file} was created after the broker started`
@@ -45,9 +52,9 @@ export class ProfileBaseline {
     return `profile file ${file} changed after the broker started`
   }
 
-  /** Takes the file's current bytes as the baseline, as a human spawn of it does. */
-  accept(name: string): void {
-    const digest = digestOf(path.join(this.dir, `${name}.json`))
+  /** Takes the loaded file text as the baseline, as a human spawn of it does. */
+  accept(name: string, source: string | undefined): void {
+    const digest = digestOf(source)
     if (digest === undefined) this.digests.delete(name)
     else this.digests.set(name, digest)
   }

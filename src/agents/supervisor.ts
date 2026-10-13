@@ -52,7 +52,7 @@ import {
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
-import { loadProfile, recordedRole, roleOf } from './profiles.js'
+import { loadProfileSource, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -841,6 +841,9 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   const { tokens, usd_est, usage, models, price_table } = read
   return { tokens, usd_est, usage, models, price_table }
 }
+
+/** Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`. */
+const isHumanSpawn = (req: SpawnRequest): boolean => req.requestedBy === HUMAN && req.spawnedAs === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1779,18 +1782,25 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * CC-1094: a profile file rewritten since broker start may have lost its denies to the agent that
-   * rewrote it. An agent spawn of it is flagged or, under `refuse`, refused; a human spawn accepts it.
+   * CC-1094: loads a profile for a launch. A profile file rewritten since broker start may have lost its
+   * denies to the agent that rewrote it, so an agent launch of it is flagged or, under `refuse`, refused.
+   * Only a human's own spawn accepts it. A resume or surface switch never does: the background
+   * auto-resume and the decider's CLI resume both arrive as HUMAN.
    */
-  private checkProfileDrift(req: SpawnRequest, profile: AgentProfile): AgentProfile | { refusal: string } {
-    const drift = this.profileBaseline.drift(profile.name)
+  private loadCheckedProfile(
+    name: string,
+    by: string | undefined,
+    human: boolean,
+  ): AgentProfile | { error: string } {
+    const { profile, source } = loadProfileSource(name)
+    if ('error' in profile) return profile
+    const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
-    const human = req.requestedBy === HUMAN
     const refused = !human && this.profileDriftMode() === 'refuse'
-    logEvent('profile_drift', { name: req.name, profile: profile.name, by: req.requestedBy, drift, refused })
+    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
-      return { refusal: `${drift}; profileDrift=refuse holds agent spawns of it until a human spawns it` }
-    if (human) this.profileBaseline.accept(profile.name)
+      return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
+    if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
     return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
   }
@@ -1985,10 +1995,8 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const loaded = loadProfile(req.profile)
-    if ('error' in loaded) return this.refuse(req, loaded.error)
-    const profile = this.checkProfileDrift(req, loaded)
-    if ('refusal' in profile) return this.refuse(req, profile.refusal)
+    const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
+    if ('error' in profile) return this.refuse(req, profile.error)
     const lineage: Lineage = {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
@@ -3513,7 +3521,7 @@ export class Supervisor implements TeleportHost {
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
     if (blocked) return { ok: false, reason: blocked, transcript }
-    const profile = loadProfile(identity.profile)
+    const profile = this.loadCheckedProfile(identity.profile, req.requestedBy, false)
     if ('error' in profile)
       return {
         ok: false,
@@ -3738,7 +3746,7 @@ export class Supervisor implements TeleportHost {
     const agent = identity as AgentIdentity
     const refused = req.to === 'interactive' ? this.checkSurfacer(agent, req) : undefined
     if (refused) return { ok: false, reason: refused }
-    const profile = loadProfile(agent.profile)
+    const profile = this.loadCheckedProfile(agent.profile, req.requestedBy, false)
     if ('error' in profile)
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
     if (agent.sessionId === '')

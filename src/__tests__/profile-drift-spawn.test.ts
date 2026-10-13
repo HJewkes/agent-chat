@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import { Supervisor, type SpawnOutcome } from '../agents/supervisor.js'
+import { Supervisor, type SpawnOutcome, type SpawnRequest } from '../agents/supervisor.js'
+import { transcriptPath } from '../agents/transcript.js'
 import { ProfileBaseline, type ProfileDriftMode } from '../agents/profile-baseline.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -40,7 +41,12 @@ function writeProfile(name: string, description = name): void {
   )
 }
 
-const spawn = (name: string, profile: string, requestedBy: string): Promise<SpawnOutcome> =>
+const spawn = (
+  name: string,
+  profile: string,
+  requestedBy: string,
+  over: Partial<SpawnRequest> = {},
+): Promise<SpawnOutcome> =>
   sup.spawn({
     name,
     profile,
@@ -49,7 +55,17 @@ const spawn = (name: string, profile: string, requestedBy: string): Promise<Spaw
     cwd: tmp('drift-cwd-'),
     surface: 'headless',
     spawnerConfigDir: tmp('drift-account-'),
+    ...over,
   })
+
+async function exited(outcome: SpawnOutcome): Promise<void> {
+  const agent = core.agents.get(outcome.agentId as string)!
+  const transcript = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+  fs.mkdirSync(path.dirname(transcript), { recursive: true })
+  fs.writeFileSync(transcript, '{}\n')
+  const recordExit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+  await recordExit.call(sup, agent.agentId, { code: 0, signal: null })
+}
 
 const driftWarnings = (outcome: SpawnOutcome): string[] =>
   (outcome.warnings ?? []).filter(warning => warning.includes('after the broker started'))
@@ -134,6 +150,34 @@ describe('profile drift at spawn (CC-1094)', () => {
     expect(human.ok).toBe(true)
     expect(after.ok).toBe(true)
     expect(driftWarnings(after)).toEqual([])
+  })
+
+  it('refuses a burndown spawn of a drifted profile under refuse and keeps the old baseline', async () => {
+    mode = 'refuse'
+    writeProfile('bd-implementer', 'rewritten')
+
+    const burndown = await spawn('worker-i', 'bd-implementer', 'human', {
+      spawnedAs: 'burndown',
+      task: 'claude-channels/CC-1094',
+    })
+    const after = await spawn('worker-j', 'bd-implementer', 'titan-coord')
+
+    expect(burndown.ok).toBe(false)
+    expect(burndown.reason).toContain(profileFile('bd-implementer'))
+    expect(after.ok).toBe(false)
+    expect(launches).toBe(0)
+  })
+
+  it('refuses a human resume of an agent whose profile was rewritten under refuse', async () => {
+    mode = 'refuse'
+    const first = await spawn('worker-k', 'bd-implementer', 'titan-coord')
+    await exited(first)
+    writeProfile('bd-implementer', 'rewritten')
+
+    const resumed = await sup.resume('worker-k', { requestedBy: 'human' })
+
+    expect(resumed.ok).toBe(false)
+    expect(resumed.reason).toContain(profileFile('bd-implementer'))
   })
 
   it('counts a profile file created after start as drift', async () => {
