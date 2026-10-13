@@ -28,7 +28,7 @@ describe('burndown worktree pools (CC-1040)', () => {
   })
 
   it('counts a -reviewer tree in the reviewer pool and a previewer tree as an implementer', () => {
-    expect(worktreeUse(['tc-cc-1-reviewer', 'previewer-x'], 12, config)).toMatchObject({
+    expect(worktreeUse(['seat-a-reviewer', 'previewer-x'], 12, config)).toMatchObject({
       total: 1,
       reviewers: 1,
     })
