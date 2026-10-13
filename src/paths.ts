@@ -28,6 +28,18 @@ export const metaPath = (): string => path.join(home(), 'broker.meta.json')
  */
 export const tokenPath = (): string => path.join(home(), 'ui.token')
 
+/** CC-1063: the broker's per-host launcher secrets, one 0600 file per configured machine. */
+export const launcherKeysDir = (): string => path.join(home(), 'launcher-keys')
+
+/** The host name becomes a file name, so anything path-like is refused rather than resolved. */
+export const launcherKeyPath = (host: string): string => {
+  if (!/^[a-z0-9.-]+$/i.test(host) || /^\.+$/.test(host)) throw new Error(`not a launcher host name: ${host}`)
+  return path.join(launcherKeysDir(), `${host.toLowerCase()}.key`)
+}
+
+/** The launcher machine's own copy of its secret, copied there out of band by the owner. */
+export const ownLauncherKeyPath = (): string => path.join(home(), 'launcher.key')
+
 /**
  * Built dashboard assets, served by the broker rather than by a separate dev server.
  *

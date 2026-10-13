@@ -8,6 +8,7 @@ import { deliver, SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { MAX_REMEMBERED, ReportBatcher } from '../broker/report-batch.js'
+import { STRANDED_MAX_AGE_MS } from '../broker/stranded-reports.js'
 import { batchMeta, senderMeta } from '../server/index.js'
 import type { ClientMessage, DeliveredMessage, ServerMessage, SystemEvent } from '../protocol.js'
 
@@ -326,6 +327,20 @@ describe('reports to one coordinator inside the window', () => {
     expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE', 'Status: DONE, and one thing more'])
   })
 
+  // CC-337: stranded reports are bounded by age, so a name taken up a day later is not woken by them.
+  it('pushes nothing to a seat that registers after the stranded-report age limit, and keeps its inbox', () => {
+    const seat = session('seat')
+    const a = worker('w-a', seat)
+    say(a, 'seat', 'Status: DONE')
+    core.drop(seat.conn)
+    vi.setSystemTime(Date.now() + STRANDED_MAX_AGE_MS + 1)
+
+    const back = session('seat')
+
+    expect(pushes(back)).toEqual([])
+    expect(core.events.inboxFor('seat', 10).map(m => m.text)).toEqual(['Status: DONE'])
+  })
+
   // Mutation caught: `close` not flushing, so a clean shutdown leaves the batch unpushed.
   it('pushes a held batch when the broker shuts down cleanly', () => {
     const coord = session('coord')
@@ -421,6 +436,74 @@ describe('reports to one coordinator inside the window', () => {
     expect(batcher.wasPushed('id-0')).toBe(false)
     expect(batcher.wasPushed('id-1')).toBe(true)
     expect(batcher.wasPushed(`id-${MAX_REMEMBERED}`)).toBe(true)
+  })
+})
+
+describe('the batcher on its own (CC-337)', () => {
+  /** A batcher whose pushes the test reads, or whose push throws. */
+  const batcherOver = (windowMs: number, push: (conn: string, m: DeliveredMessage) => unknown) =>
+    new ReportBatcher<string>(
+      push,
+      () => windowMs,
+      () => 'batch-id',
+    )
+
+  const recorder = () => {
+    const written: string[] = []
+    const push = (_conn: string, m: DeliveredMessage) => void written.push(m.batch ? 'batch' : m.msgId)
+    return { written, push }
+  }
+
+  // Mutation caught: `windowMs <= 0` weakened to `< 0`, so a 0 window still waits on a timer.
+  it('writes a report before returning when the window is 0', () => {
+    const { written, push } = recorder()
+    const batcher = batcherOver(0, push)
+
+    batcher.report('coord', message('id-one'))
+
+    expect(written).toEqual(['id-one'])
+    expect(batcher.wasPushed('id-one')).toBe(true)
+  })
+
+  // Mutation caught: `resend` not flushing first, so stranded reports overtake one already held.
+  it('writes what is held ahead of the reports it resends', () => {
+    vi.useFakeTimers()
+    const { written, push } = recorder()
+    const batcher = batcherOver(WINDOW_MS, push)
+    batcher.report('coord', message('held'))
+
+    batcher.resend('coord', [message('stranded')])
+
+    expect(written).toEqual(['held', 'stranded'])
+    expect(batcher.forget('coord')).toEqual([])
+  })
+
+  // Mutation caught: only the first report of a written batch remembered as pushed.
+  it('counts every report of a written batch as pushed', () => {
+    vi.useFakeTimers()
+    const { written, push } = recorder()
+    const batcher = batcherOver(WINDOW_MS, push)
+    for (const id of ['id-a', 'id-b', 'id-c']) batcher.report('coord', message(id))
+
+    vi.advanceTimersByTime(WINDOW_MS)
+
+    expect(written).toEqual(['batch'])
+    expect(['id-a', 'id-b', 'id-c'].map(id => batcher.wasPushed(id))).toEqual([true, true, true])
+  })
+
+  // Mutation caught: a throwing push read as written, or let out of the timer.
+  it('keeps the reports held, and does not throw, when the push throws', () => {
+    vi.useFakeTimers()
+    const batcher = batcherOver(WINDOW_MS, () => {
+      throw new Error('socket closed')
+    })
+    batcher.report('coord', message('id-a'))
+    batcher.report('coord', message('id-b'))
+
+    expect(() => vi.advanceTimersByTime(WINDOW_MS)).not.toThrow()
+
+    expect(batcher.wasPushed('id-a')).toBe(false)
+    expect(batcher.forget('coord').map(m => m.msgId)).toEqual(['id-a', 'id-b'])
   })
 })
 

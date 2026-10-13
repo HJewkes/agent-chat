@@ -361,6 +361,7 @@ describe('branchPrReader', () => {
     number: 1,
     state: 'closed',
     mergedAt: null,
+    closedAt: null,
     branch: 'agent-chat/sx-dm-1-a',
     headSha: 'h1',
     ...patch,
