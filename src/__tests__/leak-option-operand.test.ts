@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { operandMaySpellOption } from '../leak-guard/option-operand.js'
-import { parseShell } from '../leak-guard/shell-words.js'
+import { LIVE, parseShell } from '../leak-guard/shell-words.js'
 
 const pushedWord = (word: string): string => {
   const marked = parseShell(`git push origin ${word}`).find(command => command.words[1] === 'push')?.marked[3]
@@ -88,6 +88,27 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     '`x`--no-verify',
   ])('is true when the text around the expansion may start an option word: %s', word => {
     expect(operandMaySpellOption(pushedWord(word))).toBe(true)
+  })
+
+  it.each([
+    'main$=X--no-verify',
+    'main$~X--no-verify',
+    'main$^X--no-verify',
+    'main$+X--no-verify',
+    'main$#X--no-verify',
+    'main$[0]--zz',
+    'main$X[1]--zz',
+    '$X:s/a/-b/',
+    '${X:- }--x=--no-verify',
+    '-n:-a=${X}',
+    'main${X:- }*',
+    'main${X:- }?',
+  ])('is true for a $ form it cannot read, an option after an expansion, or a glob word start: %s', word => {
+    expect(operandMaySpellOption(pushedWord(word))).toBe(true)
+  })
+
+  it.each([`${LIVE}$(x -y`, `${LIVE}\`x -y`])('is true for a substitution that never closes: %j', marked => {
+    expect(operandMaySpellOption(marked)).toBe(true)
   })
 
   it('splits injected text on the IFS the line sets', () => {

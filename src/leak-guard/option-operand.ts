@@ -12,7 +12,9 @@ const DEFAULT_IFS = ' \t\n'
 // zsh flags, a name, a positional or a special parameter, and an optional subscript. `!` is left out, so
 // bash indirection such as ${!X:- -x} is never read and always denies.
 const HEAD = new RegExp(`^[=~^]*(?:${NAME}|\\d+|[@*#?$-])(?:\\[[^\\]]*\\])?`)
-const BARE_PARAMETER = new RegExp(`^\\$(?:${NAME}|\\d|[@*#?$!-])`)
+// A special parameter must not run into a name (zsh reads `$#X` and `$+X` as one expansion), and a
+// name must not take a zsh subscript or modifier; such a `$` is read as an unknown expansion.
+const BARE_PARAMETER = new RegExp(`^\\$(?:${NAME}|\\d|[@*#?$!-](?![\\w{]))(?![\\[]|:[A-Za-z&])`)
 const LENGTH = new RegExp(`^#(?:${NAME}|\\d+)$`)
 const OFFSET = /^:\s*-?\d+(?::\s*-?\d+)?$/
 // zsh modifiers that only reshape the value; `:s`, `:gs`, `:&` and `:g&` add text of their own.
@@ -27,9 +29,21 @@ const PATTERN = /^[\w\s.,@%+=:{}*?[\]!^~-]*$/
 const BRACE_WITH_DASH = /[{}].*-|-.*[{}]/
 // An option that takes its value after `=` keeps its literal name whatever the value expands to.
 const OPTION_WITH_VALUE = /^--?[A-Za-z][\w-]*=/
+// A word that starts with `-`, or with a glob that may match a file named `-x`.
+const WORD_START = new RegExp(`^(?:-|${LIVE}[*?[])`)
+// After an expansion whose end is unknown, any `-` or glob in the text may start a word.
+const ANY_WORD_START = new RegExp(`-|${LIVE}[*?[]`)
 
-/** Text between expansions, or one expansion and whether it may itself put an option-shaped word in. */
-type Segment = { text: string } | { unsafe: boolean }
+interface Expansion {
+  end: number
+  /** It may itself put an option-shaped word in. */
+  unsafe: boolean
+  /** A `$` form the reader does not know, so where it stops is unknown. */
+  unknown: boolean
+}
+
+/** Text between expansions, glob marks kept, or one expansion. */
+type Segment = { text: string } | Expansion
 
 /** The text of the `${` body starting at `from`, up to its matching `}`, or undefined when it never closes. */
 function braceBody(word: string, from: number): string | undefined {
@@ -88,19 +102,22 @@ function substitutionEnd(word: string, at: number): number | undefined {
   return undefined
 }
 
+const known = (end: number, unsafe: boolean): Expansion => ({ end, unsafe, unknown: false })
+
 /** The expansion at `at`, just after a LIVE mark, with the index past it; undefined for a glob or `~`, which stay text. */
-function readExpansion(word: string, at: number, ifs: string): { end: number; unsafe: boolean } | undefined {
+function readExpansion(word: string, at: number, ifs: string): Expansion | undefined {
   if (word.startsWith('${', at)) {
     const body = braceBody(word, at + 2)
-    if (body === undefined) return { end: word.length, unsafe: true }
-    return { end: at + body.length + 3, unsafe: mayInjectOption(body, ifs) }
+    if (body === undefined) return known(word.length, true)
+    return known(at + body.length + 3, mayInjectOption(body, ifs))
   }
   if (word.startsWith('$(', at) || word[at] === '`') {
     const end = substitutionEnd(word, at)
-    return end === undefined ? { end: word.length, unsafe: true } : { end, unsafe: false }
+    return end === undefined ? known(word.length, true) : known(end, false)
   }
   const bare = BARE_PARAMETER.exec(word.slice(at))
-  return bare ? { end: at + bare[0].length, unsafe: false } : undefined
+  if (bare) return known(at + bare[0].length, false)
+  return word[at] === '$' ? { end: at + 1, unsafe: false, unknown: true } : undefined
 }
 
 /** The marked word as text segments split around each expansion it holds. */
@@ -110,11 +127,11 @@ function segments(marked: string, ifs: string): Segment[] {
   for (let at = 0; at < marked.length;) {
     const expansion = marked[at] === LIVE ? readExpansion(marked, at + 1, ifs) : undefined
     if (expansion) {
-      out.push({ text }, { unsafe: expansion.unsafe })
+      out.push({ text }, expansion)
       text = ''
       at = expansion.end
     } else {
-      if (marked[at] !== LIVE) text += marked[at]
+      text += marked[at]
       at++
     }
   }
@@ -125,14 +142,17 @@ function segments(marked: string, ifs: string): Segment[] {
 /**
  * Whether `marked`, a word holding an expansion, may become an option word once the shell expands
  * and splits it on `ifs` (the line's IFS when it sets one): an expansion that may inject one, or
- * text that starts the word or follows an expansion and starts with `-`.
+ * text that starts the word or follows an expansion and starts with `-` or a glob. After a `$` form
+ * it does not know, a `-` or glob anywhere in the text that follows counts.
  */
 export function operandMaySpellOption(marked: string, ifs = DEFAULT_IFS): boolean {
   const parts = segments(marked, ifs)
   if (parts.length === 1) return false
-  return parts.some((part, index) =>
-    'unsafe' in part
-      ? part.unsafe
-      : part.text.startsWith('-') && !(index === 0 && OPTION_WITH_VALUE.test(part.text)),
-  )
+  return parts.some((part, index) => {
+    if (!('text' in part)) return part.unsafe
+    if (index === 0) return WORD_START.test(part.text) && !OPTION_WITH_VALUE.test(part.text)
+    const before = parts[index - 1]
+    const unknownEnd = before !== undefined && 'unknown' in before && before.unknown
+    return (unknownEnd ? ANY_WORD_START : WORD_START).test(part.text)
+  })
 }
