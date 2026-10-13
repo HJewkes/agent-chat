@@ -4,7 +4,13 @@ import { SURFACE_NAMES, TELEPORT_REASONS, type ServerMessage } from '../../proto
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
 import { hostIdentity } from '../host.js'
-import { hostCarriedFlags, hostRemoteControl } from '../../broker/host-channels.js'
+import {
+  hostCarriedFlags,
+  hostRemoteControl,
+  isCarriedModel,
+  type CarriedFlags,
+} from '../../broker/host-channels.js'
+import { observedModel } from '../../agents/transcript.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
@@ -19,6 +25,24 @@ function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>)
     `"${res.name}". ${when} Do not start anything new — finish or write down whatever is in ` +
     `flight, because it will not survive this turn.${warnings}`
   )
+}
+
+/**
+ * CC-1166: a broker on another host cannot read this session's transcript, so this process reports
+ * the model it ran on. The observed model wins over argv `--model`, as in `baseConfig`, because a
+ * `/model` switch changes it after launch.
+ */
+export function launchSeenWithModel(
+  argv: CarriedFlags | undefined,
+  sessionId: string | undefined,
+): CarriedFlags | undefined {
+  const observed =
+    sessionId === undefined
+      ? undefined
+      : observedModel(process.cwd(), sessionId, process.env.CLAUDE_CONFIG_DIR)
+  const model = observed !== undefined && isCarriedModel(observed) ? observed : argv?.model
+  if (model === undefined) return argv
+  return { ...(argv ?? { channels: [] }), model }
 }
 
 /**
@@ -102,7 +126,7 @@ export const agentTeleport = defineTool({
     const to = present(destination)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
-    const launchSeen = hostCarriedFlags(hostIdentity().hostPid)
+    const launchSeen = launchSeenWithModel(hostCarriedFlags(hostIdentity().hostPid), hostIdentity().sessionId)
     const res = (await ctx.broker.request(
       {
         t: 'teleport',
