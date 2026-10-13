@@ -6,11 +6,16 @@ import {
   type CollisionWork,
 } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
-import { DEFAULT_OVERLAP_EXEMPT, overlapExemptFor } from '../agents/burndown/overlap-exempt.js'
+import {
+  DEFAULT_OVERLAP_EXEMPT,
+  SHARED_DOC_EXEMPT,
+  overlapExemptFor,
+} from '../agents/burndown/overlap-exempt.js'
 
 /** CC-1153: index and generated files that merge-up resolves never refuse a dispatch on overlap alone. */
 
 const TITAN = '/x/titan-platform'
+const AGENT_CHAT = '/x/agent-chat'
 const README = 'products/factory/README.md'
 
 const facts = (over: Partial<CollisionFacts> = {}): CollisionFacts => ({
@@ -100,25 +105,57 @@ describe('dispatch file-overlap gate with an exempt list', () => {
   })
 })
 
-describe('overlapExemptFor', () => {
-  it('returns the built-in titan-platform list when config names none', () => {
-    expect(overlapExemptFor(TITAN, {})).toEqual(DEFAULT_OVERLAP_EXEMPT['titan-platform'])
-    expect(overlapExemptFor(TITAN, {})).toContain(README)
+describe('shared docs in a repo with no list of its own', () => {
+  const agentChat = (over: Partial<CollisionFacts> = {}): CollisionFacts =>
+    facts({ repo: AGENT_CHAT, overlapExempt: overlapExemptFor(AGENT_CHAT, {}), ...over })
+  const docs = ['README.md', 'docs/README-dev.md', 'CAPABILITIES.md']
+
+  it('dispatches when an open PR overlaps only on a root README, a nested README variant and CAPABILITIES.md', () => {
+    expect(collision(work([...docs, 'src/a.ts']), agentChat(openPrTouching(docs)))).toBeUndefined()
   })
 
-  it('lets config replace the list for the repo it names', () => {
+  it('still refuses when that PR also touches the code file', () => {
+    const found = collision(work([...docs, 'src/a.ts']), agentChat(openPrTouching([...docs, 'src/a.ts'])))
+
+    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/a.ts' })
+  })
+
+  it('dispatches over a held claim that owns a changeset glob', () => {
+    const heldOwns = [{ holder: 'CC-2 slice a', repo: AGENT_CHAT, owns: ['.changeset/*.md', 'src/b.ts'] }]
+
+    expect(collision(work(['.changeset/tp-x.md', 'src/a.ts']), agentChat({ heldOwns }))).toBeUndefined()
+  })
+
+  it('still refuses a held claim that shares the code file', () => {
+    const heldOwns = [{ holder: 'CC-2 slice a', repo: AGENT_CHAT, owns: ['README.md', 'src/a.ts'] }]
+
+    expect(collision(work(['README.md', 'src/a.ts']), agentChat({ heldOwns }))?.kind).toBe('file-overlap')
+  })
+})
+
+describe('overlapExemptFor', () => {
+  it('returns the shared docs plus the built-in titan-platform list when config names none', () => {
+    expect(overlapExemptFor(TITAN, {})).toEqual([
+      ...SHARED_DOC_EXEMPT,
+      ...(DEFAULT_OVERLAP_EXEMPT['titan-platform'] ?? []),
+    ])
+    expect(overlapExemptFor(TITAN, {})).toContain('site/reference/**')
+  })
+
+  it('lets config replace only the repo part of the list', () => {
     const config = { dispatchOverlapExempt: { 'titan-platform': ['a.md'] } }
 
-    expect(overlapExemptFor(TITAN, config)).toEqual(['a.md'])
+    expect(overlapExemptFor(TITAN, config)).toEqual([...SHARED_DOC_EXEMPT, 'a.md'])
+    expect(overlapExemptFor(TITAN, config)).toContain('**/CAPABILITIES.md')
   })
 
-  it('returns an empty list for a repo with no default and no config', () => {
-    expect(overlapExemptFor('/x/agent-chat', {})).toEqual([])
+  it('returns the shared docs for a repo with no default and no config', () => {
+    expect(overlapExemptFor(AGENT_CHAT, {})).toEqual(['**/CAPABILITIES.md', '**/README*.md', '.changeset/**'])
   })
 
   it.each([['not a list'], [[1, 2]], [null]])('keeps the default when the configured value is %j', value => {
     const config = { dispatchOverlapExempt: { 'titan-platform': value } }
 
-    expect(overlapExemptFor(TITAN, config)).toEqual(DEFAULT_OVERLAP_EXEMPT['titan-platform'])
+    expect(overlapExemptFor(TITAN, config)).toEqual(overlapExemptFor(TITAN, {}))
   })
 })
