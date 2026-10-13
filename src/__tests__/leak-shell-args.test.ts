@@ -133,6 +133,8 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     ['readonly IF\\S=.; git push $1', 'IFS'],
     ['declare -n r=IF""S; r=.; git push $1', 'IFS'],
     ['declare -n r=v; r=.; git push $1', 'nameref'],
+    ['declare -$1 r=v; git push', 'nameref'],
+    ['export "$0=."; git push $1', 'nameref'],
     ['typeset -rn r=v; git push $1', 'nameref'],
     ['nameref r=v; git push $1', 'nameref'],
     ["echo $'x' $1", 'ansi-c quoting'],
@@ -160,6 +162,7 @@ describe('sh -c scripts that read their arguments implicitly (CC-1201)', () => {
     ['git push origin a#b $1', 'git push origin a#b a'],
     ['echo "$HOME" $# ${#x} $1', 'echo "$HOME" $# ${#x} a'],
     ['git config --unset x $1', 'git config --unset x a'],
+    ['export PATH=$1:/bin; git push', 'export PATH=a:/bin; git push'],
   ])('fills %j, which sets options or loops over a list', (script, text) => {
     expect(filled(script, { params: ['a'] })).toEqual({ text })
   })
@@ -179,11 +182,20 @@ const SHELLS = ['dash', 'bash'].filter(shell => {
 })
 
 // Each runs `git push` with `--no-verify` in a real shell, though its text never spells it out.
+// The words after the script are ARG0 and the params.
 const HIDDEN_SPLITS: [string, string, string[], string[]][] = [
-  ['export IF""S', 'export IF""S=.; git push $1', ['a.--no-verify'], ['dash', 'bash']],
-  ['readonly IF\\S', 'readonly IF\\S=.; git push $1', ['a.--no-verify'], ['dash', 'bash']],
-  ['a nameref to IFS', 'declare -n r=IF""S; r=.; git push $1', ['a.--no-verify'], ['bash']],
-  ["dash's $'", "x=$'\\'\ngit push $1\n: \\'", ['--no-verify'], ['dash']],
+  ['export IF""S', 'export IF""S=.; git push $1', ['_', 'a.--no-verify'], ['dash', 'bash']],
+  ['readonly IF\\S', 'readonly IF\\S=.; git push $1', ['_', 'a.--no-verify'], ['dash', 'bash']],
+  ['a nameref to IFS', 'declare -n r=IF""S; r=.; git push $1', ['_', 'a.--no-verify'], ['bash']],
+  ["dash's $'", "x=$'\\'\ngit push $1\n: \\'", ['_', '--no-verify'], ['dash']],
+  ['IFS named by $0', 'export "$0=."; git push $1', ['IFS', 'a.--no-verify'], ['dash', 'bash']],
+  ['printf -v to IFS named by $0', 'printf -v "$0" .; git push $1', ['IFS', 'a.--no-verify'], ['bash']],
+  [
+    'a nameref built from params',
+    'declare -$1 r=$2; r=.; git push $3',
+    ['_', 'n', 'IFS', 'a.--no-verify'],
+    ['bash'],
+  ],
 ]
 
 describe.skipIf(SHELLS.length === 0)(
@@ -196,19 +208,19 @@ describe.skipIf(SHELLS.length === 0)(
     })
     afterAll(() => fs.rmSync(bin, { recursive: true, force: true }))
 
-    const ran = (shell: string, script: string, params: string[]) =>
-      execFileSync(shell, ['-c', script, '_', ...params], {
+    const ran = (shell: string, script: string, words: string[]) =>
+      execFileSync(shell, ['-c', script, ...words], {
         env: { PATH: `${bin}:${process.env.PATH ?? ''}` },
         encoding: 'utf8',
       })
 
     it.each(HIDDEN_SPLITS)(
       'returns implicit for %s, which pushes --no-verify',
-      (_, script, params, shells) => {
+      (_, script, [zero, ...params], shells) => {
         for (const shell of shells.filter(name => SHELLS.includes(name))) {
-          expect(ran(shell, script, params)).toContain('[--no-verify]')
+          expect(ran(shell, script, [zero ?? '', ...params])).toContain('[--no-verify]')
         }
-        expect(filled(script, { params })).toHaveProperty('implicit')
+        expect(filled(script, { zero, params })).toHaveProperty('implicit')
       },
     )
   },

@@ -75,7 +75,9 @@ export function fillScriptArgs(script: string, args: ScriptArgs): ScriptFill {
     const { start, end, words } = replacement(script, use, args)
     text = text.slice(0, start) + words + text.slice(end)
   }
-  return { text }
+  // An argument may spell a reader itself: `export "$0=."` with `$0` set to IFS.
+  const filledReader = implicitReader(text)
+  return filledReader === undefined ? { text } : { implicit: filledReader }
 }
 
 /** A reader the fill cannot follow: a function, or one of `commandReader`'s. */
@@ -93,7 +95,7 @@ function commandReader({ words, marked }: SimpleCommand): string | undefined {
   const reader = words.find(word => READERS.has(word))
   if (reader !== undefined) return reader
   if (words.some(word => MAY_NAME_IFS.test(word))) return 'IFS'
-  if (words.some(word => DECLARERS.has(word)) && words.some(word => NAMEREF_FLAG.test(word))) return 'nameref'
+  if (words.some(word => DECLARERS.has(word)) && marked.some(declaresUnseen)) return 'nameref'
   if (words.some((word, i) => word === 'set' && !plainSet(words.slice(i + 1)))) return 'set'
   const head = headIndex(words)
   if (head === undefined) return undefined
@@ -101,6 +103,13 @@ function commandReader({ words, marked }: SimpleCommand): string | undefined {
   if (words[head] === '.' || words[head] === 'source') return 'source'
   if (words[head] === 'function') return 'function'
   return words[head] === 'for' && words[head + 2] !== 'in' ? 'for' : undefined
+}
+
+/** A declaration word that makes a nameref, or whose flags or name expand, so it may make one or name IFS. */
+function declaresUnseen(marked: string): boolean {
+  const word = marked.replaceAll(LIVE, '')
+  if (NAMEREF_FLAG.test(word)) return true
+  return /^[-+]/.test(word) ? marked.includes(LIVE) : (marked.split('=')[0] ?? '').includes(LIVE)
 }
 
 /** The command word: past keywords, assignments and the builtin wrappers. */
