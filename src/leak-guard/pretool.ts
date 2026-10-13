@@ -308,9 +308,18 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
 function stdinArgs(words: readonly string[], fed: Fed | undefined): string[] {
   if (fed === undefined || words.length === 0) return [...words]
   const { replace } = fed
-  const placed =
-    replace === undefined ? words : words.map(word => (unmark(word).includes(replace) ? XARGS_ARGS : word))
+  const placed = replace === undefined ? words : words.map(word => placeFed(word, replace))
   return fed.append ? [...placed, XARGS_ARGS] : [...placed]
+}
+
+/**
+ * A word with each copy of the replace string swapped for the unreadable words, keeping the rest of it
+ * readable, as in the script of `sh -c 'git push {} --no-verify'`. A replace string the guard cannot read may be anywhere.
+ */
+function placeFed(word: string, replace: string): string {
+  if (replace === ANY_WORD) return XARGS_ARGS
+  const pattern = [...replace].map(c => `${LIVE}?${c.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}`).join('')
+  return word.replace(new RegExp(pattern, 'g'), () => XARGS_ARGS)
 }
 
 /** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
@@ -601,7 +610,11 @@ const PUSH_FLAGS = new Set(
  */
 function checkFedPush(run: GitRun, scope: Scope): string | undefined {
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  if (at < 0 || run.resolved[at] !== 'push' || !run.marked.slice(at + 1).includes(XARGS_ARGS))
+  if (
+    at < 0 ||
+    run.resolved[at] !== 'push' ||
+    !run.marked.slice(at + 1).some(word => word.includes(XARGS_ARGS))
+  )
     return undefined
   for (const word of run.resolved.slice(at + 1)) {
     if (word === '--') return undefined

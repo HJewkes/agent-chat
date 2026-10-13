@@ -131,6 +131,22 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     expect(checkCommand('xargs xargs -I{} git push origin -- {}', ctx)).toBeDefined()
   })
 
+  it('denies a script that sh -c reads, keeping its text around the replace string', () => {
+    expect(checkCommand(`xargs -I{} sh -c 'git push origin {} --no-verify'`, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    `xargs -I{} bash -c 'git config protocol.ext.allow {}'`,
+    `xargs -I% sh -c 'git remote add o %'`,
+    `xargs -I{} sh -c 'git push origin {}'`,
+  ])('denies a write a -c script takes from the replace string: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
+  it('denies a push whose subcommand word holds the replace string', () => {
+    expect(checkCommand('xargs -I{} git pu{} origin', ctx)).toBeDefined()
+  })
+
   it('denies a config write through the replace word', () => {
     expect(checkCommand('xargs -I % git config %', ctx)).toBeDefined()
   })
@@ -144,6 +160,8 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     'xargs -a "$X" git push origin --',
     'xargs -I {} git push origin -- {}',
     'xargs -- "$X"',
+    `xargs -I{} sh -c 'git log {}'`,
+    'xargs -I{} git push origin -- x{}y',
     'xargs git log',
     'ls | xargs git add',
     'xargs git status',
