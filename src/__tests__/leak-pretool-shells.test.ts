@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseTerms } from '@titan-design/egress-scan'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { checkCommand, readText, type GuardContext } from '../leak-guard/pretool.js'
+import { checkCommand, pretoolDecision, readText, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 /**
  * Runs each command through the guard and then through real shells with a fake `gh` that
@@ -175,8 +175,30 @@ const HIDDEN_BEHIND_OPTION = [
   `function f { gh ${FROM_FILE}; }; f`,
 ]
 
+// CC-718: the splitter ends `${X:-'${Y}` at its first `}`, so the quote it opens hides a gh spelt any way.
+const MISREAD = `echo \${X:-'\${Y}'};`
+const POST_TERM = `pr create -t ${TERM} -b ok`
+const HIDDEN_BY_EXPANSION = [
+  `${MISREAD} gh ${POST_TERM}`,
+  `${MISREAD} g''h ${POST_TERM}`,
+  `${MISREAD} g\\h ${POST_TERM}`,
+  `${MISREAD} "g"h ${POST_TERM}`,
+  `${MISREAD} A=g;B=h;$A$B ${POST_TERM}`,
+  `${MISREAD} eval 'g''h ${POST_TERM}'`,
+  `${MISREAD} f(){ g''h "$@";}; f ${POST_TERM}`,
+]
+// Only zsh posts these: its (e) flag runs the assignment, which defines foo, and it counts the nested
+// `{`, so the `#` is inside the expansion. bash rejects the flag, and reads the `#` as a comment.
+const ZSH_POSTS = [
+  `X='\${functions[gh]::=command gh ${POST_TERM}}'; : \${(e)X}; gh pr view`,
+  `X='\${functions[foo]::=command g''h ${POST_TERM}}'; : \${(e)X}; foo`,
+  `echo \${X:-{} #}; g''h ${POST_TERM}`,
+]
+
 const DENIED = [
   ...COPIED_ONTO_STDIN,
+  ...HIDDEN_BY_EXPANSION,
+  ...ZSH_POSTS,
   ...HIDDEN_BEHIND_OPTION,
   `${COMMENT} <<'EOF' ${OPEN3} 0<&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} <&3\nclean\nEOF`,
@@ -270,6 +292,21 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   it('sees a leak when there is one: every shell posts a pipe that a descriptor-3 heredoc does not replace', () => {
     for (const record of posted(`${EVIL} | ${CREATE} 3${HEREDOC}`)) expect(record).toContain(TERM)
   })
+
+  it.each([...HIDDEN_BY_EXPANSION, ...ZSH_POSTS])(
+    'denies %j through the hook entry, and a shell posts the term when run',
+    command => {
+      const raw = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: WORK })
+      const decision = JSON.parse(pretoolDecision(raw, () => guard())) as {
+        hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string }
+      }
+
+      expect(decision.hookSpecificOutput.permissionDecision).toBe('deny')
+      expect(decision.hookSpecificOutput.permissionDecisionReason).toBe(REASONS.operatorExpansion)
+      const runnable = !ZSH_POSTS.includes(command) || SHELLS.some(([shell]) => shell.endsWith('zsh'))
+      if (runnable) expect(posted(command).some(record => record.includes(TERM))).toBe(true)
+    },
+  )
 
   it.each(HIDDEN_BEHIND_OPTION)('sees a leak when there is one: every shell posts %j', command => {
     const records = posted(command)
