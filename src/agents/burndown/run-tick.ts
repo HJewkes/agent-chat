@@ -26,7 +26,7 @@ import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
-import { verifySection } from './brief.js'
+import { briefFacts } from './brief.js'
 import {
   autoApprovePortsOn,
   briefAnswered,
@@ -108,6 +108,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { burndownRefusalsPath, refusalSnapshot, writeRefusalSnapshot } from './refusal-snapshot.js'
 import {
   diskPlanReader,
   pendingOffLedger,
@@ -450,13 +451,14 @@ async function actOn(
   const told = await timer.time('deliver', () =>
     deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch }),
   )
-  await timer.time('write-ledger', () =>
+  await timer.time('write-ledger', () => {
     writeLedger(burndownLedgerPath(), {
       ...told.ledger,
       lastTickAt: now.toISOString(),
       ...(serviceCheck === undefined ? {} : { serviceCheck }),
-    }),
-  )
+    })
+    writeRefusalSnapshot(burndownRefusalsPath(), refusalSnapshot(outcomes, now))
+  })
   return {
     lines: [
       ...routed,
@@ -1250,7 +1252,7 @@ function stepContext(
   now: Date,
   root: string,
 ): Omit<StepContext, 'running'> {
-  const facts = new Map<string, { defaultBranch: string; verifySteps?: string }>()
+  const facts = new Map<string, RepoFacts>()
   return {
     now,
     root,
@@ -1270,10 +1272,10 @@ function stepContext(
   }
 }
 
-function repoFacts(repo: string): { defaultBranch: string; verifySteps?: string } {
-  const claudeMd = readOrUndefined(path.join(repo, 'CLAUDE.md'))
-  const verifySteps = claudeMd === undefined ? undefined : verifySection(claudeMd)
-  return { defaultBranch: defaultBranch(repo), ...(verifySteps === undefined ? {} : { verifySteps }) }
+type RepoFacts = ReturnType<StepContext['repoFacts']>
+
+function repoFacts(repo: string): RepoFacts {
+  return { defaultBranch: defaultBranch(repo), ...briefFacts(readOrUndefined(path.join(repo, 'CLAUDE.md'))) }
 }
 
 /** The gate for a successor or reviewer, which run on opus: a sonnet-only account is closed to them. */

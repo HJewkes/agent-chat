@@ -16,7 +16,13 @@ import {
   type Task,
 } from './eligibility.js'
 import { binaryGate, capGate } from './gate-reading.js'
-import { contractOverlap, liveOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
+import {
+  contractOverlap,
+  liveOverlap,
+  type Collision,
+  type CollisionWork,
+  type SameTickClaim,
+} from './collision.js'
 import { stopLineRefusal, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, slotMismatch, type Claim, type Ledger } from './ledger.js'
@@ -55,6 +61,8 @@ import { worktreePathFor } from './trust-gate.js'
 import { planFacts, priorRoute, type PriorRouter, type Routed } from './prior-route.js'
 import { shareOrder, sharedDefaults, type ProjectShares } from './project-shares.js'
 import type { TaskFacts } from './classify-task.js'
+import type { Blocker } from './refusal-snapshot.js'
+import { parseTaskTags } from './task-tags.js'
 
 /**
  * CC-205 D2: one seat's dispatches for a tick. Walks the seat's scored order
@@ -171,7 +179,7 @@ export interface Placement {
 
 type Role = keyof SeatDispatch['caps']
 const ROLES: readonly Role[] = ['implementers', 'reviewers', 'planners']
-type Refused = Pick<Refusal, 'kind' | 'reason' | 'gate'>
+type Refused = Pick<Refusal, 'kind' | 'reason' | 'gate' | 'blocker' | 'slice'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
 /** CC-986: an implementer-routed task with no plan to seed from; a planner writes the one at this path. */
@@ -279,8 +287,14 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     },
   )
   planBelowFloor(plan, depth, walk, take)
-  for (const { initiative, task, reason } of planRefusals)
-    plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
+  for (const { initiative, task, reason, blocker } of planRefusals)
+    plan.refusals.push({
+      initiative,
+      task,
+      kind: 'plan-blocked',
+      reason,
+      ...(blocker !== undefined && { blocker }),
+    })
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
   plan.notes.push(...idleNotes(inputs.seat.seat, walk))
@@ -422,7 +436,7 @@ interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
   refused: ShareCapRefusals
   /** Rows `planOrder` dropped for a tag reason, one per task. */
-  planRefusals: { initiative: string; task: string; reason: string }[]
+  planRefusals: { initiative: string; task: string; reason: string; blocker?: Blocker }[]
   placement?: Placement
 }
 
@@ -468,7 +482,7 @@ function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
   return {
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
-    planRefusals: tagRefusals(rows, planned, base),
+    planRefusals: tagRefusals(rows, planned, base, inputs.ledger),
     placement: placementOf(planned, inputs.shares === undefined ? inputs.defaults.initiative_decay : 1),
   }
 }
@@ -548,6 +562,7 @@ function tagRefusals(
   rows: readonly ScoreRow[],
   planned: ReturnType<typeof planOrder>,
   base: Omit<Parameters<typeof planOrder>[0], 'rows' | 'n'>,
+  ledger: Ledger,
 ): Ordered['planRefusals'] {
   if (!Object.keys(planned.refused).some(key => !HOLDS(key))) return []
   const placed = new Set(planned.order.map(row => row.id))
@@ -556,8 +571,31 @@ function tagRefusals(
     .flatMap(row => {
       const alone = planOrder({ ...base, rows: [row], n: 1 })
       const reason = Object.keys(alone.refused).find(key => !HOLDS(key))
-      return reason === undefined ? [] : [{ initiative: row.initiative, task: row.id, reason }]
+      if (reason === undefined) return []
+      const refusal = { initiative: row.initiative, task: row.id, reason }
+      return [reason === 'dep-blocked' ? { ...refusal, ...namedDeps(row.id, base.tasks, ledger) } : refusal]
     })
+}
+
+/** CC-1241: `dep-blocked` names each open dep with its claim state; the first one is the snapshot's blocker. */
+function namedDeps(
+  id: string,
+  tasks: readonly ScoredTask[],
+  ledger: Ledger,
+): { reason: string; blocker?: Blocker } {
+  const task = tasks.find(t => t.id === id)
+  const open = new Set(tasks.map(t => t.id))
+  const deps = task === undefined ? [] : parseTaskTags(task).task.deps.filter(dep => open.has(dep))
+  const blockers = deps.map(dep => ({ task: dep, state: depState(dep, ledger) }))
+  const [first] = blockers
+  if (first === undefined) return { reason: 'dep-blocked' }
+  const named = blockers.map(b => `${b.task} (${b.state})`).join(', ')
+  return { reason: `dep-blocked: ${named}`, blocker: first }
+}
+
+function depState(taskId: string, ledger: Ledger): string {
+  const claim = heldClaims(ledger).find(c => c.taskId === taskId)
+  return claim === undefined ? 'open, no claim' : `open, claim ${claim.phase}`
 }
 
 function startWalk(inputs: SeatPlanInputs): Walk {
@@ -867,7 +905,12 @@ function takeSlices(
   for (const claim of slices) {
     const outcome = considerSlice(claim, walk)
     if (!('kind' in outcome) || outcome.kind === 'role-cap') supply += 1
-    take(claim.initiative, claim.taskId, outcome)
+    const { slice } = claim
+    take(
+      claim.initiative,
+      claim.taskId,
+      'kind' in outcome && slice !== undefined ? { ...outcome, slice } : outcome,
+    )
   }
   return supply
 }
@@ -947,7 +990,7 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
   }
   const refused =
     stopLineRefusal(flow, inputs.lineStop) ??
-    inputs.collision?.(d.repo, work, landedRepos(inputs.seat)) ??
+    collided(inputs.collision?.(d.repo, work, landedRepos(inputs.seat)), d.repo) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
     (d.slice === undefined
       ? orphanRefusal(at, d.task, d.profile, inputs.orphan, inputs.ledger)
@@ -962,6 +1005,13 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
         ...refused,
         gate: binaryGate(`gate.${refused.kind}`, BINARY_SOURCES[refused.kind] ?? COLLISION_SOURCE),
       }
+}
+
+/** CC-1241: a collision naming an open PR carries it as the refusal's blocker. */
+function collided(hit: Collision | undefined, repo: string): Refused | undefined {
+  if (hit === undefined) return undefined
+  const { kind, reason, pr } = hit
+  return pr === undefined ? { kind, reason } : { kind, reason, blocker: { pr, repo } }
 }
 
 /** CC-1097: where a binary stop is read; every collision kind reads the ledger and the open PRs. */
