@@ -66,24 +66,33 @@ export function readRecentSubjects(
   return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
+const REVERT = /^Revert "(.*)"/
+
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** A slice's commit subject opens `<ID> <letter>` as tokens, the form burndown implementers use: `A-1 b: title`. */
+const opensSlice = (subject: string, id: string, letter: string): boolean =>
+  new RegExp(`^${escaped(id)} ${escaped(letter)}(?![A-Za-z0-9])`, 'i').test(subject)
+
 /**
- * CC-1227: a default-branch commit for every slice, done or released, and no open PR title naming the parent.
- * Slice commits carry the parent id and no slice letter, so the test is one distinct commit per slice. A
- * `[covers ...]` line repeats its commit's subject and counts once.
+ * CC-1227: every slice, done or released, has a default-branch commit whose subject opens `<ID> <letter>`, and no
+ * open PR title names the parent. A typo fix or a filing commit that merely opens with the id lands no slice, so
+ * slices are matched by letter, not counted. A revert never counts, nor the commit it reverts; a `[covers ...]`
+ * suffix is dropped. The caller bounds each log to commits since the task began.
  */
 export function releasedSlicesLanded(
   taskId: string,
-  slices: { done: number; released: number },
+  slices: { done: readonly string[]; released: readonly string[] },
   reads: readonly SubjectRead[],
   openPrTitles: readonly string[],
 ): boolean {
   if (reads.some(read => read.subjects === undefined)) return false
   if (openPrTitles.some(title => namesId(title, taskId))) return false
-  const commits = reads
-    .flatMap(read => read.subjects ?? [])
-    .filter(s => namesId(s, taskId))
-    .map(s => s.replace(/ \[covers [^\]]*\]$/, ''))
-  return slices.released > 0 && new Set(commits).size >= slices.done + slices.released
+  const subjects = reads.flatMap(read => read.subjects ?? []).map(s => s.replace(/ \[covers [^\]]*\]$/, ''))
+  const reverted = new Set(subjects.flatMap(s => REVERT.exec(s)?.[1] ?? []))
+  const landed = subjects.filter(s => !REVERT.test(s) && !reverted.has(s))
+  const letters = [...slices.done, ...slices.released]
+  return slices.released.length > 0 && letters.every(l => landed.some(s => opensSlice(s, taskId, l)))
 }
 
 export interface LandedSweep {
