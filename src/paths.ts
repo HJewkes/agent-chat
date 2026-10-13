@@ -117,6 +117,9 @@ export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-
 /** One JSON summary row per burndown tick, appended; `burndown dispatch-stats` reads it (schema in tick-summary.ts). */
 export const burndownTicksPath = (): string => path.join(home(), 'burndown-ticks.jsonl')
 
+/** CC-1193: one decision record per real tick and the ledgers they read, for the dispatch-workflow shadow diff. */
+export const burndownShadowDir = (): string => path.join(home(), 'burndown-shadow')
+
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
 

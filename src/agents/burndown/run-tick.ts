@@ -9,6 +9,7 @@ import {
   burndownOverridePath,
   burndownOwedHoldsPath,
   burndownPausePath,
+  burndownShadowDir,
   burndownTickStatusPath,
   burndownTicksPath,
 } from '../../paths.js'
@@ -108,6 +109,7 @@ import {
   type SkippedSeat,
 } from './seat-tick.js'
 import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
+import { shadowDecisions, writeShadowRecord, type ShadowCapture } from './shadow-record.js'
 import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
@@ -286,11 +288,13 @@ async function tickOnce(opts: TickOptions): Promise<TickResult> {
       lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
       outcome: { kind: 'skipped' },
     }
-  const { lines, summary, lockHeldMs } = locked.value
+  const { lines, summary, lockHeldMs, shadow } = locked.value
   if (summary !== undefined) {
     const timings = { durationMs: Math.round(monotonic() - started), lockHeldMs, steps: timer.steps() }
     appendTickSummary(tickSummary(summary, timings), opts.log ?? logEvent)
   }
+  if (shadow !== undefined && summary !== undefined && gate.config.shadowOut)
+    recordShadow(shadow, summary.now, opts.log ?? logEvent)
   return { lines: [...gate.head, ...lines], outcome: { kind: 'ok' } }
 }
 
@@ -298,11 +302,23 @@ interface Ran {
   lines: string[]
   /** A real tick's summary row inputs; a dry run has none. */
   summary?: SummaryInputs
+  /** CC-1193: a real tick's ledger as read and its decisions, for the shadow record. */
+  shadow?: ShadowCapture
+}
+
+/** Best effort: a record that cannot be written is an event, never a failed tick. */
+function recordShadow(shadow: ShadowCapture, now: Date, log: NonNullable<TickOptions['log']>): void {
+  try {
+    writeShadowRecord(burndownShadowDir(), shadow, now)
+  } catch (err) {
+    log('burndown_shadow_record_failed', { reason: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer): Promise<Ran> {
   const now = opts.now ?? new Date()
   const ledger = await timer.time('read-ledger', () => readLedger(burndownLedgerPath()))
+  const ledgerText = JSON.stringify(ledger)
   const briefs = await timer.time('brief-approve', () => settleBriefs(config, opts, now))
   const decided = await decide(config, opts, ledger, now, timer, briefs.routes)
   const { steps, decider } = decided
@@ -330,9 +346,11 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
     }
   }
   const acted = await actOn(config, opts, ledger, decided, now, timer)
+  const decisions = shadowDecisions({ steps: steps.map(describe), briefs, decided })
   return {
     lines: [`burndown tick at ${now.toISOString()}`, ...acted.lines, ...notes],
     summary: acted.summary,
+    shadow: { ledgerText, config, decisions },
   }
 }
 
