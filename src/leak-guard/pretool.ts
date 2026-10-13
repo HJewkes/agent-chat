@@ -237,7 +237,7 @@ const XARGS_LONG_FLAG = new Set([
   '--version',
   '--help',
 ])
-// From sudo's getopt string `+Aa:BbC:c:D:Eeg:Hh::iKklNnPpR:r:SsT:t:U:u:Vv`; -h takes a value only glued.
+// From sudo's getopt string `+Aa:BbC:c:D:Eeg:Hh::iKklNnPpR:r:SsT:t:U:u:Vv`.
 const SUDO_SHORT_VALUE = new Set('aCcDgpRrTtUu')
 const SUDO_LONG_VALUE = new Set([
   '--close-from',
@@ -353,9 +353,16 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
     } else if (name === 'sudo') {
       const after = dropSudoOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.sudoOption }
-      at = after
       // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
       chdir = true
+      if (after.shell) {
+        const script = rest.slice(after.at)
+        // Words xargs adds, or an expansion sudo then escapes, may hold anything the shell reads, such as $IFS.
+        if (fed !== undefined || script.some(word => word.includes(LIVE)))
+          return { reason: REASONS.hiddenCommand }
+        rest = sudoShell(script)
+        at = 0
+      } else at = after.at
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
@@ -491,35 +498,66 @@ const replaceString = (marked: string): string => {
   return plain.includes(LIVE) ? ANY_WORD : plain
 }
 
-/**
- * The index of the command sudo runs, or undefined on a long option this guard does not know
- * or an option word the shell expands, which may be any option.
- */
-function dropSudoOptions(words: readonly string[], i: number): number | undefined {
-  for (; i < words.length; i++) {
-    const a = words[i] as string
-    if (a === '--') return i + 1
-    if (!a.startsWith('-') || a === '-') break
-    if (a.includes(LIVE)) return undefined
-    const name = a.split('=')[0] as string
-    if (a.startsWith('--') && !SUDO_LONG_VALUE.has(name) && !SUDO_LONG_FLAG.has(name)) return undefined
-    i += a.startsWith('--')
-      ? SUDO_LONG_VALUE.has(name) && !a.includes('=')
-        ? 1
-        : 0
-      : sudoClusterValueWords(a)
-  }
-  return Math.min(i, words.length)
+/** Where the command sudo runs starts, and whether -s, -i, --shell or --login hand it to a shell instead. */
+interface SudoRun {
+  at: number
+  shell: boolean
 }
 
-/** A sudo short-flag cluster takes the next word only when its first value letter ends it; a glued -h takes the rest. */
-function sudoClusterValueWords(cluster: string): number {
-  for (let k = 1; k < cluster.length; k++) {
-    if (SUDO_SHORT_VALUE.has(cluster[k] as string)) return k === cluster.length - 1 ? 1 : 0
-    if (cluster[k] === 'h') return 0
-  }
-  return 0
+interface SudoOption {
+  width: number
+  shell: boolean
 }
+
+const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
+
+/**
+ * The command sudo runs, or undefined on a long option this guard does not know, an ambiguous -h,
+ * or an option word the shell expands, which may be any option.
+ */
+function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefined {
+  let shell = false
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return { at: i + 1, shell }
+    if (!a.startsWith('-') || a === '-') break
+    if (a.includes(LIVE)) return undefined
+    const option = a.startsWith('--') ? sudoLongOption(a) : sudoCluster(a, i + 1 < words.length)
+    if (option === undefined) return undefined
+    shell ||= option.shell
+    i += option.width
+  }
+  return { at: Math.min(i, words.length), shell }
+}
+
+function sudoLongOption(option: string): SudoOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!SUDO_LONG_VALUE.has(name) && !SUDO_LONG_FLAG.has(name)) return undefined
+  return {
+    width: SUDO_LONG_VALUE.has(name) && !option.includes('=') ? 1 : 0,
+    shell: SUDO_SHELL_LONG.has(name),
+  }
+}
+
+/**
+ * A sudo short-flag cluster takes the next word only when its first value letter ends it; a glued -h takes the rest.
+ * A bare -h before another word is --help in some sudo versions and --host with that word in others, so it is undefined.
+ */
+function sudoCluster(cluster: string, hasNext: boolean): SudoOption | undefined {
+  let shell = false
+  for (let k = 1; k < cluster.length; k++) {
+    const letter = cluster[k] as string
+    const last = k === cluster.length - 1
+    if (SUDO_SHORT_VALUE.has(letter)) return { width: last ? 1 : 0, shell }
+    if (letter === 'h') return last && hasNext ? undefined : { width: 0, shell }
+    shell ||= letter === 's' || letter === 'i'
+  }
+  return { width: 0, shell }
+}
+
+/** sudo -s or -i runs `shell -c` on its words joined, each character but alnum, _, - and $ escaped. */
+const sudoShell = (words: readonly string[]): string[] =>
+  words.length === 0 ? ['sh'] : ['sh', '-c', words.map(w => w.replace(/[^A-Za-z0-9_$-]/g, '\\$&')).join(' ')]
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
 function clusterValueWords(cluster: string): number {

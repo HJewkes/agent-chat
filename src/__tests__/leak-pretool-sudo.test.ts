@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 // Synthetic only: a made-up private term.
+const TERM = 'zq7privateseat'
 const ctx = (): GuardContext => ({
-  terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
+  terms: { kind: 'ok', rules: parseTerms(`${TERM}\n`) },
   cwd: '/work',
   env: {},
   protectedPaths: ['/cfg/titan-egress/private-terms', '.agent-chat/git-hooks'],
@@ -65,9 +66,38 @@ describe('the bypass guard fails closed on a sudo option it cannot read', () => 
     'sudo --us root git push --no-verify',
     'sudo -$opts git push --no-verify',
     'sudo --user=$u git push',
+    'sudo -h host git push --no-verify',
+    'sudo -Eh host git push --no-verify',
   ])('denies %s', line => {
     expect(checkCommand(line, ctx())).toBe(REASONS.sudoOption)
   })
+})
+
+const SHELL_FLAGS = ['-s', '-i', '-Es', '--shell', '--login', '-u root -s']
+
+describe('the bypass guard reads sudo -s and -i as the shell script they run', () => {
+  it.each(SHELL_FLAGS)('denies sudo %s with a private term in a gh body', flags => {
+    expect(checkCommand(`sudo ${flags} gh pr comment 1 --body '${TERM}'`, ctx())).toBeDefined()
+  })
+
+  it.each(SHELL_FLAGS)('denies sudo %s with a push whose quoted $IFS the shell splits', flags => {
+    expect(checkCommand(`sudo ${flags} git 'push$IFS--no-verify'`, ctx())).toBeDefined()
+  })
+
+  it.each(SHELL_FLAGS)('denies sudo %s reading a push from a herestring', flags => {
+    expect(checkCommand(`sudo ${flags} <<< 'git push --no-verify'`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(SHELL_FLAGS)('denies sudo %s with a plain no-verify push', flags => {
+    expect(checkCommand(`sudo ${flags} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(['sudo -s git push $ARGS', 'echo x | xargs sudo -s git push'])(
+    'denies %s, whose words it cannot read',
+    line => {
+      expect(checkCommand(line, ctx())).toBe(REASONS.hiddenCommand)
+    },
+  )
 })
 
 describe('the bypass guard allows sudo lines that skip no hook', () => {
@@ -77,6 +107,9 @@ describe('the bypass guard allows sudo lines that skip no hook', () => {
     'sudo git status',
     'sudo git push origin main',
     'sudo -u root git push origin main',
+    'sudo -s git status',
+    'sudo -i',
+    "sudo -s <<< 'git status'",
     'sudo ls | xargs -n 1 echo',
     'echo "sudo git push --no-verify is denied"',
   ])('allows %s', line => {
