@@ -26,26 +26,26 @@ const claim = (taskId: string, seat: string, minutesAgo: number, extra: Partial<
 const ledger = (claims: Claim[]): Ledger => ({ claims }) as Ledger
 
 const queued = ledger([
-  claim('D-1', 'design-coord', 90),
-  claim('D-2', 'design-coord', 30, { slice: 'b', dependsOn: ['a'] }),
-  claim('T-1', 'titan-coord', 500),
+  claim('D-1', 'seat-b', 90),
+  claim('D-2', 'seat-b', 30, { slice: 'b', dependsOn: ['a'] }),
+  claim('T-1', 'seat-a', 500),
 ])
 
 describe('orphanQueues', () => {
   it('flags a seat with queued claims that no plan covers this tick, and counts its ready slices', () => {
-    const found = orphanQueues(queued, new Set(['titan-coord']), NOW)
+    const found = orphanQueues(queued, new Set(['seat-a']), NOW)
 
-    expect(found).toEqual([{ seat: 'design-coord', queued: 2, ready: 1, oldestMinutes: 90 }])
+    expect(found).toEqual([{ seat: 'seat-b', queued: 2, ready: 1, oldestMinutes: 90 }])
     expect(found.map(orphanQueueLine)).toEqual([
-      'orphan queue: seat design-coord not ticked, 2 queued (1 ready), oldest 90m',
+      'orphan queue: seat seat-b not ticked, 2 queued (1 ready), oldest 90m',
     ])
   })
 
   it('stays silent for a ticked seat and for a seat with nothing queued', () => {
-    const l = ledger([claim('D-1', 'design-coord', 5, { phase: 'implementing' })])
+    const l = ledger([claim('D-1', 'seat-b', 5, { phase: 'implementing' })])
 
-    expect(orphanQueues(queued, new Set(['titan-coord', 'design-coord']), NOW)).toEqual([])
-    expect(orphanQueues(l, new Set(['titan-coord']), NOW)).toEqual([])
+    expect(orphanQueues(queued, new Set(['seat-a', 'seat-b']), NOW)).toEqual([])
+    expect(orphanQueues(l, new Set(['seat-a']), NOW)).toEqual([])
   })
 })
 
@@ -60,7 +60,7 @@ const seatRow = (extra: Partial<SeatSummary> = {}): SeatSummary => ({
 })
 
 describe('tick summary row', () => {
-  it('carries the orphan queue when only titan-coord is planned', () => {
+  it('carries the orphan queue when only seat-a is planned', () => {
     const row = tickSummary({
       now: NOW,
       maxAgeDays: 7,
@@ -68,11 +68,11 @@ describe('tick summary row', () => {
       dispatch: [],
       tasks: new Map(),
       registrations: [],
-      outcomes: [{ seat: 'titan-coord', dispatched: 0, refusals: [] }],
+      outcomes: [{ seat: 'seat-a', dispatched: 0, refusals: [] }],
       ledger: queued,
     })
 
-    expect(row.orphanQueues).toEqual([{ seat: 'design-coord', queued: 2, ready: 1, oldestMinutes: 90 }])
+    expect(row.orphanQueues).toEqual([{ seat: 'seat-b', queued: 2, ready: 1, oldestMinutes: 90 }])
   })
 })
 
@@ -81,11 +81,11 @@ describe('dispatch-stats', () => {
     v: 1,
     ts: ago(5),
     registrations: { ok: 0, refused: 0, failed: 0 },
-    seats: { 'titan-coord': seatRow() },
+    seats: { 'seat-a': seatRow() },
   })
   const ports: DispatchStatsPorts = {
     now: NOW,
-    seats: () => ['design-coord', 'titan-coord'],
+    seats: () => ['seat-b', 'seat-a'],
     tickRows: () => tickRow,
     ledger: () => queued,
     dispatchLog: () => undefined,
@@ -100,6 +100,6 @@ describe('dispatch-stats', () => {
     const lines = renderDispatchStats(dispatchStats(ports, 24 * 3_600_000))
 
     const flagged = lines.filter(l => l.includes('orphan queue'))
-    expect(flagged).toEqual(['  orphan queue: seat design-coord not ticked, 2 queued (1 ready), oldest 90m'])
+    expect(flagged).toEqual(['  orphan queue: seat seat-b not ticked, 2 queued (1 ready), oldest 90m'])
   })
 })
