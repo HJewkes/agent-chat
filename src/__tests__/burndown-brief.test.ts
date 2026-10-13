@@ -139,6 +139,14 @@ describe('brief writer brief (CC-939)', () => {
     }
   })
 
+  it('makes a publish its own dep-linked task in both plan briefs (CC-987)', () => {
+    for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
+      expect(brief).toContain('its own task tagged ops:publish')
+      expect(brief).toContain("'publish <package> at <version>'")
+      expect(brief).toContain('dep: on the publish task')
+    }
+  })
+
   it('fits PLANNER_BRIEF_MAX_BYTES for an oversized task', () => {
     expect(bytes(briefWriterBrief(largest()))).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)
   })

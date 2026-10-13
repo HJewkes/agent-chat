@@ -17,14 +17,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-function allocated(meta: Record<string, string>): AgentEventRow {
+function allocated(meta: Record<string, string>, ref = 'ag000001'): AgentEventRow {
   return {
     kind: 'isolation_allocated',
     ts: Date.now(),
     actor: 'worker',
     target: null,
     msgId: null,
-    ref: 'ag000001',
+    ref,
     body: '',
     meta: { strategy: 'worktree', ...meta },
   }
@@ -37,46 +37,56 @@ function created(): { gitRoot: string; worktree: string; row: AgentEventRow } {
 }
 
 describe('the worktree agent-chat created for a launch (CC-1110)', () => {
-  it('is the recorded tree when the allocation launches in it', () => {
-    const { worktree, row } = created()
+  it('is the recorded tree and its repository when the allocation launches in it', () => {
+    const { gitRoot, worktree, row } = created()
 
-    expect(createdWorktreeFor([row], { cwd: worktree, ref: { worktree } }, 'worktree')).toBe(worktree)
+    expect(createdWorktreeFor([row], 'ag000001', { cwd: worktree, ref: { worktree } }, 'worktree')).toEqual({
+      worktree,
+      gitRoot,
+    })
   })
 
   it('is nothing for an isolation:none launch, whatever its ref says', () => {
     const { worktree, row } = created()
 
-    expect(createdWorktreeFor([row], { cwd: worktree, ref: { worktree } }, 'none')).toBeUndefined()
+    expect(
+      createdWorktreeFor([row], 'ag000001', { cwd: worktree, ref: { worktree } }, 'none'),
+    ).toBeUndefined()
   })
 
-  it('is nothing for an assigned tree agent-chat never allocated', () => {
-    const { gitRoot, worktree } = created()
-    const assigned = allocated({ gitRoot, worktree, branch: 'task/x', assigned: 'true' })
-
-    expect(createdWorktreeFor([assigned], { cwd: worktree, ref: { worktree } }, 'worktree')).toBeUndefined()
-  })
-
-  it('is the original record for an assigned tree agent-chat did allocate', () => {
+  it('is nothing for an assigned tree, even one agent-chat allocated for another agent', () => {
     const { gitRoot, worktree, row } = created()
-    const assigned = allocated({ gitRoot, worktree, branch: 'agent-chat/worker', assigned: 'true' })
-
-    expect(createdWorktreeFor([row, assigned], { cwd: worktree, ref: { worktree } }, 'worktree')).toBe(
-      worktree,
+    const assigned = allocated(
+      { gitRoot, worktree, branch: 'agent-chat/worker', assigned: 'true' },
+      'ag000002',
     )
+    const allocation = { cwd: worktree, ref: { worktree, assigned: 'true' } }
+
+    expect(createdWorktreeFor([row, assigned], 'ag000002', allocation, 'worktree')).toBeUndefined()
   })
 
-  it('is nothing when the record is for a different path', () => {
-    const { row } = created()
-    const elsewhere = path.join(tmpdir(), 'elsewhere')
+  it('is nothing when the only record of the path belongs to another agent', () => {
+    const { worktree, row } = created()
 
     expect(
-      createdWorktreeFor([row], { cwd: elsewhere, ref: { worktree: elsewhere } }, 'worktree'),
+      createdWorktreeFor([row], 'ag000002', { cwd: worktree, ref: { worktree } }, 'worktree'),
+    ).toBeUndefined()
+  })
+
+  it("is nothing when the agent's newest allocation is for a different path", () => {
+    const { worktree, row } = created()
+    const moved = allocated({ gitRoot: tmpdir(), worktree: path.join(tmpdir(), 'other'), branch: 'b' })
+
+    expect(
+      createdWorktreeFor([row, moved], 'ag000001', { cwd: worktree, ref: { worktree } }, 'worktree'),
     ).toBeUndefined()
   })
 
   it('is nothing when the cwd is not the allocated tree', () => {
     const { worktree, row } = created()
 
-    expect(createdWorktreeFor([row], { cwd: tmpdir(), ref: { worktree } }, 'worktree')).toBeUndefined()
+    expect(
+      createdWorktreeFor([row], 'ag000001', { cwd: tmpdir(), ref: { worktree } }, 'worktree'),
+    ).toBeUndefined()
   })
 })

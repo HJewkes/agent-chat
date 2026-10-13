@@ -80,6 +80,8 @@ export type ShepherdRow = Omit<z.infer<typeof Row>, 'phase'> & {
 type Log = (event: string, detail: Record<string, unknown>) => void
 
 export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
+/** TP-2516: the bare form leaves out done, failed and cancelled runs; these readers need them. */
+export const SHEPHERD_STATUS_ALL_ARGS = [...SHEPHERD_STATUS_ARGS, '--all']
 
 /**
  * Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is
@@ -87,12 +89,12 @@ export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
  * skipped and an unknown phase kept as `unknown`, each logged once per read.
  */
 export function shepherdRows(exec: Runner = run, log: Log = logEvent): ShepherdRow[] | undefined {
-  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ALL_ARGS)
   return result.status === 0 ? parseShepherdRows(result.stdout, log) : undefined
 }
 
 const STATUS_TIMEOUT_MS = 15_000
-/** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
+/** With `--all` Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
 const STATUS_MAX_BYTES = 64 * 1024 * 1024
 
 /**
@@ -107,7 +109,7 @@ export async function shepherdRowsAsync(
   const cwd = homedir()
   const started = performance.now()
   try {
-    const { stdout } = await promisify(execFile)(bin, SHEPHERD_STATUS_ARGS, {
+    const { stdout } = await promisify(execFile)(bin, SHEPHERD_STATUS_ALL_ARGS, {
       cwd,
       env: childEnv(),
       encoding: 'utf8',
@@ -276,7 +278,7 @@ export interface ShepherdListing {
 
 /** Undefined when Shepherd is down or the answer is not a JSON array. */
 export function shepherdListed(exec: Runner = run): ShepherdListing | undefined {
-  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ALL_ARGS)
   if (result.status !== 0) return undefined
   let parsed: unknown
   try {

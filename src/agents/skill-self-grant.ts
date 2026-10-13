@@ -76,6 +76,20 @@ export function linkedWorktreeRoot(root: string): string | undefined {
   }
 }
 
+/** The real common dir git resolves for `root`, the repository's `.git` for a linked worktree. */
+export function gitCommonDir(root: string): string | undefined {
+  try {
+    const commonDir = execFileSync(
+      'git',
+      ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    return fs.realpathSync(commonDir)
+  } catch {
+    return undefined
+  }
+}
+
 /** Hand-written `.git` and admin files can mimic the pointers, so ask git where the admin dir sits. */
 function isRegisteredByGit(realRoot: string): boolean {
   const [gitDir, commonDir] = execFileSync(

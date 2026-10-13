@@ -88,7 +88,7 @@ export interface GuardContext {
   cwd: string
   /** The hook's own environment, which `~` and `$VAR` in a gh argument are expanded from. */
   env: Env
-  /** Absolute paths and path fragments an agent may not touch: the hook dir and the term list. */
+  /** Absolute paths and path fragments an agent may not touch: the hook dir, the term list and, for a worker, agent-chat's profiles and config. */
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
   readAlias: ReadAlias
@@ -2061,6 +2061,18 @@ export function ownInstall(
 export const pathFindsOwnInstall = (env: NodeJS.ProcessEnv, entry: string | undefined): boolean =>
   ownInstall(env, entry) !== undefined
 
+const WORKER_CONFIG_FILES = ['profiles', 'config.json', 'hooks.json', 'burndown.config.json']
+
+// A worker that rewrites a profile or the config can drop its own denies (CC-1094); a coordinator edits them by design.
+const workerConfigPaths = (env: NodeJS.ProcessEnv): string[] => {
+  if (env.AGENT_CHAT_ROLE === 'coordinator') return []
+  const fragments = WORKER_CONFIG_FILES.map(file => `.agent-chat/${file}`)
+  const relocated = env.AGENT_CHAT_HOME
+  return relocated
+    ? [...fragments, ...WORKER_CONFIG_FILES.map(file => path.join(relocated, file))]
+    : fragments
+}
+
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -2079,6 +2091,7 @@ export function guardContext(
       'titan-egress/private-terms',
       '.agent-chat/git-hooks',
       ...(hooksDir === undefined ? [] : [hooksDir]),
+      ...workerConfigPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

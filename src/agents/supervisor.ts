@@ -107,6 +107,8 @@ import { withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
   allocationRecord,
+  createdWorktreeFor,
+  type CreatedWorktree,
   goneWorktree,
   identityTranscript,
   missingAgent,
@@ -2407,7 +2409,11 @@ export class Supervisor implements TeleportHost {
       configDir: account.dir,
       ...(account.unset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agentId, allocation, isolationName),
+    )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
     // Appended BEFORE the launch. If the launch then fails, the identity exists
@@ -3588,6 +3594,15 @@ export class Supervisor implements TeleportHost {
     return gone !== undefined && gone.worktree === path.resolve(identity.cwd) ? gone : undefined
   }
 
+  /** CC-1110: the self-grant anchor, the tree this allocation launches in only if agent-chat recorded creating it. */
+  private createdWorktree(
+    agentId: string,
+    allocation: Allocation,
+    isolation: IsolationName,
+  ): CreatedWorktree | undefined {
+    return createdWorktreeFor(this.core.events.agentEvents(), agentId, allocation, isolation)
+  }
+
   /** Re-create the worktree and record it, so a later retire treats it like the allocation or adoption it was. */
   private async reattachForResume(
     identity: AgentIdentity,
@@ -3637,7 +3652,11 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
       ...(req.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agent.agentId, allocation, isolation),
+    )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
       kind: 'agent_resumed',
@@ -3756,7 +3775,11 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(profile, cliEntry(), plan.surface),
+      this.createdWorktree(agent.agentId, allocation, isolation),
+    )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
     // longer has — `foldAgent` reads it, and only a switch ever writes it.
@@ -3920,7 +3943,11 @@ export class Supervisor implements TeleportHost {
       })
 
     const { plan, sessionId } = this.successorPlan(input, allocation)
-    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      this.createdWorktree(input.agentId, allocation, isolation),
+    )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
     const executionId = this.openSuccessor(input, predecessor)
