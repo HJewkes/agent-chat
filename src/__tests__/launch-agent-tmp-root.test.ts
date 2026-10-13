@@ -27,7 +27,7 @@ class FakeFs implements TmpFs {
 }
 
 const reviewer = { AGENT_CHAT_NAME: 'pr-9-review', AGENT_CHAT_PROFILE: 'reviewer' }
-const implementer = { AGENT_CHAT_NAME: 'tc-cc-9-a', AGENT_CHAT_PROFILE: 'implementer' }
+const implementer = { AGENT_CHAT_NAME: 'seat-a-impl', AGENT_CHAT_PROFILE: 'implementer' }
 
 function baseEnvFor(env: Record<string, string>, platform: NodeJS.Platform): Record<string, string> {
   const root = launchTmpRoot(env, platform, HOME)
@@ -59,7 +59,7 @@ describe('a launch TMPDIR root (CC-1184)', () => {
   it('keeps a Linux implementer TMPDIR under /tmp', () => {
     const env = baseEnvFor(implementer, 'linux')
 
-    expect(env.TMPDIR).toBe(`/tmp/ac-tc-cc-9-a-${process.pid}`)
+    expect(env.TMPDIR).toBe(`/tmp/ac-seat-a-impl-${process.pid}`)
   })
 
   it('leaves a macOS reviewer TMPDIR off the disk root', () => {
