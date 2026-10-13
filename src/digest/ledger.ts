@@ -136,8 +136,34 @@ function decidedSince(db: DatabaseSyncType, sinceMs: number): DecidedEntry[] {
       basis: meta.basis ?? '(none)',
       precedent: meta.precedent ?? '(none)',
       state: row.overruled ? 'overruled' : row.accepted ? 'accepted' : 'awaiting audit',
+      ...decisionExtras(meta),
     }
   })
+}
+
+/** Optional decided meta, all strings per the TP-695 contract; a malformed value reads as absent. */
+function decisionExtras(
+  meta: Record<string, string>,
+): Pick<DecidedEntry, 'reversible' | 'confidence' | 'principleIds'> {
+  const reversible = meta.reversible?.trim()
+  const confidence = meta.confidence === undefined ? NaN : Number(meta.confidence)
+  const principleIds = stringArray(meta.principle_ids)
+  return {
+    ...(reversible ? { reversible } : {}),
+    ...(confidence >= 0 && confidence <= 1 ? { confidence } : {}),
+    ...(principleIds.length > 0 ? { principleIds } : {}),
+  }
+}
+
+function stringArray(json: string | undefined): string[] {
+  try {
+    const parsed: unknown = json === undefined ? [] : JSON.parse(json)
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string' && id !== '')
+      : []
+  } catch {
+    return []
+  }
 }
 
 /** Decisions per class over the last week and how many the human overruled; the design's weekly reversal rate. */
