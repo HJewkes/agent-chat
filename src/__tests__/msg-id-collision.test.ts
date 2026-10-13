@@ -105,7 +105,7 @@ describe('an explicit-id path whose first draw repeats an open human item', () =
 
   const collideNext = (): void => void uuids.queue.push(uuidStarting(OPEN), uuidStarting('bbbbbbbb'))
 
-  const loggedIds = (core: BrokerCore, kind: string): string[] =>
+  const loggedIds = (core: BrokerCore, kind: string): (string | null)[] =>
     core.events
       .since(0, 1000)
       .filter(row => row.kind === kind && row.actor !== 'agent-chat')
