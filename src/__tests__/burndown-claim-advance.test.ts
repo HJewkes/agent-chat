@@ -13,7 +13,7 @@ import {
 } from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import { liveAgentOf } from '../agents/burndown/seat-tick.js'
-import { seedSlices } from '../agents/burndown/seed-slices.js'
+import { seedSlices, type PlanReader } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -246,6 +246,39 @@ describe('burndown release --slice and link (CC-978)', () => {
     const report = await releaseTask('CC-1', retire, NOW, 'z')
 
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+  })
+
+  describe('an unclaimed slice of a task whose claims are all done (CC-1240)', () => {
+    const planned =
+      (slices: string[], ran: string[]): PlanReader =>
+      () => ({
+        path: '/plan.md',
+        text: `\`\`\`burndown-slices\n${JSON.stringify(slices.map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+        ranOffLedger: ran.map(n => `bd-cc-1-${n}`),
+      })
+
+    beforeEach(() => {
+      writeLedger(file(), { ...EMPTY_LEDGER, claims: [slice('a', { phase: 'done' })] })
+    })
+
+    it('is released when an off-ledger run holds it, so the task stops waiting on that run', async () => {
+      const retireNone = vi.fn(async (_name: string) => ({ ok: true }))
+
+      const report = await releaseTask('CC-1', retireNone, NOW, 'b', planned(['a', 'b'], ['b']))
+
+      expect(report.ok).toBe(true)
+      expect(readLedger(file()).slicesReleased).toEqual({ 'CC-1': ['b'] })
+      expect(retireNone).not.toHaveBeenCalled()
+    })
+
+    it('is refused when the plan does not list it or no run holds it', async () => {
+      const notPlanned = await releaseTask('CC-1', retire, NOW, 'z', planned(['a', 'b'], ['b']))
+      const noRun = await releaseTask('CC-1', retire, NOW, 'b', planned(['a', 'b'], []))
+
+      expect(notPlanned).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+      expect(noRun).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice b'] })
+      expect(readLedger(file()).slicesReleased).toBeUndefined()
+    })
   })
 
   it('links a PR to a queued slice and refuses one that is not queued', async () => {

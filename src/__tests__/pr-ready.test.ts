@@ -56,6 +56,7 @@ const originOf = (work: string): string => path.join(path.dirname(work), 'origin
 /**
  * A synthetic origin repo and a clone of it on a feature branch. Upstream commits go straight
  * into the origin, so the fixture never pushes and only pr-ready's own fetch updates the clone.
+ * The clone has a node_modules directory, as an installed tree does.
  */
 function fixtureRepo(base: Record<string, string>, feature: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-ready-'))
@@ -68,6 +69,7 @@ function fixtureRepo(base: Record<string, string>, feature: Record<string, strin
   configure(work)
   git(work, 'checkout', '-q', '-b', 'feature')
   commit(work, feature, 'feature')
+  fs.mkdirSync(path.join(work, 'node_modules'))
   return work
 }
 
@@ -289,6 +291,60 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.toolCalls).toEqual([])
     expect(rebaseInProgress(work)).toBe(false)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
+  })
+})
+
+describe('pr-ready in a fresh worktree with no node_modules', () => {
+  const PNPM_INSTALL = 'pnpm install --frozen-lockfile --ignore-scripts'
+  const NPM_INSTALL = 'npm ci --ignore-scripts'
+  const [npmKind, pnpmKind] = KINDS as [Kind, Kind]
+  const freshRepo = (kind: Kind, extra: Record<string, string> = {}): string => {
+    const work = fixtureRepo({ ...kind.base, ...extra }, kind.feature)
+    fs.rmSync(path.join(work, 'node_modules'), { recursive: true })
+    return work
+  }
+
+  it('installs with pnpm after the rebase and before any check', async () => {
+    const result = await runPrReady(freshRepo(pnpmKind))
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok deps: installed with ${PNPM_INSTALL}`)
+    expect(result.out.indexOf(`ok deps: installed with ${PNPM_INSTALL}`)).toBe(
+      result.out.indexOf('ok rebase') + 1,
+    )
+    expect(result.toolCalls).toEqual([PNPM_INSTALL, ...pnpmKind.checks])
+  })
+
+  it('installs with npm ci in an npm repo', async () => {
+    const result = await runPrReady(freshRepo(npmKind))
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok deps: installed with ${NPM_INSTALL}`)
+    expect(result.toolCalls).toEqual([NPM_INSTALL, ...npmKind.checks])
+  })
+
+  it('names the install command and stops before the checks when the install fails', async () => {
+    const work = freshRepo(pnpmKind, { '.changeset/config.json': '{}\n' })
+    const notFound: Override = line =>
+      line === pnpmKind.changeset ? { code: 1, output: 'Command changeset not found' } : undefined
+
+    const result = await runPrReady(work, [PNPM_INSTALL], {}, { override: notFound })
+
+    expect(result.code).toBe(1)
+    expect(result.out.slice(-2)).toEqual([
+      `FAIL deps: ${PNPM_INSTALL} failed (synthetic failure: ${PNPM_INSTALL}); ` +
+        'run it in this worktree, then re-run pr-ready',
+      'PR-READY FAIL exit=1',
+    ])
+    expect(result.out.join('\n')).not.toContain('Command changeset not found')
+    expect(result.toolCalls).toEqual([PNPM_INSTALL])
+  })
+
+  it('installs nothing and prints no deps line when node_modules is present', async () => {
+    const result = await runPrReady(fixtureRepo(pnpmKind.base, pnpmKind.feature))
+
+    expect(result.out.some(line => line.includes('deps'))).toBe(false)
+    expect(result.toolCalls).not.toContain(PNPM_INSTALL)
   })
 })
 
@@ -737,6 +793,7 @@ describe('pr-ready scan', () => {
 
   it('passes the clean-tree check with an untracked node_modules symlink into another checkout', async () => {
     const dir = work()
+    fs.rmSync(path.join(dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
 
     const result = await runPrReady(dir)
@@ -759,6 +816,7 @@ describe('pr-ready scan', () => {
 
   it('still fails the clean-tree check on another untracked file beside a node_modules symlink', async () => {
     const dir = work()
+    fs.rmSync(path.join(dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
     fs.writeFileSync(path.join(dir, 'other.txt'), 'x\n')
 

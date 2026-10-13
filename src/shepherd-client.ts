@@ -64,6 +64,8 @@ const Row = z.object({
   /** TP-1570: read only to write a retiring seat agent's merged row; absent on an older Shepherd. */
   implementer: z.string().nullable().optional(),
   outcome: z.object({ kind: z.string() }).nullable().optional().catch(null),
+  /** CC-1262: past its fix-round limit, so no new child stacks on it; absent on an older Shepherd. */
+  stackFrozen: z.boolean().optional(),
 })
 
 /**
@@ -72,6 +74,13 @@ const Row = z.object({
  */
 export type ShepherdRow = Omit<z.infer<typeof Row>, 'phase'> & {
   phase: (typeof PHASES)[number] | 'unknown'
+}
+
+/** A held run's hold class: its reason's text before the first ":", or undefined when unheld or unclassed. */
+export function holdClass(row: Pick<ShepherdRow, 'held'>): string | undefined {
+  const reason = row.held?.reason
+  const colon = reason?.indexOf(':') ?? -1
+  return reason === undefined || colon === -1 ? undefined : reason.slice(0, colon)
 }
 
 type Log = (event: string, detail: Record<string, unknown>) => void
