@@ -413,6 +413,7 @@ describe('reports to one coordinator inside the window', () => {
     const batcher = new ReportBatcher<string>(
       () => undefined,
       () => 0,
+      () => 'batch-id',
     )
 
     for (let i = 0; i <= MAX_REMEMBERED; i++) batcher.report('coord', message(`id-${i}`))
@@ -436,6 +437,7 @@ describe('a report that is held and not yet written', () => {
     const batcher = new ReportBatcher<string>(
       () => undefined,
       () => WINDOW_MS,
+      () => 'batch-id',
     )
 
     batcher.report('coord', message('id-one'))
