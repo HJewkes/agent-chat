@@ -7,6 +7,7 @@ import type { Ledger } from './ledger.js'
 import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
+import { bindingOf, type Binding } from './gate-reading.js'
 import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
@@ -53,6 +54,10 @@ import type { TickStep } from './step-timer.js'
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
  *   registrations   {ok, refused, failed} for the seat's claims and its adopted PRs
+ *   binding         CC-1097: {kind, initiative, task?, lever, value, reading, headroom, source} of the first refusal,
+ *                   in rank order, that a capacity lever made (role-cap, worktrees, slots, budget): the lever that
+ *                   bound the seat this tick; null when no capacity lever refused; absent when the seat was skipped.
+ *                   Rows from before CC-1097 lack it
  *   skipped         why the seat was not planned; absent when it was
  */
 
@@ -72,6 +77,7 @@ export interface SeatSummary {
   trust?: NamedRefusal[]
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
+  binding?: Binding | null
   skipped?: string
 }
 
@@ -193,7 +199,9 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
     ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
-    ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
+    ...(outcome.skipped === undefined
+      ? { binding: bindingOf(outcome.refusals) }
+      : { skipped: outcome.skipped }),
   }
 }
 

@@ -251,6 +251,16 @@ describe('the burndown tick summary in the live tick', () => {
             cap: { implementers: 1, reviewers: 1, planners: 1 },
           },
           registrations: { ok: 0, refused: 0, failed: 0 },
+          binding: {
+            kind: 'role-cap',
+            initiative: 'demo',
+            task: expect.any(String),
+            lever: 'concurrency.implementers',
+            value: 1,
+            reading: 1,
+            headroom: 0,
+            source: expect.any(String),
+          },
         },
       },
     })
