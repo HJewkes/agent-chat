@@ -203,7 +203,7 @@ describe('observe reads exited work only for a silent exit', () => {
 describe('an adopted PR is fenced by its owns (CC-1023)', () => {
   const owning = (patch: Partial<Claim> = {}): Claim => claim({ owns: ['src/a.ts'], ...patch })
   const level = { reviewable: false, reason: 'nothing committed past base' }
-  const adopted = (owned: Observation['owned']): Observation => ({
+  const adopted = (owned: NonNullable<Observation['owned']>): Observation => ({
     ...silentExit({ openPr: PR, ahead: 0 }, level),
     owned,
   })
