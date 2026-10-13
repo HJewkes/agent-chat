@@ -3144,3 +3144,97 @@ describe('burndown tick reads the real broker view and checkouts (CC-946)', () =
     )
   })
 })
+
+describe('burndown tick closes an all-released parent whose slices landed (CC-1238)', () => {
+  const sliceClaim = (n: string): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    seat: 'seat-t',
+    namePrefix: 'st',
+    slice: n,
+    repo: repo(),
+    spawnedAt: NOON.toISOString(),
+    phase: 'done',
+    phaseAt: NOON.toISOString(),
+  })
+  const taskFile = (): string => path.join(world, 'aw', 'demo', 'tasks', 'DM-1.yml')
+
+  const releasedParent = (): void => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [sliceClaim('a')],
+      slicesReleased: { 'DM-1': ['b'] },
+    })
+  }
+
+  const land = (...subjects: string[]): void => {
+    for (const subject of subjects) git(repo(), 'commit', '-q', '--allow-empty', '-m', subject)
+    git(repo(), 'push', '-q', 'origin', 'main')
+  }
+
+  /** Stands in for `active-work task done`: the fixture's status line flips, so the next tick reads it closed. */
+  const doneCalls = (): { calls: string[][]; done: (slug: string, id: string) => void } => {
+    const calls: string[][] = []
+    return {
+      calls,
+      done: (slug, id) => {
+        calls.push([slug, id])
+        fs.writeFileSync(
+          taskFile(),
+          fs.readFileSync(taskFile(), 'utf8').replace('status: open', 'status: done'),
+        )
+      },
+    }
+  }
+
+  const tickWith = (done: (slug: string, id: string) => void, exec: Runner = stubGh()) =>
+    tickFromDisk({
+      dryRun: false,
+      broker: fakeBroker().broker,
+      now: NOON,
+      log: () => {},
+      exec,
+      egress: CLEAN_SCAN,
+      taskDone: done,
+    })
+
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+  })
+
+  it('closes the parent once, however many ticks follow', async () => {
+    releasedParent()
+    land('DM-1: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+    await tickWith(done)
+
+    expect(calls).toEqual([['demo', 'DM-1']])
+  })
+
+  it('only flags a parent whose released slice has no commit on the default branch', async () => {
+    releasedParent()
+    land('DM-1: first slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+    expect(readLedger(burndownLedgerPath()).slicesFlagged).toEqual(['demo/DM-1:released'])
+  })
+
+  it('leaves a parent open while an open PR title names it', async () => {
+    releasedParent()
+    land('DM-1: first slice', 'DM-1 b: second slice')
+    const pr = { number: 9, title: 'DM-1 c: more', branch: 'x', body: '' }
+    const exec = stubGh(() => ({ status: 0, stdout: JSON.stringify(pr) }))
+    const { calls, done } = doneCalls()
+
+    await tickWith(done, exec)
+
+    expect(calls).toEqual([])
+  })
+})

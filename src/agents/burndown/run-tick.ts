@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
@@ -88,7 +89,9 @@ import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
-import { mergedEvents } from './slices-complete.js'
+import { mergedEvents, mergedFlagKey, slicesMerged, slicesReleasedComplete } from './slices-complete.js'
+import { readOpenPrs, readSubjects } from './collision.js'
+import { releasedSlicesLanded } from './landed-sweep.js'
 import type { SeatEvents, SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
@@ -190,6 +193,8 @@ export interface TickOptions {
   monotonic?: () => number
   /** CC-1234: the `active-work task edit` that settles proposed briefs; a test injects one that edits its fixture. */
   briefEdit?: ApprovePorts['edit']
+  /** CC-1238: the `active-work task done` that closes a landed all-released parent; a test injects one that edits its fixture. */
+  taskDone?: (slug: string, id: string) => void
 }
 
 interface ReaderFailure {
@@ -316,6 +321,9 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
         ...describeDecider(config, decider),
         ...describeTriage(decided.triage),
         ...describeSeatEvents(diff, now),
+        ...decided.closing.map(
+          p => `would close ${p.initiative} ${p.id}: every slice landed or was released`,
+        ),
         ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
         ...notes,
       ],
@@ -349,6 +357,7 @@ async function actOn(
     summary,
     humanStepSeats,
     merged,
+    closing,
   }: Decided,
   now: Date,
   timer: StepTimer,
@@ -402,6 +411,7 @@ async function actOn(
       ...(opts.egress === undefined ? {} : { egress: opts.egress }),
     }),
   )
+  const closed = closeParents(closing, opts, log)
   const diff = {
     seats: config.seats,
     before: ledger,
@@ -423,7 +433,15 @@ async function actOn(
     }),
   )
   return {
-    lines: [...routed, ...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines],
+    lines: [
+      ...routed,
+      ...executed.lines,
+      ...adopted,
+      ...woken.lines,
+      ...leaks.lines,
+      ...closed,
+      ...told.lines,
+    ],
     summary: { ...summary, now, registrations },
   }
 }
@@ -574,6 +592,96 @@ function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): Settled
   })
 }
 
+/** Each repo's default-branch subjects and open PR titles, read once; a failed read of either marks the repo unreadable. */
+function landingReader(exec: Runner): (repo: string) => { subjects: string[] | undefined; titles: string[] } {
+  const seen = new Map<string, { subjects: string[] | undefined; titles: string[] }>()
+  return repo => {
+    const known = seen.get(repo)
+    if (known !== undefined) return known
+    const prs = readOpenPrs(repo, exec)
+    const subjects = prs === undefined ? undefined : readSubjects(repo, defaultBranch(repo, exec), exec)
+    const read = { subjects, titles: (prs ?? []).map(pr => pr.title) }
+    seen.set(repo, read)
+    return read
+  }
+}
+
+/**
+ * CC-1238: open parents whose slices were all released or done, with a default-branch commit for every slice and no open
+ * PR naming them. Slice commits are counted from git, so a parent the seat merely abandoned stays open and is flagged.
+ */
+function landedReleasedParents(
+  ledger: Ledger,
+  tasks: ReadonlyMap<string, readonly Task[]>,
+  seats: LoadedSeats,
+  opts: TickOptions,
+): ClosingParent[] {
+  const read = landingReader(opts.exec ?? run)
+  const home = (initiative: string): string[] => seats.loaded.flatMap(s => s.dispatch.repos[initiative] ?? [])
+  return [...tasks].flatMap(([initiative, list]) =>
+    list
+      .filter(t => (t.status === undefined || t.status === 'open') && slicesReleasedOnly(ledger, t.id))
+      .filter(t => slicesLanded(ledger, { initiative, id: t.id }, home(initiative), read))
+      .map(t => ({ initiative, id: t.id })),
+  )
+}
+
+const slicesReleasedOnly = (ledger: Ledger, id: string): boolean =>
+  !slicesMerged(ledger, id) && slicesReleasedComplete(ledger, id)
+
+function slicesLanded(
+  ledger: Ledger,
+  { initiative, id }: ClosingParent,
+  fallback: readonly string[],
+  read: ReturnType<typeof landingReader>,
+): boolean {
+  const claims = ledger.claims.filter(
+    c => c.taskId === id && c.initiative === initiative && c.slice !== undefined,
+  )
+  const named = claims.flatMap(c => (c.repo === undefined ? [] : [c.repo]))
+  const reads = [...new Set(named.length > 0 ? named : fallback)].map(repo => ({ repo, ...read(repo) }))
+  const slices = { done: claims.length, released: ledger.slicesReleased?.[id]?.length ?? 0 }
+  return (
+    reads.length > 0 &&
+    releasedSlicesLanded(
+      id,
+      slices,
+      reads,
+      reads.flatMap(r => r.titles),
+    )
+  )
+}
+
+/** `active-work task done`, pinned to the root this tick read so the close never lands in another tree. */
+function taskDoneOn(root: string): (slug: string, id: string) => void {
+  return (slug, id) => {
+    execFileSync('active-work', ['task', 'done', slug, id], {
+      stdio: 'pipe',
+      timeout: 30_000,
+      env: { ...process.env, ACTIVE_ROOT: root },
+    })
+  }
+}
+
+/** Closes each landed parent; a failed close is logged and left for the next tick, which sees the task still open. */
+function closeParents(
+  closing: readonly ClosingParent[],
+  opts: TickOptions,
+  log: (event: string, detail: Record<string, unknown>) => void,
+): string[] {
+  const done = opts.taskDone ?? taskDoneOn(opts.root ?? activeWorkRoot())
+  return closing.map(({ initiative, id }) => {
+    try {
+      done(initiative, id)
+      return `closed ${initiative} ${id}: every slice landed or was released`
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      log('burndown_parent_close_failed', { initiative, id, reason })
+      return `could not close ${initiative} ${id}: ${reason}`
+    }
+  })
+}
+
 /** Wakes the decider, or records why not when the human has something to fix. */
 async function actOnDecider(
   config: TickConfig,
@@ -664,6 +772,13 @@ interface Decided {
   humanStepSeats: LoadedSeat[]
   /** CC-1049: open tasks whose slices all merged, told once to the seat that holds them. */
   merged: SeatEvents
+  /** CC-1238: all-released parents whose slices landed on the default branch, closed by the tick. */
+  closing: ClosingParent[]
+}
+
+interface ClosingParent {
+  initiative: string
+  id: string
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -789,6 +904,9 @@ async function decide(
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
+  const closingParents =
+    seats === undefined ? [] : landedReleasedParents(ledger, dispatchCtx.tasks, seats, opts)
+  const closing = new Set(closingParents.map(p => mergedFlagKey(p.initiative, p.id)))
   const notes = [
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
@@ -826,7 +944,11 @@ async function decide(
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     humanStepSeats: seats?.loaded ?? [],
-    merged: seats === undefined ? {} : mergedEvents(ledger, dispatchCtx.tasks),
+    merged:
+      seats === undefined
+        ? {}
+        : mergedEvents(ledger, dispatchCtx.tasks, (i, id) => closing.has(mergedFlagKey(i, id))),
+    closing: closingParents,
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
