@@ -94,6 +94,16 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
     },
   )
 
+  it.each([
+    `X=-I--; printf '%s\\n' --no-verify | xargs "$X" git push origin HEAD:x --`,
+    'xargs $X git push origin HEAD:x --',
+    'xargs "$(cat f)" git push origin HEAD:x --',
+    'xargs -t "$X" git push origin HEAD:x --',
+    'xargs -t"$X" git push origin HEAD:x --',
+  ])('denies a push behind an xargs option word the guard cannot read: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
   it('denies --max-lines with no value, which leaves the next word as the command', () => {
     expect(checkCommand('xargs --max-lines git push --no-verify', ctx)).toBe(REASONS.noVerify)
   })

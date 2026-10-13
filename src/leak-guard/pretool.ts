@@ -354,8 +354,16 @@ function dropXargsOptions(words: readonly string[], i: number): { at: number; fe
   for (; i < words.length; i++) {
     const a = words[i] as string
     if (a === '--') return { at: i + 1, fed: feed(replace, batches) }
+    const option =
+      !a.startsWith('-') || a === '-'
+        ? undefined
+        : a.startsWith('--')
+          ? longFeed(a)
+          : clusterFeed(a, words[i + 1])
+    // An expansion here may be an option such as -I--, so the guard cannot tell how xargs feeds the command.
+    if (a.includes(LIVE) && option?.replace === undefined)
+      return { at: i, fed: { replace: ANY_WORD, append: true } }
     if (!a.startsWith('-') || a === '-') break
-    const option = a.startsWith('--') ? longFeed(a) : clusterFeed(a, words[i + 1])
     if (option === undefined) return undefined
     replace = option.replace ?? replace
     batches ||= option.batches === true
