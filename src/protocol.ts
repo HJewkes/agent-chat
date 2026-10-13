@@ -1089,6 +1089,8 @@ export type ClientMessage =
        * session is already named by its registration; the row then records it in place of the human.
        */
       spawnedAs?: 'burndown' | 'shepherd'
+      /** CC-1206: the agent identity in the CLI caller's env; only lowers trust, read only from an unregistered connection. */
+      callerAgent?: string
       /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
       task?: string
       /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
