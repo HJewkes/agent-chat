@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { findClauses, holdsReplacement, parallelCall, type ParallelCall } from '../leak-guard/run-wrappers.js'
 import { LIVE, parseShell, unmark } from '../leak-guard/shell-words.js'
 
-/** The marked words after the program name, as the guard sees them. */
-const argv = (line: string): string[] => {
+const parsed = (line: string) => {
   const cmd = parseShell(line)[0]
   if (cmd === undefined) throw new Error(`no command in ${line}`)
-  return cmd.marked.slice(1)
+  return cmd
 }
+
+/** The marked words after the program name, as the guard sees them. */
+const argv = (line: string): string[] => parsed(line).marked.slice(1)
+
+const parallelOf = (line: string) => parallelCall(argv(line), parsed(line).splits)
 
 const clausesOf = (line: string) =>
   findClauses(argv(line)).clauses.map(c => ({
@@ -17,7 +21,7 @@ const clausesOf = (line: string) =>
   }))
 
 const parallel = (line: string): ParallelCall => {
-  const call = parallelCall(argv(line))
+  const call = parallelOf(line)
   if ('unknownOption' in call) throw new Error(`unknown option at ${call.unknownOption} in ${line}`)
   return call
 }
@@ -34,6 +38,19 @@ describe('find action clauses (CC-1223)', () => {
     expect(clausesOf(String.raw`find . -exec echo + {} \; -ok git push ';'`)).toEqual([
       { action: '-exec', words: ['echo', '+', '{}'], terminator: ';' },
       { action: '-ok', words: ['git', 'push'], terminator: ';' },
+    ])
+  })
+
+  it('ends an -ok or -okdir clause only at ;, since find reads + there as a word', () => {
+    expect(clausesOf(String.raw`find d -ok echo A {} + B \;`)).toEqual([
+      { action: '-ok', words: ['echo', 'A', '{}', '+', 'B'], terminator: ';' },
+    ])
+    expect(clausesOf(String.raw`find . -okdir sh -c 'shift; "$@"' {} + git push --force \;`)).toEqual([
+      {
+        action: '-okdir',
+        words: ['sh', '-c', 'shift; "$@"', '{}', '+', 'git', 'push', '--force'],
+        terminator: ';',
+      },
     ])
   })
 
@@ -146,8 +163,12 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     ['parallel -j', 0],
     ['parallel "$CMD" ::: a', 0],
     ['parallel --unknown-flag gzip ::: a', 0],
+    ['parallel -j $N main ::: x', 0],
+    ['parallel -j$N main ::: x', 0],
+    ['parallel --jobs=$N main ::: x', 0],
+    ['parallel -k --tagstring $T main ::: x', 1],
   ])('refuses an option it cannot read: %s', (line, at) => {
-    expect(parallelCall(argv(line))).toEqual({ unknownOption: at })
+    expect(parallelOf(line)).toEqual({ unknownOption: at })
   })
 
   it('reads a value it cannot see when the value decides nothing', () => {

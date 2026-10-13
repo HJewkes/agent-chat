@@ -17,7 +17,11 @@ export interface FindClause {
   /** Index in `marked` of the clause's first command word. */
   at: number
   words: string[]
-  /** `undefined` when the words ran out first: find refuses that, but the words are read anyway. */
+  /**
+   * `+` only after `{}` in an `-exec` or `-execdir` clause, since find reads `+` as a plain word for
+   * `-ok`/`-okdir`. `undefined` when the words ran out first: find refuses that, but the words are
+   * read anyway.
+   */
   terminator: ';' | '+' | undefined
 }
 
@@ -54,13 +58,21 @@ function readClause(
 ): [FindClause, number] {
   for (let i = from; i < marked.length; i++) {
     const word = marked[i]
-    const ends = word === ';' || (word === '+' && unmark(marked[i - 1] ?? '') === '{}' && i > from)
+    const batches = action === '-exec' || action === '-execdir'
+    const ends = word === ';' || (batches && word === '+' && unmark(marked[i - 1] ?? '') === '{}' && i > from)
     if (ends) return [{ action, at: from, words: marked.slice(from, i), terminator: word }, i + 1]
   }
   return [{ action, at: from, words: marked.slice(from), terminator: undefined }, marked.length]
 }
 
-/** Every action clause in `marked` (find's words after its name), from index `from`. */
+/**
+ * Every action clause in `marked` (find's words after its name), from index `from`. Clause words come
+ * back as they are, and the caller has two duties. A clause word it cannot read may expand to `;` and
+ * end the clause early, so the words after it run as find's own, which may be another `-exec`. So
+ * the caller must deny any such word. And find passes each clause word as one argv entry, so a
+ * single quoted word such as `'git push'` is a program name with a space in it, not a command line.
+ * Only `sh -c` and the like re-parse a word as shell.
+ */
 export function findClauses(marked: readonly string[], from = 0): FindCall {
   const clauses: FindClause[] = []
   let i = from
@@ -191,7 +203,11 @@ function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
 }
 
 /** The options before the command and the index of the first word after them, or the unknown option's index. */
-function readParallelOptions(marked: readonly string[], from: number): [ParallelOptions, number] | number {
+function readParallelOptions(
+  marked: readonly string[],
+  splits: readonly string[],
+  from: number,
+): [ParallelOptions, number] | number {
   const opts: ParallelOptions = {
     quote: false,
     argFile: false,
@@ -208,6 +224,7 @@ function readParallelOptions(marked: readonly string[], from: number): [Parallel
     if ((word.split('=')[0] ?? '').includes(LIVE)) return i
     const read = word.startsWith('--') ? readLong(word, marked[i + 1]) : readCluster(word, marked[i + 1])
     if (read === null || !read[0].every(option => applyOption(opts, option))) return i
+    if (marked.slice(i, i + read[1]).some(taken => splits.includes(taken))) return i
     i += read[1]
   }
   return [opts, i]
@@ -230,13 +247,19 @@ function readInputs(opts: ParallelOptions, marked: readonly string[], from: numb
 }
 
 /**
- * Reads GNU parallel's words after its name, from index `from`. An option the guard does not know
- * (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), one it cannot read, or an
- * expansion where an option may stand returns `unknownOption`, its index: the caller cannot tell what the command becomes. A literal
- * `--` after the command is read as an input separator too, which covers moreutils' `parallel`.
+ * Reads GNU parallel's words after its name, from index `from`; `splits` is the command's
+ * `SimpleCommand.splits`. It returns `unknownOption`, the word's index, for an option the guard does
+ * not know (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), one it cannot
+ * read, an expansion where an option may stand, or an option value the shell splits (`-j $N` may be
+ * `1 git push`): the caller cannot tell what the command becomes. A literal `--` after the command
+ * is read as an input separator too, which covers moreutils' `parallel`.
  */
-export function parallelCall(marked: readonly string[], from = 0): ParallelCall | { unknownOption: number } {
-  const options = readParallelOptions(marked, from)
+export function parallelCall(
+  marked: readonly string[],
+  splits: readonly string[],
+  from = 0,
+): ParallelCall | { unknownOption: number } {
+  const options = readParallelOptions(marked, splits, from)
   if (typeof options === 'number') return { unknownOption: options }
   const [opts, start] = options
   let end = start
