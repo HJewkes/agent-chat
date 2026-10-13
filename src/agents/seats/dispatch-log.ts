@@ -13,7 +13,7 @@ import {
 } from './dispatch-record.js'
 import type { RetireOutcome } from './retire-outcome.js'
 import { retireSeatOutcome } from './retire-seat-outcome.js'
-import type { ShepherdRow } from '../burndown/shepherd.js'
+import type { ShepherdRow } from '../../shepherd-client.js'
 import { parseTaskTags, type BriefSource } from '../burndown/task-tags.js'
 import { shepherdPrRef, taskOf } from './journal-line.js'
 import type { SeatJournal } from './journal.js'
