@@ -522,3 +522,26 @@ describe('git clone of a repository the guard cannot read (TP-2444)', () => {
     expect(hookReason('U=https://github.com/o/r; git clone "$U"')).toBe(REASONS.remoteUrlUnresolved)
   })
 })
+
+describe('GIT_ALLOW_PROTOCOL on a line with no git (CC-1137 d)', () => {
+  it.each([
+    'GIT_ALLOW_PROTOCOL=ext make',
+    'export GIT_ALLOW_PROTOCOL=ext; ./build.sh',
+    'GIT_ALLOW_PROTOCOL=https:EXT npm test',
+    'env GIT_ALLOW_PROTOCOL=file:ext bash run.sh',
+    'GIT_ALLOW_PROTOCOL=ext',
+    'declare -x GIT_ALLOW_PROTOCOL=ext; make',
+  ])('denies a literal list naming ext anywhere: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'unset GIT_ALLOW_PROTOCOL; ls',
+    'GIT_ALLOW_PROTOCOL="$P" make',
+    'env -u GIT_ALLOW_PROTOCOL npm test',
+    'GIT_ALLOW_PROTOCOL=https:ssh make',
+    'echo $GIT_ALLOW_PROTOCOL',
+  ])('leaves an unset or unread list off a git line to the CC-1095 pin: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})

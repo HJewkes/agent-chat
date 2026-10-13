@@ -47,6 +47,7 @@ describe('file-overlap gate with a planner-accepted overlap', () => {
     expect(collision(work(), facts({ 1083: [INDEX] }))).toEqual({
       kind: 'file-overlap',
       reason: `#1083 touches ${INDEX}`,
+      pr: 1083,
     })
   })
 
@@ -54,6 +55,7 @@ describe('file-overlap gate with a planner-accepted overlap', () => {
     expect(collision(work([ACCEPT_1083]), facts({ 1083: [INDEX], 1090: [INDEX] }))).toEqual({
       kind: 'file-overlap',
       reason: `#1090 touches ${INDEX}`,
+      pr: 1090,
     })
   })
 
@@ -61,6 +63,7 @@ describe('file-overlap gate with a planner-accepted overlap', () => {
     expect(collision(work([ACCEPT_1083]), facts({ 1083: [INDEX, CONDITIONS] }))).toEqual({
       kind: 'file-overlap',
       reason: `#1083 touches ${CONDITIONS}`,
+      pr: 1083,
     })
   })
 
