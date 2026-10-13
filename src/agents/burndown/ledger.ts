@@ -90,6 +90,10 @@ const Claim = z.object({
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
   prHead: z.string().optional(),
   lastReport: z.string().optional(),
+  /** CC-1229: Shepherd runs the tick re-registered after a transient failure: how many, when last, and for which head. */
+  reregistered: z
+    .object({ n: z.number().int().positive(), at: z.string(), head: z.string().optional() })
+    .optional(),
   stalledReason: z.string().optional(),
   /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),

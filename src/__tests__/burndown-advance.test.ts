@@ -520,6 +520,126 @@ describe('burndown hands a PR to Shepherd', () => {
   })
 })
 
+describe('a shepherd-ended claim on a transient failure (CC-1229)', () => {
+  const GAP = 31 * 60_000
+  const open = { kind: 'open' as const, pr: 'o/r#9' }
+  const ciTimeout = 'ci-timeout: required checks did not finish'
+  const ended = (reason: string | null = ciTimeout) => ({ row: row('failed', reason) })
+  const shepherding = (patch: Partial<Claim> = {}): Claim => claim({ phase: 'shepherding', pr: PR, ...patch })
+  const stalledEnded = (patch: Partial<Claim> = {}): Claim =>
+    shepherding({
+      stalledReason: `Shepherd run run-9 ended failed without merging: ${ciTimeout}`,
+      stalledClass: 'failed',
+      stallCode: 'shepherd-ended',
+      ...patch,
+    })
+
+  it.each(['ci-timeout', 'gh-api-5xx', 'rate-limit', 'connection reset by peer'])(
+    'hands a claim whose run failed on %s back to Shepherd and clears the stall',
+    kind => {
+      const { actions, after } = step(stalledEnded(), { shepherd: ended(`${kind}: x`), prState: open })
+
+      expect(registers(actions)).toEqual([
+        expect.objectContaining({
+          registration: expect.objectContaining({ task: 'demo/CC-1', implementer: 'bd-cc-1' }),
+        }),
+      ])
+      expect(after).toEqual([
+        expect.objectContaining({
+          phase: 'shepherding',
+          stalledReason: undefined,
+          stallCode: undefined,
+          reregistered: { n: 1, at: NOW.toISOString(), head: 'h9' },
+        }),
+      ])
+    },
+  )
+
+  it('re-registers on the tick the run ends, before any stall is written', () => {
+    const { actions, after } = step(shepherding(), { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toHaveLength(1)
+    expect(after[0]?.stalledReason).toBeUndefined()
+  })
+
+  it.each([
+    ['an unknown failure reason', ended('merge denied'), open],
+    ['an unreadable PR state', ended(), 'unreadable' as const],
+    ['a closed PR', ended(), { kind: 'closed' as const, pr: 'o/r#9' }],
+  ])('parks as today on %s', (_, shepherd, prState) => {
+    const { actions, after } = step(stalledEnded(), { shepherd, prState })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]).toEqual(expect.objectContaining({ stallCode: 'shepherd-ended' }))
+  })
+
+  it('parks as today when no PR state was read', () => {
+    const { actions } = step(stalledEnded(), { shepherd: ended() })
+
+    expect(registers(actions)).toEqual([])
+  })
+
+  it('never re-registers a merged PR; it finishes the claim', () => {
+    const { actions, after } = step(stalledEnded(), {
+      shepherd: ended(),
+      prState: { kind: 'merged', pr: 'o/r#9', head: 'h9' },
+    })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]?.phase).toBe('done')
+  })
+
+  it('stops at two re-registers per claim', () => {
+    const spent = stalledEnded({
+      reregistered: { n: 2, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'old' },
+    })
+
+    const { actions, after } = step(spent, { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]?.stallCode).toBe('shepherd-ended')
+  })
+
+  it('waits 30 minutes after the last re-register', () => {
+    const recent = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - 29 * 60_000).toISOString(), head: 'old' },
+    })
+    const later = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'old' },
+    })
+
+    expect(registers(step(recent, { shepherd: ended(), prState: open }).actions)).toEqual([])
+    expect(registers(step(later, { shepherd: ended(), prState: open }).actions)).toHaveLength(1)
+  })
+
+  it('registers one new run per head', () => {
+    const sameHead = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'h9' },
+    })
+
+    expect(registers(step(sameHead, { shepherd: ended(), prState: open }).actions)).toEqual([])
+  })
+
+  it('leaves the claim holds and the run alone', () => {
+    const { actions } = step(stalledEnded(), { shepherd: ended(), prState: open })
+
+    expect(actions.map(a => a.kind)).toEqual(['update', 'register'])
+  })
+
+  it('parses a stored claim without the field unchanged', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc1229-'))
+    const file = path.join(dir, 'ledger.json')
+    const stored = { ...EMPTY_LEDGER, claims: [shepherding()] }
+    fs.writeFileSync(file, JSON.stringify(stored))
+
+    try {
+      expect(readLedger(file).claims).toEqual([shepherding()])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('the code on each stall', () => {
   const sites: [string, Claim, Observation, StallCode | undefined][] = [
     [
