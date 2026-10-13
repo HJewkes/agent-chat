@@ -2,8 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { brokerKeyFor, helloProof, ownKey, proofMatches } from '../broker/launcher-key.js'
-import { ensureToken } from '../broker/token.js'
+import { brokerKeyFor, ensureBrokerKey, helloProof, ownKey, proofMatches } from '../broker/launcher-key.js'
 import { launcherKeyPath, ownLauncherKeyPath } from '../paths.js'
 
 /**
@@ -60,6 +59,15 @@ describe('proofMatches', () => {
     expect(proofMatches(KEY, 'mac', NONCE, proof.slice(0, -1))).toBe(false)
     expect(proofMatches(KEY, 'mac', NONCE, '')).toBe(false)
   })
+
+  it('returns false rather than throwing for a 64-char non-ASCII proof', () => {
+    expect(proofMatches(KEY, 'mac', NONCE, 'é'.repeat(64))).toBe(false)
+  })
+
+  it('refuses a 64-char proof that is not lowercase hex', () => {
+    expect(proofMatches(KEY, 'mac', NONCE, 'z'.repeat(64))).toBe(false)
+    expect(proofMatches(KEY, 'mac', NONCE, helloProof(KEY, 'mac', NONCE).toUpperCase())).toBe(false)
+  })
 })
 
 describe('launcherKeyPath', () => {
@@ -76,16 +84,23 @@ describe('launcherKeyPath', () => {
 })
 
 describe('key files', () => {
-  it('mints a broker key 0600, so no other local account can read it', () => {
-    const file = launcherKeyPath('mac')
+  it('mints a broker key 0600 in a 0700 directory, so no other local account can read it', () => {
+    ensureBrokerKey('mac')
 
-    ensureToken(file)
+    expect(fs.statSync(launcherKeyPath('mac')).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(path.join(dir, 'launcher-keys')).mode & 0o777).toBe(0o700)
+  })
 
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  it('tightens an existing keys directory to 0700 and keeps an existing key', () => {
+    fs.mkdirSync(path.join(dir, 'launcher-keys'), { mode: 0o755 })
+    const key = ensureBrokerKey('mac')
+
+    expect(ensureBrokerKey('mac')).toBe(key)
+    expect(fs.statSync(path.join(dir, 'launcher-keys')).mode & 0o777).toBe(0o700)
   })
 
   it('reads the broker key for a host, and none for a host never provisioned or path-like', () => {
-    const key = ensureToken(launcherKeyPath('mac'))
+    const key = ensureBrokerKey('mac')
 
     expect(brokerKeyFor('MAC')).toBe(key)
     expect(brokerKeyFor('linux')).toBeNull()
@@ -99,5 +114,24 @@ describe('key files', () => {
 
     fs.writeFileSync(ownLauncherKeyPath(), `${KEY}\n`, { mode: 0o600 })
     expect(ownKey()).toBe(KEY)
+  })
+
+  it('refuses a key file readable by group or other', () => {
+    fs.writeFileSync(ownLauncherKeyPath(), `${KEY}\n`)
+    fs.chmodSync(ownLauncherKeyPath(), 0o640)
+
+    expect(ownKey()).toBeNull()
+  })
+
+  it('refuses a symlinked key file, even one pointing at a 0600 key', () => {
+    const real = path.join(dir, 'elsewhere.key')
+    fs.writeFileSync(real, `${KEY}\n`, { mode: 0o600 })
+    fs.chmodSync(real, 0o600)
+    fs.mkdirSync(path.join(dir, 'launcher-keys'), { mode: 0o700 })
+    fs.symlinkSync(real, ownLauncherKeyPath())
+    fs.symlinkSync(real, launcherKeyPath('mac'))
+
+    expect(ownKey()).toBeNull()
+    expect(brokerKeyFor('mac')).toBeNull()
   })
 })
