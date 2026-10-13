@@ -140,16 +140,17 @@ function segments(marked: string, ifs: string): Segment[] {
 }
 
 const BRACE_OPENER = `${LIVE}{`
-const BRACE_SEPARATOR = /,|\.\./
+// `{}` with no `}` after it is the one brace that never expands.
+const EMPTY_BRACES = /^\}[^}]*$/
 
 /**
- * Whether any unquoted `{` in `marked` may open a brace expansion: a `,` or `..` follows it, or no `}`
- * does. Only `{` is marked, so a quoted `}` cannot be told from the closing one and the body is not parsed.
+ * Whether any unquoted `{` in `marked` may open a brace expansion. zsh's braceccl expands any
+ * `{chars}`, so every `{` but a lone `{}` counts, including one with no `}` after it. Only `{` is
+ * marked, so a quoted `}` cannot be told from the closing one and the body is not parsed.
  */
 function opensBraceExpansion(marked: string): boolean {
   for (let at = marked.indexOf(BRACE_OPENER); at >= 0; at = marked.indexOf(BRACE_OPENER, at + 1)) {
-    const after = marked.slice(at + BRACE_OPENER.length)
-    if (!after.includes('}') || BRACE_SEPARATOR.test(after)) return true
+    if (!EMPTY_BRACES.test(marked.slice(at + BRACE_OPENER.length))) return true
   }
   return false
 }

@@ -128,12 +128,16 @@ describe('a ${...} operand that may yield an option word (CC-1286)', () => {
     'main${=X}{+../}{+../}no{+../}verify',
     'main$=X{+../}{+../}no{+../}verify',
     'main$X{,../}',
+    'main${X}{a}-x',
+    'main${=X}{+-/}{+-/}no{+-/}verify',
+    'main$X{+-/}',
+    'main$X{"}",-x}',
   ])('is true for a brace expansion beside an expansion: %s', word => {
     expect(operandMaySpellOption(pushedWord(word))).toBe(true)
   })
 
-  it.each(["'{a,-b}'${X}", 'main${X}{a}-x', '"{a,-b}"$X'])(
-    'is false for a quoted brace or a brace with no comma or ..: %s',
+  it.each(["'{a,-b}'${X}", '"{a,-b}"$X', 'main$X{}'])(
+    'is false for a quoted brace or a lone {}: %s',
     word => {
       expect(operandMaySpellOption(pushedWord(word))).toBe(false)
     },
