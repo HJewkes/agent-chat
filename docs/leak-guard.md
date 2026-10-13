@@ -367,6 +367,8 @@ an expansion or xargs input among those words denies (CC-1209).
 | `GIT_ALLOW_PROTOCOL` listing `ext` on any line; unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                   | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
+| `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
+| `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
@@ -861,6 +863,47 @@ as written, and `eval` of text it cannot read is denied only when the line names
 program env var whose value is already in the agent's environment, set by a shell startup file or
 an earlier tool call rather than on this command line, is not read, the same gap as any such
 variable.
+
+### Inputs that change what git, gh or ssh run (TP-2376)
+
+Some inputs make a program run code the guard never reads, without naming that code on the line.
+
+**ssh options.** `ssh`, `scp` and `sftp` are read the way OpenSSH's getopt reads them
+(`ssh-options.ts`), wherever they run: at top level, by path, behind a wrapper, in a nested
+`sh -c`, as the value of `GIT_SSH_COMMAND`, or as a `git -c core.sshCommand=` value. The guard
+denies with its `sshProgram` reason an `-o` whose keyword ends in `Command` (ProxyCommand,
+LocalCommand, KnownHostsCommand, PermitLocalCommand, RemoteCommand) in any case, glued, spaced,
+quoted or in a cluster such as `-vo LocalCommand=x`; an `-o` naming a local library or program
+(PKCS11Provider, SecurityKeyProvider, XAuthLocation) and ssh's `-I`; a `-F` config file other
+than `/dev/null` or `none`, since a config file can set any of these; scp and sftp `-S` and `-D`,
+and sftp `-b`; and an option word the guard cannot read. ssh re-reads options once after the host,
+so `ssh h -oProxyCommand=x` denies, but words after the remote command's first word do not:
+`ssh h sort -o ProxyCommand` is allowed. `ssh -J`, `ssh -F /dev/null` and plain `-o` settings
+such as `BatchMode=yes` stay allowed; use `-J` for a jump host. `GIT_SSH=<path>` runs a program
+file and stays the script-file gap.
+
+**Shell startup, exec path and template variables.** `BASH_ENV` (bash), `ENV` (sh and ksh in
+POSIX mode) and `ZDOTDIR` (zsh) make a shell source a file before it runs its command;
+`GIT_EXEC_PATH` makes git run its helpers from a directory; `GIT_TEMPLATE_DIR` makes `git init`
+and `git clone` copy hooks and config from one. The shell class fails closed on any variable bash, zsh, sh or ksh
+turns straight into code, matched by pattern in `SHELL_CODE_ENV` (`trust-inputs.ts`): bash's
+exported functions `BASH_FUNC_<name>%%` and `BASH_FUNC_<name>()`, `SHELLOPTS` and `BASHOPTS`
+(`SHELLOPTS=xtrace` expands `PS4`), every prompt (`PS0` to `PS4`, `PROMPT_COMMAND`, zsh's
+`PROMPT*`, `RPROMPT*`, `RPS*` and `SPROMPT`), and `FPATH`, `MODULE_PATH` and
+`BASH_LOADABLES_PATH`. They join the program env rule above with the same
+line test and the same reading of each word, but each denies with its own reason
+(`shellStartupEnv`, `gitExecPath`, `templateDir`), and a plain literal value denies too, since the
+value names a file, not a command line to check. So `BASH_ENV=/tmp/rc bash -c "gh zz"`,
+`export BASH_ENV=/tmp/rc; git push`, `ZDOTDIR=/tmp/z zsh -c 'git status'`,
+`env BASH_ENV=/x git push`, `: ${BASH_ENV:=/x}; git push`, `GIT_EXEC_PATH=/tmp/x git push` and
+`export GIT_TEMPLATE_DIR=/t; git init r` deny, as do
+`env 'BASH_FUNC_git%%=() { command git push --no-verify; }' bash -c 'git status'` and
+`SHELLOPTS=xtrace PS4='$(git push --no-verify)' bash -c 'git status'`. A read (`echo "$BASH_ENV"`), `unset BASH_ENV`, a
+line that never reaches git or gh (`BASH_ENV=/tmp/rc make`) and a commit message naming the
+variable stay allowed. Known false deny: a bare `ENV` word on a line that reaches git, as in
+`echo ENV; git status`, denies the way `LESS` does. The agents' pre-push hook runs under
+`/bin/sh -p`, which ignores `BASH_ENV` and `ENV`; the rule is about a chained repo hook and about a
+`bash -c` or `zsh -c` that would hide git or gh from the guard.
 
 ### A gh alias (TP-2371)
 
