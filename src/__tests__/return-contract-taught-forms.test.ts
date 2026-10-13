@@ -12,6 +12,7 @@ import {
   REVIEW_TREE_RULE,
   REVIEWER_BODY_FILE_RULE,
 } from '../agents/return-contract-blocks.js'
+import { BUILTIN_PROFILES } from '../agents/profiles.js'
 import { checkCommand, guardContext, type GuardContext } from '../leak-guard/pretool.js'
 
 /**
@@ -169,6 +170,12 @@ describe('the repo profile templates', () => {
     const file = path.resolve(import.meta.dirname, '../../profiles/bd-reviewer.json')
     const prelude = (JSON.parse(fs.readFileSync(file, 'utf8')) as { promptPrelude: string }).promptPrelude
     expect(prelude).toContain(PROBE_SANDBOX_RULE)
+  })
+
+  // CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
+  it('builtin reviewer carries the probe-sandbox rule', () => {
+    const reviewer = BUILTIN_PROFILES.find(p => p.name === 'reviewer')
+    expect(reviewer?.promptPrelude).toContain(PROBE_SANDBOX_RULE)
   })
 
   it('has the implementer delete its pr-ready file and the reviewer write none', () => {
