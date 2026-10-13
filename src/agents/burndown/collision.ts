@@ -3,10 +3,11 @@ import { patternsOverlap } from '../../broker/claims.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
-import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
+import { heldClaims, sameClaim, type Claim, type Ledger, type StackedOn } from './ledger.js'
 import { defaultBranch } from './observe.js'
 import { exemptFromOverlap, overlapExemptFor } from './overlap-exempt.js'
 import { DESTRUCTIVE_OPS, type Contract } from './report.js'
+import { shepherdTarget } from './shepherd.js'
 import { GIT_BIN } from './review-diff.js'
 
 /**
@@ -36,6 +37,8 @@ export interface CollisionWork {
   owns: string[]
   /** The scopes a slice declares with an op; omitted means none. */
   contracts?: Contract[]
+  /** CC-1158 c: the parent a stacked slice builds on; its PR's files are the child's own base, so file-overlap skips that PR. */
+  stackedOn?: StackedOn
 }
 
 /** A dispatch planned this tick with the work its collision check saw, so a later seat's check sees it too. */
@@ -171,7 +174,8 @@ const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   const owns = work.owns.filter(path => !isChangeset(path))
   if (owns.length === 0 || facts.prs === undefined) return undefined
-  for (const pr of facts.prs.filter(pr => !isReleasePr(pr))) {
+  const parentPr = shepherdTarget(work.stackedOn?.pr)?.pr
+  for (const pr of facts.prs.filter(pr => !isReleasePr(pr) && pr.number !== parentPr)) {
     const files = facts.prFiles(pr.number)
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }

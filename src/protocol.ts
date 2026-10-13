@@ -74,6 +74,7 @@ export interface SpawnResultFields {
     | 'seat_budget_stop'
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'
+    | 'seat_spawn_unprefixed'
     | 'reviewer_account_limit'
     | 'broker_draining'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */

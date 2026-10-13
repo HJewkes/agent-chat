@@ -28,6 +28,7 @@ import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
 import {
   readHandReserve,
+  readSpawnerSeat,
   readOverlap,
   readSeatSpawn,
   type OverlapRequest,
@@ -305,6 +306,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
               },
               spawn,
             ),
+          spawnerSeat: (spawn: OverlapRequest) => readSpawnerSeat({ root: defaultAutonomyRoot() }, spawn),
         },
         poolPick: {
           read: (spawn: PoolPickRequest) => readPoolPick(defaultAutonomyRoot(), spawn),
