@@ -35,7 +35,7 @@ const work = (overlapsAccepted?: AcceptedOverlap[]): CollisionWork => ({
   slice: 'a',
   tags: [],
   owns: [INDEX, CONDITIONS],
-  overlapsAccepted,
+  ...(overlapsAccepted === undefined ? {} : { overlapsAccepted }),
 })
 
 describe('file-overlap gate with a planner-accepted overlap', () => {
