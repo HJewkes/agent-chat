@@ -459,3 +459,19 @@ describe('successor brief byte budgets (CC-757)', () => {
     expect(successorAfterAnswer(base, answer)).not.toContain('truncated')
   })
 })
+
+describe('a stacked worker brief', () => {
+  const stacked = { pr: 'acme/widgets#10', branch: 'agent/parent' }
+
+  it('tells the child to fall back to the default branch when the parent has already merged', () => {
+    const brief = workerBrief(task({ stackedOn: stacked, defaultBranch: 'trunk' }))
+
+    const fallback =
+      'If PR acme/widgets#10 has merged, `git merge origin/trunk` and open with `--base trunk`, without `--after`.'
+    expect(brief.split(fallback)).toHaveLength(3)
+  })
+
+  it('names no merged-parent fallback for an unstacked brief', () => {
+    expect(workerBrief(task())).not.toContain('has merged')
+  })
+})
