@@ -175,6 +175,10 @@ export const isReleasePr = (pr: Pick<OpenPr, 'branch'>): boolean => pr.branch.st
 /** One changeset file per change, never edited together, so two of them cannot conflict. */
 const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
 
+/** Two changeset paths collide only as the same literal file, so a `.changeset/*` owns never holds another task's changeset (CC-1276). */
+const pathsCollide = (a: string, b: string): boolean =>
+  isChangeset(a) && isChangeset(b) ? a === b : patternsOverlap(a, b)
+
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   const owns = work.owns.filter(path => !isChangeset(path))
   if (owns.length === 0 || facts.prs === undefined) return undefined
@@ -269,7 +273,7 @@ export function sameTickCollision(
 }
 
 const overlapping = (owns: string[], others: string[]): string | undefined =>
-  owns.find(own => others.some(other => patternsOverlap(own, other)))
+  owns.find(own => others.some(other => pathsCollide(own, other)))
 
 const TASK_ID = '[A-Za-z][A-Za-z0-9]*-\\d+'
 const ID_SEPARATOR = '[ \\t]*(?:,[ \\t]*(?:and[ \\t]+)?|and[ \\t]+|&[ \\t]*)'

@@ -388,6 +388,42 @@ describe('sameTickCollision over earlier seats this tick (CC-275)', () => {
   })
 })
 
+describe('changeset paths collide only by literal name (CC-1276)', () => {
+  const adding = work('TP-9', { slice: 'a', owns: ['src/x.ts', '.changeset/tp-9-a.md'] })
+  const claimBy = (patterns: string[]) => facts({ claims: [{ owner: 'peer', repo: '/repo', patterns }] })
+
+  it("passes a changeset under another agent's .changeset/* file claim", () => {
+    expect(collision(adding, claimBy(['.changeset/*']))).toBeUndefined()
+  })
+
+  it('passes a changeset under a same-tick dispatch owning .changeset/*', () => {
+    const earlier = [
+      {
+        seat: 'seat-a',
+        repo: '/repo',
+        agentName: 'sa-tp-1-b',
+        work: work('TP-1', { owns: ['.changeset/*'] }),
+      },
+    ]
+    expect(sameTickCollision(earlier, '/repo', adding)).toBeUndefined()
+  })
+
+  it('still refuses the same literal changeset path', () => {
+    const result = collision(work('TP-9', { owns: ['.changeset/tp-9.md'] }), claimBy(['.changeset/tp-9.md']))
+    expect(result).toEqual({
+      kind: 'claimed',
+      reason: ".changeset/tp-9.md is under peer's file claim",
+    })
+  })
+
+  it('still refuses a source path in a claim that also holds .changeset/*', () => {
+    expect(collision(adding, claimBy(['.changeset/*', 'src/x.ts']))).toEqual({
+      kind: 'claimed',
+      reason: "src/x.ts is under peer's file claim",
+    })
+  })
+})
+
 const contract = (scope: string, op: Contract['op']): Contract => ({ scope, op })
 const heldBy = (holder: string, ...contracts: Contract[]) => ({ holder, contracts })
 
