@@ -285,6 +285,11 @@ const Ledger = z.object({
   decider: DeciderState.optional(),
   /** Per-seat pool samples, keyed by seat name (CC-205). */
   seats: z.record(z.string(), SeatState).optional(),
+  /**
+   * When each seat's finished agents were last retired, by seat name (TP-1974 c). Beside `seats`, not in it:
+   * a seat state needs pool samples, and a seat with none still retires.
+   */
+  dailyRetire: z.record(z.string(), z.string().datetime()).optional(),
   /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
   humanFiled: z.array(z.string()).optional(),
   /** The scanner state the leak check last recorded, so a missing scanner is logged once rather than every tick. */

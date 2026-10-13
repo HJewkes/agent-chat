@@ -113,6 +113,7 @@ function fakeBroker(refuseAgent = 0): Fake {
     retire: async () => ({ ok: false, reason: 'no retire expected' }),
     queue: async () => [],
     resume: async name => ({ ok: true, agentId: `id-${name}` }),
+    retireFinished: async () => ({ ok: true, plan: [], results: [] }),
     collisionView: async () => ({ names: [], claims: [] }),
     seatSender: async () => ({
       send: async (to, text) => {

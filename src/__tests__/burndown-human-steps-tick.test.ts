@@ -135,6 +135,7 @@ function fakeBroker(held: number): { broker: TickBroker; frames: SpawnFrame[] } 
     retire: async () => ({ ok: true }),
     queue: async () => [],
     resume: async name => ({ ok: true, agentId: `id-${name}` }),
+    retireFinished: async () => ({ ok: true, plan: [], results: [] }),
     collisionView: async () => ({ names: [], claims: [] }),
     seatSender: async () => ({
       send: async () => ({ ok: true }),

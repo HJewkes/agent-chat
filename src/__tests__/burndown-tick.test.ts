@@ -183,6 +183,7 @@ function fakeBroker(
         fake.resumes.push({ name, message })
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
+      retireFinished: async () => ({ ok: true, plan: [], results: [] }),
       collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
       seatSender: async () => {
         fake.senders.opened += 1
