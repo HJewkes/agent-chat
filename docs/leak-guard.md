@@ -388,14 +388,16 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
-A line that names `gh` (which includes `agent-chat gh-write`) is denied when it holds an unquoted or
-double-quoted `${...}` that is anything but `${NAME}` or `${1}` (CC-718): an operator such as `:-`,
-`:=`, `:+`, `:?`, `#`, `%`, `/`, `^` or `,`, a leading `#` or `!`, or a zsh flag group such as `(e)`.
-The splitter ends such an expansion at its first `}`, so `echo ${X:-'${Y}'}; gh pr create ...` opens a
-quote it never closes and hides the gh command, and zsh's `(e)` flag runs the text it expands, which
-can redefine `gh`. The test is on the raw line, since the misread can hide the gh word itself. Compute
-the value in an earlier Bash call, or write it out; inside single quotes, as in `-b '${X:-y}'`, it is
-plain text and allowed. git-only lines are not affected.
+The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
+`echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
+command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
+function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
+`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. A line that names `gh` (which
+includes `agent-chat gh-write`) is also denied for any other `${...}` that is not `${NAME}` or
+`${1}`: one with an operator such as `:-`, `#`, `%`, `/`, `^` or `,`, or with a leading `#` or `!`.
+`$x`, `${HOME}` and `${10}` stay allowed everywhere. Inside single quotes, as in `-b '${X:-y}'`, the
+expansion is plain text and allowed. To get past the rule, compute the value in an earlier Bash call,
+or write it out.
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`

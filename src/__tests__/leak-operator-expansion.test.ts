@@ -35,10 +35,25 @@ describe('a ${...} expansion with an operator or flag on a gh line (CC-718)', ()
   })
 
   it.each([
+    `echo \${X:-'\${Y}'}; g''h pr create -t ${TERM} -b ok`,
+    `echo \${X:-'\${Y}'}; A=g;B=h;$A$B pr create -t ${TERM} -b ok`,
+    `echo \${X:-'\${Y}'}; eval 'g''h pr create -t ${TERM} -b ok'`,
+    `X='\${functions[foo]::=command g''h pr create -t ${TERM} -b ok}'; : \${(e)X}; foo`,
+    'echo "${X:-"y"}"',
+    'echo ${X:-\\}}',
+    'echo ${X:-${Y}}',
+    'echo ${X:-$(true)}',
+    'echo ${(e)X}',
+  ])('denies %j on any line, since what follows the expansion is not what the shell runs', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.operatorExpansion)
+  })
+
+  it.each([
     'echo "${DIR:-.}"; git status',
     "gh pr create -t x -b '${X:-y}'",
     'echo "${T}" ${1}; gh pr create -t x -b ok',
-    'echo ${X:-y}',
+    'echo ${HOME} ${1} ${10} $x "${HOME}"; gh pr create -t x -b ok',
+    'echo ${X:-y} ${#X} ${X%.md}',
   ])('allows %j', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

@@ -66,15 +66,23 @@ interface Mark {
 
 /**
  * Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run,
- * and a `${...}` met inside a substitution still counts; see `holdsOperatorExpansion`.
+ * and a `${...}` met inside a substitution still counts; see `expansionRisk`.
  */
 interface Budget {
   forks: number
-  operatorExpansion: boolean
+  expansion: ExpansionRisk | undefined
 }
 
-// The only `${...}` forms the splitter reads as the shell does; an operator, a leading `#` or `!`, or a zsh flag group is not.
+/**
+ * `operator`: a `${...}` with an operator, a leading `#` or `!`, which the splitter reads up to its
+ * first `}`. `unreadable`: one holding a quote, an escape, a nested `$` or a zsh flag group, where
+ * that first `}` may not be the shell's, so the rest of the line is not what the shell runs.
+ */
+export type ExpansionRisk = 'operator' | 'unreadable'
+
+// The only `${...}` forms the splitter reads as the shell does.
 const PLAIN_BRACED = /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*|\d+)\}$/
+const UNREADABLE_BRACED = /^\$\{\(|['"`\\]|.\$/
 
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
@@ -148,14 +156,14 @@ class ShellLexer {
     private readonly src: string,
     start = 0,
     private readonly nested = false,
-    private readonly budget: Budget = { forks: MAX_FORKS, operatorExpansion: false },
+    private readonly budget: Budget = { forks: MAX_FORKS, expansion: undefined },
   ) {
     this.pos = start
     this.cur = this.newCommand()
   }
 
-  get operatorExpansionSeen(): boolean {
-    return this.budget.operatorExpansion
+  get expansion(): ExpansionRisk | undefined {
+    return this.budget.expansion
   }
 
   private newCommand(): SimpleCommand {
@@ -410,7 +418,8 @@ class ShellLexer {
   private bracedAt(): string {
     const end = this.src.indexOf('}', this.pos)
     const text = this.src.slice(this.pos, end < 0 ? this.src.length : end + 1)
-    this.budget.operatorExpansion ||= !PLAIN_BRACED.test(text)
+    if (UNREADABLE_BRACED.test(text)) this.budget.expansion = 'unreadable'
+    else if (!PLAIN_BRACED.test(text)) this.budget.expansion ??= 'operator'
     return text
   }
 
@@ -582,14 +591,14 @@ export function expandWord(
 }
 
 /**
- * Whether an unquoted or double-quoted `${...}` is anything but `${NAME}` or `${1}`. The splitter ends
- * one at its first `}`, so `${X:-'${Y}'}` opens a quote it never closes and hides a gh command after
- * it, and zsh's `${(e)...}` runs the text it expands (CC-718).
+ * The worst unquoted or double-quoted `${...}` in `src` that is not `${NAME}` or `${1}`. The splitter
+ * ends one at its first `}`, so `${X:-'${Y}'}` opens a quote it never closes and hides any command
+ * after it, even one spelt `g''h`, and zsh's `${(e)...}` runs the text it expands (CC-718).
  */
-export function holdsOperatorExpansion(src: string): boolean {
+export function expansionRisk(src: string): ExpansionRisk | undefined {
   const lexer = new ShellLexer(unmark(src))
   lexer.run()
-  return lexer.operatorExpansionSeen
+  return lexer.expansion
 }
 
 const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/
