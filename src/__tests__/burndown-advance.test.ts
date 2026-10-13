@@ -573,6 +573,15 @@ describe('a shepherd-ended claim on a transient failure (CC-1229)', () => {
     expect(after[0]).toEqual(expect.objectContaining({ stallCode: 'shepherd-ended' }))
   })
 
+  it('leaves a stall of another code alone', () => {
+    const budget = stalledEnded({ stalledReason: 'budget: spent $9 of $5', stallCode: 'budget' })
+
+    const { actions, after } = step(budget, { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]).toEqual(expect.objectContaining({ stallCode: 'budget' }))
+  })
+
   it('parks as today when no PR state was read', () => {
     const { actions } = step(stalledEnded(), { shepherd: ended() })
 

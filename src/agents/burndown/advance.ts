@@ -530,6 +530,7 @@ function mayReregister(claim: Claim, head: string | null, now: Date): boolean {
  */
 function reregistered(claim: Claim, obs: Observation, now: Date): Action[] | undefined {
   const row = obs.shepherd?.row
+  if (claim.stallCode !== undefined && claim.stallCode !== 'shepherd-ended') return undefined
   if (claim.pr === undefined || !(claim.phase === 'shepherding' || claim.phase === 'awaiting-merge'))
     return undefined
   if (row === undefined || row.phase !== 'failed' || !TRANSIENT.test(row.stalled?.reason ?? ''))
