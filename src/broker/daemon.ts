@@ -25,7 +25,7 @@ import { seatJournal } from '../agents/seats/journal.js'
 import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import { burndownTreeHold } from '../agents/burndown/tree-hold.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
-import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
+import { shepherdRowsAsync } from '../shepherd-client.js'
 import {
   readHandReserve,
   readSpawnerSeat,
