@@ -1,11 +1,13 @@
+import { holdClass } from '../../shepherd-client.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { readySlices, type Claim, type Ledger, type StackedOn } from './ledger.js'
 import { rowFor, shepherdTarget, type ShepherdRow } from './shepherd.js'
 
 /**
  * CC-1158 slice a: which queued slices may stack on an unmerged parent slice. A parent is a base when its
- * claim is shepherding a PR whose Shepherd run is registered, past its first green CI, and neither held nor
- * stalled (owner decision 269 D3). Chains are at most `STACK_MAX_DEPTH` unmerged claims long.
+ * claim is shepherding a PR whose Shepherd run is registered, past its first green CI, not stalled, not
+ * `stackFrozen`, and unheld or held only for review (owner decisions 269 D3, 313(a)). Chains are at most
+ * `STACK_MAX_DEPTH` unmerged claims long.
  */
 
 export const STACK_MODES = ['off', 'shadow', 'on'] as const
@@ -31,8 +33,24 @@ function unmergedDepth(ledger: Ledger, claim: Claim): number {
   return depth
 }
 
+/**
+ * Owner decision 313(a), amending 269 D3: holds that wait on a reviewer, not on the PR, leave a base. Any other
+ * class, an owner or park hold, or one this build does not know, is refused.
+ */
+const BASE_HOLD_CLASSES: ReadonlySet<string> = new Set(['g10-adversary', 'g10-review', 'no-reviewer'])
+
+const baseHold = (row: ShepherdRow): boolean => {
+  if (row.held == null) return true
+  const cls = holdClass(row)
+  return cls !== undefined && BASE_HOLD_CLASSES.has(cls)
+}
+
 const baseRow = (row: ShepherdRow | undefined): boolean =>
-  row !== undefined && CI_GREEN_PHASES.has(row.phase) && row.held == null && row.stalled === null
+  row !== undefined &&
+  CI_GREEN_PHASES.has(row.phase) &&
+  baseHold(row) &&
+  row.stalled === null &&
+  row.stackFrozen !== true
 
 /** The parent `dep` of `child` as a stack base, else undefined. */
 export function stackable(
