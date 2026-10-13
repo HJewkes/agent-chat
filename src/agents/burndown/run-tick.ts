@@ -90,8 +90,8 @@ import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import { mergedEvents, mergedFlagKey, slicesMerged, slicesReleasedComplete } from './slices-complete.js'
-import { readOpenPrs, readSubjects } from './collision.js'
-import { releasedSlicesLanded } from './landed-sweep.js'
+import { readOpenPrs } from './collision.js'
+import { readRecentSubjects, releasedSlicesLanded } from './landed-sweep.js'
 import type { SeatEvents, SpawnResult } from './seat-events.js'
 import {
   briefDepsOf,
@@ -592,16 +592,25 @@ function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): Settled
   })
 }
 
-/** Each repo's default-branch subjects and open PR titles, read once; a failed read of either marks the repo unreadable. */
-function landingReader(exec: Runner): (repo: string) => { subjects: string[] | undefined; titles: string[] } {
-  const seen = new Map<string, { subjects: string[] | undefined; titles: string[] }>()
-  return repo => {
-    const known = seen.get(repo)
+type LandingRead = { subjects: string[] | undefined; titles: string[] }
+
+/**
+ * Each repo's open PR titles, read once, and its default-branch subjects over a window of days, read once per window.
+ * A failed read of either marks the repo unreadable, which keeps the parent open.
+ */
+function landingReader(exec: Runner): (repo: string, days: number) => LandingRead {
+  const prs = new Map<string, ReturnType<typeof readOpenPrs>>()
+  const seen = new Map<string, LandingRead>()
+  return (repo, days) => {
+    const key = `${repo}\0${days}`
+    const known = seen.get(key)
     if (known !== undefined) return known
-    const prs = readOpenPrs(repo, exec)
-    const subjects = prs === undefined ? undefined : readSubjects(repo, defaultBranch(repo, exec), exec)
-    const read = { subjects, titles: (prs ?? []).map(pr => pr.title) }
-    seen.set(repo, read)
+    if (!prs.has(repo)) prs.set(repo, readOpenPrs(repo, exec))
+    const open = prs.get(repo)
+    const subjects =
+      open === undefined ? undefined : readRecentSubjects(repo, defaultBranch(repo, exec), days, exec)
+    const read = { subjects, titles: (open ?? []).map(pr => pr.title) }
+    seen.set(key, read)
     return read
   }
 }
@@ -617,11 +626,12 @@ function landedReleasedParents(
   opts: TickOptions,
 ): ClosingParent[] {
   const read = landingReader(opts.exec ?? run)
+  const now = opts.now ?? new Date()
   const home = (initiative: string): string[] => seats.loaded.flatMap(s => s.dispatch.repos[initiative] ?? [])
   return [...tasks].flatMap(([initiative, list]) =>
     list
       .filter(t => (t.status === undefined || t.status === 'open') && slicesReleasedOnly(ledger, t.id))
-      .filter(t => slicesLanded(ledger, { initiative, id: t.id }, home(initiative), read))
+      .filter(t => slicesLanded(ledger, { initiative, id: t.id }, home(initiative), read, now))
       .map(t => ({ initiative, id: t.id })),
   )
 }
@@ -634,12 +644,18 @@ function slicesLanded(
   { initiative, id }: ClosingParent,
   fallback: readonly string[],
   read: ReturnType<typeof landingReader>,
+  now: Date,
 ): boolean {
   const claims = ledger.claims.filter(
     c => c.taskId === id && c.initiative === initiative && c.slice !== undefined,
   )
   const named = claims.flatMap(c => (c.repo === undefined ? [] : [c.repo]))
-  const reads = [...new Set(named.length > 0 ? named : fallback)].map(repo => ({ repo, ...read(repo) }))
+  // The log starts at the oldest slice claim, so a commit from before the parent was worked never counts.
+  const began = Math.min(...claims.map(c => Date.parse(c.spawnedAt)))
+  const days = Number.isFinite(began) ? Math.ceil((now.getTime() - began) / 86_400_000) + 1 : undefined
+  const reads = [...new Set(named.length > 0 ? named : fallback)].map(repo =>
+    days === undefined ? { repo, subjects: undefined, titles: [] } : { repo, ...read(repo, days) },
+  )
   const slices = { done: claims.length, released: ledger.slicesReleased?.[id]?.length ?? 0 }
   return (
     reads.length > 0 &&

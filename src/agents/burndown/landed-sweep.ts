@@ -66,10 +66,17 @@ export function readRecentSubjects(
   return result.status === 0 ? landingLines(result.stdout) : undefined
 }
 
+const REVERT = /^Revert "(.*)"/
+
+/** A subject the parent id opens as a whole token: `A-1: x` or `A-1 b: x`, never `A-9: filed from A-1`. */
+const opensWithId = (subject: string, id: string): boolean =>
+  subject.toLowerCase().startsWith(id.toLowerCase()) && namesId(subject.slice(0, id.length + 1), id)
+
 /**
  * CC-1227: a default-branch commit for every slice, done or released, and no open PR title naming the parent.
- * Slice commits carry the parent id and no slice letter, so the test is one distinct commit per slice. A
- * `[covers ...]` line repeats its commit's subject and counts once.
+ * A slice commit's subject opens with the parent id, so a later task's subject that mentions it does not count.
+ * A revert never counts, nor the commit it reverts. Distinct subjects are counted, and a `[covers ...]` line
+ * repeats its commit's subject and counts once. The caller bounds each log to commits since the task began.
  */
 export function releasedSlicesLanded(
   taskId: string,
@@ -79,10 +86,9 @@ export function releasedSlicesLanded(
 ): boolean {
   if (reads.some(read => read.subjects === undefined)) return false
   if (openPrTitles.some(title => namesId(title, taskId))) return false
-  const commits = reads
-    .flatMap(read => read.subjects ?? [])
-    .filter(s => namesId(s, taskId))
-    .map(s => s.replace(/ \[covers [^\]]*\]$/, ''))
+  const subjects = reads.flatMap(read => read.subjects ?? []).map(s => s.replace(/ \[covers [^\]]*\]$/, ''))
+  const reverted = new Set(subjects.flatMap(s => REVERT.exec(s)?.[1] ?? []))
+  const commits = subjects.filter(s => opensWithId(s, taskId) && !REVERT.test(s) && !reverted.has(s))
   return slices.released > 0 && new Set(commits).size >= slices.done + slices.released
 }
 

@@ -206,6 +206,24 @@ describe('releasedSlicesLanded', () => {
     expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
   })
 
+  it('is false when the second commit is a revert of the first', () => {
+    const lines = ['A-1: one', 'Revert "A-1: one"']
+
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
+  })
+
+  it("is false when the second commit only mentions the parent in another task's subject", () => {
+    const lines = ['A-1: one', 'A-9: follow-up filed from A-1']
+
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
+  })
+
+  it('does not count a commit that was later reverted', () => {
+    const lines = ['A-1: one', 'A-1 b: two', 'Revert "A-1 b: two"']
+
+    expect(releasedSlicesLanded('A-1', { done: 1, released: 1 }, reads(lines), [])).toBe(false)
+  })
+
   it('is false when an open PR names the parent', () => {
     expect(releasedSlicesLanded('A-1', one, reads(['A-1: one']), ['A-1: open work'])).toBe(false)
   })

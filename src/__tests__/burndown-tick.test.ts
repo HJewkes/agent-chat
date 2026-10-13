@@ -3226,6 +3226,53 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
     expect(readLedger(burndownLedgerPath()).slicesFlagged).toEqual(['demo/DM-1:released'])
   })
 
+  it('leaves a parent open when a slice commit was reverted', async () => {
+    releasedParent()
+    land('DM-1: first slice', 'Revert "DM-1: first slice"')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it("leaves a parent open when the second commit belongs to another task's subject", async () => {
+    releasedParent()
+    land('DM-1: first slice', 'DM-9: follow-up filed from DM-1')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open when the open-PR read fails', async () => {
+    releasedParent()
+    land('DM-1: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(
+      done,
+      stubGh(() => ({ status: 1, stdout: '' })),
+    )
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open when its repo cannot be read', async () => {
+    releasedParent()
+    land('DM-1: first slice', 'DM-1 b: second slice')
+    const unreadable: Runner = (bin, args, cwd) =>
+      bin === GIT_BIN && args.includes('fetch')
+        ? { status: 1, stdout: '', stderr: '' }
+        : stubGh()(bin, args, cwd)
+    const { calls, done } = doneCalls()
+
+    await tickWith(done, unreadable)
+
+    expect(calls).toEqual([])
+  })
+
   it('leaves a parent open while an open PR title names it', async () => {
     releasedParent()
     land('DM-1: first slice', 'DM-1 b: second slice')
