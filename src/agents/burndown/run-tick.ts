@@ -25,7 +25,13 @@ import { advance, applyActions, claimKey, type Action, type ClaimKey, type Inbox
 import { withFindings } from './finding.js'
 import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
-import { autoApproveBriefs, autoApprovePortsOn, briefAnswered, type DeciderRoute } from './brief-approve.js'
+import {
+  autoApproveBriefs,
+  autoApprovePortsOn,
+  briefAnswered,
+  type ApprovePorts,
+  type DeciderRoute,
+} from './brief-approve.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import {
@@ -175,6 +181,8 @@ export interface TickOptions {
   ownerQueueDir?: string
   /** CC-1192: the monotonic ms clock the step timings read; defaults to `performance.now`. */
   monotonic?: () => number
+  /** CC-1234: the `active-work task edit` that settles proposed briefs; a test injects one that edits its fixture. */
+  briefEdit?: ApprovePorts['edit']
 }
 
 interface ReaderFailure {
@@ -530,7 +538,8 @@ function recordingSpawn(
 /** CC-1234: approves each proposed brief whose plan lints and sends the rest to the decider once; a dry run only says so. */
 function settleBriefs(config: TickConfig, opts: TickOptions, now: Date): Promise<string[]> {
   const name = config.decider?.name
-  return autoApproveBriefs(autoApprovePortsOn(opts.root ?? activeWorkRoot()), {
+  const ports = autoApprovePortsOn(opts.root ?? activeWorkRoot())
+  return autoApproveBriefs(opts.briefEdit === undefined ? ports : { ...ports, edit: opts.briefEdit }, {
     today: localDate(now),
     dryRun: opts.dryRun,
     ...(name === undefined ? {} : { route: deciderRoute(name, opts.broker) }),

@@ -1,4 +1,5 @@
 import { planPathFor } from '../agents/burndown/brief.js'
+import { briefVersion } from '../agents/burndown/brief-approve.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -2114,6 +2115,112 @@ describe('burndown tick wakes the decider', () => {
     expect(lines.join('\n')).toContain('would wake decider decider (headless) for 1 waiting question(s)')
     expect(fake.resumes).toEqual([])
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
+  })
+})
+
+describe('burndown tick settles proposed briefs through one decider gate (CC-1234)', () => {
+  const TODAY = '2026-09-26'
+  const PROPOSED = `brief:proposed=${TODAY}`
+  const slice = { n: 'a', title: 'one slice', points: 2, doneWhen: 'tests pass', owns: ['src/a.ts'] }
+  const planWith = (slices: unknown[]): string =>
+    `# Plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
+  const LINTED = planWith([slice])
+  const UNLINTED = planWith([{ ...slice, points: 8 }])
+  const taskFile = (id: string): string => path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`)
+  const tagsOf = (id: string): string[] =>
+    fs
+      .readFileSync(taskFile(id), 'utf8')
+      .split('\n')
+      .filter(l => l.startsWith('  - '))
+      .map(l => l.slice(4))
+
+  /** Stands in for `active-work task edit`: tags are the fixture's last block, so a tag line is appended or dropped. */
+  const briefEdit = (_slug: string, id: string, args: string[]): void => {
+    const [flag, value] = args
+    const text = fs.readFileSync(taskFile(id), 'utf8')
+    if (flag === '--add-tag') fs.writeFileSync(taskFile(id), `${text}  - ${value}\n`)
+    if (flag === '--remove-tag')
+      fs.writeFileSync(
+        taskFile(id),
+        text
+          .split('\n')
+          .filter(l => l !== `  - ${value}`)
+          .join('\n'),
+      )
+  }
+
+  const proposedBriefs = (briefs: Record<string, string>): void => {
+    initiative(Object.fromEntries(Object.keys(briefs).map(id => [id, `${task(id)}  - ${PROPOSED}\n`])))
+    for (const [id, plan] of Object.entries(briefs))
+      write(planPathFor(path.join(world, 'aw', 'demo'), id), plan)
+  }
+
+  /** The broker refuses a second resume of an agent the first one made live, as the supervisor does. */
+  const liveAfterFirstResume = (): ((name: string) => SpawnReply) => {
+    let resumed = false
+    return () => {
+      if (resumed) return { ok: false, reason: 'decider is already live; message it instead' }
+      resumed = true
+      return { ok: true, agentId: 'id-decider' }
+    }
+  }
+
+  const tickWithEdits = (fake: Fake) =>
+    tickFromDisk({
+      dryRun: false,
+      broker: fake.broker,
+      now: NOON,
+      log: () => {},
+      exec: stubGh(),
+      egress: CLEAN_SCAN,
+      briefEdit,
+    })
+
+  it('resumes the decider once for a failing brief and an old open question, naming both', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({
+      agents: [deciderRow('exited')],
+      queue: [question(6)],
+      resume: liveAfterFirstResume(),
+    })
+
+    await tickWithEdits(fake)
+
+    expect(fake.resumes).toHaveLength(1)
+    expect(fake.resumes[0]?.message).toContain('`agent-chat queue --questions --json`')
+    expect(fake.resumes[0]?.message).toContain('DM-2')
+    const decider = readLedger(burndownLedgerPath()).decider
+    expect(decider?.wakes).toHaveLength(1)
+    expect(decider?.refused).toBeUndefined()
+  })
+
+  it('approves a lint-passing brief and counts the failing one as a decider wake', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-1': LINTED, 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')], resume: liveAfterFirstResume() })
+
+    const lines = await tickWithEdits(fake)
+
+    expect(tagsOf('DM-1')).toEqual(expect.arrayContaining([`brief:ready=${TODAY}`, 'brief:src=briefer']))
+    expect(tagsOf('DM-1')).not.toContain(PROPOSED)
+    expect(tagsOf('DM-2')).toContain(PROPOSED)
+    expect(tagsOf('DM-2')).toContain(`brief:decider=${briefVersion(PROPOSED, UNLINTED)}`)
+    expect(fake.resumes).toHaveLength(1)
+    expect(readLedger(burndownLedgerPath()).decider?.wakes).toHaveLength(1)
+    expect(lines.join('\n')).toContain('auto: slice lint passed')
+  })
+
+  it('holds a failing brief for the next tick when the decider is at its hourly cap', async () => {
+    deciderSetup('id-decider', { decider: { name: 'decider', maxPerHour: 1 } })
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo([10]) } })
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')] })
+
+    await tickWithEdits(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(tagsOf('DM-2').some(t => t.startsWith('brief:decider='))).toBe(false)
   })
 })
 
