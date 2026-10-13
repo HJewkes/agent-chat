@@ -209,16 +209,24 @@ async function headBranch(target: ParkTarget): Promise<HeadBranch> {
   }
 }
 
-/** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
-const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo', '.api-extractor-temp']
+/**
+ * Ignored dirs `git worktree remove` may delete, each with what rebuilds all of its contents.
+ * Add a dir only when that holds for everything in it: `.codewatch` fails, since it keeps paid triage verdicts and a hand-written check.json.
+ */
+const REGENERABLE_DIR_SOURCES: Record<string, string> = {
+  node_modules: 'the package manager install',
+  dist: 'the build',
+  coverage: 'the test run',
+  '.turbo': "turbo's task cache",
+  '.api-extractor-temp': 'api-extractor on every run',
+}
+
+const REGENERABLE_DIRS = Object.keys(REGENERABLE_DIR_SOURCES)
 
 /** Tool caches that sit at any depth as single files. */
 const REGENERABLE_FILES = ['.eslintcache']
 
-/**
- * `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything.
- * `.codewatch` is never regenerable: it holds paid triage verdicts and a hand-written check.json that re-indexing does not rebuild.
- */
+/** `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything. */
 const isRegenerable = (entry: string): boolean => {
   const segments = entry.split('/').filter(Boolean)
   if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
