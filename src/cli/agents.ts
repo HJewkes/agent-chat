@@ -408,6 +408,18 @@ export function parseSpawnedAs(value: string): SpawnedAs {
   return spawnedAs
 }
 
+/**
+ * CC-1206: the agent identity a spawned agent's shell carries (`launch-plan.ts` sets both), so an
+ * agent's CLI spawn without `--spawned-as` is not taken for the human's. It only lowers trust: an
+ * agent that unsets its env is back to the broker's own checks.
+ */
+export function callerAgentField(env: NodeJS.ProcessEnv): { callerAgent?: string } {
+  const callerAgent = [env.AGENT_CHAT_NAME, env.AGENT_CHAT_AGENT_ID].find(
+    v => v !== undefined && v.trim() !== '',
+  )
+  return callerAgent === undefined ? {} : { callerAgent }
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
@@ -455,6 +467,7 @@ export async function agentSpawn(
       ...(options.role === undefined ? {} : { workRole: options.role }),
       ...(options.surface === undefined ? {} : { surface: options.surface }),
       ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+      ...callerAgentField(process.env),
       ...(options.remoteControl === true ? { remoteControl: true } : {}),
       ...(process.env.CLAUDE_CONFIG_DIR === undefined
         ? {}
