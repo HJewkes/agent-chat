@@ -153,15 +153,23 @@ import {
   SEAT_BUDGET_STOP,
   SEAT_HAND_RESERVE,
   SEAT_SPAWN_OVERLAP,
+  SEAT_SPAWN_UNPREFIXED,
   handReserveOverflow,
   seatSpawnGate,
   spawnOverlap,
+  unprefixedSeatSpawn,
   type SeatBudgetRefusalCode,
   type SeatHandReserveRefusalCode,
   type SeatOverlapRefusalCode,
   type SeatSpawnMode,
+  type SeatUnprefixedRefusalCode,
 } from './seats/spawn-gate.js'
-import type { HandReserveFacts, OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
+import type {
+  HandReserveFacts,
+  OverlapFacts,
+  OverlapRequest,
+  SpawnerSeatFacts,
+} from './seats/spawn-gate-read.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
@@ -614,6 +622,8 @@ export interface SpawnRequest {
   parentAgentId?: string
   requestedBy: string
   forceReset?: boolean
+  /** CC-1158: the `origin/<branch>` a new worktree is cut from; absent, origin's default branch. */
+  baseRef?: string
   /** Applied at the spawned agent's own registration, before its first turn. */
   tags?: string[]
   subscriptions?: Subscription[]
@@ -643,6 +653,7 @@ export type SpawnRefusalCode =
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
   | SeatHandReserveRefusalCode
+  | SeatUnprefixedRefusalCode
   | typeof REVIEWER_ACCOUNT_LIMIT
 
 /** CC-1078: reads the five_hour window and ceiling of the account a reviewer spawn bills. Absent in tests, which own no account. */
@@ -661,6 +672,8 @@ export interface SeatOverlapReaders {
   read: (spawn: OverlapRequest) => OverlapFacts | undefined
   /** CC-936: the seat's hand reserve; absent where the seat reserves nothing. */
   handReserve?: (spawn: OverlapRequest) => HandReserveFacts | undefined
+  /** CC-965: the seat the spawner is, by its own name; absent where no spawner is checked. */
+  spawnerSeat?: (spawn: OverlapRequest) => SpawnerSeatFacts | undefined
 }
 
 /** CC-606: the pool pick's disk reader and its `poolPick` config mode, both read per spawn. */
@@ -1585,6 +1598,36 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-965: a seat's implementer spawn named without the seat's prefix, which would escape its reserve and logs.
+   * Follows the overlap gate's mode: warn logs `seat_spawn_unprefixed` and spawns. An unreadable seat lets it through.
+   */
+  private unprefixedRefusal(req: SpawnRequest, profileName: string): string | undefined {
+    const gate = this.seatOverlap
+    const mode = gate?.mode() ?? 'off'
+    if (gate?.spawnerSeat === undefined || mode === 'off' || req.spawnedAs !== undefined) return undefined
+    try {
+      const seat = gate.spawnerSeat({ name: req.name, spawner: req.requestedBy, task: req.task })
+      if (seat === undefined) return undefined
+      const unprefixed = unprefixedSeatSpawn({
+        mode,
+        role: req.workRole ?? inferWorkRole(profileName, req.name),
+        override: req.override,
+        prefix: seat.prefix,
+        name: req.name,
+      })
+      if (unprefixed === undefined) return undefined
+      logEvent(SEAT_SPAWN_UNPREFIXED, { name: req.name, mode, requested_by: req.requestedBy })
+      return mode === 'refuse' ? unprefixed.reason : undefined
+    } catch (err) {
+      logEvent('seat_spawn_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+  }
+
+  /**
    * CC-932: a hand spawn of a task burndown has claimed or that is brief-ready. Warn mode logs
    * `seat_spawn_overlap` and lets it through; refuse mode returns the reason. The tick's and Shepherd's own
    * spawns carry `spawnedAs` and never pass through. An unreadable ledger lets the spawn through.
@@ -2007,6 +2050,8 @@ export class Supervisor implements TeleportHost {
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const reserve = this.handReserveRefusal(req, profile.name)
     if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
+    const unprefixed = this.unprefixedRefusal(req, profile.name)
+    if (unprefixed) return this.refuse(req, unprefixed, { code: SEAT_SPAWN_UNPREFIXED, retryable: false })
     const site = this.siteFor(req)
     if ('refusal' in site) return this.refuse(req, site.refusal)
     if (site.site === 'caller') return this.spawnRemote(req, profile, lineage, site)
@@ -2064,6 +2109,7 @@ export class Supervisor implements TeleportHost {
         ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
       },
       ...(req.forceReset ? { forceReset: true } : {}),
+      ...(req.baseRef === undefined ? {} : { baseRef: req.baseRef }),
     }
 
     const floor = floorWarning(isolationName, profile.isolation)

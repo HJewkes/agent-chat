@@ -74,6 +74,7 @@ export interface SpawnResultFields {
     | 'seat_budget_stop'
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'
+    | 'seat_spawn_unprefixed'
     | 'reviewer_account_limit'
     | 'broker_draining'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
@@ -1018,6 +1019,8 @@ export type ClientMessage =
        * and is accepted with a worktree profile.
        */
       claimPaths?: string[]
+      /** CC-1158: the `origin/<branch>` a worktree spawn is cut from; a stacked slice names its parent's PR branch. */
+      baseRef?: string
       /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there

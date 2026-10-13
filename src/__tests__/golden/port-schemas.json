@@ -1,0 +1,394 @@
+{
+  "roster": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "spawning",
+                "live",
+                "detached",
+                "exited",
+                "retired"
+              ]
+            },
+            "spawnedAt": {
+              "type": "number"
+            },
+            "exitedAt": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "agentId",
+            "name",
+            "state",
+            "spawnedAt"
+          ],
+          "additionalProperties": {}
+        }
+      },
+      "slots": {
+        "type": "object",
+        "properties": {
+          "held": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "held",
+          "cap"
+        ],
+        "additionalProperties": false
+      },
+      "partial": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "agents"
+    ],
+    "additionalProperties": false
+  },
+  "inbox-since": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "messages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "number"
+            },
+            "msgId": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "msgId",
+            "from",
+            "text"
+          ],
+          "additionalProperties": {}
+        }
+      },
+      "nextCursor": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "messages",
+      "nextCursor"
+    ],
+    "additionalProperties": false
+  },
+  "queue": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "msgId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "message",
+                "broadcast",
+                "question",
+                "notice",
+                "answer",
+                "resolution",
+                "approval_request",
+                "registered",
+                "deregistered",
+                "route_failed",
+                "agent_spawned",
+                "agent_attached",
+                "agent_detached",
+                "agent_resumed",
+                "agent_exited",
+                "agent_retired",
+                "agent_handoff",
+                "agent_stood_down",
+                "isolation_allocated",
+                "isolation_released",
+                "isolation_parked",
+                "agent_spawn_refused",
+                "verdict_refused",
+                "endorse_request",
+                "decided",
+                "seat_blocked",
+                "seat_unblocked",
+                "seat_activity",
+                "seat_ask_denied"
+              ]
+            },
+            "from": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "at": {
+              "type": "number"
+            },
+            "meta": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "msgId",
+            "kind",
+            "from",
+            "text",
+            "at",
+            "meta"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "additionalProperties": false
+  },
+  "files-claims": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "names": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "owner",
+            "repo",
+            "patterns"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "recentlyExited": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "names",
+      "claims"
+    ],
+    "additionalProperties": false
+  },
+  "spawn": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean",
+        "const": true
+      },
+      "agentId": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      },
+      "code": {
+        "type": "string"
+      },
+      "retryable": {
+        "type": "boolean"
+      },
+      "retryAfterMs": {
+        "type": "number"
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "disallowedTools": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "transcript": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "found"
+        ],
+        "additionalProperties": false
+      },
+      "base": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "sha"
+        ],
+        "additionalProperties": false
+      },
+      "launch": {},
+      "host": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "send": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "sent": {
+        "type": "boolean",
+        "const": true
+      }
+    },
+    "required": [
+      "sent"
+    ],
+    "additionalProperties": false
+  },
+  "envelope": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "data": {}
+        },
+        "required": [
+          "ok",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "retryAfterMs": {
+                "type": "number"
+              },
+              "unknown": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "retryable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "ok",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  }
+}

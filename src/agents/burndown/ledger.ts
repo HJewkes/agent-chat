@@ -35,8 +35,17 @@ export type Phase = (typeof PHASES)[number]
 export const AGENT_PHASES = ['planning', 'implementing', 'reviewing'] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
-/** CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. */
-const StackedOn = z.object({ taskId: z.string(), slice: z.string(), pr: z.string(), branch: z.string() })
+/**
+ * CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. `forkHead` is the
+ * parent head the child's worktree was cut from, recorded once the spawn answers, to diagnose a restack against.
+ */
+const StackedOn = z.object({
+  taskId: z.string(),
+  slice: z.string(),
+  pr: z.string(),
+  branch: z.string(),
+  forkHead: z.string().optional(),
+})
 export type StackedOn = z.infer<typeof StackedOn>
 
 const Claim = z.object({
@@ -237,6 +246,8 @@ const LadderRecord = z.object({
   /** The branch the last release kept, the stall code that sent it there, and the seat to tell. */
   branch: z.string().optional(),
   code: z.enum(STALL_CODES).optional(),
+  /** CC-1158 d: why a release that is no stall (`stack-broken`) happened; it replaces any earlier `code`. */
+  reason: z.string().optional(),
   seat: z.string().optional(),
   /** Set when the seat's `released` notice failed to send, and cleared once one lands (CC-829). */
   releaseDue: z.literal(true).optional(),

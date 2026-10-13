@@ -308,6 +308,7 @@ export interface Released {
   slice?: string
   seat?: string
   code?: StallCode
+  reason?: string
   branch?: string
   /** The task's release count, which sets its backoff. */
   n: number
@@ -321,6 +322,7 @@ function releasedOf(key: string, record: LadderRecord, ledger: Ledger): Released
     ...(slice === undefined || slice === '' ? {} : { slice }),
     ...(record.seat === undefined ? {} : { seat: record.seat }),
     ...(record.code === undefined ? {} : { code: record.code }),
+    ...(record.reason === undefined ? {} : { reason: record.reason }),
     ...(record.branch === undefined ? {} : { branch: record.branch }),
   }
 }

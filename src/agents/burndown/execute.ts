@@ -3,7 +3,13 @@ import { applyActions, claimKey, type Action, type ClaimKey, type RetireAction }
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { clearLiveness, factFingerprint, LIVENESS_LIMIT, maskText, pruneLiveness, spend } from './liveness.js'
 import { parkUpdate } from './stall-code.js'
-import { targetRef, type RegisterReply, type Registration, type ShepherdTarget } from './shepherd.js'
+import {
+  shepherdTarget,
+  targetRef,
+  type RegisterReply,
+  type Registration,
+  type ShepherdTarget,
+} from './shepherd.js'
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
@@ -37,6 +43,8 @@ export interface SpawnFrame {
   spawnedAs: 'burndown'
   /** CC-952: the slice's owns, which the broker claims for the agent so the next tick sees them. */
   claimPaths?: string[]
+  /** CC-1158: a stacked slice's worktree is cut from `origin/<parent branch>`, not the default branch. */
+  baseRef?: string
 }
 
 export interface SpawnSpec {
@@ -51,6 +59,7 @@ export interface SpawnSpec {
   worktree?: string
   tier?: number
   claimPaths?: string[]
+  baseRef?: string
 }
 
 export function spawnFrame(s: SpawnSpec): SpawnFrame {
@@ -70,6 +79,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
     ...(s.tier === undefined ? {} : { tier: s.tier }),
     ...(s.claimPaths?.length ? { claimPaths: s.claimPaths } : {}),
+    ...(s.baseRef === undefined ? {} : { baseRef: s.baseRef }),
   }
 }
 
@@ -87,6 +97,8 @@ export interface SpawnReply {
   code?: string
   /** A refusal that clears by itself (a rate or capacity limit), so it spends no liveness budget. */
   retryable?: boolean
+  /** The ref and commit the agent's new worktree branch was cut from. */
+  base?: { ref: string; sha: string }
 }
 
 export interface ExecuteDeps {
@@ -234,7 +246,7 @@ async function spawnOne(
     code: reply.code,
   })
   if (reply.ok) {
-    const patch = { agentId: reply.agentId }
+    const patch = { agentId: reply.agentId, ...forkHeadPatch(state.ledger, key, frame, reply) }
     state.save(
       clearLiveness(
         applyActions(state.ledger, [{ kind: 'update', key, patch }], deps.now),
@@ -242,9 +254,27 @@ async function spawnOne(
         spawnAction(frame),
       ),
     )
-    return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}`
+    return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}${baseIgnored(frame, reply)}`
   }
   return refused(step, reply, state, deps)
+}
+
+/** A broker that predates `baseRef` cuts from the default branch; the stacked brief's first step merges the parent. */
+const baseIgnored = (frame: SpawnFrame, reply: SpawnReply): string =>
+  frame.baseRef === undefined || reply.base?.ref === frame.baseRef
+    ? ''
+    : `; base ${frame.baseRef} not honoured (cut from ${reply.base?.ref ?? 'an unreported base'}), the brief merges it first`
+
+/** CC-1158 (decision 275): a stacked claim records the parent head its worktree was cut from. */
+function forkHeadPatch(
+  ledger: Ledger,
+  key: ClaimKey,
+  frame: SpawnFrame,
+  reply: SpawnReply,
+): Partial<Pick<Claim, 'stackedOn'>> {
+  const stackedOn = ledger.claims.find(c => c.phase === 'spawning' && sameClaim(c, key))?.stackedOn
+  if (stackedOn === undefined || frame.baseRef === undefined || reply.base?.ref !== frame.baseRef) return {}
+  return { stackedOn: { ...stackedOn, forkHead: reply.base.sha } }
 }
 
 /** A retryable refusal is undone for free; any other spends the budget, undone within it and parked once spent. */
@@ -281,7 +311,8 @@ function registerOne(
   { ledger, save }: Pick<SpawnState, 'ledger' | 'save'>,
   deps: ExecuteDeps,
 ): string {
-  const { key, registration } = step
+  const { key } = step
+  const registration = stackedRegistration(step.registration, ledger, key)
   const ref = targetRef(registration.target)
   const reply = deps.register(registration)
   deps.log('burndown_shepherd_register', { pr: ref, task: registration.task, ...reply })
@@ -311,6 +342,14 @@ function registerOne(
     applyActions(spent.ledger, [{ ...park, patch: { ...park.patch, stalledClass: 'gate-trip' } }], deps.now),
   )
   return `not registered ${ref}: retry-spent: ${detail}`
+}
+
+/** CC-1158: a stacked claim lands after its parent PR, named from the claim rather than looked up on GitHub. */
+function stackedRegistration(registration: Registration, ledger: Ledger, key: ClaimKey): Registration {
+  if (registration.after !== undefined) return registration
+  const parent = ledger.claims.find(c => c.phase !== 'done' && sameClaim(c, key))?.stackedOn
+  const after = shepherdTarget(parent?.pr)
+  return after === undefined ? registration : { ...registration, after }
 }
 
 /** A refusal after allocation leaves the worktree behind (the supervisor releases the slot only), so name it. */

@@ -455,6 +455,24 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
   }
 }
 
+/** CC-1158: a stacked slice's base, fetched fresh; a stale or default-branch cut would lose its parent's work. */
+export async function resolveRequestedBase(
+  gitRoot: string,
+  ref: string,
+  timeoutMs: number,
+): Promise<BranchBase> {
+  const branch = ref.startsWith('origin/') ? ref.slice('origin/'.length) : ''
+  const valid =
+    branch !== '' &&
+    !branch.startsWith('-') &&
+    (await gitOrNull(['check-ref-format', '--branch', branch], gitRoot)) !== null
+  if (!valid) throw new Error(`base ${ref} is not a branch on origin; not spawned`)
+  const sha = await fetchTip(gitRoot, branch, timeoutMs)
+  if (sha === null)
+    throw new Error(`fetching base ${ref} failed or timed out; not cut from the default branch instead`)
+  return { sha, ref }
+}
+
 /** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
 const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): SetupTarget => ({
   gitRoot,
@@ -985,7 +1003,11 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))
-      const base = await resolveBranchBase(gitRoot, opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
+      const fetchTimeout = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+      const base =
+        ctx.baseRef === undefined
+          ? await resolveBranchBase(gitRoot, fetchTimeout)
+          : await resolveRequestedBase(gitRoot, ctx.baseRef, fetchTimeout)
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
         base: base.sha,
         force: ctx.forceReset === true,

@@ -18,7 +18,7 @@ import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
-import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
+import { adoptSeatOf, changedFiles as prChangedFiles, diskAdoptPorts } from './pr-adopt-ports.js'
 import { claimPrReader } from './pr-state.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
@@ -57,7 +57,17 @@ import {
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
-import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import { binaryGate, capGate, type GateReading } from './gate-reading.js'
+import {
+  BURNDOWN_CONFIG,
+  DEFAULT_NAME_PREFIX,
+  plan,
+  stackInputs,
+  type Capacity,
+  type Dispatch,
+  type PlanInputs,
+} from './plan.js'
+import { backoffHeld } from './backoff.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
@@ -75,7 +85,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
-import { seedSteps } from './seed-slices.js'
+import { diskPlanReader, resyncQueuedSlices, resyncSteps, seedSteps } from './seed-slices.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
@@ -451,6 +461,15 @@ function adoptPrs(
   }
 }
 
+/** CC-1023: an adopted PR's files from GitHub; a renamed file counts by both paths, as the local `--no-renames` read does. */
+const prFilesReader =
+  (exec: Runner) =>
+  (pr: string): string[] | undefined => {
+    const target = shepherdTarget(pr)
+    const files = target === undefined ? undefined : prChangedFiles(target, exec)
+    return files?.flatMap(f => (f.previousPath === undefined ? [f.path] : [f.path, f.previousPath]))
+  }
+
 /** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
 function logReasons(
   autonomyRoot: string,
@@ -470,7 +489,14 @@ function logReasons(
 /** The tick's releases and its brake notice, each logged once. */
 function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
   for (const r of releasesSince(before, after))
-    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+    log('burndown_release', {
+      task: r.taskId,
+      slice: r.slice,
+      code: r.code,
+      reason: r.reason,
+      branch: r.branch,
+      n: r.n,
+    })
   const brake = brakeSince(before, after)
   if (brake === undefined) return
   const claims = brake.claims.map(c => c.key)
@@ -595,6 +621,7 @@ async function decide(
       shepherdRows: shepherd,
       landed: target => shepherdLanded(target, opts.exec ?? run),
       exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+      prFiles: prFilesReader(opts.exec ?? run),
       prState: claimPrReader(opts.exec ?? run),
     }),
   )
@@ -610,10 +637,16 @@ async function decide(
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const planning = timer.start('plan')
   const laddered = ladderActions(
-    withFindings(advance(held, observations, now), held, observations, now, seat => {
-      const lookup = ctx.seat?.(seat)
-      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
-    }),
+    withFindings(
+      advance(held, observations, now, name => mayRun(roster, name)),
+      held,
+      observations,
+      now,
+      seat => {
+        const lookup = ctx.seat?.(seat)
+        return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+      },
+    ),
     held,
     ledger,
     {
@@ -626,7 +659,8 @@ async function decide(
   )
   const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
-  const planLedger = applyActions(ledger, kept, now)
+  const resynced = resyncQueuedSlices(applyActions(ledger, kept, now), diskPlanReader(root))
+  const planLedger = applyActions(ledger, [...kept, ...resynced.actions], now)
   const triage = triageFor(
     config,
     planLedger,
@@ -639,6 +673,7 @@ async function decide(
   const building = timer.start('plan')
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
+  const stacking = stackInputs(config.stack.mode, planLedger, backoffHeld(planLedger, now), shepherd)
   const planned = planNew(
     world,
     seats,
@@ -650,6 +685,7 @@ async function decide(
       orphan: (repo, name) => orphanAt(repo, name),
       collision: check,
       charged: advanced.charged,
+      ...(stacking.stack === undefined ? {} : { stack: stacking.stack }),
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
@@ -663,11 +699,13 @@ async function decide(
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...laddered.notes,
+    ...resynced.notes,
     ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
     ...planned.notes,
+    ...stacking.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -677,6 +715,7 @@ async function decide(
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...resyncSteps(resynced),
     ...seedSteps(planned.seeds),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
@@ -726,9 +765,10 @@ function serviceGate(
   }
 }
 
-type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> & {
-  charged: readonly string[]
-}
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> &
+  Pick<PlanInputs, 'stack'> & {
+    charged: readonly string[]
+  }
 
 interface Planned {
   dispatch: Dispatch[]
@@ -832,9 +872,9 @@ function triageFor(
   config: TickConfig,
   ledger: Ledger,
   roster: Roster,
-  capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
+  capacity: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   now: Date,
-): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason'> } {
+): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> } {
   const readiness = triageReadiness(config)
   const { agents: free, agentsReason } = capacity
   const verdicts = triageVerdicts({
@@ -859,7 +899,7 @@ export function agentCapacity(
   config: TickConfig,
   claims: Claim[],
   roster: Roster,
-): Pick<Capacity, 'agents' | 'agentsReason'> {
+): Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'> {
   const live = liveBurndownAgents(claims, roster, config.decider === undefined ? [] : [config.decider.name])
   const slots = roster.slots
   const free = slots === undefined ? 0 : slots.cap - slots.held - config.reserveSlots
@@ -867,15 +907,31 @@ export function agentCapacity(
     slots === undefined
       ? 'broker reported no slot reading, so none are assumed free'
       : `broker slots ${slots.held}/${slots.cap} held, ${config.reserveSlots} kept free`
+  const agents = Math.max(0, Math.min(config.maxAgents - live, free))
   return {
-    agents: Math.max(0, Math.min(config.maxAgents - live, free)),
+    agents,
     agentsReason: `${live} of maxAgents ${config.maxAgents} burndown agents alive; ${broker}`,
+    agentsGate: room => agentsGate(config, live, slots, agents - room),
   }
 }
 
+/**
+ * CC-1097: the smaller of the two agent ceilings binds; broker slots bind when unread, as none are assumed free.
+ * `started` is what the tick took from `agents` before the refusal: decider, advance, triage and plan spawns.
+ */
+function agentsGate(config: TickConfig, live: number, slots: Roster['slots'], started: number): GateReading {
+  if (slots === undefined) return binaryGate('agentSlots', AGENT_SLOTS_SOURCE)
+  const used = slots.held + config.reserveSlots
+  return config.maxAgents - live <= slots.cap - used
+    ? capGate('burndown.maxAgents', config.maxAgents, live + started, BURNDOWN_CONFIG)
+    : capGate('agentSlots', slots.cap, used + started, AGENT_SLOTS_SOURCE)
+}
+
+const AGENT_SLOTS_SOURCE = '~/.agent-chat/config.json'
+
 function worktreeCapacity(
   config: TickConfig,
-  agents: Pick<Capacity, 'agents' | 'agentsReason'>,
+  agents: Pick<Capacity, 'agents' | 'agentsReason' | 'agentsGate'>,
   prefixes: readonly string[],
 ): Capacity {
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)

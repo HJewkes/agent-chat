@@ -9,7 +9,7 @@ import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-sto
 import { readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
-import { ownsSpawns, seatOf } from './seat-of.js'
+import { ownsSpawns, seatFileNamed, seatOf } from './seat-of.js'
 import type { OverlapClaim, SeatSpawnInput } from './spawn-gate.js'
 import { savedMeters } from './stops.js'
 import { accountReading } from './watchdog.js'
@@ -182,4 +182,21 @@ export function readHandReserve(
     loadResolvedConfig({ paths: settingsBeside(paths.tickConfigFile) }).tick.handReserve[seat.name] ?? 0
   if (reserve <= 0 || seat.prefix === undefined) return undefined
   return { reserve, prefix: seat.prefix, held: heldClaims(readLedger(paths.ledgerFile)) }
+}
+
+export interface SpawnerSeatFacts {
+  /** The spawning seat's agent-name prefix. */
+  prefix: string
+}
+
+/**
+ * CC-965: the prefix of the seat that `req.spawner` names, whatever the spawn is called. Undefined when the
+ * spawner is no seat. Throws when the seat file cannot be read; the broker logs that and lets the spawn through.
+ */
+export function readSpawnerSeat(
+  paths: Pick<OverlapPaths, 'root'>,
+  req: OverlapRequest,
+): SpawnerSeatFacts | undefined {
+  const found = seatFileNamed(paths.root, req.spawner)
+  return found === undefined ? undefined : { prefix: found.seat.prefix }
 }

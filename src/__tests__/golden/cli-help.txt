@@ -21,6 +21,8 @@ Commands:
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
+  port                       JSON envelope ports for the dispatch factory; none of them starts a
+                             broker
   machine                    operator HOLDs, owner stops and the machine stop
   host                       host launchers: machines a teleport can land a successor on
   debug                      diagnostics: sessions, history, routing
@@ -861,6 +863,103 @@ Options:
   --hours <value>  how far back to look (default 24)
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
+
+=== agent-chat port
+Usage: agent-chat port [options] [command]
+
+JSON envelope ports for the dispatch factory; none of them starts a broker
+
+Options:
+  -h, --help                              display help for command
+
+Commands:
+  roster                                  print every agent row, retired ones included, and the slot
+                                          count as one JSON line
+  inbox-since [options] <name> <afterId>  print a session's messages after a cursor as one JSON
+                                          line; delivers nothing
+  queue                                   print the human queue as one JSON envelope line; never
+                                          starts a broker
+  files-claims                            print live names, recently exited agents and every files
+                                          claim as one JSON line
+  spawn [options]                         spawn from burndown's spawn frame on stdin as one JSON
+                                          envelope line; never starts a broker
+  retire <name>                           retire one agent as burndown does, as one JSON envelope
+                                          line; never starts a broker
+  resume [options] <name>                 resume an agent headless on a message from stdin, as one
+                                          JSON envelope line
+  send [options] [to]                     send or notify as burndown, text on stdin, as one JSON
+                                          envelope line; never starts a broker
+  help [command]                          display help for command
+
+=== agent-chat port roster
+Usage: agent-chat port roster [options]
+
+print every agent row, retired ones included, and the slot count as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port inbox-since
+Usage: agent-chat port inbox-since [options] <name> <afterId>
+
+print a session's messages after a cursor as one JSON line; delivers nothing
+
+Options:
+  --limit <value>  most messages to return (default 200)
+  -h, --help       display help for command
+
+=== agent-chat port queue
+Usage: agent-chat port queue [options]
+
+print the human queue as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port files-claims
+Usage: agent-chat port files-claims [options]
+
+print live names, recently exited agents and every files claim as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port spawn
+Usage: agent-chat port spawn [options]
+
+spawn from burndown's spawn frame on stdin as one JSON envelope line; never starts a broker
+
+Options:
+  --frame-stdin  read the spawn frame JSON from stdin
+  -h, --help     display help for command
+
+=== agent-chat port retire
+Usage: agent-chat port retire [options] <name>
+
+retire one agent as burndown does, as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port resume
+Usage: agent-chat port resume [options] <name>
+
+resume an agent headless on a message from stdin, as one JSON envelope line
+
+Options:
+  --message-stdin  read the wake message from stdin
+  -h, --help       display help for command
+
+=== agent-chat port send
+Usage: agent-chat port send [options] [to]
+
+send or notify as burndown, text on stdin, as one JSON envelope line; never starts a broker
+
+Options:
+  --as <sender>  the sender label; only burndown
+  --notify       file a notice on the human queue instead of messaging an agent
+  --task <id>    the task a notice is about (with --notify)
+  -h, --help     display help for command
 
 === agent-chat machine
 Usage: agent-chat machine [options] [command]

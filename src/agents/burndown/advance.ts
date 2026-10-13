@@ -22,6 +22,7 @@ import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import { classifyStale } from './stale-claim.js'
 import type { ActivityRead } from './stall.js'
 import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
+import { BRANCH_PREFIX } from '../isolation/worktree.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -53,7 +54,8 @@ export interface Observation {
   diff?: { reviewable: boolean; reason: string }
   /**
    * CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns
-   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before.
+   * nothing. CC-1150 f: `adjudicated` says whether they may join `owns`; absent, they stall as before. CC-1023: a
+   * silent exit's adopted PR adds its own files, and an unreadable PR read reads as unreadable.
    */
   owned?: { outside: string[]; adjudicated?: Adjudication } | 'unreadable'
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
@@ -105,7 +107,9 @@ export type Action =
       key: ClaimKey
       branch?: string
       requeue: boolean
-      code: StallCode
+      /** Absent for a release that is no stall: CC-1158 d's `stack-broken` carries `reason` instead. */
+      code?: StallCode
+      reason?: string
       /** The agents that may still run, newest first; a retired one is no longer the broker's to retire. */
       names: string[]
     }
@@ -126,11 +130,27 @@ export function advance(
   claims: Claim[],
   observations: ReadonlyMap<string, Observation>,
   now: Date,
+  mayRun: (name: string) => boolean = () => true,
 ): Action[] {
-  return claims.flatMap(claim => {
+  const actions = claims.flatMap(claim => {
     const obs = observations.get(claimKey(claim)) ?? {}
     return withStale(claim, obs, now, advanceClaim(claim, obs, now))
   })
+  return withStackReleases(claims, observations, actions, mayRun)
+}
+
+/** CC-1158 d: a stacked child whose parent broke is released, and nothing else the tick planned for it stands. */
+function withStackReleases(
+  claims: Claim[],
+  observations: ReadonlyMap<string, Observation>,
+  actions: Action[],
+  mayRun: (name: string) => boolean,
+): Action[] {
+  const releases = brokenStacks(claims, mayRun, observations)
+  if (releases.length === 0) return actions
+  const broken = new Set(releases.map(r => claimKey(r.key)))
+  const kept = actions.filter(a => !('key' in a) || !broken.has(claimKey(a.key)))
+  return [...kept, ...releases]
 }
 
 /**
@@ -269,7 +289,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (handsOff)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport }, obs.shepherd?.row)
   const silent = report === undefined || report.status === 'unknown'
-  const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
+  const adopted = silent ? adoptExited(claim, obs, lastReport) : undefined
   if (adopted !== undefined) return adopted
   if (obs.diff?.reviewable === true) {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
@@ -373,16 +393,17 @@ function amended(claim: Claim, obs: Observation, files: string[], resume: Resume
  * CC-673: adopt what a silent exit left. An open PR goes to Shepherd; commits ahead get one
  * resume successor per claim. An unreadable read waits a tick, under the phase timeout, rather
  * than move on a guess. Nothing here releases the claim; undefined falls through to review or a stall.
+ * CC-1023: the PR is fenced by its owns first, read from the PR's own files, since the worktree may hold none of them.
  */
-function adoptExited(
-  claim: Claim,
-  work: Observation['exitedWork'],
-  lastReport: string | undefined,
-): Action[] | undefined {
+function adoptExited(claim: Claim, obs: Observation, lastReport: string | undefined): Action[] | undefined {
+  const work = obs.exitedWork
   if (work === undefined) return undefined
   if (work === 'unreadable') return []
   if (work.openPr !== null)
-    return handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+    return (
+      fenced(claim, obs, afterWorker) ??
+      handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+    )
   if (work.ahead > 0 && claim.resumed !== true)
     return successor(claim, { kind: 'resume', ahead: work.ahead }, { resumed: true, lastReport })
   return undefined
@@ -603,7 +624,7 @@ function released(ledger: Ledger, action: Extract<Action, { kind: 'release' }>, 
   const key = claimKey(action.key)
   const held = (c: Claim): boolean => c.phase !== 'done' && sameClaim(c, action.key)
   const claim = ledger.claims.find(held)
-  const record = ledger.ladder?.[key]
+  const { code: _code, reason: _reason, ...record } = ledger.ladder?.[key] ?? ({} as Partial<LadderRecord>)
   const claims = action.requeue
     ? ledger.claims.map(c => (held(c) ? requeued(c, at) : c))
     : ledger.claims.filter(c => !held(c))
@@ -617,11 +638,12 @@ function released(ledger: Ledger, action: Extract<Action, { kind: 'release' }>, 
     ladder: {
       ...ledger.ladder,
       [key]: {
-        respawns: record?.respawns ?? 0,
+        respawns: record.respawns ?? 0,
         ...record,
-        releases: (record?.releases ?? 0) + 1,
+        releases: (record.releases ?? 0) + 1,
         lastAt: at,
-        code: action.code,
+        ...(action.code === undefined ? {} : { code: action.code }),
+        ...(action.reason === undefined ? {} : { reason: action.reason }),
         ...(action.branch === undefined ? {} : { branch: action.branch }),
         ...(claim?.seat === undefined ? {} : { seat: claim.seat }),
       },
@@ -644,4 +666,48 @@ function patched(claim: Claim, patch: ClaimPatch, at: string): Claim {
     ...(since === undefined ? {} : { stalledAt: since }),
     ...(stale === undefined || restart ? {} : { stale }),
   }
+}
+
+type Release = Extract<Action, { kind: 'release' }>
+
+/** How a parent broke: its claim went back to the queue, or GitHub reads its PR closed unmerged. */
+function parentBroke(
+  parent: Claim | undefined,
+  obs: Observation | undefined,
+): 'released' | 'closed' | undefined {
+  if (parent?.phase === 'queued') return 'released'
+  return obs?.prState !== undefined && obs.prState !== 'unreadable' && obs.prState.kind === 'closed'
+    ? 'closed'
+    : undefined
+}
+
+const prNumber = (pr: string): string => `#${/(\d+)$/.exec(pr)?.[1] ?? pr}`
+
+/**
+ * CC-1158 d: every held claim stacked on a parent that was released or closed unmerged goes back to the queue with
+ * its branch kept, so it re-dispatches from the default branch. A merged parent is `done`, so it is not held and
+ * breaks nothing; an open one breaks nothing either.
+ */
+export function brokenStacks(
+  claims: readonly Claim[],
+  mayRun: (name: string) => boolean,
+  observations: ReadonlyMap<string, Observation>,
+): Release[] {
+  return claims.flatMap((child): Release[] => {
+    const on = child.stackedOn
+    if (on === undefined) return []
+    const parent = claims.find(c => c.taskId === on.taskId && c.slice === on.slice)
+    const how = parentBroke(parent, parent === undefined ? undefined : observations.get(claimKey(parent)))
+    if (how === undefined) return []
+    return [
+      {
+        kind: 'release',
+        key: { taskId: child.taskId, slice: child.slice },
+        requeue: true,
+        reason: `stack-broken: parent ${on.taskId} ${on.slice} ${prNumber(on.pr)} ${how}`,
+        names: retireAll(child).names.filter(mayRun),
+        ...(child.agentName === undefined ? {} : { branch: `${BRANCH_PREFIX}${child.agentName}` }),
+      },
+    ]
+  })
 }
