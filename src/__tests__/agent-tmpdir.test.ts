@@ -51,7 +51,8 @@ class FakeFs implements TmpFs {
       .filter(p => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes('/'))
       .map(p => p.slice(path.length + 1))
   }
-  mkdir(path: string, mode: number): void {
+  mkdir(path: string, mode: number, recursive = false): void {
+    if (this.nodes.has(path) && recursive) return
     if (this.nodes.has(path)) throw Object.assign(new Error('exists'), { code: 'EEXIST' })
     this.made.push([path, mode])
     this.nodes.set(path, { kind: 'dir', uid: UID, mode })
@@ -97,6 +98,8 @@ const launch = (agentId: string, launcher: number) => ({
 })
 
 const DIR = '/tmp/ac-worker-4242'
+const DISK_ROOT = '/home/example/.cache/agent-chat/tmp'
+const DISK_DIR = `${DISK_ROOT}/ac-worker-4242`
 const target = { name: 'worker', pid: 4242, agentIds: new Set(['a1']) }
 const deps = (fs: FakeFs, table = procTable({})) => ({ fs, table, uid: UID, self: 1 })
 
@@ -169,6 +172,57 @@ describe('making the per-agent TMPDIR', () => {
 
     expect(ensureAgentTmpDir({ name: '../etc', pid: 4242, platform: 'linux', fs, uid: UID })).toBeUndefined()
     expect(fs.made).toEqual([])
+  })
+})
+
+describe('a per-agent TMPDIR under the on-disk root (CC-1184)', () => {
+  const request = (fs: FakeFs, root: string) =>
+    ({ name: 'worker', pid: 4242, root, platform: 'linux', fs, uid: UID }) as const
+
+  it('creates the root and then the dir, both 0700', () => {
+    const fs = new FakeFs()
+
+    expect(ensureAgentTmpDir(request(fs, DISK_ROOT))).toBe(DISK_DIR)
+    expect(fs.made).toEqual([
+      [DISK_ROOT, 0o700],
+      [DISK_DIR, 0o700],
+    ])
+  })
+
+  it('reuses an existing root it owns', () => {
+    const fs = new FakeFs().add(DISK_ROOT)
+
+    expect(ensureAgentTmpDir(request(fs, DISK_ROOT))).toBe(DISK_DIR)
+    expect(fs.made).toEqual([[DISK_DIR, 0o700]])
+  })
+
+  it('will not use a root that is a symlink or another user’s', () => {
+    expect(ensureAgentTmpDir(request(new FakeFs().add(DISK_ROOT, 'symlink'), DISK_ROOT))).toBeUndefined()
+    expect(ensureAgentTmpDir(request(new FakeFs().add(DISK_ROOT, 'dir', 0), DISK_ROOT))).toBeUndefined()
+  })
+
+  it('refuses any other root without touching the fs', () => {
+    for (const root of [
+      '/etc',
+      'home/example/.cache/agent-chat/tmp',
+      '/home/example/../../etc/.cache/agent-chat/tmp',
+      '/home/example/.cache/agent-chat/tmp/',
+      '/home/example/.cache/other',
+    ]) {
+      const fs = new FakeFs()
+      expect(ensureAgentTmpDir(request(fs, root)), root).toBeUndefined()
+      expect(agentTmpPath('worker', 4242, root), root).toBeUndefined()
+      expect(fs.made, root).toEqual([])
+    }
+  })
+
+  it('removes exactly the disk dir at exit and leaves the /tmp one', () => {
+    const fs = new FakeFs().add(DISK_ROOT).add(DISK_DIR).add(DIR)
+
+    removeOwnTmpDir('worker', 'a1', 4242, { ...deps(fs), platform: 'linux', log: () => undefined }, DISK_ROOT)
+
+    expect(fs.removed).toEqual([DISK_DIR])
+    expect(fs.nodes.has(DIR)).toBe(true)
   })
 })
 
@@ -546,6 +600,35 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
         }),
       ],
     ])
+  })
+
+  it('removes a finished agent’s dir under each root it is given', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11').add(DISK_ROOT).add(`${DISK_ROOT}/ac-worker-12`)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: ['/tmp', DISK_ROOT],
+    })
+
+    expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
+  })
+
+  it('skips a root that does not exist', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11')
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: () => undefined,
+      roots: [DISK_ROOT, '/tmp'],
+    })
+
+    expect(fs.removed).toEqual(['/tmp/ac-worker-11'])
   })
 
   it('does nothing when no agent is finished', () => {
