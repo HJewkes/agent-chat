@@ -224,7 +224,7 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
       kind: 'released',
       taskId: r.taskId,
       ...(r.slice === undefined ? {} : { slice: r.slice }),
-      detail: withCode(r.code, detail),
+      detail: r.reason === undefined ? withCode(r.code, detail) : `${r.reason}; ${detail}`,
       ...(r.code === undefined ? {} : { code: r.code }),
     })
   }

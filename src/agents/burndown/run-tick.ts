@@ -470,7 +470,14 @@ function logReasons(
 /** The tick's releases and its brake notice, each logged once. */
 function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
   for (const r of releasesSince(before, after))
-    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+    log('burndown_release', {
+      task: r.taskId,
+      slice: r.slice,
+      code: r.code,
+      reason: r.reason,
+      branch: r.branch,
+      n: r.n,
+    })
   const brake = brakeSince(before, after)
   if (brake === undefined) return
   const claims = brake.claims.map(c => c.key)
@@ -610,10 +617,16 @@ async function decide(
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const planning = timer.start('plan')
   const laddered = ladderActions(
-    withFindings(advance(held, observations, now), held, observations, now, seat => {
-      const lookup = ctx.seat?.(seat)
-      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
-    }),
+    withFindings(
+      advance(held, observations, now, name => mayRun(roster, name)),
+      held,
+      observations,
+      now,
+      seat => {
+        const lookup = ctx.seat?.(seat)
+        return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+      },
+    ),
     held,
     ledger,
     {

@@ -129,12 +129,13 @@ export function advance(
   claims: Claim[],
   observations: ReadonlyMap<string, Observation>,
   now: Date,
+  mayRun: (name: string) => boolean = () => true,
 ): Action[] {
   const actions = claims.flatMap(claim => {
     const obs = observations.get(claimKey(claim)) ?? {}
     return withStale(claim, obs, now, advanceClaim(claim, obs, now))
   })
-  return withStackReleases(claims, observations, actions)
+  return withStackReleases(claims, observations, actions, mayRun)
 }
 
 /** CC-1158 d: a stacked child whose parent broke is released, and nothing else the tick planned for it stands. */
@@ -142,8 +143,9 @@ function withStackReleases(
   claims: Claim[],
   observations: ReadonlyMap<string, Observation>,
   actions: Action[],
+  mayRun: (name: string) => boolean,
 ): Action[] {
-  const releases = brokenStacks(claims, observations)
+  const releases = brokenStacks(claims, mayRun, observations)
   if (releases.length === 0) return actions
   const broken = new Set(releases.map(r => claimKey(r.key)))
   const kept = actions.filter(a => !('key' in a) || !broken.has(claimKey(a.key)))
@@ -620,7 +622,7 @@ function released(ledger: Ledger, action: Extract<Action, { kind: 'release' }>, 
   const key = claimKey(action.key)
   const held = (c: Claim): boolean => c.phase !== 'done' && sameClaim(c, action.key)
   const claim = ledger.claims.find(held)
-  const record = ledger.ladder?.[key]
+  const { code: _code, reason: _reason, ...record } = ledger.ladder?.[key] ?? ({} as Partial<LadderRecord>)
   const claims = action.requeue
     ? ledger.claims.map(c => (held(c) ? requeued(c, at) : c))
     : ledger.claims.filter(c => !held(c))
@@ -634,11 +636,12 @@ function released(ledger: Ledger, action: Extract<Action, { kind: 'release' }>, 
     ladder: {
       ...ledger.ladder,
       [key]: {
-        respawns: record?.respawns ?? 0,
+        respawns: record.respawns ?? 0,
         ...record,
-        releases: (record?.releases ?? 0) + 1,
+        releases: (record.releases ?? 0) + 1,
         lastAt: at,
         ...(action.code === undefined ? {} : { code: action.code }),
+        ...(action.reason === undefined ? {} : { reason: action.reason }),
         ...(action.branch === undefined ? {} : { branch: action.branch }),
         ...(claim?.seat === undefined ? {} : { seat: claim.seat }),
       },
@@ -685,6 +688,7 @@ const prNumber = (pr: string): string => `#${/(\d+)$/.exec(pr)?.[1] ?? pr}`
  */
 export function brokenStacks(
   claims: readonly Claim[],
+  mayRun: (name: string) => boolean,
   observations: ReadonlyMap<string, Observation>,
 ): Release[] {
   return claims.flatMap((child): Release[] => {
@@ -693,14 +697,13 @@ export function brokenStacks(
     const parent = claims.find(c => c.taskId === on.taskId && c.slice === on.slice)
     const how = parentBroke(parent, parent === undefined ? undefined : observations.get(claimKey(parent)))
     if (how === undefined) return []
-    const live = observations.get(claimKey(child))?.agent !== undefined
     return [
       {
         kind: 'release',
         key: { taskId: child.taskId, slice: child.slice },
         requeue: true,
         reason: `stack-broken: parent ${on.taskId} ${on.slice} ${prNumber(on.pr)} ${how}`,
-        names: live ? retireAll(child).names : [],
+        names: retireAll(child).names.filter(mayRun),
         ...(child.agentName === undefined ? {} : { branch: `${BRANCH_PREFIX}${child.agentName}` }),
       },
     ]
