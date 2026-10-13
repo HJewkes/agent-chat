@@ -379,12 +379,25 @@ function fenced(claim: Claim, obs: Observation, resume: Resume): Action[] | unde
   if (first === undefined) return undefined
   const verdict = owned.adjudicated
   if (verdict?.kind === 'amend') return amended(claim, obs, verdict.files, resume)
+  if (verdict?.kind === 'escalate' && verdict.protectedPath !== undefined)
+    return [protectedPark(claim, verdict.protectedPath)]
   const more = rest.length === 0 ? '' : ` (+${rest.length} more)`
   const cause = verdict === undefined ? '' : `; not amended: ${verdict.reason}`
   return [
     parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns${cause}`),
   ]
 }
+
+/**
+ * CC-1235: a protected file is never amended in, so the park names it and the plan line to widen, and nothing else:
+ * the same text on every tick, whatever else the PR touches, keeps the seat's notice and the stall line single.
+ */
+const protectedPark = (claim: Claim, file: string): Action =>
+  parkUpdate(
+    keyOf(claim),
+    'outside-owns',
+    `PR touches ${file} outside its slice owns; not amended: ${file} is a protected path; widen the owns line of slice ${claim.slice ?? '?'} in the plan to cover ${file}`,
+  )
 
 function amended(claim: Claim, obs: Observation, files: string[], resume: Resume): Action[] {
   const patch = {
