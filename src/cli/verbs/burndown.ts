@@ -56,6 +56,7 @@ import {
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 import { burndownLandedVerb } from './burndown-landed.js'
+import { kicksInBroker, sendJobKick } from './job-kick.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -334,6 +335,19 @@ export const burndownStatusVerb = defineVerb({
   },
 })
 
+/** CC-1151: a dry tick still reads gh and titan-factory through the caller's PATH, so an agent plans instead. */
+async function kickTick(dryRun: boolean): Promise<Report> {
+  if (dryRun)
+    return refused(
+      new Error('burndown tick --dry-run refused from an agent shell; use `agent-chat burndown plan`'),
+    )
+  try {
+    return await sendJobKick({ t: 'job_kick', job: 'burndown_tick' })
+  } catch (err) {
+    return refused(err)
+  }
+}
+
 export const burndownTickVerb = defineVerb({
   name: 'burndown.tick',
   description: 'one pass: advance every claim a phase, then spawn new work inside the ceilings',
@@ -347,6 +361,7 @@ export const burndownTickVerb = defineVerb({
   },
   async run({ once, dryRun }) {
     if (once !== true) return refused(new Error('burndown tick runs one pass only; pass --once'))
+    if (kicksInBroker()) return kickTick(dryRun === true)
     // Never autostart: a tick that brought up a broker would own it, and the broker serves every session.
     const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
       autoStart: false,
