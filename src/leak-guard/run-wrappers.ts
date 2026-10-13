@@ -94,47 +94,52 @@ export function findClauses(marked: readonly string[], from = 0): FindCall {
 }
 
 /**
- * An allowlist: only options whose whole effect `ParallelCall` carries (quoting, replacement
- * strings, input separators, unread arg files) or which leave the command and its inputs alone
- * (scheduling, output, logging). Every other option is refused. That includes the ones that regroup
- * inputs into one command (`-X`, `-m`, `--xargs`, `-n`, `-N`, `-L`, `--max-*`, `-C`/`--colsep`),
- * drop or reshape inputs (`-E`, `-d`, `-0`, `--header`, `--pipe`), and name a command of their own
- * (`-S`/`--sshlogin`, `--ssh`). Long names are without the leading `--`.
+ * How the guard must read an allowlisted option's value. `inert` values never reach the command
+ * (job counts, timeouts). `evaluated` values are expanded with replacement strings and `{= perl =}`,
+ * `replace` values become replacement strings, and `separator` values split the inputs; the guard
+ * accepts these only as a literal it read in full, without `{=`, and only once. `argFile` inputs are
+ * unread.
  */
-const PARALLEL_LONG_VALUE: ReadonlySet<string> = new Set(
-  [
-    'arg-file arg-file-sep arg-sep jobs max-procs joblog results halt tagstring timeout delay',
-    'memfree load retries nice extensionreplace basenamereplace dirnamereplace seqreplace slotreplace',
-  ]
-    .join(' ')
-    .split(' '),
-)
+type ValueKind = 'inert' | 'evaluated' | 'replace' | 'separator' | 'argFile'
+
+/**
+ * An allowlist: only options whose whole effect `ParallelCall` carries or which leave the command
+ * and its inputs alone. Every other option is refused. That includes the ones that regroup inputs
+ * into one command (`-X`, `-m`, `--xargs`, `-n`, `-N`, `-L`, `--max-*`, `-C`/`--colsep`), drop or
+ * reshape inputs (`-E`, `-d`, `-0`, `--header`, `--pipe`), name a command of their own
+ * (`-S`/`--sshlogin`, `--ssh`), or splice text into perl (`--plus`, `--rpl`). Long names are without
+ * the leading `--`; one-letter names are short options.
+ */
+const PARALLEL_VALUE: ReadonlyMap<string, ValueKind> = new Map([
+  ...['jobs', 'max-procs', 'halt', 'timeout', 'delay', 'memfree', 'load', 'retries', 'nice'].map(
+    name => [name, 'inert'] as const,
+  ),
+  ...['tagstring', 'results', 'joblog'].map(name => [name, 'evaluated'] as const),
+  ...['I', 'extensionreplace', 'basenamereplace', 'dirnamereplace', 'seqreplace', 'slotreplace'].map(
+    name => [name, 'replace'] as const,
+  ),
+  ['arg-sep', 'separator'],
+  ['arg-file-sep', 'separator'],
+  ['arg-file', 'argFile'],
+])
 
 const PARALLEL_LONG_FLAG: ReadonlySet<string> = new Set(
   [
     'keep-order quote ungroup verbose group line-buffer lb tag dry-run bar progress eta will-cite',
-    'plus shuf no-notice',
+    'shuf no-notice',
   ]
     .join(' ')
     .split(' '),
 )
 
-const PARALLEL_SHORT_VALUE = new Set('aIjP')
 const PARALLEL_SHORT_FLAG = new Set('kquvt')
 
-const LONG_ALIAS: ReadonlyMap<string, string> = new Map([
-  ['arg-file', 'a'],
-  ['quote', 'q'],
-])
-
-/** Options whose value changes where the command's input lands or which words separate inputs. */
-const REPLACE_OPTIONS: ReadonlySet<string> = new Set([
-  'I',
-  'extensionreplace',
-  'basenamereplace',
-  'dirnamereplace',
-  'seqreplace',
-  'slotreplace',
+/** Short options that take a value, by the long name they stand for. */
+const SHORT_VALUE: ReadonlyMap<string, string> = new Map([
+  ['a', 'arg-file'],
+  ['I', 'I'],
+  ['j', 'jobs'],
+  ['P', 'max-procs'],
 ])
 
 export type ParallelInputs = { kind: 'literal'; groups: string[][] } | { kind: 'unread' }
@@ -150,6 +155,8 @@ export interface ParallelCall {
 }
 
 interface ParallelOptions {
+  /** The non-inert value options already read: GNU keeps only the last of a repeated one. */
+  seen: Set<string>
   quote: boolean
   argFile: boolean
   replaceStrings: string[]
@@ -167,12 +174,11 @@ type Read = [Option[], number] | null
 function readLong(word: string, next: string | undefined): Read {
   const eq = word.indexOf('=')
   const name = eq < 0 ? word.slice(2) : word.slice(2, eq)
-  const alias = LONG_ALIAS.get(name) ?? name
-  if (PARALLEL_LONG_FLAG.has(name) && eq < 0) return [[{ name: alias, value: undefined }], 1]
-  if (!PARALLEL_LONG_VALUE.has(name)) return null
+  if (PARALLEL_LONG_FLAG.has(name) && eq < 0) return [[{ name, value: undefined }], 1]
+  if (!PARALLEL_VALUE.has(name)) return null
   const value = eq < 0 ? next : word.slice(eq + 1)
   if (value === undefined) return null
-  return [[{ name: alias, value }], eq < 0 ? 2 : 1]
+  return [[{ name, value }], eq < 0 ? 2 : 1]
 }
 
 /** One `-xyz` cluster, which Getopt::Long's bundling reads letter by letter. */
@@ -184,11 +190,12 @@ function readCluster(word: string, next: string | undefined): Read {
       options.push({ name: letter, value: undefined })
       continue
     }
-    if (!PARALLEL_SHORT_VALUE.has(letter)) return null
+    const name = SHORT_VALUE.get(letter)
+    if (name === undefined) return null
     const attached = word.slice(i + 1)
     const value = attached === '' ? next : attached
     if (value === undefined) return null
-    options.push({ name: letter, value })
+    options.push({ name, value })
     return [options, attached === '' ? 2 : 1]
   }
   return [options, 1]
@@ -197,14 +204,31 @@ function readCluster(word: string, next: string | undefined): Read {
 /** GNU parallel runs the perl in a `{= … =}` string, in the command and in option values alike. */
 const runsPerl = (word: string): boolean => unmark(word).includes('{=')
 
-/** Folds one read option into `opts`; false when its value runs perl, or is unreadable but decides structure. */
+/** Whether a value of `kind` is one the guard read in full and that runs no perl. */
+function valueIsSafe(kind: ValueKind, value: string): boolean {
+  if (runsPerl(value)) return false
+  if (kind === 'inert' || kind === 'argFile') return true
+  if (hidden(value) || unmark(value) === '') return false
+  return kind !== 'separator' || !unmark(value).startsWith('-')
+}
+
+/**
+ * Folds one read option into `opts`; false when the guard cannot account for it: an unclassified
+ * option, a value it may not read, or a repeated non-inert option. A separator spelled like an
+ * option is refused too, because Getopt reads it as an option before parallel splits the inputs.
+ */
 function applyOption(opts: ParallelOptions, { name, value }: Option): boolean {
-  const structural = REPLACE_OPTIONS.has(name) || name === 'arg-sep' || name === 'arg-file-sep'
-  if (value !== undefined && (runsPerl(value) || (structural && hidden(value)))) return false
-  const read = value === undefined ? '' : unmark(plain(value))
-  if (name === 'q') opts.quote = true
-  if (name === 'a') opts.argFile = true
-  if (REPLACE_OPTIONS.has(name)) opts.replaceStrings.push(read)
+  if (value === undefined) {
+    if (name === 'q' || name === 'quote') opts.quote = true
+    return true
+  }
+  const kind = PARALLEL_VALUE.get(name)
+  if (kind === undefined || !valueIsSafe(kind, value)) return false
+  if (kind !== 'inert' && opts.seen.has(name)) return false
+  opts.seen.add(name)
+  const read = unmark(plain(value))
+  if (kind === 'argFile') opts.argFile = true
+  if (kind === 'replace') opts.replaceStrings.push(read)
   if (name === 'arg-sep') opts.argSep = read
   if (name === 'arg-file-sep') opts.argFileSep = read
   return true
@@ -217,6 +241,7 @@ function readParallelOptions(
   from: number,
 ): [ParallelOptions, number] | number {
   const opts: ParallelOptions = {
+    seen: new Set(),
     quote: false,
     argFile: false,
     replaceStrings: [],

@@ -70,6 +70,12 @@ describe('find action clauses (CC-1223)', () => {
     ])
   })
 
+  it('skips both -fprintf values', () => {
+    expect(clausesOf(String.raw`find . -fprintf out -exec -exec tool \;`)).toEqual([
+      { action: '-exec', words: ['tool'], terminator: ';' },
+    ])
+  })
+
   it('finds no clause in a find that only prints', () => {
     expect(findClauses(argv("find . -type f -name '*.ts' -print"))).toEqual({ clauses: [] })
   })
@@ -185,8 +191,24 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     ['parallel --colsep , {1} {2} ::: tool,sub', 0],
     ['parallel -kX tool ::: sub --flag', 0],
     ['parallel --frobnicate tool ::: x', 0],
+    ["parallel --plus tool '{/a b/sub}' ::: 'a b'", 0],
+    ['parallel -k --tagstring "$T" tool ::: x', 1],
+    ['parallel --results "$R" tool ::: x', 0],
+    ['parallel --joblog="$J" tool ::: x', 0],
+    ['parallel --arg-sep AA --arg-sep BB tool BB x', 2],
+    ['parallel --arg-file-sep AA --arg-file-sep BB tool ::: x', 2],
+    ['parallel --arg-sep -k -k tool sub -k x', 0],
+    ["parallel --arg-sep '' tool ::: x", 0],
+    ['parallel -I % -I @ tool @ ::: x', 2],
+    ['parallel --quote=x tool ::: a', 0],
   ])('refuses an option it cannot read: %s', (line, at) => {
     expect(parallelOf(line)).toEqual({ unknownOption: at })
+  })
+
+  it('reads literal evaluated values and a repeated inert option', () => {
+    const call = parallel("parallel -j 2 -j 4 --tagstring '{}:' --results out tool ::: x")
+    expect(call.command.map(unmark)).toEqual(['tool'])
+    expect(call.inputs).toEqual({ kind: 'literal', groups: [['x']] })
   })
 
   it('reads a value it cannot see when the value decides nothing', () => {
