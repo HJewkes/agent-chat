@@ -783,3 +783,52 @@ describe('a slice PR against its owns at PR open (CC-669)', () => {
     expect(calls).toEqual([WORKTREE])
   })
 })
+
+describe('a protected path outside the owns (CC-1235)', () => {
+  const OWNED = 'src/agents/burndown/collision.ts'
+  const PROTECTED = 'src/__tests__/burndown-worktree-pools.test.ts'
+  const sliced = (patch: Partial<Claim> = {}): Claim => claim({ slice: 'a', owns: [OWNED], ...patch })
+  const refused = (file: string, extra: string[] = []): Observation => ({
+    agent: exited,
+    report: parseReport(`Status: DONE\nPR: ${PR}`),
+    owned: {
+      outside: [file, ...extra],
+      adjudicated: { kind: 'escalate', reason: `${file} is a protected path`, protectedPath: file },
+    },
+  })
+
+  it('parks once with outside-owns and names the plan owns line to widen', () => {
+    const { after } = step(sliced(), refused(PROTECTED))
+
+    expect(after).toEqual([
+      expect.objectContaining({
+        stallCode: 'outside-owns',
+        stalledReason: expect.stringContaining(
+          `widen the owns line of slice a in the plan to cover ${PROTECTED}`,
+        ),
+      }),
+    ])
+  })
+
+  it('writes nothing new on the next tick, whatever else the PR now touches', () => {
+    const { after } = step(sliced(), refused(PROTECTED))
+    const parked = after[0] as Claim
+
+    const next = advance([parked], new Map([[claimKey(parked), refused(PROTECTED, ['README.md'])]]), NOW)
+
+    expect(next).toEqual([])
+  })
+
+  it('keeps the amend for a non-protected outside path', () => {
+    const file = 'src/agents/burndown/ledger.ts'
+    const obs: Observation = {
+      ...refused(file),
+      owned: { outside: [file], adjudicated: { kind: 'amend', files: [file] } },
+    }
+
+    const { after } = step(sliced(), obs)
+
+    expect(after[0]?.ownsAmended).toEqual([file])
+    expect(after[0]?.stallCode).toBeUndefined()
+  })
+})

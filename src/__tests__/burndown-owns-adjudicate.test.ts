@@ -164,7 +164,7 @@ describe('an outside-owns PR that collides fails closed (test 22)', () => {
       expect(after.ownsAmended).toBeUndefined()
       expect(after.stallCode).toBe('outside-owns')
       expect(after.stalledReason).toMatch(
-        new RegExp(`outside its slice owns; not amended: ${escape(cause)}$`),
+        new RegExp(`outside its slice owns; not amended: ${escape(cause)}(;|$)`),
       )
     })
   }
@@ -186,7 +186,11 @@ describe('an outside-owns PR that collides fails closed (test 22)', () => {
 
     const verdict = adjudicateOutside([DOC, 'src/agents/x.ts'], { held: [], openPrs: () => prs })
 
-    expect(verdict).toEqual({ kind: 'escalate', reason: 'src/agents/x.ts is a protected path' })
+    expect(verdict).toEqual({
+      kind: 'escalate',
+      reason: 'src/agents/x.ts is a protected path',
+      protectedPath: 'src/agents/x.ts',
+    })
     expect(read).toEqual([])
   })
 })
@@ -216,7 +220,11 @@ describe('a protected file moved out of its tree', () => {
       const verdict = adjudicateOutside(outsideOwns(files, [OWNED]), { held: [], openPrs: () => [] })
 
       expect(files).toEqual(expect.arrayContaining(['scripts/merge-guard.sh', 'tools/helper.sh']))
-      expect(verdict).toEqual({ kind: 'escalate', reason: 'scripts/merge-guard.sh is a protected path' })
+      expect(verdict).toEqual({
+        kind: 'escalate',
+        reason: 'scripts/merge-guard.sh is a protected path',
+        protectedPath: 'scripts/merge-guard.sh',
+      })
     } finally {
       fs.rmSync(repo, { recursive: true, force: true })
     }
