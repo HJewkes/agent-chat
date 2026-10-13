@@ -343,9 +343,26 @@ describe('per_day_points', () => {
     expect(gate({ now, runStartAt, history: day(20, 35), sevenDay: 37 }).open).toBe(true)
   })
 
-  it('pauses when no reading at or before 07:00 exists, even with no run cap', () => {
+  it("stays open under the cap with no reading at or before 07:00, counting from the day's first (CC-1190)", () => {
     const budget = { ...SEAT_B, spend: {} }
     const history = [{ at: at(7, 1).getTime(), sevenDay: 30 }]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 31 }).open).toBe(true)
+  })
+
+  it("pauses at the cap counting from the day's first reading, naming the fallback", () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [
+      { at: at(8).getTime(), sevenDay: 20 },
+      { at: at(12).getTime(), sevenDay: 30 },
+    ]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 38 }).reason).toBe(
+      "BUDGET-PAUSE pool pool-y: day spend 18 points since 08:00 (first sample; none at or before 07:00) at or above the pool pool-y's per_day_points 18",
+    )
+  })
+
+  it('pauses when the only reading is the current one, so no earlier reading exists', () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [{ at: now.getTime(), sevenDay: 31 }]
     const result = gate({ budget, now, runStartAt, history, sevenDay: 31 })
     expect(result).toEqual({
       open: false,
