@@ -6,7 +6,7 @@ import { advance, applyActions } from '../agents/burndown/advance.js'
 import type { RunResult } from '../agents/burndown/exec.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
-import { claimPrReader, claimPrState, type RepoPull } from '../agents/burndown/pr-state.js'
+import { claimPrReader, claimPrState, readRepoPulls, type RepoPull } from '../agents/burndown/pr-state.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-1054: the tick finishes a claim whose PR merged, which seats released by hand; a claim with no PR stays put. */
@@ -35,6 +35,7 @@ const pull = (patch: Partial<RepoPull> = {}): RepoPull => ({
   number: 9,
   state: 'closed',
   mergedAt: '2026-10-11T11:00:00Z',
+  closedAt: '2026-10-11T11:00:00Z',
   branch: 'agent-chat/bd-cc-1-a',
   headSha: 'h9',
   ...patch,
@@ -253,17 +254,61 @@ describe('the tick settles a shepherding claim while Shepherd is unreadable (CC-
 })
 
 describe('claimPrState tells a closed PR from none (CC-1150)', () => {
-  const closed = pull({ state: 'closed', mergedAt: null })
+  const closed = pull({ state: 'closed', mergedAt: null, closedAt: '2026-10-12T09:30:00Z' })
 
-  it('reports a recorded PR closed unmerged as closed', () => {
+  it('reports a recorded PR closed unmerged as closed, with its close time (CC-1230)', () => {
     const found = claimPrState(claim({ pr: 'o/r#9' }), 'o/r', { pulls: [closed], complete: true })
 
+    expect(found).toEqual({ kind: 'closed', pr: 'o/r#9', at: '2026-10-12T09:30:00Z' })
+  })
+
+  it('omits the close time when GitHub gave none', () => {
+    const found = claimPrState(claim({ pr: 'o/r#9' }), 'o/r', {
+      pulls: [{ ...closed, closedAt: null }],
+      complete: true,
+    })
+
     expect(found).toEqual({ kind: 'closed', pr: 'o/r#9' })
+  })
+
+  it('leaves open and merged results without a close time', () => {
+    const open = pull({ state: 'open', mergedAt: null, closedAt: null })
+    const merged = pull({ closedAt: '2026-10-11T11:00:00Z' })
+
+    expect(claimPrState(claim({ pr: 'o/r#9' }), 'o/r', { pulls: [open], complete: true })).toEqual({
+      kind: 'open',
+      pr: 'o/r#9',
+    })
+    expect(claimPrState(claim({ pr: 'o/r#9' }), 'o/r', { pulls: [merged], complete: true })).toEqual({
+      kind: 'merged',
+      pr: 'o/r#9',
+      head: 'h9',
+    })
   })
 
   it('reports a branch-only closed pull as none', () => {
     const found = claimPrState(claim({ pr: undefined }), 'o/r', { pulls: [closed], complete: true })
 
     expect(found).toEqual({ kind: 'none' })
+  })
+})
+
+describe('readRepoPulls carries closed_at (CC-1230)', () => {
+  it('asks GitHub for closed_at and keeps it on the pull', () => {
+    const gh = fakeGh([pull({ state: 'closed', mergedAt: null, closedAt: '2026-10-12T09:30:00Z' })])
+
+    const read = readRepoPulls('o/r', gh.exec)
+
+    expect(gh.calls[0]).toContain(
+      '.[] | {number, state, mergedAt: .merged_at, closedAt: .closed_at, branch: .head.ref, headSha: .head.sha}',
+    )
+    expect(read?.pulls[0]?.closedAt).toBe('2026-10-12T09:30:00Z')
+  })
+
+  it('reads a pull without closed_at as null', () => {
+    const { closedAt: _omitted, ...open } = pull({ state: 'open', mergedAt: null })
+    const gh = { exec: (): RunResult => ({ status: 0, stdout: JSON.stringify(open) }) }
+
+    expect(readRepoPulls('o/r', gh.exec)?.pulls[0]?.closedAt).toBeNull()
   })
 })

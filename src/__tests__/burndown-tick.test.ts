@@ -3283,6 +3283,33 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
     expect(calls).toEqual([])
   })
 
+  it('leaves a landed parent open while a plan slice ran off-ledger with no claim (CC-1240)', async () => {
+    releasedParent()
+    const slices = ['a', 'b', 'c'].map(n => ({
+      n,
+      title: n,
+      dependsOn: [],
+      owns: [`${n}.ts`],
+      points: 1,
+      doneWhen: `${n} passes.`,
+    }))
+    write(
+      path.join(world, 'aw', 'demo', 'sources', 'DM-1-plan.md'),
+      `\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`,
+    )
+    const run = { ts: NOON.toISOString(), task: 'DM-1', agent: 'st-dm-1-c', outcome: 'dispatched' }
+    write(
+      path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy', 'logs', 'seat-t', 'dispatch.jsonl'),
+      `${JSON.stringify(run)}\n`,
+    )
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
   it('leaves a parent open while an open PR title names it', async () => {
     releasedParent()
     land('DM-1 a: first slice', 'DM-1 b: second slice')
