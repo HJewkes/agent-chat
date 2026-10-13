@@ -250,7 +250,7 @@
     },
     {
       "name": "chat_ask",
-      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. Set door: an ask without one is treated as one-way.",
+      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. Optional: header (<=80 chars); options as labels or {label, description}; default (a label); door (absent = one-way); category; initiative; blocking; reversible (how to undo); onNoAnswer.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -259,7 +259,6 @@
             "description": "The question, with enough context to answer it cold"
           },
           "kind": {
-            "description": "What sort of item this is, for grouping",
             "type": "string",
             "enum": [
               "decision",
@@ -273,11 +272,9 @@
             "type": "string"
           },
           "header": {
-            "description": "A one-line title for the queue, at most 80 characters",
             "type": "string"
           },
           "options": {
-            "description": "The choices, if the answer is one of a few: a label, or {label, description}",
             "type": "array",
             "items": {
               "anyOf": [
@@ -307,11 +304,9 @@
             "type": "string"
           },
           "default": {
-            "description": "The option taken if nobody answers; must be one of the labels",
             "type": "string"
           },
           "door": {
-            "description": "two-way if the answer is cheap to undo; absent is treated as one-way",
             "type": "string",
             "enum": [
               "one-way",
@@ -319,15 +314,12 @@
             ]
           },
           "category": {
-            "description": "Decision category, e.g. tech_design, scope_priority, merge_gate",
             "type": "string"
           },
           "initiative": {
-            "description": "The initiative slug the question belongs to",
             "type": "string"
           },
           "blocking": {
-            "description": "continue if you carry on meanwhile, parked if you stopped",
             "type": "string",
             "enum": [
               "continue",
@@ -335,11 +327,9 @@
             ]
           },
           "reversible": {
-            "description": "One line on how to undo the answer",
             "type": "string"
           },
           "onNoAnswer": {
-            "description": "What you will do if nobody answers, or \"parked\"",
             "type": "string"
           }
         },
