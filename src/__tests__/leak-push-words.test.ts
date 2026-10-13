@@ -39,6 +39,12 @@ describe('a git push word that is or may become --no-verify (CC-1285)', () => {
     'git push origin "$B:$C"',
     'git push -o "$X" -- origin main',
     'git push --repo "$R" -- origin main',
+    'git push "-o$X" -- --no-verify origin main',
+    'git push "-u$X" -- origin main',
+    'git push "--rep$X" -- origin main',
+    'git push "--push-opt$X" -- origin main',
+    'git push "--rec$X" -- origin main',
+    'git push "--exec$X" -- origin main',
   ])('cannot read %s', line => {
     expect(riskOf(line)).toBe('unreadable')
   })
@@ -49,6 +55,9 @@ describe('a git push word that is or may become --no-verify (CC-1285)', () => {
     'git push origin "HEAD:$B"',
     'git push origin "origin/$B"',
     'git push "--push-option=$X" origin main',
+    'git push "--repo=$R" -- origin main',
+    'git push "--push-opt=$X" -- --no-verify origin main',
+    'git push "-ox$X" -- --no-verify origin main',
     'git push origin -- "$V"',
     'git push origin -- $V',
     'git push -u -- origin "$B"',
