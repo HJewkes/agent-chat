@@ -636,6 +636,69 @@ describe('refusing to park what the removal would lose', () => {
     expect(fs.existsSync(path.join(agent.cwd, 'x.tsbuildinfo', '.env'))).toBe(true)
   })
 
+  it('parks a tree whose only ignored files are api-extractor output in a package dir', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const temp = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(temp, { recursive: true })
+    fs.writeFileSync(path.join(temp, 'x.api.md'), 'report\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('parks a tree whose only ignored files are a top-level .codewatch index', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.codewatch/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, '.codewatch'))
+    fs.writeFileSync(path.join(agent.cwd, '.codewatch', 'graph.db'), 'synthetic\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses an ignored .codewatch below the top, naming its file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.codewatch/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, 'src', '.codewatch'), { recursive: true })
+    fs.writeFileSync(path.join(agent.cwd, 'src', '.codewatch', 'x'), 'notes\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('src/.codewatch/x') })
+    expect(fs.existsSync(path.join(agent.cwd, 'src', '.codewatch', 'x'))).toBe(true)
+  })
+
+  it('refuses an ignored secrets file beside api-extractor and codewatch output', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\n.codewatch/\nsecrets.local\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, '.api-extractor-temp'))
+    fs.writeFileSync(path.join(agent.cwd, '.api-extractor-temp', 'x.api.md'), 'report\n')
+    fs.mkdirSync(path.join(agent.cwd, '.codewatch'))
+    fs.writeFileSync(path.join(agent.cwd, '.codewatch', 'graph.db'), 'synthetic\n')
+    fs.writeFileSync(path.join(agent.cwd, 'secrets.local'), 'TOKEN=synthetic\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/\(secrets\.local\); .*top-level \.claude, \.codewatch/),
+    })
+    expect(fs.existsSync(path.join(agent.cwd, 'secrets.local'))).toBe(true)
+  })
+
   it('parks a tree whose only ignored files are regenerable', async () => {
     const agent = await spawnIn('worker-a', makeRepo())
     fs.writeFileSync(path.join(agent.cwd, '.gitignore'), 'node_modules/\ndist/\n')
