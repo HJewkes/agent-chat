@@ -150,9 +150,12 @@ export const reportKindOf = (text: string): ReportKind | undefined =>
 /** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
 export const isReport = (text: string): boolean => reportKindOf(text) !== undefined
 
-/** A report that says the sender is finished: a closing return-contract status, or any `Verdict:` (CC-321). */
+/**
+ * A report that says the sender is finished: a closing return-contract status or a
+ * verdict (CC-321). The word must end the token, so `DONE-ish` and `MERGE_LATER` are not (CC-337).
+ */
 const TERMINAL_OPENING =
-  /^[\s*_`#>]*(verdict[*_`]*\s*:|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context)\b)/i
+  /^[\s*_`#>]*(verdict[*_`]*\s*:[\s*_`]*(merge|fix_first|wait|approve|changes|request_changes|revise|reject|blocked)|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context))(?![\w-])/i
 
 /** Whether a message is its sender's last word; `Status: IN PROGRESS` is a report and is not this. */
 export const isTerminalReport = (text: string): boolean => TERMINAL_OPENING.test(text)
