@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { resolvePoolPickMode } from '../../config.js'
 import { readAccountBudget } from '../budget.js'
-import { loadDoc, readTextIfPresent } from '../seats/io.js'
+import { loadDoc } from '../seats/io.js'
 import { readPace } from '../seats/pace-file.js'
 import { pickPool, poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
 import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
@@ -35,16 +35,9 @@ import type { Action } from './advance.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { diskPathExists } from './slice-repo.js'
-import {
-  parseFunds,
-  parsePools,
-  parseSeat,
-  seatInitiatives,
-  seatPools,
-  type FundsMap,
-} from '../seats/charter.js'
-import { dispatchLogPath } from '../seats/dispatch-log.js'
-import { foldDispatch } from '../seats/dispatch-record.js'
+import { parseFunds, parsePools, seatInitiatives, seatPools, type FundsMap } from '../seats/charter.js'
+import { run } from './exec.js'
+import { branchPrReader, offLedgerRunsIn, seatDispatchRecords } from './off-ledger-adopt.js'
 import { diskPlanReader, sliceRunsIn, type SliceRuns } from './seed-slices.js'
 import { readPriorRouter } from './prior-route.js'
 import { backlogIds, planSectionIds, seatScopeOf, type SeatScope } from './seat-scope.js'
@@ -454,30 +447,23 @@ function fundedRows(seat: LoadedSeat, rows: ScoreRow[]): { rows: ScoreRow[]; unf
 
 /**
  * CC-1121 b: the seat's dispatch log as slice runs. A seat with no log yet ran none; a log that
- * cannot be read names none either, so seeding fails open with a note.
+ * cannot be read names none either, so seeding fails open with a note. CC-1233: each run carries
+ * its branch PR, read from GitHub across the seat's checkouts only when the task is seeded.
  */
 function sliceRunsOf(seat: LoadedSeat): { sliceRuns: SliceRuns; note?: string } {
-  const { seat: name, prefix } = seat.dispatch
+  const { seat: name, prefix, repos } = seat.dispatch
   const none = { sliceRuns: () => [] }
   if (seat.autonomyRoot === undefined) return none
   try {
-    const log = readSeatLog(seat.autonomyRoot, name)
-    if (log === undefined) return none
-    const { records } = foldDispatch(log)
-    return { sliceRuns: taskId => sliceRunsIn(records, taskId, prefix) }
+    const records = seatDispatchRecords(seat.autonomyRoot, name)
+    if (records === undefined) return none
+    const prOf = branchPrReader(Object.values(repos).flat(), run)
+    return {
+      sliceRuns: taskId => offLedgerRunsIn(records, sliceRunsIn(records, taskId, prefix), prOf),
+    }
   } catch (err) {
     return { ...none, note: `slice runs unread for seat ${name}: ${message(err)}` }
   }
-}
-
-/** The seat's dispatch log text, undefined when it does not exist yet; any other fault throws. */
-function readSeatLog(root: string, name: string): string | undefined {
-  const text = readTextIfPresent(path.join(root, 'seats', `${name}.md`))
-  const parsed = text === undefined ? undefined : parseSeat(name, text)
-  if (text === undefined || parsed === undefined) throw new Error(`${name} is not a seat`)
-  const file = dispatchLogPath(root, { seat: parsed, text })
-  if (file === undefined) throw new Error(`${name} dispatch_log resolves outside the root`)
-  return readTextIfPresent(file)
 }
 
 /**

@@ -771,6 +771,7 @@ function seedFromPlan(
   )
   for (const warning of seeding.warnings)
     walk.notes.push(`slice-lint ${row.initiative} ${row.id}: ${warning}`)
+  walk.notes.push(...seeding.notes)
   return { seeds: seeding.claims }
 }
 
