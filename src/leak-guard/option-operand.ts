@@ -159,12 +159,13 @@ function opensBraceExpansion(marked: string): boolean {
  * and splits it on `ifs` (the line's IFS when it sets one): an expansion that may inject one, or
  * text that starts the word or follows an expansion and starts with `-` or a glob. After a `$` form
  * it does not know, a `-` or glob anywhere in the text that follows counts. A brace expansion makes
- * each alternative a copy of the word around it, so with an expansion beside it any `-` counts.
+ * each alternative a copy of the word around it, and a zsh range such as `{+../}` makes a `-` of its own,
+ * so with an expansion beside it the word denies.
  */
 export function operandMaySpellOption(marked: string, ifs = DEFAULT_IFS): boolean {
   const parts = segments(marked, ifs)
   if (parts.length === 1) return false
-  if (marked.includes('-') && opensBraceExpansion(marked)) return true
+  if (opensBraceExpansion(marked)) return true
   return parts.some((part, index) => {
     if (!('text' in part)) return part.unsafe
     if (index === 0) return WORD_START.test(part.text) && !OPTION_WITH_VALUE.test(part.text)
