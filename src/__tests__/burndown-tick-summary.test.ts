@@ -106,6 +106,7 @@ describe('the tick summary row', () => {
       refusals: { untriaged: 1, 'role-cap': 2, 'plan-blocked': 1 },
       roles: { used: { implementers: 1, reviewers: 1, planners: 0 }, cap: CAPS },
       registrations: { ok: 1, refused: 1, failed: 0 },
+      binding: null,
     })
   })
 
