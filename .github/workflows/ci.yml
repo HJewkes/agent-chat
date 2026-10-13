@@ -37,6 +37,10 @@ jobs:
   # A merge gate behind the pre-push hook `prepare` installs. CI has no private term list.
   egress-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lists earlier main runs to find the last one that succeeded.
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,10 +49,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
+      # A superseded queued main run never scans its commits, so a main push scans
+      # from the last successful main run, not from the previous tip.
+      - name: Find the last scanned main commit
+        id: base
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=30" --jq '.workflow_runs')
+          echo "sha=$(node scripts/ci/egress-base.mjs "$BEFORE_SHA" "$GITHUB_SHA" <<<"$runs")" >> "$GITHUB_OUTPUT"
       # The PR head sha, not the merge ref, so GitHub's synthetic merge commit is not scanned.
       - name: Scan the pushed commits
         env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: npx --yes @titan-design/egress-scan@0.1.0 range "$BASE_SHA" "$HEAD_SHA"
 
