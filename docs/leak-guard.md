@@ -362,6 +362,16 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                               | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
 
+For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
+denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
+or `.agent-chat/burndown.config.json`, and of the same names under a relocated `AGENT_CHAT_HOME`.
+An edit tool writing to any of them is denied the same way. Rewriting a profile would let a worker
+drop its own denies. The launch plan sets `AGENT_CHAT_ROLE` from the profile's role; the
+`AGENT_CHAT_` prefix keeps a profile's `env` from setting it, and a plan without it counts as a
+worker. This is a speed bump like the rest: `cd ~/.agent-chat && cat > profiles/x.json` names
+neither fragment. Worker reads such as `cat ~/.agent-chat/profiles/x.json` are denied too; use
+`agent_profiles` instead.
+
 A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
 if either reading is. As a zsh glob group, its balanced span (nesting, quotes, `$'...'` and escapes
 honoured) is one non-literal word, so the git option rules deny it before the subcommand and, after
