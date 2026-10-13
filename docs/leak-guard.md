@@ -556,9 +556,11 @@ not track the order, so a batch option beside `-I` counts as appending too. An x
 replace string the guard cannot read (an expansion such as `"$X"`, which may be `-I--`) counts as
 filling every word and appending. An unknown long option denies. An xargs whose command word, or a
 wrapper option such as `env -u` or `nice -n`, comes from its input denies (`xargs nice`,
-`xargs -I% %`, `xargs -I% env -u% git push origin --`). A `sh -c` script under xargs is read with
-the replace string swapped in place, so `xargs -I{} sh -c 'git push origin {} --no-verify'`
-denies. Reads such as `xargs git log`, `ls | xargs git add`, `xargs git status` and
+`xargs -I% %`, `xargs -I% env -u% git push origin --`). In a `sh -c` script under xargs, only
+two spellings of the words xargs adds are read: the replace string, swapped in place, so
+`xargs -I{} sh -c 'git push origin {} --no-verify'` denies, and `"$@"`, so
+`xargs sh -c 'git push origin "$@"' _` denies as a fed push. A script that reads them through
+`$0` to `$9` or `$*` is not checked (CC-1201; see "Not covered" below). Reads such as `xargs git log`, `ls | xargs git add`, `xargs git status` and
 `xargs gh pr view` stay allowed.
 
 ### gh-write scans when it runs (CC-501 S1)
@@ -1246,6 +1248,10 @@ Not covered, by design or by cost:
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
   when the command line names `git` or `gh`, so text set in an earlier tool call gets through;
+- a `sh -c` script that reads its arguments through `$0` to `$9` or `$*`, with or without xargs
+  (CC-1201): `xargs sh -c 'git push origin $0'`, `xargs sh -c 'git push origin "$1"' _` and
+  `sh -c 'git push origin $0' --no-verify` all pass. So do `xargs -I{} sh -c '{}'`, whose whole
+  script is the replace word, and a bare `xargs sh -c`, whose script comes from stdin;
 - a command word that is an expansion, when the group or verb after it is one too (`$G pr $V`);
 - text in a place the guard does not scan: the query string of a `gh api` path
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
