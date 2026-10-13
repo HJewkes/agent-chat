@@ -263,7 +263,12 @@ describe('git and gh fed words by xargs (CC-1117)', () => {
 })
 
 describe('a git alias keeps the marks of the words around it (CC-1117)', () => {
-  const ALIASES: Record<string, string> = { cfg: 'config', p: 'push' }
+  const ALIASES: Record<string, string> = {
+    cfg: 'config',
+    p: 'push',
+    sp: '!git push',
+    shp: '!sh -c "git push $0"',
+  }
   const aliased: GuardContext = {
     ...ctx,
     readAlias: word => (word in ALIASES ? { value: ALIASES[word] as string, runsIn: '/work' } : undefined),
@@ -280,7 +285,20 @@ describe('a git alias keeps the marks of the words around it (CC-1117)', () => {
     expect(checkCommand('xargs git p origin', aliased)).toBe(REASONS.xargsPush)
   })
 
-  it.each(['git cfg --get user.name', 'git p origin main', 'xargs git p origin --'])('allows %s', command => {
-    expect(checkCommand(command, aliased)).toBeUndefined()
+  it.each([
+    'xargs git sp',
+    'xargs -I% git sp %',
+    `printf '%s\\n' --no-verify origin HEAD:x | xargs git sp`,
+    'xargs git shp',
+    'git sp $X',
+  ])('denies a ! alias that takes unreadable words: %s', command => {
+    expect(checkCommand(command, aliased)).toBe(REASONS.aliasQuotedArgs)
   })
+
+  it.each(['git cfg --get user.name', 'git p origin main', 'xargs git p origin --', 'git sp origin main'])(
+    'allows %s',
+    command => {
+      expect(checkCommand(command, aliased)).toBeUndefined()
+    },
+  )
 })
