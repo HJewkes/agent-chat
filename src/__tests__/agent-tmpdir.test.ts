@@ -16,6 +16,7 @@ import {
   type TmpStat,
 } from '../agents/agent-tmpdir.js'
 import { SWEEP_GRACE_MS } from '../agents/orphan-reap.js'
+import { agentTmpSweepRoots } from '../agents/orphan-sweep.js'
 
 const UID = 1000
 
@@ -615,6 +616,23 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     })
 
     expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
+  })
+
+  it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', () => {
+    const dir = `${DISK_ROOT}/ac-seat-a-impl-4242`
+    const fs = new FakeFs().add(DISK_ROOT).add(dir)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'seat-a-impl', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([dir])
+    expect(events).toContainEqual(['tmpdir_removed', expect.objectContaining({ source: 'sweep', path: dir })])
   })
 
   it('skips a root that does not exist', () => {

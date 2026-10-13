@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, isTerminalReport, reportKindOf } from '../broker/event-log.js'
 
 const dirs: string[] = []
 
@@ -249,5 +249,52 @@ describe('history', () => {
     log.append({ kind: 'route_failed', actor: 'alice', target: 'dave', body: 'no active session' })
 
     expect(log.history(10).map(i => i.kind)).toEqual(['message', 'route_failed'])
+  })
+})
+
+describe('which openings are reports (CC-266, CC-763)', () => {
+  it.each([
+    ['Status: IN PROGRESS', 'status'],
+    ['**Status:** DONE', 'status'],
+    ['> `Verdict`: MERGE', 'verdict'],
+    ['  ## VERDICT : FIX_FIRST', 'verdict'],
+  ])('reads %j as a %s report', (text, kind) => {
+    expect(reportKindOf(text)).toBe(kind)
+  })
+
+  it.each(['The status: DONE', 'Statuses: DONE', 'Status DONE', 'x Verdict: MERGE'])(
+    'reads %j as no report',
+    text => {
+      expect(reportKindOf(text)).toBeUndefined()
+    },
+  )
+})
+
+describe("which reports are the sender's last word (CC-321, CC-337)", () => {
+  it.each([
+    'Status: DONE',
+    '**Status:** DONE_WITH_CONCERNS',
+    'Status: BLOCKED on review',
+    'Status: NEEDS_CONTEXT',
+    'Verdict: MERGE',
+    '**Verdict:** FIX_FIRST',
+    'Verdict: WAIT',
+    'Verdict: APPROVE',
+    'Verdict: CHANGES',
+    'verdict: merge\nPR: x',
+  ])('counts %j as terminal', text => {
+    expect(isTerminalReport(text)).toBe(true)
+  })
+
+  it.each([
+    'Status: IN PROGRESS',
+    'Status: DONE-ish',
+    'Status: DONEISH',
+    'Verdict: pending',
+    'Verdict: MERGE-ish',
+    'Verdict:',
+    'Status: working, DONE soon',
+  ])('does not count %j as terminal', text => {
+    expect(isTerminalReport(text)).toBe(false)
   })
 })
