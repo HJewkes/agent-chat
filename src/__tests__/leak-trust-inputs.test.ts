@@ -89,6 +89,27 @@ describe('git init and clone --template (TP-2376)', () => {
   it('reads an ambiguous prefix on clone as an unmatched option', () => {
     expect(templateOption('clone', args('--t=/t', 'https://github.com/o/r'))).toBe('option')
   })
+
+  // git init and clone read options anywhere, so an unread word may be `--template=<dir>`.
+  it.each([
+    ['init', ['$X', 'r']],
+    ['init', ['r', '$X']],
+    ['clone', ['https://github.com/o/r', '$D']],
+  ] as const)('git %s %j with an unread word before -- is an unmatched option', (sub, words) => {
+    expect(templateOption(sub, args(...words))).toBe('option')
+  })
+
+  it.each([
+    ['init', ['--', '$X']],
+    ['init', ['-b', '$B', 'r']],
+    ['clone', ['--', 'https://github.com/o/r', '$D']],
+  ] as const)('git %s %j with unread words only after -- or as a value takes none', (sub, words) => {
+    expect(templateOption(sub, args(...words))).toBe(false)
+  })
+
+  it('reads options after a -- that is an option value', () => {
+    expect(templateOption('init', args('-b', '--', '--template=/t', 'r'))).toBe(true)
+  })
 })
 
 describe('git --exec-path (TP-2376)', () => {

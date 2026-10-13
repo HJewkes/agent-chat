@@ -70,11 +70,14 @@ export const INIT_OPTIONS = optionSpec(
 /**
  * Whether `git init` or `git clone`, given its words after the subcommand, takes a template from a
  * directory: true for `--template` (any unique prefix) with a non-empty or unread value, `option`
- * when an option is one the guard cannot match. An empty value and `--no-template` use none.
+ * when an option is one the guard cannot match or a word before `--` that is no option's value is
+ * unread: both commands read options anywhere, so that word may be `--template=<dir>`. An empty
+ * value and `--no-template` use none.
  */
 export function templateOption(sub: 'init' | 'clone', args: SubArgs): boolean | 'option' {
   const parsed = parseOptions(args, sub === 'init' ? INIT_OPTIONS : CLONE_OPTIONS)
-  if (parsed === undefined) return 'option'
+  if (parsed === undefined || parsed.positionals.slice(0, parsed.beforeDashDash).includes(undefined))
+    return 'option'
   if (isSet(parsed, 'help') || !parsed.options.has('template')) return false
   const value = parsed.options.get('template')
   return value === undefined || (typeof value === 'string' && value !== '')

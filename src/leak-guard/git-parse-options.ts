@@ -64,10 +64,11 @@ export interface SubArgs {
  */
 export type OptionValue = boolean | string | undefined
 
-/** The final state of each option a call names, and its other words in order. */
+/** The final state of each option a call names, its other words in order, and how many came before an ending `--`. */
 export interface ParsedArgs {
   options: Map<string, OptionValue>
   positionals: (string | undefined)[]
+  beforeDashDash: number
 }
 
 /** Whether an option ends set: given, not cancelled by a later `--no-` form. */
@@ -140,7 +141,7 @@ export function parseOptions(
   spec: OptionSpec,
   end: OptionsEnd = ANYWHERE,
 ): ParsedArgs | undefined {
-  const parsed: ParsedArgs = { options: new Map(), positionals: [] }
+  const parsed: ParsedArgs = { options: new Map(), positionals: [], beforeDashDash: Infinity }
   let ended = false
   for (let i = 0; i < args.resolved.length;) {
     const word = args.resolved[i]
@@ -153,6 +154,7 @@ export function parseOptions(
     const text = word ?? args.written[i] ?? ''
     if (text === '--') {
       ended = end.atDashDash
+      if (ended) parsed.beforeDashDash = parsed.positionals.length
       i++
       continue
     }
@@ -163,5 +165,6 @@ export function parseOptions(
     if (taken === undefined) return undefined
     i += taken
   }
+  parsed.beforeDashDash = Math.min(parsed.beforeDashDash, parsed.positionals.length)
   return parsed
 }
