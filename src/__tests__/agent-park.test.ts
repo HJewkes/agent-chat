@@ -701,11 +701,18 @@ describe('refusing to park what the removal would lose', () => {
       db.exec("INSERT INTO snapshot (commit_hash) VALUES ('abc')")
       db.exec('CREATE TABLE verdict (snapshot_id INTEGER, key TEXT, verdict TEXT, cost_usd REAL)')
       for (let i = 0; i < verdicts; i++) db.exec(`INSERT INTO verdict VALUES (1, 'k${i}', 'confirmed', 0.02)`)
+      db.exec('CREATE TABLE blob_cache (namespace TEXT, key TEXT, value BLOB)')
       db.close()
       return file
     }
 
-    it('parks a tree whose only ignored file is a graph index with no triage verdicts', async () => {
+    function addRow(file: string, sql: string): void {
+      const db = new DatabaseSync(file)
+      db.exec(sql)
+      db.close()
+    }
+
+    it('parks a tree whose only ignored file is a graph index with no paid output', async () => {
       const agent = await withCodewatchIgnored()
       writeGraphDb(agent.cwd, 0)
       await exit(agent)
@@ -717,6 +724,30 @@ describe('refusing to park what the removal would lose', () => {
     it('refuses a graph index holding a triage verdict, naming it', async () => {
       const agent = await withCodewatchIgnored()
       const db = writeGraphDb(agent.cwd, 1)
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a graph index holding a cached area summary, naming it', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 0)
+      addRow(db, "INSERT INTO blob_cache VALUES ('code-graph/community-summary', 'area-1', 'summary')")
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a graph index with rows in a table re-indexing does not rebuild', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 0)
+      addRow(db, "CREATE TABLE future_paid (x TEXT); INSERT INTO future_paid VALUES ('paid')")
       await exit(agent)
 
       const parked = await sup.park('worker-a')

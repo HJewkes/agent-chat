@@ -267,19 +267,43 @@ const isRegenerable = (entry: string): boolean => {
 const CODEWATCH_INDEX = '.codewatch/graph.db'
 const CODEWATCH_INDEX_FILES = ['', '-wal', '-shm', '-journal'].map(suffix => CODEWATCH_INDEX + suffix)
 
-const hasTable = (db: DatabaseSyncType, name: string): boolean =>
-  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+/** Tables re-indexing rebuilds: the code-graph index and store-sqlite's migration ledger. */
+const REBUILT_GRAPH_TABLES = [
+  '_migration',
+  'snapshot',
+  'node',
+  'edge',
+  'metric',
+  'id_alias',
+  'file_fingerprint',
+  'finding',
+]
+
+const tableNames = (db: DatabaseSyncType): string[] =>
+  (
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+      )
+      .all() as { name: string }[]
+  ).map(row => row.name)
+
+const hasRows = (db: DatabaseSyncType, table: string): boolean =>
+  db.prepare(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`).get() !== undefined
 
 /**
- * CC-1163: the index re-indexing rebuilds, but its `verdict` table holds paid triage that it does not, so
- * only a code-graph db (it has a `snapshot` table) with no verdict rows counts. Any failure to read refuses.
+ * CC-1163: re-indexing rebuilds the code-graph tables, but not paid output such as triage `verdict` rows or
+ * LLM summaries in `blob_cache`. So only a code-graph db (it has a `snapshot` table) whose every other table is
+ * empty counts; an unknown table with rows is kept. Any failure to read refuses.
  */
 function indexOnlyGraphDb(worktree: string): boolean {
   let db: DatabaseSyncType | undefined
   try {
     db = new DatabaseSync(join(worktree, CODEWATCH_INDEX), { readOnly: true })
-    if (!hasTable(db, 'snapshot')) return false
-    return !hasTable(db, 'verdict') || db.prepare('SELECT 1 FROM verdict LIMIT 1').get() === undefined
+    const open = db
+    const tables = tableNames(open)
+    if (!tables.includes('snapshot')) return false
+    return tables.every(table => REBUILT_GRAPH_TABLES.includes(table) || !hasRows(open, table))
   } catch {
     return false
   } finally {
