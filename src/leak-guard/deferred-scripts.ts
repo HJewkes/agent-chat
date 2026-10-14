@@ -56,9 +56,17 @@ export function trapActions(words: readonly string[]): string[] {
 const hasFlag = (options: string[], flag: string): boolean =>
   options.some(option => option.startsWith('-') && option.includes(flag))
 
+/** An operand whose expansion may hold the `=` that splits name from value, so the shell may define anything. */
+function hiddenDefinition(word: string): AliasDefinition | undefined {
+  const eq = word.indexOf('=')
+  if (!isLive(eq < 0 ? word : word.slice(0, eq))) return undefined
+  return { name: word, value: word, global: true, suffix: true, blank: true }
+}
+
 /**
  * The definitions an `alias` makes, in bash or zsh, skipping the bare names it prints. `-g` and `-s` mark
- * them global or suffix. A first operand the shell expands might be either flag, so it marks them both.
+ * them global or suffix. A first operand the shell expands might be either flag, so it marks them both,
+ * and an operand that may expand to a definition is returned whole, as its own name and value.
  */
 export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
   if (unmark(words[0] ?? '') !== 'alias') return []
@@ -68,6 +76,8 @@ export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
   const global = unsure || hasFlag(options, 'g')
   const suffix = unsure || hasFlag(options, 's')
   return operands.flatMap(word => {
+    const hidden = hiddenDefinition(word)
+    if (hidden !== undefined) return [hidden]
     const eq = word.indexOf('=')
     if (eq < 0) return []
     const value = word.slice(eq + 1)

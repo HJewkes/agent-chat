@@ -77,8 +77,26 @@ describe('aliasDefinitions', () => {
   })
 
   it('marks a definition global and suffix after a first operand the shell expands', () => {
-    const [definition] = aliasDefinitions(markedOf('alias $G X=push'))
-    expect(definition).toMatchObject({ name: 'X', value: 'push', global: true, suffix: true })
+    const definitions = aliasDefinitions(markedOf('alias $G X=push'))
+    expect(definitions[1]).toMatchObject({ name: 'X', value: 'push', global: true, suffix: true })
+  })
+
+  const hidden = (word: string) => ({ name: word, value: word, global: true, suffix: true, blank: true })
+
+  it.each([
+    ['alias "$D"', [hidden(`${LIVE}$D`)]],
+    [
+      'alias $G X=push',
+      [hidden(`${LIVE}$G`), { ...plain, name: 'X', value: 'push', global: true, suffix: true }],
+    ],
+    ['alias ll=ls "$D"', [{ ...plain, name: 'll', value: 'ls' }, hidden(`${LIVE}$D`)]],
+    ['alias $N=ls', [hidden(`${LIVE}$N=ls`)]],
+  ])('%s returns an operand that may expand to a definition whole', (line, definitions) => {
+    expect(aliasDefinitions(markedOf(line))).toEqual(definitions)
+  })
+
+  it('returns nothing for a plain bare name given marked words', () => {
+    expect(aliasDefinitions(markedOf('alias ll'))).toEqual([])
   })
 
   it('keeps the mark on a value the shell expands', () => {
