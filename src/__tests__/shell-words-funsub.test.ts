@@ -40,6 +40,32 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBeUndefined()
   })
 
+  // bash 5.3.9 runs the push in each of these; a missed `{` closed the funsub at the group's `}`.
+  it.each([
+    'echo "${ if true; then { :; }; fi; git push --no-verify; }"',
+    'echo "${ until false; do { :; }; break; done; git push --no-verify; }"',
+    'echo "${ while true; do { :; }; break; done; git push --no-verify; }"',
+    'echo "${ if false; then :; else { :; }; fi; git push --no-verify; }"',
+    'echo "${ if false; then :; elif { :; }; then :; fi; git push --no-verify; }"',
+    'echo "${ if { :; }; then :; fi; git push --no-verify; }"',
+    'echo "${ ! { :; }; git push --no-verify; }"',
+    'echo "${ time { :; }; git push --no-verify; }"',
+    'echo "${ time -p { :; }; git push --no-verify; }"',
+    'echo "${ coproc { :; }; git push --no-verify; }"',
+    'echo "${ coproc N { :; }; git push --no-verify; }"',
+    'echo "${ { { :; }; }; git push --no-verify; }"',
+    'echo "${|if true; then { :; }; fi; git push --no-verify; }"',
+    'echo ${ if true; then { :; }; fi; git push --no-verify; }',
+    'echo "${ case x in\n}) ;; esac; git push --no-verify; }"',
+    'echo "${ case x in\n(}) ;; esac; git push --no-verify; }"',
+  ])('%j reads the group and closes only at the last }', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(true)
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {

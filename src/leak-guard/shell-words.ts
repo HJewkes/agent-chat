@@ -260,13 +260,16 @@ class ShellLexer {
   /**
    * In a funsub, counts `{ }` groups and closes at the `}` that ends none. bash closes only at a `}` in
    * command position; zsh also at a `}` argument, so one makes the line unreadable rather than guessed.
+   * A `{` word opens a group after any reserved word (`then {`, `time -p {`, `coproc N {`), so every one
+   * is counted: a stray count reads on past the close and ends unreadable, where a missed one closes early.
    */
   private braceWord(c: string): boolean {
-    if (!this.closesOnBrace || this.word !== null || (c !== '{' && c !== '}')) return false
+    if (!this.closesOnBrace || this.word !== null || this.patternNext) return false
+    if (c !== '{' && c !== '}') return false
     const next = this.src[this.pos + 1]
     const command = this.cur.words.length === 0
     if (c === '{') {
-      if (command && next !== undefined && ' \t\n'.includes(next)) this.braceDepth++
+      if (next !== undefined && ' \t\n'.includes(next)) this.braceDepth++
       return false
     }
     if (command && this.braceDepth === 0) {
