@@ -1,8 +1,8 @@
 /**
  * A best-effort POSIX shell word splitter for the PreToolUse guard (CC-270). It is not a shell:
- * it splits simple commands, removes quotes, and reads heredocs and command substitutions,
- * which is enough to see what an ordinary command line runs. Anything it misreads is a gap
- * in a speed bump, never a boundary; see docs/leak-guard.md.
+ * it splits simple commands, removes quotes, and reads heredocs, command substitutions and
+ * bash 5.3's `${ cmd;}` / `${|cmd;}` (funsub), which is enough to see what an ordinary command
+ * line runs. Anything it misreads is a gap in a speed bump, never a boundary; see docs/leak-guard.md.
  */
 
 /** Precedes each `$`, leading `~`, glob character and substitution the shell would expand in a marked word. */
@@ -10,7 +10,7 @@ export const LIVE = '\0'
 
 export const unmark = (word: string): string => word.replaceAll(LIVE, '')
 
-/** One `$(...)` or backtick pair: its source text and the commands inside it. */
+/** One `$(...)`, backtick pair or funsub: its source text and the commands inside it. */
 export interface Substitution {
   raw: string
   commands: SimpleCommand[]
@@ -65,7 +65,7 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
-const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
+const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>', '&>', '&>>'])
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -112,6 +112,97 @@ function nestedClose(src: string, start: number): number {
   return -1
 }
 
+/** `at`, moved past any backslash-newline, which bash removes before it reads tokens. */
+function unjoinAt(src: string, at: number): number {
+  while (src.startsWith('\\\n', at)) at += 2
+  return at
+}
+
+/** The index after the `n` characters from `at` as bash reads them. */
+function skipChars(src: string, at: number, n: number): number {
+  for (let i = 0; i < n; i++) at = unjoinAt(src, unjoinAt(src, at) + 1)
+  return at
+}
+
+/** Where the body of a funsub opening at `at` starts: `${` and a blank, tab or newline, or `${|`. */
+function funsubBody(src: string, at: number): number | undefined {
+  const brace = unjoinAt(src, at + 1)
+  if (src[at] !== '$' || src[brace] !== '{') return undefined
+  const open = unjoinAt(src, brace + 1)
+  const c = src[open] ?? ''
+  if (c === '|') return open + 1
+  return c !== '' && ' \t\n'.includes(c) ? open : undefined
+}
+
+// What a `(` starts: only in a subshell can `{` and `}` still be reserved words.
+type ParenKind = 'subshell' | 'function' | 'header' | 'arith' | 'text'
+
+/** bash's reserved words, each mapped to whether a command may start after it, as after `then`. */
+const RESERVED = new Map<string, boolean>([
+  ...['if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time', '!', '{', 'coproc'].map(
+    w => [w, true] as const,
+  ),
+  ...['fi', 'done', 'esac', '}', '[[', ']]', 'case', 'for', 'select', 'function', 'in'].map(
+    w => [w, false] as const,
+  ),
+])
+
+/**
+ * A token as bash's parser records it in last_read_token: a reserved word or operator by its text,
+ * `\n`, `(`, `)`, or one of the names below; undefined is the start of a command list (token 0).
+ */
+type Token = string | undefined
+const WORD = 'WORD'
+const ASSIGNMENT_WORD = 'ASSIGNMENT_WORD'
+// `-p` and `--` right after `time`, and `--` after `time -p` (parse.y 3471-3481).
+const TIMEOPT = 'TIMEOPT'
+const TIMEIGN = 'TIMEIGN'
+// The `))` that ends `(( ))` and the one that ends `for (( ))`.
+const ARITH_CMD = 'ARITH_CMD'
+const ARITH_FOR_EXPRS = 'ARITH_FOR_EXPRS'
+// Operators the reader lexes as one token, longest first.
+const OPERATOR_TOKENS = [';;&', ';;', ';&', '&&', '||', '|&']
+const CASE_ENDS = new Set<Token>([';;', ';&', ';;&'])
+
+/**
+ * The tokens after which bash 5.3 recognises a reserved word: reserved_word_acceptable, parse.y 5896-5947.
+ * undefined stands for token 0 and for the DOLPAREN or DOLBRACE that opens a substitution's body.
+ */
+const RESERVED_ACCEPTABLE = new Set<Token>([
+  ...['\n', ';', '(', ')', '|', '&', '{', '}', '&&', ARITH_CMD, '!', '|&', ']]', 'do', 'done'],
+  ...['elif', 'else', 'esac', 'fi', 'if', '||', ';;', ';&', ';;&', 'then', 'time', TIMEOPT],
+  ...[TIMEIGN, 'coproc', 'until', 'while', undefined],
+])
+
+function reservedWordAcceptable(last: Token, before: Token): boolean {
+  if (RESERVED_ACCEPTABLE.has(last)) return true
+  // The default case: the NAME of `coproc NAME` and of `function NAME`, a WORD and never an assignment.
+  return last === WORD && (before === 'coproc' || before === 'function')
+}
+
+/** The tokens after which bash 5.3 reads `time` as reserved: time_command_acceptable, parse.y 3285-3337. */
+const TIME_ACCEPTABLE = new Set<Token>([
+  ...['&&', '||', '&', 'while', 'do', 'until', 'if', 'then', 'elif', 'else', '{', '(', ')', '!'],
+  ...['time', TIMEOPT, TIMEIGN],
+])
+
+function timeCommandAcceptable(last: Token, before: Token): boolean {
+  // Token 0, `;` and a newline, unless they follow a `|`.
+  if (last === undefined || last === ';' || last === '\n') return before !== '|'
+  return TIME_ACCEPTABLE.has(last)
+}
+
+// bash's assignment(): a name, an optional subscript, then `=` or `+=`, all before any quote.
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
+
+/** The reserved words after whose next word an `in` is reserved, and for `for` and `select` a `do`. */
+type Header = 'case' | 'for' | 'select'
+const isHeader = (token: string | undefined): token is Header =>
+  token === 'case' || token === 'for' || token === 'select'
+
+// A `{` or `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
+const METACHAR = /[ \t\n;&|()<>]/
+
 function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
   if (UNREADABLE_BRACED.test(text)) return 'unreadable'
   const close = nestedClose(src, start)
@@ -121,8 +212,6 @@ function bracedRisk(src: string, start: number, text: string): ExpansionRisk | u
 
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
-// Words after which a `(` still starts a command.
-const COMMAND_PREFIX = new Set(['{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 // gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
@@ -189,6 +278,42 @@ class ShellLexer {
   private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
+  /** Reading a funsub body, which a `}` in command position outside any `{ }` group closes. */
+  closesOnBrace = false
+  private braceDepth = 0
+  private braceClosed = false
+  /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
+  private parens: ParenKind[] = []
+  /*
+   * The parser state below is set token by token, as bash keeps it, and every structural decision
+   * (a group's braces, a case's patterns, `[[ ]]`, what a `(` opens) reads it. Nothing is inferred
+   * from the words of the current command, since a quoted `"if"` looks like `if` there.
+   */
+  /** A command may start at the next token, so a `(` there opens a subshell or arithmetic. */
+  private atStart = true
+  /**
+   * bash's reserved_word_acceptable for the last token read, the one place a `{` or `}` is decided:
+   * `reservedWordAcceptable` of the last two tokens, bar a `(` or `)` that is no subshell's, which bash
+   * reads as part of a word or arithmetic. A redirect leaves it.
+   */
+  private reservedOk = true
+  /** `reservedOk` when the current word began, so whether the word itself may be reserved. */
+  private wordStartOk = true
+  /** The current word began where a function name may stand: at a command start or after `function`. */
+  private wordStartNames = true
+  /** bash's last_read_token and token_before_that. */
+  private lastToken: Token
+  private beforeLast: Token
+  /** Where in the current word its first quote or escape began, so whether it can be an assignment. */
+  private quoteStart = Infinity
+  /** The last token was a word that is not reserved, so a `}x` after it is a plain argument. */
+  private lastPlain = false
+  /** The last token was an unquoted word that may name a function, as `f` in `f ()`. */
+  private named = false
+  /** The header whose name or subject was the last word, so an `in` (or `do`) next is reserved. */
+  private expectIn: Header | undefined
+  /** Inside `[[ ]]`, where neither an operator nor a newline starts a command. */
+  private testOpen = false
 
   constructor(
     private readonly src: string,
@@ -232,13 +357,184 @@ class ShellLexer {
   private step(): void {
     const c = this.src[this.pos] as string
     if (c === '\\' && this.src[this.pos + 1] === '\n') return void (this.pos += 2)
+    if (this.braceWord(c)) return
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
     if (c === '(' || c === ')') return this.paren(c)
+    // bash's `&>` and `&>>` send both streams to a file; they do not end the command.
+    if (c === '&' && this.peek(this.pos + 1) === '>') return this.redirect()
     if (OPERATORS.has(c)) return this.operator(c)
     if (c === '#' && this.word === null) return this.skipComment()
     if (c === '<' || c === '>') return this.redirect()
     this.wordPart(c)
+  }
+
+  /**
+   * In a funsub, counts `{ }` groups and closes at the `}` that ends none. A brace is reserved exactly
+   * when `reservedOk` is set, outside `[[ ]]`, arithmetic and arrays. A `{` or `}` word anywhere else
+   * makes the line unreadable, unless it is a plain argument such as `}x` after an ordinary word.
+   */
+  private braceWord(c: string): boolean {
+    // After a redirect operator bash reads a `{` or `}` as the file name, never as a reserved word.
+    if (!this.closesOnBrace || this.word !== null || this.patternNext || this.pending !== null) return false
+    if (c === '{') this.openBrace()
+    return c === '}' && this.closeBrace()
+  }
+
+  private openBrace(): void {
+    const next = this.peek(this.pos + 1)
+    if (next !== undefined && !METACHAR.test(next)) return
+    if (this.braceReserved()) this.braceDepth++
+    else this.budget.expansion = 'unreadable'
+  }
+
+  /**
+   * bash closes at a reserved `}` even with no blank after it (`}x`). A `}` word that is neither reserved
+   * and alone nor a plain argument after ordinary words is unreadable.
+   */
+  private closeBrace(): boolean {
+    const reserved = this.braceReserved()
+    if (reserved && this.braceDepth === 0) {
+      this.endCommand()
+      this.closed = this.braceClosed = true
+      return true
+    }
+    const next = this.peek(this.pos + 1)
+    const alone = next === undefined || METACHAR.test(next)
+    if (reserved && alone) this.braceDepth--
+    else if (reserved || alone || !this.plainArgument()) this.budget.expansion = 'unreadable'
+    return false
+  }
+
+  private braceReserved(): boolean {
+    return this.reservedOk && !this.testOpen && !this.inText()
+  }
+
+  /**
+   * A `}x` that is not reserved is an argument after a plain word, or after `[[` inside `[[ ]]`, where
+   * bash reads every word as text. Fails closed after anything else: an operator, a newline, a `(` or `)`,
+   * or a reserved word such as `case` that a name follows.
+   */
+  private plainArgument(): boolean {
+    return this.lastPlain || (this.testOpen && this.lastToken === '[[')
+  }
+
+  /** Inside `(( ))`, an array or another `(` that is no subshell, where bash reads a brace as text. */
+  private inText(): boolean {
+    return this.parens.some(kind => kind === 'text' || kind === 'arith')
+  }
+
+  private unjoin(at: number): number {
+    return unjoinAt(this.src, at)
+  }
+
+  /** The character at `at` as bash reads it; every lookahead that decides a token goes through here. */
+  private peek(at: number): string | undefined {
+    return this.src[this.unjoin(at)]
+  }
+
+  /** The `n` characters from the cursor as bash reads them. */
+  private ahead(n: number): string {
+    let text = ''
+    for (let at = this.unjoin(this.pos); at < this.src.length && text.length < n; at = this.unjoin(at + 1))
+      text += this.src[at]
+    return text
+  }
+
+  /** Moves the cursor past `n` characters as bash reads them. */
+  private advance(n: number): void {
+    this.pos = this.after(n)
+  }
+
+  /** The index after the `n` characters from the cursor as bash reads them. */
+  private after(n: number): number {
+    return skipChars(this.src, this.pos, n)
+  }
+
+  /** A `(` at the cursor followed only by blanks and a `)`, as in `name()`. */
+  private emptyParens(): boolean {
+    let at = this.unjoin(this.pos + 1)
+    while (/\s/.test(this.src[at] ?? '')) at = this.unjoin(at + 1)
+    return this.src[at] === ')'
+  }
+
+  /** The `)` closing arithmetic whose first `)` is at `end` is doubled, as bash reads it. */
+  private doubled(end: number): boolean {
+    return this.peek(end + 1) === ')'
+  }
+
+  /**
+   * Records `token` as bash's last_read_token, so that `reservedOk` is reserved_word_acceptable of it,
+   * or `ok` for a parenthesis bash does not read as a token of its own. A word that is not reserved
+   * then sets `lastPlain` and `named` itself.
+   */
+  private accept(token: Token, ok = reservedWordAcceptable(token, this.lastToken)): void {
+    this.reservedOk = ok
+    this.beforeLast = this.lastToken
+    this.lastToken = token
+    this.lastPlain = this.named = false
+  }
+
+  /** Classifies a word as bash's parser would, the only place a word changes the parser state. */
+  private afterWord(word: string, quoteStart: number): void {
+    const quoted = quoteStart !== Infinity
+    const before = this.lastToken
+    const header = this.expectIn
+    this.expectIn = undefined
+    if (!quoted && this.reservedWord(word, header)) return this.takeReserved(word, header)
+    const named = !quoted && this.wordStartNames && !word.includes('=')
+    const token = this.wordToken(word, quoted, quoteStart)
+    this.atStart = token === TIMEOPT || token === TIMEIGN
+    this.accept(token)
+    this.lastPlain = true
+    this.named = named
+    if (isHeader(before)) this.expectIn = before
+  }
+
+  /** The token bash's read_token_word gives a word that is not reserved: parse.y 3471-3481 and 5784-5847. */
+  private wordToken(word: string, quoted: boolean, quoteStart: number): Token {
+    const last = this.lastToken
+    if (!quoted && word === '-p' && last === 'time') return TIMEOPT
+    if (!quoted && word === '--' && (last === 'time' || last === TIMEOPT)) return TIMEIGN
+    const name = ASSIGNMENT.exec(word)?.[0]
+    const assigns = name !== undefined && name.length <= quoteStart
+    return assigns && this.assignmentAcceptable() ? ASSIGNMENT_WORD : WORD
+  }
+
+  /** bash's assignment_acceptable and command_token_position, parse.y 3154-3164. */
+  private assignmentAcceptable(): boolean {
+    if (this.patternNext) return false
+    return this.lastToken === ASSIGNMENT_WORD || (!CASE_ENDS.has(this.lastToken) && this.wordStartOk)
+  }
+
+  /**
+   * CHECK_FOR_RESERVED_WORD and special_case_tokens, parse.y 3166-3209 and 3365-3489: only `]]` is
+   * reserved inside `[[ ]]`, only `esac` where a case pattern is due, `time` only where
+   * time_command_acceptable allows, and an `in` (or a `do` after `for` or `select`) after a header's name
+   * even where no reserved word may be.
+   */
+  private reservedWord(word: string, header: Header | undefined): boolean {
+    if (this.testOpen) return word === ']]'
+    if (header !== undefined && (word === 'in' || (word === 'do' && header !== 'case'))) return true
+    if (this.patternNext) return word === 'esac' && this.patternEsac()
+    if (word === 'time' && !timeCommandAcceptable(this.lastToken, this.beforeLast)) return false
+    return this.wordStartOk && RESERVED.has(word)
+  }
+
+  /** `case w in esac` ends at once; after a pattern's `|` or `(` an `esac` is a pattern (Posix rule 4). */
+  private patternEsac(): boolean {
+    const last = this.lastToken
+    return (this.wordStartOk || last === 'in') && last !== '|' && last !== '('
+  }
+
+  /** `[[` and `]]` open and close a test; a case's `in` and `esac` open and close its patterns. */
+  private takeReserved(word: string, header: Header | undefined): void {
+    if (word === '[[' || word === ']]') this.testOpen = word === '[['
+    else if (word === 'in' && header === 'case') this.caseDepth++
+    else if (word === 'esac' && this.caseDepth > 0) this.caseDepth--
+    if (word === 'in' || word === 'esac') this.patternNext = word === 'in' && header === 'case'
+    this.atStart = RESERVED.get(word) ?? false
+    this.accept(word)
   }
 
   private skip(then: () => void): void {
@@ -248,18 +544,24 @@ class ShellLexer {
 
   private newline(): void {
     this.endCommand()
+    this.atStart = !this.testOpen
+    this.accept('\n')
     this.join('\n')
     this.pos++
     this.readHeredocs()
   }
 
   private operator(c: string): void {
-    const op = c !== ';' && this.src[this.pos + 1] === c ? c + c : c
-    if (c === ';' && this.caseDepth > 0 && ';&'.includes(this.src[this.pos + 1] ?? '.'))
-      this.patternNext = true
+    const ahead = this.ahead(3)
+    const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
+    if (CASE_ENDS.has(op) && this.caseDepth > 0) this.patternNext = true
     this.endCommand()
-    this.join(op)
-    this.pos += op.length
+    this.expectIn = undefined
+    this.atStart = !this.testOpen
+    this.accept(op)
+    // A command joined by `|&`, `;;` or `;&` records its first character, `|` or `;`.
+    this.join(op === '&&' || op === '||' ? op : c)
+    this.advance(op.length)
   }
 
   /** A newline after `&&`, `||` or `|` continues the list, so it never replaces that operator. */
@@ -270,43 +572,68 @@ class ShellLexer {
 
   /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
-    if (this.patternNext && this.word === null && c === '(') return void this.pos++
+    if (this.patternNext && this.word === null && c === '(') return this.skip(() => this.accept('('))
     if (this.patternNext && c === ')') this.endWord()
     if (this.patternNext && c === ')') return this.endPattern()
     if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
     const opensCommand = this.word === null && !fed
+    const kind = this.parenKind(opensCommand)
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1
-    if (defined >= 0 && /^\(\s*\)/.test(this.src.slice(this.pos))) this.cur.marked[defined] += LIVE
+    if (defined >= 0 && this.emptyParens()) this.cur.marked[defined] += LIVE
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
+    if (c === '(') this.parens.push(kind)
+    const closed = c === ')' ? this.parens.pop() : undefined
+    this.expectIn = undefined
+    this.atStart = c === '(' ? kind === 'subshell' : closed === 'function' || closed === 'header'
+    this.acceptParen(c, c === '(' ? kind : closed)
     this.depth += c === '(' ? 1 : -1
     this.trackArith(c, opensCommand)
     this.pos++
     this.cur = this.newCommand()
   }
 
-  private endPattern(): void {
-    this.endCommand()
-    this.patternNext = false
-    this.pos++
+  /**
+   * The token a `(` or `)` leaves. Only a subshell's `(` lets a reserved word follow; an array's `( )`
+   * is part of its assignment word, and arithmetic's `((`, `))` and the `))` of `for (( ))` are tokens
+   * of their own, after which bash opens a `{` (parse.y 3455-3463).
+   */
+  private acceptParen(c: string, kind: ParenKind | undefined): void {
+    if (c === '(') return this.accept('(', kind === 'subshell')
+    if (kind === 'text') return this.accept(ASSIGNMENT_WORD, false)
+    if (kind === 'arith') return this.accept(ARITH_CMD)
+    this.accept(kind === 'header' ? ARITH_FOR_EXPRS : ')', true)
   }
 
-  /** `case w in` opens a pattern and `esac` ends the statement, so a pattern's `)` does not close a substitution. */
-  private trackCase(): void {
-    const words = this.cur.words
-    const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
-    const word = words[words.length - 1]
-    if (word === 'esac' && words.length === 1 && this.caseDepth > 0) {
-      this.caseDepth--
-      this.patternNext = false
-    } else if (word === 'in' && head >= 0 && words[head] === 'case' && words.length === head + 3) {
-      this.caseDepth++
-      this.patternNext = true
-    }
+  /** A `(` at a command start that is not `((`, `[[` or arithmetic opens a subshell; `name()` is a function's. */
+  private parenKind(opensCommand: boolean): ParenKind {
+    if (this.testOpen) return 'text'
+    if (this.emptyParens()) return this.defines() ? 'function' : 'text'
+    if (!opensCommand) return 'text'
+    const doubled = this.peek(this.pos + 1) === '('
+    // `for ((;;))` is followed by a `{ }` or `do` body, so its close starts a command.
+    if (doubled && this.lastToken === 'for') return 'header'
+    if (!this.atStart || this.inArith()) return 'text'
+    return doubled ? 'arith' : 'subshell'
+  }
+
+  /** `name()` or `function name()`, whose name is the word before the `()` or the one it ends; `a=()` is an array. */
+  private defines(): boolean {
+    const word = this.word
+    if (word === null) return this.named
+    return !this.quoted && this.wordStartNames && !word.includes('=')
+  }
+
+  private endPattern(): void {
+    this.endCommand()
+    this.atStart = true
+    this.accept(')')
+    this.patternNext = false
+    this.pos++
   }
 
   private inArith(): boolean {
@@ -316,14 +643,14 @@ class ShellLexer {
   /** A `((` at command position is arithmetic when bash finds its `))`; `((a) )` and `((a)|b)` are subshells. */
   private trackArith(c: string, opensCommand: boolean): void {
     if (c === ')' && !this.inArith()) this.arith = undefined
-    if (c !== '(' || !opensCommand || this.arith !== undefined || this.src[this.pos + 1] !== '(') return
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ')')
-    if (span && this.src[span.end + 1] === ')') this.arith = { depth: this.depth + 1, text: span.text }
+    if (c !== '(' || !opensCommand || this.arith !== undefined || this.peek(this.pos + 1) !== '(') return
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ')')
+    if (span && this.doubled(span.end)) this.arith = { depth: this.depth + 1, text: span.text }
   }
 
   /** Notes the body of a `$[ ]` the shell evaluates as arithmetic; the lexer still reads what is inside it. */
   private noteBracket(): void {
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ']')
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ']')
     if (span !== undefined) this.cur.arithBodies.push(span.text)
   }
 
@@ -337,7 +664,7 @@ class ShellLexer {
   private globGroup(): boolean {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
-    if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
     if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
     if (end < 0) {
@@ -371,15 +698,14 @@ class ShellLexer {
     this.mark ??= { after: this.out.length, skip: this.cur }
   }
 
-  /** The `(` starts a command, a case pattern after `in`, or a `[[` operand: not an argument. */
+  /**
+   * The `(` starts a command, a `[[` operand or follows another `(`, as in `((`: not an argument. A case
+   * pattern's `(` never gets here.
+   */
   private opensCommand(): boolean {
-    const words = this.cur.words
-    const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
-    if (head < 0) return true
+    if (this.atStart || this.testOpen || this.lastToken === '(') return true
     // `for ((i=0; i<3; i++))` is arithmetic, not a glob.
-    if (words[head] === 'for' && words.length === head + 1 && this.src.startsWith('((', this.pos)) return true
-    if (words[head] === '[[') return !words.includes(']]')
-    return words[head] === 'case' && words[words.length - 1] === 'in'
+    return this.lastToken === 'for' && this.ahead(2) === '(('
   }
 
   /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
@@ -389,7 +715,7 @@ class ShellLexer {
       const c = this.src[i] as string
       if (c === '\n') return -1
       if (c === '\\') i++
-      else if (c === '$' && this.src[i + 1] === "'") i = this.closeAnsi(i + 1)
+      else if (c === '$' && this.peek(i + 1) === "'") i = this.closeAnsi(this.unjoin(i + 1))
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
       else if (c === '(') depth++
       else if (c === ')' && --depth === 0) return i + 1
@@ -422,27 +748,37 @@ class ShellLexer {
   }
 
   private redirect(): void {
-    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
+    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos).replaceAll('\\\n', ''))?.[0]
     if (range !== undefined) return this.globRange(range)
-    const fd = this.descriptor()
+    // In `2&>f` the 2 is an argument, not a descriptor.
+    const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
     this.endWord()
-    if (this.src.startsWith('<<<', this.pos)) return this.expect(aside ? 'discard' : 'herestring', 3)
-    if (this.src.startsWith('<<', this.pos)) {
-      const strip = this.src[this.pos + 2] === '-'
+    const ahead = this.ahead(3)
+    if (ahead === '<<<') return this.expect(aside ? 'discard' : 'herestring', 3)
+    if (ahead.startsWith('<<')) {
+      const strip = ahead[2] === '-'
       return this.expect({ strip, aside }, strip ? 3 : 2)
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
-    if (fd === 0 || (fd < 0 && this.src[this.pos] === '<')) this.cur.stdinLive = true
-    const start = this.pos
-    this.pos++
-    while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
-    this.pending = WRITE_OPERATORS.has(this.src.slice(start, this.pos)) ? 'write' : 'discard'
+    if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
+    this.pending = WRITE_OPERATORS.has(this.redirectOperator()) ? 'write' : 'discard'
+  }
+
+  /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
+  private redirectOperator(): string {
+    let op = this.peek(this.pos) ?? ''
+    this.advance(1)
+    for (let c = this.peek(this.pos); c !== undefined && '>&|'.includes(c); c = this.peek(this.pos)) {
+      op += c
+      this.advance(1)
+    }
+    return op
   }
 
   /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
   private descriptor(): number {
-    if (this.word === null || this.quoted || !/^\d+$/.test(this.word)) return -1
+    if (this.word === null || this.quoteStart !== Infinity || !/^\d+$/.test(this.word)) return -1
     // zsh reads `12<f` as the word 12 and a redirect of stdin, where bash reads descriptor 12.
     if (this.word.length > 1 && this.src[this.pos] === '<') this.cur.stdinLive = true
     const fd = Number(this.word)
@@ -452,28 +788,33 @@ class ShellLexer {
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
   private globRange(range: string): void {
-    this.pos += range.length
+    this.advance(range.length)
     this.append(range, true)
   }
 
   private expect(pending: Pending, width: number): void {
     this.pending = pending
-    this.pos += width
+    this.advance(width)
   }
 
   private wordPart(c: string): void {
-    const next = this.src[this.pos + 1]
+    const next = this.peek(this.pos + 1)
     this.quoted ||= c === "'" || c === '"' || c === '\\'
+    // bash's parser sees `$'if'` quoted too, so it is neither a reserved word nor an assignment's name.
+    if (this.quoted || (c === '$' && next === "'"))
+      this.quoteStart = Math.min(this.quoteStart, this.word?.length ?? 0)
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
     if (c === '$' && next === "'") return this.ansiC()
     if (c === '$' && next === '[') this.noteBracket()
     if (c === '$' && next === '(') return this.split(this.substitution(false))
+    const fun = this.funsub(false)
+    if (fun !== undefined) return this.split(fun)
     if (c === '$' && next === '{') return this.split(this.braced())
     if (c === '`') return this.split(this.backtick(false))
     if (c === '\\') {
       this.pos += 2
-      return this.append(next ?? '')
+      return this.append(this.src[this.pos - 1] ?? '')
     }
     this.pos++
     const live = this.expands(c, next)
@@ -512,8 +853,14 @@ class ShellLexer {
   }
 
   private append(text: string, live = false): void {
+    if (this.word === null) this.startWord()
     this.marked = (this.word === null ? '' : this.marked) + (live ? LIVE : '') + text
     this.word = (this.word ?? '') + text
+  }
+
+  private startWord(): void {
+    this.wordStartOk = this.reservedOk
+    this.wordStartNames = this.atStart || this.lastToken === 'function'
   }
 
   private until(quote: string): string {
@@ -529,16 +876,19 @@ class ShellLexer {
     this.pos++
     while (this.pos < this.src.length && this.src[this.pos] !== '"') {
       const c = this.src[this.pos] as string
-      const next = this.src[this.pos + 1] ?? ''
+      const next = this.peek(this.pos + 1) ?? ''
+      const escaped = this.src[this.pos + 1] ?? ''
       if (c === '$' && next === '[') this.noteBracket()
-      if (c === '$' && next === '(') this.append(this.substitution(true), true)
+      const fun = this.funsub(true)
+      if (fun !== undefined) this.append(fun, true)
+      else if (c === '$' && next === '(') this.append(this.substitution(true), true)
       else if (c === '`') this.append(this.backtick(true), true)
       else if (c === '$' && next === '{') {
         this.bracedAt()
         this.append(c, true)
         this.pos++
-      } else if (c === '\\' && '$`"\\\n'.includes(next)) {
-        this.append(next === '\n' ? '' : next)
+      } else if (c === '\\' && '$`"\\\n'.includes(escaped)) {
+        this.append(escaped === '\n' ? '' : escaped)
         this.pos += 2
       } else {
         this.append(c, c === '$')
@@ -551,7 +901,7 @@ class ShellLexer {
   /** Decodes `\x67`, `\147` and the rest, so `$'\x67it'` reads as git (TP-721); an escape it cannot decode stays LIVE. */
   private ansiC(): void {
     this.append('')
-    this.pos += 2
+    this.advance(2)
     while (this.pos < this.src.length && this.src[this.pos] !== "'") {
       const c = this.src[this.pos] as string
       const escape = c === '\\' ? ansiCEscape(this.src, this.pos) : { text: c, width: 1, live: false }
@@ -566,8 +916,22 @@ class ShellLexer {
     const start = this.pos
     const arith = this.substitutedArith(start)
     if (arith !== undefined) this.cur.arithBodies.push(arith.text)
-    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget, arith)
+    const inner = new ShellLexer(this.src, this.after(2), true, this.budget, arith)
     const commands = inner.run()
+    this.pos = Math.min(inner.pos + 1, this.src.length)
+    if (inner.mark !== undefined) this.unsettled()
+    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
+  }
+
+  /** Reads the body of a funsub at the cursor as commands; with no `}` where bash closes it, the line is unreadable. */
+  private funsub(quoted: boolean): string | undefined {
+    const body = funsubBody(this.src, this.pos)
+    if (body === undefined) return undefined
+    const start = this.pos
+    const inner = new ShellLexer(this.src, body, true, this.budget)
+    inner.closesOnBrace = true
+    const commands = inner.run()
+    if (!inner.braceClosed) this.budget.expansion = 'unreadable'
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
@@ -575,9 +939,9 @@ class ShellLexer {
 
   /** A `$((` is arithmetic when bash finds its `))`; `$((a) )` is a substitution of a subshell. */
   private substitutedArith(start: number): Arith | undefined {
-    if (this.budget.probe || !this.src.startsWith('$((', start)) return undefined
-    const span = arithSpan(this.src, start + 3, ')')
-    return span && this.src[span.end + 1] === ')' ? { depth: 1, text: span.text } : undefined
+    if (this.budget.probe || this.ahead(3) !== '$((') return undefined
+    const span = arithSpan(this.src, skipChars(this.src, start, 3), ')')
+    return span && this.doubled(span.end) ? { depth: 1, text: span.text } : undefined
   }
 
   private backtick(quoted: boolean): string {
@@ -600,17 +964,19 @@ class ShellLexer {
     if (this.word === null) return
     const word = this.word
     const quoted = this.quoted
+    const quoteStart = this.quoteStart
     const splitting = this.splitting
     this.splitting = false
     this.word = null
     this.quoted = false
+    this.quoteStart = Infinity
     const pending = this.pending
     this.pending = null
     if (pending === null) {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
-      if (!quoted) this.trackCase()
+      this.afterWord(word, quoteStart)
     } else if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
@@ -694,9 +1060,9 @@ function arithSpan(src: string, from: number, closer: string): { end: number; te
   const opener = { ')': '(', ']': '[' }[closer]
   let depth = 0
   let text = ''
-  for (let i = from; i < src.length;) {
+  for (let i = unjoinAt(src, from); i < src.length; i = unjoinAt(src, i)) {
     const c = src[i] as string
-    const next = src[i + 1]
+    const next = src[unjoinAt(src, i + 1)]
     if (c === closer && depth-- === 0) return { end: i, text }
     if (c === opener) depth++
     const skip = skipIn(src, i, c, next, closer === '"')
@@ -717,7 +1083,7 @@ function skipIn(
 ): Step | undefined {
   if (c === '\\') return { next: at + 2, text: src.slice(at, at + 2) }
   if (c === '$' && next === '(') {
-    const end = substitutionEnd(src, at + 2)
+    const end = substitutionEnd(src, skipChars(src, at, 2))
     return end < 0 ? undefined : { next: end, text: ' ' }
   }
   if ((c === '$' && next === '{') || c === '`' || (!quoted && (c === '"' || c === "'")))
