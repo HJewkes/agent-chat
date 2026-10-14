@@ -5,12 +5,12 @@
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question.
  */
-import { arithClose, LIVE, NAME, type SimpleCommand } from './shell-words.js'
+import { LIVE, NAME, type SimpleCommand } from './shell-words.js'
 
 const INTEGER_DECLARERS = new Set(['declare', 'typeset', 'local', 'integer'])
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
 const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
-// A literal `$(...)` or backtick is parsed and checked as a command already, so its words are not names.
+// A literal `$(...)` or backtick in an operand or subscript is checked as a command already, so its words are not names.
 const SUBSTITUTION = /\$\([^()]*\)|`[^`]*`/g
 // `arr[...]=` and zsh's `$arr[...]` subscript a variable when the `[` is unquoted.
 const LIVE_SUBSCRIPT = new RegExp(`(?:^|\\$)${NAME}${LIVE}\\[`, 'g')
@@ -41,16 +41,6 @@ function subscripts(marked: string): string[] {
   ]
 }
 
-/** The `$((...))` and `$[...]` bodies in a command's words and substitutions. */
-function arithExpansions(cmd: SimpleCommand): string[] {
-  const raws = cmd.substitutions
-    .map(sub => sub.raw)
-    .filter(raw => raw.startsWith('$((') && arithClose(raw, 3) >= 0)
-  const bodies = raws.map(raw => raw.slice(3, arithClose(raw, 3)))
-  const joined = cmd.words.join(' ')
-  return [...bodies, ...bracketBodies(joined, openingsOf(joined, /\$\[/g))]
-}
-
 const hasIntegerFlag = (words: string[]): boolean =>
   words[0] === 'integer' || words.some(word => /^-[A-Za-z]*i/.test(word))
 
@@ -64,12 +54,7 @@ function integerOperands(cmd: SimpleCommand): string[] {
 
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
-  const texts = [
-    cmd.arithText,
-    ...arithExpansions(cmd),
-    ...integerOperands(cmd),
-    ...cmd.marked.flatMap(subscripts),
-  ]
+  const texts = [...cmd.arithBodies, ...integerOperands(cmd), ...cmd.marked.flatMap(subscripts)]
   const names = texts.flatMap(text =>
     [...text.replace(SUBSTITUTION, ' ').matchAll(ARITH_NAME)].map(match => match[1] ?? match[2] ?? ''),
   )

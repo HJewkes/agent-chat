@@ -60,6 +60,13 @@ describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
     ['let "arr[$i]"', 'let', ['arr', 'i']],
     ['echo $[ arr[$i] ]', 'echo', ['arr', 'i']],
     ['(( n + 1 ))', 'n', ['n']],
+    [': $(( $(echo ")" >/dev/null; echo 1) + y ))', ':', ['y']],
+    ["(( $(: ')'; echo 1) + y ))", "$(: ')'; echo 1)", ['y']],
+    ['(( `: ")"; echo 1` + y ))', '`: ")"; echo 1`', ['y']],
+    ['(( $(case q in q) echo 1;; esac) + y ))', '$(case q in q) echo 1;; esac)', ['y']],
+    ['echo $(( ${z:-)} + y ))', 'echo', ['z', 'y']],
+    ['echo $[ x<y ]', 'echo', ['x', 'y']],
+    ['echo "$[ x<y ]"', 'echo', ['x', 'y']],
   ])('%s: %s yields %j', (line, head, names) => {
     expect(arithSubscriptNames(commandOf(line, head))).toEqual(names)
   })
@@ -76,5 +83,18 @@ describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
     ['((git push) )', 'git'],
   ])('%s: %s yields none', (line, head) => {
     expect(arithSubscriptNames(commandOf(line, head))).toEqual([])
+  })
+})
+
+describe('a case pattern ends no substitution', () => {
+  it.each([
+    ['echo $(case q in q) git push;; esac) z', ['echo', '$(case q in q) git push;; esac)', 'z']],
+    [
+      'echo $(case q in (a|b) x;; r) git push;; esac) z',
+      ['echo', '$(case q in (a|b) x;; r) git push;; esac)', 'z'],
+    ],
+  ])('%s', (line, words) => {
+    expect(commandOf(line, 'echo').words).toEqual(words)
+    expect(commandOf(line, 'git').words).toEqual(['git', 'push'])
   })
 })
