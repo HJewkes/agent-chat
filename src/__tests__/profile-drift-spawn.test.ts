@@ -17,7 +17,6 @@ let home: string
 let core: BrokerCore
 let sup: Supervisor
 let launches: number
-let mode: ProfileDriftMode
 let stopAutoAttach: () => void
 
 const tmp = (prefix: string): string => {
@@ -70,21 +69,12 @@ async function exited(outcome: SpawnOutcome): Promise<void> {
 const driftWarnings = (outcome: SpawnOutcome): string[] =>
   (outcome.warnings ?? []).filter(warning => warning.includes('after the broker started'))
 
-beforeEach(() => {
-  home = tmp('drift-home-')
-  process.env.AGENT_CHAT_HOME = home
-  fs.mkdirSync(path.join(home, 'profiles'), { recursive: true })
-  writeProfile('bd-implementer')
-  writeProfile('steady')
-  launches = 0
-  mode = 'flag'
-  const events = new EventLog(path.join(home, 'events.db'))
-  core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
-  stopAutoAttach = autoAttach(core)
+function start(mode?: ProfileDriftMode): void {
+  sup?.close()
   sup = new Supervisor(core, {
     cwdLister: async () => [],
     profileBaseline: new ProfileBaseline(path.join(home, 'profiles')),
-    profileDriftMode: () => mode,
+    ...(mode === undefined ? {} : { profileDriftMode: mode }),
     surface: {
       platform: 'darwin',
       spawn: () => {
@@ -93,6 +83,22 @@ beforeEach(() => {
       },
     },
   })
+}
+
+const writeConfig = (profileDrift: ProfileDriftMode): void =>
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ profileDrift }))
+
+beforeEach(() => {
+  home = tmp('drift-home-')
+  process.env.AGENT_CHAT_HOME = home
+  fs.mkdirSync(path.join(home, 'profiles'), { recursive: true })
+  writeProfile('bd-implementer')
+  writeProfile('steady')
+  launches = 0
+  const events = new EventLog(path.join(home, 'events.db'))
+  core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
+  stopAutoAttach = autoAttach(core)
+  start('flag')
 })
 
 afterEach(() => {
@@ -130,7 +136,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('refuses an agent spawn of a drifted profile under refuse, launching nothing', async () => {
-    mode = 'refuse'
+    start('refuse')
     writeProfile('bd-implementer', 'rewritten')
 
     const outcome = await spawn('worker-d', 'bd-implementer', 'seat-a')
@@ -141,7 +147,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('lets a human spawn a drifted profile under refuse and re-baselines it', async () => {
-    mode = 'refuse'
+    start('refuse')
     writeProfile('bd-implementer', 'rewritten')
 
     const human = await spawn('worker-e', 'bd-implementer', 'human')
@@ -153,7 +159,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('refuses a burndown spawn of a drifted profile under refuse and keeps the old baseline', async () => {
-    mode = 'refuse'
+    start('refuse')
     writeProfile('bd-implementer', 'rewritten')
 
     const burndown = await spawn('worker-i', 'bd-implementer', 'human', {
@@ -169,7 +175,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('refuses a human resume of an agent whose profile was rewritten under refuse', async () => {
-    mode = 'refuse'
+    start('refuse')
     const first = await spawn('worker-k', 'bd-implementer', 'seat-a')
     await exited(first)
     writeProfile('bd-implementer', 'rewritten')
@@ -181,7 +187,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('counts a profile file created after start as drift', async () => {
-    mode = 'refuse'
+    start('refuse')
     writeProfile('newcomer')
 
     const outcome = await spawn('worker-g', 'newcomer', 'seat-a')
@@ -190,7 +196,7 @@ describe('profile drift at spawn (CC-1094)', () => {
   })
 
   it('never counts a builtin with no file as drift', async () => {
-    mode = 'refuse'
+    start('refuse')
 
     const outcome = await spawn('worker-h', 'explorer', 'seat-a')
 
@@ -219,4 +225,29 @@ describe('profile drift at spawn (CC-1094)', () => {
       expect(outcome.reason).toContain(`cannot read ${profileFile('sealed')}`)
     },
   )
+
+  it('keeps refusing after config.json is loosened to flag post-start (CC-1202)', async () => {
+    writeConfig('refuse')
+    start()
+    writeConfig('flag')
+    writeProfile('bd-implementer', 'rewritten')
+
+    const outcome = await spawn('worker-n', 'bd-implementer', 'seat-a')
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toContain(profileFile('bd-implementer'))
+    expect(launches).toBe(0)
+  })
+
+  it('keeps flagging after config.json is tightened to refuse post-start (CC-1202)', async () => {
+    writeConfig('flag')
+    start()
+    writeConfig('refuse')
+    writeProfile('bd-implementer', 'rewritten')
+
+    const outcome = await spawn('worker-o', 'bd-implementer', 'seat-a')
+
+    expect(outcome.ok).toBe(true)
+    expect(driftWarnings(outcome)).toHaveLength(1)
+  })
 })
