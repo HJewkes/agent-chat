@@ -277,7 +277,7 @@ class ShellLexer {
     if (c === '\n') return this.newline()
     if (c === '(' || c === ')') return this.paren(c)
     // bash's `&>` and `&>>` send both streams to a file; they do not end the command.
-    if (c === '&' && this.src[this.pos + 1] === '>') return this.redirect()
+    if (c === '&' && this.peek(this.pos + 1) === '>') return this.redirect()
     if (OPERATORS.has(c)) return this.operator(c)
     if (c === '#' && this.word === null) return this.skipComment()
     if (c === '<' || c === '>') return this.redirect()
@@ -308,10 +308,28 @@ class ShellLexer {
     return false
   }
 
-  /** The character at `at`, past any backslash-newline, which bash removes before it reads tokens. */
-  private peek(at: number): string | undefined {
+  /** `at`, moved past any backslash-newline, which bash removes before it reads tokens. */
+  private unjoin(at: number): number {
     while (this.src.startsWith('\\\n', at)) at += 2
-    return this.src[at]
+    return at
+  }
+
+  /** The character at `at` as bash reads it; every operator and redirect lookahead goes through here. */
+  private peek(at: number): string | undefined {
+    return this.src[this.unjoin(at)]
+  }
+
+  /** The `n` characters from the cursor as bash reads them. */
+  private ahead(n: number): string {
+    let text = ''
+    for (let at = this.unjoin(this.pos); at < this.src.length && text.length < n; at = this.unjoin(at + 1))
+      text += this.src[at]
+    return text
+  }
+
+  /** Moves the cursor past `n` characters as bash reads them. */
+  private advance(n: number): void {
+    for (let i = 0; i < n; i++) this.pos = this.unjoin(this.unjoin(this.pos) + 1)
   }
 
   /** Every word before the `{` is an unquoted reserved word, bar `time -p`, `coproc NAME` and `function NAME`. */
@@ -340,13 +358,13 @@ class ShellLexer {
   }
 
   private operator(c: string): void {
-    const op = c !== ';' && this.src[this.pos + 1] === c ? c + c : c
-    if (c === ';' && this.caseDepth > 0 && ';&'.includes(this.src[this.pos + 1] ?? '.'))
-      this.patternNext = true
+    const next = this.peek(this.pos + 1) ?? '.'
+    const op = c !== ';' && next === c ? c + c : c
+    if (c === ';' && this.caseDepth > 0 && ';&'.includes(next)) this.patternNext = true
     this.endCommand()
     this.atStart = !this.testOpen
     this.join(op)
-    this.pos += op.length
+    this.advance(op.length)
   }
 
   /** A newline after `&&`, `||` or `|` continues the list, so it never replaces that operator. */
@@ -541,17 +559,26 @@ class ShellLexer {
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
     this.endWord()
-    if (this.src.startsWith('<<<', this.pos)) return this.expect(aside ? 'discard' : 'herestring', 3)
-    if (this.src.startsWith('<<', this.pos)) {
-      const strip = this.src[this.pos + 2] === '-'
+    const ahead = this.ahead(3)
+    if (ahead === '<<<') return this.expect(aside ? 'discard' : 'herestring', 3)
+    if (ahead.startsWith('<<')) {
+      const strip = ahead[2] === '-'
       return this.expect({ strip, aside }, strip ? 3 : 2)
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
-    if (fd === 0 || (fd < 0 && this.src[this.pos] === '<')) this.cur.stdinLive = true
-    const start = this.pos
-    this.pos++
-    while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
-    this.pending = WRITE_OPERATORS.has(this.src.slice(start, this.pos)) ? 'write' : 'discard'
+    if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
+    this.pending = WRITE_OPERATORS.has(this.redirectOperator()) ? 'write' : 'discard'
+  }
+
+  /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
+  private redirectOperator(): string {
+    let op = this.peek(this.pos) ?? ''
+    this.advance(1)
+    for (let c = this.peek(this.pos); c !== undefined && '>&|'.includes(c); c = this.peek(this.pos)) {
+      op += c
+      this.advance(1)
+    }
+    return op
   }
 
   /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
@@ -572,7 +599,7 @@ class ShellLexer {
 
   private expect(pending: Pending, width: number): void {
     this.pending = pending
-    this.pos += width
+    this.advance(width)
   }
 
   private wordPart(c: string): void {

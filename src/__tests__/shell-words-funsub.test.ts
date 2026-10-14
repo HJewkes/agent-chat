@@ -229,6 +229,32 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(cmd?.writes).toEqual(['f', 'g'])
   })
 
+  // bash 5.3.9 removes \<newline> before it reads `&>`, `;;`, `;&`, `>&` or `>|`.
+  it.each(
+    [
+      'echo a &\\\n>f } ; git push --no-verify ;}"',
+      'echo a &\\\n>f { ;} #"; git push --no-verify\n}"',
+      'echo a &\\\n>\\\n>f } ; git push --no-verify ;}"',
+      'case x in x) :;\\\n; }) ;; esac; git push --no-verify ;}"',
+      'case x in x) :;\\\n& }) ;; esac; git push --no-verify ;}"',
+      'echo a >\\\n&2 } ; git push --no-verify ;}"',
+      'echo a 2>\\\n&1 } ; git push --no-verify ;}"',
+      'echo a >\\\n|f } ; git push --no-verify ;}"',
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}`)),
+  )('%j joins the operator across \\<newline>, so the push is read as a command', src => {
+    expect(find(src, 'git')?.words).toEqual(['git', 'push', '--no-verify'])
+  })
+
+  it.each(
+    [
+      "echo 'a &\\\n>f' ; git push --no-verify ;}\"",
+      "cat <<'E'\nx &\\\n>f }\nE\ngit push --no-verify ;}\"",
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}`)),
+  )('%j keeps a quoted \\<newline> literal', src => {
+    expect(find(src, 'git')?.nested).toBe(true)
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
