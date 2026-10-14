@@ -61,7 +61,9 @@ export function runsProgram(key: string): boolean {
 /**
  * Environment variables whose value git, or the man and less it starts, runs as a program or
  * shell command, including the `PAGER`, `EDITOR` and `VISUAL` fallbacks git honours, the
- * askpass and proxy hooks, man's `MANPAGER` and the `BROWSER` git web--browse may read.
+ * askpass and proxy hooks, man's `MANPAGER` and the `BROWSER` git web--browse may read. It also
+ * holds the `GH_PAGER`, `GH_EDITOR` and `GH_BROWSER` that gh (2.102, `gh help environment`) runs
+ * ahead of those fallbacks.
  */
 export const PROGRAM_ENV = new Set([
   'GIT_PAGER',
@@ -78,6 +80,9 @@ export const PROGRAM_ENV = new Set([
   'GIT_EXTERNAL_DIFF',
   'GIT_PROXY_COMMAND',
   'BROWSER',
+  'GH_PAGER',
+  'GH_EDITOR',
+  'GH_BROWSER',
 ])
 
 /**
