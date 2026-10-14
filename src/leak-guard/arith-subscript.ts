@@ -339,36 +339,68 @@ function quoteEnd(text: string, open: number): number {
   return text.length
 }
 
-/**
- * The body of each `$(...)` and backtick pair in `marked` that the splitter did not read as a command: one
- * it kept quoted, or one marked LIVE with no substitution in `read` behind it. The splitter also marks the
- * literal `$` of `"$"` LIVE, so `x["$"'(P)]'` looks live while bash builds `$(P)` from it; the mark alone
- * is not trusted.
- */
-function quotedSubstitutions(marked: string, read: ReadonlySet<string>): string[] {
-  const bodies: string[] = []
-  for (let i = 0; i < marked.length; i++) {
-    const from = marked.startsWith('$(', i) && marked[i + 2] !== '(' ? i + 2 : marked[i] === '`' ? i + 1 : -1
-    if (from < 0) continue
-    const end = from === i + 2 ? bodyEnd(marked, from) : closingTick(marked, from)
-    const live = marked[i - 1] === LIVE
-    if (!live || !read.has(unmark(marked.slice(i, end + 1)))) bodies.push(unmark(marked.slice(from, end)))
-    i = end
-  }
-  return bodies
-}
-
 const closingTick = (text: string, from: number): number => {
   const close = text.indexOf('`', from)
   return close < 0 ? text.length : close
 }
 
+// A funsub `${ ` (space, tab or newline after `${`) or valsub `${|`, which bash runs as commands. Its text
+// cannot be read (the splitter cut it at its first `}`), so the rest of the word is reported from the `${`.
+const inWordFunsub = (marked: string, i: number): boolean =>
+  marked.startsWith('${', i) && /[\s|]/.test(marked[i + 2] ?? '')
+
+/** One opener at `i`: the start of the body it runs, the index past its close, and the whole opener text. */
+function opener(marked: string, i: number): { from: number; end: number; token: string } | undefined {
+  // `$((` is arithmetic when well-formed and a `$( (...) )` command otherwise; either way read its body.
+  if (marked.startsWith('$((', i) || (marked.startsWith('$(', i) && marked[i + 2] !== '(')) {
+    const end = bodyEnd(marked, i + 2)
+    return { from: i + 2, end, token: unmark(marked.slice(i, end + 1)) }
+  }
+  if (marked[i] === '`') {
+    const end = closingTick(marked, i + 1)
+    return { from: i + 1, end, token: unmark(marked.slice(i, end + 1)) }
+  }
+  return undefined
+}
+
+/** True once; it spends one count of `token` in `recorded`, so a fake sharing a real sub's text is not trusted twice. */
+function recorded(counts: Map<string, number>, token: string): boolean {
+  const n = counts.get(token) ?? 0
+  if (n <= 0) return false
+  counts.set(token, n - 1)
+  return true
+}
+
+/**
+ * The body of every opener bash recognizes in `marked` that the splitter did not itself read as a command:
+ * `$(`, `$((`, a backtick, and a non-live `${ ` or `${|` funsub. Trust is per recorded substitution, spent
+ * once: a live opener is skipped only while `counts` still holds its exact text, because the splitter also
+ * marks the literal `$` of `"$"` LIVE (so `x["$"'(P)]'` looks live though bash builds `$(P)` from it) and a
+ * fake can share a real sub's text in the same command.
+ */
+function quotedSubstitutions(marked: string, counts: Map<string, number>): string[] {
+  const bodies: string[] = []
+  for (let i = 0; i < marked.length; i++) {
+    const live = marked[i - 1] === LIVE
+    if (!live && inWordFunsub(marked, i)) {
+      bodies.push(unmark(marked.slice(i)))
+      break
+    }
+    const found = opener(marked, i)
+    if (found === undefined) continue
+    if (!live || !recorded(counts, found.token)) bodies.push(unmark(marked.slice(found.from, found.end)))
+    i = found.end
+  }
+  return bodies
+}
+
 /** Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic. */
 function substitutionsOf(cmd: SimpleCommand): string[] {
-  const read = new Set(cmd.substitutions.map(sub => sub.raw))
+  const counts = new Map<string, number>()
+  for (const sub of cmd.substitutions) counts.set(sub.raw, (counts.get(sub.raw) ?? 0) + 1)
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const texts = [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies]
-  return texts.flatMap(text => quotedSubstitutions(text, read))
+  return texts.flatMap(text => quotedSubstitutions(text, counts))
 }
 
 /**

@@ -323,13 +323,45 @@ describe('arithSubstitutions reports a funsub unread, from its ${ on', () => {
     "y=${ x=(['}']=1); }",
     "echo ${| x=(['$(P)']=1); }",
     'echo ${ echo ${ x=([k]=1); }; }',
+    // A funsub reaches arithmetic from any word, so a non-live ${ or ${| is reported too (CC-1334 round 10).
+    `n='x[\${ ${P}; }]'`,
+    `n='x[\${| ${P}; }]'`,
+    `n="x[\\\${ ${P}; }]"`,
+    `for n in '\${ ${P}; }'; do :; done`,
+    `echo '\${ ${P}; }'`,
   ])('%s', line => {
     expect(bodiesOf(line).some(body => body.startsWith('${'))).toBe(true)
   })
 
-  it.each(['echo ${x}', 'echo "${x[1]}"', "echo '${ x; }'", 'echo ${#x}'])('%s is no funsub', line => {
+  it.each(['echo ${x}', 'echo "${x[1]}"', 'echo ${#x}'])('%s is no funsub', line => {
     expect(bodiesOf(line)).toEqual([])
   })
+})
+
+// bash reads a $(( that is not well-formed arithmetic as $( (..) ), and the literal $ of "$" is marked LIVE,
+// so an opener's reality is judged per recorded substitution (spent once), not by its mark or text (round 10).
+describe('arithSubstitutions reads $(( and a faked-live opener', () => {
+  // A `$((` runs its body as a subshell `$( (..) )`, so the reported body wraps the payload in parens.
+  it.each([`n='x[$((${P}) )]'`, `n=x["$"'((${P}) )]'`, `n='x[$( (${P}) )]'`])('%s', line => {
+    expect(bodiesOf(line).some(body => body.includes(P))).toBe(true)
+  })
+
+  it.each([
+    `n=x["$"'(${P})]'`,
+    `n="x[$"'(${P})]'`,
+    // A fake sharing a real $(P)'s text in the same command is still reported: trust is spent once.
+    `echo $(${P}) x["$"'(${P})]'`,
+    `echo "$(${P})" "$"'(${P})]'`,
+  ])('%s', line => {
+    expect(bodiesOf(line)).toContain(P)
+  })
+
+  it.each(['echo $((1 + 1))', 'echo "$((a))"', 'n=$((1 + 1))', 'echo $(( $(date) ))', `echo "$(${P})"`])(
+    '%s is a genuine opener and is not reported',
+    line => {
+      expect(bodiesOf(line)).toEqual([])
+    },
+  )
 })
 
 describe('the pretool guard and arithSubstitutions share one list of name-operand builtins', () => {
