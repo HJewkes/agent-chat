@@ -3401,3 +3401,42 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
     expect(calls).toEqual([])
   })
 })
+
+describe('burndown tick sweeps exited trees park-at-exit kept (CC-1257)', () => {
+  function sweepFixture(): { fake: Fake; parks: string[] } {
+    const tree = path.join(repo(), '.worktrees', 'bd-old')
+    fs.mkdirSync(tree, { recursive: true })
+    const parks: string[] = []
+    const fake = fakeBroker({
+      agents: [{ ...row('bd-old', 'exited', tree), exitedAt: NOON.getTime() - 60_000 }],
+    })
+    fake.broker = {
+      ...fake.broker,
+      park: async name => {
+        parks.push(name)
+        return { ok: true }
+      },
+    }
+    return { fake, parks }
+  }
+
+  it('parks an exited tree no claim reads and logs the counts', async () => {
+    const { fake, parks } = sweepFixture()
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(parks).toEqual(['bd-old'])
+    expect(lines).toContain('parked bd-old')
+    expect(logged).toContainEqual({ event: 'burndown_park_sweep', detail: { parked: 1, kept: 0, left: 0 } })
+  })
+
+  it('a dry run parks nothing and names the candidate', async () => {
+    const { fake, parks } = sweepFixture()
+
+    const lines = await tick(fake, true)
+
+    expect(parks).toEqual([])
+    expect(lines).toContain('would park 1: bd-old')
+  })
+})

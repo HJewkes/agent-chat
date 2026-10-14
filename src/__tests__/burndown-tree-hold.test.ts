@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Phase } from '../agents/burndown/ledger.js'
-import { burndownTreeHold } from '../agents/burndown/tree-hold.js'
+import { burndownTreeHold, ledgerTreeHold } from '../agents/burndown/tree-hold.js'
 
 let dir: string
 let ledgerFile: string
@@ -75,5 +75,28 @@ describe('whether a burndown claim still reads a worktree (CC-1039)', () => {
     fs.writeFileSync(ledgerFile, '{ not json')
 
     expect(burndownTreeHold(ledgerFile, tree)).toMatch(/unreadable/)
+  })
+})
+
+describe('the same hold over a ledger the tick already read (CC-1257)', () => {
+  const ledgerWith = (phase: Phase) => ({
+    version: 1 as const,
+    claims: [
+      {
+        taskId: 'CC-1',
+        initiative: 'claude-channels',
+        spawnedAt: '2026-10-11T00:00:00.000Z',
+        phase,
+        phaseAt: '2026-10-11T00:00:00.000Z',
+        worktree: tree,
+      },
+    ],
+  })
+
+  it('holds an implementing claim and releases an awaiting-merge one', () => {
+    expect(ledgerTreeHold(ledgerWith('implementing'), tree)).toBe(
+      'burndown claim CC-1 holds the tree in phase implementing',
+    )
+    expect(ledgerTreeHold(ledgerWith('awaiting-merge'), tree)).toBeUndefined()
   })
 })
