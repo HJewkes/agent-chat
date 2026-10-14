@@ -18,7 +18,7 @@ const agent = (name: string, over: Partial<AgentIdentity> = {}): AgentIdentity =
   profile: 'bd-implementer',
   state: 'exited',
   origin: 'spawned',
-  spawnedBy: 'titan-coord',
+  spawnedBy: 'seat-a',
   spawnedAt: T0,
   brief: '',
   cwd: `/trees/${name}`,
