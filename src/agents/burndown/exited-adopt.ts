@@ -18,29 +18,46 @@ export interface ExitedWork {
 
 /** Undefined when any read failed, so the claim waits a tick rather than moving on a guess. */
 export function readExitedWork(worktree: string, exec: Runner = run): ExitedWork | undefined {
-  const ahead = commitsAhead(worktree, exec)
+  const ahead = commitsAhead(worktree, 'HEAD', exec)
   if (ahead === undefined) return undefined
   const openPr = openPrOn(worktree, exec)
   return openPr === undefined ? undefined : { openPr, ahead }
 }
 
-function commitsAhead(worktree: string, exec: Runner): number | undefined {
-  const base = resolveBaseRef(worktree, exec)
+/**
+ * CC-981: the same read for a tree already parked (checkout removed, branch kept), taken
+ * from the named branch in the parent checkout. A missing branch is unreadable, never "no work".
+ */
+export function readParkedWork(checkout: string, branch: string, exec: Runner = run): ExitedWork | undefined {
+  const exists = exec(GIT_BIN, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], checkout)
+  if (exists.status !== 0) return undefined
+  const ahead = commitsAhead(checkout, branch, exec)
+  if (ahead === undefined) return undefined
+  const openPr = openPrFor(checkout, branch, exec)
+  return openPr === undefined ? undefined : { openPr, ahead }
+}
+
+function commitsAhead(cwd: string, ref: string, exec: Runner): number | undefined {
+  const base = resolveBaseRef(cwd, exec)
   if (base === undefined) return undefined
-  const result = exec(GIT_BIN, ['rev-list', '--count', `${base}..HEAD`], worktree)
+  const result = exec(GIT_BIN, ['rev-list', '--count', `${base}..${ref}`], cwd)
   const count = Number(result.stdout.trim())
   return result.status === 0 && result.stdout.trim() !== '' && Number.isInteger(count) ? count : undefined
 }
 
-// REST, never GraphQL: the owner's account hits GraphQL rate limits.
 function openPrOn(worktree: string, exec: Runner): string | null | undefined {
   const branch = exec(GIT_BIN, ['rev-parse', '--abbrev-ref', 'HEAD'], worktree)
   const name = branch.stdout.trim()
   if (branch.status !== 0 || name === '' || name === 'HEAD') return undefined
-  const repo = originRepo(worktree, exec)
+  return openPrFor(worktree, name, exec)
+}
+
+// REST, never GraphQL: the owner's account hits GraphQL rate limits.
+function openPrFor(cwd: string, branch: string, exec: Runner): string | null | undefined {
+  const repo = originRepo(cwd, exec)
   if (repo === undefined) return null
   const owner = repo.split('/')[0] ?? ''
-  const head = encodeURIComponent(`${owner}:${name}`)
+  const head = encodeURIComponent(`${owner}:${branch}`)
   const result = exec('gh', [
     'api',
     `repos/${repo}/pulls?state=open&head=${head}&per_page=1`,

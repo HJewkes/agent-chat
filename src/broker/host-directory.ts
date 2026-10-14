@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import type { ConnectedLauncher } from '../agents/teleport-destination.js'
 import type { HostProbe, RemoteLaunch, SurfaceName } from '../protocol.js'
 import { logEvent } from './log.js'
@@ -54,6 +54,7 @@ const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCas
 export class HostDirectory<K = unknown> {
   private readonly byHost = new Map<string, Connected<K>>()
   private readonly outstanding = new Map<string, Outstanding<K>>()
+  private readonly nonces = new Map<K, string>()
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -75,6 +76,23 @@ export class HostDirectory<K = unknown> {
     return { ok: true }
   }
 
+  /**
+   * CC-1063: a fresh nonce for this connection's next hello proof, replacing any earlier one.
+   * It is bound to the connection, so a proof seen on one connection is useless on another.
+   */
+  challenge(key: K): string {
+    const nonce = randomBytes(32).toString('hex')
+    this.nonces.set(key, nonce)
+    return nonce
+  }
+
+  /** The connection's nonce, at most once: a hello consumes it whether or not its proof holds. */
+  takeNonce(key: K): string | undefined {
+    const nonce = this.nonces.get(key)
+    this.nonces.delete(key)
+    return nonce
+  }
+
   /** The machine this connection launches for, if it is a launcher. */
   hostOf(key: K): string | undefined {
     return [...this.byHost.values()].find(connected => connected.key === key)?.entry.host
@@ -82,6 +100,7 @@ export class HostDirectory<K = unknown> {
 
   /** The launcher's connection closed: its entry goes, and anything waiting on it is answered now. */
   drop(key: K): void {
+    this.nonces.delete(key)
     for (const [host, connected] of this.byHost)
       if (connected.key === key) {
         this.byHost.delete(host)
