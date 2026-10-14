@@ -13,6 +13,7 @@ import {
 } from '../agents/burndown/brief-approve.js'
 import { briefReviewSection, deciderVerdict } from '../agents/burndown/decider.js'
 import { opsNoneTag } from '../agents/burndown/ops.js'
+import { renderClassFile, type PlanClass } from '../agents/burndown/plan-class.js'
 import type { AgentIdentity } from '../protocol.js'
 
 const TASK = `id: CC-1
@@ -118,6 +119,73 @@ describe('burndown brief approve', () => {
   it('refuses a task with no proposal', () => {
     fs.writeFileSync(path.join(root, 'init', 'tasks', 'CC-1.yml'), 'id: CC-1\ntags:\n  - kind:x\n')
     expect(approveBrief('CC-1', ports(), '2026-10-10').ok).toBe(false)
+  })
+
+  describe('off-plan gate (TP-2418)', () => {
+    const classFile = (cls: PlanClass) => {
+      const dir = path.join(root, 'claude-channels', 'sources', 'factory-review')
+      fs.mkdirSync(dir, { recursive: true })
+      const row = { class: cls, id: 'CC-1', initiative: 'init', detail: 'P3', ask: '-' }
+      fs.writeFileSync(path.join(dir, 'off-plan-2026-10-13.md'), renderClassFile('classes', [row]))
+      fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    }
+
+    it.each<PlanClass>(['off', 'ambiguous'])(
+      'refuses a proposed task the newest file lists %s, and edits nothing',
+      cls => {
+        classFile(cls)
+
+        const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+        expect(report.ok).toBe(false)
+        expect(report.errors?.[0]).toContain('CC-1 is off plan')
+        expect(report.errors?.[0]).toContain('--off-plan-ok')
+        expect(edits).toEqual([])
+      },
+    )
+
+    it('refuses a task whose triage note puts it outside the plan', () => {
+      fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+      fs.writeFileSync(
+        path.join(root, 'init', 'tasks', 'CC-1.yml'),
+        `${TASK}notes: "Outside accepted factory plan p-list."\n`,
+      )
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(report.errors?.[0]).toContain('triage note')
+      expect(edits).toEqual([])
+    })
+
+    it('approves an off-plan task given --off-plan-ok and logs the reason as a note', () => {
+      classFile('off')
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10', 'owner ordered 2026-10-12')
+
+      expect(report.ok).toBe(true)
+      expect(edits).toContainEqual(['--add-tag', 'brief:ready=2026-10-10'])
+      expect(edits.at(-1)).toEqual(['--append', '2026-10-10: approved off plan: owner ordered 2026-10-12'])
+    })
+
+    it('refuses a blank --off-plan-ok reason', () => {
+      classFile('off')
+
+      expect(approveBrief('CC-1', ports(), '2026-10-10', '  ').ok).toBe(false)
+      expect(edits).toEqual([])
+    })
+
+    it('approves an on-plan task as before, with no note', () => {
+      classFile('on')
+
+      const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+      expect(report.ok).toBe(true)
+      expect(edits).toEqual([
+        ['--add-tag', 'brief:ready=2026-10-10'],
+        ['--add-tag', 'brief:src=briefer'],
+        ['--remove-tag', 'brief:proposed=2026-10-09'],
+      ])
+    })
   })
 
   describe('ops tag on promotion (CC-1154)', () => {

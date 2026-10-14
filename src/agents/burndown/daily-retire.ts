@@ -4,7 +4,8 @@ import { dayStart } from './budget-gate.js'
 /**
  * TP-1974 c: the charter's mechanical cleanup, once a day after 07:00 local. Each enrolled seat's finished
  * agents are retired over the broker's `retire_finished` frame, scoped to the seat as spawner; the broker
- * already skips agents holding unpushed or uncommitted work and implementers with an open PR.
+ * already skips agents holding unpushed or uncommitted work, and implementers (Shepherd-registered ones
+ * included) and reviewers whose PR is open (CC-1325).
  */
 
 /** The `retire_finished_result` frame's body. */
