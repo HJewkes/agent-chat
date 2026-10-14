@@ -622,7 +622,7 @@ function recordingSpawn(
   }
 }
 
-const briefPorts = (opts: TickOptions): AutoApprovePorts => {
+const briefPorts = (opts: Pick<TickOptions, 'root' | 'briefEdit'>): AutoApprovePorts => {
   const ports = autoApprovePortsOn(opts.root ?? activeWorkRoot())
   return opts.briefEdit === undefined ? ports : { ...ports, edit: opts.briefEdit }
 }
@@ -745,22 +745,32 @@ function closeParents(
   })
 }
 
+interface DeciderDeps {
+  broker: TickBroker
+  log: (event: string, detail: Record<string, unknown>) => void
+  now: Date
+  /** Persists the ledger; defaults to the burndown ledger file, and a test injects one that throws. */
+  write?: (ledger: Ledger) => void
+}
+
 /** Wakes the decider, or records why not when the human has something to fix. */
 async function actOnDecider(
   config: TickConfig,
   verdict: DeciderVerdict | undefined,
   ledger: Ledger,
-  deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
+  deps: DeciderDeps,
+  compose?: () => string | undefined,
 ): Promise<{ ledger: Ledger; lines: string[]; delivery: WakeDelivery }> {
   const name = config.decider?.name
   if (verdict === undefined || name === undefined)
     return { ledger, lines: [], delivery: { sent: false, reason: 'no decider configured' } }
   if (verdict.wake) {
-    const write = (l: Ledger): void => writeLedger(burndownLedgerPath(), l)
     const woken = await wakeDecider(name, verdict.message, ledger, {
       resume: deps.broker.resume,
-      write,
-      ...deps,
+      log: deps.log,
+      now: deps.now,
+      write: deps.write ?? ((l: Ledger): void => writeLedger(burndownLedgerPath(), l)),
+      ...(compose === undefined ? {} : { compose }),
     })
     return { ledger: woken.ledger, lines: [woken.line], delivery: woken.delivery }
   }
@@ -771,13 +781,16 @@ async function actOnDecider(
   return { ledger: recordRefusal(ledger, verdict.reason, deps.now), lines: [line], delivery }
 }
 
-/** CC-1234: the tick's one decider wake; its briefs' sends are recorded right before it and kept or dropped by how it ended. */
-async function actOnDeciderAndBriefs(
+/**
+ * CC-1234: the tick's one decider wake; its briefs' sends are kept or dropped by how it ended. CC-1239: they are
+ * recorded inside the wake, after its counting ledger write, so a write that throws leaves no record behind.
+ */
+export async function actOnDeciderAndBriefs(
   config: TickConfig,
   { decider, briefRoutes }: { decider: DeciderVerdict | undefined; briefRoutes: readonly BriefRoute[] },
   ledger: Ledger,
-  deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
-  opts: TickOptions,
+  deps: DeciderDeps,
+  opts: Pick<TickOptions, 'root' | 'briefEdit'>,
 ): Promise<{ ledger: Ledger; lines: string[] }> {
   const ports = briefPorts(opts)
   if (decider?.wake !== true) {
@@ -785,13 +798,18 @@ async function actOnDeciderAndBriefs(
     const reason = decider?.wake === false ? decider.reason : 'no decider configured'
     return { ledger: acted.ledger, lines: [...acted.lines, ...unsentBriefLines(briefRoutes, reason)] }
   }
-  const { recorded, lines } = recordBriefRoutes(briefRoutes, ports)
-  const verdict = withRecordedBriefs(
-    decider,
-    recorded.map(route => route.section),
-    deps.now,
-  )
-  const acted = await actOnDecider(config, verdict, ledger, deps)
+  let recorded: BriefRoute[] = []
+  let lines: string[] = []
+  const compose = (): string | undefined => {
+    ;({ recorded, lines } = recordBriefRoutes(briefRoutes, ports))
+    const verdict = withRecordedBriefs(
+      decider,
+      recorded.map(route => route.section),
+      deps.now,
+    )
+    return verdict?.wake === true ? verdict.message : undefined
+  }
+  const acted = await actOnDecider(config, decider, ledger, deps, compose)
   const finished = finishBriefRoutes(recorded, acted.delivery, ports)
   return { ledger: acted.ledger, lines: [...lines, ...acted.lines, ...finished] }
 }
