@@ -1,6 +1,7 @@
 import os from 'node:os'
 import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
+import { claimKey } from './advance.js'
 import { gateAccount, RUN_CAP_MS, type AccountReading } from './budget-gate.js'
 import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
@@ -266,6 +267,14 @@ export function renderPlan(result: Plan, now: Date): string[] {
 const findingSuffix = (c: Claim): string =>
   c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
 
+/** Why a queued claim went back: the ladder's last release, its reason over its stall code (CC-1222). */
+function releaseSuffix(c: Claim, ledger: Ledger): string {
+  const record = ledger.ladder?.[claimKey(c)]
+  if (c.phase !== 'queued' || record?.releases === undefined || record.releases === 0) return ''
+  const branch = record.branch === undefined ? '' : `, branch ${record.branch}`
+  return ` RELEASED ${record.releases}x: ${record.reason ?? record.code ?? 'unknown'}${branch}`
+}
+
 /** A stall's or open finding's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
 function stallSuffix(c: Claim, route: RouteConfig): string {
   const exception = exceptionOf(c)
@@ -300,7 +309,7 @@ export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAu
   ]
   for (const c of held)
     lines.push(
-      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}`,
+      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}${releaseSuffix(c, ledger)}`,
     )
   for (const c of ledger.claims.filter(c => c.phase === 'done' || c.respawn !== undefined))
     for (const u of c.unretired ?? [])
