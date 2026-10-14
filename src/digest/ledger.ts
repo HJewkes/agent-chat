@@ -213,7 +213,7 @@ interface UnreportedRow {
   agents: string
 }
 
-/** Written by the supervisor as a message from agent-chat with `meta.event = 'unreported-exit'`. */
+/** Written by the supervisor from agent-chat with `meta.event = 'unreported-exit'`: a notice to the human, else a message. */
 function unreportedExitsSince(db: DatabaseSyncType, sinceMs: number): UnreportedExitGroup[] {
   const rows = db
     .prepare(
@@ -222,7 +222,7 @@ function unreportedExitsSince(db: DatabaseSyncType, sinceMs: number): Unreported
          COUNT(*) AS count,
          group_concat(DISTINCT COALESCE(json_extract(meta, '$.agent'), '?')) AS agents
        FROM events
-       WHERE kind = 'message' AND actor = 'agent-chat' AND ts >= ?
+       WHERE kind IN ('message','notice') AND actor = 'agent-chat' AND ts >= ?
          AND json_extract(meta, '$.event') = 'unreported-exit'
        GROUP BY day, last_action
        ORDER BY day ASC, count DESC, last_action ASC`,

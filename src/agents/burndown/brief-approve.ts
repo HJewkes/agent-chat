@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { planPathFor } from './brief.js'
 import { briefReviewSection, type WakeDelivery } from './decider.js'
 import type { Task } from './eligibility.js'
+import { isOffPlan, readOffPlanIds } from './off-plan.js'
 import { declaredOps, opsLint, opsNoneTag } from './ops.js'
 import { readSlices } from './report.js'
 import { parseTask, readTaskText, readTasks } from './source.js'
@@ -22,6 +23,8 @@ export interface ApprovePorts {
   planExists: (path: string) => boolean
   /** `active-work task edit <slug> <id> ...args`; throws on a non-zero exit. */
   edit: (slug: string, id: string, args: string[]) => void
+  /** TP-2418: the ids the newest off-plan file marks off plan (`readOffPlanIds`). */
+  offPlanIds: () => ReadonlySet<string>
 }
 
 /**
@@ -59,11 +62,43 @@ function opsTagEdits(
 /**
  * CC-940: promotes a briefer's `brief:proposed=<day>` to `brief:ready=<today>` and records `brief:src=briefer` (replacing any other src) through `active-work task edit`.
  * Refused when the task is unknown, carries no proposal, its plan file is missing, or its done_when has an unresolved ops hit.
+ * TP-2418: also refused when the task is off plan, unless `offPlanOk` gives the reason, which is logged as a task note.
  */
-export function approveBrief(taskId: string, ports: ApprovePorts, today: string): Report {
+export function approveBrief(taskId: string, ports: ApprovePorts, today: string, offPlanOk?: string): Report {
   const slug = ports.initiatives().find(s => readTaskText(ports.root, s, taskId) !== undefined)
   if (slug === undefined) return refused(`no task ${taskId} in any initiative`)
-  return promoteBrief(slug, taskId, ports, today)
+  const offPlan = offPlanSource(parseTask(readTaskText(ports.root, slug, taskId) ?? '', taskId), ports)
+  if (offPlan === undefined) return promoteBrief(slug, taskId, ports, today)
+  const reason = offPlanOk?.trim() ?? ''
+  if (reason === '')
+    return refused(
+      `${taskId} is off plan (${offPlan}); approve with --off-plan-ok "<reason>" for owner-ordered work`,
+    )
+  const report = promoteBrief(slug, taskId, ports, today)
+  return report.ok
+    ? { ...report, lines: [...report.lines, ...offPlanNote(slug, taskId, reason, ports, today)] }
+    : report
+}
+
+function offPlanSource(task: Task, ports: ApprovePorts): string | undefined {
+  const listed = ports.offPlanIds()
+  if (!isOffPlan(task, listed)) return undefined
+  return listed.has(task.id) ? 'listed off or ambiguous in the newest off-plan file' : 'its triage note'
+}
+
+function offPlanNote(
+  slug: string,
+  taskId: string,
+  reason: string,
+  ports: ApprovePorts,
+  today: string,
+): string[] {
+  try {
+    ports.edit(slug, taskId, ['--append', `${today}: approved off plan: ${reason}`])
+    return [`${taskId}: approved off plan: ${reason}`]
+  } catch (err) {
+    return [`${taskId}: off-plan note not written: ${err instanceof Error ? err.message : String(err)}`]
+  }
 }
 
 function promoteBrief(slug: string, taskId: string, ports: ApprovePorts, today: string): Report {
@@ -302,6 +337,7 @@ export function approvePortsOn(root: string): ApprovePorts {
     initiatives: () =>
       fs.readdirSync(root, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? [e.name] : [])),
     planExists: file => fs.existsSync(file),
+    offPlanIds: () => readOffPlanIds(root),
     edit: (slug, id, args) => {
       // ACTIVE_ROOT pins the CLI to the root this read, so an edit never lands in another tree.
       execFileSync('active-work', ['task', 'edit', slug, id, ...args], {
