@@ -450,7 +450,7 @@ export function loadProfileSource(
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
   if (builtin) return { profile: withWorkerConfigDenies(builtin, path.dirname(dir)) }
-  return { profile: { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` } }
+  return { profile: { error: unknownProfileError(name, dir) } }
 }
 
 const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']
@@ -486,14 +486,31 @@ function withWorkerConfigDenies(profile: AgentProfile, agentHome: string): Agent
   return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
 }
 
+function unknownProfileError(name: string, dir: string): string {
+  const listing = profileListing(dir)
+  const known = 'names' in listing ? `known: ${listing.names.join(', ')}` : listing.error
+  return `no profile named "${name}"; ${known}`
+}
+
+/** CC-1208: a missing dir is builtins only; any other listing failure is an error naming the dir, never a throw. */
+function profileListing(dir: string): { names: string[] } | { error: string } {
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(dir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { error: `cannot list profiles in ${dir} (${(err as Error).message})` }
+    }
+    entries = []
+  }
+  const user = entries.filter(f => f.endsWith('.json')).map(f => path.basename(f, '.json'))
+  return { names: [...new Set([...BUILTIN_PROFILES.map(p => p.name), ...user])].sort() }
+}
+
 export function listProfileNames(dir: string = profilesDir()): string[] {
-  const user = fs.existsSync(dir)
-    ? fs
-        .readdirSync(dir)
-        .filter(f => f.endsWith('.json'))
-        .map(f => path.basename(f, '.json'))
-    : []
-  return [...new Set([...BUILTIN_PROFILES.map(p => p.name), ...user])].sort()
+  const listing = profileListing(dir)
+  if ('error' in listing) throw new Error(listing.error)
+  return listing.names
 }
 
 /** CC-163: fail closed, so a profile written before roles existed cannot spawn or take Remote Control. */

@@ -231,13 +231,79 @@ describe('observe reads exited work only for a silent exit', () => {
     expect(reads).toBe(0)
   })
 
-  it('reads nothing for a gone row whose worktree no longer exists (CC-1230 a)', async () => {
+  it('reads a gone row whose .worktrees tree was parked from its branch (CC-981)', async () => {
+    const c = claim({ worktree: path.join(dir, '.worktrees', 'bd-cc-1'), stalledReason: 'no final report' })
+    const reads: string[][] = []
+
+    await observe(
+      [c],
+      { agents: [] },
+      deps({
+        exitedWork: () => (reads.push(['tree']), undefined),
+        parkedWork: (checkout, branch) => (reads.push([checkout, branch]), undefined),
+      }),
+    )
+
+    expect(reads).toEqual([[dir, 'agent-chat/bd-cc-1']])
+  })
+
+  it('reads nothing for a gone row whose absent worktree is not a .worktrees tree (CC-1230 a)', async () => {
     const c = claim({ worktree: path.join(dir, 'parked'), stalledReason: 'no final report' })
     let reads = 0
+    const count = (): undefined => ((reads += 1), undefined)
 
-    await observe([c], { agents: [] }, deps({ exitedWork: () => ((reads += 1), undefined) }))
+    const { observations } = await observe(
+      [c],
+      { agents: [] },
+      deps({ exitedWork: count, parkedWork: count }),
+    )
 
     expect(reads).toBe(0)
+    expect(observations.get(claimKey(c))?.exitedWork).toBeUndefined()
+  })
+
+  describe('a tree parked before the tick read the exit (CC-981)', () => {
+    const successor = { ...row, name: 'bd-cc-1-s1' } as AgentIdentity
+    const parked = (): Claim =>
+      claim({ agentName: 'bd-cc-1-s1', worktree: path.join(dir, '.worktrees', 'bd-cc-1') })
+    const byBranch =
+      (work: ExitedWork) =>
+      (checkout: string, branch: string): ExitedWork | undefined =>
+        checkout === dir && branch === 'agent-chat/bd-cc-1' ? work : undefined
+
+    it("adopts a parked tree's open PR by branch and hands it to Shepherd", async () => {
+      const c = parked()
+      const work = { openPr: PR, ahead: 2 }
+
+      const { observations } = await observe(
+        [c],
+        { agents: [successor] },
+        deps({ finalText: () => undefined, parkedWork: byBranch(work) }),
+      )
+      const obs = observations.get(claimKey(c)) ?? {}
+      const { actions, after } = step(c, obs)
+
+      expect(obs.exitedWork).toEqual(work)
+      expect(kinds(actions)).toContain('register')
+      expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+    })
+
+    it('finishes a parked tree whose PR merged', async () => {
+      const c = parked()
+
+      const { observations } = await observe(
+        [c],
+        { agents: [successor] },
+        deps({
+          finalText: () => undefined,
+          parkedWork: byBranch({ openPr: null, ahead: 2 }),
+          prState: () => ({ kind: 'merged', pr: PR, head: 'abc' }),
+        }),
+      )
+      const { after } = step(c, observations.get(claimKey(c)) ?? {})
+
+      expect(after).toEqual([expect.objectContaining({ phase: 'done', pr: PR })])
+    })
   })
 })
 
