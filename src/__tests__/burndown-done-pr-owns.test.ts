@@ -4,7 +4,9 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim } from '../agents/burndown/ledger.js'
+import type { Runner } from '../agents/burndown/exec.js'
 import { observe, type ObserveDeps } from '../agents/burndown/observe.js'
+import { prFilesReader } from '../agents/burndown/run-tick.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-1066: a finished worker's DONE+PR hand-off is fenced on the PR's own files, not only the local diff. */
@@ -22,6 +24,14 @@ function step(c: Claim, obs: Observation): { actions: Action[]; after: Claim[] }
 }
 
 const kinds = (actions: Action[]): Action['kind'][] => actions.map(a => a.kind)
+
+/** A fake `gh api …/files` whose one line renames `from` to `to`. */
+const ghRename =
+  (from: string, to: string): Runner =>
+  () => ({
+    status: 0,
+    stdout: JSON.stringify({ path: to, previousPath: from, additions: 0, deletions: 0 }) + '\n',
+  })
 
 describe('a DONE+PR hand-off is fenced by the PR files (CC-1066)', () => {
   let dir: string
@@ -160,5 +170,27 @@ describe('a DONE+PR hand-off is fenced by the PR files (CC-1066)', () => {
     expect(obs.owned).toEqual({ outside: [] })
     expect(kinds(actions)).toContain('register')
     expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', stallCode: undefined })])
+  })
+
+  it('stalls a DONE worker whose PR renames a file from outside owns into owns (CC-1221)', async () => {
+    const c = claim()
+
+    const obs = await observed(c, cleanDeps({ prFiles: prFilesReader(ghRename(OUTSIDE, 'src/a.ts')) }))
+    const { actions, after } = step(c, obs)
+
+    expect(obs.owned).toEqual({ outside: [OUTSIDE] })
+    expect(kinds(actions)).not.toContain('register')
+    expect(after).toEqual([expect.objectContaining({ phase: 'implementing', stallCode: 'outside-owns' })])
+  })
+
+  it('hands off a DONE worker whose PR renames a file within owns (CC-1221)', async () => {
+    const c = claim({ owns: ['src/a.ts', 'src/b.ts'] })
+
+    const obs = await observed(c, cleanDeps({ prFiles: prFilesReader(ghRename('src/b.ts', 'src/a.ts')) }))
+    const { actions, after } = step(c, obs)
+
+    expect(obs.owned).toEqual({ outside: [] })
+    expect(kinds(actions)).toContain('register')
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
   })
 })
