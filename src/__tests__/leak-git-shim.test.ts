@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -536,23 +537,25 @@ describe('where the agent git shim is put on PATH', () => {
     const state = fs.mkdtempSync(path.join(SCRATCH, 'state-'))
     const fake = path.join(state, 'fake-claude.js')
     fs.writeFileSync(fake, 'process.stdout.write(process.env.PATH)\n')
+    // Unique per call: run-agent refuses an id any process on the machine already runs as (CC-1164).
+    const agentId = `agt-${randomUUID().slice(0, 8)}`
     const plan: LaunchPlan = {
-      agentId: 'agt-test',
+      agentId,
       bin: 'claude',
       args: [fake],
       cwd: state,
       env: planEnv,
-      title: 'agt-test',
+      title: agentId,
       surface: 'headless',
     }
-    fs.mkdirSync(path.join(state, 'agents', 'agt-test'), { recursive: true })
-    fs.writeFileSync(path.join(state, 'agents', 'agt-test', 'plan.json'), JSON.stringify(plan))
+    fs.mkdirSync(path.join(state, 'agents', agentId), { recursive: true })
+    fs.writeFileSync(path.join(state, 'agents', agentId, 'plan.json'), JSON.stringify(plan))
     const run = expectSpawned(
-      spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
+      spawnSync(process.execPath, [CLI, 'run-agent', agentId], {
         encoding: 'utf8',
         env: { PATH: '/usr/bin:/bin', AGENT_CHAT_HOME: state, AGENT_CHAT_CLAUDE: process.execPath },
       }),
-      'run-agent agt-test',
+      `run-agent ${agentId}`,
     )
     return run.stdout.split(':')
   }

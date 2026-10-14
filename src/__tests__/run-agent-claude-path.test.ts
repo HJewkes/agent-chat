@@ -1,4 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { type SpawnSyncReturns, spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -23,8 +24,11 @@ const MINIMAL_PATH = '/usr/bin:/bin'
 
 let stateDir: string
 let fakeClaude: string
+// Per test, because run-agent refuses an id any process on the machine already runs as (CC-1164).
+let agentId: string
 
 beforeEach(() => {
+  agentId = `agt-${randomUUID().slice(0, 8)}`
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-run-agent-'))
   fakeClaude = path.join(stateDir, 'fake-claude.js')
   fs.writeFileSync(fakeClaude, "process.stdout.write('fake-claude-ran')\n")
@@ -57,14 +61,14 @@ function writePlan(
 }
 
 const runAgent = (env: Record<string, string>) =>
-  spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
+  spawnSync(process.execPath, [CLI, 'run-agent', agentId], {
     encoding: 'utf8',
     env: { ...env, PATH: MINIMAL_PATH, AGENT_CHAT_HOME: stateDir },
   })
 
 describe('run-agent resolving claude without a usable PATH', () => {
   it('spawns the AGENT_CHAT_CLAUDE override rather than failing on a bare PATH lookup', () => {
-    writePlan('agt-test')
+    writePlan(agentId)
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -79,7 +83,7 @@ describe('run-agent stamping the launched process', () => {
       fakeClaude,
       'process.stdout.write(JSON.stringify([process.env.AGENT_CHAT_LAUNCHER_PID, String(process.ppid)]))\n',
     )
-    writePlan('agt-test', { AGENT_CHAT_LAUNCHER_PID: '1' })
+    writePlan(agentId, { AGENT_CHAT_LAUNCHER_PID: '1' })
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -91,7 +95,7 @@ describe('run-agent stamping the launched process', () => {
 describe('run-agent putting the REST gh shim on the agent PATH (CC-395)', () => {
   it('launches claude with the shim directory first on PATH and a gh script in it', () => {
     fs.writeFileSync(fakeClaude, "process.stdout.write(process.env.PATH.split(':')[0])\n")
-    writePlan('agt-test')
+    writePlan(agentId)
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -114,7 +118,7 @@ describe('run-agent honouring an unset marker in the plan (CC-200)', () => {
         fakeClaude,
         `require('node:fs').writeFileSync(${JSON.stringify(seen)}, String('CLAUDE_CONFIG_DIR' in process.env))\n`,
       )
-      writePlan('agt-test', {}, undefined, { surface, unsetEnv: ['CLAUDE_CONFIG_DIR'] })
+      writePlan(agentId, {}, undefined, { surface, unsetEnv: ['CLAUDE_CONFIG_DIR'] })
 
       runAgent({ AGENT_CHAT_CLAUDE: process.execPath, CLAUDE_CONFIG_DIR: stateDir })
 
@@ -124,14 +128,14 @@ describe('run-agent honouring an unset marker in the plan (CC-200)', () => {
 })
 
 describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () => {
-  const tailFile = () => path.join(stateDir, 'agents', 'agt-test', 'stderr-tail.txt')
+  const tailFile = () => path.join(stateDir, 'agents', agentId, 'stderr-tail.txt')
 
   it('leaves only the bounded tail of what claude wrote to stderr, and still passes it on', () => {
     fs.writeFileSync(
       fakeClaude,
       "process.stdin.resume(); process.stderr.write('x'.repeat(100000) + 'Not logged in · Please run /login\\n'); process.exitCode = 1\n",
     )
-    writePlan('agt-test', {}, 'the brief')
+    writePlan(agentId, {}, 'the brief')
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -143,7 +147,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
   })
 
   it('writes no tail file when claude says nothing on stderr', () => {
-    writePlan('agt-test', {}, 'the brief')
+    writePlan(agentId, {}, 'the brief')
 
     runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -155,7 +159,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
       fakeClaude,
       "process.stdin.resume(); require('node:child_process').spawn('sleep', ['4'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.stderr.write('Not logged in\\n'); process.exitCode = 3\n",
     )
-    writePlan('agt-test', {}, 'the brief')
+    writePlan(agentId, {}, 'the brief')
 
     const started = Date.now()
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
@@ -170,7 +174,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
       fakeClaude,
       "process.stdin.resume(); require('node:child_process').spawn(process.execPath, ['-e', \"setTimeout(() => process.stderr.write('late words\\\\n'), 100)\"], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.exitCode = 2\n",
     )
-    writePlan('agt-test', {}, 'the brief')
+    writePlan(agentId, {}, 'the brief')
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -180,7 +184,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
 
   it('exits with the claude exit code when claude closes stdin before reading its brief (CC-197)', () => {
     fs.writeFileSync(fakeClaude, 'process.stdin.destroy(); process.exit(7)\n')
-    writePlan('agt-test', {}, 'x'.repeat(4 * 1024 * 1024))
+    writePlan(agentId, {}, 'x'.repeat(4 * 1024 * 1024))
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -191,7 +195,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
   it('discards a tail left by an earlier launch of the same agent', () => {
     fs.mkdirSync(path.dirname(tailFile()), { recursive: true })
     fs.writeFileSync(tailFile(), 'Not logged in\n')
-    writePlan('agt-test', {}, 'the brief')
+    writePlan(agentId, {}, 'the brief')
 
     runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
@@ -217,18 +221,21 @@ describe('run-agent continuing a conversation that already exists (CC-488)', () 
     fs.writeFileSync(file, '{}\n')
   }
 
-  const argvSeen = (): string[] => JSON.parse(fs.readFileSync(seen, 'utf8')) as string[]
+  const argvSeen = (result: SpawnSyncReturns<string>): string[] => {
+    expect(result.status, result.stderr).toBe(0)
+    return JSON.parse(fs.readFileSync(seen, 'utf8')) as string[]
+  }
 
   it('hands claude --resume for a stored --session-id plan whose transcript exists', () => {
     const configDir = path.join(stateDir, 'account')
     writeTranscript(configDir)
-    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
+    writePlan(agentId, { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
       args: [fakeClaude, '--session-id', SID],
     })
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
-    expect(argvSeen()).toEqual(['--resume', SID])
+    expect(argvSeen(result)).toEqual(['--resume', SID])
     expect(result.stderr).toContain(SID)
   })
 
@@ -250,7 +257,7 @@ describe('run-agent continuing a conversation that already exists (CC-488)', () 
       '--disallowed-tools',
       'WebFetch',
     ]
-    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir, CC761_MARK: 'kept' }, 'the brief', {
+    writePlan(agentId, { CLAUDE_CONFIG_DIR: configDir, CC761_MARK: 'kept' }, 'the brief', {
       args: [fakeClaude, '--session-id', SID, ...permissionArgs],
     })
 
@@ -262,39 +269,39 @@ describe('run-agent continuing a conversation that already exists (CC-488)', () 
   })
 
   it('keeps --session-id when no transcript exists', () => {
-    writePlan('agt-test', { CLAUDE_CONFIG_DIR: path.join(stateDir, 'account') }, 'the brief', {
+    writePlan(agentId, { CLAUDE_CONFIG_DIR: path.join(stateDir, 'account') }, 'the brief', {
       args: [fakeClaude, '--session-id', SID],
     })
 
-    runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
-    expect(argvSeen()).toEqual(['--session-id', SID])
+    expect(argvSeen(result)).toEqual(['--session-id', SID])
   })
 
   it('reads the home .claude when the plan unsets CLAUDE_CONFIG_DIR', () => {
     const home = path.join(stateDir, 'home')
     writeTranscript(path.join(home, '.claude'))
-    writePlan('agt-test', {}, 'the brief', {
+    writePlan(agentId, {}, 'the brief', {
       args: [fakeClaude, '--session-id', SID],
       unsetEnv: ['CLAUDE_CONFIG_DIR'],
     })
 
-    runAgent({
+    const result = runAgent({
       AGENT_CHAT_CLAUDE: process.execPath,
       HOME: home,
       CLAUDE_CONFIG_DIR: path.join(stateDir, 'other'),
     })
 
-    expect(argvSeen()).toEqual(['--resume', SID])
+    expect(argvSeen(result)).toEqual(['--resume', SID])
   })
 
   it('refuses with exit 75 when another run-agent already holds the agent', () => {
     const configDir = path.join(stateDir, 'account')
     writeTranscript(configDir)
-    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
+    writePlan(agentId, { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
       args: [fakeClaude, '--session-id', SID],
     })
-    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', 'run-agent', 'agt-test'], {
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', 'run-agent', agentId], {
       stdio: 'ignore',
     })
     try {
@@ -305,6 +312,28 @@ describe('run-agent continuing a conversation that already exists (CC-488)', () 
       expect(fs.existsSync(seen)).toBe(false)
     } finally {
       holder.kill()
+    }
+  })
+
+  it("resumes a stored session while another agent's run-agent is running (CC-1164)", () => {
+    const configDir = path.join(stateDir, 'account')
+    writeTranscript(configDir)
+    writePlan(agentId, { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
+      args: [fakeClaude, '--session-id', SID],
+    })
+    const unrelated = spawn(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 20000)', 'run-agent', 'agt-test'],
+      {
+        stdio: 'ignore',
+      },
+    )
+    try {
+      const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+      expect(argvSeen(result)).toEqual(['--resume', SID])
+    } finally {
+      unrelated.kill()
     }
   })
 })
