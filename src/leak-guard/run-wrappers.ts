@@ -232,9 +232,9 @@ function valueIsSafe(name: string, kind: ValueKind, value: string): boolean {
 
 /**
  * A separator the shell never rewrites and Getopt never reads as an option: no braces, globs,
- * quotes or `$`, and no leading `-`. So a word spelling it reads the same to the guard and to parallel.
+ * quotes, `$` or `^`, and no leading `-` or `+`. So a word spelling it reads the same to the guard and to parallel.
  */
-const SEPARATOR = /^[A-Za-z0-9_:,.@%+=^]+$/
+const SEPARATOR = /^[A-Za-z0-9_:,.@%=][A-Za-z0-9_:,.@%+=]*$/
 
 /**
  * Folds one read option into `opts`; false when the guard cannot account for it: an unclassified
@@ -296,7 +296,7 @@ function readParallelOptions(
   let i = from
   while (i < marked.length) {
     const word = marked[i] ?? ''
-    if (plain(word).startsWith(LIVE)) return i
+    if (plain(word).startsWith(LIVE) || word.startsWith('+')) return i
     if (!word.startsWith('-') || word === '-' || isSeparator(opts, word)) return [opts, i]
     if ((word.split('=')[0] ?? '').includes(LIVE)) return i
     const read = word.startsWith('--') ? readLong(word, marked[i + 1]) : readCluster(word, marked[i + 1])
@@ -332,7 +332,8 @@ function readInputs(opts: ParallelOptions, marked: readonly string[], from: numb
 /**
  * Reads GNU parallel's words after its name, from index `from`; `splits` is the command's
  * `SimpleCommand.splits`. It returns `unknownOption`, the word's index, for an option the guard does
- * not know (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), one it cannot
+ * not know (an abbreviation, a single-dash long name, `--rpl`, `--shebang`, `-J`), any word with
+ * Getopt::Long's `+` option prefix (`+xargs`, `+j 4`), one it cannot
  * read, an expansion where an option may stand, or an option value the shell splits (`-j $N` may be
  * `1 git push`): the caller cannot tell what the command becomes. It refuses a command word that
  * runs perl (`{= … =}`) too, and a `--` anywhere: GNU reads it as the end of options, as part of

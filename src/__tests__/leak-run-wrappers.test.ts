@@ -207,6 +207,18 @@ describe('GNU parallel options, command and inputs (CC-1223)', () => {
     ["parallel --arg-sep '' tool ::: x", 0],
     ['parallel -I % -I @ tool @ ::: x', 2],
     ['parallel --quote=x tool ::: a', 0],
+    ['parallel +xargs git ::: push --no-verify', 0],
+    ['parallel +j 4 tool ::: x', 0],
+    ["parallel +memfree 'qx(tool)' tool ::: x", 0],
+    ['parallel -k +memfree=1G tool ::: x', 1],
+    ['parallel +sshlogin host tool ::: x', 0],
+    ['parallel +plus tool ::: x', 0],
+    ["parallel +rpl '{a} s/a/b/' tool {a} ::: x", 0],
+    ['parallel +shebang-wrap tool', 0],
+    ["parallel '+xargs' tool ::: x", 0],
+    ["parallel --arg-sep '^' tool '^' x", 0],
+    ["parallel --arg-sep 'a^b' tool 'a^b' x", 0],
+    ['parallel --arg-sep +S tool +S x', 0],
   ])('refuses an option it cannot read: %s', (line, at) => {
     expect(parallelOf(line)).toEqual({ unknownOption: at })
   })
