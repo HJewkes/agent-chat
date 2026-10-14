@@ -321,92 +321,118 @@ function funsubRest(marked: readonly string[]): string[] {
 const funsubAt = (text: string, i: number): boolean =>
   text.startsWith('${', i) && /[\s|]/.test(text[i + 2] ?? '')
 
-// Past these, a text is not read at all: the rest from its first opener is the fail-closed sentinel. They keep
-// the walk well inside the guard's deadline, which allows on timeout (failopen.ts), so padding cannot buy a pass.
+// Past these, a text is not read at all: the rest from its first opener is the fail-closed sentinel. With the
+// parse window and the deadline they keep the read well inside the guard's deadline, which allows on timeout
+// (failopen.ts), so padding cannot buy a pass. parseShell is superlinear on some data (unbalanced `(`, globs)
+// and can throw, so each call reads at most the last of PARSE_WINDOWS characters and a throw is a sentinel.
 const MAX_TEXT = 1 << 20
 const MAX_OPENERS = 20_000
+const PARSE_WINDOWS = [256, 1024, 4096]
+const DEADLINE_MS = 1000
 const SUBSTITUTION_OPENER = /\$\(|`/g
-
-/**
- * Where each outermost `$(`, `$((` or backtick substitution in `plain` from `from` on starts, with its exact
- * raw text, from one `parseShell` of that tail: the lexer the guard trusts ends it, so a `case`, `#` comment or
- * heredoc inside is not cut short. The tail starts at an opener, so quote characters in the data before it
- * are not read as quotes. The raws come in source order, so each is found from the end of the one before.
- */
-function substitutionStarts(plain: string, from: number): Map<number, string> {
-  const tail = plain.slice(from)
-  const parsed = parseShell(tail)
-  const inner = new Set(parsed.flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)))
-  const starts = new Map<number, string>()
-  let cursor = 0
-  for (const cmd of parsed) {
-    if (inner.has(cmd)) continue
-    for (const { raw } of cmd.substitutions) {
-      const at = tail.indexOf(raw, cursor)
-      if (at < 0) continue
-      starts.set(from + at, raw)
-      cursor = at + raw.length
-    }
-  }
-  return starts
-}
 
 // A raw the lexer closed: `$(...)` ends with `)`, a backtick pair with a backtick.
 const closed = (raw: string): boolean => raw.endsWith(')') || (raw.length > 1 && raw.endsWith('`'))
 
+/**
+ * Where each outermost `$(`, `$((` or backtick substitution the lexer closes in the window of `plain` from
+ * `from` starts, with its exact raw text, from one `parseShell` of that window, or undefined when it throws.
+ * The lexer the guard trusts ends each one, so a `case`, `#` comment or heredoc inside is not cut short. The
+ * window starts at an opener, so quote characters in the data before it are not read as quotes; a raw the
+ * window cut off is left out, so its opener is read again from its own window. Raws come in source order,
+ * so each is found from the end of the one before.
+ */
+function windowStarts(plain: string, from: number, size: number): Map<number, string> | undefined {
+  const window = plain.slice(from, from + size)
+  let parsed: SimpleCommand[]
+  try {
+    parsed = parseShell(window)
+  } catch {
+    return undefined
+  }
+  const inner = new Set(parsed.flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)))
+  const starts = new Map<number, string>()
+  let cursor = 0
+  for (const { raw } of parsed.filter(cmd => !inner.has(cmd)).flatMap(cmd => cmd.substitutions)) {
+    const at = window.indexOf(raw, cursor)
+    if (at < 0) continue
+    if (closed(raw)) starts.set(from + at, raw)
+    cursor = at + raw.length
+  }
+  return starts
+}
+
+/** The starts read from the smallest window that closes the opener at `from`, so a short sub costs a short parse. */
+function substitutionStarts(plain: string, from: number): Map<number, string> | undefined {
+  let starts: Map<number, string> | undefined
+  for (const size of PARSE_WINDOWS) {
+    starts = windowStarts(plain, from, size)
+    if (starts === undefined || starts.has(from) || from + size >= plain.length) return starts
+  }
+  return starts
+}
+
 // The command inside an opener's raw: `$(cmd)`/`$((cmd))` to the text past `$(`, `` `cmd` `` to the text past the tick.
 const openerBody = (raw: string): string => (raw[0] === '`' ? raw.slice(1, -1) : raw.slice(2, -1))
 
-/** True once; it spends one count of `raw` in `counts`, so a fake sharing a real sub's text is not trusted twice. */
-function recorded(counts: Map<string, number>, raw: string): boolean {
-  const n = counts.get(raw) ?? 0
-  if (n <= 0) return false
-  counts.set(raw, n - 1)
-  return true
+/**
+ * The recorded substitution whose exact text starts `plain` at `i`, spending one count of it, or undefined.
+ * Text from an opener on ends where the lexer ends it whatever comes before, so a match is the same raw
+ * without a parse; spent once, a fake sharing a real sub's text is not trusted twice.
+ */
+function trusted(plain: string, i: number, counts: Map<string, number>): string | undefined {
+  let best: string | undefined
+  for (const [raw, n] of counts)
+    if (n > 0 && plain.startsWith(raw, i) && raw.length > (best?.length ?? 0)) best = raw
+  if (best !== undefined) counts.set(best, (counts.get(best) ?? 1) - 1)
+  return best
+}
+
+/** What one quoted read needs beside its text: the recorded subs it may trust, and when the line's read must end. */
+interface Read {
+  counts: Map<string, number>
+  deadline: number
 }
 
 /**
  * The body of every `$(`, `$((`, backtick or `${ ` opener bash recognizes in `text` that the splitter did
- * not itself read as a command. Each opener's extent comes from `parseShell`, never from counting parens, so
- * a `case`, comment or heredoc inside it is not cut short. Trust is per recorded substitution, spent once: an
- * opener is skipped only while `counts` still holds its exact text, because the splitter marks the literal
- * `$` of `"$"` LIVE too (so `x["$"'(P)]'` looks live though bash builds `$(P)`) and a fake can share a real
- * sub's text in the same command. An opener with no well-formed close, and a funsub, are reported whole from
- * the opener as a sentinel (it still starts with `$(`, `` ` `` or `${`) that slice b denies without parsing.
+ * not itself read as a command. Each opener's extent comes from `parseShell`, never from counting parens.
+ * Trust is per recorded substitution, spent once, because the splitter marks the literal `$` of `"$"` LIVE
+ * too (so `x["$"'(P)]'` looks live though bash builds `$(P)`). An opener the lexer does not close in its
+ * window, a throw, the deadline and a funsub all report the rest from the opener as a sentinel (it still
+ * starts with `$(`, `` ` `` or `${`) that slice b denies without parsing.
  */
-function quotedSubstitutions(text: string, counts: Map<string, number>): string[] {
+function quotedSubstitutions(text: string, read: Read): string[] {
   const plain = unmark(text)
   const first = plain.search(/\$\(|`|\$\{[\s|]/)
   if (first < 0) return []
   if (plain.length > MAX_TEXT || (plain.match(SUBSTITUTION_OPENER)?.length ?? 0) > MAX_OPENERS)
     return [plain.slice(first)]
-  let starts = new Map<number, string>()
-  // Characters parsed so far may not pass a linear bound; past it the rest fails closed rather than slow down.
-  let budget = 4 * plain.length + 4096
+  let starts: Map<number, string> | undefined = new Map()
   const bodies: string[] = []
   for (let i = first; i < plain.length; i++) {
     if (funsubAt(plain, i)) return [...bodies, plain.slice(i)]
     if (!plain.startsWith('$(', i) && plain[i] !== '`') continue
-    if (!starts.has(i) && budget >= plain.length - i) {
-      budget -= plain.length - i
-      starts = substitutionStarts(plain, i)
+    const known = trusted(plain, i, read.counts)
+    if (known === undefined && !starts.has(i)) {
+      starts = performance.now() > read.deadline ? undefined : substitutionStarts(plain, i)
+      if (starts === undefined) return [...bodies, plain.slice(i)]
     }
-    const raw = starts.get(i)
-    // An opener the lexer did not end here (never closed, or past the budget): fail closed.
-    if (raw === undefined || !closed(raw)) return [...bodies, plain.slice(i)]
-    if (!recorded(counts, raw)) bodies.push(openerBody(raw))
+    const raw = known ?? starts.get(i)
+    if (raw === undefined) return [...bodies, plain.slice(i)]
+    if (known === undefined) bodies.push(openerBody(raw))
     i += raw.length - 1
   }
   return bodies
 }
 
 /** Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic. */
-function substitutionsOf(cmd: SimpleCommand): string[] {
+function substitutionsOf(cmd: SimpleCommand, deadline: number): string[] {
   const counts = new Map<string, number>()
   for (const sub of cmd.substitutions) counts.set(sub.raw, (counts.get(sub.raw) ?? 0) + 1)
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const texts = [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies]
-  return texts.flatMap(text => quotedSubstitutions(text, counts))
+  return texts.flatMap(text => quotedSubstitutions(text, { counts, deadline }))
 }
 
 /**
@@ -416,6 +442,7 @@ function substitutionsOf(cmd: SimpleCommand): string[] {
  * already, so it is not listed. A funsub is reported whole, from its `${` on.
  */
 export function arithSubstitutions(parsed: readonly SimpleCommand[]): string[] {
-  const bodies = parsed.flatMap(cmd => [...substitutionsOf(cmd), ...funsubRest(cmd.marked)])
+  const deadline = performance.now() + DEADLINE_MS
+  const bodies = parsed.flatMap(cmd => [...substitutionsOf(cmd, deadline), ...funsubRest(cmd.marked)])
   return [...new Set(bodies)]
 }

@@ -418,3 +418,34 @@ describe('arithSubstitutions stays linear on long texts', () => {
     expect(bodies).toEqual(['`a`'.repeat(10_001)])
   })
 })
+
+// parseShell is superlinear on some data and can throw; the module's per-call window and per-line deadline
+// keep its read bounded, and anything it cannot finish is the fail-closed sentinel, never a slow allow.
+describe('arithSubstitutions bounds the work parseShell does', () => {
+  const heredoc = (body: string): string => `cat <<'EOF'\n${body}\nEOF`
+  const timed = (line: string): { ms: number; bodies: string[] } => {
+    const parsed = parseShell(line)
+    const start = performance.now()
+    const bodies = arithSubstitutions(parsed)
+    return { ms: performance.now() - start, bodies }
+  }
+  const sentinel = (body: string): boolean => /^(\$\(|`|\$\{)/.test(body)
+
+  it('one opener before 256K of unbalanced ( is read from its own window, fast', () => {
+    const { ms, bodies } = timed(heredoc(`$(a) ${'x('.repeat(128 * 1024)}`))
+    expect(ms).toBeLessThan(2000)
+    expect(bodies).toEqual(['a'])
+  })
+
+  it('256K of lines that make one whole-text parse slow or throw is read opener by opener, fast', () => {
+    const line = '$(el).css(x) // note: (see below\n'
+    const { ms, bodies } = timed(heredoc(line.repeat(Math.ceil((256 * 1024) / line.length))))
+    expect(ms).toBeLessThan(2000)
+    expect(bodies).toEqual(['el'])
+  })
+
+  it('an opener its largest window cannot close is the sentinel', () => {
+    const { bodies } = timed(heredoc(`$(${'x('.repeat(4096)}`))
+    expect(bodies.some(sentinel)).toBe(true)
+  })
+})
