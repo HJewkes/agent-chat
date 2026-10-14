@@ -298,3 +298,98 @@ describe("which reports are the sender's last word (CC-321, CC-337)", () => {
     expect(isTerminalReport(text)).toBe(false)
   })
 })
+
+describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)', () => {
+  function sqlRunBy(log: EventLog, read: () => void): string {
+    const db = log.ledgerHandle()
+    const prepare = db.prepare.bind(db)
+    const seen: string[] = []
+    db.prepare = (sql: string) => {
+      seen.push(sql)
+      return prepare(sql)
+    }
+    try {
+      read()
+    } finally {
+      db.prepare = prepare
+    }
+    expect(seen).toHaveLength(1)
+    return seen[0]!
+  }
+
+  function planOf(log: EventLog, sql: string, ...params: string[]): string[] {
+    const rows = log
+      .ledgerHandle()
+      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      .all(...params) as { detail: string }[]
+    return rows.map(r => r.detail)
+  }
+
+  function seedInterleaved(log: EventLog): void {
+    for (let i = 0; i < 10; i++) {
+      log.append({ kind: 'agent_spawned', actor: 'human', target: `a${i}`, msgId: `id${i}` })
+      log.append({ kind: 'message', actor: 'human', target: `a${i}`, body: 'hello' })
+      log.append({ kind: 'agent_attached', actor: `a${i}`, ref: `id${i}` })
+      log.append({ kind: 'isolation_allocated', actor: `a${i}`, ref: `id${i}` })
+    }
+  }
+
+  it('scans the table in rowid order with no temp B-tree sort', () => {
+    const log = freshLog()
+    seedInterleaved(log)
+
+    const plan = planOf(
+      log,
+      sqlRunBy(log, () => log.agentEvents()),
+    )
+
+    expect(plan.join('\n')).not.toContain('TEMP B-TREE')
+    expect(plan.some(d => d.startsWith('SCAN events'))).toBe(true)
+  })
+
+  it('returns agent rows in append order across kinds, without other kinds', () => {
+    const log = freshLog()
+    log.append({ kind: 'agent_spawned', actor: 'human', target: 'a', msgId: 'A', body: '1' })
+    log.append({ kind: 'message', actor: 'human', target: 'a', body: 'not agent' })
+    log.append({ kind: 'agent_attached', actor: 'a', ref: 'A', body: '2' })
+    log.append({ kind: 'agent_spawned', actor: 'human', target: 'b', msgId: 'B', body: '3' })
+    log.append({ kind: 'isolation_allocated', actor: 'a', ref: 'A', body: '4' })
+    log.append({ kind: 'agent_exited', actor: 'b', ref: 'B', body: '5' })
+
+    const rows = log.agentEvents()
+
+    expect(rows.map(r => r.body)).toEqual(['1', '2', '3', '4', '5'])
+    expect(rows.map(r => r.kind)).toEqual([
+      'agent_spawned',
+      'agent_attached',
+      'agent_spawned',
+      'isolation_allocated',
+      'agent_exited',
+    ])
+  })
+
+  it('keeps temp sorts in memory, including after a reopen', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'events.db')
+    const tempStore = (log: EventLog) => log.ledgerHandle().prepare('PRAGMA temp_store').get()
+
+    const first = new EventLog(file)
+    expect(tempStore(first)).toEqual({ temp_store: 2 })
+    first.close()
+
+    expect(tempStore(new EventLog(file))).toEqual({ temp_store: 2 })
+  })
+
+  it("looks one agent's rows up by index, not by a table scan", () => {
+    const log = freshLog()
+    seedInterleaved(log)
+
+    const sql = sqlRunBy(log, () => log.agentEventsFor('id3'))
+    const plan = planOf(log, sql, 'id3', 'id3').join('\n')
+
+    expect(plan).toContain('events_msg_id')
+    expect(plan).toContain('events_ref')
+    expect(plan).not.toContain('SCAN events')
+  })
+})
