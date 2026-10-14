@@ -356,7 +356,11 @@ function addHiddenCommands(program: Command): void {
       '--self-grant-skills <root>',
       "allow writes under this worktree's .claude/skills/<name>/ (CC-694)",
     )
-    .action(async (options: { deadline: string; selfGrantSkills?: string }) => {
+    .option(
+      '--self-grant-common-dir <dir>',
+      'the git common dir pinned at launch; self-grant refuses without it (CC-1200)',
+    )
+    .action(async (options: { deadline: string; selfGrantSkills?: string; selfGrantCommonDir?: string }) => {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })

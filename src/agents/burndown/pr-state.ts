@@ -4,7 +4,7 @@ import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
 import { jsonLines, originRepo } from './pr-adopt-ports.js'
-import { shepherdTarget, targetRef } from './shepherd.js'
+import { shepherdTarget, targetRef, type ShepherdTarget } from './shepherd.js'
 
 /**
  * CC-1054: what GitHub says about a held claim's PR, so the tick lets go of a claim whose PR merged or whose
@@ -102,6 +102,41 @@ export function readRepoPulls(repo: string, exec: Runner): RepoPulls | undefined
     })
   }
   return { pulls, complete: pulls.length < PAGE }
+}
+
+/** One PR's merge time and head; `mergedAt` is null while it is unmerged. */
+export interface PullMerge {
+  mergedAt: string | null
+  headSha: string
+}
+
+/**
+ * CC-1044: one PR read by number, so a merge the page-limited `readRepoPulls` cannot see still counts.
+ * Undefined when `gh` fails or answers in a shape it should not.
+ */
+export function readPullMerge(target: ShepherdTarget, exec: Runner): PullMerge | undefined {
+  const result = exec('gh', [
+    'api',
+    `repos/${target.repo}/pulls/${target.pr}`,
+    '--jq',
+    '{mergedAt: .merged_at, headSha: .head.sha}',
+  ])
+  if (result.status !== 0) return undefined
+  const [line] = jsonLines(result.stdout)
+  const p = line as Partial<PullMerge> | undefined
+  if (typeof p?.headSha !== 'string' || p.headSha === '') return undefined
+  if (p.mergedAt !== null && typeof p.mergedAt !== 'string') return undefined
+  return { mergedAt: p.mergedAt, headSha: p.headSha }
+}
+
+/** The tick's single-PR reader: each `repo#n` read at most once, however many claims ask. */
+export function pullMergeReader(exec: Runner): (target: ShepherdTarget) => PullMerge | undefined {
+  const read = new Map<string, PullMerge | undefined>()
+  return target => {
+    const ref = targetRef(target)
+    if (!read.has(ref)) read.set(ref, readPullMerge(target, exec))
+    return read.get(ref)
+  }
 }
 
 /** The tick's reader: each repo's pulls and each checkout's origin read at most once, however many claims share them. */

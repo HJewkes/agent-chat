@@ -116,3 +116,37 @@ export function parseClassFile(text: string): ClassRow[] | undefined {
     ]
   })
 }
+
+/** The ask column of a row whose ask failed to reach the broker; the next run retries it. */
+export const NOT_SENT = 'not-sent'
+
+/** True when the ask column holds a sent ask's message id. */
+export const hasAsk = (ask: string): boolean => ask !== '-' && ask !== NOT_SENT
+
+/** An ambiguous row with no sent ask: the owner has not been asked about it yet. */
+export const needsAsk = (row: ClassRow): boolean => row.class === 'ambiguous' && !hasAsk(row.ask)
+
+/** TP-2418 c: an ambiguous row keeps the ask an earlier file records for it, so the owner is asked once. */
+export function carryAsks(rows: readonly ClassRow[], previous: readonly ClassRow[]): ClassRow[] {
+  const sent = new Map(previous.filter(row => hasAsk(row.ask)).map(row => [row.id, row.ask]))
+  return rows.map(row => {
+    const ask = sent.get(row.id)
+    return row.class === 'ambiguous' && ask !== undefined ? { ...row, ask } : row
+  })
+}
+
+export interface OwnerAnswer {
+  msgId: string
+  outcome: 'answered' | 'dismissed'
+  text: string
+}
+
+const CHOICE = /^\s*(on|off)\b/i
+
+/** An answer of on or off settles an ambiguous row, citing the answer; anything else leaves it ambiguous. */
+export function applyAnswer(row: ClassRow, answer: OwnerAnswer | undefined): ClassRow {
+  if (row.class !== 'ambiguous' || answer?.outcome !== 'answered') return row
+  const choice = CHOICE.exec(answer.text)?.[1]?.toLowerCase()
+  if (choice !== 'on' && choice !== 'off') return row
+  return { ...row, class: choice, detail: `owner answered ${answer.msgId}` }
+}
