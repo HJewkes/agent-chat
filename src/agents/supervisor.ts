@@ -93,6 +93,13 @@ import {
 } from './remote-spawn.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import {
+  REVIEWER_TREE_CHANGED,
+  reviewerDirtyText,
+  treeChange,
+  treeFingerprint,
+  type TreeFingerprint,
+} from './reviewer-tree-guard.js'
+import {
   REVIEWER_ACCOUNT_LIMIT,
   reviewerAccountGate,
   type ReviewerAccountRead,
@@ -760,6 +767,8 @@ interface Live {
   runningObserved?: boolean
   /** CC-951: kept while its successor-first successor starts, so its own exit is not a finish. */
   teleporting?: boolean
+  /** CC-233: a reviewer's cwd as it was before launch, compared again at exit. */
+  reviewerTree?: TreeFingerprint
 }
 
 export interface SupervisorOptions {
@@ -1353,6 +1362,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    if (entry.cancelReason !== MODE_SWITCH) await this.reportReviewerTree(entry)
     const resumeOn =
       failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
         ? this.reportIfUnreported(agentId, entry.name)
@@ -1432,6 +1442,48 @@ export class Supervisor implements TeleportHost {
     if (decision === 'resume') return tail
     this.notifyUnreported(agentId, name, identity.spawnedBy, tail)
     return undefined
+  }
+
+  /** CC-233: undefined for a non-reviewer, so only a reviewer's exit is checked. */
+  private async reviewerTreeBefore(profile: string, name: string, cwd: string) {
+    return isReviewerSpawn(profile, name) ? treeFingerprint(cwd) : undefined
+  }
+
+  /** CC-233: tells the spawner which paths a reviewer left changed in the tree it reviewed. */
+  private async reportReviewerTree(entry: Live): Promise<void> {
+    if (entry.reviewerTree === undefined) return
+    const cwd = entry.allocation.cwd
+    const after = await treeFingerprint(cwd)
+    const paths = after === undefined ? [] : treeChange(entry.reviewerTree, after)
+    if (paths.length === 0) return
+    const spawner = this.core.agents.get(entry.agentId)?.spawnedBy ?? HUMAN
+    const body = reviewerDirtyText(entry.name, cwd, paths)
+    const { msgId } = this.core.append({
+      kind: spawner === HUMAN ? 'notice' : 'message',
+      actor: 'agent-chat',
+      target: spawner,
+      body,
+      meta: {
+        event: REVIEWER_TREE_CHANGED,
+        agent: entry.name,
+        agent_id: entry.agentId,
+        cwd,
+        paths: paths.join('\n'),
+      },
+    })
+    this.core.deliverTo(spawner, {
+      msgId,
+      from: 'agent-chat',
+      text: body,
+      at: Date.now(),
+      event: REVIEWER_TREE_CHANGED,
+    })
+    logEvent(REVIEWER_TREE_CHANGED, {
+      agentId: entry.agentId,
+      name: entry.name,
+      spawner,
+      paths: paths.length,
+    })
   }
 
   /** CC-336: a refused resume (budget, machine stop, no transcript) falls back to the notice. */
@@ -2564,9 +2616,10 @@ export class Supervisor implements TeleportHost {
       },
     })
 
+    const reviewerTree = await this.reviewerTreeBefore(profile.name, req.name, allocation.cwd)
     const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
-    this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
+    this.track(agentId, req.name, handle, allocation, isolationName, req.anchor, reviewerTree)
     this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
@@ -2986,6 +3039,7 @@ export class Supervisor implements TeleportHost {
     allocation: Allocation,
     isolation: IsolationName,
     anchor?: string,
+    reviewerTree?: TreeFingerprint,
   ): void {
     // A settle timer from a previous life closes over the OLD Live object, but
     // `recordExit` resolves the entry by id against the current map — so a timer
@@ -2996,7 +3050,15 @@ export class Supervisor implements TeleportHost {
     if (previous?.settle) clearTimeout(previous.settle)
     this.forgetReattach(agentId)
 
-    const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
+    const entry: Live = {
+      agentId,
+      name,
+      handle,
+      allocation,
+      isolation,
+      ...(anchor ? { anchor } : {}),
+      ...(reviewerTree ? { reviewerTree } : {}),
+    }
     this.live.set(agentId, entry)
     // CC-78: the same facts on disk, so a retire that outlives this broker can
     // still release the worktree and close the pane. `exited` is dropped because
@@ -3758,11 +3820,12 @@ export class Supervisor implements TeleportHost {
         ...provenance,
       },
     })
+    const reviewerTree = await this.reviewerTreeBefore(profile.name, agent.name, allocation.cwd)
     const handle = await this.launchOn(surface, plan, req.anchor).catch((err: unknown) => {
       this.resumeNeverStarted(agent, err)
       throw err
     })
-    this.track(agent.agentId, agent.name, handle, allocation, isolation, req.anchor)
+    this.track(agent.agentId, agent.name, handle, allocation, isolation, req.anchor, reviewerTree)
     this.bindExecution(agent.agentId, executionId)
   }
 
@@ -3877,7 +3940,7 @@ export class Supervisor implements TeleportHost {
 
     const executionId = this.continueExecution(agent, entry)
     const handle = await this.launchOn(surface, plan, req.anchor)
-    this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor)
+    this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor, entry?.reviewerTree)
     this.bindExecution(agent.agentId, executionId)
     logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })
     // Delivered after the relaunch so it lands in the session that came back,
