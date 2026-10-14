@@ -385,14 +385,37 @@ describe('burndown release --slice and link (CC-978)', () => {
       expect(merged.claims.find(c => c.slice === 'a')?.phase).toBe('done')
     })
 
-    it('re-links a slice never seeded when the PR branch names the task and --initiative is given', async () => {
+    it('seeds the whole plan of a task never seeded, linking only the named slice, so it never reads merged early', async () => {
       writeLedger(file(), EMPTY_LEDGER)
       const ports = { ...pulled({ title: 'unrelated', branch: 'agent-chat/bd-cc-1-b' }), initiative: 'demo' }
 
       const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, ports)
 
+      const linked = readLedger(file())
       expect(report.ok).toBe(true)
-      expect(readLedger(file()).claims).toMatchObject([{ taskId: 'CC-1', slice: 'b', pr: 'o/r#41' }])
+      expect(linked.claims.map(c => [c.slice, c.pr])).toEqual([
+        ['a', undefined],
+        ['b', 'o/r#41'],
+        ['c', undefined],
+      ])
+      expect(readySlices(linked).map(c => c.slice)).toEqual(['a', 'c'])
+      const merged = await mergedTick(linked, c =>
+        c.pr === undefined ? undefined : { kind: 'merged', pr: c.pr, head: 'h41' },
+      )
+      expect(merged.claims.map(c => c.phase)).toEqual(['queued', 'done', 'queued'])
+      expect(
+        seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan('demo', 'CC-1'), merged, NOW),
+      ).not.toEqual({
+        merged: true,
+      })
+    })
+
+    it('adds only the named slice after a slice release, keeping the rest of the plan as seeded', async () => {
+      await releaseTask('CC-1', retire, NOW, 'b')
+
+      await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, pulled({ title: 'CC-1 b: thing' }))
+
+      expect(readLedger(file()).claims.map(c => c.slice)).toEqual(['a', 'c', 'b'])
     })
 
     it('refuses a PR whose title and branch name another task', async () => {

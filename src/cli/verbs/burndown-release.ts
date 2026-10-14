@@ -269,18 +269,26 @@ function relinkLocked(
   const parent =
     ofTask[0] ?? (ports.initiative === undefined ? undefined : { taskId: task, initiative: ports.initiative })
   if (parent === undefined) return 'no claim of the task is left to name its initiative; pass --initiative'
-  const planned = plannedSlice(ports.plan(parent.initiative, task), slice)
+  const planned = plannedSlices(ports.plan(parent.initiative, task), slice)
   if (typeof planned === 'string') return planned
-  const added = sliceClaims(parent, [planned], ports.now ?? new Date()).map(c => ({ ...c, pr }))
+  const released = ledger.slicesReleased?.[task]?.includes(slice) === true
+  // Seeding adds every plan slice at once, which alreadySeeded and slicesMerged rely on: a task with no slice
+  // claim and nothing released gets the whole plan, or its other slices would never run and it would read merged.
+  const seeded = released || ofTask.some(c => c.slice !== undefined)
+  const slices = seeded ? planned.filter(s => s.n === slice) : planned
+  const added = sliceClaims(parent, slices, ports.now ?? new Date()).map(c =>
+    c.slice === slice ? { ...c, pr } : c,
+  )
   writeLedger(file, unreleased({ ...ledger, claims: [...ledger.claims, ...added] }, task, slice))
   return undefined
 }
 
-function plannedSlice({ path, text }: PlanFile, slice: string): PlannedSlice | string {
+/** Every slice of the plan, or why the plan or the named slice cannot be read. */
+function plannedSlices({ path, text }: PlanFile, slice: string): PlannedSlice[] | string {
   if (text === undefined) return `no plan at ${path}`
   const read = readSlices(text)
   if (read.slices === undefined) return `plan unreadable: ${read.problems.join('; ')}`
-  return read.slices.find(s => s.n === slice) ?? `slice ${slice} is not in ${path}`
+  return read.slices.some(s => s.n === slice) ? read.slices : `slice ${slice} is not in ${path}`
 }
 
 /** Drops the slice from the task's released slices, and the task's key once none is left. */
