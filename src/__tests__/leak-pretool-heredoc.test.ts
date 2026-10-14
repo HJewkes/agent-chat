@@ -81,6 +81,22 @@ const SHELLS: [string, string[]][] = (
   ] satisfies [string, string[]][]
 ).filter(([shell]) => fs.existsSync(shell))
 
+const bashVersion = (): [number, number] => {
+  try {
+    const v = execFileSync('/bin/bash', ['-c', 'echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}'], {
+      encoding: 'utf8',
+    })
+    const [major = 0, minor = 0] = v.trim().split(' ').map(Number)
+    return [major, minor]
+  } catch {
+    return [0, 0]
+  }
+}
+const [major, minor] = bashVersion()
+const bashRunsFunsub = major > 5 || (major === 5 && minor >= 3)
+// bash before 5.3 has no funsubs, so it prints those bodies as text.
+const BASH_LIVE = LIVE.filter(src => bashRunsFunsub || !src.includes('${'))
+
 /** Whether `shell` ran the fake git for `src`, fed on stdin as a script. */
 function runsGit(shell: string, args: string[], src: string): boolean {
   fs.rmSync(RECORD, { force: true })
@@ -99,7 +115,7 @@ describe('real shells agree with the guard on heredoc bodies', () => {
     )
   })
 
-  it.each(LIVE)('bash runs the push in %j', src => {
+  it.each(BASH_LIVE)('bash runs the push in %j', src => {
     expect(runsGit('/bin/bash', ['--noprofile', '--norc'], src)).toBe(true)
   })
 
