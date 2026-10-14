@@ -206,10 +206,6 @@ interface Element {
 }
 
 /**
- * The marked words of the compound array list `cmd` opens, read from the commands after it in `line`
- * and skipping the commands of the substitutions inside it; undefined when `cmd` opens none.
- */
-/**
  * The command list that holds `cmd` innermost: a substitution's own commands for a `cmd` inside one, which
  * the splitter also lists, flattened, in `line` and in every enclosing substitution; else `line` itself.
  */
@@ -220,6 +216,10 @@ function containingList(cmd: SimpleCommand, line: readonly SimpleCommand[]): rea
     .reduce((best, list) => (list.length < best.length ? list : best), line)
 }
 
+/**
+ * The marked words of the compound array list `cmd` opens, read from the commands after it in `line`
+ * and skipping the commands of the substitutions inside it; undefined when `cmd` opens none.
+ */
 function compoundList(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] | undefined {
   if (!OPENER.test(cmd.marked.at(-1) ?? '')) return undefined
   const line = containingList(cmd, parsed)
@@ -309,7 +309,8 @@ function bodyEnd(text: string, from: number, open = '(', close = ')'): number {
 
 // bash 5.3's `${ list; }` and `${| list; }`. The splitter cuts their words at the first `}`, even a quoted one, so
 // their text cannot be read here; until a real funsub reader lands (CC-1327 a) the rest of the command is
-// reported whole as one text, unread, the same fail-closed signal as a compound key that never closes.
+// reported whole as one raw text that starts with `${`. That is not a command: the guard (slice b) must deny
+// any body that starts with `${` rather than check it as one.
 const FUNSUB = new RegExp(`${LIVE}\\$\\{[\\s|]`)
 
 /** The command's text from its first live funsub on, unmarked, or nothing when it holds none. */
@@ -349,6 +350,37 @@ function quotedSubstitutions(marked: string): string[] {
 }
 
 /** The quoted substitutions one command of `parsed` runs as arithmetic or as a name. */
+// A name may carry the integer attribute from anywhere, even from before the line, and then bash evaluates
+// what is assigned to it as arithmetic, so a quoted `$(...)` in a subscript of the value runs. A value with
+// no `NAME[` runs nothing that way, so it is not read.
+const VALUE_SUBSCRIPT = new RegExp(`${NAME}${LIVE}?\\[`)
+
+/** The text of `value` from its first `NAME[` on, or nothing when it has none. */
+function fromSubscript(value: string): string[] {
+  const at = value.search(VALUE_SUBSCRIPT)
+  return at < 0 ? [] : [value.slice(at)]
+}
+
+/** The value part of a `NAME=value`, `NAME+=value` or `NAME[...]=value` word, or nothing when it has none. */
+function valuePart(word: string): string[] {
+  const at = word.indexOf('=', nameEnd(word))
+  return at < 0 ? [] : [word.slice(at + 1)]
+}
+
+/** Every element value of the compound list `cmd` opens. */
+function compoundValues(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
+  const list = compoundList(cmd, parsed)
+  return list === undefined ? [] : elements(list).map(element => element.value)
+}
+
+/** Every value `cmd` assigns: prefix assignments, declarer operands, compound list values, and `read` data. */
+function assignedValues(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
+  const { marked, words, markedAssignments } = commandHead(cmd)
+  const declared = DECLARERS.has(words[0] ?? '') ? nameOperands(words).map(i => marked[i] ?? '') : []
+  const data = words[0] === 'read' && cmd.stdin !== undefined ? [cmd.stdin] : []
+  return [...[...markedAssignments, ...declared].flatMap(valuePart), ...compoundValues(cmd, parsed), ...data]
+}
+
 function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
   const { marked, words, markedAssignments } = commandHead(cmd)
   const operands = nameOperands(words)
@@ -358,6 +390,7 @@ function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): 
     ...integerValues(words, marked, operands),
     ...namerefValues(words, marked, operands),
     ...compoundTexts(cmd, parsed),
+    ...assignedValues(cmd, parsed).flatMap(fromSubscript),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   return [...texts, ...cmd.arithBodies].flatMap(quotedSubstitutions)

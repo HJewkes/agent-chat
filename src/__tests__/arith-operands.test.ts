@@ -193,10 +193,8 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `[[ 'x[$(${P})]' == 1 ]]`,
     `test 'x[$(${P})]' -eq 1`,
     `echo 'x[$(${P})]'`,
-    `declare 'n=x[$(${P})]'`,
     `read -a 'x[$(${P})]'`,
     `declare 'n=$(${P})'`,
-    `export 'n=x[$(${P})]'`,
     `unset -f 'f'`,
     `x[$(${P})]=1`,
     `x='$(${P})'`,
@@ -205,13 +203,9 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `x=('[$(${P})]=1')`,
     `x=(['k']='$(${P})')`,
     `declare -A x=( ["$(${P})"]=1 )`,
-    `x=(['k']='y[$(${P})]')`,
-    `declare -a x=('y[$(${P})]')`,
-    `declare -A x=(['k']='y[$(${P})]')`,
     `declare -ai x=(1); echo 'y[$(${P})]'`,
     `x=(a b) && echo '[$(${P})]=1'`,
     `echo '\${ x=([k]=1); }' 'x[$(${P})]'`,
-    `declare r='x[$(${P})]'`,
     `[ -v x ]`,
     `[[ -v x ]]`,
     `[[ $n -eq 3 ]]`,
@@ -219,6 +213,43 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `! test 'x[$(${P})]' -eq 1`,
     `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
+    expect(bodiesOf(line)).toEqual([])
+  })
+})
+
+// An integer attribute may come from an earlier command or from before the line, so every assigned value
+// is read as possible arithmetic: a quoted $(...) in a subscript of it runs.
+describe('arithSubstitutions reads a subscript in any assigned value', () => {
+  const forms = [
+    `n='x[$(${P})]'`,
+    `n+='x[$(${P})]'`,
+    `x[0]='y[$(${P})]'`,
+    `n='x[$(${P})]' true`,
+    `x+=('y[$(${P})]')`,
+    `x=(['k']='y[$(${P})]')`,
+    `declare n='x[$(${P})]'`,
+    `declare 'n=x[$(${P})]'`,
+    `declare r='x[$(${P})]'`,
+    `declare -a x=('y[$(${P})]')`,
+    `declare -A x=(['k']='y[$(${P})]')`,
+    `export n='x[$(${P})]'`,
+    `local n='x[$(${P})]'`,
+    `readonly n='x[$(${P})]'`,
+    `read n <<< 'x[$(${P})]'`,
+    `read n <<'EOF'\nx[$(${P})]\nEOF`,
+  ]
+  it.each(forms.flatMap(form => [form, `declare -i n; declare -ai x; ${form}`]))('%s', line => {
+    expect(bodiesOf(line)).toEqual([P])
+  })
+
+  it.each([
+    `n='$(${P})'`,
+    `declare n='$(${P})'`,
+    `x+=('$(${P})')`,
+    `read n <<< '$(${P})'`,
+    `echo n='x[$(${P})]'`,
+    `x=('[$(${P})]=1')`,
+  ])('%s has no subscript in its value', line => {
     expect(bodiesOf(line)).toEqual([])
   })
 })
