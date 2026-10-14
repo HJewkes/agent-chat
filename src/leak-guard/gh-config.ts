@@ -25,8 +25,11 @@ function readFlag(word: string): FlagRead {
 
 interface Positionals {
   words: (string | undefined)[]
-  /** Whether `-h`/`--host` took an unresolved word, which an unquoted expansion may split into a key and value. */
-  hostUnread: boolean
+  /**
+   * How many positionals came before the last unresolved `-h`/`--host` word, undefined when none
+   * did: an unquoted expansion there may add positionals, vanish, or end in `-h` and take the next one.
+   */
+  unreadHostAt: number | undefined
 }
 
 /**
@@ -35,7 +38,7 @@ interface Positionals {
  */
 function positionals(rest: readonly (string | undefined)[]): Positionals | 'unread' | 'help' {
   const words: (string | undefined)[] = []
-  let hostUnread = false
+  let unreadHostAt: number | undefined
   let parsing = true
   for (let i = 0; i < rest.length; i++) {
     const word = rest[i]
@@ -46,11 +49,11 @@ function positionals(rest: readonly (string | undefined)[]): Positionals | 'unre
       if (flag === 'help') return rest.slice(0, i).includes(undefined) ? 'unread' : 'help'
       if (flag === 'hostNext' && i + 1 < rest.length) {
         const host = rest[++i]
-        if (host === undefined) hostUnread = true
+        if (host === undefined) unreadHostAt = words.length
       }
     } else words.push(word)
   }
-  return { words, hostUnread }
+  return { words, unreadHostAt }
 }
 
 /** What the positionals write, before an unresolved host word is taken into account. */
@@ -66,13 +69,16 @@ function programWrite(words: readonly (string | undefined)[]): GhConfigProgram |
  * `rest` is every word of `gh config set` after its two command words, undefined where the guard
  * cannot resolve one. Flags may come anywhere before `--`, as pflag reads them. Returns undefined
  * when the call writes no program key, including a call missing its key or value, which gh rejects.
- * Past an unresolved host word only a program write stays read: that word may itself hold a
- * program key (`-h $H` with `H="a --host= pager"`), so any other reading is `unread`.
+ * Past an unresolved host word a program write stays read only when exactly its key and value
+ * follow that word, since any shift the expansion makes then leaves gh with the wrong count of
+ * positionals; every other reading is `unread` (`-h $H` with `H="a --host= pager"` writes pager).
  */
 export function ghConfigProgram(rest: readonly (string | undefined)[]): GhConfigProgram | undefined {
   const read = positionals(rest)
   if (read === 'help') return undefined
   if (read === 'unread') return { kind: 'unread' }
   const write = programWrite(read.words)
-  return read.hostUnread && write?.kind !== 'program' ? { kind: 'unread' } : write
+  if (read.unreadHostAt === undefined) return write
+  const settled = write?.kind === 'program' && read.unreadHostAt === 0 && read.words.length === 2
+  return settled ? write : { kind: 'unread' }
 }

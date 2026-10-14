@@ -40,6 +40,10 @@ describe('gh config set the guard cannot read', () => {
     [['-h', undefined]],
     [['--host', undefined, 'git push --no-verify']],
     [['-h', undefined, 'git_protocol', 'x']],
+    [['-h', undefined, 'pager', 'editor', PUSH]],
+    [['pager', '-h', undefined, 'x']],
+    [['pager', PUSH, '--host', undefined]],
+    [['-h', undefined, 'pager', '-h', undefined, 'x']],
   ])('reads %j as unread', rest => {
     expect(ghConfigProgram(rest)).toEqual({ kind: 'unread' })
   })
