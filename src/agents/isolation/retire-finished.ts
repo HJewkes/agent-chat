@@ -3,6 +3,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { runGit, type GitRunner } from '../../git.js'
 import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
+import { heldBranches, memoizeOpenPr, openPrHold } from './open-pr-hold.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
 import { shepherdSkip, type ShepherdSkipPort } from './shepherd-skip.js'
 import { isLive } from './sweep.js'
@@ -11,6 +12,7 @@ import { isLive } from './sweep.js'
  * CC-323: the skip rules for `agent retire --finished`. Every rule errs towards
  * skipping: a wrong skip costs a line of output, a wrong retire can lose work.
  * The retire itself still goes through `Supervisor.retire`, so its refusals apply too.
+ * CC-1325: it also keeps implementers, Shepherd-registered ones included, and reviewers while their PR is open.
  */
 
 export interface RetireScope {
@@ -86,18 +88,27 @@ async function planFinished(
 ): Promise<Planned[]> {
   const roster = port.roster()
   const events = port.events()
+  const planPort = port.skip ? { ...port, skip: memoizedSkip(port.skip) } : port
   const callers = new Set([scope.caller, scope.spawner].filter((n): n is string => Boolean(n?.trim())))
   const planned: Planned[] = []
   for (const agent of roster.filter(a => inScope(a, scope))) {
     const reason = callers.has(agent.name)
       ? `${agent.name} is the caller itself, not an agent it spawned`
-      : await finishedBlocker(port, agent, roster, events)
+      : await finishedBlocker(planPort, agent, roster, events)
     const base: Omit<RetirePlanEntry, 'action'> = { name: agent.name, ...duplicateOf(agent, roster) }
     const entry: RetirePlanEntry =
       reason === undefined ? { ...base, action: 'retire' } : { ...base, action: 'skip', reason }
     planned.push({ agentId: agent.agentId, entry })
   }
   return planned
+}
+
+/** One `gh` read per repo and branch for the whole plan, shared by the CC-904 and CC-1325 rules. */
+function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
+  return {
+    activeRuns: () => skip.activeRuns(),
+    hasOpenPr: memoizeOpenPr((root, b) => skip.hasOpenPr(root, b)),
+  }
 }
 
 /** Teleport successors keep their predecessor's name, so a name alone cannot say which row the plan means. */
@@ -124,6 +135,9 @@ async function finishedBlocker(
   if (byAdopter) return byAdopter
   const byShepherd = port.skip && (await shepherdSkip(port.skip, agent, target))
   if (byShepherd) return byShepherd
+  const byOpenPr =
+    port.skip && (await openPrHold(port.skip.hasOpenPr, heldBranches(agent, target, roster, events)))
+  if (byOpenPr) return byOpenPr
   if (target === undefined) return undefined
   return workBlocker(target, port.git).catch(
     (err: Error) => `could not read ${target.worktree}: ${err.message}`,
