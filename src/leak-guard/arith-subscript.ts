@@ -349,38 +349,21 @@ function quotedSubstitutions(marked: string): string[] {
   return bodies.map(unmark)
 }
 
+// Text reaches a variable that may carry the integer attribute, set anywhere and even before the line, through
+// any word or any stdin: an assigner, printf -v, read, readarray, for, set --, a pipe. bash then evaluates it
+// as arithmetic, and a quoted `$(...)` in a subscript of it runs. So every word and every here-string or
+// heredoc is read from its first NAME[ on, whatever the command, which over-reports a non-consumer on
+// purpose. A name right after `$`, a name character or `}` (`$y[`, `${y}[`) is not a subscript bash ran;
+// text with no NAME[ runs nothing that way, so it is not read.
+const WORD_SUBSCRIPT = new RegExp(`(?<![A-Za-z0-9_$}])${NAME}${LIVE}?\\[`)
+
+/** The text of `text` from its first NAME[ on, or nothing when it has none. */
+function fromSubscript(text: string): string[] {
+  const at = text.search(WORD_SUBSCRIPT)
+  return at < 0 ? [] : [text.slice(at)]
+}
+
 /** The quoted substitutions one command of `parsed` runs as arithmetic or as a name. */
-// A name may carry the integer attribute from anywhere, even from before the line, and then bash evaluates
-// what is assigned to it as arithmetic, so a quoted `$(...)` in a subscript of the value runs. A value with
-// no `NAME[` runs nothing that way, so it is not read.
-const VALUE_SUBSCRIPT = new RegExp(`${NAME}${LIVE}?\\[`)
-
-/** The text of `value` from its first `NAME[` on, or nothing when it has none. */
-function fromSubscript(value: string): string[] {
-  const at = value.search(VALUE_SUBSCRIPT)
-  return at < 0 ? [] : [value.slice(at)]
-}
-
-/** The value part of a `NAME=value`, `NAME+=value` or `NAME[...]=value` word, or nothing when it has none. */
-function valuePart(word: string): string[] {
-  const at = word.indexOf('=', nameEnd(word))
-  return at < 0 ? [] : [word.slice(at + 1)]
-}
-
-/** Every element value of the compound list `cmd` opens. */
-function compoundValues(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
-  const list = compoundList(cmd, parsed)
-  return list === undefined ? [] : elements(list).map(element => element.value)
-}
-
-/** Every value `cmd` assigns: prefix assignments, declarer operands, compound list values, and `read` data. */
-function assignedValues(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
-  const { marked, words, markedAssignments } = commandHead(cmd)
-  const declared = DECLARERS.has(words[0] ?? '') ? nameOperands(words).map(i => marked[i] ?? '') : []
-  const data = words[0] === 'read' && cmd.stdin !== undefined ? [cmd.stdin] : []
-  return [...[...markedAssignments, ...declared].flatMap(valuePart), ...compoundValues(cmd, parsed), ...data]
-}
-
 function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
   const { marked, words, markedAssignments } = commandHead(cmd)
   const operands = nameOperands(words)
@@ -390,7 +373,7 @@ function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): 
     ...integerValues(words, marked, operands),
     ...namerefValues(words, marked, operands),
     ...compoundTexts(cmd, parsed),
-    ...assignedValues(cmd, parsed).flatMap(fromSubscript),
+    ...[...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin])].flatMap(fromSubscript),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   return [...texts, ...cmd.arithBodies].flatMap(quotedSubstitutions)

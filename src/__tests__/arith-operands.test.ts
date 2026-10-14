@@ -190,10 +190,6 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
   it.each([
     `[[ x -eq $(${P}) ]]`,
     `[[ "$(${P})" -eq 1 ]]`,
-    `[[ 'x[$(${P})]' == 1 ]]`,
-    `test 'x[$(${P})]' -eq 1`,
-    `echo 'x[$(${P})]'`,
-    `read -a 'x[$(${P})]'`,
     `declare 'n=$(${P})'`,
     `unset -f 'f'`,
     `x[$(${P})]=1`,
@@ -203,15 +199,11 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `x=('[$(${P})]=1')`,
     `x=(['k']='$(${P})')`,
     `declare -A x=( ["$(${P})"]=1 )`,
-    `declare -ai x=(1); echo 'y[$(${P})]'`,
     `x=(a b) && echo '[$(${P})]=1'`,
-    `echo '\${ x=([k]=1); }' 'x[$(${P})]'`,
     `[ -v x ]`,
     `[[ -v x ]]`,
     `[[ $n -eq 3 ]]`,
     `let i=i+1`,
-    `! test 'x[$(${P})]' -eq 1`,
-    `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
     expect(bodiesOf(line)).toEqual([])
   })
@@ -247,9 +239,51 @@ describe('arithSubstitutions reads a subscript in any assigned value', () => {
     `declare n='$(${P})'`,
     `x+=('$(${P})')`,
     `read n <<< '$(${P})'`,
-    `echo n='x[$(${P})]'`,
     `x=('[$(${P})]=1')`,
   ])('%s has no subscript in its value', line => {
+    expect(bodiesOf(line)).toEqual([])
+  })
+})
+
+// Text reaches an integer variable through any word or stdin, so a quoted $(...) in a NAME[ subscript is
+// reported in every word and every here-string or heredoc, whatever the command. A row whose command never
+// consumes the text (echo, cat, test, foo) is over-reported on purpose: that is the fail-closed choice.
+describe('arithSubstitutions reads a NAME[ subscript in any word or stdin', () => {
+  it.each([
+    `printf -v n 'x[$(${P})]'`,
+    `printf -vn 'x[$(${P})]'`,
+    `printf -v n '%s' 'x[$(${P})]'`,
+    `readarray -t x <<< 'y[$(${P})]'`,
+    `mapfile -t x <<'EOF'\ny[$(${P})]\nEOF`,
+    `mapfile -t x <<EOF\ny[$(${P})]\nEOF`,
+    `for n in 'x[$(${P})]'; do :; done`,
+    `echo 'x[$(${P})]' | read n`,
+    `shopt -s lastpipe; echo 'x[$(${P})]' | read n`,
+    `set -- 'x[$(${P})]'; n=$1`,
+    `cat <<< 'x[$(${P})]'`,
+    `foo 'x[$(${P})]'`,
+    `echo 'x[$(${P})]'`,
+    `command echo 'x[$(${P})]'`,
+    `echo n='x[$(${P})]'`,
+    `test 'x[$(${P})]' -eq 1`,
+    `! test 'x[$(${P})]' -eq 1`,
+    `[[ 'x[$(${P})]' == 1 ]]`,
+    `read -a 'x[$(${P})]'`,
+    `declare -ai x=(1); echo 'y[$(${P})]'`,
+    `echo \${n:='x[$(${P})]'}`,
+    `echo \${z['$(${P})']}`,
+  ])('%s', line => {
+    expect(bodiesOf(line)).toContain(P)
+  })
+
+  it.each([
+    `echo '$(${P})'`,
+    `foo "\${y}['$(${P})']"`,
+    `foo '$y[$(${P})]'`,
+    `foo 'x [$(${P})]'`,
+    `foo '(x)[$(${P})]'`,
+    `cat <<< '$(${P})'`,
+  ])('%s has no NAME[ subscript', line => {
     expect(bodiesOf(line)).toEqual([])
   })
 })
