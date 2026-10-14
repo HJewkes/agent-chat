@@ -1007,21 +1007,42 @@ describe('over real sockets, with the window far from its end', () => {
     await new Promise(resolve => listener.close(resolve))
   })
 
-  /** A client on its own socket, registered once its `register_result` has come back. */
-  async function client(frame: Omit<Extract<ClientMessage, { t: 'register' }>, 't' | 'workingOn' | 'pid'>) {
-    const socket = net.createConnection(socketPath)
-    sockets.push(socket)
+  /**
+   * Parses the socket's newline-framed messages into `frames`. `frame(match)` resolves with the first
+   * frame that matches, already buffered or yet to come, so a wait is bounded only by the test timeout.
+   */
+  function frameReader(socket: net.Socket) {
     const frames: ServerMessage[] = []
+    const waiters: { match: (f: ServerMessage) => boolean; resolve: (f: ServerMessage) => void }[] = []
     let buffered = ''
     socket.on('data', chunk => {
       const lines = (buffered + String(chunk)).split('\n')
       buffered = lines.pop() ?? ''
-      for (const line of lines.filter(Boolean)) frames.push(JSON.parse(line) as ServerMessage)
+      for (const line of lines.filter(Boolean)) {
+        const parsed = JSON.parse(line) as ServerMessage
+        frames.push(parsed)
+        for (const waiter of waiters.filter(w => w.match(parsed))) {
+          waiters.splice(waiters.indexOf(waiter), 1)
+          waiter.resolve(parsed)
+        }
+      }
     })
+    const frame = (match: (f: ServerMessage) => boolean): Promise<ServerMessage> => {
+      const found = frames.find(match)
+      return found ? Promise.resolve(found) : new Promise(resolve => waiters.push({ match, resolve }))
+    }
+    return { frames, frame }
+  }
+
+  /** A client on its own socket, registered once its `register_result` has come back. */
+  async function client(frame: Omit<Extract<ClientMessage, { t: 'register' }>, 't' | 'workingOn' | 'pid'>) {
+    const socket = net.createConnection(socketPath)
+    sockets.push(socket)
+    const reader = frameReader(socket)
     const write = (message: ClientMessage): void => void socket.write(JSON.stringify(message) + '\n')
     write({ t: 'register', workingOn: '', pid: 1, ...frame })
-    await vi.waitFor(() => expect(frames.some(f => f.t === 'register_result' && f.ok)).toBe(true))
-    return { socket, frames, write }
+    await reader.frame(f => f.t === 'register_result' && f.ok)
+    return { socket, write, ...reader }
   }
 
   const coordinator = () => client({ name: 'coord', cwd: '/tmp/coord', subscriptions: EXIT_SUBSCRIPTION })
@@ -1031,14 +1052,19 @@ describe('over real sockets, with the window far from its end', () => {
     const { msgId } = core.append({ kind: 'agent_spawned', actor: 'coord', target: 'w-a', body: 'work' })
     const a = await client({ name: 'w-a', cwd: '/tmp/w-a', agentId: msgId })
     a.write({ t: 'send', to: 'coord', text: 'Status: DONE' })
-    await vi.waitFor(() => expect(a.frames.some(f => f.t === 'send_result' && f.ok)).toBe(true))
+    await a.frame(f => f.t === 'send_result' && f.ok)
     return msgId
   }
 
+  /** Used only before asserting that something did not arrive, after the positive frames are in. */
   const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, LIFECYCLE_MS + 100))
 
   const textsPushed = (frames: ServerMessage[]): string[] =>
     frames.flatMap(f => (f.t === 'deliver' ? [f.message.text] : []))
+
+  const isDeliver = (f: ServerMessage): boolean => f.t === 'deliver'
+  const isExitOfWorker = (f: ServerMessage): boolean =>
+    f.t === 'system_events' && f.events.some(e => e.kind === 'agent_exited' && e.subject === 'w-a')
 
   const exitsIn = (frames: ServerMessage[]): string[] =>
     frames
@@ -1052,6 +1078,7 @@ describe('over real sockets, with the window far from its end', () => {
     expect(textsPushed(coord.frames)).toEqual([])
 
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await coord.frame(isDeliver)
     await settle()
 
     expect(textsPushed(coord.frames)).toEqual(['Status: DONE'])
@@ -1062,11 +1089,14 @@ describe('over real sockets, with the window far from its end', () => {
   it('writes the held report to the socket a coordinator reconnects on, once, and never to the closed one', async () => {
     const first = await coordinator()
     const agentId = await reportFromWorker()
+    const closed = new Promise(resolve => first.socket.once('close', resolve))
     first.socket.destroy()
-    await vi.waitFor(() => expect(core.registry.connFor('coord')).toBeUndefined())
+    await closed
+    await vi.waitFor(() => expect(core.registry.connFor('coord')).toBeUndefined(), { timeout: 15_000 })
 
     const second = await coordinator()
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await second.frame(isDeliver)
     await settle()
 
     expect(textsPushed(first.frames)).toEqual([])
@@ -1080,7 +1110,8 @@ describe('over real sockets, with the window far from its end', () => {
     const agentId = await reportFromWorker()
 
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '1' } })
-    await settle()
+    await coord.frame(isExitOfWorker)
+    await coord.frame(isDeliver)
 
     const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
     expect(order).toEqual(['deliver', 'system_events'])

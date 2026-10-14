@@ -21,7 +21,7 @@ import {
   hookSettingsPath,
   planPath,
   readLaunchPlan,
-  selfGrantRootOf,
+  selfGrantPinOf,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
 import type { CreatedWorktree } from '../agents/resume-session.js'
@@ -536,6 +536,32 @@ describe('profiles resolve by name only', () => {
     expect((result as { error: string }).error).toMatch(/known: explorer/)
   })
 
+  it('an unknown name over an unlistable profiles dir is an error, not a throw', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    let result: ReturnType<typeof loadProfile> | undefined
+    expect(() => (result = loadProfile('nope', file))).not.toThrow()
+    expect((result as { error: string }).error).toContain(
+      `no profile named "nope"; cannot list profiles in ${file} (ENOTDIR`,
+    )
+  })
+
+  it('a missing profiles dir still lists the builtins', () => {
+    expect(listProfileNames(path.join(tmpdir(), 'absent'))).toEqual(BUILTIN_PROFILES.map(p => p.name).sort())
+  })
+
+  it('a builtin still loads over an unlistable profiles dir', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    expect(loadProfile('explorer', file)).toMatchObject({ name: 'explorer' })
+  })
+
+  it('listing an unlistable profiles dir throws a message naming the dir', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    expect(() => listProfileNames(file)).toThrow(`cannot list profiles in ${file}`)
+  })
+
   it('lets a user profile override a builtin of the same name', () => {
     const dir = tmpdir()
     fs.writeFileSync(
@@ -877,14 +903,16 @@ describe('the PermissionRequest hook (CC-144)', () => {
   })
 
   it('passes a self-grant root to the hook shell-quoted, and leaves the command unchanged without one', () => {
-    const command = (root?: string): string | undefined =>
+    const command = (pin?: { root: string; commonDir: string }): string | undefined =>
       (
-        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001', root) as {
+        buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001', pin) as {
           hooks: { PermissionRequest: { hooks: { command: string }[] }[] }
         }
       ).hooks.PermissionRequest[0]?.hooks[0]?.command
 
-    expect(command('/w t')).toMatch(/ permission-hook --deadline 1790 --self-grant-skills '\/w t'$/)
+    expect(command({ root: '/w t', commonDir: '/r c/.git' })).toMatch(
+      / permission-hook --deadline 1790 --self-grant-skills '\/w t' --self-grant-common-dir '\/r c\/.git'$/,
+    )
     expect(command(undefined)).toBe(
       (
         buildHookSettings('/e/cli.js', 1800, undefined, 'ag000001') as {
@@ -946,21 +974,24 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     const created = linkedWorktree()
     const cwd = created.worktree
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBe(cwd)
+    expect(selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toEqual({
+      root: cwd,
+      commonDir: fs.realpathSync(path.join(created.gitRoot, '.git')),
+    })
   })
 
   it('does not arm a forged common dir at the recorded path', () => {
     const cwd = forgedWorktree()
     const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+    expect(selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
   })
 
   it('does not arm a real worktree of a different repository than the record names', () => {
     const cwd = linkedWorktree().worktree
     const created = { worktree: cwd, gitRoot: linkedWorktree().gitRoot }
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
+    expect(selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), created)).toBeUndefined()
   })
 
   it('does not arm a recorded path that is now a symlink, even to a real worktree of the repo', () => {
@@ -969,7 +1000,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     fs.symlinkSync(real.worktree, cwd)
 
     expect(
-      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { ...real, worktree: cwd }),
+      selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { ...real, worktree: cwd }),
     ).toBeUndefined()
   })
 
@@ -977,27 +1008,27 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     const cwd = forgedWorktree()
 
     expect(linkedWorktreeRoot(cwd)).toBe(cwd)
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+    expect(selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
   })
 
   it('does not arm when cwd differs from the created worktree', () => {
     const cwd = forgedWorktree()
 
     expect(
-      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), linkedWorktree()),
+      selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), linkedWorktree()),
     ).toBeUndefined()
   })
 
   it('does not arm a linked worktree agent-chat has no record of creating', () => {
     const cwd = linkedWorktree().worktree
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
+    expect(selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })))).toBeUndefined()
   })
 
   it('does not arm a profile without the rule', () => {
     const created = linkedWorktree()
 
-    expect(selfGrantRootOf(buildLaunchPlan(input({ cwd: created.worktree })), created)).toBeUndefined()
+    expect(selfGrantPinOf(buildLaunchPlan(input({ cwd: created.worktree })), created)).toBeUndefined()
   })
 
   it('does not arm a main checkout, whose .git is a directory', () => {
@@ -1005,7 +1036,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     fs.mkdirSync(path.join(cwd, '.git'))
 
     expect(
-      selfGrantRootOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { worktree: cwd, gitRoot: cwd }),
+      selfGrantPinOf(buildLaunchPlan(input({ profile: optedIn, cwd })), { worktree: cwd, gitRoot: cwd }),
     ).toBeUndefined()
   })
 
@@ -1015,7 +1046,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
       input({ cwd: created.worktree, brief: `--allowed-tools ${REPO_SKILLS_RULE}` }),
     )
 
-    expect(selfGrantRootOf(plan, created)).toBeUndefined()
+    expect(selfGrantPinOf(plan, created)).toBeUndefined()
   })
 
   it('puts the root on the hook command in the written settings file', () => {
@@ -1029,7 +1060,11 @@ describe('arming the repo skill self-grant (CC-694)', () => {
       created,
     )
 
-    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain(`--self-grant-skills '${cwd}'`)
+    const settings = fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
+    expect(settings).toContain(`--self-grant-skills '${cwd}'`)
+    expect(settings).toContain(
+      `--self-grant-common-dir '${fs.realpathSync(path.join(created.gitRoot, '.git'))}'`,
+    )
   })
 
   it('leaves the hook command unarmed when no created worktree is passed', () => {

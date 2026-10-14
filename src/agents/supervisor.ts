@@ -1446,10 +1446,11 @@ export class Supervisor implements TeleportHost {
     if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
   }
 
+  /** CC-1182: to the human it is a plain notice, so it leaves the queue on the notice TTL, not the 7-day sweep. */
   private notifyUnreported(agentId: string, name: string, spawner: string, tail: ExitTail): void {
     const body = unreportedExitText(name, tail)
     const { msgId } = this.core.append({
-      kind: 'message',
+      kind: spawner === HUMAN ? 'notice' : 'message',
       actor: 'agent-chat',
       target: spawner,
       body,

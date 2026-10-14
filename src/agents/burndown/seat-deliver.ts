@@ -85,8 +85,8 @@ export interface HumanItem {
   task?: string
 }
 
-function dueEvents({ seats, before, after, spawns, merged }: SeatDiff): SeatEvents {
-  const all = foldBraked(seatEvents(before, after, spawns, merged), before, after)
+function dueEvents({ seats, before, after, spawns, merged }: SeatDiff, now: Date): SeatEvents {
+  const all = foldBraked(seatEvents(before, after, spawns, merged, { now }), before, after)
   return Object.fromEntries(Object.entries(all).filter(([seat]) => seats.includes(seat)))
 }
 
@@ -95,7 +95,7 @@ export async function deliverSeatEvents(
   deps: DeliverDeps,
 ): Promise<{ ledger: Ledger; lines: string[] }> {
   const settled = { ...diff, after: settleNotified(settleCheckpoints(diff.after)) }
-  const due = Object.entries(dueEvents(settled))
+  const due = Object.entries(dueEvents(settled, deps.now))
   recordMerges(due, settled.after, deps.dispatch)
   const human = diff.human ?? []
   const asking = checkpointsDue(settled.after)
@@ -268,7 +268,7 @@ export function describeSeatEvents(diff: SeatDiff, now: Date): string[] {
 }
 
 function describeEvents(diff: SeatDiff, now: Date): string[] {
-  return Object.entries(dueEvents(diff)).flatMap(([seat, events]) => [
+  return Object.entries(dueEvents(diff, now)).flatMap(([seat, events]) => [
     `would send to ${seat}:`,
     ...renderSeatEvents(seat, events, now)
       .split('\n')
