@@ -91,6 +91,7 @@ export function sliceClaims(parent: Parent, slices: readonly PlannedSlice[], now
     ...(s.owns.length === 0 ? {} : { owns: s.owns }),
     ...(s.repo === undefined ? {} : { repo: s.repo }),
     ...((s.contracts ?? []).length === 0 ? {} : { contracts: s.contracts }),
+    ...((s.overlapsAccepted ?? []).length === 0 ? {} : { overlapsAccepted: s.overlapsAccepted }),
     ...(parent.seat === undefined ? {} : { seat: parent.seat }),
     ...(parent.namePrefix === undefined ? {} : { namePrefix: parent.namePrefix }),
   }))
@@ -220,7 +221,7 @@ export interface Resync {
   notes: string[]
 }
 
-type SliceFields = Pick<Claim, 'owns' | 'dependsOn' | 'repo' | 'contracts'>
+type SliceFields = Pick<Claim, 'owns' | 'dependsOn' | 'repo' | 'contracts' | 'overlapsAccepted'>
 
 /** The fields `sliceClaims` sets, with `undefined` where it would leave one out. */
 function sliceFields(s: PlannedSlice): SliceFields {
@@ -229,6 +230,7 @@ function sliceFields(s: PlannedSlice): SliceFields {
     dependsOn: s.dependsOn,
     repo: s.repo,
     contracts: (s.contracts ?? []).length === 0 ? undefined : s.contracts,
+    overlapsAccepted: (s.overlapsAccepted ?? []).length === 0 ? undefined : s.overlapsAccepted,
   }
 }
 
@@ -238,9 +240,10 @@ const shown = (f: SliceFields): Record<keyof SliceFields, string> => ({
   dependsOn: JSON.stringify([...(f.dependsOn ?? [])].sort()),
   repo: JSON.stringify(f.repo ?? null),
   contracts: JSON.stringify((f.contracts ?? []).map(c => `${c.op} ${c.scope}`).sort()),
+  overlapsAccepted: JSON.stringify((f.overlapsAccepted ?? []).map(a => `#${a.pr} ${a.path}`).sort()),
 })
 
-const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts'] as const
+const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts', 'overlapsAccepted'] as const
 
 function resyncClaim(claim: Claim, slice: PlannedSlice, plan: string): Resync {
   const next = sliceFields(slice)

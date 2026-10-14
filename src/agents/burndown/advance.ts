@@ -652,7 +652,19 @@ function withLadder(ledger: Ledger, key: string, record: LadderRecord | undefine
 
 /** What a requeued slice keeps: the planner's slice and who dispatched it, none of the last attempt. */
 function requeued(claim: Claim, at: string): Claim {
-  const { taskId, initiative, slice, dependsOn, owns, repo, contracts, seat, namePrefix, spawnedAt } = claim
+  const {
+    taskId,
+    initiative,
+    slice,
+    dependsOn,
+    owns,
+    repo,
+    contracts,
+    overlapsAccepted,
+    seat,
+    namePrefix,
+    spawnedAt,
+  } = claim
   return {
     taskId,
     initiative,
@@ -664,6 +676,7 @@ function requeued(claim: Claim, at: string): Claim {
     ...(owns === undefined ? {} : { owns }),
     ...(repo === undefined ? {} : { repo }),
     ...(contracts === undefined ? {} : { contracts }),
+    ...(overlapsAccepted === undefined ? {} : { overlapsAccepted }),
     ...(seat === undefined ? {} : { seat }),
     ...(namePrefix === undefined ? {} : { namePrefix }),
   }

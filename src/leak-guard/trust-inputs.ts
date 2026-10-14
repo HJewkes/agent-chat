@@ -29,22 +29,47 @@ export const TRUST_ENV: ReadonlyMap<string, TrustEnv> = new Map([
  * shell's startup as BASH_ENV does. Patterns rather than names, to fail closed on kin: bash's
  * exported functions (`BASH_FUNC_f%%`, and `BASH_FUNC_f()` from older patches), its option lists
  * (`SHELLOPTS=xtrace` expands `PS4`), every prompt bash, zsh, sh or ksh expands (`PS0`-`PS4`,
- * `PROMPT_COMMAND`, zsh's `PROMPT*`, `RPROMPT*`, `RPS*` and `SPROMPT`), and the paths a shell loads
- * functions or modules from.
+ * `PROMPT_COMMAND`, zsh's `PROMPT`, `PROMPT2`-`PROMPT4`, `PROMPT_EOL_MARK`, `RPROMPT`, `RPROMPT2`,
+ * `RPS*` and `SPROMPT`), and the paths a shell loads functions or modules from. A lookalike such as
+ * `PROMPTS` is no prompt, so the prompt patterns stop at a digit or an underscore suffix.
  */
 export const SHELL_CODE_ENV: readonly string[] = [
   'BASH_FUNC_[^\\s=]*',
   'SHELLOPTS',
   'BASHOPTS',
   'PS[0-9]+',
-  'PROMPT\\w*',
-  'RPROMPT\\w*',
+  'PROMPT(?:[0-9]+|_\\w+)?',
+  'RPROMPT[0-9]*',
   'RPS[0-9]+',
   'SPROMPT',
   'FPATH',
   'MODULE_PATH',
   'BASH_LOADABLES_PATH',
 ]
+
+/**
+ * Variables whose value loads or runs code in perl, ruby or python, which git's helpers
+ * (`git send-email`, `git svn`) and a repository's hooks may be. `PYTHONSTARTUP` runs only in an
+ * interactive python, and is listed to fail closed as `BASH_ENV` is. `NODE_OPTIONS` and the
+ * module paths (`PYTHONPATH`, `PERL5LIB`, `RUBYLIB`, `NODE_PATH`) are left out: they are common on
+ * build lines and are accepted gaps.
+ */
+export const INTERPRETER_CODE_ENV: readonly string[] = ['PERL5OPT', 'PERL5DB', 'RUBYOPT', 'PYTHONSTARTUP']
+
+/** zsh imports a lowercase `prompt` into `PS1`; only zsh reads it, so it counts only on a zsh line. */
+export const ZSH_IMPORTED_PROMPT_ENV: readonly string[] = ['prompt']
+
+// A `zsh` word not inside a longer name (`oh-my-zsh`), or the user's `$SHELL`, which may be zsh.
+const ZSH_RUN = /(?<![\w-])zsh\b|\$\{?SHELL\b/
+
+/** Whether a command line may run zsh. */
+export const runsZsh = (text: string): boolean => ZSH_RUN.test(text)
+
+/**
+ * Programs whose words never name a shell variable they assign, so a bare `PS1` given to them is
+ * data. `printf` and zsh's `print` are left out: `-v` assigns the named variable.
+ */
+export const NAME_FREE_PROGRAMS: ReadonlySet<string> = new Set(['echo', 'grep', 'egrep', 'fgrep', 'rg'])
 
 // git reads both keys only without a subsection, and section and key names case-insensitively.
 const TRUST_KEYS: Readonly<Record<string, TrustKey>> = {

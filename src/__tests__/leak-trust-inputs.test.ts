@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { SubArgs } from '../leak-guard/git-parse-options.js'
 import {
+  INTERPRETER_CODE_ENV,
+  NAME_FREE_PROGRAMS,
+  SHELL_CODE_ENV,
   TRUST_ENV,
+  ZSH_IMPORTED_PROMPT_ENV,
   execPathOption,
+  runsZsh,
   templateOption,
   trustConfigWrite,
   trustKey,
@@ -31,6 +36,40 @@ describe('trust-input environment and keys (TP-2376)', () => {
     expect(trustKey('Safe.Directory')).toBe('safeDirectory')
     expect(trustKey('init.templateDir')).toBe('templateDir')
     expect(trustKey('user.name')).toBeUndefined()
+  })
+})
+
+describe('shell startup, interpreter and zsh prompt names (TP-2854)', () => {
+  const shellCode = new RegExp(`^(?:${SHELL_CODE_ENV.join('|')})$`)
+
+  it.each(['PROMPT', 'PROMPT2', 'PROMPT_COMMAND', 'PROMPT_EOL_MARK', 'RPROMPT', 'RPROMPT2', 'PS1', 'RPS1'])(
+    'takes %s as a prompt the shell expands',
+    name => expect(shellCode.test(name)).toBe(true),
+  )
+
+  it.each(['PROMPTS', 'RPROMPTX', 'MY_PROMPT', 'prompt'])('takes %s for no shell prompt', name =>
+    expect(shellCode.test(name)).toBe(false),
+  )
+
+  it.each(['zsh -ic x', '/bin/zsh -c x', '$SHELL -ic x', '${SHELL} -i'])('sees zsh run in %s', line =>
+    expect(runsZsh(line)).toBe(true),
+  )
+
+  it.each(['bash -ic x', 'oh-my-zsh-update', 'echo zshrc', 'git status'])('sees no zsh run in %s', line =>
+    expect(runsZsh(line)).toBe(false),
+  )
+
+  it('lists the interpreter startup names and leaves the accepted gaps out', () => {
+    expect(INTERPRETER_CODE_ENV).toEqual(['PERL5OPT', 'PERL5DB', 'RUBYOPT', 'PYTHONSTARTUP'])
+    expect(INTERPRETER_CODE_ENV).not.toContain('NODE_OPTIONS')
+    expect(INTERPRETER_CODE_ENV).not.toContain('PYTHONPATH')
+    expect(ZSH_IMPORTED_PROMPT_ENV).toEqual(['prompt'])
+  })
+
+  it('counts only programs that cannot assign a named variable as name-free', () => {
+    expect([...NAME_FREE_PROGRAMS].sort()).toEqual(['echo', 'egrep', 'fgrep', 'grep', 'rg'])
+    expect(NAME_FREE_PROGRAMS.has('printf')).toBe(false)
+    expect(NAME_FREE_PROGRAMS.has('print')).toBe(false)
   })
 })
 
