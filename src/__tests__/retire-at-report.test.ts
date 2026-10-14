@@ -17,6 +17,7 @@ import {
 import { NOT_FINISHED } from '../agents/isolation/retire-at-report.js'
 import { resolveAutoRetireOnReport } from '../config.js'
 import type { AgentIdentity } from '../protocol.js'
+import type { FinishedRetireOutcome } from '../agents/isolation/retire-finished.js'
 import { autoAttach } from './broker-harness.js'
 
 const logged = vi.hoisted(() => vi.fn<(event: string, detail: Record<string, unknown>) => void>())
@@ -360,8 +361,8 @@ describe('retire --finished shares the CC-904 rule', () => {
     expect(out.plan).toEqual([{ name: 'cc-bulk', action: 'skip', reason: OPEN_PR_REASON }])
   })
 
-  it('retires an agent whose open PR a registered Shepherd run names', async () => {
-    shepherd.openPr = true
+  async function registeredRetire(openPr: boolean): Promise<FinishedRetireOutcome> {
+    shepherd.openPr = openPr
     shepherd.runs = () =>
       Promise.resolve([{ branch: 'agent-chat/cc-reg', names: [], implementer: null, phase: 'review' }])
     sup.close()
@@ -369,8 +370,24 @@ describe('retire --finished shares the CC-904 rule', () => {
     const agent = await pushedImplementer('cc-reg')
     await exit(agent)
     vi.setSystemTime(Date.now() + RECLAIM_GRACE_MS + 1_000)
+    return sup.retireFinished({ prefix: 'cc-' })
+  }
 
-    const out = await sup.retireFinished({ prefix: 'cc-' })
+  // CC-1325 overrides CC-950 here: the bulk retire keeps it while the PR is open, so Shepherd can resume it warm.
+  it('skips an agent whose open PR a registered Shepherd run holds', async () => {
+    const out = await registeredRetire(true)
+
+    expect(out.plan).toEqual([
+      {
+        name: 'cc-reg',
+        action: 'skip',
+        reason: 'open PR on agent-chat/cc-reg (kept until merged or closed)',
+      },
+    ])
+  })
+
+  it('retires that agent once its PR is merged or closed', async () => {
+    const out = await registeredRetire(false)
 
     expect(out.plan).toEqual([{ name: 'cc-reg', action: 'retire' }])
   })
