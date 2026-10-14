@@ -9,7 +9,14 @@ import { pickPool, poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
 import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
 import { billingOrder, firstOpen, type BillingOrder } from './billed-pool.js'
-import { chargesOn, gatePool, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import {
+  chargesOn,
+  gatePool,
+  type DispatchCost,
+  type PoolGateInput,
+  type SevenDaySample,
+} from './budget-gate.js'
+import { diskDispatchCosts } from './dispatch-cost-source.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
@@ -73,6 +80,8 @@ export interface SeatTickDeps {
   meters: (seat: string, pool: string) => SavedMeters
   /** CC-1145: the pool pick's mode and order for the seat's spawns; absent, the tick bills the seat's home pool. */
   poolPick?: (seat: string, home: string) => { mode: PoolPickMode; order: string[]; funds?: FundsMap }
+  /** CC-1038: the pool's observed per-dispatch cost; absent or undefined, the gate charges the charter's or the default. */
+  dispatchCost?: (pool: string) => DispatchCost | undefined
 }
 
 export interface LoadedSeat {
@@ -160,6 +169,7 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
       history,
       runStartAt: runStart,
       ctx: { now: deps.now },
+      ...costOf(deps, dispatch.pool.name),
     },
     state,
     autonomyRoot: deps.autonomyRoot,
@@ -222,7 +232,20 @@ function otherPoolBudget(
     history,
     now: deps.now,
   })
-  return { pool, spend, reading, history, runStartAt: runStart, ctx: { now: deps.now } }
+  return {
+    pool,
+    spend,
+    reading,
+    history,
+    runStartAt: runStart,
+    ctx: { now: deps.now },
+    ...costOf(deps, name),
+  }
+}
+
+function costOf(deps: SeatTickDeps, pool: string): { dispatchCost?: DispatchCost } {
+  const dispatchCost = deps.dispatchCost?.(pool)
+  return dispatchCost === undefined ? {} : { dispatchCost }
 }
 
 /**
@@ -684,7 +707,7 @@ export function watchdogUnusable(): string | undefined {
   }
 }
 
-/** The live readers: the pool's status file and the watchdog's saved run meter. */
+/** The live readers: the pool's status file, the watchdog's saved run meter, and the pool's observed dispatch cost. */
 export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): SeatTickDeps {
   const doc = loadDoc()
   return {
@@ -702,6 +725,7 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
     },
     meters: (seat, pool) => savedMeters(doc, seat, pool),
     poolPick: (seat, home) => diskPoolPick(autonomyRoot, seat, home, now),
+    dispatchCost: diskDispatchCosts(autonomyRoot, now.getTime()),
   }
 }
 
