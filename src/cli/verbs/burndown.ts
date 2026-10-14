@@ -4,10 +4,18 @@ import { requiredString } from '../../args.js'
 import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
-import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import {
+  gateOrdered,
+  renderScored,
+  scoredPlanFromDisk,
+  scoredSeatFromDisk,
+  type ScoredPlanDiskOptions,
+} from '../../agents/burndown/score-render.js'
 import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
-import { localDate, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { localDate, readSeatScope, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
+import type { TickConfig } from '../../agents/burndown/source.js'
 import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
@@ -59,6 +67,7 @@ import {
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 import { burndownLandedVerb } from './burndown-landed.js'
+import { burndownClassifyVerb } from './burndown-classify.js'
 import { kicksInBroker, sendJobKick } from './job-kick.js'
 
 const refused = (err: unknown): Report => ({
@@ -236,15 +245,32 @@ export async function seatPlanOptions(
   }
 }
 
-function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
-  const plan = scoredPlanFromDisk({
+export type ScoredGateConfig = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'scopeTagAliases'>
+
+/** CC-988: under the seat's `on` brief gate, the order its tick walks; otherwise `planOrder`'s decayed order. */
+export function scoredSeatPlan(
+  seat: string,
+  { top, autonomyRoot, today }: PlanArgs,
+  tick: ScoredGateConfig = loadResolvedConfig().tick,
+): string[] {
+  const disk = {
     seat,
     top: top ?? DEFAULT_TOP,
     today: today ?? localDate(new Date()),
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
     activeWorkRoot: activeWorkRoot(),
-  })
-  return renderScored(plan)
+  }
+  if (tick.briefGate[seat] === 'on') return renderScored(gatedPlan(disk, tick, today))
+  return renderScored(scoredPlanFromDisk(disk))
+}
+
+/** Reads every row, as the tick does, so the gate re-ranks the whole scope before `--top` cuts it. */
+function gatedPlan(disk: ScoredPlanDiskOptions, tick: ScoredGateConfig, today: string | undefined) {
+  const { plan, tasks, policy } = scoredSeatFromDisk({ ...disk, top: Infinity, readySet: true })
+  const { scope } = readSeatScope(policy.seats, disk.seat, disk.autonomyRoot, tick.scopeTagAliases)
+  const now = today === undefined ? new Date() : new Date(`${today}T00:00:00`)
+  const gated = gateOrdered(plan, tasks, { maxAgeDays: tick.briefMaxAgeDays, now, scope })
+  return { ...gated, order: gated.order.slice(0, disk.top) }
 }
 
 const readCollisionView = (): Promise<BrokerView | undefined> => readBroker(collisionView)
@@ -520,12 +546,21 @@ export const burndownUnstallVerb = defineVerb({
 
 export const burndownBriefApproveVerb = defineVerb({
   name: 'burndown.brief.approve',
-  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
-  args: z.object({ task: requiredString('task') }),
+  description:
+    "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when off plan",
+  args: z.object({ task: requiredString('task'), offPlanOk: z.string().optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
-    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  cli: {
+    positional: ['task'],
+    options: {
+      offPlanOk: {
+        long: '--off-plan-ok <reason>',
+        description: 'approve an off-plan task for owner-ordered work; the reason is logged as a task note',
+      },
+    },
+  },
+  async run({ task, offPlanOk }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()), offPlanOk)
   },
 })
 
@@ -590,6 +625,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
   addVerb(burndown, burndownLandedVerb)
+  addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),

@@ -12,6 +12,7 @@ import {
   burndownShadowDir,
   burndownTickStatusPath,
   burndownTicksPath,
+  home,
 } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
@@ -77,6 +78,7 @@ import {
   rowNamed,
   worktreesUnder,
   worktreeUse,
+  type ObserveDeps,
   type Roster,
 } from './observe.js'
 import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
@@ -124,6 +126,7 @@ import { seatPrReader } from './off-ledger-adopt.js'
 import { shadowDecisions, writeShadowRecord, type ShadowCapture } from './shadow-record.js'
 import { healSteps } from './slice-repo.js'
 import { stepTimer, type StepTimer } from './step-timer.js'
+import { readStatusReport } from './status-report.js'
 import type { Resolved } from './settings-resolve.js'
 import { loadResolvedConfig } from './settings-store.js'
 import { accountDir, readInitiatives, readTaskText, readTasks, type TickConfig } from './source.js'
@@ -930,6 +933,15 @@ function isRunning(roster: Roster, name: string): boolean {
 }
 
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
+/** CC-980: read a worker's report from events.db; with no reportTo (a dry run) only the transcript is read. */
+const statusReportDep = (reportTo: string | undefined): Pick<ObserveDeps, 'statusReport'> =>
+  reportTo === undefined
+    ? {}
+    : {
+        statusReport: agent =>
+          readStatusReport(path.join(home(), 'events.db'), agent.name, reportTo, agent.spawnedAt),
+      }
+
 async function decide(
   config: TickConfig,
   opts: TickOptions,
@@ -965,6 +977,7 @@ async function decide(
       exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
       prFiles: prFilesReader(opts.exec ?? run),
       prState: claimPrReader(opts.exec ?? run),
+      ...statusReportDep(config.reportTo),
     }),
   )
   const ctx = {

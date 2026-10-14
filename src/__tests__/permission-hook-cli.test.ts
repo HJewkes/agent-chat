@@ -4,6 +4,7 @@ import path from 'node:path'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { gitCommonDir } from '../agents/skill-self-grant.js'
 import { reapBroker } from './broker-harness.js'
 
 /**
@@ -142,6 +143,24 @@ describe('the permission-hook verb with --self-grant-skills', () => {
     return fs.realpathSync(root)
   }
 
+  /** The hook arguments launch writes: the root and the common dir git resolved for it. */
+  const pinArgs = (root: string): string[] => [
+    '--self-grant-skills',
+    root,
+    '--self-grant-common-dir',
+    gitCommonDir(root)!,
+  ]
+
+  /** Runs the hook for `filePath`, denies the prompt it must file, and returns its verdict. */
+  async function denyPromptFor(filePath: string, marker: string, args: string[]): Promise<string> {
+    const hook = runHookWith(writeInput(filePath, marker), ['--deadline', '30', ...args])
+    const id = await waitForRow(filePath)
+    await cli(['approve', id, 'deny'])
+    const { code, stdout } = await hook.done
+    expect(code).toBe(0)
+    return JSON.parse(stdout).hookSpecificOutput.decision.behavior
+  }
+
   const writeInput = (filePath: string, marker: string) => ({
     ...HOOK_INPUT,
     tool_name: 'Write',
@@ -152,12 +171,7 @@ describe('the permission-hook verb with --self-grant-skills', () => {
     const root = linkedWorktree()
     const skillFile = path.join(root, '.claude', 'skills', 'probe', 'SKILL.md')
 
-    const hook = runHookWith(writeInput(skillFile, 'grant-marker'), [
-      '--deadline',
-      '30',
-      '--self-grant-skills',
-      root,
-    ])
+    const hook = runHookWith(writeInput(skillFile, 'grant-marker'), ['--deadline', '30', ...pinArgs(root)])
     const { code, stdout } = await hook.done
     const { stdout: inbox } = await cli(['inbox'])
 
@@ -170,17 +184,23 @@ describe('the permission-hook verb with --self-grant-skills', () => {
     const root = linkedWorktree()
     const settings = path.join(root, '.claude', 'settings.json')
 
-    const hook = runHookWith(writeInput(settings, 'ungranted-marker'), [
-      '--deadline',
-      '30',
-      '--self-grant-skills',
-      root,
-    ])
-    const id = await waitForRow(settings)
-    await cli(['approve', id, 'deny'])
-    const { code, stdout } = await hook.done
+    expect(await denyPromptFor(settings, 'ungranted-marker', pinArgs(root))).toBe('deny')
+  }, 20_000)
 
-    expect(code).toBe(0)
-    expect(JSON.parse(stdout).hookSpecificOutput.decision.behavior).toBe('deny')
+  it('files a prompt for a skill write when --self-grant-common-dir is missing', async () => {
+    const root = linkedWorktree()
+    const skillFile = path.join(root, '.claude', 'skills', 'unpinned', 'SKILL.md')
+
+    expect(await denyPromptFor(skillFile, 'unpinned-marker', ['--self-grant-skills', root])).toBe('deny')
+  }, 20_000)
+
+  it('files a prompt for a skill write after the root is swapped for a symlink', async () => {
+    const root = linkedWorktree()
+    const args = pinArgs(root)
+    fs.renameSync(root, `${root}.aside`)
+    fs.symlinkSync(linkedWorktree(), root)
+    const skillFile = path.join(root, '.claude', 'skills', 'swapped', 'SKILL.md')
+
+    expect(await denyPromptFor(skillFile, 'swapped-marker', args)).toBe('deny')
   }, 20_000)
 })

@@ -11,7 +11,7 @@ import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { readPrFiles, type HeldOwns } from './collision.js'
 import { run, type Runner } from './exec.js'
-import { readExitedWork, type ExitedWork } from './exited-adopt.js'
+import { readExitedWork, readParkedWork, type ExitedWork } from './exited-adopt.js'
 import { AGENT_PHASES, sameClaim, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import type { ClaimPr } from './pr-state.js'
@@ -20,8 +20,9 @@ import { defaultAutonomyRoot, loadPolicy } from './policy.js'
 import { adjudicateOutside, type Adjudication, type OtherPr } from './owns-adjudicate.js'
 import { outsideOwns } from './owns-fence.js'
 import { prFactsReader, type PrFacts } from './pr-facts.js'
-import { parseReport, readSlices, type Report } from './report.js'
+import { readSlices, type Report } from './report.js'
 import { sumSpend } from './spend-cap.js'
+import { pickReport } from './status-report.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
@@ -56,6 +57,8 @@ export interface ObserveDeps {
   /** The active-work root, where a planner's plan file lives. */
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
+  /** CC-980: the worker's newest terminal report to reportTo this session; absent reads only the transcript. */
+  statusReport?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
   /** The files a worktree's branch changed against its base (CC-669); undefined when git could not tell. */
   changedFiles?: (cwd: string) => string[] | undefined
@@ -73,6 +76,8 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-981: the same read for a parked tree, from its branch in the checkout; defaults to `readParkedWork`. */
+  parkedWork?: (checkout: string, branch: string) => ExitedWork | undefined
   /** CC-1023: the files of a silent exit's adopted PR, undefined when GitHub could not tell; absent reads nothing. */
   prFiles?: (pr: string) => string[] | undefined
   /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
@@ -262,8 +267,8 @@ async function observeClaim(
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
   if (row === undefined) return goneWork(obs, claim, deps)
   if (!FINISHED.has(row.state) || claim.phase === 'spawning') return obs
-  const text = (deps.finalText ?? defaultFinalText)(row)
-  if (text !== undefined) obs.report = parseReport(text)
+  const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
+  if (report !== undefined) obs.report = report
   if (claim.phase === 'planning' && claim.briefer === true) {
     obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
     return obs
@@ -447,8 +452,23 @@ const goneWork = (obs: Observation, claim: Claim, deps: ObserveDeps): Observatio
 function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
   const silent =
     obs.report === undefined || (obs.report.status === 'unknown' && obs.report.parked === undefined)
-  if (!silent || !fs.existsSync(worktree)) return obs
-  return { ...obs, exitedWork: (deps.exitedWork ?? readExitedWork)(worktree) ?? 'unreadable' }
+  if (!silent) return obs
+  const work = fs.existsSync(worktree)
+    ? (deps.exitedWork ?? readExitedWork)(worktree)
+    : parkedRead(worktree, deps)
+  return work === null ? obs : { ...obs, exitedWork: work ?? 'unreadable' }
+}
+
+/**
+ * CC-981: a tree parked before the tick read its exit is read from `agent-chat/<tree name>` in the checkout. The
+ * tree's name, not the claim's agent, names the branch: a successor works in its predecessor's tree. Null when the
+ * absent tree is not a `.worktrees` tree, so there is no branch to read.
+ */
+function parkedRead(worktree: string, deps: ObserveDeps): ExitedWork | undefined | null {
+  const trees = path.dirname(worktree)
+  if (path.basename(trees) !== '.worktrees') return null
+  const branch = `${BRANCH_PREFIX}${path.basename(worktree)}`
+  return (deps.parkedWork ?? readParkedWork)(path.dirname(trees), branch)
 }
 
 const SPEND_PHASES: ReadonlySet<Phase> = new Set([

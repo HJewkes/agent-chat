@@ -15,6 +15,8 @@ export interface PacePool {
   fiveHour?: number
   /** When the pool's seven_day window resets. */
   resetsAt?: number
+  /** CC-1289: the account row's key when the row's `members` share one Anthropic account; every member reads this row. */
+  account?: string
 }
 
 export type PaceRead = { found: true; pools: Map<string, PacePool> } | { found: false; reason: string }
@@ -52,12 +54,26 @@ export function parsePace(text: string): PaceRead {
   const passAt = isRecord(parsed) ? finite(parsed.at) : undefined
   if (!isRecord(parsed) || passAt === undefined || !isRecord(parsed.pools))
     return { found: false, reason: 'pace.json has no pass time or no pools' }
-  const pools = parsed.pools
-  const rows = Object.entries(pools).flatMap(([name, raw]) => {
+  const rows = Object.entries(parsed.pools).flatMap(([name, raw]) => {
     const row = poolRow(raw, passAt)
-    return row === undefined ? [] : [[name, row] as const]
+    return row === undefined ? [] : memberRows(name, row, raw)
   })
-  return { found: true, pools: new Map(rows) }
+  const accountLast = [...rows.filter(([, row]) => !row.account), ...rows.filter(([, row]) => row.account)]
+  return { found: true, pools: new Map(accountLast) }
+}
+
+const stringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+
+/**
+ * CC-1289: a row whose `members` name the pools on its account stands for each of them, with `account` set to the
+ * row's key. The caller lets it override a member's own row left from before the account rows.
+ */
+function memberRows(name: string, row: PacePool, raw: unknown): (readonly [string, PacePool])[] {
+  const members = isRecord(raw) ? stringList(raw.members) : []
+  if (members.length === 0) return [[name, row]]
+  const accountRow = { ...row, account: name }
+  return [...new Set([name, ...members])].map(member => [member, accountRow] as const)
 }
 
 export function readPace(file = pacePath()): PaceRead {

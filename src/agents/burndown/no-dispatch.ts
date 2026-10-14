@@ -34,6 +34,7 @@ export interface NoDispatchReason {
 
 const STOPS: { name: string; kinds: readonly RefusalKind[] }[] = [
   { name: 'machine stop', kinds: ['stop-line'] },
+  { name: 'review backpressure', kinds: ['review-backpressure'] },
   { name: 'budget stop', kinds: ['budget'] },
   { name: 'full cap', kinds: ['slots', 'role-cap', 'worktrees'] },
 ]
