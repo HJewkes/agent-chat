@@ -87,7 +87,8 @@ export function keepsContent(cmd: SimpleCommand): boolean {
  * The words a command runs as script files. `head` is its resolved command word, and `marked` and
  * `assigns` the marked words after it and the `NAME=value` words it runs with. A shell's script and
  * startup file come from `readShellCall`; `source` and `.` run their first operand after an optional
- * `--`; and a command word holding `/` runs itself. `shells` names the shells, which the guard owns.
+ * `--`; and a command word holding `/` runs itself, even when its base name is a shell, since
+ * `./bash` may be a file the line wrote. `shells` names the shells, which the guard owns.
  */
 export function scriptRuns(
   head: string,
@@ -96,10 +97,13 @@ export function scriptRuns(
   shells: ReadonlySet<string>,
 ): ScriptRuns {
   const name = path.basename(head)
-  if (shells.has(name)) return shellRuns(name, marked, assigns)
+  const self: ScriptRun[] = head.includes('/') ? [{ word: head, args: [...marked], head: true }] : []
+  if (shells.has(name)) {
+    const call = shellRuns(name, marked, assigns)
+    return 'hidden' in call ? call : { ...call, runs: [...self, ...call.runs] }
+  }
   if (head === 'source' || head === '.') return sourceRuns(marked)
-  if (head.includes('/')) return { runs: [{ word: head, args: [...marked], head: true }], stdin: false }
-  return { runs: [], stdin: false }
+  return { runs: self, stdin: false }
 }
 
 function shellRuns(name: string, marked: readonly string[], assigns: readonly string[]): ScriptRuns {
@@ -124,13 +128,17 @@ function sourceRuns(marked: readonly string[]): ScriptRuns {
 /**
  * A `#!` line naming anything but one of `shells`, directly or through `env`, so running the file as a
  * command hands its text to a reader the guard does not follow. A file with no `#!` line runs under a
- * shell. `env` with an option (`env -S bash -e`) is foreign, since the split is not read here.
+ * shell. `env` with an option (`env -S bash -e`) is foreign, since the split is not read here. The
+ * kernel resolves a relative interpreter (`#!sh`, `#!./bash`) from the current directory, and `env`
+ * one holding `/` likewise, so either may be a file the line wrote and is foreign too.
  */
 export function foreignShebang(body: string, shells: ReadonlySet<string>): boolean {
   const first = body.split('\n', 1)[0] ?? ''
   if (!first.startsWith('#!')) return false
   const [interpreter = '', next = ''] = first.slice(2).trim().split(/\s+/)
+  if (!interpreter.startsWith('/')) return true
   const name = path.basename(interpreter)
   if (name !== 'env') return !shells.has(name)
-  return next.startsWith('-') || !shells.has(path.basename(next))
+  if (next.startsWith('-') || (next.includes('/') && !next.startsWith('/'))) return true
+  return !shells.has(path.basename(next))
 }

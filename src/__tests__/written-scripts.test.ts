@@ -100,7 +100,8 @@ describe('scriptRuns', () => {
     ['bash s.sh', ['s.sh']],
     ['sh -eo pipefail s.sh', ['s.sh']],
     ['zsh s.sh x y', ['s.sh']],
-    ['/bin/bash -- s.sh', ['s.sh']],
+    ['/bin/bash -- s.sh', ['/bin/bash', 's.sh']],
+    ['./sh s.sh', ['./sh', 's.sh']],
     ['source s.sh', ['s.sh']],
     ['. ./s.sh', ['./s.sh']],
     ['source -- s.sh', ['s.sh']],
@@ -111,7 +112,7 @@ describe('scriptRuns', () => {
     expect(runWords(line)).toEqual(words)
   })
 
-  it.each(["bash -c 'x'", 'ls s.sh', 's.sh', 'source', '/bin/bash -c x'])('%j runs no script file', line => {
+  it.each(["bash -c 'x'", 'ls s.sh', 's.sh', 'source'])('%j runs no script file', line => {
     expect(runsOf(line)).toEqual({ runs: [], stdin: false })
   })
 
@@ -121,6 +122,14 @@ describe('scriptRuns', () => {
       expect(runsOf(line)).toEqual({ runs: [], stdin: true })
     },
   )
+
+  it.each([
+    ['/bin/bash -c x', { runs: [{ word: '/bin/bash', args: ['-c', 'x'], head: true }], stdin: false }],
+    ['./bash', { runs: [{ word: './bash', args: [], head: true }], stdin: true }],
+    ['/tmp/x/zsh -s', { runs: [{ word: '/tmp/x/zsh', args: ['-s'], head: true }], stdin: true }],
+  ])('%j runs its own path as well as the shell call', (line, runs) => {
+    expect(runsOf(line)).toEqual(runs)
+  })
 
   it('runs a startup file before the script on its stdin', () => {
     expect(runsOf('bash --rcfile r -i')).toEqual({
@@ -150,18 +159,27 @@ describe('scriptRuns', () => {
 })
 
 describe('foreignShebang', () => {
-  it.each(['git push', '#!/bin/sh\ngit push', '#!/bin/bash -e\nx', '#!/usr/bin/env zsh\nx', '#! /bin/dash'])(
-    '%j runs under a shell',
-    body => {
-      expect(foreignShebang(body, SHELLS)).toBe(false)
-    },
-  )
+  it.each([
+    'git push',
+    '#!/bin/sh\ngit push',
+    '#!/bin/bash -e\nx',
+    '#!/usr/bin/env zsh\nx',
+    '#! /bin/dash',
+    '#!/usr/bin/env /bin/sh\nx',
+  ])('%j runs under a shell', body => {
+    expect(foreignShebang(body, SHELLS)).toBe(false)
+  })
 
   it.each([
     '#!/usr/bin/python3\nx',
     '#!/usr/bin/env node\nx',
     '#!/usr/bin/env -S bash -e\nx',
     '#!/usr/bin/env\nx',
+    '#!sh\nx',
+    '#!./bash\nx',
+    '#!bin/sh\nx',
+    '#! sh\nx',
+    '#!/usr/bin/env ./bash\nx',
   ])('%j hands the file to another reader', body => {
     expect(foreignShebang(body, SHELLS)).toBe(true)
   })
