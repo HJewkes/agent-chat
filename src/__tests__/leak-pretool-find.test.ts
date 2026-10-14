@@ -59,6 +59,13 @@ describe('find runs each action clause with the paths it finds in place of {} (C
     expect(checkCommand(command, ctx)).toBeDefined()
   })
 
+  it.each(['xargs find .', 'xargs -0 find', 'xargs find . -maxdepth 0', 'xargs find . -exec true \\;'])(
+    'denies a find whose expression xargs may extend with an -exec: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBe(REASONS.hiddenCommand)
+    },
+  )
+
   it.each([
     "find . -name '*.ts' -exec grep -n foo {} \\;",
     'find . -exec grep -l x {} +',

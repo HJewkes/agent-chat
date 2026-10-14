@@ -426,6 +426,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (replace !== undefined)
         rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
     } else if (name === 'find') {
+      // Words xargs adds land among find's own, where one may be -exec.
+      if (fed?.append === true || fed?.hidden === true) return { reason: REASONS.hiddenCommand }
       const run = findRun(rest, at)
       if (run === undefined) return done()
       const before: Lead = { assigns: [...assigns], chdir, fed }
