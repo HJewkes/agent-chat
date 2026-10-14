@@ -47,16 +47,39 @@ const TRANSPARENT = new Set([...KEYWORDS, 'command', 'builtin'])
 const PASS_OPTIONS = new Set(['-p', '--'])
 const ASSIGNMENT = new RegExp(`^${NAME}(\\[.*\\])?\\+?=`)
 
-/** The command's words and marked words from its command word on, so `if read x` reads as `read x`. */
-function commandHead(cmd: SimpleCommand): { words: string[]; marked: string[] } {
+const PLAIN_NAME = new RegExp(`^${NAME}$`)
+
+interface CommandHead {
+  /** The words and marked words from the command word on, so `if read x` reads as `read x`. */
+  words: string[]
+  marked: string[]
+  /** The `NAME=value` and `NAME[...]=value` assignment words before it, which bash resolves as names. */
+  assignments: string[]
+  markedAssignments: string[]
+}
+
+/** How many words a `coproc` at `at` puts before its command: itself, and a NAME when a compound command follows. */
+const coprocWidth = (words: string[], at: number): number =>
+  PLAIN_NAME.test(words[at + 1] ?? '') && KEYWORDS.has(words[at + 2] ?? '') ? 2 : 1
+
+function commandHead(cmd: SimpleCommand): CommandHead {
+  const { words, marked } = cmd
+  const assigns: number[] = []
   let start = 0
-  while (start < cmd.words.length) {
-    const word = cmd.words[start] ?? ''
-    const passOption = PASS_OPTIONS.has(word) && TRANSPARENT.has(cmd.words[start - 1] ?? '')
-    if (!TRANSPARENT.has(word) && !ASSIGNMENT.test(word) && !passOption) break
+  while (start < words.length) {
+    const word = words[start] ?? ''
+    const passOption = PASS_OPTIONS.has(word) && TRANSPARENT.has(words[start - 1] ?? '')
+    if (ASSIGNMENT.test(word)) assigns.push(start)
+    else if (word === 'coproc') start += coprocWidth(words, start) - 1
+    else if (!TRANSPARENT.has(word) && !passOption) break
     start++
   }
-  return { words: cmd.words.slice(start), marked: cmd.marked.slice(start) }
+  return {
+    words: words.slice(start),
+    marked: marked.slice(start),
+    assignments: assigns.map(i => words[i] ?? ''),
+    markedAssignments: assigns.map(i => marked[i] ?? ''),
+  }
 }
 
 /**
@@ -151,6 +174,15 @@ function operandIndexes(words: string[], argOption: RegExp | undefined): number[
   return operands
 }
 
+// printf's `-vNAME`, the name attached to its option.
+const ATTACHED_NAME = /^-v(.+)$/s
+
+/** The name part of every word `source` holds that bash resolves as a variable name: prefix assignments, operands, `-vNAME`. */
+function nameTexts(words: string[], source: string[], assignments: string[]): string[] {
+  const attached = words[0] === 'printf' ? source.flatMap(word => ATTACHED_NAME.exec(word)?.[1] ?? []) : []
+  return [...assignments, ...nameOperands(words).map(i => source[i] ?? ''), ...attached].map(namePart)
+}
+
 /** A variable name's own `$` expansions, whose values become the name, and the names its subscript reads. */
 function nameOperandNames(word: string): string[] {
   const open = word.indexOf('[')
@@ -163,18 +195,14 @@ const namesIn = (text: string): string[] =>
 
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
-  const { words } = commandHead(cmd)
-  const operands = nameOperands(words)
+  const { words, assignments } = commandHead(cmd)
   const texts = [
     ...cmd.arithBodies,
-    ...integerValues(words, words, operands),
+    ...integerValues(words, words, nameOperands(words)),
     ...cmd.marked.flatMap(subscripts),
     ...comparisonOperands(words).map(i => words[i] ?? ''),
   ]
-  const names = [
-    ...texts.flatMap(namesIn),
-    ...operands.flatMap(i => nameOperandNames(namePart(words[i] ?? ''))),
-  ]
+  const names = [...texts.flatMap(namesIn), ...nameTexts(words, words, assignments).flatMap(nameOperandNames)]
   return [...new Set(names)]
 }
 
@@ -225,12 +253,11 @@ function quotedSubstitutions(marked: string): string[] {
  * substitution is a command already, so it is not listed.
  */
 export function arithSubstitutions(cmd: SimpleCommand): string[] {
-  const { marked, words } = commandHead(cmd)
-  const names = nameOperands(words)
+  const { marked, words, markedAssignments } = commandHead(cmd)
   const texts = [
     ...comparisonOperands(words).map(i => marked[i] ?? ''),
-    ...names.map(i => namePart(marked[i] ?? '')),
-    ...integerValues(words, marked, names),
+    ...nameTexts(words, marked, markedAssignments),
+    ...integerValues(words, marked, nameOperands(words)),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
