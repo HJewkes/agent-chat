@@ -99,8 +99,14 @@ describe('aliasDefinitions', () => {
     expect(aliasDefinitions(markedOf('alias ll'))).toEqual([])
   })
 
-  it('keeps the mark on a value the shell expands', () => {
-    expect(aliasDefinitions(markedOf('alias x="$P"'))).toEqual([{ ...plain, name: 'x', value: `${LIVE}$P` }])
+  it('keeps the mark on a value the shell expands and reads it as blank-ended', () => {
+    expect(aliasDefinitions(markedOf('alias x="$P"'))).toEqual([
+      { ...plain, name: 'x', value: `${LIVE}$P`, blank: true },
+    ])
+  })
+
+  it('reads a home path value as settled', () => {
+    expect(aliasDefinitions(markedOf('alias x=~/bin/tool'))).toMatchObject([{ name: 'x', blank: false }])
   })
 })
 
@@ -118,16 +124,29 @@ describe('streamScript', () => {
     ['. /dev//fd/3', '.'],
     ['. /proc/self/fd/0', '.'],
     ['. /dev/fd/$n', '.'],
+    ['source /dev/stderr 2< <(echo "echo RAN")', 'source'],
+    [". /dev/stderr 2<<'EOF'\necho RAN\nEOF", '.'],
+    ['. /dev/stdout', '.'],
+    ['source /dev/./stdout', 'source'],
+    ['. "$F"', '.'],
+    ['. /dev/$X', '.'],
+    ['source /tmp/*.sh', 'source'],
+    ['source a=(x)', 'source'],
     ['bash -', 'bash'],
     ['diff <(a) <(b)', 'diff'],
-  ])('%s reads a stream', (line, head) => {
+  ])('%s may read a stream', (line, head) => {
     expect(streamScript(commandOf(line, head))).toBe(true)
+  })
+
+  it('reads the descriptor itself, not the heredoc feeding it', () => {
+    expect(streamScript(commandOf("source /dev/stderr 2<<'EOF'\nx\nEOF", 'source'))).toBe(true)
+    expect(streamScript(commandOf("source /dev/null 2<<'EOF'\nx\nEOF", 'source'))).toBe(false)
   })
 
   it.each([
     ['. ~/.venv/bin/activate', '.'],
-    ['source a=(x)', 'source'],
     ['. "<(x)"', '.'],
+    ['source ~user/.profile', 'source'],
     ['bash script.sh', 'bash'],
     ['bash', 'bash'],
     ['. /dev/null', '.'],

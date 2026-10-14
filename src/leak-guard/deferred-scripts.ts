@@ -26,7 +26,14 @@ const TRAP_PRINT = /^-[A-Za-z]*[plP]/
 // A signal named on its own resets it: EXIT, SIGINT, 0, RTMIN+1.
 const SIGNAL = /^(?:SIG)?[A-Za-z0-9]+(?:[+-][0-9]+)?$/
 
-const isLive = (word: string): boolean => word.includes(LIVE)
+// A leading `~/` or `~user/` expands to a home directory, which settles where the word points.
+const HOME_TILDE = /^\0~(?:[A-Za-z_][\w.-]*)?(?=\/|$)/
+
+/**
+ * The shell settles this word at run time, so its literal text says nothing about it. Every reader here
+ * gives such a word its fail-closed reading: a possible action, definition, blank end or stream.
+ */
+const isLive = (word: string): boolean => word.replace(HOME_TILDE, '').includes(LIVE)
 
 /** The words after the leading options of `words`, which start at the command word, and those options. */
 function splitOptions(words: readonly string[]): { options: string[]; operands: string[] } {
@@ -81,24 +88,22 @@ export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
     const eq = word.indexOf('=')
     if (eq < 0) return []
     const value = word.slice(eq + 1)
-    return [{ name: word.slice(0, eq), value, global, suffix, blank: /[ \t\n]$/.test(unmark(value)) }]
+    const blank = isLive(value) || /[ \t\n]$/.test(unmark(value))
+    return [{ name: word.slice(0, eq), value, global, suffix, blank }]
   })
 }
 
-const STREAM_PATH = /^\/dev\/(?:stdin|fd\/.+)$|^\/proc\/[^/]+\/fd\/.+$/
-
-/** `<(…)` and `>(…)` leave a word that is only a mark; zsh's `=(…)` leaves `=` and a mark. */
-const isProcessSubstitution = (marked: string): boolean => marked === LIVE || /^\0?=\0$/.test(marked)
+// `source /dev/stderr 2< <(…)` reads a script from any descriptor, so every standard stream counts.
+const STREAM_PATH = /^\/dev\/(?:stdin|stdout|stderr|fd\/.+)$|^\/proc\/[^/]+\/fd\/.+$/
 
 const isStreamPath = (word: string): boolean => word === '-' || STREAM_PATH.test(path.posix.normalize(word))
 
 /**
- * Whether any operand of `cmd` names a stream rather than a file: a process substitution, `/dev/stdin`,
- * `/dev/fd/N`, `/proc/<pid>/fd/N` or `-`. A `$N` in an fd path counts, since any fd is a stream. It
- * reads every operand, so `diff <(a) <(b)` is true too; the guard asks only of a shell, `.` or `source`.
+ * Whether any operand of `cmd` may name a stream rather than a file: `/dev/stdin`, `/dev/stdout`,
+ * `/dev/stderr`, `/dev/fd/N`, `/proc/<pid>/fd/N`, `-`, or any word the shell settles at run time. That
+ * includes `<(…)` and `>(…)`, which leave a word that is only a mark, zsh's `=(…)`, and `. "$F"`. It reads
+ * every operand, so `diff <(a) <(b)` is true too; the guard asks only of a shell, `.` or `source`.
  */
 export function streamScript(cmd: SimpleCommand): boolean {
-  return cmd.marked.some(
-    (marked, at) => at > 0 && (isProcessSubstitution(marked) || isStreamPath(unmark(marked))),
-  )
+  return cmd.marked.some((marked, at) => at > 0 && (isLive(marked) || isStreamPath(unmark(marked))))
 }
