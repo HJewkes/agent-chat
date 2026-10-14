@@ -11,7 +11,8 @@
  * which quoted `$(...)` bash will evaluate. The guard checks each body as a command. Two limits:
  * - Over-reporting is the intended fail-closed choice: a commit or PR body that quotes a denied command
  *   inside `$(...)` is reported too, and the guard decides.
- * - Data read at runtime from a file (`read n < file`, `$(<file)`) is out of reach.
+ * - Data read at runtime from a file (`read n < file`, `$(<file)`) is out of reach, and so is a `$` produced
+ *   at runtime (`x[$d'(P)]'`, `printf 'x[\\x24(P)]'`).
  */
 import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
 
@@ -338,31 +339,37 @@ function quoteEnd(text: string, open: number): number {
   return text.length
 }
 
-/** The body of each `$(...)` and backtick pair in `marked` that is not LIVE: text the splitter kept quoted. */
-function quotedSubstitutions(marked: string): string[] {
+/**
+ * The body of each `$(...)` and backtick pair in `marked` that the splitter did not read as a command: one
+ * it kept quoted, or one marked LIVE with no substitution in `read` behind it. The splitter also marks the
+ * literal `$` of `"$"` LIVE, so `x["$"'(P)]'` looks live while bash builds `$(P)` from it; the mark alone
+ * is not trusted.
+ */
+function quotedSubstitutions(marked: string, read: ReadonlySet<string>): string[] {
   const bodies: string[] = []
   for (let i = 0; i < marked.length; i++) {
+    const from = marked.startsWith('$(', i) && marked[i + 2] !== '(' ? i + 2 : marked[i] === '`' ? i + 1 : -1
+    if (from < 0) continue
+    const end = from === i + 2 ? bodyEnd(marked, from) : closingTick(marked, from)
     const live = marked[i - 1] === LIVE
-    if (marked.startsWith('$(', i) && marked[i + 2] !== '(') {
-      const end = bodyEnd(marked, i + 2)
-      if (!live) bodies.push(marked.slice(i + 2, end))
-      i = end
-    } else if (marked[i] === '`') {
-      const close = marked.indexOf('`', i + 1)
-      const end = close < 0 ? marked.length : close
-      if (!live) bodies.push(marked.slice(i + 1, end))
-      i = end
-    }
+    if (!live || !read.has(unmark(marked.slice(i, end + 1)))) bodies.push(unmark(marked.slice(from, end)))
+    i = end
   }
-  return bodies.map(unmark)
+  return bodies
+}
+
+const closingTick = (text: string, from: number): number => {
+  const close = text.indexOf('`', from)
+  return close < 0 ? text.length : close
 }
 
 /** Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic. */
-const substitutionsOf = (cmd: SimpleCommand): string[] =>
+function substitutionsOf(cmd: SimpleCommand): string[] {
+  const read = new Set(cmd.substitutions.map(sub => sub.raw))
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
-  [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies].flatMap(
-    quotedSubstitutions,
-  )
+  const texts = [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies]
+  return texts.flatMap(text => quotedSubstitutions(text, read))
+}
 
 /**
  * The body of every quoted `$(...)` and backtick in every word, here-string and heredoc of every command

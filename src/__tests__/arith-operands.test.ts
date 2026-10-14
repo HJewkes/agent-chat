@@ -298,6 +298,20 @@ describe('arithSubstitutions reports every quoted substitution in any word or st
   )
 })
 
+// The splitter marks the literal `$` of `"$"` LIVE too, so a `$(` it marks live but never read as a
+// substitution is reported: bash joins the quoted pieces into `$(P)` and runs it.
+describe('arithSubstitutions does not trust a LIVE $( with no substitution behind it', () => {
+  it.each([
+    `n=x["$"'(${P})]'`,
+    `n="x[$"'(${P})]'`,
+    `n=x[$"$"'(${P})]'`,
+    `n=x[$'\\x24''(${P})]'`,
+    `n=x["$""("'${P})]'`,
+  ])('%s', line => {
+    expect(bodiesOf(line).some(body => body.includes(P))).toBe(true)
+  })
+})
+
 // The splitter cuts a funsub at its first `}`, even a quoted one, so the rest of the command is reported unread.
 describe('arithSubstitutions reports a funsub unread, from its ${ on', () => {
   it.each([
