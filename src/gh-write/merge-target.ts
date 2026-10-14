@@ -142,20 +142,23 @@ const MERGE_PATH = /(?:^|\/)repos\/([^/]+)\/([^/]+)\/pulls\/([^/?#]+)\/merge(?:[
 const API_PREFIX = /^https?:\/\/api\.github\.com\//i
 const OTHER_HOST = /^[a-z][a-z0-9+.-]*:\/\//i
 
-/** Decodes until stable, so a double-encoded path is read the way any later hop could read it. */
-function decoded(word: string): string {
+const ASCII_ESCAPE = /%([0-7][0-9A-Fa-f])/g
+const MAX_DECODE_ROUNDS = 8
+
+/**
+ * Decodes each ASCII `%XX` escape until stable, so a double-encoded path is read the way any later
+ * hop could read it. Escapes are decoded one by one, so a malformed or non-ASCII escape elsewhere
+ * in the word never stops the rest decoding; every character of a merge path is ASCII.
+ * `undefined` when the word is still changing after the last round.
+ */
+function decoded(word: string): string | undefined {
   let current = word
-  for (let round = 0; round < 5; round++) {
-    let next: string
-    try {
-      next = decodeURIComponent(current)
-    } catch {
-      return current
-    }
+  for (let round = 0; round < MAX_DECODE_ROUNDS; round++) {
+    const next = current.replace(ASCII_ESCAPE, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
     if (next === current) return current
     current = next
   }
-  return current
+  return undefined
 }
 
 /** The method is ignored on purpose: a method-override header could turn a GET into the merge. */
@@ -180,7 +183,9 @@ function isCanonical(path: string): boolean {
 const MENTIONS_MERGE = /pulls[\s\S]*merge/i
 
 function endpointTarget(word: string): MergeTarget {
-  const path = decoded(word).replace(API_PREFIX, '')
+  const plain = decoded(word)
+  if (plain === undefined) return unresolved('a path encoded too deeply to read')
+  const path = plain.replace(API_PREFIX, '')
   if (!isCanonical(path) && MENTIONS_MERGE.test(path)) return unresolved('a non-canonical pulls merge path')
   const match = MERGE_PATH.exec(path)
   if (match === null) return NONE

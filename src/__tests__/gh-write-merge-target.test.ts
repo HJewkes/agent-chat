@@ -50,6 +50,26 @@ describe('mergeTarget for gh api', () => {
   })
 
   it.each([
+    ['an encoded letter', 'repos/o/r/pulls/12/m%65rge'],
+    ['an encoded letter and a malformed fragment escape', 'repos/o/r/pulls/12/m%65rge#%FF'],
+    ['an encoded path and a malformed query escape', 'repos%2Fo%2Fr%2Fpulls%2F12%2Fmerge?x=%FF'],
+    ['an invalid escape elsewhere', 'repos/o/r/pulls/12/m%65rge?x=%zz'],
+    ['a non-ASCII escape elsewhere', 'repos/o/r/pulls/12/merg%65?x=%C3%A9'],
+  ])('reads a merge endpoint with %s', (_, endpoint) => {
+    expect(mergeTarget(['api', '-X', 'PUT', endpoint], NO_ENV)).toEqual({
+      kind: 'merge',
+      repo: 'o/r',
+      pr: 12,
+    })
+  })
+
+  it('refuses a merge path encoded more deeply than it decodes', () => {
+    const endpoint = `repos/o/r/pulls/12/m%${'25'.repeat(9)}65rge`
+
+    expect(kindOf(['api', '-X', 'PUT', endpoint])).toBe('unresolved')
+  })
+
+  it.each([
     ['an empty segment before the owner', 'repos//o/r/pulls/12/merge'],
     ['an empty segment before pulls', 'repos/o/r//pulls/12/merge'],
     ['an empty segment before the PR', 'repos/o/r/pulls//12/merge'],
