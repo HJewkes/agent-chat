@@ -3,7 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ledgerLockHolder, withLedgerLock } from '../agents/burndown/ledger.js'
-import { burndownKicker, KICK_DEBOUNCE_MS, kickCommand, type KickPorts } from '../broker/burndown-kick.js'
+import {
+  burndownKicker,
+  KICK_DEBOUNCE_MS,
+  KICK_LOG_MAX_BYTES,
+  kickCommand,
+  rotateKickLog,
+  type KickPorts,
+} from '../broker/burndown-kick.js'
 import { cliEntry } from '../paths.js'
 import { jobEnv } from '../mirror/plist.js'
 import type { AppendInput } from '../broker/event-store.js'
@@ -245,5 +252,49 @@ describe('kicked tick env', () => {
 
     expect(command).toBe(process.execPath)
     expect(args).toEqual([cliEntry(), 'burndown', 'tick', '--once'])
+  })
+})
+
+describe('kick log rotation', () => {
+  let dir: string
+  let file: string
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kick-log-'))
+    file = path.join(dir, 'burndown-kick.log')
+  })
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  it('moves a log over 10 MB to .1 so the next tick opens a fresh one', () => {
+    fs.writeFileSync(file, 'old tick output\n')
+    fs.truncateSync(file, 11 * 1024 * 1024)
+
+    rotateKickLog(file, KICK_LOG_MAX_BYTES)
+
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.statSync(`${file}.1`).size).toBe(11 * 1024 * 1024)
+    expect(fs.readFileSync(`${file}.1`, 'utf8').startsWith('old tick output\n')).toBe(true)
+  })
+
+  it('replaces an older .1 generation rather than keeping two', () => {
+    fs.writeFileSync(`${file}.1`, 'oldest')
+    fs.writeFileSync(file, 'newer output')
+
+    rotateKickLog(file, 4)
+
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('newer output')
+  })
+
+  it('leaves a log under the limit in place', () => {
+    fs.writeFileSync(file, 'small')
+
+    rotateKickLog(file, KICK_LOG_MAX_BYTES)
+
+    expect(fs.readFileSync(file, 'utf8')).toBe('small')
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+  })
+
+  it('does not throw when the log does not exist yet', () => {
+    expect(() => rotateKickLog(file, KICK_LOG_MAX_BYTES)).not.toThrow()
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
   })
 })
