@@ -2,7 +2,9 @@
 
 Decision record for CC-1083 (slice b), 2026-10-12. Follow-up implementation:
 **CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`),
-filed and open; nothing in it has landed.
+filed and open; nothing in it has landed. **CC-1151** has landed (#785, #818): the
+tick and seat opt-out sites no longer run in an agent's process, and the root rule below
+is superseded (see "The boundary that closes the class").
 
 ## The problem
 
@@ -26,9 +28,10 @@ frames by caller.
 
 This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
 (`src/broker/socket.ts`), read with `git show origin/main:src/broker/socket.ts` at
-origin/main `d173e6c` (2026-10-12). It lists all 49 cases there, and each case appears in
-exactly one class: 7 refused, 6 requester mapped, 2 session bound and 34 out of scope. When a frame is added to the dispatcher, add it
-here too.
+origin/main `d173e6c` (2026-10-12), and recounted at origin/main `2e2ec80` (2026-10-14).
+It lists all 52 cases there, and each case appears in exactly one class: 7 refused, 6
+requester mapped, 2 session bound and 37 out of scope. When a frame is added to the
+dispatcher, add it here too.
 
 ### Class 1: refused from a declared connection
 
@@ -115,20 +118,21 @@ keeps one agent from filing a prompt, or an audit row, under another agent's nam
 The gate leaves these frames alone. Each one already refuses an unregistered
 connection, checks something other than "unregistered", or only reads.
 
-| Frame                                                                                                                        | Its own check                                                                                                                                                                                                                                        |
-| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`, `broadcast`, `ask`, `notify`, `endorse`, `subscribe`, `unsubscribe`, `tag`, `claim`, `release`, `status`, `approval` | `SESSION_FRAMES`: each handler refuses or no-ops without a registered name                                                                                                                                                                           |
-| `decided`                                                                                                                    | `handleDecided`: the connection's bound agent id must equal the configured decider's                                                                                                                                                                 |
-| `teleport`, `teleport_plan_wait`, `teleport_launched`, `background`                                                          | the subject is the connection's own durable identity (`registry.entryFor(conn)?.agentId`); refused without one                                                                                                                                       |
-| `teleport_land_failed`                                                                                                       | `landFailed` requires the armed landing's token                                                                                                                                                                                                      |
-| `register`                                                                                                                   | registry name rules, plus `refuseLauncherRegister`; it creates a name, it does not use the human's authority                                                                                                                                         |
-| `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it                                                                                                                                 |
-| `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                                                                                                                                             |
-| `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host                                                                                                                       |
-| `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                                                                                                                                                |
-| `job_kick`                                                                                                                   | `handleJobKick`: a closed job set; the request is rebuilt from `job` and `seat` alone; a seat must be at most 64 characters and have a seat file in the broker's own autonomy root; single flight per job and seat. It runs only what the timers run |
-| `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                                                                                                                                        |
-| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                             |
+| Frame                                                                                                                        | Its own check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`, `broadcast`, `ask`, `notify`, `endorse`, `subscribe`, `unsubscribe`, `tag`, `claim`, `release`, `status`, `approval` | `SESSION_FRAMES`: each handler refuses or no-ops without a registered name                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `decided`                                                                                                                    | `handleDecided`: the connection's bound agent id must equal the configured decider's                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `teleport`, `teleport_plan_wait`, `teleport_launched`, `background`                                                          | the subject is the connection's own durable identity (`registry.entryFor(conn)?.agentId`); refused without one                                                                                                                                                                                                                                                                                                                                                                                 |
+| `teleport_land_failed`                                                                                                       | `landFailed` requires the armed landing's token                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `register`                                                                                                                   | registry name rules, plus `refuseLauncherRegister`; it creates a name, it does not use the human's authority                                                                                                                                                                                                                                                                                                                                                                                   |
+| `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it                                                                                                                                                                                                                                                                                                                                                                           |
+| `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host                                                                                                                                                                                                                                                                                                                                                                 |
+| `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `spawn_launched`, `spawn_placed`                                                                                             | `remoteReportRefusal`: only the connection the broker handed that agent's remote launch may report on it                                                                                                                                                                                                                                                                                                                                                                                       |
+| `job_kick`                                                                                                                   | `handleJobKick`: a closed job set (`burndown_tick`, `seats_watchdog`, `seats_heartbeat_check`); the request is rebuilt from `job` and `seat` alone; a seat must be at most 64 characters and have a seat file in the broker's own autonomy root; single flight per job and seat. The broker launches the job detached with `jobEnv` of its own environment plus the user bus, never the caller's. It runs only what the timers run, so it is accepted from a declared connection too (CC-1151) |
+| `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                                                                                                                                                                                                                                                                       |
 
 ## Options weighed
 
@@ -192,11 +196,13 @@ process's environment rather than on the command text.
 open. `env -u AGENT_CHAT_AGENT_ID agent-chat debug send …` or a raw `nc` write still
 reaches the broker as the human, with `requestedBy = HUMAN` and a `permission_hook`
 `session` of the caller's choosing. Declaring another agent's id makes the caller act as
-that agent. The same `env -u` also gets past the root rule for the tick and seat opt-out
-sites (see "Tick and seat callers" below), because the rule applies only when an id is
-set.
+that agent. The same `env -u` also gets past the kick boundary for the tick and seat
+opt-out sites (see "The boundary that closes the class" below): with no id, a site runs
+in-process as the units do.
 
-**The root rule narrows the opt-out sites; it does not close them.** It compares three
+**The root rule narrowed the opt-out sites; it did not close them.** This paragraph and
+the list after it record why the rule was dropped; CC-1151 superseded it and it was never
+built. It compared three
 values with the broker's: `currentAutonomyRoot()`, `activeWorkRoot()` and `home()`. That
 does stop one route. Moving `HOME` or `AGENT_CHAT_HOME` to a directory of your own and
 planting a `chat.sock` symlink to the live socket makes the site's `home()` differ from
@@ -229,19 +235,43 @@ an agent that calls an opt-out site from its own shell. Citations are at origin/
   patch (`:238`), a hand-off (`:232`), and the done update next to `retireAll` (`:240`).
   A planted report shapes what the tick spawns and records.
 
-So `PATH=/tmp/fake:$PATH agent-chat burndown tick --once` from an agent shell passes the
-root rule and acts as `HUMAN` on output the agent planted.
+So, under the root rule alone, `PATH=/tmp/fake:$PATH agent-chat burndown tick --once`
+from an agent shell would pass the rule and act as `HUMAN` on output the agent planted.
 
-**The boundary that closes the class.** An opted-out tick or watchdog never runs in the
-agent's process. When `AGENT_CHAT_AGENT_ID` is set, each opt-out site sends the broker a
-new Class 4 kick frame that takes no arguments, and runs nothing itself. The broker then
-runs the job in its own environment, the way it already launches ticks: `launchTick` in
-`src/broker/burndown-kick.ts:111`, with `jobEnv` (`src/mirror/plist.ts:7`, used at
-`burndown-kick.ts:102`). The launchd and systemd units run jobs the same way. The root,
-`home()`, `PATH`, `GH_*`, git config and planted-input questions then all go away
-together, and the root-compare frame is no longer needed. This is tracked as **CC-1151**
-and is not built in this PR. Once it lands, hand-run `burndown tick` and `seats watchdog`
-/ `heartbeat-check` calls from an agent shell go through the kick frame.
+Two more inputs of the same kind were found later: `CLAUDE_CONFIG_DIR`, which picks the
+worker transcript (`configDir` in `src/agents/transcript.ts:35`) that decides DONE,
+retirement, a reviewer spawn and `lastReport`; and `NODE_OPTIONS`, which loads code into
+the opted-out process.
+
+**The boundary that closes the class: built (CC-1151).** An opted-out tick, watchdog or
+heartbeat check never runs in the agent's process. When `AGENT_CHAT_AGENT_ID` is set,
+`burndown tick --once`, `seats watchdog` and `seats heartbeat-check --seat S` send the
+broker a Class 4 `job_kick` frame and run no policy themselves (`src/cli/verbs/job-kick.ts`,
+#818). The frame names only the job, and the seat for a heartbeat check. Flags that would
+choose policy are refused from an agent shell: `--root` on both seat verbs, `--seat` and
+`--fire-cap` on the watchdog, and `--dry-run` on the tick (use `agent-chat burndown
+plan`). `seats watchdog --dry-run` and `--replay`, and `heartbeat-check --dry-run`, still
+run in-process: they send nothing with authority and write nothing.
+
+The broker runs the job in its own environment (`src/broker/job-kick.ts`, #785). The tick
+goes through the burndown kicker, so it shares the ledger-lock deferral and never overlaps
+a kicked tick, and logs to `<home>/burndown-kick.log`. The seat jobs log to
+`<home>/job-kick.log`. Every launch uses `launchDetached` with `jobEnv`
+(`src/mirror/plist.ts:7`, which passes only `HOME`, `PATH`, `AGENT_CHAT_HOME`,
+`ACTIVE_ROOT` and `AGENT_CHAT_ACTIVE_WORK_ROOT`, all from the broker) plus the user bus,
+the way the launchd and systemd units run them. The job's env has no `AGENT_CHAT_AGENT_ID`,
+so it takes the in-process path and cannot kick again. The root, `home()`, `PATH`,
+`GH_*`, git config, `CLAUDE_CONFIG_DIR`, `NODE_OPTIONS` and planted-input questions go
+away together, and the root-compare frame is not needed.
+
+Tests: `src/__tests__/opt-out-kick.test.ts` plants `PATH` (fake `gh`, `titan-factory`,
+`active-work` and `git` that touch a marker), `GH_TOKEN`, `GH_CONFIG_DIR`, `HOME` and
+`CLAUDE_CONFIG_DIR` in the caller. For all three verbs the reply is the broker's, the
+broker log has a `job_kick` row, and the marker never appears. That harness broker has an
+ephemeral home, so it records the kick without launching. `src/__tests__/job-kick.test.ts`
+covers the launch side: the job's env is `jobEnv` of the broker's env plus the bus, with no
+`GH_*`, `GIT_*`, `NODE_OPTIONS` or `AGENT_CHAT_AGENT_ID`, and planted fields on the frame
+never reach the job.
 
 What stays open after that is the §11.4 OS-account limit:
 
@@ -263,15 +293,15 @@ frames. It lists every sender of a Class 1, 2 or 3 frame under `src/` at origin/
 because they go over the session's registered connection, which the gate does not
 change. Internal `Supervisor` calls are left out too: they never cross the socket.
 
-| Sender                                                                                                                          | Frames                                                                                                  | Usual runner                                                     | Can run with the id set?                                                                                                                                                        | Under the gate as recommended                                                                                                                             |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| burndown tick: `cli/verbs/burndown.ts`, `burndown/execute.ts`, `burndown/triage.ts`, `cli/burndown-broker.ts`                   | `spawn`, `resume`, `retire` (Class 2)                                                                   | the launchd job or systemd timer (`agent-chat burndown install`) | **yes**. `burndown/exec.ts` says "a tick run from an agent's shell carries both" identity variables. `docs/burndown.md` asks for supervised `burndown tick --once` runs by hand | checked as the shell's agent: escalation, coordinator depth, worker-spawn ban, rate limit. The new retire ownership check refuses its retires. **Breaks** |
-| seat watchdog: `cli/verbs/seat-respawn.ts`, `cli/verbs/seats.ts`                                                                | `spawn`, `retire`, `resume` (Class 2)                                                                   | launchd or systemd units (`src/mirror/plist.ts`)                 | yes, if a seat or coordinator runs `seats watchdog` by hand from its shell                                                                                                      | same as the tick. The seat's relaunch is refused or checked as that agent. **Breaks**                                                                     |
-| seat watchdog: `cli/verbs/seat-broker.ts` (`sendAsOwner`)                                                                       | `human_send` (Class 1)                                                                                  | same units                                                       | same                                                                                                                                                                            | refused. **Breaks**                                                                                                                                       |
-| `agent-chat agent …`: `cli/agents.ts`, `cli/verbs/agent-{park,resume,retire}.ts`                                                | `spawn`, `surface`, `park`, `resume`, `retire`, `retire_finished` (Class 2); `teleport_abort` (Class 1) | the owner, or a coordinator's shell                              | yes, from a coordinator's shell (`WORKER_CLI_DENY` keeps workers off the literal spelling)                                                                                      | mapped to the coordinator, the same as its MCP tools. That is intended. `teleport_abort` is refused, which is also intended                               |
-| `cli/human.ts`, `cli/verbs/{dismiss,endorse,approve,ask}.ts`, `inbox/apply.ts`, `cli/debug.ts`, `cli/verbs/teleport-request.ts` | Class 1 frames                                                                                          | the owner's terminal                                             | only when the owner types them into an agent's pane                                                                                                                             | refused. Intended; see the `!` commands question below                                                                                                    |
-| `mirror/source.ts`                                                                                                              | `answer`, `dismiss`, `endorse_approve`, `approve_permission` (Class 1)                                  | the mirror daemon's launchd or systemd unit                      | no, the unit does not carry the id                                                                                                                                              | unchanged                                                                                                                                                 |
-| `cli/verbs/permission-hook.ts`                                                                                                  | `permission_hook`, `permission_self_granted` (Class 3), `permission_hook_withdrawn` (Class 4)           | the PermissionRequest hook inside the agent's tree               | always                                                                                                                                                                          | accepted for the agent's own session. Intended                                                                                                            |
+| Sender                                                                                                                          | Frames                                                                                                  | Usual runner                                                     | Can run with the id set?                                                                                                                                                        | Under the gate as recommended                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| burndown tick: `cli/verbs/burndown.ts`, `burndown/execute.ts`, `burndown/triage.ts`, `cli/burndown-broker.ts`                   | `spawn`, `resume`, `retire` (Class 2)                                                                   | the launchd job or systemd timer (`agent-chat burndown install`) | **yes**. `burndown/exec.ts` says "a tick run from an agent's shell carries both" identity variables. `docs/burndown.md` asks for supervised `burndown tick --once` runs by hand | would break if run in-process. Since CC-1151 the site sends only `job_kick` (Class 4) and the broker runs the tick with the unit's env, so the gate never sees these frames from the agent. **Unaffected** |
+| seat watchdog: `cli/verbs/seat-respawn.ts`, `cli/verbs/seats.ts`                                                                | `spawn`, `retire`, `resume` (Class 2)                                                                   | launchd or systemd units (`src/mirror/plist.ts`)                 | yes, if a seat or coordinator runs `seats watchdog` by hand from its shell                                                                                                      | same as the tick: `seats watchdog` and `heartbeat-check` kick the broker (CC-1151). **Unaffected**                                                                                                         |
+| seat watchdog: `cli/verbs/seat-broker.ts` (`sendAsOwner`)                                                                       | `human_send` (Class 1)                                                                                  | same units                                                       | same                                                                                                                                                                            | sent only by the broker-run job, which has no id (CC-1151). **Unaffected**                                                                                                                                 |
+| `agent-chat agent …`: `cli/agents.ts`, `cli/verbs/agent-{park,resume,retire}.ts`                                                | `spawn`, `surface`, `park`, `resume`, `retire`, `retire_finished` (Class 2); `teleport_abort` (Class 1) | the owner, or a coordinator's shell                              | yes, from a coordinator's shell (`WORKER_CLI_DENY` keeps workers off the literal spelling)                                                                                      | mapped to the coordinator, the same as its MCP tools. That is intended. `teleport_abort` is refused, which is also intended                                                                                |
+| `cli/human.ts`, `cli/verbs/{dismiss,endorse,approve,ask}.ts`, `inbox/apply.ts`, `cli/debug.ts`, `cli/verbs/teleport-request.ts` | Class 1 frames                                                                                          | the owner's terminal                                             | only when the owner types them into an agent's pane                                                                                                                             | refused. Intended; see the `!` commands question below                                                                                                                                                     |
+| `mirror/source.ts`                                                                                                              | `answer`, `dismiss`, `endorse_approve`, `approve_permission` (Class 1)                                  | the mirror daemon's launchd or systemd unit                      | no, the unit does not carry the id                                                                                                                                              | unchanged                                                                                                                                                                                                  |
+| `cli/verbs/permission-hook.ts`                                                                                                  | `permission_hook`, `permission_self_granted` (Class 3), `permission_hook_withdrawn` (Class 4)           | the PermissionRequest hook inside the agent's tree               | always                                                                                                                                                                          | accepted for the agent's own session. Intended                                                                                                                                                             |
 
 ## Open questions for CC-1138
 
@@ -280,6 +310,13 @@ change. Internal `Supervisor` calls are left out too: they never cross the socke
   task board, the charter and the seat files decide what they spawn, resume and retire,
   not the agent whose shell started them. Under the hello as written, a hand-run tick or
   watchdog would be checked as that agent and would break.
+
+  **Superseded by CC-1151 (built in #785 and #818).** With the id set, these three sites
+  send a `job_kick` frame, which is Class 4 and accepted from a declared connection, and
+  the broker runs the job without the id. So CC-1138 needs no opt-out list, no opt-out
+  argument on `withRunningBroker`, no root rule and no root-compare frame: none of them is
+  to be built. The hello stays on at every site. The rest of this item records the
+  rejected design and why it fell short.
 
   Options:
   1. Strip the id for these callers, the way `childEnv` (`src/exec.ts`) already
@@ -348,17 +385,16 @@ watchdog` picks a policy the caller wrote, with no `--root`. With that policy, a
   found another. Comparing with the broker's values covers the root and `home()` inputs,
   but not the others the opt-out sites read from the calling process (`PATH`, `GH_*`,
   git config, planted reports). It is a stopgap, not a closure. See the Limits section:
-  the boundary that closes the class is the broker kick frame (CC-1151). Once that
-  lands, an opted-out site runs nothing in the agent's process, and this frame is no
-  longer needed.
+  the boundary that closes the class is the broker kick frame (CC-1151). It has landed,
+  an opted-out site runs nothing in the agent's process, and this frame is not built.
 
   Option 2 was rejected because the broker would have to trust a self-declared source,
   which an agent can set as easily as it can omit the id. That adds broker surface for no
   extra assurance. Option 3 was rejected because it breaks the supervised ticks
   `docs/burndown.md` asks for, and a seat relaunching its peers.
 
-  **Limit.** An agent that runs `burndown tick` or `seats watchdog` and passes the root
-  rule acts with the tick's or watchdog's authority. The owner's files bound what that
+  **Limit.** An agent that runs `burndown tick` or `seats watchdog`, and so kicks the
+  broker, starts a run with the tick's or watchdog's authority. The owner's files bound what that
   authority does: the charter, the seat files and the task board. The caller's brief does
   not. Those files sit under the same OS account, though, so an agent that edits them
   edits the policy. This is §11.4's limit again, not a new one.
@@ -386,8 +422,9 @@ watchdog` picks a policy the caller wrote, with no `--root`. With that policy, a
   `source: 'watchdog'` through `sendAsOwner` (`src/cli/verbs/seat-broker.ts`). They run
   from launchd or systemd units (`src/mirror/plist.ts`), which do not carry the id. Before
   the gate lands, confirm that no seat session runs these verbs from its own shell, where
-  the id would be set. If one does, the tick and seat entry above covers it: the
-  heartbeat-check call site turns the hello off, under the root rule.
+  the id would be set. If one does, CC-1151 covers it: the call kicks the broker, which
+  runs the check without the id, and the caller gets the kick reply, not the check's
+  output (that goes to `<home>/job-kick.log`).
 - **`teleport request`** (`src/cli/verbs/teleport-request.ts`) is a human verb that sends
   `human_send`. When the owner types it into a teleported agent's terminal pane, the
   shell carries the agent's id and the gate would refuse it. Decide whether that is

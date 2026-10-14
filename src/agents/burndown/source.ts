@@ -9,6 +9,7 @@ import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
 import { PRIOR_ROUTINGS } from './prior-route.js'
 import { STACK_MODES } from './stack.js'
+import { REVIEW_BACKPRESSURE_MODES } from './flow-gate.js'
 import { BRIEF_GATES, type Initiative, type Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
@@ -144,6 +145,14 @@ export const TickConfigSchema = z.object({
     .object({ mode: z.enum(STACK_MODES).default('off') })
     .strict()
     .default({ mode: 'off' }),
+  /** CC-1106: refuse new implementers while queued reviews exceed `k` x Shepherd's review cap. Flipping it is an owner step. */
+  reviewBackpressure: z
+    .object({
+      mode: z.enum(REVIEW_BACKPRESSURE_MODES).default('off'),
+      k: z.number().positive({ error: 'reviewBackpressure.k must be positive' }).default(2),
+    })
+    .strict()
+    .default({ mode: 'off', k: 2 }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
   /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */

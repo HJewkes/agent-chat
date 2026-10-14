@@ -24,7 +24,15 @@ import {
   type CollisionWork,
   type SameTickClaim,
 } from './collision.js'
-import { stopLineRefusal, type LineStop } from './flow-gate.js'
+import {
+  reviewBackpressureRefusal,
+  stopLineRefusal,
+  type FlowRefusal,
+  type FlowWork,
+  type LineStop,
+  type ReviewBackpressure,
+} from './flow-gate.js'
+import type { ReviewBacklog } from './review-backlog.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, slotMismatch, type Claim, type Ledger } from './ledger.js'
 import type { AgentIdentity } from '../../protocol.js'
@@ -102,6 +110,10 @@ export interface SeatPlanInputs {
   activeTree?: (claim: Claim) => boolean
   /** Set while the service check has failed twice running (CC-629); absent, the line runs. */
   lineStop?: LineStop
+  /** CC-1106: Shepherd's review queue this tick; absent, review backpressure is not applied. */
+  reviewBacklog?: ReviewBacklog
+  /** CC-1106: `burndown.reviewBackpressure`; absent or `off`, no implementer waits on the review queue. */
+  reviewBackpressure?: ReviewBackpressure
   /** The seat's `scope_tags` and backlog (CC-779); absent, every scored row is in scope. */
   scope?: SeatScope
   /** The broker's roster (CC-779): the seat's running agents count against its caps; absent, only claims do. */
@@ -222,6 +234,8 @@ interface Walk {
   capacity: Capacity | undefined
   tally: Tally
   notes: string[]
+  /** CC-1106: whether this seat already noted an unread or shadow review backpressure; it notes once. */
+  backpressureNoted?: boolean
 }
 
 /** Ready slices of the seat's planners first, since their tasks are underway; then the scored order. */
@@ -987,7 +1001,7 @@ function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Disp
   }
 }
 
-/** In D6's order: stop-line, collision, orphan, trust, role cap, worktree caps, then the pool gate. */
+/** In D6's order: stop-line, review backpressure, collision, orphan, trust, role cap, worktree caps, then the pool gate. */
 function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
   const flow = { tags: work.tags, planner: role === 'planners' }
@@ -998,6 +1012,7 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
   }
   const refused =
     stopLineRefusal(flow, inputs.lineStop) ??
+    backpressure(flow, walk) ??
     collided(inputs.collision?.(d.repo, work, landedRepos(inputs.seat)), d.repo) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
     (d.slice === undefined
@@ -1013,6 +1028,15 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
         ...refused,
         gate: binaryGate(`gate.${refused.kind}`, BINARY_SOURCES[refused.kind] ?? COLLISION_SOURCE),
       }
+}
+
+/** CC-1106: a refusal from the review queue; an unread queue or a shadow gate notes once per seat instead. */
+function backpressure(flow: FlowWork, walk: Walk): FlowRefusal | undefined {
+  const verdict = reviewBackpressureRefusal(flow, walk.inputs.reviewBacklog, walk.inputs.reviewBackpressure)
+  if (verdict === undefined || 'kind' in verdict) return verdict
+  if (!walk.backpressureNoted) walk.notes.push(`seat ${walk.inputs.seat.seat} ${verdict.note}`)
+  walk.backpressureNoted = true
+  return undefined
 }
 
 /** CC-1241: a collision naming an open PR carries it as the refusal's blocker. */
