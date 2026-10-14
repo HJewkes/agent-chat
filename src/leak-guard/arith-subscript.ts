@@ -14,7 +14,7 @@
  * - Data read at runtime from a file (`read n < file`, `$(<file)`) is out of reach, and so is a `$` produced
  *   at runtime (`x[$d'(P)]'`, `printf 'x[\\x24(P)]'`).
  */
-import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
+import { LIVE, NAME, parseShell, type SimpleCommand, unmark } from './shell-words.js'
 
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
 const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
@@ -303,19 +303,6 @@ export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCom
   return [...new Set(names)]
 }
 
-/** Where the `$(...)` whose body starts at `from` closes, past quotes and nested parentheses; the end when it never does. */
-function bodyEnd(text: string, from: number, open = '(', close = ')'): number {
-  let depth = 0
-  for (let i = from; i < text.length; i++) {
-    const c = text[i]
-    if (c === '\\') i++
-    else if (c === "'" || c === '"') i = quoteEnd(text, i)
-    else if (c === open) depth++
-    else if (c === close && depth-- === 0) return i
-  }
-  return text.length
-}
-
 // bash 5.3's `${ list; }` and `${| list; }`. The splitter cuts their words at the first `}`, even a quoted one, so
 // their text cannot be read here; until a real funsub reader lands (CC-1327 a) the rest of the command is
 // reported whole as one raw text that starts with `${`. That is not a command: the guard (slice b) must deny
@@ -330,66 +317,63 @@ function funsubRest(marked: readonly string[]): string[] {
   return [unmark([first.slice(first.search(FUNSUB)), ...marked.slice(at + 1)].join(' '))]
 }
 
-function quoteEnd(text: string, open: number): number {
-  const quote = text[open]
-  for (let i = open + 1; i < text.length; i++) {
-    if (quote === '"' && text[i] === '\\') i++
-    else if (text[i] === quote) return i
-  }
-  return text.length
+// A funsub `${ ` (space, tab or newline after `${`) or valsub `${|`: bash runs it, the splitter cuts it at
+// its first `}`, so its text cannot be read and the rest from the `${` is reported as a `${` sentinel.
+const funsubAt = (text: string, i: number): boolean =>
+  text.startsWith('${', i) && /[\s|]/.test(text[i + 2] ?? '')
+
+/**
+ * The exact text bash reads for the `$(`, `$((` or backtick opener at the start of `rest`, found by the
+ * guard's own lexer rather than by counting parens, so a `case`, `#` comment or heredoc inside it ends where
+ * bash ends it. `undefined` when the lexer finds no well-formed close, so the caller fails closed.
+ */
+function openerRaw(rest: string): string | undefined {
+  const raws = parseShell(rest)
+    .flatMap(cmd => cmd.substitutions.map(sub => sub.raw))
+    .filter(raw => rest.startsWith(raw))
+    .sort((a, b) => b.length - a.length)
+  const raw = raws[0]
+  if (raw === undefined) return undefined
+  const closed = raw.endsWith(')') || (raw.length > 1 && raw.endsWith('`'))
+  return closed ? raw : undefined
 }
 
-const closingTick = (text: string, from: number): number => {
-  const close = text.indexOf('`', from)
-  return close < 0 ? text.length : close
-}
+// The command inside an opener's raw: `$(cmd)`/`$((cmd))` to the text past `$(`, `` `cmd` `` to the text past the tick.
+const openerBody = (raw: string): string => (raw[0] === '`' ? raw.slice(1, -1) : raw.slice(2, -1))
 
-// A funsub `${ ` (space, tab or newline after `${`) or valsub `${|`, which bash runs as commands. Its text
-// cannot be read (the splitter cut it at its first `}`), so the rest of the word is reported from the `${`.
-const inWordFunsub = (marked: string, i: number): boolean =>
-  marked.startsWith('${', i) && /[\s|]/.test(marked[i + 2] ?? '')
-
-/** One opener at `i`: the start of the body it runs, the index past its close, and the whole opener text. */
-function opener(marked: string, i: number): { from: number; end: number; token: string } | undefined {
-  // `$((` is arithmetic when well-formed and a `$( (...) )` command otherwise; either way read its body.
-  if (marked.startsWith('$((', i) || (marked.startsWith('$(', i) && marked[i + 2] !== '(')) {
-    const end = bodyEnd(marked, i + 2)
-    return { from: i + 2, end, token: unmark(marked.slice(i, end + 1)) }
-  }
-  if (marked[i] === '`') {
-    const end = closingTick(marked, i + 1)
-    return { from: i + 1, end, token: unmark(marked.slice(i, end + 1)) }
-  }
-  return undefined
-}
-
-/** True once; it spends one count of `token` in `recorded`, so a fake sharing a real sub's text is not trusted twice. */
-function recorded(counts: Map<string, number>, token: string): boolean {
-  const n = counts.get(token) ?? 0
+/** True once; it spends one count of `raw` in `counts`, so a fake sharing a real sub's text is not trusted twice. */
+function recorded(counts: Map<string, number>, raw: string): boolean {
+  const n = counts.get(raw) ?? 0
   if (n <= 0) return false
-  counts.set(token, n - 1)
+  counts.set(raw, n - 1)
   return true
 }
 
 /**
- * The body of every opener bash recognizes in `marked` that the splitter did not itself read as a command:
- * `$(`, `$((`, a backtick, and a non-live `${ ` or `${|` funsub. Trust is per recorded substitution, spent
- * once: a live opener is skipped only while `counts` still holds its exact text, because the splitter also
- * marks the literal `$` of `"$"` LIVE (so `x["$"'(P)]'` looks live though bash builds `$(P)` from it) and a
- * fake can share a real sub's text in the same command.
+ * The body of every `$(`, `$((`, backtick or `${ ` opener bash recognizes in `text` that the splitter did
+ * not itself read as a command. Each opener's extent comes from `parseShell`, never from counting parens, so
+ * a `case`, comment or heredoc inside it is not cut short. Trust is per recorded substitution, spent once: an
+ * opener is skipped only while `counts` still holds its exact text, because the splitter marks the literal
+ * `$` of `"$"` LIVE too (so `x["$"'(P)]'` looks live though bash builds `$(P)`) and a fake can share a real
+ * sub's text in the same command. An opener with no well-formed close, and a funsub, are reported whole from
+ * the opener as a sentinel (it still starts with `$(`, `` ` `` or `${`) that slice b denies without parsing.
  */
-function quotedSubstitutions(marked: string, counts: Map<string, number>): string[] {
+function quotedSubstitutions(text: string, counts: Map<string, number>): string[] {
+  const plain = unmark(text)
   const bodies: string[] = []
-  for (let i = 0; i < marked.length; i++) {
-    const live = marked[i - 1] === LIVE
-    if (!live && inWordFunsub(marked, i)) {
-      bodies.push(unmark(marked.slice(i)))
+  for (let i = 0; i < plain.length; i++) {
+    if (funsubAt(plain, i)) {
+      bodies.push(plain.slice(i))
       break
     }
-    const found = opener(marked, i)
-    if (found === undefined) continue
-    if (!live || !recorded(counts, found.token)) bodies.push(unmark(marked.slice(found.from, found.end)))
-    i = found.end
+    if (!plain.startsWith('$(', i) && plain[i] !== '`') continue
+    const raw = openerRaw(plain.slice(i))
+    if (raw === undefined) {
+      bodies.push(plain.slice(i))
+      break
+    }
+    if (!recorded(counts, raw)) bodies.push(openerBody(raw))
+    i += raw.length - 1
   }
   return bodies
 }

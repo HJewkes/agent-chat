@@ -364,6 +364,23 @@ describe('arithSubstitutions reads $(( and a faked-live opener', () => {
   )
 })
 
+// The opener's end comes from parseShell, so a case pattern, a # comment or a heredoc inside it, which a paren
+// count mistakes for the close, no longer cuts the body short and hides the payload after it (round 11).
+describe('arithSubstitutions ends an opener where the lexer does, not at a counted paren', () => {
+  it.each([
+    `n='x[$(case a in a) ${P};; esac)]'`,
+    `n='x[$(echo # )\n${P})]'`,
+    `n='x[$(cat <<E\n)\nE\n${P})]'`,
+    `read n <<'E'\nx[$(case a in a) ${P};; esac)]\nE`,
+  ])('%s', line => {
+    expect(bodiesOf(line).some(body => body.includes(P))).toBe(true)
+  })
+
+  it.each([`n='x[$(${P}`, `n='x[$(case a in a) ${P}`])('%s fails closed on no close', line => {
+    expect(bodiesOf(line).some(body => body.startsWith('$('))).toBe(true)
+  })
+})
+
 describe('the pretool guard and arithSubstitutions share one list of name-operand builtins', () => {
   it('pretool.ts imports both sets rather than defining its own', () => {
     const source = fs.readFileSync(new URL('../leak-guard/pretool.ts', import.meta.url), 'utf8')
