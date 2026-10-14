@@ -100,6 +100,19 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(push?.nested).toBe(true)
   })
 
+  // bash 5.3.9 reads CR, VT, FF, NBSP and U+2028 as word characters, so `{` before one is no group.
+  it.each(['\r', '\v', '\f', ' ', ' '].flatMap(ch => ['${ ', '${|'].map(open => [open, ch])))(
+    '%j{%j;} closes where bash does, so the push after it is a command',
+    (open, ch) => {
+      const src = `echo "${open}{${ch};} #"; git push --no-verify\n}"`
+
+      const push = find(src, 'git')
+
+      expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+      expect(push?.nested).toBe(false)
+    },
+  )
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {

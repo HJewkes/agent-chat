@@ -136,7 +136,7 @@ const BRACE_PREFIX = new Set([
 ])
 
 // A `{` or `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
-const METACHAR = /[\s;&|()<>]/
+const METACHAR = /[ \t\n;&|()<>]/
 
 function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
   if (UNREADABLE_BRACED.test(text)) return 'unreadable'
