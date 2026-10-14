@@ -307,6 +307,27 @@ describe('bash 5.3 funsub bodies read as commands', () => {
 
   it.each(['${ ', '${|'])('%j keeps }x after another word a plain argument', open => {
     expect(expansionRisk(`echo "${open}echo a }x; date; }"`)).toBeUndefined()
+    expect(expansionRisk(`echo "${open}[[ }x ]]; date; }"`)).toBeUndefined()
+  })
+
+  it.each(['${ ', '${|'])('%j never takes }x after a reserved word for an argument', open => {
+    expect(expansionRisk(`echo "${open}x=1 fi }x; date; }"`)).toBe('unreadable')
+  })
+
+  // bash 5.3.9 closes at the `}` after chained compound ends, as reserved_word_acceptable allows.
+  it.each(
+    [
+      'if :; then if :; then :; fi fi }',
+      'if :; then [[ a ]] fi }',
+      '{ { :; } } }',
+      'if :; then (:) fi }',
+      'while false; do if :; then :; fi done }',
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}"; git push --no-verify; #"\n}"`)),
+  )('%j closes after the chained ends, so the push is a command', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(false)
   })
 
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
@@ -335,5 +356,48 @@ describe('other ${...} forms are unchanged', () => {
     ['echo ${HOME}', undefined],
   ])('%j stays %j', (src, risk) => {
     expect(expansionRisk(src)).toBe(risk)
+  })
+})
+
+// Each line chains two or three compound ends before `}`; bash 5.3.9 closes the funsub there and runs
+// the push in every one (checked against bash for CC-1327, 1176 lines).
+const LEAVES = [
+  'if :; then :; fi',
+  'for a in b; do :; done',
+  'case a in a) ;; esac',
+  '{ :; }',
+  '[[ a ]]',
+  '(( 1 ))',
+  '(:)',
+]
+const WRAPPERS = [
+  'if :; then @ fi',
+  'while false; do @ done',
+  '{ @ }',
+  '( @ )',
+  'case a in a) @ esac',
+  'for a in b; do @ done',
+]
+const chained = WRAPPERS.flatMap(outer =>
+  LEAVES.flatMap(leaf =>
+    [outer, ...WRAPPERS.map(inner => outer.replace('@', inner))].map(w => w.replace('@', leaf)),
+  ),
+)
+const matrix = chained.flatMap(body =>
+  ['${ ', '${|'].flatMap(open =>
+    [' }', ' }x'].map(tail => `echo "${open}${body}${tail}"; git push --no-verify; #"\n}"`),
+  ),
+)
+
+describe('chained compound ends before a funsub }', () => {
+  it('covers every leaf, wrapper pair, opener and tail', () => {
+    expect(matrix).toHaveLength(1176)
+  })
+
+  it.each(matrix)('%j closes where bash does', src => {
+    const push = find(src, 'git')
+
+    expect(push?.nested).toBe(false)
+    expect(expansionRisk(src)).toBeUndefined()
   })
 })
