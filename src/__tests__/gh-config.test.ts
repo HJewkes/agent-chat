@@ -36,11 +36,15 @@ describe('gh config set the guard cannot read', () => {
     [['--weird', 'pager', 'x']],
     [['-x', 'pager', 'x']],
     [[undefined, '--help', 'pager', 'x']],
+    [['-h', undefined, 'x']],
+    [['-h', undefined]],
+    [['--host', undefined, 'git push --no-verify']],
+    [['-h', undefined, 'git_protocol', 'x']],
   ])('reads %j as unread', rest => {
     expect(ghConfigProgram(rest)).toEqual({ kind: 'unread' })
   })
 
-  it('lets -h swallow an unresolved host', () => {
+  it('keeps a program write past an unresolved host', () => {
     expect(ghConfigProgram(['-h', undefined, 'pager', 'x'])).toEqual({ kind: 'program', value: 'x' })
   })
 })
