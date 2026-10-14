@@ -1,0 +1,120 @@
+{
+  "rows": [
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 1409,
+      "runId": "aba9b354-e6af-4340-be85-22015d70bd58",
+      "phase": "review",
+      "headSha": "2974171f3630b047d43e0bd2746d6ec154c6df60",
+      "stalled": null,
+      "held": {
+        "reason": "g10-adversary: security touch"
+      }
+    },
+    {
+      "repo": "hjewkes/agent-chat",
+      "pr": 891,
+      "runId": "f793dc2e-1969-4648-a94a-e01fd8205e24",
+      "phase": "review",
+      "headSha": "742b9cd11797ffde4cf43ffbd85feb513d4d2f7f",
+      "stalled": null,
+      "held": {
+        "reason": "g10-adversary: security touch"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-design",
+      "pr": 852,
+      "runId": "08ec9e3f-f07f-40c0-a9ae-b9ff2663535d",
+      "phase": "review",
+      "headSha": "888a17ba31468e8f023d9b84ed02e6a8309c4495",
+      "stalled": null,
+      "held": {
+        "reason": "g10-review: 998 changed lines"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 1497,
+      "runId": "b1f7dc4d-ba25-4c35-addf-3210fa83d1e8",
+      "phase": "review",
+      "headSha": "adc9fd72c57989aedb164ff0ca1c087e2b67157b",
+      "stalled": null,
+      "held": {
+        "reason": "g10-adversary: authority, security touch"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 1498,
+      "runId": "8030f5e4-1663-4509-bdaa-95a3d2985d7c",
+      "phase": "review",
+      "headSha": "44678e75fce6d8f1f933b39a736c04cf7306031c",
+      "stalled": null,
+      "held": {
+        "reason": "g10-review: 452 changed lines"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 1500,
+      "runId": "15c8eda6-ae58-4308-b537-5e908f1c5e7f",
+      "phase": "review",
+      "headSha": "df3473460ee7ee2749dd0d42ba46121d96738411",
+      "stalled": null,
+      "held": {
+        "reason": "g10-adversary: security touch"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 1507,
+      "runId": "15d79961-9e8d-469d-bed9-ce6917c57d6d",
+      "phase": "review",
+      "headSha": "02c593f32d813c59630e08b8cd55c02fe619d738",
+      "stalled": null,
+      "held": {
+        "reason": "no-reviewer: ReviewerAskTimedOut at 02c593f32d813c59630e08b8cd55c02fe619d738; TP-2446"
+      }
+    },
+    {
+      "repo": "hjewkes/agent-chat",
+      "pr": 935,
+      "runId": "a571f9c7-2e11-48c7-ac5f-df418118bb78",
+      "phase": "review",
+      "headSha": "78e75760731d47517b6a42f5a090f8db387c9587",
+      "stalled": null,
+      "held": {
+        "reason": "no-reviewer: ReviewerAskTimedOut at 78e75760731d47517b6a42f5a090f8db387c9587; TP-2446"
+      }
+    },
+    {
+      "repo": "hjewkes/titan-platform",
+      "pr": 287,
+      "runId": "10212c76-274d-4304-a2b9-6f02d2fb1847",
+      "phase": "done",
+      "headSha": "ff1f123b0fe1edfd9840e6982c522606add66269",
+      "stalled": null,
+      "held": null
+    }
+  ],
+  "deploy": {
+    "runningSha": "ef65c2dbedf74d9c669cb146662b2ea409149695",
+    "behind": 0,
+    "behindMinutes": 0,
+    "consecutiveRefusals": 0,
+    "lastRefusal": {
+      "at": "2026-10-13T20:35:21.940Z",
+      "reason": "rolled-back ac9834e1770ccc23b2c195c392d8c0c0fa8a381d: 5 more run(s) failed or need recovery during the 120 s watch"
+    },
+    "alarm": false,
+    "causes": [],
+    "notice": null,
+    "escalation": null
+  },
+  "reviewSlots": {
+    "running": ["rv-hjewkes-agent-chat-931-2"],
+    "cap": 24,
+    "readAt": "2026-10-14T12:34:33.765Z"
+  }
+}
