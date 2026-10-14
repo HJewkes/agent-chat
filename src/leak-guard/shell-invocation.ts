@@ -42,6 +42,8 @@ interface Grammar {
   letters: Readonly<Record<string, Letter>>
   /** How an `o` or `O` with letters after it in its word reads its name: from those letters, the next word, or not at all. */
   glued: 'rest' | 'next' | 'hidden'
+  /** Words that end the options. zsh also ends them at a bare `+` or `+-`, which bash ignores or rejects. */
+  ends: ReadonlySet<string>
 }
 
 // Names for letters that have no long spelling. `normalise` strips `-`, so no long option reaches them.
@@ -73,6 +75,8 @@ const COMMON_LETTERS: Readonly<Record<string, Letter>> = {
 }
 const BASH_LETTERS = { ...COMMON_LETTERS, s: { name: 'shinstdin', anySign: true }, H: { name: 'histexpand' } }
 
+const DASH_ENDS = new Set(['-', '--'])
+
 // Observed letter tables. `sh` may be bash or dash, so it takes bash's, the wider of the two.
 const GRAMMARS: Readonly<Record<string, Grammar>> = {
   zsh: {
@@ -82,13 +86,16 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
       b: { name: END, anySign: true },
     },
     glued: 'rest',
+    ends: new Set([...DASH_ENDS, '+', '+-']),
   },
-  bash: { letters: BASH_LETTERS, glued: 'next' },
-  sh: { letters: BASH_LETTERS, glued: 'next' },
-  dash: { letters: COMMON_LETTERS, glued: 'next' },
+  bash: { letters: BASH_LETTERS, glued: 'next', ends: DASH_ENDS },
+  sh: { letters: BASH_LETTERS, glued: 'next', ends: DASH_ENDS },
+  dash: { letters: COMMON_LETTERS, glued: 'next', ends: DASH_ENDS },
 }
 
-// Any other shell takes every letter's effect under either sign, and hides a name glued to `o`.
+// Any other shell takes every letter's effect under either sign, hides a name glued to `o`, reads a bare
+// `+` as a letter cluster so the options after it still count, and reports history even under `-c`:
+// nothing shows its `-c` string is inert, and csh substitutes `!` in the text it reads.
 const UNOBSERVED: Grammar = {
   letters: {
     ...BASH_LETTERS,
@@ -96,6 +103,7 @@ const UNOBSERVED: Grammar = {
     K: { name: 'banghist', inverted: true },
   },
   glued: 'hidden',
+  ends: DASH_ENDS,
 }
 
 // Long options that take the next word as their operand: bash's rc files and zsh's `--emulate`.
@@ -192,7 +200,7 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
   while (at < words.length && !opts.hidden && !opts.ended) {
     const word = words[at] ?? ''
     if (word.includes(LIVE)) return { ...opts, end: at, hidden: true }
-    if (word === '--' || word === '-') return { ...opts, end: at + 1 }
+    if (grammar.ends.has(word)) return { ...opts, end: at + 1 }
     if (!word.startsWith('-') && !word.startsWith('+')) return { ...opts, end: at }
     at = LONG.test(word) ? readLong(words, at, opts) : readCluster(grammar, words, at, opts)
   }
@@ -208,12 +216,13 @@ export function readShellCall(
   marked: readonly string[],
   assigns: readonly string[],
 ): ShellCall {
-  const opts = readOptions(GRAMMARS[name] ?? UNOBSERVED, marked)
+  const grammar = GRAMMARS[name] ?? UNOBSERVED
+  const opts = readOptions(grammar, marked)
   if (opts.hidden) return { script: { from: 'hidden' }, history: true }
   if (opts.command)
     return {
       script: { from: 'command', at: opts.end < marked.length ? opts.end : undefined },
-      history: false,
+      history: grammar === UNOBSERVED,
     }
   const history = opts.history || assigns.some(word => STARTUP_ASSIGNMENT.test(word))
   if (opts.stdin || opts.end >= marked.length) return { script: { from: 'stdin' }, history }

@@ -77,6 +77,13 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['ENV=./rc sh s.sh', 0, true],
     ['bash -l s.sh', 1, true],
     ['bash --login s.sh', 1, true],
+    ['zsh + -s', 1, false],
+    ['zsh +- -s', 1, false],
+    ['zsh + -i', 1, false],
+    ['zsh +- -i s.sh', 1, false],
+    ['bash + -i s.sh', 2, true],
+    ['ksh +i s.sh', 1, true],
+    ['ksh + -i s.sh', 2, true],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -116,6 +123,15 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'bash *.sh',
   ])('%s hides its options', line => {
     expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
+  })
+
+  it.each([
+    ['ksh -ic x', 1],
+    ['ksh -c x', 1],
+    ['tcsh -c x', 1],
+    ['csh -c x', 1],
+  ])('%s runs the string at %s and reports history, as an unobserved shell', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'command', at }, history: true })
   })
 
   it('reads an expansion after the options as an operand', () => {
