@@ -11,7 +11,14 @@ import {
   type LockResult,
   type LockWait,
 } from '../../agents/burndown/ledger.js'
-import { pendingOffLedger, type PlanReader } from '../../agents/burndown/seed-slices.js'
+import type { Runner } from '../../agents/burndown/exec.js'
+import { readSlices, type PlannedSlice } from '../../agents/burndown/report.js'
+import {
+  pendingOffLedger,
+  sliceClaims,
+  type PlanFile,
+  type PlanReader,
+} from '../../agents/burndown/seed-slices.js'
 import { slicesReleasedUnclaimed } from '../../agents/burndown/slices-complete.js'
 import type { Report } from '../command.js'
 
@@ -135,34 +142,150 @@ function withoutSliceReleases(ledger: Ledger, task: string): Ledger {
   return Object.keys(kept).length === 0 ? rest : { ...rest, slicesReleased: kept }
 }
 
+/** CC-1141 b: what a re-link reads of a PR from GitHub. */
+export interface LinkedPull {
+  title: string
+  state: string
+  branch: string
+}
+
+/** CC-1141 b: the reads a re-link of a slice with no held claim needs; without them, only a queued slice links. */
+export interface LinkPorts {
+  plan: PlanReader
+  /** The PR's title, state and head branch; undefined when GitHub could not tell. */
+  pull: (pr: string) => LinkedPull | undefined
+  /** The initiative of a task with no claim left on the ledger. */
+  initiative?: string
+  now?: Date
+}
+
+// REST, never GraphQL: the owner's account hits GraphQL rate limits.
+export const pullReader =
+  (exec: Runner) =>
+  (pr: string): LinkedPull | undefined => {
+    const target = shepherdTarget(pr)
+    if (target === undefined) return undefined
+    const result = exec('gh', [
+      'api',
+      `repos/${target.repo}/pulls/${target.pr}`,
+      '--jq',
+      '{title, state, branch: .head.ref}',
+    ])
+    if (result.status !== 0) return undefined
+    try {
+      const pull = JSON.parse(result.stdout) as Partial<LinkedPull>
+      const fields = [pull.title, pull.state, pull.branch]
+      return fields.every(f => typeof f === 'string') ? (pull as LinkedPull) : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+const escaped = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The whole task id, any case, so `CC-12` never names `CC-1`. */
+export const namesTask = (text: string, task: string): boolean =>
+  new RegExp(`(?<![A-Za-z0-9])${escaped(task)}(?![0-9])`, 'i').test(text)
+
 /**
  * CC-978: records a hand-dispatched PR on a queued slice, so the tick never dispatches the slice and
  * finishes it when the PR merges. Refused for a claim that is not queued or a PR Shepherd cannot name.
+ * CC-1141 b: with `ports`, a released or never-seeded slice is re-created as a queued claim carrying the PR.
  */
 export async function linkSlicePr(
   task: string,
   slice: string,
   pr: string,
   wait: LockWait = { waitMs: LEDGER_WAIT_MS },
+  ports?: LinkPorts,
 ): Promise<Report> {
   if (shepherdTarget(pr) === undefined)
     return refusedReport(`${pr} is not a GitHub PR (owner/repo#n or its URL)`)
   const file = burndownLedgerPath()
-  const locked = await withLedgerLock(
-    file,
-    () => {
-      const ledger = readLedger(file)
-      const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
-      if (claim?.phase !== 'queued') return claim?.phase ?? 'no held claim'
-      writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
-      return undefined
-    },
-    { wait, announce: true },
-  )
+  const locked = await withLedgerLock(file, () => linkQueued(file, task, slice, pr), {
+    wait,
+    announce: true,
+  })
   if (!locked.ran) return lockRefusal(locked)
+  if (locked.value === NO_CLAIM && ports !== undefined) return relinkSlice(task, slice, pr, ports, wait)
   if (locked.value !== undefined)
     return refusedReport(
       `${task} slice ${slice} is not queued (${locked.value}); only a queued slice takes a link`,
     )
   return { ok: true, lines: [`linked ${task} slice ${slice} to ${pr}; the tick will not dispatch it`] }
+}
+
+const NO_CLAIM = 'no held claim'
+
+/** Links the queued claim, or names the phase that refuses it. */
+function linkQueued(file: string, task: string, slice: string, pr: string): string | undefined {
+  const ledger = readLedger(file)
+  const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
+  if (claim?.phase !== 'queued') return claim?.phase ?? NO_CLAIM
+  writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
+  return undefined
+}
+
+/** CC-1141 b: an open PR naming the task re-creates the slice's queued claim from the plan. */
+async function relinkSlice(
+  task: string,
+  slice: string,
+  pr: string,
+  ports: LinkPorts,
+  wait: LockWait,
+): Promise<Report> {
+  const what = `${task} slice ${slice}`
+  const pull = ports.pull(pr)
+  if (pull === undefined) return refusedReport(`${what} has no held claim, and ${pr} could not be read`)
+  if (pull.state !== 'open') return refusedReport(`${what} has no held claim, and ${pr} is ${pull.state}`)
+  if (!namesTask(pull.title, task) && !namesTask(pull.branch, task))
+    return refusedReport(`${what} has no held claim, and neither ${pr}'s title nor its branch names ${task}`)
+  const file = burndownLedgerPath()
+  const locked = await withLedgerLock(file, () => relinkLocked(file, task, slice, pr, ports), {
+    wait,
+    announce: true,
+  })
+  if (!locked.ran) return lockRefusal(locked)
+  if (locked.value !== undefined) return refusedReport(`${what}: ${locked.value}`)
+  return {
+    ok: true,
+    lines: [`re-created ${what} as a queued claim linked to ${pr}; it finishes when the PR merges`],
+  }
+}
+
+/** Writes the re-created claim, or says why it cannot. */
+function relinkLocked(
+  file: string,
+  task: string,
+  slice: string,
+  pr: string,
+  ports: LinkPorts,
+): string | undefined {
+  const ledger = readLedger(file)
+  const ofTask = ledger.claims.filter(c => c.taskId === task)
+  const existing = ofTask.find(c => c.slice === slice)
+  if (existing !== undefined)
+    return `its claim is ${existing.phase}; only a released or unseeded slice re-links`
+  const parent =
+    ofTask[0] ?? (ports.initiative === undefined ? undefined : { taskId: task, initiative: ports.initiative })
+  if (parent === undefined) return 'no claim of the task is left to name its initiative; pass --initiative'
+  const planned = plannedSlice(ports.plan(parent.initiative, task), slice)
+  if (typeof planned === 'string') return planned
+  const added = sliceClaims(parent, [planned], ports.now ?? new Date()).map(c => ({ ...c, pr }))
+  writeLedger(file, unreleased({ ...ledger, claims: [...ledger.claims, ...added] }, task, slice))
+  return undefined
+}
+
+function plannedSlice({ path, text }: PlanFile, slice: string): PlannedSlice | string {
+  if (text === undefined) return `no plan at ${path}`
+  const read = readSlices(text)
+  if (read.slices === undefined) return `plan unreadable: ${read.problems.join('; ')}`
+  return read.slices.find(s => s.n === slice) ?? `slice ${slice} is not in ${path}`
+}
+
+/** Drops the slice from the task's released slices, and the task's key once none is left. */
+function unreleased(ledger: Ledger, task: string, slice: string): Ledger {
+  const left = (ledger.slicesReleased?.[task] ?? []).filter(n => n !== slice)
+  if (left.length > 0) return { ...ledger, slicesReleased: { ...ledger.slicesReleased, [task]: left } }
+  return ledger.slicesReleased?.[task] === undefined ? ledger : withoutSliceReleases(ledger, task)
 }

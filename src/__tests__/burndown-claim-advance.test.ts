@@ -16,7 +16,8 @@ import { liveAgentOf } from '../agents/burndown/seat-tick.js'
 import { seedSlices, type PlanReader } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import { slicesReleasedComplete } from '../agents/burndown/slices-complete.js'
-import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
+import { linkSlicePr, releaseTask, type LinkedPull } from '../cli/verbs/burndown-release.js'
+import type { ClaimPr } from '../agents/burndown/pr-state.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-978: a claim whose PR merged finishes, a slice is released alone, and a hand-dispatched PR holds its slice. */
@@ -336,6 +337,100 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(linked.ok).toBe(true)
     expect(refused.ok).toBe(false)
     expect(readLedger(file()).claims.map(c => c.pr)).toEqual([undefined, 'o/r#41', undefined])
+  })
+
+  describe('a released or unseeded slice re-linked to its open PR (CC-1141 b)', () => {
+    const plan: PlanReader = () => ({
+      path: '/plan.md',
+      text: `\`\`\`burndown-slices\n${JSON.stringify(['a', 'b', 'c'].map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+    })
+    const pulled = (patch: Partial<LinkedPull> = {}) => ({
+      plan,
+      pull: vi.fn(() => ({ title: 'CC-1 a: do the thing', state: 'open', branch: 'agent-chat/x', ...patch })),
+      now: NOW,
+    })
+
+    /** Observe then advance with GitHub's PR state stubbed and no Shepherd run, as an outside-owns PR has. */
+    async function mergedTick(ledger: Ledger, prState: (c: Claim) => ClaimPr | undefined): Promise<Ledger> {
+      const held = ledger.claims.filter(c => c.phase !== 'done')
+      const { observations } = await observe(
+        held,
+        { agents: [] },
+        {
+          finalText: () => undefined,
+          inboxSince: async () => [],
+          root: '/nowhere',
+          shepherdRows: () => [],
+          openPrs: [],
+          spendCap: () => undefined,
+          progress: () => 'unreadable',
+          activity: () => ({ ok: false, reason: 'stub' }) as never,
+          prState,
+        },
+      )
+      return applyActions(ledger, advance(held, observations, NOW), NOW)
+    }
+
+    it('re-creates a queued claim carrying the PR, and the merge finishes it without a Shepherd run', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled())
+
+      const linked = readLedger(file())
+      const relinked = linked.claims.find(c => c.slice === 'a')
+      expect(report.ok).toBe(true)
+      expect(relinked).toMatchObject({ phase: 'queued', pr: 'o/r#41', owns: ['a.ts'], initiative: 'demo' })
+      expect(linked.slicesReleased).toBeUndefined()
+      const merged = await mergedTick(linked, () => ({ kind: 'merged', pr: 'o/r#41', head: 'h41' }))
+      expect(merged.claims.find(c => c.slice === 'a')?.phase).toBe('done')
+    })
+
+    it('re-links a slice never seeded when the PR branch names the task and --initiative is given', async () => {
+      writeLedger(file(), EMPTY_LEDGER)
+      const ports = { ...pulled({ title: 'unrelated', branch: 'agent-chat/tc-cc-1-b' }), initiative: 'demo' }
+
+      const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, ports)
+
+      expect(report.ok).toBe(true)
+      expect(readLedger(file()).claims).toMatchObject([{ taskId: 'CC-1', slice: 'b', pr: 'o/r#41' }])
+    })
+
+    it('refuses a PR whose title and branch name another task', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled({ title: 'CC-12 a: other' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('names CC-1')] })
+      expect(readLedger(file())).toEqual(before)
+    })
+
+    it('refuses a closed or merged PR', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled({ state: 'closed' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('is closed')] })
+      expect(readLedger(file())).toEqual(before)
+    })
+
+    it('still refuses a slice held in a phase other than queued, without reading the PR', async () => {
+      const ports = pulled()
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, ports)
+
+      expect(report.ok).toBe(false)
+      expect(ports.pull).not.toHaveBeenCalled()
+    })
+
+    it('reads no PR state for a queued claim without a PR', async () => {
+      const prState = vi.fn(() => undefined)
+
+      await mergedTick({ ...EMPTY_LEDGER, claims: [slice('b')] }, prState)
+
+      expect(prState).not.toHaveBeenCalled()
+    })
   })
 })
 
