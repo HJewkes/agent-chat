@@ -30,12 +30,22 @@ describe('isOffPlan', () => {
     expect(isOffPlan({ id: 'X-1', priority: 5, notes })).toBe(true)
   })
 
-  it.each([
-    [98, false],
-    [99, true],
-    [101, true],
-  ])('treats priority %i as off-plan=%s', (priority, expected) => {
-    expect(isOffPlan({ id: 'X-1', priority })).toBe(expected)
+  it('leaves a fresh task at a default priority on plan', () => {
+    expect(isOffPlan({ id: 'X-1', priority: 1842 })).toBe(false)
+  })
+
+  it('leaves a triage-ranked 99 without the marker on plan', () => {
+    expect(isOffPlan({ id: 'X-1', priority: 99 })).toBe(false)
+  })
+
+  it('flags the notes marker at any priority', () => {
+    const notes = 'outside accepted factory plan P-list'
+    expect(isOffPlan({ id: 'X-1', priority: 1, notes })).toBe(true)
+    expect(isOffPlan({ id: 'X-1', priority: 1842, notes })).toBe(true)
+  })
+
+  it('flags a listed id at a default priority', () => {
+    expect(isOffPlan({ id: 'X-1', priority: 1842 }, new Set(['X-1']))).toBe(true)
   })
 
   it('flags an id the file listed and leaves an unlisted one', () => {
@@ -87,7 +97,7 @@ describe('briefer selection', () => {
     [
       'a',
       [
-        { id: 'X-1', tags: [], priority: 99 },
+        { id: 'X-1', tags: [], priority: 1842 },
         { id: 'X-2', tags: [], priority: 5, notes: 'outside accepted factory plan P-list' },
         { id: 'X-3', tags: [], priority: 5 },
         { id: 'X-4', tags: [], priority: 5 },
@@ -98,11 +108,11 @@ describe('briefer selection', () => {
 
   it('offers only on-plan tasks to briefers', () => {
     const offered = planningCandidates(refusals, tasks, new Set(['X-4'])).map(r => r.task)
-    expect(offered).toEqual(['X-3'])
+    expect(offered).toEqual(['X-1', 'X-3'])
   })
 
   it('names every off-plan refusal', () => {
     const named = offPlanRefusals(refusals, tasks, new Set(['X-4'])).map(r => r.task)
-    expect(named).toEqual(['X-1', 'X-2', 'X-4'])
+    expect(named).toEqual(['X-2', 'X-4'])
   })
 })
