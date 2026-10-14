@@ -444,6 +444,18 @@ describe('Exited with no Status report', () => {
     expect(rendered).toContain('== Exited with no Status report (4)')
     expect(rendered).toContain(`- ${day(today)} ScheduleWakeup x1: w-c`)
   })
+
+  it("counts a human-spawned agent's notice alongside a coordinator's message (CC-1182)", () => {
+    const today = NOW - HOUR
+    ledger([
+      exit(today, 'w-coord', 'Bash(rm)'),
+      { ...exit(today, 'rv-human', 'Bash(rm)'), kind: 'notice', target: 'human' },
+    ])
+
+    const [group] = digest().ledger.unreportedExits
+
+    expect(group).toMatchObject({ lastAction: 'Bash(rm)', count: 2, agents: ['rv-human', 'w-coord'] })
+  })
 })
 
 describe('Spend', () => {
