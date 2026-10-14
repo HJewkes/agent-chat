@@ -9,6 +9,7 @@ import {
   type Ledger,
 } from '../../agents/burndown/ledger.js'
 import { pendingOffLedger, type PlanReader } from '../../agents/burndown/seed-slices.js'
+import { slicesReleasedUnclaimed } from '../../agents/burndown/slices-complete.js'
 import type { Report } from '../command.js'
 
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -32,7 +33,8 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
 
 /**
  * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
- * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
+ * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing,
+ * except that a task with released slices and no slice claim (`slicesReleasedUnclaimed`) is cleared to reseed.
  * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`. `readPlan` lets it release an
  * unclaimed slice an off-ledger run holds (CC-1240).
  */
@@ -53,6 +55,10 @@ export async function releaseTask(
       writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
       return { dropped, hold: undefined, unclaimed: true }
     }
+    if (dropped.length === 0 && slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
+      writeLedger(file, withoutSliceReleases(ledger, task))
+      return { dropped, hold: undefined, reseedable: true }
+    }
     if (dropped.length === 0) return { dropped, hold: undefined }
     const claims = ledger.claims.filter(c => !dropped.includes(c))
     if (slice !== undefined) {
@@ -72,6 +78,11 @@ export async function releaseTask(
   const what = slice === undefined ? task : `${task} slice ${slice}`
   if ('unclaimed' in locked.value)
     return { ok: true, lines: [`released ${what}, which had no claim; the task no longer waits on it`] }
+  if ('reseedable' in locked.value)
+    return {
+      ok: true,
+      lines: [`released ${task}, whose slices were released with none held; it can be seeded again`],
+    }
   if (dropped.length === 0) return refusedReport(`no held claim on ${what}`)
   const lines: string[] = []
   for (const claim of dropped) lines.push(describeClaim(claim), ...(await retireNames(claim, retire)))
@@ -100,7 +111,10 @@ function waitsOnRun(ledger: Ledger, task: string, slice: string, readPlan?: Plan
   return pendingOffLedger(ledger, readPlan)(parent.initiative, task).includes(slice)
 }
 
-/** A whole-task release lets the task be seeded again. */
+/**
+ * A whole-task release lets the task be seeded again. CC-1256: so does one with no held claim, which only
+ * clears the released slices and counts no backoff, since no agent was dropped.
+ */
 function withoutSliceReleases(ledger: Ledger, task: string): Ledger {
   const { slicesReleased: all, ...rest } = ledger
   const { [task]: _cleared, ...kept } = all ?? {}
