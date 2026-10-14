@@ -475,7 +475,7 @@ describe('the batcher on its own (CC-337)', () => {
     batcher.resend('coord', [message('stranded')])
 
     expect(written).toEqual(['held', 'stranded'])
-    expect(batcher.forget('coord')).toEqual([])
+    expect(batcher.forget('coord').messages).toEqual([])
   })
 
   // Mutation caught: only the first report of a written batch remembered as pushed.
@@ -503,7 +503,7 @@ describe('the batcher on its own (CC-337)', () => {
     expect(() => vi.advanceTimersByTime(WINDOW_MS)).not.toThrow()
 
     expect(batcher.wasPushed('id-a')).toBe(false)
-    expect(batcher.forget('coord').map(m => m.msgId)).toEqual(['id-a', 'id-b'])
+    expect(batcher.forget('coord').messages.map(m => m.msgId)).toEqual(['id-a', 'id-b'])
   })
 })
 

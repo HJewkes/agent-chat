@@ -20,6 +20,12 @@ export const MAX_REMEMBERED = 1024
 /** `false` says the frame was not written; any other return, from a transport that cannot tell, says it was. */
 type Push<C> = (conn: C, message: DeliveredMessage) => unknown
 
+/** CC-337: what a closed connection held, and the exit verdicts waiting on it, for its successor. */
+export interface Unpushed {
+  messages: DeliveredMessage[]
+  settled: (() => void)[]
+}
+
 interface Held {
   messages: DeliveredMessage[]
   timer?: NodeJS.Timeout
@@ -61,14 +67,17 @@ export class ReportBatcher<C> {
     return this.pushed.has(msgId)
   }
 
-  /** The connection is gone: what it was pushed no longer counts, and what it was only held is returned. */
-  forget(conn: C): DeliveredMessage[] {
+  /**
+   * The connection is gone: what it was pushed no longer counts, and what it was only held is
+   * returned with the exit verdicts waiting on it, which run once the successor has it.
+   */
+  forget(conn: C): Unpushed {
     for (const [msgId, to] of this.pushed) if (to === conn) this.pushed.delete(msgId)
     const waiting = this.held.get(conn)
-    if (!waiting) return []
+    if (!waiting) return { messages: [], settled: [] }
     clearTimeout(waiting.timer)
     this.held.delete(conn)
-    return waiting.messages
+    return { messages: waiting.messages, settled: waiting.settled ?? [] }
   }
 
   flush(conn: C): void {

@@ -6,6 +6,7 @@ import { BrokerCore, CLOSING_ACT_MS, type Conn } from '../broker/core.js'
 import { deliver, SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import { STRANDED_MAX_AGE_MS } from '../broker/stranded-reports.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -59,7 +60,8 @@ function wire(): Wire {
 
 const send = (from: Wire, frame: ClientMessage): void => server.handleMessage(from.conn, frame)
 
-function session(name: string, agentId?: string): Wire {
+/** `watching` re-declares an exit subscription in the register frame, as a reconnecting client does. */
+function session(name: string, agentId?: string, watching?: string): Wire {
   const w = wire()
   send(w, {
     t: 'register',
@@ -68,6 +70,9 @@ function session(name: string, agentId?: string): Wire {
     cwd: `/tmp/${name}`,
     pid: 1,
     ...(agentId ? { agentId } : {}),
+    ...(watching
+      ? { subscriptions: [{ selector: { name: watching }, kinds: ['agent_exited' as const] }] }
+      : {}),
   })
   return w
 }
@@ -180,6 +185,81 @@ describe('an exit while its report is held', () => {
 
     expect(wakes(coord)).toEqual([])
     expect(wakes(back).flatMap(f => (f.t === 'deliver' ? [f.message.text] : []))).toEqual(['Status: DONE'])
+  })
+})
+
+describe('a deferred exit whose coordinator connection is replaced inside the window', () => {
+  const idOf = (w: Wire): string => core.registry.entryFor(w.conn)?.agentId as string
+
+  /** A coordinator that is itself an agent, so its own agent id or a teleport successor can take it over. */
+  const coordinator = (): Wire => worker('coord', session('root'))
+
+  /** `w-a` reports progress, not a close, and exits 0 while that report is held. */
+  function progressThenExit(coord: Wire): void {
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: IN PROGRESS\nhalfway through, tests next')
+    exit(a, 'w-a')
+  }
+
+  const delivered = (w: Wire): string[] =>
+    w.frames.flatMap(f => (f.t === 'deliver' ? ['deliver'] : f.t === 'system_events' ? ['agent_exited'] : []))
+
+  // Mutation caught: `forget` dropping the deferred verdict, so the exit is never announced to anyone.
+  it('announces the exit to the connection that takes the coordinator over by resume, after the report', () => {
+    const coord = coordinator()
+    progressThenExit(coord)
+
+    const back = session('coord', idOf(coord), 'w-a')
+    vi.advanceTimersByTime(LIFECYCLE_MS)
+
+    expect(delivered(back)).toEqual(['deliver', 'agent_exited'])
+    expect(exitsPushedTo(back)).toEqual(['w-a'])
+    expect(wakes(coord).filter(f => f.t === 'deliver')).toEqual([])
+  })
+
+  // Mutation caught: a teleport takeover's `supersede` dropping what the displaced connection held.
+  it('announces the exit to a teleport successor, after the report', () => {
+    const coord = coordinator()
+    progressThenExit(coord)
+    const { msgId } = core.append({
+      kind: 'agent_spawned',
+      actor: 'root',
+      target: 'coord',
+      body: 'work',
+      meta: { surface: 'headless', teleport_from: idOf(coord) },
+    })
+
+    const successor = session('coord', msgId, 'w-a')
+    vi.advanceTimersByTime(LIFECYCLE_MS)
+
+    expect(core.registry.connFor('coord')).toBe(successor.conn)
+    expect(delivered(successor)).toEqual(['deliver', 'agent_exited'])
+  })
+
+  // Mutation caught: the verdict run when the connection closes, with nobody holding the name to tell.
+  it('announces the exit to whoever registers the name after the window, when the coordinator just closed', () => {
+    const coord = session('coord')
+    progressThenExit(coord)
+
+    core.drop(coord.conn)
+    vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
+    const back = session('coord', undefined, 'w-a')
+    vi.advanceTimersByTime(LIFECYCLE_MS)
+
+    expect(delivered(back)).toEqual(['deliver', 'agent_exited'])
+  })
+
+  // Mutation caught: verdicts dropped with expired reports, so an exit after a day-long absence is never told.
+  it('announces the exit with no report once the stranded report has aged out', () => {
+    const coord = session('coord')
+    progressThenExit(coord)
+
+    core.drop(coord.conn)
+    vi.advanceTimersByTime(STRANDED_MAX_AGE_MS + 1)
+    const back = session('coord', undefined, 'w-a')
+    vi.advanceTimersByTime(LIFECYCLE_MS)
+
+    expect(delivered(back)).toEqual(['agent_exited'])
   })
 })
 

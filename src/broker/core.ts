@@ -16,7 +16,7 @@ import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport } from './event-log.js'
-import { ReportBatcher } from './report-batch.js'
+import { ReportBatcher, type Unpushed } from './report-batch.js'
 import type { ExitJudgement } from './subscriptions.js'
 import { StrandedReports } from './stranded-reports.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
@@ -394,8 +394,8 @@ export class BrokerCore<C = Conn> {
     gap.unref()
   }
 
-  private strand(name: string, unpushed: DeliveredMessage[]): void {
-    this.stranded.add(name, unpushed, Date.now())
+  private strand(name: string, unpushed: Unpushed): void {
+    this.stranded.add(name, unpushed.messages, Date.now(), unpushed.settled)
   }
 
   /**
@@ -415,10 +415,13 @@ export class BrokerCore<C = Conn> {
     this.deliverMissedAnswers(name)
     const conn = this.registry.connFor(name)
     if (conn === undefined) return
-    const unpushed = this.stranded.take(name, Date.now())
-    if (unpushed.length === 0) return
-    this.reports.resend(conn, unpushed)
-    logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+    const { messages, settled } = this.stranded.take(name, Date.now())
+    if (messages.length > 0) {
+      this.reports.resend(conn, messages)
+      logEvent('stranded_reports_delivered', { name, count: messages.length })
+    }
+    // CC-337: after the resend, so an exit that waited on a stranded report is judged against it.
+    for (const then of settled) then()
   }
 
   private deliverMissedAnswers(name: string): void {
