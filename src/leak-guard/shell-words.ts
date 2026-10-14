@@ -120,6 +120,21 @@ function funsubBody(src: string, at: number): number | undefined {
   return ' \t\n'.includes(c) && c !== '' ? at + 2 : undefined
 }
 
+// Words after which a `{` still opens a group, as COMMAND_PREFIX is for a `(`.
+const BRACE_PREFIX = new Set([
+  '{',
+  '!',
+  'if',
+  'then',
+  'elif',
+  'else',
+  'while',
+  'until',
+  'do',
+  'time',
+  'coproc',
+])
+
 // A `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
 const METACHAR = /[\s;&|()<>]/
 
@@ -204,6 +219,8 @@ class ShellLexer {
   closesOnBrace = false
   private braceDepth = 0
   private braceClosed = false
+  /** A word of the current command was quoted, so it is not a reserved word. */
+  private quotedWord = false
 
   constructor(
     private readonly src: string,
@@ -260,8 +277,8 @@ class ShellLexer {
   /**
    * In a funsub, counts `{ }` groups and closes at the `}` that ends none. bash closes only at a `}` in
    * command position; zsh also at a `}` argument, so one makes the line unreadable rather than guessed.
-   * A `{` word opens a group after any reserved word (`then {`, `time -p {`, `coproc N {`), so every one
-   * is counted: a stray count reads on past the close and ends unreadable, where a missed one closes early.
+   * A `{` word opens a group only where `groupOpens` places it. One it cannot place makes the line
+   * unreadable: counted, it reads past bash's close; uncounted, its `}` may close early.
    */
   private braceWord(c: string): boolean {
     if (!this.closesOnBrace || this.word !== null || this.patternNext) return false
@@ -269,7 +286,9 @@ class ShellLexer {
     const next = this.src[this.pos + 1]
     const command = this.cur.words.length === 0
     if (c === '{') {
-      if (next !== undefined && ' \t\n'.includes(next)) this.braceDepth++
+      if (next === undefined || !' \t\n'.includes(next)) return false
+      if (this.groupOpens()) this.braceDepth++
+      else this.budget.expansion = 'unreadable'
       return false
     }
     if (command && this.braceDepth === 0) {
@@ -281,6 +300,17 @@ class ShellLexer {
     if (!command) this.budget.expansion = 'unreadable'
     else this.braceDepth--
     return false
+  }
+
+  /** Every word before the `{` is an unquoted reserved word, bar `time`'s `-p` and `coproc`'s name. */
+  private groupOpens(): boolean {
+    if (this.quotedWord) return false
+    const words = this.cur.words
+    const reserved = words.findIndex(word => !BRACE_PREFIX.has(word))
+    if (reserved < 0) return true
+    const before = words[reserved - 1]
+    const option = before === 'time' && words[reserved] === '-p'
+    return reserved === words.length - 1 && (option || before === 'coproc')
   }
 
   private skip(then: () => void): void {
@@ -671,6 +701,7 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       if (!quoted) this.trackCase()
+      this.quotedWord ||= quoted
     } else if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
@@ -693,6 +724,7 @@ class ShellLexer {
       this.out.push(this.cur)
     }
     this.cur = this.newCommand()
+    this.quotedWord = false
   }
 
   private readHeredocs(): void {

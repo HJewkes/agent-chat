@@ -66,6 +66,19 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBeUndefined()
   })
 
+  // bash 5.3.9 closes at `;}` and runs the push; counting the `{` argument read on into the outer quote.
+  it.each([
+    'echo "${ echo { ;} #"; git push --no-verify\n}"',
+    'echo "${|echo { ;} #"; git push --no-verify\n}"',
+    'x="${ echo { ;} #"; git push --no-verify\n}"',
+    'printf "${ echo { ;} #"; git push --no-verify\n}"',
+    'echo "${ echo { ;} \'"; git push --no-verify; : "\'\n}"',
+    'echo "${ "then" { ;} #"; git push --no-verify\n}"',
+    'echo "${ x=1 { ;} #"; git push --no-verify\n}"',
+  ])('%j has a { argument, so it is unreadable', src => {
+    expect(expansionRisk(src)).toBe('unreadable')
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
