@@ -289,11 +289,21 @@ function gateTick(opts: TickOptions): Gate {
   return { config, head }
 }
 
-/** CC-1181: a dry run waited, so its refusal names how long; a real tick did not. */
-const lockRefusal = ({ holder, waited }: { holder: number; waited?: number }): string =>
-  waited === undefined
+/** CC-1181: a dry run waited, so its refusal names how long; a real tick did not, and may have yielded. */
+const lockRefusal = ({
+  holder,
+  waited,
+  waiter,
+}: {
+  holder: number
+  waited?: number
+  waiter?: true
+}): string => {
+  if (waiter) return `a release is waiting on the ledger lock (pid ${holder}); did nothing`
+  return waited === undefined
     ? `another tick holds the ledger lock (pid ${holder}); did nothing`
     : `another tick held the ledger lock (pid ${holder}) for the whole ${Math.round(waited / 1000)}s wait; did nothing`
+}
 
 /** CC-1192: the summary row is appended after the lock is released, so its write never counts as lock-held time. */
 async function tickOnce(opts: TickOptions): Promise<TickResult> {
@@ -302,7 +312,7 @@ async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const timer = stepTimer(monotonic)
   const gate = await timer.time('config', () => gateTick(opts))
   if ('done' in gate) return gate.done
-  const wait = opts.dryRun ? { wait: opts.lockWait ?? { waitMs: LEDGER_WAIT_MS } } : {}
+  const wait = opts.dryRun ? { wait: opts.lockWait ?? { waitMs: LEDGER_WAIT_MS } } : { yieldToWaiter: true }
   const locked = await withLedgerLock(
     burndownLedgerPath(),
     async () => {
