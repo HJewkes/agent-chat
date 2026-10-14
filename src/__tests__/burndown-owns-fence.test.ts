@@ -58,6 +58,22 @@ describe('a slice PR against its owns', () => {
         outsideOwns(['src/__tests__/burndown-owns-fence.test.ts'], ['src/agents/burndown/owns-fence.ts']),
       ).toEqual([])
     })
+
+    it("allows a test prefixed with a dir's singular or its leading word", () => {
+      expect(outsideOwns(['src/__tests__/seat-status.test.ts'], ['src/agents/seats/status.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/agent-identity.test.ts'], ['src/agents/identity.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/agent-park.test.ts'], ['src/agents/isolation/park.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/leak-scan.test.ts'], ['src/leak-guard/scan.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/seat-watchdog-lock.test.ts'], ['src/agents/seats/lock.ts'])).toEqual(
+        [],
+      )
+    })
+
+    it('still reports a prefix that is only a part of a dir name past its leading word', () => {
+      expect(outsideOwns(['src/__tests__/guard-scan.test.ts'], ['src/leak-guard/scan.ts'])).toEqual([
+        'src/__tests__/guard-scan.test.ts',
+      ])
+    })
   })
 
   it("allows a test named for a wildcard entry's dir, and reports one named for another", () => {

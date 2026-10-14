@@ -8,9 +8,10 @@ import { matchPattern } from '../isolation/file-ownership.js'
  * A companion is a test file (`*.test.*`, `*.spec.*`, or under `__tests__/` or
  * `test/`) whose stem, minus `.test`/`.spec`, is the `<name>` of an owned
  * concrete file, or is `<seg>-...` where `<seg>` is one of that file's dir
- * segments and the hyphen tokens after it hold `<name>` as a run
- * (`burndown-claim-advance` for `burndown/advance.ts`, never `launch-plan` for
- * `burndown/plan.ts`: CC-832). It sits in that file's dir or in a
+ * segments, its leading words or their singular, and the hyphen tokens after
+ * it hold `<name>` as a run (`burndown-claim-advance` for `burndown/advance.ts`,
+ * `seat-status` for `seats/status.ts`, `leak-scan` for `leak-guard/scan.ts`,
+ * never `launch-plan` for `burndown/plan.ts`: CC-832). It sits in that file's dir or in a
  * `__tests__`/`test` dir on one of its ancestors: this repo keeps its tests in
  * `src/__tests__/`.
  * For a wildcard or dir entry the stem must start with the entry's last literal
@@ -69,8 +70,19 @@ function isCompanion(file: string, pattern: string): boolean {
 function namedUnderSegment(stem: string, name: string, dir: string): boolean {
   return dir
     .split('/')
-    .filter(seg => seg !== '' && seg !== '.' && stem.startsWith(`${seg}-`))
-    .some(seg => holdsRun(stem.slice(seg.length + 1).split('-'), name.split('-')))
+    .filter(seg => seg !== '' && seg !== '.')
+    .flatMap(segmentPrefixes)
+    .filter(prefix => stem.startsWith(`${prefix}-`))
+    .some(prefix => holdsRun(stem.slice(prefix.length + 1).split('-'), name.split('-')))
+}
+
+/** The ways this repo shortens a dir in a test prefix: its leading words (`leak` for `leak-guard`) and their singular (`seat` for `seats`). */
+function segmentPrefixes(seg: string): string[] {
+  const words = seg.split('-')
+  const leading = words.map((_, at) => words.slice(0, at + 1).join('-'))
+  return leading.flatMap(prefix =>
+    prefix.length > 1 && prefix.endsWith('s') ? [prefix, prefix.slice(0, -1)] : [prefix],
+  )
 }
 
 const holdsRun = (tokens: string[], run: string[]): boolean =>
