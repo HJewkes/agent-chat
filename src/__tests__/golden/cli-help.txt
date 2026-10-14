@@ -293,6 +293,9 @@ Options:
   --top <value>            picks to print with --scored (default 20)
   --autonomy-root <value>  directory holding charter.md and seats/
   --today <value>          pin the staleness clock (YYYY-MM-DD) with --scored
+  --shares <value>         with --seat: what-if project shares, <slug>=<share>,...; prints the next
+                           picks by project before -> after
+  --picks <value>          picks the --shares what-if forecasts (default 20)
   -h, --help               display help for command
 
 === agent-chat burndown milestone

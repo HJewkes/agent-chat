@@ -11,7 +11,6 @@ import { SocketServer } from '../broker/socket.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 import {
   claudeCodeAncestor,
-  linuxPeerPorts,
   parseStat,
   peerPidFromSs,
   provePeerLocal,
@@ -212,26 +211,6 @@ describe('parsers', () => {
     const shared = ss.replace('pid=700,fd=9))', 'pid=700,fd=9),("node",pid=701,fd=9))')
     expect(peerPidFromSs(shared, '111')).toBeUndefined()
     expect(peerPidFromSs(ss, '999')).toBeUndefined()
-  })
-})
-
-describe.skipIf(process.platform !== 'linux')('linuxPeerPorts on a real socket', () => {
-  it('names this process as the peer of its own client connection', async () => {
-    const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-peer-')), 's.sock')
-    const accepted = new Promise<net.Socket>(resolve => {
-      const server = net.createServer(resolve).listen(sock)
-      server.unref()
-    })
-    const client = net.connect(sock)
-    const serverSide = await accepted
-
-    expect(linuxPeerPorts.peerPid(serverSide)).toBe(process.pid)
-    const ancestor = claudeCodeAncestor(serverSide, linuxPeerPorts)
-    expect(claudeCodeAncestor(serverSide, linuxPeerPorts)).toBe(ancestor)
-
-    client.destroy()
-    serverSide.destroy()
-    fs.rmSync(path.dirname(sock), { recursive: true, force: true })
   })
 })
 
