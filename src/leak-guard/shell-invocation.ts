@@ -30,6 +30,8 @@ const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
 const SHELLOPTS = /^SHELLOPTS=/
 // A long option: `--name`, or zsh's `+-name`, which turns it off.
 const LONG = /^(?:--|\+-)./
+// Shells observed to take an `o`'s name from the next word even when letters follow it in the cluster.
+const NEXT_WORD_NAME = new Set(['sh', 'bash', 'dash'])
 
 /** zsh accepts `BANG_HIST`, `bang-hist` and `banghist` alike, and a `no` prefix inverts the option. */
 function turnsOnHistory(name: string, on: boolean): boolean {
@@ -49,29 +51,33 @@ interface Options {
   ended: boolean
 }
 
-/** Reads the name an `o` or `O` takes, from the rest of its word or else the next word; returns that next index. */
-function readOptionName(
-  rest: string,
-  words: readonly string[],
-  next: number,
-  on: boolean,
-  opts: Options,
-): number {
-  const operand = rest === '' ? words[next++] : rest
+/** Reads an option name: on, off, or an expansion that hides it. */
+function readOptionName(operand: string | undefined, on: boolean, opts: Options): void {
   if (operand?.includes(LIVE)) opts.hidden = true
   else if (operand !== undefined && turnsOnHistory(operand, on)) opts.history = true
-  return next
 }
 
-/** Reads one short cluster such as `-eo pipefail`, `-ointeractive` or `+o`, consuming any operand words. */
+/**
+ * Reads one short cluster such as `-eo pipefail` or `+o`, consuming any operand words. zsh takes the
+ * rest of the word after `o` as the name (`-ointeractive`); bash and dash take the next word and keep
+ * reading the letters after `o` as flags (`bash -oi pipefail` is interactive). For any other shell the
+ * letters after `o` may be either, so they are read as flags and also report history.
+ */
 function readCluster(name: string, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
   const on = word.startsWith('-')
   let next = at + 1
   for (let i = 1; i < word.length; i++) {
     const letter = word[i]
-    if (letter === 'o' || letter === 'O') return readOptionName(word.slice(i + 1), words, next, on, opts)
-    if (letter === 'c') opts.command = true
+    const rest = word.slice(i + 1)
+    if (letter === 'o' || letter === 'O') {
+      if (name === 'zsh' && rest !== '') {
+        readOptionName(rest, on, opts)
+        return next
+      }
+      readOptionName(words[next++], on, opts)
+      if (!NEXT_WORD_NAME.has(name) && rest !== '') opts.history = true
+    } else if (letter === 'c') opts.command = true
     else if (letter === 's') opts.stdin = true
     else if (on && (letter === 'i' || letter === 'H')) opts.history = true
     else if (!on && name === 'zsh' && letter === 'K') opts.history = true

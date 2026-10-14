@@ -69,6 +69,11 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['zsh -b -i', 1, false],
     ['zsh -ib s.sh', 1, true],
     ['zsh --emulate sh s.sh', 2, false],
+    ['bash -oi pipefail s.sh', 2, true],
+    ['bash -oO pipefail extglob s.sh', 3, false],
+    ['dash -oi nolog s.sh', 2, true],
+    ['sh -ox pipefail s.sh', 2, false],
+    ['ksh -ox pipefail s.sh', 2, true],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -85,6 +90,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ["zsh -c -x 'x'", 2],
     ["zsh --emulate sh -c 'x'", 3],
     ["zsh -bc 'x'", 1],
+    ["bash -oc pipefail 'x'", 2],
+    ["dash -oc nolog 'x'", 2],
     ["SHELLOPTS=history:histexpand bash -c 'x'", 1],
     ['bash -c', undefined],
   ])('%s runs the string at %s, without history', (line, at) => {
