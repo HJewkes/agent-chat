@@ -331,9 +331,14 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `caffeinate`, `coproc`, zsh's `noglob`, `nocorrect` and `repeat <n>`, `if`/`then`
-and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
-`/usr/bin/nice` is stripped like `nice`.
+`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
+`if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
+`/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
+unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
+not know, an option word the shell expands, or a bare `-h` before another word (`--help` or `--host`,
+by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, so the guard checks
+`sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
+an expansion or xargs input among those words denies (CC-1209).
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -359,9 +364,11 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a program-running env var (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `MANPAGER` and kin, below) on a line that runs git: a plain literal assignment whose value a row above denies, or any other use but a read                             | git runs the value as a pager, editor or ssh command        |
 | an `ext::` transport in any git word or config value whose decoded shell command a row above denies (below)                                                                                                                                     | `protocol.ext.allow` lets `ext::` run a shell command       |
 | a gh alias whose body a row above denies, when `gh alias set` stores it or `gh <alias>` runs it; `gh alias import`, a body or argument the guard cannot read, or a line that writes gh config or moves its home (below)                         | `gh alias set x '!git push --no-verify'` runs git unseen    |
-| `GIT_ALLOW_PROTOCOL` listing `ext`, unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                               | a later git runs `ext::` as shell                           |
+| `GIT_ALLOW_PROTOCOL` listing `ext` on any line; unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                   | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
+| `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
+| `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
@@ -387,6 +394,20 @@ parsed words, is or may be `git` or `gh`; put such a command on a line of its ow
 as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case pattern, a `[[ ]]`
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
+
+The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
+`echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
+command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
+function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
+`$` (as in `${X:-$HOME}` or `${X:-$(cmd)}`) or a zsh flag group. It is also denied when the
+expansion holds a nested `{` and zsh, which counts nested braces, finds the close past a blank, a
+quote or an operator, as in `${X:-{} #}`, or finds no close at all. `${X:-python{3,}}` keeps one
+word under either close and is not affected. A line that names `gh` (which
+includes `agent-chat gh-write`) is also denied for any other `${...}` that is not `${NAME}` or
+`${1}`: one with an operator such as `:-`, `#`, `%`, `/`, `^` or `,`, or with a leading `#` or `!`.
+`$x`, `${HOME}` and `${10}` stay allowed everywhere. Inside single quotes, as in `-b '${X:-y}'`, the
+expansion is plain text and allowed. To get past the rule, compute the value in an earlier Bash call,
+or write it out.
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
@@ -714,7 +735,12 @@ rule below on a line that may reach git: a plain literal assignment (prefix, `ex
 whose list names `ext`, in any case, denies, and any other use but a read denies, as in
 `GIT_ALLOW_PROTOCOL="$P" git fetch`. Unsetting it there (`unset`, `env -u`, `env --unset`) also
 denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh git fetch` stays
-allowed. A `git config` write, legacy or `git config set`, of `protocol.allow` or
+allowed. A literal list naming `ext` denies wherever it appears, on a script, make or npm line too
+(`GIT_ALLOW_PROTOCOL=ext make`, CC-1137 d), since nothing legitimate lists it. An unset, an unread
+value or a built name (`export $N=ext; make`) on a line that cannot reach git stays allowed and is
+left to the CC-1095 pin, which re-pins the list for every git the shim runs;
+`leak-git-shim-protocol.test.ts` shows a script's and a make rule's git refusing `ext::` under each.
+A `git config` write, legacy or `git config set`, of `protocol.allow` or
 `protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
 stay allowed. `git remote add` or `set-url` with a word the guard cannot read, and a `git config`
 write of `remote.<name>.url`, `.pushurl`, `.vcs` or `url.<base>.insteadOf` or `.pushInsteadOf` with
@@ -837,6 +863,47 @@ as written, and `eval` of text it cannot read is denied only when the line names
 program env var whose value is already in the agent's environment, set by a shell startup file or
 an earlier tool call rather than on this command line, is not read, the same gap as any such
 variable.
+
+### Inputs that change what git, gh or ssh run (TP-2376)
+
+Some inputs make a program run code the guard never reads, without naming that code on the line.
+
+**ssh options.** `ssh`, `scp` and `sftp` are read the way OpenSSH's getopt reads them
+(`ssh-options.ts`), wherever they run: at top level, by path, behind a wrapper, in a nested
+`sh -c`, as the value of `GIT_SSH_COMMAND`, or as a `git -c core.sshCommand=` value. The guard
+denies with its `sshProgram` reason an `-o` whose keyword ends in `Command` (ProxyCommand,
+LocalCommand, KnownHostsCommand, PermitLocalCommand, RemoteCommand) in any case, glued, spaced,
+quoted or in a cluster such as `-vo LocalCommand=x`; an `-o` naming a local library or program
+(PKCS11Provider, SecurityKeyProvider, XAuthLocation) and ssh's `-I`; a `-F` config file other
+than `/dev/null` or `none`, since a config file can set any of these; scp and sftp `-S` and `-D`,
+and sftp `-b`; and an option word the guard cannot read. ssh re-reads options once after the host,
+so `ssh h -oProxyCommand=x` denies, but words after the remote command's first word do not:
+`ssh h sort -o ProxyCommand` is allowed. `ssh -J`, `ssh -F /dev/null` and plain `-o` settings
+such as `BatchMode=yes` stay allowed; use `-J` for a jump host. `GIT_SSH=<path>` runs a program
+file and stays the script-file gap.
+
+**Shell startup, exec path and template variables.** `BASH_ENV` (bash), `ENV` (sh and ksh in
+POSIX mode) and `ZDOTDIR` (zsh) make a shell source a file before it runs its command;
+`GIT_EXEC_PATH` makes git run its helpers from a directory; `GIT_TEMPLATE_DIR` makes `git init`
+and `git clone` copy hooks and config from one. The shell class fails closed on any variable bash, zsh, sh or ksh
+turns straight into code, matched by pattern in `SHELL_CODE_ENV` (`trust-inputs.ts`): bash's
+exported functions `BASH_FUNC_<name>%%` and `BASH_FUNC_<name>()`, `SHELLOPTS` and `BASHOPTS`
+(`SHELLOPTS=xtrace` expands `PS4`), every prompt (`PS0` to `PS4`, `PROMPT_COMMAND`, zsh's
+`PROMPT*`, `RPROMPT*`, `RPS*` and `SPROMPT`), and `FPATH`, `MODULE_PATH` and
+`BASH_LOADABLES_PATH`. They join the program env rule above with the same
+line test and the same reading of each word, but each denies with its own reason
+(`shellStartupEnv`, `gitExecPath`, `templateDir`), and a plain literal value denies too, since the
+value names a file, not a command line to check. So `BASH_ENV=/tmp/rc bash -c "gh zz"`,
+`export BASH_ENV=/tmp/rc; git push`, `ZDOTDIR=/tmp/z zsh -c 'git status'`,
+`env BASH_ENV=/x git push`, `: ${BASH_ENV:=/x}; git push`, `GIT_EXEC_PATH=/tmp/x git push` and
+`export GIT_TEMPLATE_DIR=/t; git init r` deny, as do
+`env 'BASH_FUNC_git%%=() { command git push --no-verify; }' bash -c 'git status'` and
+`SHELLOPTS=xtrace PS4='$(git push --no-verify)' bash -c 'git status'`. A read (`echo "$BASH_ENV"`), `unset BASH_ENV`, a
+line that never reaches git or gh (`BASH_ENV=/tmp/rc make`) and a commit message naming the
+variable stay allowed. Known false deny: a bare `ENV` word on a line that reaches git, as in
+`echo ENV; git status`, denies the way `LESS` does. The agents' pre-push hook runs under
+`/bin/sh -p`, which ignores `BASH_ENV` and `ENV`; the rule is about a chained repo hook and about a
+`bash -c` or `zsh -c` that would hide git or gh from the guard.
 
 ### A gh alias (TP-2371)
 
@@ -1240,7 +1307,7 @@ so a bug in the guard cannot block every command an agent runs.
 Not covered, by design or by cost:
 
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
-  sees;
+  sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
   `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`,
   `script -q /dev/null gh ...`. The guard

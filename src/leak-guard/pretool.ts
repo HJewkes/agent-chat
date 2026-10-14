@@ -30,6 +30,8 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
+import { SHELL_CODE_ENV, TRUST_ENV, type TrustEnv } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
   ghAliasReader,
@@ -63,6 +65,7 @@ import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } f
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
+  expansionRisk,
   HOLE,
   LIVE,
   mixesParenAndGuarded,
@@ -165,6 +168,7 @@ export const REASONS = {
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
+  sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -173,6 +177,7 @@ export const REASONS = {
   configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  operatorExpansion: `leak-guard: this line holds a \${...} expansion with a quote, a nested expansion or a flag, or one with an operator beside a gh command, which the guard cannot read the way the shell will. Compute the value in an earlier Bash call, or write it out. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
@@ -191,24 +196,29 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
-  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
   xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
+  sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
+  shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
+  gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH, which makes git run its helper programs, hooks included, from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
+  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, which makes git init and clone copy hooks and config from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
-const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env']
+const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env', 'sudo']
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
   ...OPTION_WRAPPERS,
   ...SHELLS,
   ...ENV_EDITS,
+  ...SSH_PROGRAMS,
   ...['function', 'eval', 'git', 'gh', 'agent-chat'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
@@ -234,6 +244,42 @@ const XARGS_LONG_FLAG = new Set([
   '--version',
   '--help',
 ])
+// From sudo's getopt string `+Aa:BbC:c:D:Eeg:Hh::iKklNnPpR:r:SsT:t:U:u:Vv`.
+const SUDO_SHORT_VALUE = new Set('aCcDgpRrTtUu')
+const SUDO_LONG_VALUE = new Set([
+  '--close-from',
+  '--chdir',
+  '--group',
+  '--host',
+  '--prompt',
+  '--chroot',
+  '--role',
+  '--type',
+  '--command-timeout',
+  '--other-user',
+  '--user',
+  '--login-class',
+])
+const SUDO_LONG_FLAG = new Set([
+  '--askpass',
+  '--bell',
+  '--background',
+  '--preserve-env',
+  '--edit',
+  '--set-home',
+  '--login',
+  '--remove-timestamp',
+  '--reset-timestamp',
+  '--list',
+  '--no-update',
+  '--non-interactive',
+  '--preserve-groups',
+  '--stdin',
+  '--shell',
+  '--version',
+  '--validate',
+  '--help',
+])
 
 // `NAME=`, `NAME+=`, `NAME[idx]=` and `NAME[idx]+=` all assign: the shell reads the next word as the command.
 // The lexer marks the `[` of a subscript as live, since it is a glob character elsewhere.
@@ -247,6 +293,7 @@ const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
+const NAMES_GH = /\bgh\b/
 
 /**
  * `chdir` is set when a wrapper such as `env -C` runs the command in another directory.
@@ -310,6 +357,19 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       const { replace } = fed
       if (replace !== undefined)
         rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
+    } else if (name === 'sudo') {
+      const after = dropSudoOptions(rest, at + 1)
+      if (after === undefined) return { reason: REASONS.sudoOption }
+      // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
+      chdir = true
+      if (after.shell) {
+        const script = rest.slice(after.at)
+        // Words xargs adds, or an expansion sudo then escapes, may hold anything the shell reads, such as $IFS.
+        if (fed !== undefined || script.some(word => word.includes(LIVE)))
+          return { reason: REASONS.hiddenCommand }
+        rest = sudoShell(script)
+        at = 0
+      } else at = after.at
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
@@ -444,6 +504,67 @@ const replaceString = (marked: string): string => {
   const plain = marked.replaceAll(BRACE_PAIR, '{}')
   return plain.includes(LIVE) ? ANY_WORD : plain
 }
+
+/** Where the command sudo runs starts, and whether -s, -i, --shell or --login hand it to a shell instead. */
+interface SudoRun {
+  at: number
+  shell: boolean
+}
+
+interface SudoOption {
+  width: number
+  shell: boolean
+}
+
+const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
+
+/**
+ * The command sudo runs, or undefined on a long option this guard does not know, an ambiguous -h,
+ * or an option word the shell expands, which may be any option.
+ */
+function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefined {
+  let shell = false
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return { at: i + 1, shell }
+    if (!a.startsWith('-') || a === '-') break
+    if (a.includes(LIVE)) return undefined
+    const option = a.startsWith('--') ? sudoLongOption(a) : sudoCluster(a, i + 1 < words.length)
+    if (option === undefined) return undefined
+    shell ||= option.shell
+    i += option.width
+  }
+  return { at: Math.min(i, words.length), shell }
+}
+
+function sudoLongOption(option: string): SudoOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!SUDO_LONG_VALUE.has(name) && !SUDO_LONG_FLAG.has(name)) return undefined
+  return {
+    width: SUDO_LONG_VALUE.has(name) && !option.includes('=') ? 1 : 0,
+    shell: SUDO_SHELL_LONG.has(name),
+  }
+}
+
+/**
+ * A sudo short-flag cluster takes the next word only when its first value letter ends it; a glued -h takes the rest.
+ * A bare -h before another word is --help in some sudo versions and --host with that word in others, so it is undefined.
+ */
+function sudoCluster(cluster: string, hasNext: boolean): SudoOption | undefined {
+  let shell = false
+  for (let k = 1; k < cluster.length; k++) {
+    const letter = cluster[k] as string
+    const last = k === cluster.length - 1
+    if (SUDO_SHORT_VALUE.has(letter)) return { width: last ? 1 : 0, shell }
+    if (letter === 'h') return last && hasNext ? undefined : { width: 0, shell }
+    shell ||= letter === 's' || letter === 'i'
+  }
+  return { width: 0, shell }
+}
+
+/** sudo -s or -i runs `shell -c` on its words joined, each character but alnum, _, - and $ escaped. */
+const sudoShell = (words: readonly string[]): string[] =>
+  words.length === 0 ? ['sh'] : ['sh', '-c', words.map(w => w.replace(/[^A-Za-z0-9_$-]/g, '\\$&')).join(' ')]
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
 function clusterValueWords(cluster: string): number {
@@ -1762,6 +1883,8 @@ function checkSimple(
       checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
     )
   }
+  if (SSH_PROGRAMS.has(name))
+    return sshRunsLocalProgram(name, marked, cmd.splits) ? REASONS.sshProgram : undefined
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
@@ -1862,7 +1985,18 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
+// Regex sources for whole names; SHELL_CODE_ENV holds patterns such as BASH_FUNC_*.
+const TRUST_NAMES: readonly (readonly [string, TrustEnv])[] = [
+  ...TRUST_ENV,
+  ...SHELL_CODE_ENV.map(name => [name, 'shellStartup'] as const),
+]
+const ENV_NAMES = [
+  ...PROGRAM_ENV,
+  ...OPAQUE_PROGRAM_ENV,
+  ...PROTOCOL_ENV,
+  ...TRUST_NAMES.map(([name]) => name),
+]
+const ENV_NAME = new RegExp(`^(?:${ENV_NAMES.join('|')})$`)
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -1882,20 +2016,46 @@ const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).so
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
 /**
- * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
- * protocol list that lets git run `ext::` URLs.
+ * A program-env event: a script to check, null for a use the guard cannot read, EXT_ON for
+ * unsetting the protocol list, or EXT_LISTED for a literal list naming `ext` (CC-1137 d).
  */
 const EXT_ON = Symbol('ext-on')
+// Nothing legitimate lists ext, so this denies on any line; an unset off a git line is left to the CC-1095 pin.
+const EXT_LISTED = Symbol('ext-listed')
 // A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
 const NAME_HIDDEN = Symbol('name-hidden')
-type EnvEvent = string | null | typeof EXT_ON | typeof NAME_HIDDEN
+/** A use of a TRUST_ENV name other than a read or an unset (TP-2376): denied with its own reason. */
+interface TrustOn {
+  trust: TrustEnv
+}
+type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | TrustOn
+
+const TRUST_REFS = TRUST_NAMES.map(([name, trust]) => ({
+  use: nameUse(name),
+  assign: nameAssign(name),
+  trust,
+}))
+const TRUST_REASONS: Readonly<Record<TrustEnv, string>> = {
+  shellStartup: REASONS.shellStartupEnv,
+  execPath: REASONS.gitExecPath,
+  templateDir: REASONS.templateDir,
+}
+
+/** The trust input a word sets by any use of its name but a read; `assignOnly` counts only an assigning `${NAME:=x}`. */
+function trustOn(text: string, assignOnly = false): TrustOn | undefined {
+  const ref = TRUST_REFS.find(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
+  return ref === undefined ? undefined : { trust: ref.trust }
+}
+
+/** A program-env name's event in a word: a trust input's own event, else null for a use the guard cannot read. */
+const nameEvent = (text: string, assignOnly = false): TrustOn | null => trustOn(text, assignOnly) ?? null
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
 
 /**
  * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
- * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * value, null when the value is unreadable, and for a protocol list EXT_LISTED when it lists `ext` or
  * no event at all. undefined when the word is no such assignment.
  */
 function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
@@ -1906,7 +2066,7 @@ function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const value = word.slice(name.length + 1)
   if (value.includes(LIVE)) return null
   if (!protocol) return value
-  return listsExt(unmark(value)) ? EXT_ON : 'none'
+  return listsExt(unmark(value)) ? EXT_LISTED : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
@@ -2050,7 +2210,9 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
   // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
   if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
-  if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
+  if (role === 'data') return liveExpandsProgramEnv(word) ? nameEvent(text, true) : undefined
+  const trust = trustOn(text)
+  if (trust !== undefined) return trust
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
   if (plain === 'none') return undefined
   if (plain !== undefined) return plain
@@ -2061,7 +2223,7 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
 function scanWord(word: string): string {
   const um = unmark(word)
   const name = ASSIGNMENT.exec(word)?.[1]
-  return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
+  return name !== undefined && ENV_NAME.test(name) ? um.slice(0, um.indexOf('=') + 1) : um
 }
 
 /** How many words at the end of `words` are the written words they end with, so not split out of one. */
@@ -2103,7 +2265,10 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
   const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
   return {
-    events: [...assigned, ...used].map(() => null),
+    events: [
+      ...assigned.map(word => nameEvent(unmark(word))),
+      ...used.map(word => nameEvent(unmark(word), data)),
+    ],
     scan: [...unwrapped.assigns.map(scanWord), ...unwrapped.words.map(unmark)],
   }
 }
@@ -2136,17 +2301,25 @@ function checkProgramEnvLine(
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
+  if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
   if (!mayReachGit(scan, ctx.env)) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
-    if (event === EXT_ON) return REASONS.extProtocol
+    if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
     if (event === NAME_HIDDEN) continue
+    if (typeof event === 'object') return TRUST_REASONS[event.trust]
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
   return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
+}
+
+/** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
+function deniesExpansion(command: string): boolean {
+  const risk = expansionRisk(command)
+  return risk === 'unreadable' || (risk === 'operator' && NAMES_GH.test(command))
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -2165,6 +2338,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
+  if (deniesExpansion(command)) return REASONS.operatorExpansion
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 

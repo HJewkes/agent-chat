@@ -264,6 +264,33 @@ describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b, C
   })
 })
 
+describe('refusing a task whose slices were seeded before (CC-1256)', () => {
+  const PARENT = { taskId: 'A-1', initiative: 'alpha' }
+  const PLAN = { path: PLAN_PATH, text: planText(SLICES) }
+  const queuedB = plannerSlices().filter(c => c.slice === 'b')
+
+  it('refuses a parent whose slices were all released, and none is held, as released', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, slicesReleased: { 'A-1': ['a', 'b'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices a, b of A-1 were released and none is held; close the task, or run agent-chat burndown release A-1 to reseed`,
+    })
+  })
+
+  it('still refuses a parent with a held slice and a released one as already queued', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: queuedB, slicesReleased: { 'A-1': ['a'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(queuedB.map(c => c.phase)).toEqual(['queued'])
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices of A-1 were already queued; close the task or replan it`,
+    })
+  })
+})
+
 describe('sliceRunsIn', () => {
   const run = (agent: string, task: string | null = 'AB-408'): DispatchRecord =>
     ({ agent, task, outcome: 'abandoned' }) as DispatchRecord
