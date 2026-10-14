@@ -59,6 +59,7 @@ import {
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 import { burndownLandedVerb } from './burndown-landed.js'
+import { burndownClassifyVerb } from './burndown-classify.js'
 import { kicksInBroker, sendJobKick } from './job-kick.js'
 
 const refused = (err: unknown): Report => ({
@@ -590,6 +591,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
   addVerb(burndown, burndownLandedVerb)
+  addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),
