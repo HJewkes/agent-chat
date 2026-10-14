@@ -7,6 +7,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { HostDirectory, LAUNCH_TIMEOUT_MS, PROBE_TIMEOUT_MS } from '../broker/host-directory.js'
 import { ensureBrokerKey, helloProof } from '../broker/launcher-key.js'
+import { logPath } from '../paths.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
@@ -99,8 +100,10 @@ function macLauncher(): Wire {
   return launcher
 }
 
-const configureMac = (): void =>
-  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { mac: MAC } }))
+const configureMac = (hostProof: 'enforce' | 'off' = 'enforce'): void =>
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { mac: MAC }, hostProof }))
+
+const brokerLog = (): string => (fs.existsSync(logPath()) ? fs.readFileSync(logPath(), 'utf8') : '')
 
 const lastHello = (w: Wire) => w.frames.filter(f => f.t === 'host_hello_result').at(-1)
 
@@ -243,6 +246,7 @@ describe('announcing a host launcher', () => {
   })
 
   it('takes a nonce once, so a second hello on the same connection needs a new challenge', () => {
+    configureMac()
     const launcher = wire()
     const proof = helloProof(ensureBrokerKey(MAC), MAC, challenge(launcher))
     helloAsMac(launcher, proof)
@@ -252,12 +256,15 @@ describe('announcing a host launcher', () => {
     expect(lastHello(launcher)?.reason).toContain('send host_challenge first')
   })
 
-  it('refuses a configured machine the broker has no key for, naming host key-new', () => {
+  it('refuses a configured machine the broker has no key for, naming the provisioning step', () => {
     configureMac()
     const launcher = wire()
     helloAsMac(launcher, helloProof('a'.repeat(64), MAC, challenge(launcher)))
 
-    expect(lastHello(launcher)).toMatchObject({ ok: false, reason: expect.stringContaining('host key-new') })
+    expect(lastHello(launcher)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('provision the launcher key'),
+    })
     expect(listed()).toEqual([])
   })
 
@@ -277,6 +284,35 @@ describe('announcing a host launcher', () => {
 
     expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
     expect(listed()).toEqual([MAC])
+  })
+
+  it('accepts a configured machine’s hello with no proof while hostProof is off, as before', () => {
+    configureMac('off')
+    const launcher = wire()
+    helloAsMac(launcher)
+
+    expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
+    expect(listed()).toEqual([MAC])
+    expect(brokerLog()).not.toContain('host_launcher_refused')
+  })
+
+  it('accepts and logs a bad proof while hostProof is off', () => {
+    configureMac('off')
+    ensureBrokerKey(MAC)
+    const launcher = wire()
+    helloAsMac(launcher, helloProof('f'.repeat(64), MAC, challenge(launcher)))
+
+    expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
+    expect(listed()).toEqual([MAC])
+    expect(brokerLog()).toContain('proof-invalid (not enforced)')
+  })
+
+  it('defaults hostProof to off when the config does not name it', () => {
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { mac: MAC } }))
+    const launcher = wire()
+    helloAsMac(launcher)
+
+    expect(lastHello(launcher)?.ok).toBe(true)
   })
 
   it('refuses a challenge from a registered session connection', () => {

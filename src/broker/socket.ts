@@ -48,7 +48,7 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId, resolveMachines } from '../config.js'
+import { resolveDeciderAgentId, resolveHostProofMode, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
@@ -246,7 +246,7 @@ export function proofRefusal(
   const key = keyFor(host)
   if (key === null)
     return configured
-      ? `no launcher key for ${host} on the broker; run 'agent-chat host key-new ${host}' and copy it to that machine`
+      ? `no launcher key for ${host} on the broker; provision the launcher key (CC-1063 slice d)`
       : undefined
   if (nonce === undefined) return `no valid launcher proof for ${host}: send host_challenge first`
   return proofMatches(key, host, nonce, proof) ? undefined : `no valid launcher proof for ${host}`
@@ -770,13 +770,31 @@ export class SocketServer {
     const machines = Object.values(resolveMachines())
     const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    const refusal = proofRefusal(hello.host, msg.proof, nonce, machines, brokerKeyFor)
+    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce, machines)
     const result =
       refusal === undefined
         ? this.hosts.hello(conn, hello, frame => reply(conn, frame))
         : { ok: false, reason: refusal }
     if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
     reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /**
+   * CC-1063: with `hostProof` off (the default until launchers answer the challenge), a hello without a
+   * proof is accepted as before, and a bad proof is logged and accepted, so the check can be watched live.
+   */
+  private enforcedProofRefusal(
+    host: string,
+    proof: unknown,
+    nonce: string | undefined,
+    machines: readonly string[],
+  ): string | undefined {
+    const enforced = resolveHostProofMode() === 'enforce'
+    if (!enforced && proof === undefined) return undefined
+    const refusal = proofRefusal(host, proof, nonce, machines, brokerKeyFor)
+    if (enforced || refusal === undefined) return refusal
+    logEvent('host_launcher_refused', { host, reason: 'proof-invalid (not enforced)' })
+    return undefined
   }
 
   /** CC-1063: the challenge is the hello's first step, so a session is refused it with the hello's answer. */
