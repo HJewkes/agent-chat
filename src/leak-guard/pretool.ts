@@ -232,8 +232,30 @@ const OPTION_WRAPPERS = [
   'env',
   'sudo',
 ]
-const STDBUF_VALUE = ['-i', '-o', '-e', '--input', '--output', '--error']
-const IONICE_VALUE = ['-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid', '--uid']
+/** A getopt_long option table: the short letters that take a value, and each long name with whether it takes one. */
+interface Getopt {
+  shortValue: string
+  long: Readonly<Record<string, boolean>>
+}
+// coreutils stdbuf: `+i:o:e:`.
+const STDBUF_GETOPT: Getopt = {
+  shortValue: 'ioe',
+  long: { input: true, output: true, error: true, help: false, version: false },
+}
+// util-linux ionice: `+n:c:p:P:u:tVh`.
+const IONICE_GETOPT: Getopt = {
+  shortValue: 'cnpPu',
+  long: {
+    class: true,
+    classdata: true,
+    pid: true,
+    pgid: true,
+    uid: true,
+    ignore: false,
+    help: false,
+    version: false,
+  },
+}
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
@@ -427,8 +449,8 @@ function wrapperEnd(words: readonly string[], at: number, name: string): number 
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
   if (name === 'exec') return dropOptions(words, at + 1, ['-a'])
   if (name === 'nice') return dropOptions(words, at + 1, ['-n'])
-  if (name === 'stdbuf') return dropOptions(words, at + 1, STDBUF_VALUE)
-  if (name === 'ionice') return dropOptions(words, at + 1, IONICE_VALUE)
+  if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT)
+  if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT)
   if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'])
   if (name === 'timeout' || name === 'repeat') return dropOptions(words, at + 1, ['-s', '-k']) + 1
   return undefined
@@ -440,6 +462,46 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
     i += withValue.includes(words[i] as string) ? 2 : 1
   }
   return Math.min(i, words.length)
+}
+
+/**
+ * The index of the command after a getopt_long wrapper's options, read as getopt reads them: an unambiguous long-name
+ * prefix, `--name=value`, and a short cluster whose value letter takes the rest of the word or the next one.
+ * A word the guard cannot read stops the scan there, so it is read as the command.
+ */
+function dropGetopt(words: readonly string[], i: number, spec: Getopt): number {
+  while (i < words.length) {
+    const word = words[i] as string
+    if (word === '--') return i + 1
+    if (!word.startsWith('-') || word === '-') return i
+    const width = word.startsWith('--')
+      ? longOptionWidth(word.slice(2), spec)
+      : shortClusterWidth(word.slice(1), spec)
+    if (width === undefined) return i
+    i += width
+  }
+  return words.length
+}
+
+/** How many words a long option takes: 2 when it needs the next word as its value, 1 otherwise. */
+function longOptionWidth(body: string, spec: Getopt): number | undefined {
+  const eq = body.indexOf('=')
+  const name = eq < 0 ? body : body.slice(0, eq)
+  if (name.includes(LIVE)) return undefined
+  const names = Object.keys(spec.long)
+  const matches = name in spec.long ? [name] : names.filter(n => n.startsWith(name))
+  // An ambiguous prefix whose names all take a value still takes one; getopt refuses any other.
+  const takesValue = matches.length > 0 && matches.every(n => spec.long[n] === true)
+  return takesValue && eq < 0 ? 2 : 1
+}
+
+/** How many words a short cluster takes: a value letter ends it, taking the next word when nothing follows it. */
+function shortClusterWidth(cluster: string, spec: Getopt): number | undefined {
+  for (let k = 0; k < cluster.length; k++) {
+    if (cluster[k] === LIVE) return undefined
+    if (spec.shortValue.includes(cluster[k] as string)) return k === cluster.length - 1 ? 2 : 1
+  }
+  return 1
 }
 
 /** What one xargs option sets about how it feeds its command. */

@@ -26,6 +26,32 @@ describe('stdbuf and ionice run the command after their options (CC-1223)', () =
     expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
   })
 
+  it.each([
+    'stdbuf --out L git push --no-verify',
+    'stdbuf --outp L git push --no-verify',
+    'stdbuf --e 0 git push --no-verify',
+    'stdbuf --in 0 git push --no-verify',
+    'stdbuf --out=L git push --no-verify',
+    'stdbuf -- git push --no-verify',
+    'ionice --classd 7 git push --no-verify',
+    'ionice --cl 3 git push --no-verify',
+    'ionice -tc 3 git push --no-verify',
+    'ionice -tn 7 git push --no-verify',
+    'ionice -tc3 -tn7 git push --no-verify',
+    'ionice -p 1 git push --no-verify',
+  ])('reads option prefixes and clusters as getopt does: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'stdbuf "$O" git push --no-verify',
+    'ionice -t"$O" 3 git push --no-verify',
+    'ionice --"$O" 3 git push --no-verify',
+    'stdbuf -oL ionice -c3 "$C" git push --no-verify',
+  ])('denies an option word it cannot read: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
   it.each(['ionice -c3 env -u GIT_CONFIG_COUNT git push', 'stdbuf -oL env GIT_CONFIG_COUNT=0 git push'])(
     'denies a git config variable it carries: %s',
     command => {
