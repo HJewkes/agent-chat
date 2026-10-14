@@ -20,8 +20,9 @@ import { defaultAutonomyRoot, loadPolicy } from './policy.js'
 import { adjudicateOutside, type Adjudication, type OtherPr } from './owns-adjudicate.js'
 import { outsideOwns } from './owns-fence.js'
 import { prFactsReader, type PrFacts } from './pr-facts.js'
-import { parseReport, readSlices, type Report } from './report.js'
+import { readSlices, type Report } from './report.js'
 import { sumSpend } from './spend-cap.js'
+import { pickReport } from './status-report.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
@@ -56,6 +57,8 @@ export interface ObserveDeps {
   /** The active-work root, where a planner's plan file lives. */
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
+  /** CC-980: the worker's newest terminal report to reportTo this session; absent reads only the transcript. */
+  statusReport?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
   /** The files a worktree's branch changed against its base (CC-669); undefined when git could not tell. */
   changedFiles?: (cwd: string) => string[] | undefined
@@ -262,8 +265,8 @@ async function observeClaim(
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
   if (row === undefined) return goneWork(obs, claim, deps)
   if (!FINISHED.has(row.state) || claim.phase === 'spawning') return obs
-  const text = (deps.finalText ?? defaultFinalText)(row)
-  if (text !== undefined) obs.report = parseReport(text)
+  const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
+  if (report !== undefined) obs.report = report
   if (claim.phase === 'planning' && claim.briefer === true) {
     obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
     return obs

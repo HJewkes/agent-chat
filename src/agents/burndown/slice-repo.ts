@@ -8,7 +8,9 @@ import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 /**
  * CC-946: the checkout a ready slice dispatches into. The slice plan's `repo`, else the one checkout that
  * holds the paths it owns, comes before the task's tags: a task is filed under one initiative while its
- * plan may put the work in another repo. A plan and an explicit `repo:` tag that disagree refuse.
+ * plan may put the work in another repo. A plan and an explicit `repo:` tag that disagree refuse. The
+ * slice `repo` may come from the plan's `Repo:` header (CC-1293), so a slice owning only new files still
+ * lands in the plan's repo.
  */
 
 export type PathExists = (repo: string, relative: string) => boolean
