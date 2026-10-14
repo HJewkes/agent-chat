@@ -16,7 +16,7 @@ import {
   type ScoredPlan,
 } from '../agents/burndown/score-render.js'
 import { tasksFromList } from '../agents/burndown/score-source.js'
-import type { PlannedRow } from '../agents/burndown/plan-order.js'
+import type { PlannedRow, Tier } from '../agents/burndown/plan-order.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb, planFlagError, scoredSeatPlan } from '../cli/verbs/burndown.js'
 
@@ -465,7 +465,7 @@ describe('gate order of a scored plan (CC-988)', () => {
   const tasks = tasksFromList(snapshot)
   const ready = `brief:ready=${snapshot.today}`
   const gate = { maxAgeDays: 7, now: new Date(`${snapshot.today}T00:00:00`) }
-  const rowOf = (id: string, tier: number, score: number) => ({ ...base, id, tier, score, effective: score })
+  const rowOf = (id: string, tier: Tier, score: number) => ({ ...base, id, tier, score, effective: score })
   const taskOf = (id: string, priority: number, tags: string[]) => ({ ...tasks[0]!, id, priority, tags })
   const planOf = (rows: ScoredPlan['order']): ScoredPlan => ({
     order: rows,
