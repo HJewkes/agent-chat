@@ -60,6 +60,18 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
   )
 
   it.each([
+    ['g=gi; parallel ${g}t push --no-verify ::: a', REASONS.parallelOption],
+    ['parallel -j2 $(printf gi)t push --no-verify ::: a', REASONS.parallelOption],
+    [`parallel 'echo "{}"' ::: '$(g=gi; \${g}t push --no-verify)'`, REASONS.parallelQuoted],
+  ])('denies on a line that may reach git without spelling it: %s', (command, reason) => {
+    expect(checkCommand(command, ctx)).toBe(reason)
+  })
+
+  it('denies an input inside double quotes, where the shell expands what parallel quoted', () => {
+    expect(checkCommand(`parallel 'git log "{}"' ::: a`, ctx)).toBe(REASONS.parallelQuoted)
+  })
+
+  it.each([
     'parallel {} ::: git ::: push ::: --no-verify',
     'parallel -I X X ::: git ::: push ::: --no-verify',
     "parallel {} ::: 'git push --no-verify'",
@@ -92,6 +104,7 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
     'parallel -q git log -1 {} ::: a',
     "parallel ::: 'echo hi' 'ls'",
     'parallel --unknown-flag gzip ::: a',
+    `parallel 'echo "{}"' ::: a`,
   ])('allows a command that runs no push: %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

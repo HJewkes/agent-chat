@@ -2062,11 +2062,14 @@ const singleQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}
  * replacement string, or appended when no word holds one parallel reads as such (with `-I` set,
  * `{}` is a plain word). Under `-q` each word is quoted and each input stays one word.
  */
-function parallelScript(words: readonly string[], call: ParallelCall): string {
+function parallelScript(
+  words: readonly string[],
+  call: ParallelCall,
+  input = call.quote ? '"$@"' : '$@',
+): string {
   const custom = call.replaceStrings
   const fills = (word: string): boolean =>
     custom.length > 0 ? custom.some(s => word.includes(s)) : holdsReplacement(word)
-  const input = call.quote ? '"$@"' : '$@'
   const script = words
     .map(word => {
       const parts = cutAtReplacements(word, custom)
@@ -2076,9 +2079,21 @@ function parallelScript(words: readonly string[], call: ParallelCall): string {
   return words.some(fills) ? script : `${script} ${input}`
 }
 
-/** Whether the shell would read a `$@` in `script` as literal text, inside quotes or after a backslash. */
-const quotesInput = (script: string): boolean =>
-  parseShell(script).some(cmd => cmd.marked.some(word => word.replaceAll(XARGS_ARGS, '').includes('$@')))
+/** An input written as a quoted word; its quotes survive the shell only inside double quotes. */
+const INPUT_PROBE = "'\x02'"
+
+/**
+ * Whether the shell reads an input as other than one plain word: as literal text inside single
+ * quotes or after a backslash, or inside double quotes, where it still expands the `$(...)` that
+ * parallel quoted for an unquoted word. Under `-q` parallel quotes each word whole, so only the first applies.
+ */
+function quotesInput(words: readonly string[], call: ParallelCall, script: string): boolean {
+  const marked = (text: string): string[] => parseShell(text).flatMap(cmd => cmd.marked)
+  return (
+    marked(script).some(word => word.replaceAll(XARGS_ARGS, '').includes('$@')) ||
+    (!call.quote && marked(parallelScript(words, call, INPUT_PROBE)).some(word => word.includes(INPUT_PROBE)))
+  )
+}
 
 /** Whether an input stands where `script` names a command, as `parallel {} ::: git ::: push` puts it; like xargs' fed head. */
 const inputRuns = (script: string): boolean =>
@@ -2090,7 +2105,7 @@ const inputRuns = (script: string): boolean =>
 /** Checks parallel's no-command form, where each input is a command line of its own. */
 function checkParallelInputs(inputs: ParallelInputs, ctx: GuardContext, scope: Scope, depth: number) {
   if (inputs.kind === 'unread' || inputs.groups.length !== 1)
-    return scope.namesGit ? REASONS.hiddenScript : undefined
+    return lineMayReachGit(scope, ctx) ? REASONS.hiddenScript : undefined
   return firstReason(inputs.groups[0] ?? [], input => checkAt(input, ctx, scope, depth + 1))
 }
 
@@ -2107,16 +2122,14 @@ function checkParallel(
   depth: number,
 ): string | undefined {
   const call = parallelCall(marked, cmd.splits)
-  if ('unknownOption' in call) return scope.namesGit ? REASONS.parallelOption : undefined
+  if ('unknownOption' in call) return lineMayReachGit(scope, ctx) ? REASONS.parallelOption : undefined
   if (call.command.length === 0) return checkParallelInputs(call.inputs, ctx, scope, depth)
   const plain = call.command.map(word => word.replaceAll(BRACE_PAIR, '{}'))
   const words = plain.map(word => resolveWord(word, cmd, ctx, scope))
-  if (words.includes(undefined) && scope.namesGit) return REASONS.hiddenScript
-  const script = parallelScript(
-    words.map((word, i) => word ?? unmark(plain[i] as string)),
-    call,
-  )
-  if (scope.namesGit && quotesInput(script)) return REASONS.parallelQuoted
+  if (words.includes(undefined) && lineMayReachGit(scope, ctx)) return REASONS.hiddenScript
+  const read = words.map((word, i) => word ?? unmark(plain[i] as string))
+  const script = parallelScript(read, call)
+  if (lineMayReachGit(scope, ctx) && quotesInput(read, call, script)) return REASONS.parallelQuoted
   if (inputRuns(script)) return REASONS.hiddenCommand
   return checkAt(script, ctx, scope, depth + 1)
 }
