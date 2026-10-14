@@ -18,7 +18,12 @@ export interface ScriptRun {
   head: boolean
 }
 
-export type ScriptRuns = { runs: ScriptRun[] } | { hidden: true }
+/**
+ * `stdin`: a shell reads its script from its standard input (`bash`, `bash -s x`, `bash < f`,
+ * `cat f | bash`). These readers see no redirect or pipe, so the guard joins the flag with the
+ * command's own stdin to learn which text runs.
+ */
+export type ScriptRuns = { runs: ScriptRun[]; stdin: boolean } | { hidden: true }
 
 const isLive = (word: string): boolean => word.includes(LIVE)
 
@@ -68,11 +73,14 @@ function teeText(cmd: SimpleCommand, operands: readonly string[]): string | unde
   return operands.length > 0 || cmd.writes.length > 0 ? literalStdin(cmd) : undefined
 }
 
-/** A command that names files without changing what they hold, so a script it names keeps its text. */
+/**
+ * A command that names files without changing what they hold, so a script it names keeps its text.
+ * Only a bare command word counts: `./cat s` may be a file the line wrote.
+ */
 export function keepsContent(cmd: SimpleCommand): boolean {
   const head = cmd.marked[0] ?? ''
-  if (isLive(head) || cmd.writes.length > 0) return false
-  return KEEPS_CONTENT.has(path.basename(head))
+  if (isLive(head) || head.includes('/') || cmd.writes.length > 0) return false
+  return KEEPS_CONTENT.has(head)
 }
 
 /**
@@ -90,8 +98,8 @@ export function scriptRuns(
   const name = path.basename(head)
   if (shells.has(name)) return shellRuns(name, marked, assigns)
   if (head === 'source' || head === '.') return sourceRuns(marked)
-  if (head.includes('/')) return { runs: [{ word: head, args: [...marked], head: true }] }
-  return { runs: [] }
+  if (head.includes('/')) return { runs: [{ word: head, args: [...marked], head: true }], stdin: false }
+  return { runs: [], stdin: false }
 }
 
 function shellRuns(name: string, marked: readonly string[], assigns: readonly string[]): ScriptRuns {
@@ -101,16 +109,16 @@ function shellRuns(name: string, marked: readonly string[], assigns: readonly st
   if (call.rcfile !== undefined) runs.push({ word: marked[call.rcfile] ?? '', args: [], head: false })
   const at = call.script.from === 'file' ? call.script.at : undefined
   if (at !== undefined) runs.push({ word: marked[at] ?? '', args: marked.slice(at + 1), head: false })
-  return { runs }
+  return { runs, stdin: call.script.from === 'stdin' }
 }
 
 /** bash's `source -p PATH F` searches a path, and any other option word may hide the file. */
 function sourceRuns(marked: readonly string[]): ScriptRuns {
   const at = unmark(marked[0] ?? '') === '--' ? 1 : 0
   const word = marked[at]
-  if (word === undefined) return { runs: [] }
+  if (word === undefined) return { runs: [], stdin: false }
   if (isLive(word) || (at === 0 && unmark(word).startsWith('-'))) return { hidden: true }
-  return { runs: [{ word, args: marked.slice(at + 1), head: false }] }
+  return { runs: [{ word, args: marked.slice(at + 1), head: false }], stdin: false }
 }
 
 /**

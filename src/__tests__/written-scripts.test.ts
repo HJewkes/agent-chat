@@ -18,8 +18,9 @@ const lastCommand = (line: string): SimpleCommand => {
   return found
 }
 
+/** The runs of the line's last command, the one a pipe feeds. */
 const runsOf = (line: string) => {
-  const [head = '', ...marked] = firstCommand(line).marked
+  const [head = '', ...marked] = lastCommand(line).marked
   return scriptRuns(unmark(head), marked, [], SHELLS)
 }
 
@@ -74,19 +75,24 @@ describe('writtenText', () => {
 })
 
 describe('keepsContent', () => {
-  it.each(['chmod +x s.sh', 'ls -l s.sh', 'cat s.sh', 'grep -l x s.sh', '/bin/chmod 755 s.sh'])(
+  it.each(['chmod +x s.sh', 'ls -l s.sh', 'cat s.sh', 'grep -l x s.sh'])(
     '%j keeps what the file holds',
     line => {
       expect(keepsContent(firstCommand(line))).toBe(true)
     },
   )
 
-  it.each(['sed -i s/a/b/ s.sh', 'cp a s.sh', 'cat a > s.sh', 'chmod +x s.sh > log', '$C s.sh'])(
-    '%j may change it',
-    line => {
-      expect(keepsContent(firstCommand(line))).toBe(false)
-    },
-  )
+  it.each([
+    'sed -i s/a/b/ s.sh',
+    'cp a s.sh',
+    'cat a > s.sh',
+    'chmod +x s.sh > log',
+    '$C s.sh',
+    './cat s.sh',
+    '/bin/chmod 755 s.sh',
+  ])('%j may change it', line => {
+    expect(keepsContent(firstCommand(line))).toBe(false)
+  })
 })
 
 describe('scriptRuns', () => {
@@ -95,7 +101,6 @@ describe('scriptRuns', () => {
     ['sh -eo pipefail s.sh', ['s.sh']],
     ['zsh s.sh x y', ['s.sh']],
     ['/bin/bash -- s.sh', ['s.sh']],
-    ['bash --rcfile r -i', ['r']],
     ['source s.sh', ['s.sh']],
     ['. ./s.sh', ['./s.sh']],
     ['source -- s.sh', ['s.sh']],
@@ -106,12 +111,23 @@ describe('scriptRuns', () => {
     expect(runWords(line)).toEqual(words)
   })
 
-  it.each(["bash -c 'x'", 'bash', 'bash -s x', 'ls s.sh', 's.sh', 'source', '/bin/bash -c x'])(
-    '%j runs no script file',
+  it.each(["bash -c 'x'", 'ls s.sh', 's.sh', 'source', '/bin/bash -c x'])('%j runs no script file', line => {
+    expect(runsOf(line)).toEqual({ runs: [], stdin: false })
+  })
+
+  it.each(['bash', 'bash -s x', 'bash < f', 'sh -s < f', 'cat f | bash', "printf 'x' | sh"])(
+    '%j runs the script on its stdin',
     line => {
-      expect(runWords(line)).toEqual([])
+      expect(runsOf(line)).toEqual({ runs: [], stdin: true })
     },
   )
+
+  it('runs a startup file before the script on its stdin', () => {
+    expect(runsOf('bash --rcfile r -i')).toEqual({
+      runs: [{ word: 'r', args: [], head: false }],
+      stdin: true,
+    })
+  })
 
   it.each(['bash $X', 'source -p d s', 'source $F', '. -x s'])('%j hides its script', line => {
     expect(runsOf(line)).toEqual({ hidden: true })
@@ -120,12 +136,15 @@ describe('scriptRuns', () => {
   it('gives each run the operands after it, and marks a head run', () => {
     expect(runsOf('bash s.sh --no-verify x')).toEqual({
       runs: [{ word: 's.sh', args: ['--no-verify', 'x'], head: false }],
+      stdin: false,
     })
     expect(runsOf('./s.sh --no-verify')).toEqual({
       runs: [{ word: './s.sh', args: ['--no-verify'], head: true }],
+      stdin: false,
     })
     expect(runsOf('source -- s.sh a')).toEqual({
       runs: [{ word: 's.sh', args: ['a'], head: false }],
+      stdin: false,
     })
   })
 })
