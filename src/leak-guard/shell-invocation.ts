@@ -6,6 +6,10 @@
  * with histexpand, expands `!$` in such a script. The options leave a `-c` string inert, but the
  * string can turn history on itself (`set -H -o history`), so a caller must still check it.
  * Anything the walk cannot read fails closed: an expanded word is `hidden` and reports history.
+ *
+ * Every spelling of an option (`-s`, `-o shin_stdin`, `-oshinstdin`, `--stdin`, `+o noshinstdin`,
+ * `+-noshinstdin`) resolves to one name in its shell's grammar, and the walk reads only the effect
+ * that name has, so a spelling cannot reach an option without reaching its effect.
  */
 import { LIVE } from './shell-words.js'
 
@@ -22,8 +26,78 @@ export interface ShellCall {
   history: boolean
 }
 
-// Option names that turn on the history list, `!` expansion or interactive mode, after `normalise`.
-const HISTORY_OPTION = /^(?:history|histexpand|interactive|banghist)$/
+/** What an option does to the script source: read stdin, run the operand, turn on history, end the options. */
+type Effect = 'stdin' | 'command' | 'history' | 'end'
+
+/** A short letter: the option name it sets, and how its sign reads. */
+interface Letter {
+  name: string
+  /** zsh's `-K` turns BANG_HIST off and `+K` turns it on. */
+  inverted?: boolean
+  /** Observed to take effect under `+` as well as `-`, as `bash +c`, `bash +s` and `zsh +b` do. */
+  anySign?: boolean
+}
+
+interface Grammar {
+  letters: Readonly<Record<string, Letter>>
+  /** How an `o` or `O` with letters after it in its word reads its name: from those letters, the next word, or not at all. */
+  glued: 'rest' | 'next' | 'hidden'
+}
+
+// Names for letters that have no long spelling. `normalise` strips `-`, so no long option reaches them.
+const COMMAND = '-c'
+const END = '-b'
+
+/**
+ * One table for every shell, keyed by the zsh-normalised name. A shell that does not know a name
+ * exits before it reads any script (`bash -o stdin`), so a name another shell owns fails closed.
+ * `login` counts as history because the profile files it reads can run `set -o history`.
+ */
+const NAMES: Readonly<Record<string, Effect>> = {
+  [COMMAND]: 'command',
+  [END]: 'end',
+  shinstdin: 'stdin',
+  stdin: 'stdin',
+  interactive: 'history',
+  history: 'history',
+  histexpand: 'history',
+  banghist: 'history',
+  login: 'history',
+}
+
+const COMMON_LETTERS: Readonly<Record<string, Letter>> = {
+  c: { name: COMMAND, anySign: true },
+  s: { name: 'shinstdin' },
+  i: { name: 'interactive' },
+  l: { name: 'login' },
+}
+const BASH_LETTERS = { ...COMMON_LETTERS, s: { name: 'shinstdin', anySign: true }, H: { name: 'histexpand' } }
+
+// Observed letter tables. `sh` may be bash or dash, so it takes bash's, the wider of the two.
+const GRAMMARS: Readonly<Record<string, Grammar>> = {
+  zsh: {
+    letters: {
+      ...COMMON_LETTERS,
+      K: { name: 'banghist', inverted: true },
+      b: { name: END, anySign: true },
+    },
+    glued: 'rest',
+  },
+  bash: { letters: BASH_LETTERS, glued: 'next' },
+  sh: { letters: BASH_LETTERS, glued: 'next' },
+  dash: { letters: COMMON_LETTERS, glued: 'next' },
+}
+
+// Any other shell takes every letter's effect under either sign, and hides a name glued to `o`.
+const UNOBSERVED: Grammar = {
+  letters: {
+    ...BASH_LETTERS,
+    i: { name: 'interactive', anySign: true },
+    K: { name: 'banghist', inverted: true },
+  },
+  glued: 'hidden',
+}
+
 // Long options that take the next word as their operand: bash's rc files and zsh's `--emulate`.
 const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
 // `SHELLOPTS` can turn on history and histexpand before the script is read, and a startup file named
@@ -31,14 +105,23 @@ const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
 const STARTUP_ASSIGNMENT = /^(?:SHELLOPTS|BASH_ENV|ENV)=/
 // A long option: `--name`, or zsh's `+-name`, which turns it off.
 const LONG = /^(?:--|\+-)./
-// Shells observed to take an `o`'s name from the next word even when letters follow it in the cluster.
-const NEXT_WORD_NAME = new Set(['sh', 'bash', 'dash'])
 
-/** zsh accepts `BANG_HIST`, `bang-hist` and `banghist` alike, and a `no` prefix inverts the option. */
-function turnsOnHistory(name: string, on: boolean): boolean {
-  const plain = name.toLowerCase().replaceAll(/[_-]/g, '')
-  if (HISTORY_OPTION.test(plain)) return on
-  return plain.startsWith('no') && HISTORY_OPTION.test(plain.slice(2)) && !on
+/** zsh ignores case, `_` and `-` in an option name (observed: `SHIN_STDIN`, `shin-stdin`). */
+const normalise = (name: string): string => name.toLowerCase().replaceAll(/[_-]/g, '')
+
+/** The effect of a named option turned on or off; one `no` prefix inverts it, as in zsh. */
+function nameEffect(name: string, on: boolean): Effect | undefined {
+  const plain = normalise(name)
+  const direct = NAMES[plain]
+  if (direct !== undefined) return on ? direct : undefined
+  const negated = plain.startsWith('no') ? NAMES[plain.slice(2)] : undefined
+  return on ? undefined : negated
+}
+
+function letterEffect(grammar: Grammar, letter: string, on: boolean): Effect | undefined {
+  const known = grammar.letters[letter]
+  if (known === undefined) return undefined
+  return known.anySign === true || on !== (known.inverted === true) ? NAMES[known.name] : undefined
 }
 
 interface Options {
@@ -52,37 +135,34 @@ interface Options {
   ended: boolean
 }
 
-/** Reads an option name: on, off, or an expansion that hides it. */
-function readOptionName(operand: string | undefined, on: boolean, opts: Options): void {
-  if (operand?.includes(LIVE)) opts.hidden = true
-  else if (operand !== undefined && turnsOnHistory(operand, on)) opts.history = true
+function apply(effect: Effect | undefined, opts: Options): void {
+  if (effect === 'stdin') opts.stdin = true
+  else if (effect === 'command') opts.command = true
+  else if (effect === 'history') opts.history = true
+  else if (effect === 'end') opts.ended = true
 }
 
-/**
- * Reads one short cluster such as `-eo pipefail` or `+o`, consuming any operand words. zsh takes the
- * rest of the word after `o` as the name (`-ointeractive`); bash and dash take the next word and keep
- * reading the letters after `o` as flags (`bash -oi pipefail` is interactive). Any other shell's
- * reading is unobserved and either guess can reach the `-c` branch, so letters after `o` hide the call.
- */
-function readCluster(name: string, words: readonly string[], at: number, opts: Options): number {
+/** Reads an option name: its effect, or a hidden call when the shell expands it. */
+function readName(operand: string | undefined, on: boolean, opts: Options): void {
+  if (operand?.includes(LIVE)) opts.hidden = true
+  else if (operand !== undefined) apply(nameEffect(operand, on), opts)
+}
+
+/** Reads one short cluster such as `-eo pipefail`, `-ointeractive` or `+o`, consuming any operand words. */
+function readCluster(grammar: Grammar, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
   const on = word.startsWith('-')
   let next = at + 1
   for (let i = 1; i < word.length; i++) {
-    const letter = word[i]
+    const letter = word[i] ?? ''
     const rest = word.slice(i + 1)
-    if (letter === 'o' || letter === 'O') {
-      if (rest !== '' && !NEXT_WORD_NAME.has(name)) {
-        if (name === 'zsh') readOptionName(rest, on, opts)
-        else opts.hidden = true
-        return next
-      }
-      readOptionName(words[next++], on, opts)
-    } else if (letter === 'c') opts.command = true
-    else if (letter === 's') opts.stdin = true
-    else if (on && (letter === 'i' || letter === 'H')) opts.history = true
-    else if (!on && name === 'zsh' && letter === 'K') opts.history = true
-    else if (name === 'zsh' && letter === 'b') opts.ended = true
+    if (letter !== 'o' && letter !== 'O') apply(letterEffect(grammar, letter, on), opts)
+    else if (rest === '' || grammar.glued === 'next') readName(words[next++], on, opts)
+    else {
+      if (grammar.glued === 'rest') readName(rest, on, opts)
+      else opts.hidden = true
+      return next
+    }
   }
   return next
 }
@@ -91,7 +171,7 @@ function readCluster(name: string, words: readonly string[], at: number, opts: O
 function readLong(words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
   if (!LONG_WITH_OPERAND.has(word)) {
-    opts.history ||= turnsOnHistory(word.slice(2), word.startsWith('-'))
+    readName(word.slice(2), word.startsWith('-'), opts)
     return at + 1
   }
   if (words[at + 1]?.includes(LIVE)) opts.hidden = true
@@ -99,7 +179,7 @@ function readLong(words: readonly string[], at: number, opts: Options): number {
 }
 
 /** Walks the option words, stopping at the first operand, `--`, `-b`, or a word the shell expands. */
-function readOptions(name: string, words: readonly string[]): Options {
+function readOptions(grammar: Grammar, words: readonly string[]): Options {
   const opts: Options = {
     end: words.length,
     hidden: false,
@@ -114,7 +194,7 @@ function readOptions(name: string, words: readonly string[]): Options {
     if (word.includes(LIVE)) return { ...opts, end: at, hidden: true }
     if (word === '--' || word === '-') return { ...opts, end: at + 1 }
     if (!word.startsWith('-') && !word.startsWith('+')) return { ...opts, end: at }
-    at = LONG.test(word) ? readLong(words, at, opts) : readCluster(name, words, at, opts)
+    at = LONG.test(word) ? readLong(words, at, opts) : readCluster(grammar, words, at, opts)
   }
   return { ...opts, end: Math.min(at, words.length) }
 }
@@ -128,7 +208,7 @@ export function readShellCall(
   marked: readonly string[],
   assigns: readonly string[],
 ): ShellCall {
-  const opts = readOptions(name, marked)
+  const opts = readOptions(GRAMMARS[name] ?? UNOBSERVED, marked)
   if (opts.hidden) return { script: { from: 'hidden' }, history: true }
   if (opts.command)
     return {

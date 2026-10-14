@@ -75,6 +75,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['sh -ox pipefail s.sh', 2, false],
     ['BASH_ENV=./rc bash s.sh', 0, true],
     ['ENV=./rc sh s.sh', 0, true],
+    ['bash -l s.sh', 1, true],
+    ['bash --login s.sh', 1, true],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -118,5 +120,102 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
 
   it('reads an expansion after the options as an operand', () => {
     expect(call('bash -- $X')).toEqual({ script: { from: 'file', at: 1 }, history: false })
+  })
+})
+
+type Effect = 'stdin' | 'command' | 'history' | 'end'
+
+// Each spelling observed to take effect on zsh 5.9, bash 5.3 or dash, run with a script file and a here-string.
+const SPELLINGS: Record<string, Record<Effect, string[]>> = {
+  zsh: {
+    stdin: [
+      '-s',
+      '-o shinstdin',
+      '-o shin_stdin',
+      '-o SHIN_STDIN',
+      '-o stdin',
+      '-oshinstdin',
+      '--shinstdin',
+      '--stdin',
+      '--shin-stdin',
+      '+o noshinstdin',
+      '+-noshinstdin',
+    ],
+    history: [
+      '-i',
+      '-o INTERACTIVE',
+      '-ointeractive',
+      '--interactive',
+      '+o nointeractive',
+      '+-nointeractive',
+      '+K',
+      '-o BANG_HIST',
+      '-obanghist',
+      '--banghist',
+      '+o nobanghist',
+      '+-nobanghist',
+      '-o HIST_EXPAND',
+      '-l',
+      '-o LOGIN',
+      '-ologin',
+      '--login',
+      '+o nologin',
+      '+-nologin',
+    ],
+    command: ['-c', '+c'],
+    end: ['-b', '+b'],
+  },
+  bash: {
+    stdin: ['-s', '+s'],
+    history: ['-i', '-H', '-o history', '-o histexpand', '-l', '--login'],
+    command: ['-c', '+c'],
+    end: [],
+  },
+  dash: {
+    stdin: ['-s', '-o stdin'],
+    history: ['-i', '-o interactive', '-l'],
+    command: ['-c', '+c'],
+    end: [],
+  },
+}
+
+// Each spelling observed to leave its option off.
+const OFF: Record<string, Record<'stdin' | 'history', string[]>> = {
+  zsh: {
+    stdin: ['+s', '+o shinstdin', '-o noshinstdin', '+-shinstdin', '--noshinstdin'],
+    history: ['-K', '+i', '+o interactive', '-o nointeractive', '+-interactive'],
+  },
+  bash: { stdin: [], history: ['+i', '+o history', '+o histexpand', '+H'] },
+  dash: { stdin: ['+s'], history: ['+i'] },
+}
+
+const rows = <K extends string>(table: Record<string, Record<K, string[]>>, effect: K) =>
+  Object.entries(table).flatMap(([shell, byEffect]) => byEffect[effect].map(sp => `${shell} ${sp}`))
+
+const operands = (line: string): number => line.split(' ').length - 1
+
+describe('every spelling of an option reaches its effect (CC-1288)', () => {
+  it.each(rows(SPELLINGS, 'stdin'))('%s s.sh reads stdin', line => {
+    expect(call(`${line} s.sh`).script).toEqual({ from: 'stdin' })
+  })
+
+  it.each(rows(SPELLINGS, 'history'))('%s s.sh reports history', line => {
+    expect(call(`${line} s.sh`)).toEqual({ script: { from: 'file', at: operands(line) }, history: true })
+  })
+
+  it.each(rows(SPELLINGS, 'command'))("%s 'x' runs the string", line => {
+    expect(call(`${line} 'x'`).script).toEqual({ from: 'command', at: operands(line) })
+  })
+
+  it.each(rows(SPELLINGS, 'end'))('%s -c x ends the options', line => {
+    expect(call(`${line} -c x`).script).toEqual({ from: 'file', at: operands(line) })
+  })
+
+  it.each(rows(OFF, 'stdin'))('%s s.sh reads the file', line => {
+    expect(call(`${line} s.sh`).script).toEqual({ from: 'file', at: operands(line) })
+  })
+
+  it.each(rows(OFF, 'history'))('%s s.sh reports no history', line => {
+    expect(call(`${line} s.sh`).history).toBe(false)
   })
 })
