@@ -302,3 +302,42 @@ describe('a git alias keeps the marks of the words around it (CC-1117)', () => {
     },
   )
 })
+
+describe('an xargs option the shell may split (CC-1219)', () => {
+  it.each([
+    'ls | xargs -P $(nproc) grep foo',
+    'xargs $X grep foo',
+    'xargs -n $N cat',
+    'ls | xargs -P $(nproc) -n 1 cat',
+    'xargs -P $(nproc) grep foo {}',
+    'ls | xargs -P $(nproc) grep a | xargs -P $(nproc) grep b | xargs -P $(nproc) grep c',
+  ])('keeps a literal non-git command readable: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+
+  it.each([
+    'xargs $X git push',
+    'xargs -P $(nproc) git push --no-verify',
+    'xargs -P $(nproc) git status',
+    'xargs -P $(nproc) gh pr list',
+    'xargs -P $(nproc) /usr/bin/git status',
+    'xargs -P $(nproc) sh -c "grep foo"',
+    'xargs -P $(nproc) bash',
+    'xargs -P $(nproc) env grep foo',
+    'xargs -P $(nproc) GIT_DIR=x grep',
+    'xargs -P $(nproc) $CMD git',
+    'xargs -I{} $X {} foo',
+    'xargs -I{} {} foo',
+    'xargs -I% -P $(nproc) % foo',
+    'xargs -P $(nproc) grep --no-verify',
+    'xargs -P $(nproc) push --no-verify',
+    'xargs -P $(nproc) grep include',
+    'xargs $X grep git push',
+  ])('still denies a command that may start another or reach git: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
+  it('denies an unknown long option after the split', () => {
+    expect(checkCommand('xargs -P $(nproc) --frob grep foo', ctx)).toBe(REASONS.xargsOption)
+  })
+})

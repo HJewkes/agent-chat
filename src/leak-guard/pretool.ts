@@ -353,6 +353,8 @@ type Unwrapped =
 interface Fed {
   replace?: string | undefined
   append: boolean
+  /** A split option word may have put words of its own before the command. */
+  hidden?: boolean
 }
 
 /** The words xargs adds, read as an unquoted `$@`: unreadable, and may be none or several. */
@@ -425,8 +427,10 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
 }
 
 /** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
-const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] =>
-  fed?.append === true && words.length > 0 ? [...words, XARGS_ARGS] : [...words]
+const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] => {
+  const placed = fed?.append === true && words.length > 0 ? [...words, XARGS_ARGS] : [...words]
+  return fed?.hidden === true ? [XARGS_ARGS, ...placed] : placed
+}
 
 /**
  * A word with each copy of the replace string swapped for the unreadable words, keeping the rest of it
@@ -517,6 +521,7 @@ const BATCH_LONG = new Set(['--max-args', '--max-lines'])
  * Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know.
  * GNU xargs drops a replace string on a later -n, -L or -l and appends instead; the guard does not track the order and reads both.
  * An option word or value the shell may split could hold another option, such as -I--, so the feed mode is then unknown.
+ * Past a split the command is read like a hidden command word, unless a later word may start a command or reach git.
  */
 function dropXargsOptions(
   words: readonly string[],
@@ -536,8 +541,9 @@ function dropXargsOptions(
           : clusterFeed(a, words[i + 1])
     const width = !a.startsWith('-') ? 0 : a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
     const splitting = words.slice(i, i + 1 + width).some(word => mayResplit(word, splits))
+    const unread = a.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && option?.replace === undefined
     // An expansion here may be an option such as -I--, so the guard cannot tell how xargs feeds the command.
-    if (splitting || (a.includes(LIVE) && option?.replace === undefined)) return { at: i, fed: UNKNOWN_FEED }
+    if (splitting || unread) return splitFeed(words, i, i + 1 + width, splits, replace)
     if (!a.startsWith('-') || a === '-') break
     if (option === undefined) return undefined
     replace = option.replace ?? replace
@@ -549,6 +555,26 @@ function dropXargsOptions(
 
 /** Every word may be fed, and more appended: where the guard cannot read xargs' options. */
 const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
+
+/**
+ * The feed past an xargs option word the guard cannot read, at `i`: the options before it and from `after` on, with the
+ * split's words read as put before the command. Any later word that may start a command or reach git keeps every word unknown.
+ */
+function splitFeed(
+  words: readonly string[],
+  i: number,
+  after: number,
+  splits: readonly string[],
+  replace: string | undefined,
+): { at: number; fed: Fed } | undefined {
+  const rest = dropXargsOptions(words, after, splits)
+  if (rest === undefined) return undefined
+  const unknown = { at: i, fed: UNKNOWN_FEED }
+  const command = words.slice(rest.at).map(word => word.replaceAll(BRACE_PAIR, '{}'))
+  if (rest.fed === UNKNOWN_FEED || command.length === 0) return unknown
+  if (command.some(word => mayStartCommand(word) || wordMayBeGit(word))) return unknown
+  return { at: rest.at, fed: { replace: rest.fed.replace ?? replace, append: true, hidden: true } }
+}
 
 /** A word the shell may split into several; xargs' `{}` is a literal, not a brace list. */
 const mayResplit = (word: string, splits: readonly string[]): boolean =>
