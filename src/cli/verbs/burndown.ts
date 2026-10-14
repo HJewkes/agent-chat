@@ -521,12 +521,21 @@ export const burndownUnstallVerb = defineVerb({
 
 export const burndownBriefApproveVerb = defineVerb({
   name: 'burndown.brief.approve',
-  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
-  args: z.object({ task: requiredString('task') }),
+  description:
+    "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when off plan",
+  args: z.object({ task: requiredString('task'), offPlanOk: z.string().optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
-    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  cli: {
+    positional: ['task'],
+    options: {
+      offPlanOk: {
+        long: '--off-plan-ok <reason>',
+        description: 'approve an off-plan task for owner-ordered work; the reason is logged as a task note',
+      },
+    },
+  },
+  async run({ task, offPlanOk }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()), offPlanOk)
   },
 })
 
