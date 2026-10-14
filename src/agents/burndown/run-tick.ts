@@ -59,11 +59,13 @@ import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import {
   heldClaims,
+  LEDGER_WAIT_MS,
   readLedger,
   withLedgerLock,
   writeLedger,
   type Claim,
   type Ledger,
+  type LockWait,
   type SeatState,
 } from './ledger.js'
 import {
@@ -211,6 +213,8 @@ export interface TickOptions {
   briefEdit?: ApprovePorts['edit']
   /** CC-1238: the `active-work task done` that closes a landed all-released parent; a test injects one that edits its fixture. */
   taskDone?: (slug: string, id: string) => void
+  /** CC-1181: a dry run's wait for the ledger lock; defaults to LEDGER_WAIT_MS. A real tick never waits. */
+  lockWait?: LockWait
 }
 
 interface ReaderFailure {
@@ -285,6 +289,12 @@ function gateTick(opts: TickOptions): Gate {
   return { config, head }
 }
 
+/** CC-1181: a dry run waited, so its refusal names how long; a real tick did not. */
+const lockRefusal = ({ holder, waited }: { holder: number; waited?: number }): string =>
+  waited === undefined
+    ? `another tick holds the ledger lock (pid ${holder}); did nothing`
+    : `another tick held the ledger lock (pid ${holder}) for the whole ${Math.round(waited / 1000)}s wait; did nothing`
+
 /** CC-1192: the summary row is appended after the lock is released, so its write never counts as lock-held time. */
 async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const monotonic = opts.monotonic ?? (() => performance.now())
@@ -292,14 +302,19 @@ async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const timer = stepTimer(monotonic)
   const gate = await timer.time('config', () => gateTick(opts))
   if ('done' in gate) return gate.done
-  const locked = await withLedgerLock(burndownLedgerPath(), async () => {
-    const lockedAt = monotonic()
-    const ran = await runTick(gate.config, opts, timer)
-    return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
-  })
+  const wait = opts.dryRun ? { wait: opts.lockWait ?? { waitMs: LEDGER_WAIT_MS } } : {}
+  const locked = await withLedgerLock(
+    burndownLedgerPath(),
+    async () => {
+      const lockedAt = monotonic()
+      const ran = await runTick(gate.config, opts, timer)
+      return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
+    },
+    wait,
+  )
   if (!locked.ran)
     return {
-      lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
+      lines: [...gate.head, lockRefusal(locked)],
       outcome: { kind: 'skipped' },
     }
   const { lines, summary, lockHeldMs, shadow } = locked.value
