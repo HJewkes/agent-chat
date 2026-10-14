@@ -403,6 +403,15 @@ Brokers on a temp-dir home never kick. A kicked tick runs with the timer job's e
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when the broker has them; without the user bus
 `systemctl --user` fails and the service check reads `not loaded` (CC-1144).
 
+A hand-run `burndown tick --once` from an agent's shell (`AGENT_CHAT_AGENT_ID` set) is a kick
+too (CC-1151). It sends the broker a `job_kick` frame and runs nothing in the agent's process,
+where the agent's `PATH`, `GH_*`, `HOME` and the like would steer it. The broker starts the
+tick through the same kicker, so the ledger-lock and no-overlap rules apply, and its output
+is in `<home>/burndown-kick.log`; the command prints only the broker's reply. `--dry-run` is
+refused from an agent shell: use `agent-chat burndown plan`. `seats watchdog` and
+`seats heartbeat-check` behave the same way, with output in `<home>/job-kick.log`. See
+`docs/human-caller-gate.md` for why.
+
 To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
 prints the median wait from a burndown implementer's exit to the next tick that dispatched.
 It reads `events.db` and `burndown-ticks.jsonl` and writes nothing. Each exit takes one
