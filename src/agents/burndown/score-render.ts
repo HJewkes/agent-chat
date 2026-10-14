@@ -12,6 +12,9 @@ import { readSlices } from './report.js'
 import { classifyTask, profileFor } from './classify-task.js'
 import { sharedDefaults, type ProjectShares } from './project-shares.js'
 import { readWorkflowTable, type Prior, type Profile, type WorkflowTable } from './workflow-table.js'
+import { readySet, type ReadyTask } from './ready-order.js'
+import { briefRefusal, type BriefCheck, type RefusalKind } from './eligibility.js'
+import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import {
   checkToday,
   scoreAll,
@@ -30,6 +33,8 @@ import {
 export interface ScoredRow extends PlannedRow {
   prior?: Prior
   profile?: Profile
+  /** CC-988: under an `on` brief gate, `ready` or the kind the gate refuses the row with. */
+  gate?: 'ready' | RefusalKind
 }
 
 export interface ScoredPlan {
@@ -54,6 +59,8 @@ export interface ScoredPlan {
   edgeLines?: string[]
   /** CC-637: the workflow table's lint problems; the rows then carry no prior. */
   workflowTable?: string[]
+  /** CC-988: set when `order` is the order an `on` brief gate walks (`gateOrdered`). */
+  briefGate?: 'on'
 }
 
 export interface ScoredPlanInputs {
@@ -207,6 +214,33 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
   return { plan: withPriors(withWeek, tasks, opts), tasks, policy }
 }
 
+/** CC-988: what an `on` brief gate checks a row against: the brief's age, the clock and the seat's scope. */
+export interface ScoredGate extends BriefCheck {
+  scope?: SeatScope
+}
+
+/**
+ * CC-988: `plan` in the order the tick walks under an `on` brief gate (CC-926), each row marked: brief-ready rows
+ * first in `readySet`'s order, then the rest in base order. `plan` should be read with `readySet: true`.
+ */
+export function gateOrdered(plan: ScoredPlan, tasks: readonly ScoredTask[], gate: ScoredGate): ScoredPlan {
+  const byKey = new Map(tasks.map(task => [`${task.slug}/${task.id}`, { ...task, tags: task.tags ?? [] }]))
+  const taskOf = (row: ScoredRow) => byKey.get(`${row.initiative}/${row.id}`)
+  const ready = readySet(plan.order, taskOf, gate, gate.scope)
+  const taken = new Set(ready)
+  const refused = plan.order
+    .filter(row => !taken.has(row))
+    .map(row => ({ ...row, gate: gateRefusal(row, taskOf(row), gate) }))
+  const order = [...ready.map(row => ({ ...row, gate: 'ready' as const })), ...refused]
+  return { ...plan, order, briefGate: 'on' }
+}
+
+function gateRefusal(row: ScoredRow, task: ReadyTask | undefined, gate: ScoredGate): RefusalKind {
+  if (task === undefined) return 'no-brief'
+  if (scopeRefusal(gate.scope, row.initiative, task) !== undefined) return 'out-of-scope'
+  return briefRefusal(task, gate)?.kind ?? 'no-brief'
+}
+
 function diskDefaults(defaults: ScoringDefaults, opts: ScoredPlanDiskOptions): ScoringDefaults {
   if (opts.shares !== undefined) return sharedDefaults(defaults, opts.shares)
   return opts.readySet === true ? { ...defaults, share_caps: {}, initiative_decay: 1 } : defaults
@@ -253,10 +287,11 @@ export function renderScoredRow(row: ScoredRow, rank: number): string {
   const plan = `tier=${row.tier} float=${optional(row.float, 1)} wsjf=${optional(row.wsjf, 2)}`
   const components = COMPONENT_KEYS.map(k => `${k}=${row.components[k].toFixed(2)}`).join(' ')
   const flags = row.stopShort.length > 0 ? ` stop-short:${row.stopShort.join(',')}` : ''
+  const gate = row.gate === undefined ? '' : ` gate=${row.gate}`
   return (
     `${String(rank).padStart(2)} ${fixed(row.effective, 5)} (${fixed(row.score, 5)}) ` +
     `${row.id.padEnd(9)} ${row.initiative.slice(0, 16).padEnd(16)} ${row.kind}/${row.kindSource}  ` +
-    `${components} est=${row.estimate ?? '-'} route=${row.route}${prior} ${plan}${flags} | ${row.title.slice(0, TITLE_WIDTH)}`
+    `${components} est=${row.estimate ?? '-'} route=${row.route}${prior} ${plan}${flags}${gate} | ${row.title.slice(0, TITLE_WIDTH)}`
   )
 }
 
@@ -264,6 +299,9 @@ function milestoneLine({ week, errors, absent }: NonNullable<ScoredPlan['milesto
   if (absent) return `milestones=${week} absent: no milestones/${week}.yml, order by tags alone`
   return `milestones=${week}, errors: ${errors.join('; ') || 'none'}`
 }
+
+export const GATE_HEADER =
+  'order: brief gate on, no decay or share caps, brief-ready first by priority (as the tick walks)'
 
 export function renderScored(plan: ScoredPlan): string[] {
   const refused = Object.entries(plan.refused)
@@ -274,6 +312,7 @@ export function renderScored(plan: ScoredPlan): string[] {
   const tagErrors = plan.tagErrors?.length ? [`task tags errors: ${plan.tagErrors.join('; ')}`] : []
   const epics = plan.epicsHeld?.length ? [`epics held out of tier 2: ${plan.epicsHeld.join('; ')}`] : []
   return [
+    ...(plan.briefGate === 'on' ? [GATE_HEADER] : []),
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
     ...table,
