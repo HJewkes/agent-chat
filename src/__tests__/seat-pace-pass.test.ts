@@ -6,6 +6,7 @@ import { readAccountBudget, type BudgetRead } from '../agents/budget.js'
 import type { WatchdogDoc } from '../agents/seats/io.js'
 import {
   appendReadingRows,
+  dayOpening,
   readPaceDoc,
   readingHistoryPath,
   writePaceDoc,
@@ -298,6 +299,28 @@ describe('the watchdog pass publishes pool pace', () => {
 
     expect(lines).toContain('Watchdog: pace not published: disk full')
     expect(h.doc.lastReadings?.alpha).toMatchObject({ sevenDay: 41, resetsAt: RESET_S * 1000 })
+  })
+})
+
+describe("the day's opening reading", () => {
+  const dayStartMs = new Date(2026, 9, 6, 7).getTime()
+  const row = (pool: string): ReadingRow => ({
+    ts: dayStartMs / 1000 - 600,
+    pool,
+    seven_day: 12,
+    five_hour: 30,
+    resets_at: RESET_S,
+    source: 'watchdog',
+    age_s: 60,
+  })
+
+  it('finds a row another member of the account wrote before the pools were merged', () => {
+    const query = { pool: 'claude', dayStartMs, sevenDay: 16, resetsAt: RESET_S * 1000 }
+
+    expect(dayOpening([row('personal')], { ...query, pools: ['claude', 'personal'] })).toEqual(
+      row('personal'),
+    )
+    expect(dayOpening([row('personal')], query)).toBeUndefined()
   })
 })
 
