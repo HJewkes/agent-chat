@@ -5,7 +5,7 @@
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question.
  */
-import { LIVE, NAME, parseShell, type SimpleCommand, unmark } from './shell-words.js'
+import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
 
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
 const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
@@ -307,17 +307,18 @@ function bodyEnd(text: string, from: number, open = '(', close = ')'): number {
   return text.length
 }
 
-// bash 5.3's `${ list; }` and `${| list; }`, which run `list` in the current shell; the splitter does not read them.
-const FUNSUB = new RegExp(`${LIVE}\\$\\{[\\s|]`, 'g')
+// bash 5.3's `${ list; }` and `${| list; }`. The splitter cuts their words at the first `}`, even a quoted one, so
+// their text cannot be read here; until a real funsub reader lands (CC-1327 a) the rest of the command is
+// reported whole as one text, unread, the same fail-closed signal as a compound key that never closes.
+const FUNSUB = new RegExp(`${LIVE}\\$\\{[\\s|]`)
 
-/** The body of each live funsub in the marked words, to its matching `}`, or the rest of the word when it has none. */
-const funsubBodies = (marked: readonly string[]): string[] =>
-  marked.flatMap(word =>
-    [...word.matchAll(FUNSUB)].map(match => {
-      const from = match.index + match[0].length
-      return unmark(word.slice(from, bodyEnd(word, from, '{', '}')))
-    }),
-  )
+/** The command's text from its first live funsub on, unmarked, or nothing when it holds none. */
+function funsubRest(marked: readonly string[]): string[] {
+  const at = marked.findIndex(word => FUNSUB.test(word))
+  if (at < 0) return []
+  const first = marked[at] ?? ''
+  return [unmark([first.slice(first.search(FUNSUB)), ...marked.slice(at + 1)].join(' '))]
+}
 
 function quoteEnd(text: string, open: number): number {
   const quote = text[open]
@@ -367,12 +368,9 @@ function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): 
  * or resolves it as a variable name (CC-1334), which the splitter never read as a command, across every
  * command of `parsed`, the whole output of `parseShell`. A live substitution is a command already, so it
  * is not listed. It takes the whole line so a compound array's elements, which follow its opener in the
- * list that holds it, cannot be missed by passing the wrong commands; a funsub's body is parsed here.
+ * list that holds it, cannot be missed by passing the wrong commands. A funsub is reported whole, from its `${` on.
  */
 export function arithSubstitutions(parsed: readonly SimpleCommand[]): string[] {
-  const bodies = parsed.flatMap(cmd => [
-    ...substitutionsOf(cmd, parsed),
-    ...funsubBodies(cmd.marked).flatMap(body => arithSubstitutions(parseShell(body))),
-  ])
+  const bodies = parsed.flatMap(cmd => [...substitutionsOf(cmd, parsed), ...funsubRest(cmd.marked)])
   return [...new Set(bodies)]
 }

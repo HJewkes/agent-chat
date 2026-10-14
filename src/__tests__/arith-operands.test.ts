@@ -177,10 +177,6 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     [`echo $(echo $(x=(['$(${P})']=1)))`, [P]],
     [`echo "$(echo "$(declare -ai x=('y[$(${P})]'))")"`, [P]],
     [`cat <(x=(['$(${P})']=1))`, [P]],
-    [`echo \${ x=(['$(${P})']=1); }`, [P]],
-    [`echo \${| x=(['$(${P})']=1); }`, [P]],
-    [`echo "\${ declare -ai x=('y[$(${P})]'); }"`, [P]],
-    [`echo \${ echo \${ x=([ '$(${P})' ]=1); }; }`, [P]],
     [`declare -n r='x[$(${P})]'`, [P]],
     [`local -n r='x[$(${P})]'`, [P]],
     [`typeset -n r='x[$(${P})]'`, [P]],
@@ -214,7 +210,6 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `declare -A x=(['k']='y[$(${P})]')`,
     `declare -ai x=(1); echo 'y[$(${P})]'`,
     `x=(a b) && echo '[$(${P})]=1'`,
-    `echo \${ echo 'y[$(${P})]'; }`,
     `echo '\${ x=([k]=1); }' 'x[$(${P})]'`,
     `declare r='x[$(${P})]'`,
     `[ -v x ]`,
@@ -224,6 +219,26 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `! test 'x[$(${P})]' -eq 1`,
     `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
+    expect(bodiesOf(line)).toEqual([])
+  })
+})
+
+// The splitter cuts a funsub at its first `}`, even a quoted one, so the rest of the command is reported unread.
+describe('arithSubstitutions reports a funsub unread, from its ${ on', () => {
+  it.each([
+    "echo ${ x=([$'}']=1); }",
+    "echo ${ x=([$'\\'}']=1); }",
+    'echo ${ x=([$"}"]=1); }',
+    'echo ${ x=(["$(echo "}")"]=1); }',
+    'echo "${ x=([\'}\']=1); }"',
+    "y=${ x=(['}']=1); }",
+    "echo ${| x=(['$(P)']=1); }",
+    'echo ${ echo ${ x=([k]=1); }; }',
+  ])('%s', line => {
+    expect(bodiesOf(line).some(body => body.startsWith('${'))).toBe(true)
+  })
+
+  it.each(['echo ${x}', 'echo "${x[1]}"', "echo '${ x; }'", 'echo ${#x}'])('%s is no funsub', line => {
     expect(bodiesOf(line)).toEqual([])
   })
 })
