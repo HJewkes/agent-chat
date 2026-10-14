@@ -26,14 +26,18 @@ const TRAP_PRINT = /^-[A-Za-z]*[plP]/
 // A signal named on its own resets it: EXIT, SIGINT, 0, RTMIN+1.
 const SIGNAL = /^(?:SIG)?[A-Za-z0-9]+(?:[+-][0-9]+)?$/
 
-// A leading `~/` or `~user/` expands to a home directory, which settles where the word points.
-const HOME_TILDE = /^\0~(?:[A-Za-z_][\w.-]*)?(?=\/|$)/
-
 /**
  * The shell settles this word at run time, so its literal text says nothing about it. Every reader here
- * gives such a word its fail-closed reading: a possible action, definition, blank end or stream.
+ * gives such a word its fail-closed reading: a possible action, definition, blank end or stream. A `~`
+ * counts: HOME and zsh's `hash -d` names are set by the command line, so `trap ~ EXIT` can run anything.
  */
-const isLive = (word: string): boolean => word.replace(HOME_TILDE, '').includes(LIVE)
+const isLive = (word: string): boolean => word.includes(LIVE)
+
+// A leading `~/` or `~user/` is a home directory, which `isStreamPath` still reads as a path base.
+const HOME_TILDE = /^\0~(?:[A-Za-z_][\w.-]*)?(?=\/|$)/
+
+/** As `isLive`, but where only the stream a path names matters: a home base is classified by its tail. */
+const isLivePath = (word: string): boolean => isLive(word.replace(HOME_TILDE, ''))
 
 /** The words after the leading options of `words`, which start at the command word, and those options. */
 function splitOptions(words: readonly string[]): { options: string[]; operands: string[] } {
@@ -95,6 +99,12 @@ function flagsUnsure(operands: readonly string[]): boolean[] {
 }
 
 /**
+ * bash expands a `~` at the start of an alias value or after a `:` in it, as in an assignment. The splitter
+ * marks a `~` only at the start of a word and drops the quoting there, so such a `~` counts quoted or not.
+ */
+const isLiveValue = (value: string): boolean => isLive(value) || /(?:^|:)~/.test(value)
+
+/**
  * The definitions an `alias` makes, in bash or zsh, skipping the bare names it prints. `-g` and `-s` mark
  * them global or suffix, as does a live operand that may have expanded to either flag. An operand whose
  * name part is live may expand to any definition, so it is returned whole, as its own name and value.
@@ -110,7 +120,7 @@ export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
     const value = word.slice(eq + 1)
     const global = unsure[at] === true || hasFlag(options, 'g')
     const suffix = unsure[at] === true || hasFlag(options, 's')
-    const blank = isLive(value) || /[ \t\n]$/.test(unmark(value))
+    const blank = isLiveValue(value) || /[ \t\n]$/.test(unmark(value))
     return [{ name: word.slice(0, eq), value, global, suffix, blank }]
   })
 }
@@ -145,5 +155,5 @@ const isDeviceOrProc = (normal: string): boolean =>
  * every operand, so `diff <(a) <(b)` is true too; the guard asks only of a shell, `.` or `source`.
  */
 export function streamScript(cmd: SimpleCommand): boolean {
-  return cmd.marked.some((marked, at) => at > 0 && (isLive(marked) || isStreamPath(unmark(marked))))
+  return cmd.marked.some((marked, at) => at > 0 && (isLivePath(marked) || isStreamPath(unmark(marked))))
 }

@@ -44,6 +44,14 @@ describe('trapActions', () => {
     expect(trapActions(markedOf('trap "$X" EXIT'))).toEqual([`${LIVE}$X`, 'EXIT'])
   })
 
+  it.each([
+    ['trap ~ EXIT', [`${LIVE}~`, 'EXIT']],
+    ['trap ~nd EXIT', [`${LIVE}~nd`, 'EXIT']],
+    ['trap ~/x EXIT', [`${LIVE}~/x`, 'EXIT']],
+  ])('%s returns every operand, since HOME or a named directory sets the action', (line, actions) => {
+    expect(trapActions(markedOf(line))).toEqual(actions)
+  })
+
   it('reads only a trap command', () => {
     expect(trapActions(wordsOf("echo 'a' EXIT"))).toEqual([])
   })
@@ -115,8 +123,23 @@ describe('aliasDefinitions', () => {
     ])
   })
 
-  it('reads a home path value as settled', () => {
-    expect(aliasDefinitions(markedOf('alias x=~/bin/tool'))).toMatchObject([{ name: 'x', blank: false }])
+  it.each(['alias x=~', 'alias x=~/y', 'alias x=a:~/b'])(
+    '%s reads the HOME it expands to as blank-ended',
+    line => {
+      expect(aliasDefinitions(markedOf(line))).toMatchObject([{ name: 'x', blank: true }])
+    },
+  )
+
+  it('keeps a value with no ~ at its start or after a colon settled', () => {
+    expect(aliasDefinitions(markedOf('alias x=a~b'))).toMatchObject([{ name: 'x', blank: false }])
+  })
+
+  it.each([
+    ['alias ~ X=echo', 'X'],
+    ['alias ~nd X=echo', 'X'],
+  ])('%s marks %s global and suffix, since ~ may expand to -g', (line, name) => {
+    const definition = aliasDefinitions(markedOf(line)).find(found => found.name === name)
+    expect(definition).toMatchObject({ value: 'echo', global: true, suffix: true })
   })
 })
 
