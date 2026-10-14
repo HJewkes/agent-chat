@@ -340,20 +340,23 @@ Usage: agent-chat burndown brief [options] [command]
 task brief lifecycle (item 179)
 
 Options:
-  -h, --help      display help for command
+  -h, --help                display help for command
 
 Commands:
-  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
-                  plan file
-  help [command]  display help for command
+  approve [options] <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused
+                            without a plan file or when off plan
+  help [command]            display help for command
 
 === agent-chat burndown brief approve
 Usage: agent-chat burndown brief approve [options] <task>
 
-promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when
+off plan
 
 Options:
-  -h, --help  display help for command
+  --off-plan-ok <reason>  approve an off-plan task for owner-ordered work; the reason is logged as a
+                          task note
+  -h, --help              display help for command
 
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
