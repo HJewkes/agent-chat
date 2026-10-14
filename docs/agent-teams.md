@@ -1223,11 +1223,12 @@ fails, the identity exists in a `spawning` state with a failure appended — whi
 is what you want when debugging why a pane never opened. The reverse order loses
 failed spawns entirely.
 
-**On Linux each launch gets its own TMPDIR** (CC-901), `/tmp/ac-<name>-<launcher pid>`,
-removed when `run-agent` exits and by the broker's sweep. A reviewer spawn (CC-1184) gets it
-on disk instead, at `~/.cache/agent-chat/tmp/ac-<name>-<launcher pid>`, with the same exit
-removal and sweep. Its review checkouts under `$TMPDIR/<name>` each carry an install, and a
-few at once fill the inodes of the 1M-inode /tmp tmpfs. Implementers and macOS are unchanged.
+**On Linux each launch gets its own TMPDIR** (CC-901), on disk at
+`~/.cache/agent-chat/tmp/ac-<name>-<launcher pid>` (CC-1184 for reviewers, CC-1264 for every
+launch), removed when `run-agent` exits and by the broker's sweep, which still scans /tmp for
+dirs made before CC-1264. /tmp is a 1M-inode tmpfs that every agent's harness output shares, so
+one runaway install there starves them all; on the home disk an install also hardlinks from the
+pnpm store on the same filesystem. macOS is unchanged.
 
 #### 8.1 Exit detection differs by surface, and presence papers over it
 

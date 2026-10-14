@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { REPO_SKILLS_RULE, selfGrant } from '../agents/skill-self-grant.js'
+import { gitCommonDir, REPO_SKILLS_RULE, type SelfGrantPin, selfGrant } from '../agents/skill-self-grant.js'
 
 /**
  * CC-694 b. The hook may answer `allow` for a repo skill write without the owner, so what
@@ -19,19 +19,35 @@ function tmpDir(prefix: string): string {
   return fs.realpathSync(dir)
 }
 
-/** A linked worktree made by `git worktree add`, so git itself registers it. */
-function linkedWorktree(): string {
+function initRepo(): string {
   const repo = tmpDir('agent-chat-skill-repo-')
-  const git = (...args: string[]): void => {
-    execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
-      stdio: 'ignore',
-    })
-  }
-  git('init', '-q')
-  git('commit', '-q', '--allow-empty', '-m', 'init')
+  gitIn(repo, 'init', '-q')
+  gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  return repo
+}
+
+function gitIn(repo: string, ...args: string[]): void {
+  execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+    stdio: 'ignore',
+  })
+}
+
+/** A linked worktree made by `git worktree add`, so git itself registers it. */
+function linkedWorktree(repo = initRepo()): string {
   const root = path.join(tmpDir('agent-chat-skill-wt-'), 'wt')
-  git('worktree', 'add', '-q', root)
+  gitIn(repo, 'worktree', 'add', '-q', '-b', path.basename(path.dirname(root)), root)
   return fs.realpathSync(root)
+}
+
+/** The pin launch records: the root and the common dir git resolves for it then. */
+function pinOf(root: string): SelfGrantPin {
+  return { root, commonDir: gitCommonDir(root) ?? path.join(root, '.git') }
+}
+
+/** Swap `root` for a symlink to `target` after the pin was taken, as a planted link would. */
+function swapForLink(root: string, target: string): void {
+  fs.renameSync(root, `${root}.aside`)
+  fs.symlinkSync(target, root)
 }
 
 /** Hand-written pointers that mimic a registered worktree without git knowing it. */
@@ -72,9 +88,11 @@ describe('self-granting a repo skill write in the own worktree', () => {
     const root = linkedWorktree()
     const skillFile = path.join(root, '.claude', 'skills', 'titan-floor', 'SKILL.md')
 
-    expect(selfGrant(root, 'Write', write(skillFile))).toBe(true)
-    expect(selfGrant(root, 'Edit', { file_path: skillFile, old_string: 'a', new_string: 'b' })).toBe(true)
-    expect(selfGrant(root, 'MultiEdit', { file_path: skillFile, edits: [] })).toBe(true)
+    expect(selfGrant(pinOf(root), 'Write', write(skillFile))).toBe(true)
+    expect(selfGrant(pinOf(root), 'Edit', { file_path: skillFile, old_string: 'a', new_string: 'b' })).toBe(
+      true,
+    )
+    expect(selfGrant(pinOf(root), 'MultiEdit', { file_path: skillFile, edits: [] })).toBe(true)
   })
 
   it('allows a nested file in an existing skill directory', () => {
@@ -82,22 +100,23 @@ describe('self-granting a repo skill write in the own worktree', () => {
     const refs = path.join(root, '.claude', 'skills', 'probe', 'references')
     fs.mkdirSync(refs, { recursive: true })
 
-    expect(selfGrant(root, 'Write', write(path.join(refs, 'notes.md')))).toBe(true)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(refs, 'notes.md')))).toBe(true)
   })
 
-  it('allows when the root is given through a symlink to the worktree', () => {
+  it('refuses a root given through a symlink, even to its own worktree', () => {
     const root = linkedWorktree()
     const alias = path.join(tmpDir('agent-chat-skill-alias-'), 'wt')
     fs.symlinkSync(root, alias)
+    const pin = { root: alias, commonDir: pinOf(root).commonDir }
 
-    expect(selfGrant(alias, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(true)
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
   })
 
   it('refuses a tree whose hand-written pointers git does not know', () => {
     const root = forgedWorktree()
     const skillFile = path.join(root, '.claude', 'skills', 'probe', 'SKILL.md')
 
-    expect(selfGrant(root, 'Write', write(skillFile))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(skillFile))).toBe(false)
   })
 
   it('exports the owner-approved rule string as the opt-in switch', () => {
@@ -106,49 +125,78 @@ describe('self-granting a repo skill write in the own worktree', () => {
 })
 
 describe('writes the self-grant still sends to the owner', () => {
+  it('refuses a skill write after the worktree is swapped for a symlink to another real worktree', () => {
+    const root = linkedWorktree()
+    const pin = pinOf(root)
+    const other = linkedWorktree()
+    swapForLink(root, other)
+
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+  })
+
+  it('refuses after the swap even when the other worktree shares the pinned repository', () => {
+    const repo = initRepo()
+    const root = linkedWorktree(repo)
+    const pin = pinOf(root)
+    const sibling = linkedWorktree(repo)
+    expect(gitCommonDir(sibling)).toBe(pin.commonDir)
+    swapForLink(root, sibling)
+
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+  })
+
+  it("refuses when git's common dir for the root differs from the pinned one", () => {
+    const root = linkedWorktree()
+    const pin = { root, commonDir: pinOf(linkedWorktree()).commonDir }
+
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+  })
+
   it('refuses other .claude files and subtrees', () => {
     const root = linkedWorktree()
 
     for (const rel of ['.claude/settings.json', '.claude/agents/x.md', '.claude/commands/x.md']) {
-      expect(selfGrant(root, 'Write', write(path.join(root, rel))), rel).toBe(false)
+      expect(selfGrant(pinOf(root), 'Write', write(path.join(root, rel))), rel).toBe(false)
     }
   })
 
   it('refuses the skills directory itself and a file directly in it', () => {
     const root = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/probe')))).toBe(false)
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/probe')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/SKILL.md')))).toBe(false)
   })
 
   it('refuses a skill name Claude Code would not load', () => {
     const root = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/.hidden/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/.hidden/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses a path with a .. segment even when it would land in the subtree', () => {
     const root = linkedWorktree()
     const sneaky = `${root}/.claude/skills/probe/../probe/SKILL.md`
 
-    expect(selfGrant(root, 'Write', write(sneaky))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(sneaky))).toBe(false)
   })
 
   it('refuses a relative file path', () => {
     const root = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', write('.claude/skills/probe/SKILL.md'))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write('.claude/skills/probe/SKILL.md'))).toBe(false)
   })
 
   it('refuses a second .claude segment below the skill directory', () => {
     const root = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/x/.claude/settings.json')))).toBe(
-      false,
-    )
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/x/.Claude/settings.json')))).toBe(
-      false,
-    )
+    expect(
+      selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/x/.claude/settings.json'))),
+    ).toBe(false)
+    expect(
+      selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/x/.Claude/settings.json'))),
+    ).toBe(false)
   })
 
   it('refuses a skill directory symlinked outside the worktree', () => {
@@ -157,7 +205,9 @@ describe('writes the self-grant still sends to the owner', () => {
     fs.mkdirSync(path.join(root, '.claude', 'skills'), { recursive: true })
     fs.symlinkSync(outside, path.join(root, '.claude', 'skills', 'escape'))
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/escape/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/escape/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses a skill file that is a symlink outside the worktree', () => {
@@ -168,7 +218,7 @@ describe('writes the self-grant still sends to the owner', () => {
     fs.mkdirSync(skillDir, { recursive: true })
     fs.symlinkSync(outside, path.join(skillDir, 'SKILL.md'))
 
-    expect(selfGrant(root, 'Write', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
   })
 
   it('refuses a dangling symlink, whose write would create its target', () => {
@@ -177,26 +227,32 @@ describe('writes the self-grant still sends to the owner', () => {
     fs.mkdirSync(skillDir, { recursive: true })
     fs.symlinkSync(path.join(tmpDir('agent-chat-skill-outside-'), 'new.md'), path.join(skillDir, 'SKILL.md'))
 
-    expect(selfGrant(root, 'Write', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
   })
 
   it('refuses a skill write into another worktree', () => {
     const root = linkedWorktree()
     const other = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', write(path.join(other, '.claude/skills/probe/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(other, '.claude/skills/probe/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses when the root is a main checkout', () => {
     const root = mainCheckout()
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses when the root is a submodule rather than a registered worktree', () => {
     const root = submodule()
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses a worktree whose admin dir points back at a different checkout', () => {
@@ -204,7 +260,9 @@ describe('writes the self-grant still sends to the owner', () => {
     const adminDir = fs.readFileSync(path.join(root, '.git'), 'utf8').slice('gitdir: '.length).trim()
     fs.writeFileSync(path.join(adminDir, 'gitdir'), `${path.join(linkedWorktree(), '.git')}\n`)
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses a skill file hard-linked to a file outside the worktree', () => {
@@ -215,7 +273,7 @@ describe('writes the self-grant still sends to the owner', () => {
     fs.mkdirSync(skillDir, { recursive: true })
     fs.linkSync(outside, path.join(skillDir, 'SKILL.md'))
 
-    expect(selfGrant(root, 'Edit', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Edit', write(path.join(skillDir, 'SKILL.md')))).toBe(false)
   })
 
   it('allows editing an existing skill file with a single link', () => {
@@ -224,27 +282,31 @@ describe('writes the self-grant still sends to the owner', () => {
     fs.mkdirSync(path.dirname(skillFile), { recursive: true })
     fs.writeFileSync(skillFile, 'x')
 
-    expect(selfGrant(root, 'Edit', write(skillFile))).toBe(true)
+    expect(selfGrant(pinOf(root), 'Edit', write(skillFile))).toBe(true)
   })
 
   it('refuses when the root does not exist', () => {
     const root = path.join(tmpDir('agent-chat-skill-gone-'), 'missing')
 
-    expect(selfGrant(root, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(
+      false,
+    )
   })
 
   it('refuses tools other than Write, Edit and MultiEdit', () => {
     const root = linkedWorktree()
     const skillFile = path.join(root, '.claude/skills/probe/SKILL.md')
 
-    expect(selfGrant(root, 'Bash', { command: `echo x > ${skillFile}`, file_path: skillFile })).toBe(false)
-    expect(selfGrant(root, 'NotebookEdit', { file_path: skillFile })).toBe(false)
+    expect(selfGrant(pinOf(root), 'Bash', { command: `echo x > ${skillFile}`, file_path: skillFile })).toBe(
+      false,
+    )
+    expect(selfGrant(pinOf(root), 'NotebookEdit', { file_path: skillFile })).toBe(false)
   })
 
   it('refuses tool input without a string file_path', () => {
     const root = linkedWorktree()
 
-    expect(selfGrant(root, 'Write', undefined)).toBe(false)
-    expect(selfGrant(root, 'Write', { file_path: 42 })).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', undefined)).toBe(false)
+    expect(selfGrant(pinOf(root), 'Write', { file_path: 42 })).toBe(false)
   })
 })
