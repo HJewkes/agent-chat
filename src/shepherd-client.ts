@@ -133,14 +133,68 @@ export async function shepherdRowsAsync(
 
 /** `shepherd status --json` output as rows; undefined when it is not a JSON array. */
 export function parseShepherdRows(stdout: string, log: Log = logEvent): ShepherdRow[] | undefined {
-  let parsed: unknown
+  const parsed = parseJson(stdout)
+  return Array.isArray(parsed) ? parsed.flatMap((raw, index) => readRow(raw, index, log)) : undefined
+}
+
+function parseJson(stdout: string): unknown {
   try {
-    parsed = JSON.parse(stdout)
+    return JSON.parse(stdout) as unknown
   } catch {
     return undefined
   }
-  if (!Array.isArray(parsed)) return undefined
-  return parsed.flatMap((raw, index) => readRow(raw, index, log))
+}
+
+/** Shepherd's review spawn gate: `cap` is the live `review.maxConcurrent`; `running` is absent when its roster was unread. */
+export interface ReviewSlots {
+  cap: number
+  running?: string[]
+}
+
+export interface ShepherdStatus {
+  rows: ShepherdRow[]
+  /** Absent from an older Shepherd, or from one whose answer carried no readable slots. */
+  reviewSlots?: ReviewSlots
+}
+
+/** CC-1106: `--deploy` wraps the rows as `{rows, deploy, reviewSlots}`; `--all` still lists finished runs under it. */
+export const SHEPHERD_STATUS_DEPLOY_ARGS = [...SHEPHERD_STATUS_ALL_ARGS, '--deploy']
+
+const ReviewSlotsBody = z.object({
+  cap: z.number().int().nonnegative(),
+  running: z.array(z.string()).optional(),
+  rosterError: z.string().optional(),
+})
+
+/** Every shepherded PR plus Shepherd's review slots, in one read; undefined when Shepherd is down or the answer is malformed. */
+export function shepherdStatus(exec: Runner = run, log: Log = logEvent): ShepherdStatus | undefined {
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_DEPLOY_ARGS)
+  return result.status === 0 ? parseShepherdStatus(result.stdout, log) : undefined
+}
+
+/**
+ * `shepherd status --json --deploy` output. A bare array (an older Shepherd) parses with no slots. A `rosterError`
+ * keeps `cap` and drops `running`, since a failed roster read says nothing about how many reviewers run.
+ */
+export function parseShepherdStatus(stdout: string, log: Log = logEvent): ShepherdStatus | undefined {
+  const parsed = parseJson(stdout)
+  const body = (Array.isArray(parsed) ? { rows: parsed } : parsed) as
+    { rows?: unknown; reviewSlots?: unknown } | null | undefined
+  if (typeof body !== 'object' || body === null || !Array.isArray(body.rows)) return undefined
+  const rows = body.rows.flatMap((raw: unknown, index) => readRow(raw, index, log))
+  const slots = reviewSlotsOf(body.reviewSlots, log)
+  return slots === undefined ? { rows } : { rows, reviewSlots: slots }
+}
+
+function reviewSlotsOf(raw: unknown, log: Log): ReviewSlots | undefined {
+  if (raw === undefined) return undefined
+  const parsed = ReviewSlotsBody.safeParse(raw)
+  if (!parsed.success) {
+    log('shepherd_review_slots_unread', { reason: parsed.error.issues.map(i => i.message).join('; ') })
+    return undefined
+  }
+  const { cap, running, rosterError } = parsed.data
+  return running === undefined || rosterError !== undefined ? { cap } : { cap, running }
 }
 
 function readRow(raw: unknown, index: number, log: Log): ShepherdRow[] {
