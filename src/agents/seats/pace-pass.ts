@@ -90,6 +90,8 @@ export function publishPace(store: PaceStore, rows: readonly PoolPace[], nowMs: 
 
 export interface DayOpeningQuery {
   pool: string
+  /** CC-1289: every pool on `pool`'s account; rows written under any of them before the merge count. */
+  pools?: readonly string[]
   dayStartMs: number
   /** The pool's current seven_day and the epoch ms its window resets. */
   sevenDay: number
@@ -112,9 +114,10 @@ const sameWindow = (row: ReadingRow, query: DayOpeningQuery): boolean =>
  * within a day of it, else the day's earliest. None when that row read another seven_day window.
  */
 export function dayOpening(rows: readonly ReadingRow[], query: DayOpeningQuery): ReadingRow | undefined {
-  const { pool, dayStartMs } = query
+  const { dayStartMs } = query
+  const pools = query.pools ?? [query.pool]
   const own = rows.filter(
-    row => row.pool === pool && row.ts * 1000 > dayStartMs - DAY_OPENING_MAX_LOOKBACK_MS,
+    row => pools.includes(row.pool) && row.ts * 1000 > dayStartMs - DAY_OPENING_MAX_LOOKBACK_MS,
   )
   const before = own.filter(row => row.ts * 1000 <= dayStartMs).sort((a, b) => b.ts - a.ts)[0]
   const opening = before ?? own.filter(row => row.ts * 1000 > dayStartMs).sort((a, b) => a.ts - b.ts)[0]
