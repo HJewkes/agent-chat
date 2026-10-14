@@ -30,7 +30,14 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
-import { findClauses, type FindClause } from './run-wrappers.js'
+import {
+  findClauses,
+  holdsReplacement,
+  parallelCall,
+  type FindClause,
+  type ParallelCall,
+  type ParallelInputs,
+} from './run-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -177,6 +184,8 @@ export const REASONS = {
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
+  parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
+  parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
@@ -221,6 +230,8 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+/** GNU parallel and its env_parallel front end, which run their command words as a shell script. */
+const PARALLELS: ReadonlySet<string> = new Set(['parallel', 'env_parallel'])
 const OPTION_WRAPPERS = [
   'exec',
   'nice',
@@ -264,6 +275,7 @@ const CHECKED_NAMES = new Set([
   ...SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
+  ...PARALLELS,
   ...['function', 'eval', 'git', 'gh', 'agent-chat', 'find'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
@@ -2034,6 +2046,73 @@ function checkEval(
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
+const DEFAULT_REPLACEMENT = /\{[^{}\s]*\}/
+
+/** `text` cut at each replacement string parallel fills, the `{}` family and any `-I`-style one. */
+function cutAtReplacements(text: string, custom: readonly string[]): string[] {
+  let parts = text.split(DEFAULT_REPLACEMENT)
+  for (const s of custom.filter(s => s !== '')) parts = parts.flatMap(part => part.split(s))
+  return parts
+}
+
+const singleQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
+
+/**
+ * The text GNU parallel hands its shell, with `$@` for the inputs it fills in: in place of each
+ * replacement string, or appended when no word holds one parallel reads as such (with `-I` set,
+ * `{}` is a plain word). Under `-q` each word is quoted and each input stays one word.
+ */
+function parallelScript(words: readonly string[], call: ParallelCall): string {
+  const custom = call.replaceStrings
+  const fills = (word: string): boolean =>
+    custom.length > 0 ? custom.some(s => word.includes(s)) : holdsReplacement(word)
+  const input = call.quote ? '"$@"' : '$@'
+  const script = words
+    .map(word => {
+      const parts = cutAtReplacements(word, custom)
+      return call.quote ? parts.map(singleQuote).join(input) : parts.join(input)
+    })
+    .join(' ')
+  return words.some(fills) ? script : `${script} ${input}`
+}
+
+/** Whether the shell would read a `$@` in `script` as literal text, inside quotes or after a backslash. */
+const quotesInput = (script: string): boolean =>
+  parseShell(script).some(cmd => cmd.marked.some(word => word.replaceAll(XARGS_ARGS, '').includes('$@')))
+
+/** Checks parallel's no-command form, where each input is a command line of its own. */
+function checkParallelInputs(inputs: ParallelInputs, ctx: GuardContext, scope: Scope, depth: number) {
+  if (inputs.kind === 'unread' || inputs.groups.length !== 1)
+    return scope.namesGit ? REASONS.hiddenScript : undefined
+  return firstReason(inputs.groups[0] ?? [], input => checkAt(input, ctx, scope, depth + 1))
+}
+
+/**
+ * Checks what GNU parallel or env_parallel runs: its command joined into a shell script, or with no
+ * command each input. On a line that names git or gh, an option it cannot read, a command word it
+ * cannot resolve, or an input the shell would take as literal text is a deny.
+ */
+function checkParallel(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const call = parallelCall(marked, cmd.splits)
+  if ('unknownOption' in call) return scope.namesGit ? REASONS.parallelOption : undefined
+  if (call.command.length === 0) return checkParallelInputs(call.inputs, ctx, scope, depth)
+  const plain = call.command.map(word => word.replaceAll(BRACE_PAIR, '{}'))
+  const words = plain.map(word => resolveWord(word, cmd, ctx, scope))
+  if (words.includes(undefined) && scope.namesGit) return REASONS.hiddenScript
+  const script = parallelScript(
+    words.map((word, i) => word ?? unmark(plain[i] as string)),
+    call,
+  )
+  if (scope.namesGit && quotesInput(script)) return REASONS.parallelQuoted
+  return checkAt(script, ctx, scope, depth + 1)
+}
+
 /** Whether unwrapping only dropped leading words, rather than splitting new ones out as `env -S` does. */
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
@@ -2072,6 +2151,7 @@ function checkSimple(
     return checkShell(args, cmd.stdin, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
+  if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh')
