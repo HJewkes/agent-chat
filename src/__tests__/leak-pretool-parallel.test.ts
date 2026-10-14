@@ -60,6 +60,31 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
   )
 
   it.each([
+    'parallel {} ::: git ::: push ::: --no-verify',
+    'parallel -I X X ::: git ::: push ::: --no-verify',
+    "parallel {} ::: 'git push --no-verify'",
+    "parallel {} --no-verify ::: 'git push'",
+    "parallel 'true; {}' ::: 'git push --no-verify'",
+    "parallel -q {} ::: 'git push --no-verify'",
+  ])('denies an input that stands as the command: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.hiddenCommand)
+  })
+
+  describe('-q quotes each command word and keeps each input one word', () => {
+    it.each([
+      ['parallel -q git push {} ::: --no-verify', REASONS.xargsPush],
+      ['parallel -q git push x{}y ::: a', REASONS.xargsPush],
+      ['parallel -q git push "it\'s" ::: --no-verify', REASONS.xargsPush],
+      ["parallel -q 'git push' --no-verify ::: a", undefined],
+      ["parallel -q 'git push --no-verify' ::: a", undefined],
+      ['parallel -q git log "a \'{}\' b" ::: --no-verify', undefined],
+      ["parallel -q echo 'a;git push --no-verify' ::: x", undefined],
+    ])('reads %s', (command, reason) => {
+      expect(checkCommand(command, ctx)).toBe(reason)
+    })
+  })
+
+  it.each([
     'parallel gzip ::: a b',
     'ls | parallel -j4 gzip',
     'parallel git log -1 {} ::: a',

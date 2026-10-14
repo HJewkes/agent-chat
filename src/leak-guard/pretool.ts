@@ -2080,6 +2080,13 @@ function parallelScript(words: readonly string[], call: ParallelCall): string {
 const quotesInput = (script: string): boolean =>
   parseShell(script).some(cmd => cmd.marked.some(word => word.replaceAll(XARGS_ARGS, '').includes('$@')))
 
+/** Whether an input stands where `script` names a command, as `parallel {} ::: git ::: push` puts it; like xargs' fed head. */
+const inputRuns = (script: string): boolean =>
+  parseShell(script).some(cmd => {
+    const unwrapped = unwrap(cmd.marked)
+    return !('reason' in unwrapped) && (unwrapped.words[0] ?? '').includes(XARGS_ARGS)
+  })
+
 /** Checks parallel's no-command form, where each input is a command line of its own. */
 function checkParallelInputs(inputs: ParallelInputs, ctx: GuardContext, scope: Scope, depth: number) {
   if (inputs.kind === 'unread' || inputs.groups.length !== 1)
@@ -2110,6 +2117,7 @@ function checkParallel(
     call,
   )
   if (scope.namesGit && quotesInput(script)) return REASONS.parallelQuoted
+  if (inputRuns(script)) return REASONS.hiddenCommand
   return checkAt(script, ctx, scope, depth + 1)
 }
 
