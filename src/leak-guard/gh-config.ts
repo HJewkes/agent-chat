@@ -44,7 +44,10 @@ function positionals(rest: readonly (string | undefined)[]): Positionals | 'unre
       const flag = readFlag(word)
       if (flag === 'unknown') return 'unread'
       if (flag === 'help') return rest.slice(0, i).includes(undefined) ? 'unread' : 'help'
-      if (flag === 'hostNext') hostUnread ||= i + 1 < rest.length && rest[++i] === undefined
+      if (flag === 'hostNext' && i + 1 < rest.length) {
+        const host = rest[++i]
+        if (host === undefined) hostUnread = true
+      }
     } else words.push(word)
   }
   return { words, hostUnread }

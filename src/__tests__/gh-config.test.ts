@@ -44,8 +44,19 @@ describe('gh config set the guard cannot read', () => {
     expect(ghConfigProgram(rest)).toEqual({ kind: 'unread' })
   })
 
-  it('keeps a program write past an unresolved host', () => {
-    expect(ghConfigProgram(['-h', undefined, 'pager', 'x'])).toEqual({ kind: 'program', value: 'x' })
+  it.each([
+    [['-h', undefined, 'pager', 'x'], 'x'],
+    [['--host', undefined, '--host', 'editor', 'pager', PUSH], PUSH],
+    [['--host', undefined, '-h', 'pager', 'editor', 'vim'], 'vim'],
+    [['-h', 'a', '--host', undefined, '-h', 'b', 'pager', 'x'], 'x'],
+  ])('keeps a program write past an unresolved host in %j', (rest, value) => {
+    expect(ghConfigProgram(rest)).toEqual({ kind: 'program', value })
+  })
+
+  it('reads a later host flag past an unresolved host as taking its own word', () => {
+    expect(ghConfigProgram(['-h', undefined, '-h', 'editor', 'git_protocol', 'x'])).toEqual({
+      kind: 'unread',
+    })
   })
 })
 
@@ -55,6 +66,7 @@ describe('gh config set that writes no program key', () => {
     [['prompt', 'disabled']],
     [['git_protocol', undefined]],
     [['-h', 'pager', 'git_protocol', 'ssh']],
+    [['-h', 'a', '--host', 'pager', 'git_protocol', 'ssh']],
     [['--help', 'pager', 'x']],
     [['pager', 'x', '--help']],
     [['pager']],
