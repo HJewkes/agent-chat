@@ -79,6 +79,27 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBe('unreadable')
   })
 
+  // bash 5.3.9 opens a group at a `{` before any metacharacter, so its `}` is not the close.
+  it.each([
+    'echo "${ {(:); }; git push --no-verify; }"',
+    'echo "${ if true; then {(:); }; fi; git push --no-verify; }"',
+    'echo "${ ! {(:); }; git push --no-verify; }"',
+    'echo "${ time {(:); }; git push --no-verify; }"',
+    'echo "${ f() {(:); }; git push --no-verify; }"',
+    'echo "${ for ((;;)) {(:); break; }; git push --no-verify; }"',
+    'echo "${ case x in (x) {(:); };; esac; git push --no-verify; }"',
+    'echo "${ true && {(:); }; git push --no-verify; }"',
+    'echo "${ { {(:); }; }; git push --no-verify; }"',
+    'echo "${ coproc echo {(:); }; git push --no-verify; }"',
+    'echo "${ {<>/dev/null :; }; git push --no-verify; }"',
+    'echo "${|{(:); }; git push --no-verify; }"',
+  ])('%j reads the push past a { before a metacharacter', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(true)
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {

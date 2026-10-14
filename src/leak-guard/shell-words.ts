@@ -135,7 +135,7 @@ const BRACE_PREFIX = new Set([
   'coproc',
 ])
 
-// A `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
+// A `{` or `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
 const METACHAR = /[\s;&|()<>]/
 
 function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
@@ -286,7 +286,7 @@ class ShellLexer {
     const next = this.src[this.pos + 1]
     const command = this.cur.words.length === 0
     if (c === '{') {
-      if (next === undefined || !' \t\n'.includes(next)) return false
+      if (next !== undefined && !METACHAR.test(next)) return false
       if (this.groupOpens()) this.braceDepth++
       else this.budget.expansion = 'unreadable'
       return false
