@@ -31,7 +31,15 @@ import {
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
-import { SHELL_CODE_ENV, TRUST_ENV, type TrustEnv } from './trust-inputs.js'
+import {
+  execPathOption,
+  SHELL_CODE_ENV,
+  templateOption,
+  TRUST_ENV,
+  trustConfigWrite,
+  trustKey,
+  type TrustEnv,
+} from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
   ghAliasReader,
@@ -203,8 +211,9 @@ export const REASONS = {
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
   sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
   shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
-  gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH, which makes git run its helper programs, hooks included, from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
-  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, which makes git init and clone copy hooks and config from a directory the guard never reads, and it may reach git. Drop the setting. ${DOCS}`,
+  gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -676,6 +685,9 @@ export function checkGit(args: readonly string[]): string | undefined {
   while (i < args.length && (args[i] as string).startsWith('-')) {
     const { kv, next } = configValue(args, i)
     if (overridesGuard(kv)) return REASONS.gitConfig
+    const trust = kv === undefined ? undefined : trustKey(kv.split('=')[0] as string)
+    if (trust !== undefined) return REASONS[trust]
+    if (execPathOption(args[i] as string)) return REASONS.gitExecPath
     i = next
   }
   const [sub, ...rest] = args.slice(i)
@@ -745,6 +757,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
     checkExtEnablers(run, scope) ??
+    checkTrustWrites(run, scope) ??
     checkFedPush(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
@@ -812,6 +825,20 @@ function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
   if (enabler === 'protocol') return REASONS.extProtocol
   if (enabler === 'option') return REASONS.gitOptionUnmatched
   return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
+}
+
+/** A `git config` write, or a `git init` or `git clone` template, that sets a trust input (TP-2376). */
+function checkTrustWrites(run: GitRun, scope: Scope): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  const sub = run.resolved[at]
+  const args = { resolved: run.resolved.slice(at + 1), written: run.args.slice(at + 1) }
+  if (sub === 'config') {
+    const trust = trustConfigWrite(args)
+    return trust === 'option' ? REASONS.gitOptionUnmatched : trust && REASONS[trust]
+  }
+  // An unmatched option makes git itself refuse; an unread word naming a template stays the env gap TP-2444 accepts.
+  return sub !== undefined && templateOption(sub, args) === true ? REASONS.templateDir : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>

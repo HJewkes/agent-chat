@@ -237,7 +237,8 @@ function routeBrief(p: Proposal, plan: string, problems: string[], deps: AutoApp
 
 /**
  * Intent first, written only once the tick has decided to wake the decider and right before the resume, so a tick
- * that fails earlier leaves no record and the next tick sends the brief. A route whose record fails is not sent.
+ * that fails earlier leaves no record and the next tick sends the brief. A route whose record fails is not sent,
+ * and its tag is removed in case the add wrote it before failing, so the next tick routes it again.
  */
 export function recordBriefRoutes(
   routes: readonly BriefRoute[],
@@ -247,10 +248,12 @@ export function recordBriefRoutes(
   const lines: string[] = []
   for (const route of routes)
     if (tryEdit(ports, route.slug, route.taskId, ['--add-tag', route.tag])) recorded.push(route)
-    else
+    else {
+      tryEdit(ports, route.slug, route.taskId, ['--remove-tag', route.tag])
       lines.push(
         `brief ${route.taskId} not sent to the decider: could not record the send; retried next tick`,
       )
+    }
   return { recorded, lines }
 }
 
