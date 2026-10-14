@@ -270,7 +270,7 @@ export function loadSeats(names: readonly string[], ledger: Ledger, deps: SeatTi
 }
 
 type BriefDeps = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'> &
-  Partial<Pick<TickConfig, 'priorRouting'>>
+  Partial<Pick<TickConfig, 'priorRouting' | 'readyFloor'>>
 
 export interface SeatPlanDeps {
   ledger: Ledger
@@ -560,12 +560,18 @@ function orderInputs(
   }
 }
 
-/** The config fields the brief gate, hand reserve and prior routing read; the tick and `plan --seat` both pass these. */
+/**
+ * The config fields the brief gate, ready floor, hand reserve and prior routing read; the tick and `plan --seat`
+ * both pass these.
+ */
 export function briefDepsOf(
-  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'priorRouting'>,
+  config: Pick<
+    TickConfig,
+    'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'priorRouting' | 'readyFloor'
+  >,
 ): BriefDeps {
-  const { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting } = config
-  return { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting }
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting, readyFloor } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve, priorRouting, readyFloor }
 }
 
 /** CC-638: the seat's prior router from its autonomy root's workflow table; `off` or absent reads nothing. */
@@ -589,7 +595,7 @@ export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: Se
           gate,
           maxAgeDays: brief.briefMaxAgeDays,
           agingEvery: brief.maxAgents,
-          readyFloor: readyFloorFor(brief.maxAgents),
+          readyFloor: readyFloorFor(brief.maxAgents, brief.readyFloor),
         },
       }
 }
