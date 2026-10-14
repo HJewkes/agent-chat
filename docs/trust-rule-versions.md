@@ -32,6 +32,7 @@ bundles in `~/.local/share/claude/versions/`.
 | 2.1.295 | 2.1.292 (2026-10-08)           | yes   | yes | yes | yes |
 | 2.1.296 | 2.1.295 (2026-10-10)           | yes   | yes | yes | yes |
 | 2.1.299 | 2.1.296 (2026-10-14)           | yes\* | yes | yes | yes |
+| 2.1.300 | 2.1.299 (2026-10-14)           | yes   | yes | yes | yes |
 
 \* 2.1.299, check (a): read by hand from the installed 2.1.299 bundle, not by script. Its
 config-file picker (`W_()`) prefers a legacy `.config.json` only when it is a non-empty file (or a
@@ -173,6 +174,27 @@ looser side of that difference only in a mode where the CLI cannot run commands 
 - (b) `YB()`: the canonical root's `projects[pFe()]` flag first, then `Iw`/`Nw` walk the folder and each ancestor up to the git root (`rootOnly` branch included).
 - (c) `Jn()`: gitdir, then commondir, then the back-pointing gitdir check, resolving to the main checkout.
 - (d) `hasTrustDialogAccepted`.
+
+## 2.1.300 (checked 2026-10-14 against the 2.1.299 bundle)
+
+`node scripts/verify-trust-rule.mjs 2.1.300` prints all four snippets. The script's check (a)
+pattern now also matches the `W_()` picker that 2.1.299 introduced; the earlier pattern
+printed NOT FOUND for both 2.1.299 and 2.1.300. Compared token by token (identifiers renamed in
+order of appearance) with 2.1.299:
+
+- (a) `W_()`/`$5n()`: identical to 2.1.299's `W_()`/`_4n()`, the picker the owner accepted in
+  365(4). The bytes after it differ only by a new display helper `wJ()`.
+- (b)/(d) trust check `sO`, `Lm`, `aMr`, `Um`: identical to 2.1.299's `AR`, `bm`, `dxr`, `vm`.
+  `Oke()` is `sessionFlags.sessionTrustAccepted()`, as 2.1.299's `kEe()` was.
+- (c) worktree resolver `kr` and git root finder `_r`: identical to 2.1.299's `gr` and `fr`.
+- The `rootOnly` input is still dead. `aMr` calls `GHr(n,{uncached:!0})`, which loops on the
+  marker finder `WG`. That finder is `function WG(e,{uncached:n=!1}={}){return null}`, so `GHr`
+  returns `null` on its first step. Its readability probe `Gr` is a stub returning `!1`. 2.1.299's
+  `cG`/`kr` are the same stubs. If `WG` ever returned a root, `rootOnly` would apply whenever that
+  root is not the real home directory (`zHr` compares its realpath with
+  `normalizedRealHomeDir`). Only the canonical-root key and `projects[<root>]` would then count, and an ancestor key that
+  `trust.ts` accepts would no longer trust the folder. That case is the dangerous direction, so
+  re-read `WG` before adding any later release.
 
 ## Differences that do not change the verdict
 

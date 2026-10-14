@@ -113,6 +113,7 @@ export const VERIFIED_TRUST_RULE_VERSIONS: Readonly<Record<string, string>> = Ob
   '2.1.295': '2.1.292',
   '2.1.296': '2.1.295',
   '2.1.299': '2.1.296',
+  '2.1.300': '2.1.299',
 })
 
 /** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
