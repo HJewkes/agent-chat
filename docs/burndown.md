@@ -396,8 +396,9 @@ retired because `burndown release` dropped its claim, the broker starts one deta
 `burndown tick --once` 30 seconds later. Exits inside that window share the tick. The ledger
 lock the timer's tick takes is the single-flight lock: while any tick holds it, the broker
 defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
-under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
-`burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
+under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`,
+which moves to `.1` before a tick once it passes 10 MB; `burndown_kick` and
+`burndown_kick_deferred` rows in the broker log record each decision.
 Brokers on a temp-dir home never kick. A kicked tick runs with the timer job's env plus
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when the broker has them; without the user bus
 `systemctl --user` fails and the service check reads `not loaded` (CC-1144).

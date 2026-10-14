@@ -85,7 +85,7 @@ export async function releaseTask(
       })
       return { dropped, hold: record }
     },
-    { wait },
+    { wait, announce: true },
   )
   if (!locked.ran) return lockRefusal(locked)
   const { dropped, hold } = locked.value
@@ -157,7 +157,7 @@ export async function linkSlicePr(
       writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
       return undefined
     },
-    { wait },
+    { wait, announce: true },
   )
   if (!locked.ran) return lockRefusal(locked)
   if (locked.value !== undefined)
