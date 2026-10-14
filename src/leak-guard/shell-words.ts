@@ -112,12 +112,26 @@ function nestedClose(src: string, start: number): number {
   return -1
 }
 
+/** `at`, moved past any backslash-newline, which bash removes before it reads tokens. */
+function unjoinAt(src: string, at: number): number {
+  while (src.startsWith('\\\n', at)) at += 2
+  return at
+}
+
+/** The index after the `n` characters from `at` as bash reads them. */
+function skipChars(src: string, at: number, n: number): number {
+  for (let i = 0; i < n; i++) at = unjoinAt(src, unjoinAt(src, at) + 1)
+  return at
+}
+
 /** Where the body of a funsub opening at `at` starts: `${` and a blank, tab or newline, or `${|`. */
 function funsubBody(src: string, at: number): number | undefined {
-  if (!src.startsWith('${', at)) return undefined
-  const c = src[at + 2] ?? ''
-  if (c === '|') return at + 3
-  return ' \t\n'.includes(c) && c !== '' ? at + 2 : undefined
+  const brace = unjoinAt(src, at + 1)
+  if (src[at] !== '$' || src[brace] !== '{') return undefined
+  const open = unjoinAt(src, brace + 1)
+  const c = src[open] ?? ''
+  if (c === '|') return open + 1
+  return c !== '' && ' \t\n'.includes(c) ? open : undefined
 }
 
 // Words after which a `{` still opens a group, as COMMAND_PREFIX is for a `(`.
@@ -308,13 +322,11 @@ class ShellLexer {
     return false
   }
 
-  /** `at`, moved past any backslash-newline, which bash removes before it reads tokens. */
   private unjoin(at: number): number {
-    while (this.src.startsWith('\\\n', at)) at += 2
-    return at
+    return unjoinAt(this.src, at)
   }
 
-  /** The character at `at` as bash reads it; every operator and redirect lookahead goes through here. */
+  /** The character at `at` as bash reads it; every lookahead that decides a token goes through here. */
   private peek(at: number): string | undefined {
     return this.src[this.unjoin(at)]
   }
@@ -329,7 +341,24 @@ class ShellLexer {
 
   /** Moves the cursor past `n` characters as bash reads them. */
   private advance(n: number): void {
-    for (let i = 0; i < n; i++) this.pos = this.unjoin(this.unjoin(this.pos) + 1)
+    this.pos = this.after(n)
+  }
+
+  /** The index after the `n` characters from the cursor as bash reads them. */
+  private after(n: number): number {
+    return skipChars(this.src, this.pos, n)
+  }
+
+  /** A `(` at the cursor followed only by blanks and a `)`, as in `name()`. */
+  private emptyParens(): boolean {
+    let at = this.unjoin(this.pos + 1)
+    while (/\s/.test(this.src[at] ?? '')) at = this.unjoin(at + 1)
+    return this.src[at] === ')'
+  }
+
+  /** The `)` closing arithmetic whose first `)` is at `end` is doubled, as bash reads it. */
+  private doubled(end: number): boolean {
+    return this.peek(end + 1) === ')'
   }
 
   /** Every word before the `{` is an unquoted reserved word, bar `time -p`, `coproc NAME` and `function NAME`. */
@@ -386,7 +415,7 @@ class ShellLexer {
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1
-    if (defined >= 0 && /^\(\s*\)/.test(this.src.slice(this.pos))) this.cur.marked[defined] += LIVE
+    if (defined >= 0 && this.emptyParens()) this.cur.marked[defined] += LIVE
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     if (c === '(') this.parens.push(kind)
@@ -401,7 +430,7 @@ class ShellLexer {
   /** A `(` at a command start that is not `((`, `[[` or arithmetic opens a subshell; `name()` is a function's. */
   private parenKind(opensCommand: boolean): ParenKind {
     if (!this.atStart || this.testOpen || this.quotedWord || this.quoted) return 'text'
-    if (/^\(\s*\)/.test(this.src.slice(this.pos))) return this.defines() ? 'function' : 'text'
+    if (this.emptyParens()) return this.defines() ? 'function' : 'text'
     if (!opensCommand) return 'text'
     const words = this.cur.words
     const prefix = words.findIndex(word => !BRACE_PREFIX.has(word))
@@ -447,14 +476,14 @@ class ShellLexer {
   /** A `((` at command position is arithmetic when bash finds its `))`; `((a) )` and `((a)|b)` are subshells. */
   private trackArith(c: string, opensCommand: boolean): void {
     if (c === ')' && !this.inArith()) this.arith = undefined
-    if (c !== '(' || !opensCommand || this.arith !== undefined || this.src[this.pos + 1] !== '(') return
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ')')
-    if (span && this.src[span.end + 1] === ')') this.arith = { depth: this.depth + 1, text: span.text }
+    if (c !== '(' || !opensCommand || this.arith !== undefined || this.peek(this.pos + 1) !== '(') return
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ')')
+    if (span && this.doubled(span.end)) this.arith = { depth: this.depth + 1, text: span.text }
   }
 
   /** Notes the body of a `$[ ]` the shell evaluates as arithmetic; the lexer still reads what is inside it. */
   private noteBracket(): void {
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ']')
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ']')
     if (span !== undefined) this.cur.arithBodies.push(span.text)
   }
 
@@ -468,7 +497,7 @@ class ShellLexer {
   private globGroup(): boolean {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
-    if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
     if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
     if (end < 0) {
@@ -508,7 +537,7 @@ class ShellLexer {
     const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
     if (head < 0) return true
     // `for ((i=0; i<3; i++))` is arithmetic, not a glob.
-    if (words[head] === 'for' && words.length === head + 1 && this.src.startsWith('((', this.pos)) return true
+    if (words[head] === 'for' && words.length === head + 1 && this.ahead(2) === '((') return true
     if (words[head] === '[[') return !words.includes(']]')
     return words[head] === 'case' && words[words.length - 1] === 'in'
   }
@@ -520,7 +549,7 @@ class ShellLexer {
       const c = this.src[i] as string
       if (c === '\n') return -1
       if (c === '\\') i++
-      else if (c === '$' && this.src[i + 1] === "'") i = this.closeAnsi(i + 1)
+      else if (c === '$' && this.peek(i + 1) === "'") i = this.closeAnsi(this.unjoin(i + 1))
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
       else if (c === '(') depth++
       else if (c === ')' && --depth === 0) return i + 1
@@ -553,7 +582,7 @@ class ShellLexer {
   }
 
   private redirect(): void {
-    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
+    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos).replaceAll('\\\n', ''))?.[0]
     if (range !== undefined) return this.globRange(range)
     // In `2&>f` the 2 is an argument, not a descriptor.
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
@@ -593,7 +622,7 @@ class ShellLexer {
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
   private globRange(range: string): void {
-    this.pos += range.length
+    this.advance(range.length)
     this.append(range, true)
   }
 
@@ -603,7 +632,7 @@ class ShellLexer {
   }
 
   private wordPart(c: string): void {
-    const next = this.src[this.pos + 1]
+    const next = this.peek(this.pos + 1)
     this.quoted ||= c === "'" || c === '"' || c === '\\'
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
@@ -616,7 +645,7 @@ class ShellLexer {
     if (c === '`') return this.split(this.backtick(false))
     if (c === '\\') {
       this.pos += 2
-      return this.append(next ?? '')
+      return this.append(this.src[this.pos - 1] ?? '')
     }
     this.pos++
     const live = this.expands(c, next)
@@ -672,7 +701,8 @@ class ShellLexer {
     this.pos++
     while (this.pos < this.src.length && this.src[this.pos] !== '"') {
       const c = this.src[this.pos] as string
-      const next = this.src[this.pos + 1] ?? ''
+      const next = this.peek(this.pos + 1) ?? ''
+      const escaped = this.src[this.pos + 1] ?? ''
       if (c === '$' && next === '[') this.noteBracket()
       const fun = this.funsub(true)
       if (fun !== undefined) this.append(fun, true)
@@ -682,8 +712,8 @@ class ShellLexer {
         this.bracedAt()
         this.append(c, true)
         this.pos++
-      } else if (c === '\\' && '$`"\\\n'.includes(next)) {
-        this.append(next === '\n' ? '' : next)
+      } else if (c === '\\' && '$`"\\\n'.includes(escaped)) {
+        this.append(escaped === '\n' ? '' : escaped)
         this.pos += 2
       } else {
         this.append(c, c === '$')
@@ -696,7 +726,7 @@ class ShellLexer {
   /** Decodes `\x67`, `\147` and the rest, so `$'\x67it'` reads as git (TP-721); an escape it cannot decode stays LIVE. */
   private ansiC(): void {
     this.append('')
-    this.pos += 2
+    this.advance(2)
     while (this.pos < this.src.length && this.src[this.pos] !== "'") {
       const c = this.src[this.pos] as string
       const escape = c === '\\' ? ansiCEscape(this.src, this.pos) : { text: c, width: 1, live: false }
@@ -711,7 +741,7 @@ class ShellLexer {
     const start = this.pos
     const arith = this.substitutedArith(start)
     if (arith !== undefined) this.cur.arithBodies.push(arith.text)
-    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget, arith)
+    const inner = new ShellLexer(this.src, this.after(2), true, this.budget, arith)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()
@@ -734,9 +764,9 @@ class ShellLexer {
 
   /** A `$((` is arithmetic when bash finds its `))`; `$((a) )` is a substitution of a subshell. */
   private substitutedArith(start: number): Arith | undefined {
-    if (this.budget.probe || !this.src.startsWith('$((', start)) return undefined
-    const span = arithSpan(this.src, start + 3, ')')
-    return span && this.src[span.end + 1] === ')' ? { depth: 1, text: span.text } : undefined
+    if (this.budget.probe || this.ahead(3) !== '$((') return undefined
+    const span = arithSpan(this.src, skipChars(this.src, start, 3), ')')
+    return span && this.doubled(span.end) ? { depth: 1, text: span.text } : undefined
   }
 
   private backtick(quoted: boolean): string {
@@ -863,9 +893,9 @@ function arithSpan(src: string, from: number, closer: string): { end: number; te
   const opener = { ')': '(', ']': '[' }[closer]
   let depth = 0
   let text = ''
-  for (let i = from; i < src.length;) {
+  for (let i = unjoinAt(src, from); i < src.length; i = unjoinAt(src, i)) {
     const c = src[i] as string
-    const next = src[i + 1]
+    const next = src[unjoinAt(src, i + 1)]
     if (c === closer && depth-- === 0) return { end: i, text }
     if (c === opener) depth++
     const skip = skipIn(src, i, c, next, closer === '"')
@@ -886,7 +916,7 @@ function skipIn(
 ): Step | undefined {
   if (c === '\\') return { next: at + 2, text: src.slice(at, at + 2) }
   if (c === '$' && next === '(') {
-    const end = substitutionEnd(src, at + 2)
+    const end = substitutionEnd(src, skipChars(src, at, 2))
     return end < 0 ? undefined : { next: end, text: ' ' }
   }
   if ((c === '$' && next === '{') || c === '`' || (!quoted && (c === '"' || c === "'")))

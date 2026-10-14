@@ -255,6 +255,27 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBeUndefined()
   })
 
+  // bash 5.3.9 removes \<newline> before it reads a `$` opener too.
+  it.each([
+    'echo $\\\n{ git push --no-verify;}',
+    'echo "$\\\n{ git push --no-verify;}"',
+    'x="$\\\n{ git push --no-verify;}"',
+    'echo $\\\n\\\n{ git push --no-verify;}',
+    'echo "$\\\n(git push --no-verify)"',
+    'echo ${\\\n git push --no-verify;}',
+    'echo ${\\\n|git push --no-verify;}',
+    'echo "$\\\n{|git push --no-verify;}"',
+  ])('%j reads the opener across \\<newline>', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(true)
+  })
+
+  it("decodes $\\<newline>'...' as an ANSI-C quote", () => {
+    expect(find("$\\\n'\\x67it' push --no-verify", 'git')?.words).toEqual(['git', 'push', '--no-verify'])
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
