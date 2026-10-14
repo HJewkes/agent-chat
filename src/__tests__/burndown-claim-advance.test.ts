@@ -387,7 +387,7 @@ describe('burndown release --slice and link (CC-978)', () => {
 
     it('re-links a slice never seeded when the PR branch names the task and --initiative is given', async () => {
       writeLedger(file(), EMPTY_LEDGER)
-      const ports = { ...pulled({ title: 'unrelated', branch: 'agent-chat/tc-cc-1-b' }), initiative: 'demo' }
+      const ports = { ...pulled({ title: 'unrelated', branch: 'agent-chat/bd-cc-1-b' }), initiative: 'demo' }
 
       const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, ports)
 
