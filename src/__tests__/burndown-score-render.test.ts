@@ -6,11 +6,19 @@ import { stringify } from 'yaml'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseMilestoneFile } from '../agents/burndown/milestones.js'
 import { mergeDefaults, parseCharter, parseSeat } from '../agents/burndown/policy.js'
-import { isoWeek, renderScored, renderScoredRow, scoredPlan } from '../agents/burndown/score-render.js'
+import {
+  GATE_HEADER,
+  gateOrdered,
+  isoWeek,
+  renderScored,
+  renderScoredRow,
+  scoredPlan,
+  type ScoredPlan,
+} from '../agents/burndown/score-render.js'
 import { tasksFromList } from '../agents/burndown/score-source.js'
 import type { PlannedRow } from '../agents/burndown/plan-order.js'
 import { withBroker } from '../cli/client.js'
-import { burndownPlanVerb, planFlagError } from '../cli/verbs/burndown.js'
+import { burndownPlanVerb, planFlagError, scoredSeatPlan } from '../cli/verbs/burndown.js'
 
 /** CC-230: `burndown plan --seat --scored` over the synthetic parity fixture; see its README. */
 
@@ -174,6 +182,39 @@ describe('burndown plan --seat --scored from disk', () => {
     const report = await burndownPlanVerb.run(args, ctx)
 
     expect(report).toEqual({ ok: true, lines: renderScored({ ...fixturePlan(), milestones: NO_W40_FILE }) })
+  })
+
+  const gateConfig = (gate: 'off' | 'on') => ({
+    briefGate: { 'sample-seat': gate },
+    briefMaxAgeDays: 7,
+    scopeTagAliases: {},
+  })
+  const scoredArgs = { top: 10, autonomyRoot: FIXTURE, today: snapshot.today }
+
+  it("prints an 'off' seat's plan unchanged (CC-988)", () => {
+    const lines = scoredSeatPlan('sample-seat', scoredArgs, gateConfig('off'))
+
+    expect(lines).toEqual(renderScored({ ...fixturePlan(), milestones: NO_W40_FILE }))
+  })
+
+  it("orders an 'on' seat as its tick walks: header, no decay, brief-ready rows first (CC-988)", () => {
+    const last = fixturePlan(Infinity).order.at(-1)!
+    const file = path.join(world, last.initiative, 'tasks', `${last.id}.yml`)
+    const task = snapshot.tasks.find(t => t.id === last.id)!
+    fs.writeFileSync(file, stringify({ ...task, tags: [`brief:ready=${snapshot.today}`] }))
+
+    const lines = scoredSeatPlan('sample-seat', scoredArgs, gateConfig('on'))
+
+    const rows = lines.filter(line => / gate=/.test(line))
+    expect(lines[0]).toBe(GATE_HEADER)
+    expect(rows).toHaveLength(10)
+    expect(rows[0]).toContain(` ${last.id.padEnd(9)} `)
+    expect(rows[0]).toContain(' gate=ready | ')
+    expect(rows.slice(1).every(line => line.includes(' gate=no-brief | '))).toBe(true)
+    for (const line of rows) {
+      const [, effective, raw] = /^\s*\d+\s+(\S+) \(\s*(\S+)\)/.exec(line)!
+      expect(effective).toBe(raw)
+    }
   })
 
   it('prints the week as absent when the autonomy root has no milestone file for it (CC-625)', async () => {
@@ -416,5 +457,52 @@ describe('held epic lines', () => {
 
     expect(lines).toContain('epics held out of tier 2: EP-1 epic:M1; EP-2 epic-estimate:M1')
     expect(lines.at(-1)).toContain('epic:M1: 1, epic-estimate:M1: 1')
+  })
+})
+
+describe('gate order of a scored plan (CC-988)', () => {
+  const base = fixturePlan().order[0]!
+  const tasks = tasksFromList(snapshot)
+  const ready = `brief:ready=${snapshot.today}`
+  const gate = { maxAgeDays: 7, now: new Date(`${snapshot.today}T00:00:00`) }
+  const rowOf = (id: string, tier: number, score: number) => ({ ...base, id, tier, score, effective: score })
+  const taskOf = (id: string, priority: number, tags: string[]) => ({ ...tasks[0]!, id, priority, tags })
+  const planOf = (rows: ScoredPlan['order']): ScoredPlan => ({
+    order: rows,
+    scope: 1,
+    open: rows.length,
+    refused: {},
+    skipped: [],
+  })
+
+  it('puts a brief-ready tier-3 row ahead of an unbriefed tier-2 row and marks both', () => {
+    const plan = planOf([rowOf('T2-1', 2, 50), rowOf('T3-1', 3, 10)])
+    const briefs = [taskOf('T2-1', 3, []), taskOf('T3-1', 3, [ready])]
+
+    const gated = gateOrdered(plan, briefs, gate)
+
+    expect(gated.order.map(row => [row.id, row.gate])).toEqual([
+      ['T3-1', 'ready'],
+      ['T2-1', 'no-brief'],
+    ])
+    expect(gated.briefGate).toBe('on')
+  })
+
+  it('ranks ready rows by priority before score', () => {
+    const plan = planOf([rowOf('HI-SCORE', 3, 90), rowOf('LO-SCORE', 3, 10)])
+    const briefs = [taskOf('HI-SCORE', 5, [ready]), taskOf('LO-SCORE', 2, [ready])]
+
+    const gated = gateOrdered(plan, briefs, gate)
+
+    expect(gated.order.map(row => row.id)).toEqual(['LO-SCORE', 'HI-SCORE'])
+  })
+
+  it('marks a row whose brief is past briefMaxAgeDays as brief-stale', () => {
+    const plan = planOf([rowOf('OLD', 3, 10)])
+
+    const gated = gateOrdered(plan, [taskOf('OLD', 3, ['brief:ready=2026-09-01'])], gate)
+
+    expect(gated.order[0]!.gate).toBe('brief-stale')
+    expect(renderScored(gated)[0]).toBe(GATE_HEADER)
   })
 })
