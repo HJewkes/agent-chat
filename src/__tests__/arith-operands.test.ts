@@ -13,10 +13,22 @@ const P = 'git push --no-verify'
 
 type Row = [line: string, expected: string[], index?: number]
 
-const commandOf = (line: string, index = -1): SimpleCommand => {
-  const found = parseShell(line).at(index)
-  if (found === undefined) throw new Error(`no command in ${line}`)
-  return found
+/** Applies `read` to the command at `index` of `line`, with the parsed line beside it, as the guard would. */
+const readAt =
+  <T>(read: (cmd: SimpleCommand, line: SimpleCommand[]) => T) =>
+  (line: string, index = -1): T => {
+    const commands = parseShell(line)
+    const found = commands.at(index)
+    if (found === undefined) throw new Error(`no command in ${line}`)
+    return read(found, commands)
+  }
+const namesOf = readAt(arithSubscriptNames)
+const bodiesOf = readAt(arithSubstitutions)
+
+/** What `read` finds across every command of `line`, so a none row cannot pass by looking at the wrong one. */
+const everyCommand = (read: (cmd: SimpleCommand, line: SimpleCommand[]) => string[]) => (line: string) => {
+  const commands = parseShell(line)
+  return commands.flatMap(cmd => read(cmd, commands))
 }
 
 describe('arithSubscriptNames lists the names arithmetic operands and resolved names read', () => {
@@ -36,10 +48,13 @@ describe('arithSubscriptNames lists the names arithmetic operands and resolved n
     ['a=1 x["$i"]+=1 true', ['i']],
     ['printf -v"x[$i]" 1', ['i']],
     ['coproc read "x[$i]"', ['i']],
-    ['x=([$i]=1)', ['i']],
-    ['declare -a x=( [n+1]=a [m]+=b )', ['n', 'm']],
+    ['x=([$i]=1)', ['i'], 0],
+    ['declare -a x=( [n+1]=a [m]+=b )', ['n', 'm'], 0],
     ['declare -n r="x[$i]"', ['i']],
     ['local -n r="$a"', ['a']],
+    ['x=([ k ]=1)', ['k'], 0],
+    ['declare -ai x=(n "y[$i]")', ['n', 'y', 'i'], 0],
+    ['declare -a x=(n "y[$i]")', [], 0],
     ['local "x[$i]+=1"', ['i']],
     ['unset "x[$i]"', ['i']],
     ['unset -v "x[$i]" "y[$j]"', ['i', 'j']],
@@ -52,13 +67,13 @@ describe('arithSubscriptNames lists the names arithmetic operands and resolved n
     ['builtin printf -v "$a" 1', ['a']],
     ['read -p "$p" -t 1 "x[$i]"', ['i']],
   ] satisfies Row[])('%s yields %j', (line: string, names: string[], index = -1) => {
-    expect(arithSubscriptNames(commandOf(line, index))).toEqual(names)
+    expect(namesOf(line, index)).toEqual(names)
   })
 
   it.each(['[[ $a == 0 ]]', '[ "$a" -eq 0 ]', 'test "$a" -gt 1', 'printf %s "$a"', 'echo -v "$a"'])(
     '%s yields none',
     line => {
-      expect(arithSubscriptNames(commandOf(line))).toEqual([])
+      expect(everyCommand(arithSubscriptNames)(line)).toEqual([])
     },
   )
 })
@@ -124,19 +139,35 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     [`coproc { read 'x[$(${P})]'; }`, [P], 0],
     [`coproc r while read 'x[$(${P})]'; do :; done`, [P], 0],
     // A compound array element's key and a nameref's value are names too, though they sit in a value.
-    [`x=(['$(${P})']=1)`, [P]],
-    [`x+=(['$(${P})']=1)`, [P]],
-    [`declare -a x=(['$(${P})']=1)`, [P]],
-    [`typeset -A x=(['$(${P})']=1)`, [P]],
-    [`local -a x=(['$(${P})']+=1)`, [P]],
-    [`x=( a  ['$(${P})']=1  b )`, [P]],
-    [`x=( [0]=a ['$(${P})']=1 )`, [P]],
-    [`x=( [$'$(${P})']=1 )`, [P]],
-    [`x=( ["k"'$(${P})']=1 )`, [P]],
-    [`x=(['$(echo "]"; ${P})']=1)`, [`echo "]"; ${P}`]],
-    [`f() { x=(['$(${P})']=1); }`, [P], -2],
+    [`x=(['$(${P})']=1)`, [P], 0],
+    [`x+=(['$(${P})']=1)`, [P], 0],
+    [`declare -a x=(['$(${P})']=1)`, [P], 0],
+    [`typeset -A x=(['$(${P})']=1)`, [P], 0],
+    [`local -a x=(['$(${P})']+=1)`, [P], 0],
+    [`x=( a  ['$(${P})']=1  b )`, [P], 0],
+    [`x=( [0]=a ['$(${P})']=1 )`, [P], 0],
+    [`x=( [$'$(${P})']=1 )`, [P], 0],
+    [`x=( ["k"'$(${P})']=1 )`, [P], 0],
+    [`x=(['$(echo "]"; ${P})']=1)`, [`echo "]"; ${P}`], 0],
+    [`f() { x=(['$(${P})']=1); }`, [P], 1],
     // The splitter ends this element at the `)` in its key; with no `]=` to find, the rest of the word is read.
-    [`x=(['$(echo ])')']=1)`, ['echo ]'], 1],
+    [`x=(['$(echo ])')']=1)`, ['echo ]'], 0],
+    // The list after x=( is one element list: a key may span words, and -i makes every value arithmetic.
+    [`declare -ai x=([0]='y[$(${P})]')`, [P], 0],
+    [`declare -i x=('y[$(${P})]')`, [P], 0],
+    [`declare -ai x=('y[$(${P})]')`, [P], 0],
+    [`declare -ai x=(1 'y[$(${P})]' 3)`, [P], 0],
+    [`declare -Ai x=(['k']='y[$(${P})]')`, [P], 0],
+    [`local -ai x=('y[$(${P})]')`, [P], 0],
+    [`typeset -ia x=('y[$(${P})]' 2)`, [P], 0],
+    [`integer x=('y[$(${P})]')`, [P], 0],
+    [`x=([ '$(${P})' ]=1)`, [P], 0],
+    [`x+=([ '$(${P})' ]+=1)`, [P], 0],
+    [`x=( [ 'k' '$(${P})' ]=1 )`, [P], 0],
+    [`declare -a x=( [ '$(${P})' ]+=1 )`, [P], 0],
+    [`x=(\n  ['$(${P})']=1\n)`, [P], 0],
+    [`declare -ai x=(\n  1\n  'y[$(${P})]'\n)`, [P], 0],
+    [`x=( [ '$(${P})' )`, [P], 0],
     [`declare -n r='x[$(${P})]'`, [P]],
     [`local -n r='x[$(${P})]'`, [P]],
     [`typeset -n r='x[$(${P})]'`, [P]],
@@ -144,7 +175,7 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     [`if declare -n r='x[$(${P})]'; then :; fi`, [P], 0],
     [`let 'x[$(echo ")"; ${P})]=1'`, [`echo ")"; ${P}`]],
   ] satisfies Row[])('%s yields %j', (line: string, bodies: string[], index = -1) => {
-    expect(arithSubstitutions(commandOf(line, index))).toEqual(bodies)
+    expect(bodiesOf(line, index)).toEqual(bodies)
   })
 
   it.each([
@@ -165,6 +196,11 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `x=('[$(${P})]=1')`,
     `x=(['k']='$(${P})')`,
     `declare -A x=( ["$(${P})"]=1 )`,
+    `x=(['k']='y[$(${P})]')`,
+    `declare -a x=('y[$(${P})]')`,
+    `declare -A x=(['k']='y[$(${P})]')`,
+    `declare -ai x=(1); echo 'y[$(${P})]'`,
+    `x=(a b) && echo '[$(${P})]=1'`,
     `declare r='x[$(${P})]'`,
     `[ -v x ]`,
     `[[ -v x ]]`,
@@ -173,7 +209,7 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `! test 'x[$(${P})]' -eq 1`,
     `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
-    expect(arithSubstitutions(commandOf(line))).toEqual([])
+    expect(everyCommand(arithSubstitutions)(line)).toEqual([])
   })
 })
 
@@ -185,6 +221,6 @@ describe('the pretool guard and arithSubstitutions share one list of name-operan
   })
 
   it.each([...NAME_OPERAND_BUILTINS, ...ENV_DECL])('%s resolves a quoted subscript in its operand', head => {
-    expect(arithSubstitutions(commandOf(`${head} 'x[$(${P})]'`))).toEqual([P])
+    expect(bodiesOf(`${head} 'x[$(${P})]'`)).toEqual([P])
   })
 })

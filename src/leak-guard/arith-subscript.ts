@@ -192,21 +192,65 @@ function nameTexts(words: string[], source: string[], assignments: string[]): st
   return [...assignments, ...nameOperands(words).map(i => source[i] ?? ''), ...attached].map(namePart)
 }
 
-// A compound array element `[key]=value` or `[key]+=value`, which the splitter reads as a command of its own
-// after `x=(`; bash evaluates the key as a subscript. The `[` is unquoted, so LIVE-marked.
-const ELEMENT_KEY = new RegExp(`^${LIVE}\\[(.*)\\]\\+?=`, 's')
+// The `x=(` or `x+=(` that opens a compound array: the splitter ends the opener's last word there, with a
+// LIVE mark for the `(`, and reads the elements as nested commands after it.
+const OPENER = new RegExp(`^${NAME}\\+?=${LIVE}$`)
+const LIST_JOINS = new Set(['', '\n'])
+// One `[key]=value` or `[key]+=value` element; the key runs to the last `]=`, so nothing is lost from both.
+const ELEMENT = new RegExp(`^${LIVE}\\[(.*)\\]\\+?=(.*)$`, 's')
+const KEY_CLOSE = /\]\+?=/
+
+interface Element {
+  key?: string
+  value: string
+}
 
 /**
- * The key of each marked word that may be a compound array element. With `failClosed`, a word that opens
- * with an unquoted `[` but whose `]=` cannot be found gives the rest of the word.
+ * The marked words of the compound array list `cmd` opens, read from the commands after it in `line`
+ * and skipping the commands of the substitutions inside it; undefined when `cmd` opens none.
  */
-function elementKeys(marked: string[], failClosed: boolean): string[] {
-  return marked.flatMap(word => {
-    if (!word.startsWith(`${LIVE}[`) || ['[', '[['].includes(unmark(word))) return []
-    const key = ELEMENT_KEY.exec(word)?.[1]
-    if (key !== undefined) return [key]
-    return failClosed ? [word.slice(2)] : []
-  })
+function compoundList(cmd: SimpleCommand, line: readonly SimpleCommand[]): string[] | undefined {
+  if (!OPENER.test(cmd.marked.at(-1) ?? '')) return undefined
+  const inner = new Set(line.flatMap(c => c.substitutions.flatMap(sub => sub.commands)))
+  const words: string[] = []
+  for (const next of line.slice(line.indexOf(cmd) + 1)) {
+    if (inner.has(next)) continue
+    if (!next.nested || !LIST_JOINS.has(next.before)) break
+    words.push(...next.marked)
+    if (!LIST_JOINS.has(next.after)) break
+  }
+  return words
+}
+
+/** The elements of a compound list, joining a key that spans words (`[ k ]=v`); a key that never closes runs to the end. */
+function elements(words: string[]): Element[] {
+  const found: Element[] = []
+  for (let i = 0; i < words.length; i++) {
+    let word = words[i] ?? ''
+    if (!word.startsWith(`${LIVE}[`)) {
+      found.push({ value: word })
+      continue
+    }
+    while (!KEY_CLOSE.test(word) && i + 1 < words.length) word += ` ${words[++i]}`
+    const match = ELEMENT.exec(word)
+    found.push(match ? { key: match[1] ?? '', value: match[2] ?? '' } : { key: word.slice(2), value: '' })
+  }
+  return found
+}
+
+/**
+ * The marked texts bash evaluates in the compound list `cmd` opens: every key, as a subscript, and every
+ * value too when the declarer gives the array the integer attribute.
+ */
+function compoundTexts(cmd: SimpleCommand, line: readonly SimpleCommand[]): string[] {
+  const list = compoundList(cmd, line)
+  if (list === undefined) return []
+  const { words } = commandHead(cmd)
+  const integer = DECLARERS.has(words[0] ?? '') && hasIntegerFlag(words)
+  return elements(list).flatMap(({ key, value }) => [
+    ...(key === undefined ? [] : [key]),
+    ...(integer ? [value] : []),
+  ])
 }
 
 /** A variable name's own `$` expansions, whose values become the name, and the names its subscript reads. */
@@ -219,8 +263,11 @@ function nameOperandNames(word: string): string[] {
 const namesIn = (text: string): string[] =>
   [...text.replace(SUBSTITUTION, ' ').matchAll(ARITH_NAME)].map(match => match[1] ?? match[2] ?? '')
 
-/** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
-export function arithSubscriptNames(cmd: SimpleCommand): string[] {
+/**
+ * Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. `line` is the
+ * parsed command line `cmd` came from; a compound array's elements are read from the commands after it.
+ */
+export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCommand[] = [cmd]): string[] {
   const { words, assignments } = commandHead(cmd)
   const operands = nameOperands(words)
   const texts = [
@@ -228,7 +275,7 @@ export function arithSubscriptNames(cmd: SimpleCommand): string[] {
     ...integerValues(words, words, operands),
     ...cmd.marked.flatMap(subscripts),
     ...comparisonOperands(words).map(i => words[i] ?? ''),
-    ...elementKeys(cmd.marked, false).map(unmark),
+    ...compoundTexts(cmd, line).map(unmark),
   ]
   const nameWords = [...nameTexts(words, words, assignments), ...namerefValues(words, words, operands)]
   const names = [...texts.flatMap(namesIn), ...nameWords.flatMap(nameOperandNames)]
@@ -279,9 +326,10 @@ function quotedSubstitutions(marked: string): string[] {
 /**
  * The text of each quoted `$(...)` or backtick the shell runs when it evaluates an operand as arithmetic
  * or resolves it as a variable name (CC-1334), which the splitter never read as a command. A live
- * substitution is a command already, so it is not listed.
+ * substitution is a command already, so it is not listed. Pass the parsed `line` so that a compound
+ * array `cmd` opens is read too.
  */
-export function arithSubstitutions(cmd: SimpleCommand): string[] {
+export function arithSubstitutions(cmd: SimpleCommand, line: readonly SimpleCommand[] = [cmd]): string[] {
   const { marked, words, markedAssignments } = commandHead(cmd)
   const operands = nameOperands(words)
   const texts = [
@@ -289,7 +337,7 @@ export function arithSubstitutions(cmd: SimpleCommand): string[] {
     ...nameTexts(words, marked, markedAssignments),
     ...integerValues(words, marked, operands),
     ...namerefValues(words, marked, operands),
-    ...elementKeys(cmd.marked, true),
+    ...compoundTexts(cmd, line),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
