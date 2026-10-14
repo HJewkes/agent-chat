@@ -72,6 +72,8 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
     `parallel -q eval 'echo {}' ::: '$(g=gi; \${g}t push --no-verify)'`,
     `parallel -q bash -c 'echo {}' ::: '$(g=gi; \${g}t push --no-verify)'`,
     `echo '$(g=gi; \${g}t push --no-verify)' | parallel`,
+    `parallel 'eval "$P"; echo {}' ::: '$(g=gi; \${g}t push)'`,
+    `parallel echo "$(printf gi)t" push --no-verify ::: a`,
   ])('denies a script or input that may run a hidden git: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.hiddenScript)
   })
