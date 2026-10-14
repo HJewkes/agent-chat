@@ -294,7 +294,10 @@ The client that sends it is `agent-chat host serve` (below). The broker keeps la
 when its connection closes. The first live launcher holds its machine, and a
 second connection naming the same machine (in any case) is refused while the
 holder is connected, so it cannot take over that machine's probes and launches.
-When `config.json` sets `machines`, only those hostnames may be announced. The
+When `config.json` sets `machines`, only those hostnames may be announced.
+With `hostProof: "enforce"`, every launcher also needs its broker key and a
+proof over a per-connection nonce, whether or not `machines` is set (CC-1063,
+CC-1317). The
 session guard is per connection: a registered connection cannot send
 `host_hello`, and a launcher's connection cannot register. A session can still
 open a second connection, so the trust boundary is the first-wins rule and the

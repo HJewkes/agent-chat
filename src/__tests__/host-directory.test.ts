@@ -103,6 +103,9 @@ function macLauncher(): Wire {
 const configureMac = (hostProof: 'enforce' | 'off' = 'enforce'): void =>
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { mac: MAC }, hostProof }))
 
+const configureNoMachines = (hostProof: 'enforce' | 'off'): void =>
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ hostProof }))
+
 const brokerLog = (): string => (fs.existsSync(logPath()) ? fs.readFileSync(logPath(), 'utf8') : '')
 
 const lastHello = (w: Wire) => w.frames.filter(f => f.t === 'host_hello_result').at(-1)
@@ -313,6 +316,66 @@ describe('announcing a host launcher', () => {
     helloAsMac(launcher)
 
     expect(lastHello(launcher)?.ok).toBe(true)
+  })
+
+  it('with machines empty and hostProof enforce, refuses a hello for an unkeyed host and never routes a teleport to it', async () => {
+    configureNoMachines('enforce')
+    const impostor = wire()
+    challenge(impostor)
+    helloAsMac(impostor)
+
+    expect(lastHello(impostor)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('provision the launcher key'),
+    })
+    expect(listed()).toEqual([])
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    expect(frame(predecessor, 'teleport_result')?.ok).toBe(false)
+    expect(frame(impostor, 'host_probe')).toBeUndefined()
+    expect(brokerLog()).toContain('host_launcher_refused')
+  })
+
+  it('with machines empty and hostProof enforce, refuses an unkeyed host’s hello sent without a challenge', () => {
+    configureNoMachines('enforce')
+    const impostor = wire()
+    helloAsMac(impostor)
+
+    expect(lastHello(impostor)?.reason).toContain('provision the launcher key')
+    expect(listed()).toEqual([])
+  })
+
+  it('with machines empty and hostProof enforce, accepts and routes to a host with a minted key and a valid proof', async () => {
+    configureNoMachines('enforce')
+    const launcher = macLauncher()
+
+    expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
+    expect(listed()).toEqual([MAC])
+    await teleportToMac(localPredecessor())
+    expect(frame(launcher, 'host_probe')).toBeDefined()
+  })
+
+  it('with machines empty and hostProof off, accepts a keyless hello', () => {
+    configureNoMachines('off')
+    const launcher = wire()
+    helloAsMac(launcher)
+
+    expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
+    expect(listed()).toEqual([MAC])
+  })
+
+  it('refuses a configured machine’s keyless, proofless hello under hostProof enforce, keeping key material out of the log', () => {
+    configureMac()
+    const launcher = wire()
+    challenge(launcher)
+    helloAsMac(launcher)
+
+    expect(lastHello(launcher)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('provision the launcher key'),
+    })
+    expect(listed()).toEqual([])
+    expect(JSON.stringify(core.events.agentEvents())).not.toContain(ensureBrokerKey(MAC))
   })
 
   it('refuses a challenge from a registered session connection', () => {
