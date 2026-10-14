@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
 import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
-import { Contract } from './report.js'
+import { AcceptedOverlap, Contract } from './report.js'
 import { STALE_CLASSES } from './stale-claim.js'
 import { STALL_CODES } from './stall-code.js'
 
@@ -71,6 +71,8 @@ const Claim = z.object({
   repo: z.string().optional(),
   /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
   contracts: z.array(Contract).optional(),
+  /** CC-1259: the open PRs and exact paths the planner accepts sharing; absent means none. */
+  overlapsAccepted: z.array(AcceptedOverlap).optional(),
   /** The agent the claim is waiting on now. */
   agentName: z.string().optional(),
   /** Every agent spawned for this claim, oldest first; retired newest first. */
