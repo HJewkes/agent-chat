@@ -190,16 +190,11 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
   it.each([
     `[[ x -eq $(${P}) ]]`,
     `[[ "$(${P})" -eq 1 ]]`,
-    `declare 'n=$(${P})'`,
     `unset -f 'f'`,
     `x[$(${P})]=1`,
-    `x='$(${P})'`,
     `printf -vx 1`,
     `coproc r`,
-    `x=('[$(${P})]=1')`,
-    `x=(['k']='$(${P})')`,
     `declare -A x=( ["$(${P})"]=1 )`,
-    `x=(a b) && echo '[$(${P})]=1'`,
     `[ -v x ]`,
     `[[ -v x ]]`,
     `[[ $n -eq 3 ]]`,
@@ -233,22 +228,12 @@ describe('arithSubstitutions reads a subscript in any assigned value', () => {
   it.each(forms.flatMap(form => [form, `declare -i n; declare -ai x; ${form}`]))('%s', line => {
     expect(bodiesOf(line)).toEqual([P])
   })
-
-  it.each([
-    `n='$(${P})'`,
-    `declare n='$(${P})'`,
-    `x+=('$(${P})')`,
-    `read n <<< '$(${P})'`,
-    `x=('[$(${P})]=1')`,
-  ])('%s has no subscript in its value', line => {
-    expect(bodiesOf(line)).toEqual([])
-  })
 })
 
-// Text reaches an integer variable through any word or stdin, so a quoted $(...) in a NAME[ subscript is
-// reported in every word and every here-string or heredoc, whatever the command. A row whose command never
-// consumes the text (echo, cat, test, foo) is over-reported on purpose: that is the fail-closed choice.
-describe('arithSubstitutions reads a NAME[ subscript in any word or stdin', () => {
+// Text reaches an integer variable through any word or stdin, and its name or `[` can be built at runtime,
+// so every quoted $(...) in every word, here-string and heredoc is reported, whatever the command. A row
+// whose command never consumes the text (echo, cat, test, foo) is over-reported on purpose: fail closed.
+describe('arithSubstitutions reports every quoted substitution in any word or stdin', () => {
   it.each([
     `printf -v n 'x[$(${P})]'`,
     `printf -vn 'x[$(${P})]'`,
@@ -272,20 +257,45 @@ describe('arithSubstitutions reads a NAME[ subscript in any word or stdin', () =
     `declare -ai x=(1); echo 'y[$(${P})]'`,
     `echo \${n:='x[$(${P})]'}`,
     `echo \${z['$(${P})']}`,
+    // The name or the `[` built at runtime.
+    `n=$y'[$(${P})]'`,
+    `n=\${y}'[$(${P})]'`,
+    `n="$y"'[$(${P})]'`,
+    `n=x$b'$(${P})]'`,
+    `n=$z'$(${P})]'`,
+    `v='$(${P})'; n=x[$v]`,
+    `v='[$(${P})]'; n=x$v`,
+    `n=$(printf x)'[$(${P})]'`,
+    "n=`printf x`'[$(" + P + ")]'",
+    `n=$(echo x)\\['$(${P})'\\]`,
+    `printf -v n '%s[%s]' x '$(${P})'`,
+    `printf -v n 'x\\x5b$(${P})]'`,
+    `printf -v n 'x\\133$(${P})]'`,
+    `printf -v n %b 'x\\x5b$(${P})]'`,
+    `printf '%s[%s]' x '$(${P})' | read n`,
+    `read n < <(printf '%s[%s]' x '$(${P})')`,
+    // Values with no subscript, once held out by a NAME[ gate.
+    `x='$(${P})'`,
+    `declare 'n=$(${P})'`,
+    `read n <<< '$(${P})'`,
+    `cat <<< '$(${P})'`,
+    `x=('[$(${P})]=1')`,
+    `x=(['k']='$(${P})')`,
+    `x=(a b) && echo '[$(${P})]=1'`,
+    `foo '$y[$(${P})]'`,
+    `foo 'x [$(${P})]'`,
+    `foo '(x)[$(${P})]'`,
   ])('%s', line => {
     expect(bodiesOf(line)).toContain(P)
   })
 
-  it.each([
-    `echo '$(${P})'`,
-    `foo "\${y}['$(${P})']"`,
-    `foo '$y[$(${P})]'`,
-    `foo 'x [$(${P})]'`,
-    `foo '(x)[$(${P})]'`,
-    `cat <<< '$(${P})'`,
-  ])('%s has no NAME[ subscript', line => {
-    expect(bodiesOf(line)).toEqual([])
-  })
+  // A live substitution is a command of its own, which the guard checks already.
+  it.each(['echo hi', "n='x[1]'", 'x=([k]=v)', 'cat <<< x', `echo "$(${P})"`, `foo "\${y}['$(${P})']"`])(
+    '%s reports nothing: no quoted substitution',
+    line => {
+      expect(bodiesOf(line)).toEqual([])
+    },
+  )
 })
 
 // The splitter cuts a funsub at its first `}`, even a quoted one, so the rest of the command is reported unread.

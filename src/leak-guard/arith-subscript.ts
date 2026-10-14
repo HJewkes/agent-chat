@@ -4,6 +4,14 @@
  * and some shells run a `$(...)` that value holds, so a substitution can arrive through a variable
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question.
+ *
+ * `arithSubstitutions` lists the body of every quoted substitution on a line, unconditionally (CC-1334).
+ * Text reaches a variable that may carry the integer attribute, set even before the line, through any word
+ * or stdin, and the name or its `[` can itself be produced at runtime, so no reading of the text can tell
+ * which quoted `$(...)` bash will evaluate. The guard checks each body as a command. Two limits:
+ * - Over-reporting is the intended fail-closed choice: a commit or PR body that quotes a denied command
+ *   inside `$(...)` is reported too, and the guard decides.
+ * - Data read at runtime from a file (`read n < file`, `$(<file)`) is out of reach.
  */
 import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
 
@@ -349,44 +357,20 @@ function quotedSubstitutions(marked: string): string[] {
   return bodies.map(unmark)
 }
 
-// Text reaches a variable that may carry the integer attribute, set anywhere and even before the line, through
-// any word or any stdin: an assigner, printf -v, read, readarray, for, set --, a pipe. bash then evaluates it
-// as arithmetic, and a quoted `$(...)` in a subscript of it runs. So every word and every here-string or
-// heredoc is read from its first NAME[ on, whatever the command, which over-reports a non-consumer on
-// purpose. A name right after `$`, a name character or `}` (`$y[`, `${y}[`) is not a subscript bash ran;
-// text with no NAME[ runs nothing that way, so it is not read.
-const WORD_SUBSCRIPT = new RegExp(`(?<![A-Za-z0-9_$}])${NAME}${LIVE}?\\[`)
-
-/** The text of `text` from its first NAME[ on, or nothing when it has none. */
-function fromSubscript(text: string): string[] {
-  const at = text.search(WORD_SUBSCRIPT)
-  return at < 0 ? [] : [text.slice(at)]
-}
-
-/** The quoted substitutions one command of `parsed` runs as arithmetic or as a name. */
-function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
-  const { marked, words, markedAssignments } = commandHead(cmd)
-  const operands = nameOperands(words)
-  const texts = [
-    ...comparisonOperands(words).map(i => marked[i] ?? ''),
-    ...nameTexts(words, marked, markedAssignments),
-    ...integerValues(words, marked, operands),
-    ...namerefValues(words, marked, operands),
-    ...compoundTexts(cmd, parsed),
-    ...[...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin])].flatMap(fromSubscript),
-  ]
+/** Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic. */
+const substitutionsOf = (cmd: SimpleCommand): string[] =>
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
-  return [...texts, ...cmd.arithBodies].flatMap(quotedSubstitutions)
-}
+  [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies].flatMap(
+    quotedSubstitutions,
+  )
 
 /**
- * The text of each quoted `$(...)` or backtick the shell runs when it evaluates an operand as arithmetic
- * or resolves it as a variable name (CC-1334), which the splitter never read as a command, across every
- * command of `parsed`, the whole output of `parseShell`. A live substitution is a command already, so it
- * is not listed. It takes the whole line so a compound array's elements, which follow its opener in the
- * list that holds it, cannot be missed by passing the wrong commands. A funsub is reported whole, from its `${` on.
+ * The body of every quoted `$(...)` and backtick in every word, here-string and heredoc of every command
+ * of `parsed`, the whole output of `parseShell` (CC-1334), whatever the command: the splitter never read
+ * them as commands, and arithmetic can run them (see the module header). A live substitution is a command
+ * already, so it is not listed. A funsub is reported whole, from its `${` on.
  */
 export function arithSubstitutions(parsed: readonly SimpleCommand[]): string[] {
-  const bodies = parsed.flatMap(cmd => [...substitutionsOf(cmd, parsed), ...funsubRest(cmd.marked)])
+  const bodies = parsed.flatMap(cmd => [...substitutionsOf(cmd), ...funsubRest(cmd.marked)])
   return [...new Set(bodies)]
 }
