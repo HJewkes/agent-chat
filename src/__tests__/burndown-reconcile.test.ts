@@ -9,7 +9,7 @@ import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 const NOW = new Date('2026-10-14T12:00:00.000Z')
 const EARLIER = '2026-10-14T09:00:00.000Z'
 
-const exited = (name: string): Observation['agent'] => ({ id: name, state: 'exited' })
+const exited = (name: string): NonNullable<Observation['agent']> => ({ id: name, state: 'exited' })
 
 const sliceA: Claim = {
   taskId: 'X-1',
@@ -115,11 +115,11 @@ describe('reconciling a claim whose task is done', () => {
   })
 
   it.each<[string, Observation]>([
-    ['its agent is still running', { ...taskDone, agent: { id: 'bd-x-2', state: 'running' } }],
+    ['its agent is still running', { ...taskDone, agent: { id: 'bd-x-2', state: 'live' } }],
     ['the PR read is unreadable', { ...taskDone, prState: 'unreadable' }],
     ['the PR is open', { ...taskDone, prState: { kind: 'open', pr: 'o/r#7' } }],
     ['the PR was not read', { agent: exited('bd-x-2'), taskStatus: 'done' }],
-    ['a Shepherd run is open', { ...taskDone, shepherd: { row: row({ phase: 'ci-wait', pr: 7 }) } }],
+    ['a Shepherd run is open', { ...taskDone, shepherd: { row: row({ phase: 'ci', pr: 7 }) } }],
     ['the task status was not read', { agent: exited('bd-x-2'), prState: { kind: 'none' } }],
     ['the task is open', { ...taskDone, taskStatus: 'open' }],
   ])('keeps the claim when %s', (_why, observation) => {
