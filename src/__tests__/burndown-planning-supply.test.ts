@@ -90,6 +90,27 @@ describe('planSeat below the ready floor (CC-986)', () => {
     expect(planned.notes).toContain('seat seat-a ready 0 below floor 4: planning 2 no-brief tasks')
   })
 
+  it('names the refusal kind and count of every briefer the trust gate refuses (CC-1302)', () => {
+    const tasks = IDS.map(id => task(id))
+
+    const planned = planSeat({
+      seat: SEAT,
+      rows: ROWS,
+      defaults: { initiative_decay: 0.5, share_caps: {} } as unknown as ScoringDefaults,
+      tasks: new Map([['alpha', tasks]]),
+      ledger: EMPTY_LEDGER,
+      budget: POOL,
+      brief: GATE,
+      readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
+      trust: () => 'installed Claude Code 9.9.9 is not a verified release',
+    })
+
+    expect(briefers(planned)).toEqual([])
+    expect(planned.notes).toContain(
+      'seat seat-a ready 0 below floor 4: planning 0 no-brief tasks; refused trust 5',
+    )
+  })
+
   it('dispatches no briefer when the ready depth is at the floor', () => {
     const ready = ['R-1', 'R-2', 'R-3', 'R-4']
     const tasks = [...IDS.map(id => task(id)), ...ready.map(id => task(id, [FRESH]))]

@@ -360,20 +360,44 @@ function planBelowFloor(
     refusal.kind = 'off-plan'
     refusal.reason = OFF_PLAN_REASON
   }
+  const { planned, skipped } = briefCandidates(
+    plan,
+    planningCandidates(plan.refusals, tasks, offPlanIds),
+    reason,
+    walk,
+    take,
+  )
+  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks${skippedNote(skipped)}`)
+}
+
+/** Briefs each candidate in turn; a skipped briefer's refusal kind is counted, since the row keeps its no-brief refusal. */
+function briefCandidates(
+  plan: Pick<SeatPlan, 'refusals'>,
+  candidates: readonly Refusal[],
+  reason: string,
+  walk: Walk,
+  take: (initiative: string, task: string, outcome: Taken) => void,
+): { planned: number; skipped: Map<RefusalKind, number> } {
   let planned = 0
-  for (const refusal of planningCandidates(plan.refusals, tasks, offPlanIds)) {
+  const skipped = new Map<RefusalKind, number>()
+  for (const refusal of candidates) {
     const outcome = briefFor(refusal, reason, walk)
     if (outcome === undefined) continue
     if ('kind' in outcome) {
       if (STOPS_PLANNING.has(outcome.kind)) break
+      skipped.set(outcome.kind, (skipped.get(outcome.kind) ?? 0) + 1)
       continue
     }
     plan.refusals.splice(plan.refusals.indexOf(refusal), 1)
     take(refusal.initiative, outcome.work.taskId, outcome)
     planned += 1
   }
-  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks`)
+  return { planned, skipped }
 }
+
+/** CC-1302: e.g. `; refused trust 104, orphan 2`; empty when no briefer was skipped. */
+const skippedNote = (skipped: ReadonlyMap<RefusalKind, number>): string =>
+  skipped.size === 0 ? '' : `; refused ${[...skipped].map(([kind, n]) => `${kind} ${n}`).join(', ')}`
 
 /** A briefer for a no-brief row, as `consider` sends one for a `brief:wanted` task; undefined with no repo. */
 function briefFor(refusal: Refusal, reason: string, walk: Walk): Taken | Refused | undefined {
