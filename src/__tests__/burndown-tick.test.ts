@@ -1404,7 +1404,7 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
       'refused demo DM-1 [claimed]: seat seat-t dispatched it earlier this tick as st-dm-1',
     )
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, charter)",
     )
   })
 
@@ -1897,7 +1897,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
 
     expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-r0'])
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, default)",
     )
   })
 

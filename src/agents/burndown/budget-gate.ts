@@ -170,6 +170,15 @@ export interface PoolGateInput {
   dispatched?: number
   /** CC-409: the pool's last reading that held both windows, aged to now; stands in when `reading` lacks one. */
   lastGood?: AccountReading | undefined
+  /** CC-1038: per-dispatch cost observed from the pool's history; a charter `dispatch_*_points` still wins. */
+  dispatchCost?: DispatchCost | undefined
+}
+
+export interface DispatchCost {
+  sevenDay: number
+  fiveHour: number
+  /** How the cost was measured, in words, appended to the gate reason. */
+  basis: string
 }
 
 export type PoolGateResult =
@@ -352,20 +361,81 @@ function dayStop(input: PoolGateInput, now: SevenDaySample, spend: SpendCaps): S
       }
 }
 
-/** The reading plus this tick's charged dispatches, so seats sharing a pool cannot pass one gate together. */
-function chargedReading(
-  pool: PoolRule,
-  reading: { sevenDay: number; fiveHour: number },
+type CostSource = 'charter' | 'observed' | 'default'
+
+interface WindowCharge {
+  reading: number
+  charged: number
+  each: number
+  source: CostSource
+}
+
+interface ChargedReading {
+  sevenDay: number
+  fiveHour: number
+  /** Each window's reading and charge; undefined when nothing was dispatched this tick. */
+  charges?: { sevenDay: WindowCharge; fiveHour: WindowCharge }
+  basis?: string
+}
+
+const tenths = (n: number): number => Math.round(n * 10) / 10
+
+function windowCharge(
+  reading: number,
   dispatched: number,
-): { sevenDay: number; fiveHour: number; note: string } {
-  if (dispatched === 0) return { ...reading, note: '' }
-  const sevenDay = dispatched * (pool.dispatch_seven_day_points ?? DEFAULT_DISPATCH_COST.sevenDay)
-  const fiveHour = dispatched * (pool.dispatch_five_hour_points ?? DEFAULT_DISPATCH_COST.fiveHour)
+  charter: number | undefined,
+  observed: number | undefined,
+  fallback: number,
+): WindowCharge {
+  const [each, source]: [number, CostSource] =
+    charter !== undefined
+      ? [charter, 'charter']
+      : observed !== undefined
+        ? [observed, 'observed']
+        : [fallback, 'default']
+  return { reading, charged: tenths(dispatched * each), each, source }
+}
+
+/**
+ * The reading plus this tick's charged dispatches, so seats sharing a pool cannot pass one gate together.
+ * Each window prices a dispatch at the charter's figure, else the observed cost, else the default.
+ */
+function chargedReading(input: PoolGateInput, pool: PoolRule, reading: FullWindows): ChargedReading {
+  const dispatched = input.dispatched ?? 0
+  if (dispatched === 0) return { ...reading }
+  const cost = input.dispatchCost
+  const sevenDay = windowCharge(
+    reading.sevenDay,
+    dispatched,
+    pool.dispatch_seven_day_points,
+    cost?.sevenDay,
+    DEFAULT_DISPATCH_COST.sevenDay,
+  )
+  const fiveHour = windowCharge(
+    reading.fiveHour,
+    dispatched,
+    pool.dispatch_five_hour_points,
+    cost?.fiveHour,
+    DEFAULT_DISPATCH_COST.fiveHour,
+  )
+  const observed = sevenDay.source === 'observed' || fiveHour.source === 'observed'
   return {
-    sevenDay: reading.sevenDay + sevenDay,
-    fiveHour: reading.fiveHour + fiveHour,
-    note: `; charged ${dispatched} dispatch(es) this tick at +${sevenDay} seven_day, +${fiveHour} five_hour`,
+    sevenDay: tenths(reading.sevenDay + sevenDay.charged),
+    fiveHour: tenths(reading.fiveHour + fiveHour.charged),
+    charges: { sevenDay, fiveHour },
+    ...(observed && cost !== undefined ? { basis: cost.basis } : {}),
   }
+}
+
+/** CC-1038: a window's judged figure, stating it is the reading plus this tick's charge when one applies. */
+function figure(
+  window: 'five_hour' | 'seven_day',
+  value: number,
+  charge: WindowCharge | undefined,
+  n: number,
+) {
+  if (charge === undefined) return `${window} ${value}%`
+  return `${window} ${value}% (reading ${charge.reading}% + ${charge.charged} charged: ${n} dispatch(es) this tick at ${charge.each} each, ${charge.source})`
 }
 
 /** Charter section 4's budget stops for one seat on its pool; a closed result's reason is the `BUDGET-PAUSE` line. */
@@ -458,38 +528,41 @@ function gateLastGood(input: PoolGateInput, pool: PricedPool, closed: Close): Po
   return { ...windows, staleOk: true, reason: `${windows.reason}; stale-ok: last good reading ${age}s old` }
 }
 
+type FullWindows = { sevenDay: number; fiveHour: number }
+
 function gateWindows(
   input: PoolGateInput,
   pool: PricedPool,
-  reading: { sevenDay: number; fiveHour: number },
+  reading: FullWindows,
   closed: Close,
 ): PoolGateResult {
   const { ctx } = input
   const { ceiling, line, capsLifted, note } = windowLines(pool, input)
-  const charged = chargedReading(pool, reading, input.dispatched ?? 0)
-  const { fiveHour, sevenDay } = charged
-  const why = ` (${note})${charged.note}`
+  const charged = chargedReading(input, pool, reading)
+  const { fiveHour, sevenDay, charges } = charged
+  const n = input.dispatched ?? 0
+  const five = figure('five_hour', fiveHour, charges?.fiveHour, n)
+  const seven = figure('seven_day', sevenDay, charges?.sevenDay, n)
+  const basis = charged.basis === undefined ? '' : `; ${charged.basis}`
+  const why = ` (${note})${basis}`
   const lever = (stop: string, value: number, at: number) =>
     capGate(`pools.${pool.name}.${stop}`, value, at, CHARTER_SOURCE)
   if (fiveHour >= ceiling)
     return closed(
-      `five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`,
+      `${five} at or above ceiling ${ceiling}%${why}`,
       lever('ceiling_five_hour', ceiling, fiveHour),
     )
   if (sevenDay >= line)
-    return closed(
-      `seven_day ${sevenDay}% at or above line ${line}%${why}`,
-      lever('reserve_seven_day', line, sevenDay),
-    )
+    return closed(`${seven} at or above line ${line}%${why}`, lever('reserve_seven_day', line, sevenDay))
   const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted)
-  if (stop !== undefined) return closed(`${stop.text}${charged.note}`, stop.gate)
+  if (stop !== undefined) return closed(`${stop.text}${charges ? `; ${seven}` : ''}${basis}`, stop.gate)
   const band = sonnetBand(pool)
   const sonnetOnly = fiveHour >= ceiling - band || sevenDay >= line - band
   return {
     open: true,
     pool: pool.name,
     sonnetOnly,
-    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? `; within ${band} points, sonnet only` : ''}`,
+    reason: `pool ${pool.name}: ${five} vs ceiling ${ceiling}%, ${seven} vs line ${line}%${why}${sonnetOnly ? `; within ${band} points, sonnet only` : ''}`,
   }
 }
 
