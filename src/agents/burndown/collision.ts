@@ -89,6 +89,8 @@ export interface CollisionFacts {
   held: readonly HeldContracts[]
   /** Owns on dispatched, undone claims other than the work's own: their PRs may not be open yet (CC-952). */
   heldOwns: readonly HeldOwns[]
+  /** Agents on dispatched, undone claims with owns: `heldOwns` gates them, so their spawn-time broker claim is stale (CC-1276). */
+  burndownAgents?: ReadonlySet<string>
   /** Index and generated files that merge-up resolves at land, so overlap on them alone never refuses (charter 6.2, CC-1153). */
   overlapExempt?: readonly string[]
 }
@@ -159,7 +161,10 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
   )
   if (gone !== undefined)
     return { kind: 'claimed', reason: `agent ${gone} carrying ${work.taskId} exited less than one tick ago` }
-  for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
+  const foreign = facts.claims.filter(
+    c => c.repo === facts.repo && !facts.ours.has(c.owner) && !facts.burndownAgents?.has(c.owner),
+  )
+  for (const claim of foreign) {
     const path = overlapping(work.owns, claim.patterns)
     if (path !== undefined) return { kind: 'claimed', reason: `${path} is under ${claim.owner}'s file claim` }
   }
@@ -398,6 +403,7 @@ export function collisionCheck(
       lineage: lineageOf(ledger, work.taskId),
       held: heldContracts(ledger, work),
       heldOwns: heldOwns(ledger, work),
+      burndownAgents: heldAgents(ledger),
     })
   }
 }
@@ -468,11 +474,26 @@ const heldContracts = (ledger: Ledger, work: CollisionWork): HeldContracts[] =>
       contracts: c.contracts ?? [],
     }))
 
-/** As `heldContracts`, for owns; a claim's repo is its worktree's (`<repo>/.worktrees/<name>`), else the plan's. */
+/** A claim's repo is its worktree's (`<repo>/.worktrees/<name>`), else the plan's. */
+const claimRepo = (c: Claim): string | undefined =>
+  c.worktree === undefined ? c.repo : dirname(dirname(c.worktree))
+
+/** A dispatched claim whose owns `liveOverlap` can gate. */
+const holdsOwns = (c: Claim): boolean =>
+  c.phase !== 'queued' && (c.owns ?? []).length > 0 && claimRepo(c) !== undefined
+
+/** As `heldContracts`, for owns. */
 const heldOwns = (ledger: Ledger, work: CollisionWork): HeldOwns[] =>
   heldClaims(ledger).flatMap(c => {
-    const repo = c.worktree === undefined ? c.repo : dirname(dirname(c.worktree))
-    if (c.phase === 'queued' || sameClaim(c, work) || (c.owns ?? []).length === 0 || repo === undefined)
-      return []
+    const repo = claimRepo(c)
+    if (!holdsOwns(c) || sameClaim(c, work) || repo === undefined) return []
     return [{ holder: holderOf(c), repo, owns: c.owns ?? [] }]
   })
+
+/** The agents of every claim `heldOwns` reports; the work's own claim is left in, since `ours` skips it anyway. */
+const heldAgents = (ledger: Ledger): ReadonlySet<string> =>
+  new Set(
+    heldClaims(ledger)
+      .filter(holdsOwns)
+      .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
+  )
