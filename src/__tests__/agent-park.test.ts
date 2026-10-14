@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
@@ -680,6 +681,93 @@ describe('refusing to park what the removal would lose', () => {
 
     expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(scratch\.md\)/) })
     expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
+  })
+
+  describe('a codewatch graph index (CC-1163)', () => {
+    async function withCodewatchIgnored(extraIgnores = ''): Promise<AgentIdentity> {
+      const agent = await spawnIn('worker-a', makeRepo())
+      fs.writeFileSync(path.join(agent.cwd, '.gitignore'), `.codewatch/\n${extraIgnores}`)
+      git(['add', '.gitignore'], agent.cwd)
+      git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+      fs.mkdirSync(path.join(agent.cwd, '.codewatch'))
+      return agent
+    }
+
+    function writeGraphDb(worktree: string, verdicts: number): string {
+      const file = path.join(worktree, '.codewatch', 'graph.db')
+      const db = new DatabaseSync(file)
+      db.exec('PRAGMA journal_mode = WAL')
+      db.exec('CREATE TABLE snapshot (id INTEGER PRIMARY KEY, commit_hash TEXT)')
+      db.exec("INSERT INTO snapshot (commit_hash) VALUES ('abc')")
+      db.exec('CREATE TABLE verdict (snapshot_id INTEGER, key TEXT, verdict TEXT, cost_usd REAL)')
+      for (let i = 0; i < verdicts; i++) db.exec(`INSERT INTO verdict VALUES (1, 'k${i}', 'confirmed', 0.02)`)
+      db.close()
+      return file
+    }
+
+    it('parks a tree whose only ignored file is a graph index with no triage verdicts', async () => {
+      const agent = await withCodewatchIgnored()
+      writeGraphDb(agent.cwd, 0)
+      await exit(agent)
+
+      expect((await sup.park('worker-a')).ok).toBe(true)
+      expect(fs.existsSync(agent.cwd)).toBe(false)
+    })
+
+    it('refuses a graph index holding a triage verdict, naming it', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 1)
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a check.json beside an index-only graph index, naming only check.json', async () => {
+      const agent = await withCodewatchIgnored()
+      writeGraphDb(agent.cwd, 0)
+      const check = path.join(agent.cwd, '.codewatch', 'check.json')
+      fs.writeFileSync(check, '{}\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/\(\.codewatch\/check\.json\); /),
+      })
+      expect(fs.existsSync(check)).toBe(true)
+    })
+
+    it('refuses a graph.db that is not SQLite', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = path.join(agent.cwd, '.codewatch', 'graph.db')
+      fs.writeFileSync(db, 'not a database\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses an index-only graph index nested in a package dir', async () => {
+      const agent = await withCodewatchIgnored()
+      const nested = path.join(agent.cwd, 'packages', 'ui')
+      fs.mkdirSync(path.join(nested, '.codewatch'), { recursive: true })
+      const db = writeGraphDb(nested, 0)
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('packages/ui/.codewatch/graph.db'),
+      })
+      expect(fs.existsSync(db)).toBe(true)
+    })
   })
 })
 

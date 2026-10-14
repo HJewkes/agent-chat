@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { promisify } from 'node:util'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import { gitChildEnv } from '../../git.js'
@@ -17,6 +20,10 @@ import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
  */
 
 const execFileAsync = promisify(execFile)
+
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncType
+}
 
 /** A process whose working directory is inside a tree. */
 export interface CwdProcess {
@@ -256,6 +263,36 @@ const isRegenerable = (entry: string): boolean => {
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
 }
 
+/** Codewatch writes its graph index at the git toplevel only, so a nested copy is not matched. */
+const CODEWATCH_INDEX = '.codewatch/graph.db'
+const CODEWATCH_INDEX_FILES = ['', '-wal', '-shm', '-journal'].map(suffix => CODEWATCH_INDEX + suffix)
+
+const hasTable = (db: DatabaseSyncType, name: string): boolean =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+
+/**
+ * CC-1163: the index re-indexing rebuilds, but its `verdict` table holds paid triage that it does not, so
+ * only a code-graph db (it has a `snapshot` table) with no verdict rows counts. Any failure to read refuses.
+ */
+function indexOnlyGraphDb(worktree: string): boolean {
+  let db: DatabaseSyncType | undefined
+  try {
+    db = new DatabaseSync(join(worktree, CODEWATCH_INDEX), { readOnly: true })
+    if (!hasTable(db, 'snapshot')) return false
+    return !hasTable(db, 'verdict') || db.prepare('SELECT 1 FROM verdict LIMIT 1').get() === undefined
+  } catch {
+    return false
+  } finally {
+    db?.close()
+  }
+}
+
+function withoutIndexOnlyGraphDb(worktree: string, entries: string[]): string[] {
+  if (!entries.some(entry => CODEWATCH_INDEX_FILES.includes(entry))) return entries
+  if (!indexOnlyGraphDb(worktree)) return entries
+  return entries.filter(entry => !CODEWATCH_INDEX_FILES.includes(entry))
+}
+
 /** `--directory` collapses a wholly ignored directory into one entry; list its files so a nested build output is judged alone. */
 async function expandDirectory(worktree: string, entry: string): Promise<string[]> {
   if (!entry.endsWith('/')) return [entry]
@@ -278,11 +315,14 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   if (ignored === null) return `could not list ignored files in ${worktree}`
   const entries = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
   const kept = (await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()
-  const unregenerable = kept.filter(entry => !isRegenerable(entry))
+  const unregenerable = withoutIndexOnlyGraphDb(
+    worktree,
+    kept.filter(entry => !isRegenerable(entry)),
+  )
   if (unregenerable.length === 0) return undefined
   return (
     `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo and a top-level .claude`
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`
   )
 }
 
