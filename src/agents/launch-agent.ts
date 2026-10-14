@@ -31,7 +31,7 @@ import { readLaunchPlan } from './launch-files.js'
 import { holderOf } from './launch-guard.js'
 import { continueStarted } from './launch-plan.js'
 import { findTranscript } from './transcript.js'
-import { isReviewerSpawn, reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
+import { reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -92,18 +92,15 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
 export type LaunchTmp = Omit<AgentTmpRequest, 'name' | 'pid'>
 
 /**
- * CC-1184: a Linux reviewer's TMPDIR goes on disk, because its review checkouts under
- * `$TMPDIR/<name>` each carry an install, and three at once fill /tmp's inodes. Implementers
- * and macOS keep /tmp.
+ * CC-1264: every Linux launch's TMPDIR goes on disk. /tmp is a 1M-inode tmpfs shared with every
+ * agent's harness output, so one runaway install there starves them all, and an install on the
+ * home disk can hardlink from the pnpm store on the same filesystem. macOS keeps /tmp.
  */
 export function launchTmpRoot(
-  env: Record<string, string | undefined>,
   platform: NodeJS.Platform = process.platform,
   homeDir: string = os.homedir(),
 ): string {
-  const name = env.AGENT_CHAT_NAME
-  const reviewer = name !== undefined && isReviewerSpawn(env.AGENT_CHAT_PROFILE ?? '', name)
-  return platform === 'linux' && reviewer ? diskTmpRoot(homeDir) : TMP_ROOT
+  return platform === 'linux' ? diskTmpRoot(homeDir) : TMP_ROOT
 }
 
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */
@@ -134,7 +131,7 @@ export function runAgentVerb(agentId: string): void {
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
   const shimmed = withShims(continued)
   const name = shimmed.env.AGENT_CHAT_NAME
-  const root = launchTmpRoot(shimmed.env)
+  const root = launchTmpRoot()
   const options = launchOptions(agentId, name, { root })
   const plan = withScratchAddDir(shimmed, reviewerScratchDir({ ...options.baseEnv, ...shimmed.env }))
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)

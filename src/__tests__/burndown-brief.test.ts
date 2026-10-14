@@ -123,6 +123,13 @@ describe('planner brief', () => {
     expect(brief).toContain('`dependsWhy`')
     expect(brief).toContain('otherwise leave `dependsOn` empty')
   })
+
+  it('names the slice repo field and the plan Repo: header default in both plan briefs (CC-1293)', () => {
+    for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
+      expect(brief).toContain('outside the task\'s repo sets "repo" to its checkout name')
+      expect(brief).toContain("the plan's `Repo:` header is the default")
+    }
+  })
 })
 
 describe('brief writer brief (CC-939)', () => {

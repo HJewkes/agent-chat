@@ -14,6 +14,7 @@ import {
   SCOPE_REQUIRED,
   type FinishedRetirePort,
 } from '../agents/isolation/retire-finished.js'
+import type { ShepherdRun } from '../agents/isolation/shepherd-skip.js'
 import type { AgentIdentity, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -545,16 +546,18 @@ describe('the recheck and parking rules, against a fake port', () => {
 
 describe('open PRs and Shepherd runs (CC-904)', () => {
   let openPr = false
+  let runs: ShepherdRun[] = []
 
   beforeEach(() => {
     sup.close()
     openPr = false
+    runs = []
     sup = new Supervisor(core, {
       surface: {
         platform: 'linux',
         spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
       },
-      shepherdSkip: { activeRuns: () => Promise.resolve([]), hasOpenPr: () => Promise.resolve(openPr) },
+      shepherdSkip: { activeRuns: () => Promise.resolve(runs), hasOpenPr: () => Promise.resolve(openPr) },
     })
   })
 
@@ -578,6 +581,47 @@ describe('open PRs and Shepherd runs (CC-904)', () => {
     const repo = repoWithOrigin()
     const agent = await finishedIn('cc-merged', repo)
     publish(repo, `agent-chat/${agent.name}`)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([{ name: 'cc-merged', action: 'retire' }])
+    expect(out.results).toEqual([{ name: 'cc-merged', ok: true }])
+  })
+
+  const registered = (name: string): ShepherdRun => ({
+    branch: `agent-chat/${name}`,
+    names: [name],
+    implementer: name,
+    phase: 'review',
+  })
+
+  // CC-1325: Shepherd resumes a non-retired implementer warm, so the bulk retire keeps it while the PR is open.
+  it('skips a Shepherd-registered implementer whose PR is open', async () => {
+    const repo = repoWithOrigin()
+    const agent = await finishedIn('cc-open', repo)
+    publish(repo, `agent-chat/${agent.name}`)
+    runs = [registered(agent.name)]
+    openPr = true
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([
+      {
+        name: 'cc-open',
+        action: 'skip',
+        reason: 'open PR on agent-chat/cc-open (kept until merged or closed)',
+      },
+    ])
+    expect(stateOf('cc-open')).toBe('exited')
+  })
+
+  it('retires a Shepherd-registered implementer once its PR is merged', async () => {
+    const repo = repoWithOrigin()
+    const agent = await finishedIn('cc-merged', repo)
+    publish(repo, `agent-chat/${agent.name}`)
+    runs = [registered(agent.name)]
     pastGrace()
 
     const out = await sup.retireFinished({ prefix: 'cc-' })

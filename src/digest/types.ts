@@ -1,3 +1,4 @@
+import type { ClaimHold } from '../agents/burndown/claim-hold.js'
 import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
 
 /** The morning digest's model: every section as plain data, rendered by `render.ts`. */
@@ -97,10 +98,19 @@ export interface AccountSpend {
 
 export interface StalledClaim {
   taskId: string
+  slice?: string
   initiative: string
   agentId: string
   phase: string
   phaseAt: string
+  /** Absent when the claim stalled by outliving its phase timeout rather than by a recorded reason. */
+  reason?: string
+  /** The stall's exception class, `unclassed` on a row from before classes. */
+  cls: string
+  hold: ClaimHold
+  ageMs: number
+  /** CC-1150 b: the stale class and the action proposed for it, when the claim's agent is gone. */
+  proposed?: string
 }
 
 export interface NamedItem {

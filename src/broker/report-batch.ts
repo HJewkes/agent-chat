@@ -20,9 +20,17 @@ export const MAX_REMEMBERED = 1024
 /** `false` says the frame was not written; any other return, from a transport that cannot tell, says it was. */
 type Push<C> = (conn: C, message: DeliveredMessage) => unknown
 
+/** CC-337: what a closed connection held, and the exit verdicts waiting on it, for its successor. */
+export interface Unpushed {
+  messages: DeliveredMessage[]
+  settled: (() => void)[]
+}
+
 interface Held {
   messages: DeliveredMessage[]
   timer?: NodeJS.Timeout
+  /** CC-337: run once these messages are written or refused; dropped with the connection. */
+  settled?: (() => void)[]
 }
 
 export class ReportBatcher<C> {
@@ -59,14 +67,17 @@ export class ReportBatcher<C> {
     return this.pushed.has(msgId)
   }
 
-  /** The connection is gone: what it was pushed no longer counts, and what it was only held is returned. */
-  forget(conn: C): DeliveredMessage[] {
+  /**
+   * The connection is gone: what it was pushed no longer counts, and what it was only held is
+   * returned with the exit verdicts waiting on it, which run once the successor has it.
+   */
+  forget(conn: C): Unpushed {
     for (const [msgId, to] of this.pushed) if (to === conn) this.pushed.delete(msgId)
     const waiting = this.held.get(conn)
-    if (!waiting) return []
+    if (!waiting) return { messages: [], settled: [] }
     clearTimeout(waiting.timer)
     this.held.delete(conn)
-    return waiting.messages
+    return { messages: waiting.messages, settled: waiting.settled ?? [] }
   }
 
   flush(conn: C): void {
@@ -75,11 +86,23 @@ export class ReportBatcher<C> {
     clearTimeout(waiting.timer)
     this.held.delete(conn)
     this.write(conn, waiting.messages)
+    for (const then of waiting.settled ?? []) then()
   }
 
   /** Ends the window early when it holds a report from `sender`, so that sender's exit notice cannot overtake it. */
   flushFrom(conn: C, sender: string): void {
     if (this.held.get(conn)?.messages.some(m => m.from === sender)) this.flush(conn)
+  }
+
+  /**
+   * CC-337: keeps the window when it holds a report from `sender`, and calls `then` once that batch is
+   * written, so an exit is judged after its report rather than ending the window for every other worker.
+   */
+  afterFlushFrom(conn: C, sender: string, then: () => void): boolean {
+    const waiting = this.held.get(conn)
+    if (!waiting?.messages.some(m => m.from === sender)) return false
+    waiting.settled = [...(waiting.settled ?? []), then]
+    return true
   }
 
   /** Reports a closed connection was never pushed, for the connection that now holds its name. */
