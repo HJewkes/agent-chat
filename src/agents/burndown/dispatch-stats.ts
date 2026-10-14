@@ -31,8 +31,10 @@ export interface DispatchStatsPorts {
   journal: (seat: string, day: Date) => string | undefined
   /** The tick status file's last good tick, the fallback when no tick row is in the window. */
   lastOkAt: () => string | undefined
-  /** The tick config's `maxAgents`; the ready floor is twice it. */
+  /** The tick config's `maxAgents`; the ready floor is twice it unless `readyFloor` sets one. */
   maxAgents: () => number
+  /** CC-1106: the tick config's `readyFloor`; absent or undefined keeps twice `maxAgents`. */
+  readyFloor?: () => number | undefined
   /** CC-938: the review verdicts on the PRs of `runs`' tasks since `sinceMs`; throws when the event log cannot be read. */
   verdicts: (runs: readonly DispatchRecord[], sinceMs: number) => VerdictObservation[]
   /** CC-965: the seat spawn gate's warn and refuse rows since `sinceMs`, each attributed to a seat where one owns it. */
@@ -371,10 +373,10 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
   }
 }
 
-/** CC-967: the ready depth a seat should hold, twice the config's `maxAgents`; CC-986 plans below it. */
-export const readyFloorFor = (maxAgents: number): number => 2 * maxAgents
+/** CC-967: the ready depth a seat should hold, the configured floor or twice `maxAgents`; CC-986 plans below it. */
+export const readyFloorFor = (maxAgents: number, configured?: number): number => configured ?? 2 * maxAgents
 
-/** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
+/** One record per seat, in seat-name order. `floor` overrides the config's ready floor. */
 export function dispatchStats(
   ports: DispatchStatsPorts,
   windowMs: number,
@@ -386,7 +388,7 @@ export function dispatchStats(
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
-    floor: floor ?? readyFloorFor(ports.maxAgents()),
+    floor: floor ?? readyFloorFor(ports.maxAgents(), ports.readyFloor?.()),
     gate: ports.gateRows(sinceMs),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
