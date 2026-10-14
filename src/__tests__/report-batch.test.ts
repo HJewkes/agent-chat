@@ -530,19 +530,19 @@ describe('a report that is held and not yet written', () => {
     expect(batcher.wasPushed('id-one')).toBe(true)
   })
 
-  // Mutation caught: the exit judged without first flushing, so the notice is muted for a report nobody was pushed.
+  // Mutation caught (CC-337): the exit judged at once, so the notice is muted for a report nobody was pushed.
   it.each(['coord', 'seat'])(
-    'is pushed to %s at the exit, which is then not announced, and is not pushed again after a reconnect',
+    'stays held through a clean exit, then reaches %s once and the exit is not announced',
     name => {
       const coord = session(name)
       const a = worker('w-a', coord)
       say(a, name, 'Status: DONE')
-      expect(pushes(coord)).toEqual([])
 
       exit(a, 'w-a')
+      expect(pushes(coord)).toEqual([])
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
       core.drop(coord.conn)
       const back = session(name)
-      vi.advanceTimersByTime(WINDOW_MS)
 
       expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
       expect(exitsPushedTo(coord)).toEqual([])
@@ -552,7 +552,7 @@ describe('a report that is held and not yet written', () => {
 
   // Mutation caught: a takeover leaving the displaced connection's timer armed, so it is written to after the fact.
   it.each(['coord', 'seat'])(
-    'is pushed to %s at the exit, and is not pushed again after a takeover by the same agent',
+    'goes only to the connection that takes %s over after a clean exit inside the window',
     name => {
       const coord = coordinator(name)
       const a = worker('w-a', coord)
@@ -560,11 +560,11 @@ describe('a report that is held and not yet written', () => {
 
       exit(a, 'w-a')
       const back = session(name, idOf(coord))
-      vi.advanceTimersByTime(WINDOW_MS)
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
 
-      expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(pushes(coord)).toEqual([])
       expect(exitsPushedTo(coord)).toEqual([])
-      expect(pushes(back)).toEqual([])
+      expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
     },
   )
 
@@ -617,6 +617,7 @@ describe('a report that is held and not yet written', () => {
       Object.assign(coord.conn, { [flag]: true })
 
       exit(a, 'w-a')
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
       core.drop(coord.conn)
       const back = session('coord')
 
@@ -682,6 +683,7 @@ describe('a report that is held and not yet written', () => {
     send(coord, { t: 'send', to: 'w-a', text: 'also fix the flake before you stop' })
 
     exit(a, 'w-a')
+    vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
 
     const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
     expect(order.slice(-2)).toEqual(['deliver', 'system_events'])
@@ -1072,7 +1074,8 @@ describe('over real sockets, with the window far from its end', () => {
       .map(e => e.subject)
 
   // Mutation caught: the exit muted on the strength of a report that is still held.
-  it('writes the held report when its sender exits, and sends no exit notice after it', async () => {
+  it('keeps the held report through a clean exit of its sender, then writes it with no exit notice after it', async () => {
+    windowMs = 500
     const coord = await coordinator()
     const agentId = await reportFromWorker()
     expect(textsPushed(coord.frames)).toEqual([])
