@@ -65,7 +65,7 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
-const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
+const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>', '&>', '&>>'])
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -276,6 +276,8 @@ class ShellLexer {
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
     if (c === '(' || c === ')') return this.paren(c)
+    // bash's `&>` and `&>>` send both streams to a file; they do not end the command.
+    if (c === '&' && this.src[this.pos + 1] === '>') return this.redirect()
     if (OPERATORS.has(c)) return this.operator(c)
     if (c === '#' && this.word === null) return this.skipComment()
     if (c === '<' || c === '>') return this.redirect()
@@ -535,7 +537,8 @@ class ShellLexer {
   private redirect(): void {
     const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
     if (range !== undefined) return this.globRange(range)
-    const fd = this.descriptor()
+    // In `2&>f` the 2 is an argument, not a descriptor.
+    const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
     this.endWord()
     if (this.src.startsWith('<<<', this.pos)) return this.expect(aside ? 'discard' : 'herestring', 3)

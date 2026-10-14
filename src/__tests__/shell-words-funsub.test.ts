@@ -190,6 +190,45 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBeUndefined()
   })
 
+  // bash 5.3.9 reads `&>` and `&>>` as a redirect, so the command goes on and a brace after it is an argument.
+  it.each(
+    [
+      'echo a &>/dev/null } ; git push --no-verify ;}"',
+      'echo a &>/dev/null { ;} #"; git push --no-verify\n}"',
+      'echo a&>f } ; git push --no-verify ;}"',
+      'echo a &>>f } ; git push --no-verify ;}"',
+      'echo a 2&>f } ; git push --no-verify ;}"',
+      'echo a &> f } ; git push --no-verify ;}"',
+      ': &>f } ; git push --no-verify ;}"',
+      'cat &>f <<<x } ; git push --no-verify ;}"',
+      'echo a &>f &>g } ; git push --no-verify ;}"',
+      'echo a&>f { ;} #"; git push --no-verify\n}"',
+      'echo a &>>f { ;} #"; git push --no-verify\n}"',
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}`)),
+  )('%j has a brace after &>, so it is unreadable', src => {
+    expect(expansionRisk(src)).toBe('unreadable')
+  })
+
+  it.each(['${ ', '${|'])(
+    '%j a trailing & still ends the command, so the brace after it is reserved',
+    open => {
+      const grouped = `echo "${open}{ :& } ; git push --no-verify ;}"`
+      const closed = `echo "${open}: & } #"; git push --no-verify\n}"`
+
+      expect(find(grouped, 'git')?.nested).toBe(true)
+      expect(expansionRisk(grouped)).toBeUndefined()
+      expect(find(closed, 'git')?.nested).toBe(false)
+      expect(expansionRisk(closed)).toBeUndefined()
+    },
+  )
+
+  it('records &> and &>> as writes of the command they follow', () => {
+    const [cmd] = parseShell('echo a &>f 2&>>g')
+
+    expect(cmd?.words).toEqual(['echo', 'a', '2'])
+    expect(cmd?.writes).toEqual(['f', 'g'])
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
