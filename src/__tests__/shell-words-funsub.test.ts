@@ -437,10 +437,30 @@ describe('reserved words read token by token', () => {
       'for i\ndo { :; }; done; git push --no-verify; }"',
       'time -p { :; }; git push --no-verify; }"',
       'function f () { :; }; git push --no-verify; }"',
+      "$'fi' }x; git push --no-verify; }\"",
+      'case a in (esac|}) ;; esac; git push --no-verify; }"',
+      'case a in a|esac|}) ;; esac; git push --no-verify; }"',
+      'time -- { :; }; git push --no-verify; }"',
+      'time -p -- { :; }; git push --no-verify; }"',
     ].flatMap(opened),
   )('%j reads the case or group, so the push stays inside', src => {
     expect(find(src, 'git')?.nested).toBe(true)
     expect(expansionRisk(src)).toBeUndefined()
+  })
+
+  // bash 5.3.9 reserves no `}` after an assignment named by coproc and no `time` after a pipe or coproc
+  // (reserved_word_acceptable and time_command_acceptable), so the } is an argument and the push runs.
+  it.each(
+    [
+      'coproc x=1 }; git push --no-verify; }"',
+      ': | time }; git push --no-verify; }"',
+      ': |& time }; git push --no-verify; }"',
+      ': |\ntime }; git push --no-verify; }"',
+      'coproc x time }; git push --no-verify; }"',
+      'coproc time -p }; git push --no-verify; }"',
+    ].flatMap(opened),
+  )('%j has a } argument, so it is unreadable', src => {
+    expect(expansionRisk(src)).toBe('unreadable')
   })
 })
 
