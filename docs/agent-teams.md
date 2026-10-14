@@ -1514,8 +1514,9 @@ directories with `lsof` and refuses, naming the pid, while any process sits insi
 the listing fails it refuses too, since the agent's process may have outlived the broker. An
 `lsof` exit 1 that still printed parseable output counts as a listing. The tree must be clean, on
 its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
-`coverage`, `.turbo`, a `*.tsbuildinfo` file at any depth (a directory so named is searched, not
-trusted), or a top-level `.claude` (CC-334).
+`coverage`, `.turbo`, `.api-extractor-temp` (CC-1258), an `.eslintcache` file, a `*.tsbuildinfo`
+file at any depth (a directory so named is searched, not trusted), or a top-level `.claude`
+(CC-334).
 
 Retire at the final report (CC-921) is off by default. Set `autoRetire.onFinalReport` in
 `~/.agent-chat/config.json` to `true` for every spawner, or to a list of spawner names, for
