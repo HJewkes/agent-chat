@@ -71,13 +71,15 @@ const writeLines = (file: string, lines: readonly string[]): void => {
   fs.writeFileSync(file, lines.map(line => `${line}\n`).join(''))
 }
 
-const reading = (minutesAgo: number, sevenDay: number, fiveHour: number, pool = 'pool-y') =>
+const toSeconds = (minutesAgo: number): number => Math.round((nowMs - minutesAgo * MINUTE) / 1000)
+
+const reading = (minutesAgo: number, sevenDay: number, fiveHour: number, pool = 'pool-y', resetsAt = 0) =>
   JSON.stringify({
-    ts: Math.round((nowMs - minutesAgo * MINUTE) / 1000),
+    ts: toSeconds(minutesAgo),
     pool,
     seven_day: sevenDay,
     five_hour: fiveHour,
-    resets_at: 0,
+    resets_at: resetsAt,
     source: 'watchdog',
     age_s: 30,
   })
@@ -131,6 +133,17 @@ describe('the observed cost read from disk', () => {
     writeLines(path.join(root, 'pool-readings.jsonl'), [reading(30, 22, 30)])
 
     expect(diskDispatchCosts(root, nowMs)('pool-y')).toBeUndefined()
+  })
+
+  it('reads a seven_day drop after the row’s resets_at as a reset', () => {
+    writeHistory()
+    writeLines(path.join(root, 'pool-readings.jsonl'), [
+      reading(120, 3, 10, 'pool-y', toSeconds(90)),
+      reading(60, 1, 20),
+      reading(30, 2, 30),
+    ])
+
+    expect(diskDispatchCosts(root, nowMs)('pool-y')?.basis).toContain('+2 seven_day')
   })
 
   it('has no estimate when the autonomy root holds neither file', () => {

@@ -7,6 +7,8 @@ export interface CostReading {
   at: number
   sevenDay: number
   fiveHour: number
+  /** Epoch ms the seven_day window resets; absent when unknown. */
+  sevenDayResetsAt?: number
 }
 
 export interface ObservedDispatchCost {
@@ -23,13 +25,37 @@ export const MIN_COST_SPAWNS = 10
 export const MIN_COST_SPAN_MS = 60 * 60_000
 /** A charge never reaches zero, however quiet the pool looked. */
 export const COST_FLOOR = { sevenDay: 0.05, fiveHour: 0.25 }
+/** The watchdog's seven_day reading wobbles by a point between readers, so a smaller drop is not a reset. */
+export const SEVEN_DAY_RESET_DROP = 5
 
 const clamp = (value: number, floor: number, ceiling: number): number =>
   Math.min(ceiling, Math.max(floor, value))
 
-/** Reset-aware rise of one window: a drop counts from zero, as `pointsSpent` reads seven_day. */
-const rise = (readings: readonly CostReading[], value: (r: CostReading) => number): number =>
-  pointsSpent(readings.map(r => ({ at: r.at, sevenDay: value(r) })))
+/** Reset-aware five_hour rise: any drop counts from zero, as `pointsSpent` reads it. */
+const fiveHourRise = (readings: readonly CostReading[]): number =>
+  pointsSpent(readings.map(r => ({ at: r.at, sevenDay: r.fiveHour })))
+
+/**
+ * Seven_day rise over the high-water mark. A drop is a reset only when the prior reading's resets_at has passed
+ * or the fall from the mark reaches SEVEN_DAY_RESET_DROP; a smaller dip and its recovery add nothing.
+ */
+function sevenDayRise(readings: readonly CostReading[]): number {
+  let total = 0
+  let level = readings[0]?.sevenDay ?? 0
+  for (const [i, cur] of readings.entries()) {
+    const prev = readings[i - 1]
+    if (prev === undefined) continue
+    const windowPassed = prev.sevenDayResetsAt !== undefined && prev.sevenDayResetsAt <= cur.at
+    if (windowPassed || level - cur.sevenDay >= SEVEN_DAY_RESET_DROP) {
+      total += cur.sevenDay
+      level = cur.sevenDay
+    } else {
+      total += Math.max(0, cur.sevenDay - level)
+      level = Math.max(level, cur.sevenDay)
+    }
+  }
+  return total
+}
 
 const hhmm = (ms: number): string => new Date(ms).toISOString().slice(11, 16)
 
@@ -51,13 +77,13 @@ export function observedDispatchCost(
   const spawnEnd = nowMs - SPEND_LAG_MS
   const spawns = spawnTimes.filter(t => t > spawnEnd - COST_WINDOW_MS && t <= spawnEnd).length
   if (spawns < MIN_COST_SPAWNS) return undefined
-  const fiveHourRise = rise(inWindow, r => r.fiveHour)
-  const sevenDayRise = rise(inWindow, r => r.sevenDay)
+  const fiveHour = fiveHourRise(inWindow)
+  const sevenDay = sevenDayRise(inWindow)
   return {
-    sevenDay: clamp(sevenDayRise / spawns, COST_FLOOR.sevenDay, DEFAULT_DISPATCH_COST.sevenDay),
-    fiveHour: clamp(fiveHourRise / spawns, COST_FLOOR.fiveHour, DEFAULT_DISPATCH_COST.fiveHour),
+    sevenDay: clamp(sevenDay / spawns, COST_FLOOR.sevenDay, DEFAULT_DISPATCH_COST.sevenDay),
+    fiveHour: clamp(fiveHour / spawns, COST_FLOOR.fiveHour, DEFAULT_DISPATCH_COST.fiveHour),
     basis:
-      `observed: ${spawns} spawns, +${fiveHourRise} five_hour +${sevenDayRise} seven_day` +
+      `observed: ${spawns} spawns, +${fiveHour} five_hour +${sevenDay} seven_day` +
       ` over ${hhmm(first.at)}-${hhmm(last.at)}Z`,
   }
 }
