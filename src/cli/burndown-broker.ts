@@ -48,6 +48,10 @@ export function tickBroker(
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
     },
+    async park(name) {
+      const res = (await client.request({ t: 'park', name }, 'spawn_result')) as Reply<'spawn_result'>
+      return spawnReply(res)
+    },
     async retireFinished(spawner) {
       const frame = { t: 'retire_finished' as const, spawner }
       const res = (await client.request(frame, 'retire_finished_result')) as Reply<'retire_finished_result'>
