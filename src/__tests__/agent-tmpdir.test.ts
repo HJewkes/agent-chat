@@ -226,6 +226,24 @@ describe('a per-agent TMPDIR under the on-disk root (CC-1184)', () => {
     expect(fs.removed).toEqual([DISK_DIR])
     expect(fs.nodes.has(DIR)).toBe(true)
   })
+
+  it('leaves the dir at exit when the disk root is a symlink (CC-1321)', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(DISK_DIR)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    removeOwnTmpDir(
+      'worker',
+      'a1',
+      4242,
+      { ...deps(fs), platform: 'linux', log: (e, d) => events.push([e, d]) },
+      DISK_ROOT,
+    )
+
+    expect(fs.removed).toEqual([])
+    expect(events).toEqual([
+      ['tmpdir_kept', { source: 'exit', agentId: 'a1', path: DISK_DIR, reason: 'root symlink' }],
+    ])
+  })
 })
 
 describe('a per-agent harness dir under the on-disk harness root (CC-1266)', () => {
@@ -501,6 +519,64 @@ describe('removing a per-agent TMPDIR', () => {
   })
 })
 
+describe('removing a per-agent TMPDIR under an unsafe disk root (CC-1321)', () => {
+  const rootTarget = { ...target, root: DISK_ROOT }
+
+  it('refuses to remove through a symlinked disk root', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toEqual({
+      removed: false,
+      path: DISK_DIR,
+      reason: 'root symlink',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('refuses to remove under a disk root another user owns', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'dir', 0).add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({
+      removed: false,
+      reason: 'root owned by uid 0',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('refuses to remove under a disk root that is not a directory', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'file').add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({
+      removed: false,
+      reason: 'root not a directory',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('treats a missing disk root as nothing to do', () => {
+    const fs = new FakeFs()
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toEqual({
+      removed: false,
+      path: DISK_DIR,
+      reason: 'missing',
+    })
+  })
+
+  it('still removes under /tmp, whose owner is root', () => {
+    const fs = new FakeFs().add(DIR)
+
+    expect(removeAgentTmpDir(target, deps(fs))).toMatchObject({ removed: true, path: DIR })
+  })
+
+  it('removes under an own disk root', () => {
+    const fs = new FakeFs().add(DISK_ROOT).add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({ removed: true, path: DISK_DIR })
+    expect(fs.removed).toEqual([DISK_DIR])
+  })
+})
+
 describe('removing the TMPDIR at run-agent exit', () => {
   it('removes the launch’s own dir and logs the inode count', () => {
     const fs = new FakeFs().add(DIR).add(`${DIR}/x`, 'file')
@@ -722,6 +798,25 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     })
 
     expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
+  })
+
+  it('does not sweep through a symlinked disk root (CC-1321)', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(`${DISK_ROOT}/ac-worker-12`)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: [DISK_ROOT],
+    })
+
+    expect(fs.removed).toEqual([])
+    expect(events).toContainEqual([
+      'tmpdir_kept',
+      expect.objectContaining({ source: 'sweep', reason: 'root symlink' }),
+    ])
   })
 
   it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', () => {
