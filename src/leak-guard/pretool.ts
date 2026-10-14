@@ -438,6 +438,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         ...run.later.map(words => ({ ...before, words })),
         ...run.tail.map(words => ({ ...before, fed, words })),
       ]
+      chdir ||= run.chdir
       rest = run.words.map(w => placeFed(w, '{}'))
       at = run.at
     } else if (name === 'sudo') {
@@ -485,21 +486,24 @@ const FIND_FED: Fed = { replace: '{}', append: false }
 /**
  * The command a `find` at `at` runs: its first action clause, with every `later` clause as a find of its
  * own to check apart. A word the guard cannot read may expand to `-exec`, or to a `;` that ends a clause
- * early, so the words from the first one on are also checked as a command, the `tail`. Undefined when
- * find runs nothing.
+ * early, so the words from the first one on are also checked as a command, the `tail`. `chdir` is set
+ * when the command runs in each found file's directory. Undefined when find runs nothing.
  */
 function findRun(
   rest: readonly string[],
   at: number,
-): { words: string[]; at: number; later: string[][]; tail: string[][] } | undefined {
+): { words: string[]; at: number; chdir: boolean; later: string[][]; tail: string[][] } | undefined {
   const { clauses, hiddenAt } = findClauses(rest, at + 1)
   const alone = (clause: FindClause): string[] => [rest[at] as string, clause.action, ...clause.words, ';']
   const inClause = clauses.flatMap(c => c.words.flatMap((w, i) => (unreadable(w) ? [c.at + i] : [])))
   const tailAt = Math.min(hiddenAt ?? Infinity, inClause[0] ?? Infinity)
   const tail = tailAt < Infinity ? [rest.slice(tailAt).map(w => placeFed(w, '{}'))] : []
   const [first, ...later] = clauses
-  if (first !== undefined) return { words: [...first.words], at: 0, later: later.map(alone), tail }
-  return tailAt < Infinity ? { words: [...rest], at: tailAt, later: [], tail: [] } : undefined
+  if (first !== undefined) {
+    const chdir = first.action === '-execdir' || first.action === '-okdir'
+    return { words: [...first.words], at: 0, chdir, later: later.map(alone), tail }
+  }
+  return tailAt < Infinity ? { words: [...rest], at: tailAt, chdir: false, later: [], tail: [] } : undefined
 }
 
 /** A word holding an expansion, other than the bare `{}` the shell leaves alone. */

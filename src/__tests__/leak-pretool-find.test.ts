@@ -67,6 +67,37 @@ describe('find runs each action clause with the paths it finds in place of {} (C
   )
 
   it.each([
+    'find /clean -maxdepth 0 -execdir gh pr create -t x --body-file w.md \\;',
+    'find /clean -maxdepth 0 -okdir gh pr create -t x --body-file w.md \\;',
+    'find /clean -maxdepth 0 -exec true \\; -execdir gh pr create -t x --body-file w.md \\;',
+  ])('denies a body file read in the directory -execdir moves to: %s', command => {
+    expect(checkCommand(command, { ...ctx, readFile: () => 'clean' })).toBe(REASONS.unreadableBody)
+  })
+
+  describe('with a push alias only in repositories below /work', () => {
+    const nested: GuardContext = {
+      ...ctx,
+      readAlias: (word, dir) =>
+        word === 'p' && dir !== '/work' ? { value: 'push --no-verify', runsIn: dir } : undefined,
+    }
+
+    it.each([
+      'find . -name .git -execdir git p \\;',
+      'find . -name .git -okdir git p \\;',
+      'find . -name .git -exec true \\; -execdir git p \\;',
+    ])('denies the alias run in the directory -execdir moves to: %s', command => {
+      expect(checkCommand(command, nested)).toBeDefined()
+    })
+
+    it.each(['find . -name .git -exec git p \\;', 'find . -name .git -ok git p \\;'])(
+      'reads the alias in find’s own directory for -exec and -ok: %s',
+      command => {
+        expect(checkCommand(command, nested)).toBeUndefined()
+      },
+    )
+  })
+
+  it.each([
     "find . -name '*.ts' -exec grep -n foo {} \\;",
     'find . -exec grep -l x {} +',
     'find . -type f -print',
