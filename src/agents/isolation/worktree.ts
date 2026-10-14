@@ -473,6 +473,27 @@ export async function resolveRequestedBase(
   return { sha, ref }
 }
 
+/**
+ * CC-1281: pr-ready reads `branch.<b>.agent-chat-base` to rebase a stacked branch onto its
+ * parent rather than the default branch. The key outlives the worktree in the shared config,
+ * so a default-base cut clears one a reused branch name inherited. Best effort: a spawn never
+ * fails over it.
+ */
+async function recordStackBase(
+  gitRoot: string,
+  branch: string,
+  baseRef: string | undefined,
+): Promise<string[]> {
+  const key = `branch.${branch}.agent-chat-base`
+  if (baseRef === undefined) {
+    await gitOrNull(['config', '--unset', key], gitRoot)
+    return []
+  }
+  const parent = baseRef.slice('origin/'.length)
+  if ((await gitOrNull(['config', key, parent], gitRoot)) !== null) return []
+  return [warn(`could not record ${key}=${parent}; pr-ready may not find this branch's stack base`)]
+}
+
 /** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
 const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): SetupTarget => ({
   gitRoot,
@@ -1016,6 +1037,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       await excludeBasePath(gitRoot, basePath)
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
+        ...(await recordStackBase(gitRoot, branch, ctx.baseRef)),
         ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
       ]
 

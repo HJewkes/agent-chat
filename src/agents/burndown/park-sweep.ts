@@ -14,18 +14,25 @@ import { ledgerTreeHold } from './tree-hold.js'
  */
 export const PARK_SWEEP_MAX = 8
 
-/** Exited spawned non-reviewer worktree agents of the tick's prefixes whose tree is on disk and no held claim reads, oldest exit first. */
+/**
+ * Spawned non-reviewer worktree agents of the tick's prefixes whose tree is on disk and no held
+ * claim reads: exited ones oldest exit first, then detached ones oldest event first. CC-1064: a
+ * detached row a previous broker left may never have its exit proven, so the park's own occupancy
+ * and tenancy rules decide; ordering it last keeps a running one from crowding out exited trees.
+ */
 export function parkCandidates(
   roster: Roster,
   ledger: Ledger,
   prefixes: readonly string[],
   exists: (dir: string) => boolean,
 ): AgentIdentity[] {
-  const notExited = new Set(roster.agents.filter(a => a.state !== 'exited').map(a => a.name))
+  const running = new Set(
+    roster.agents.filter(a => a.state === 'spawning' || a.state === 'live').map(a => a.name),
+  )
   const seen = new Set<string>()
   return roster.agents
-    .filter(a => isSweepable(a, prefixes) && !notExited.has(a.name))
-    .sort((a, b) => (a.exitedAt ?? 0) - (b.exitedAt ?? 0))
+    .filter(a => isSweepable(a, prefixes) && !running.has(a.name))
+    .sort(sweepOrder)
     .filter(a => {
       if (seen.has(a.name)) return false
       seen.add(a.name)
@@ -33,8 +40,13 @@ export function parkCandidates(
     })
 }
 
+const sweepOrder = (a: AgentIdentity, b: AgentIdentity): number => {
+  if (a.state !== b.state) return a.state === 'exited' ? -1 : 1
+  return a.state === 'exited' ? (a.exitedAt ?? 0) - (b.exitedAt ?? 0) : a.lastEventAt - b.lastEventAt
+}
+
 const isSweepable = (agent: AgentIdentity, prefixes: readonly string[]): boolean =>
-  agent.state === 'exited' &&
+  (agent.state === 'exited' || agent.state === 'detached') &&
   agent.origin === 'spawned' &&
   agent.isolation === 'worktree' &&
   !isReviewerSpawn(agent.profile, agent.name) &&
