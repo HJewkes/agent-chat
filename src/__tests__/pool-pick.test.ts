@@ -344,3 +344,70 @@ describe('the pace file reader', () => {
     expect(readPace('/synthetic/none/pace.json')).toEqual({ found: false, reason: 'pace.json is missing' })
   })
 })
+
+describe('pools that share one Anthropic account', () => {
+  const ACCOUNT_POOLS = [pool('claude'), pool('personal'), pool('agents')]
+  const paceRows = (pools: Record<string, Record<string, unknown>>): PaceRead =>
+    parsePace(JSON.stringify({ at: NOW, pools }))
+  const row = (behind: number, extra: Record<string, unknown> = {}) => ({
+    behind,
+    ageSeconds: 60,
+    fiveHour: 20,
+    resetsAt: NOW + 4 * 24 * 60 * MINUTE,
+    ...extra,
+  })
+
+  it('reads an account row as every member pool’s row', () => {
+    const read = paceRows({ claude: row(40, { members: ['claude', 'personal'] }) })
+
+    expect(read.found && read.pools.get('personal')).toMatchObject({ behind: 40, account: 'claude' })
+    expect(read.found && read.pools.get('claude')).toMatchObject({ behind: 40, account: 'claude' })
+  })
+
+  it('lets the account row override a member’s own row left from before', () => {
+    const read = paceRows({ personal: row(3), claude: row(40, { members: ['claude', 'personal'] }) })
+
+    expect(read.found && read.pools.get('personal')).toMatchObject({ behind: 40, account: 'claude' })
+  })
+
+  it('offers one candidate for the account, preferring the home pool', () => {
+    const pace = paceRows({ claude: row(40, { members: ['claude', 'personal'] }) })
+
+    const pick = pickPool(input({}, { pools: ACCOUNT_POOLS.slice(0, 2), home: 'personal', pace }))
+
+    expect(pick.order).toEqual(['personal'])
+    expect(pick.candidates).toContainEqual({ pool: 'claude', behind: 40, skip: 'same account as personal' })
+  })
+
+  it('keeps the first eligible member when home is on another account', () => {
+    const pace = paceRows({ claude: row(40, { members: ['claude', 'personal'] }), agents: row(10) })
+
+    const pick = pickPool(input({}, { pools: ACCOUNT_POOLS, home: 'agents', pace }))
+
+    expect(pick.order).toEqual(['claude', 'agents'])
+    expect(pick.candidates).toContainEqual({ pool: 'personal', behind: 40, skip: 'same account as claude' })
+  })
+
+  it('keeps a member the funds map allows when the other member is not funded', () => {
+    const pace = paceRows({ claude: row(40, { members: ['claude', 'personal'] }) })
+    const funds: FundsMap = { only: new Map(), never: [], fallback: ['personal'] }
+
+    const pick = pickPool(input({}, { pools: ACCOUNT_POOLS.slice(0, 2), home: 'claude', funds, pace }))
+
+    expect(pick.order).toEqual(['personal'])
+    expect(pick.candidates).toContainEqual({
+      pool: 'claude',
+      behind: 40,
+      skip: 'not in the funds map for this work',
+    })
+  })
+
+  it('still offers two candidates for two rows without members', () => {
+    const pace = paceRows({ claude: row(40), personal: row(30) })
+
+    const pick = pickPool(input({}, { pools: ACCOUNT_POOLS.slice(0, 2), home: 'personal', pace }))
+
+    expect(pick.order).toEqual(['claude', 'personal'])
+    expect(pick.candidates.every(c => c.skip === undefined)).toBe(true)
+  })
+})
