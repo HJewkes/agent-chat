@@ -99,6 +99,8 @@ export const TickConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Burndown agents alive at once, across every initiative. */
   maxAgents: z.number().int().positive({ error: 'maxAgents must be a positive integer' }).default(3),
+  /** CC-1106: the ready depth each seat holds before briefers run; unset, twice `maxAgents`. */
+  readyFloor: count.optional(),
   /** Broker agent slots the tick leaves free for the human's own spawns. */
   reserveSlots: count.default(2),
   maxWorktreesPerRepo: count.default(3),

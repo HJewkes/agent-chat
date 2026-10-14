@@ -61,10 +61,19 @@ export interface Transcript {
  * guarantee. The session id is a uuid and therefore unique across every project,
  * which makes scanning for it an exact answer rather than a heuristic one.
  */
-export function findTranscript(cwd: string, sessionId: string, dir?: string): Transcript {
+export function findTranscript(
+  cwd: string,
+  sessionId: string,
+  dir?: string,
+  index?: ProfileIndex,
+): Transcript {
   const derived = transcriptPath(cwd, sessionId, dir)
   if (sessionId === '') return { path: derived, exists: false }
   if (fs.existsSync(derived)) return { path: derived, exists: true }
+  if (index !== undefined) {
+    const found = index.inDir(dir, sessionId)
+    return found === undefined ? { path: derived, exists: false } : { path: found, exists: true }
+  }
 
   for (const project of readProjects(dir)) {
     const candidate = path.join(projectsDir(dir), project, `${sessionId}.jsonl`)
@@ -73,9 +82,12 @@ export function findTranscript(cwd: string, sessionId: string, dir?: string): Tr
   return { path: derived, exists: false }
 }
 
-/** Session id to transcript path across every profile dir; built on the first miss, then reused. */
+/** Session id to transcript path, per projects dir; each dir is listed on its first miss, then reused. */
 export interface ProfileIndex {
+  /** Across every profile dir. */
   lookup(sessionId: string): string | undefined
+  /** Within one config dir only, resolved as `findTranscript` resolves it. */
+  inDir(dir: string | undefined, sessionId: string): string | undefined
 }
 
 /**
@@ -84,24 +96,38 @@ export interface ProfileIndex {
  * resolves to the alphabetically first profile.
  */
 export function createProfileIndex(): ProfileIndex {
-  let byId: Map<string, string> | undefined
+  const byRoot = new Map<string, Map<string, string>>()
+  let profiles: string[] | undefined
+  const inDir = (dir: string | undefined, sessionId: string): string | undefined => {
+    const root = projectsDir(dir)
+    let byId = byRoot.get(root)
+    if (byId === undefined) {
+      byId = indexProjects(dir)
+      byRoot.set(root, byId)
+    }
+    return byId.get(sessionId)
+  }
   return {
+    inDir,
     lookup(sessionId) {
-      byId ??= buildProfileIndex()
-      return byId.get(sessionId)
+      profiles ??= profileDirs()
+      for (const profile of profiles) {
+        const found = inDir(profile, sessionId)
+        if (found !== undefined) return found
+      }
+      return undefined
     },
   }
 }
 
-function buildProfileIndex(): Map<string, string> {
+/** First seen wins, matching the readdir-order scan in `findTranscript`. */
+function indexProjects(dir: string | undefined): Map<string, string> {
   const byId = new Map<string, string>()
-  for (const profile of profileDirs()) {
-    for (const project of readProjects(profile)) {
-      const folder = path.join(projectsDir(profile), project)
-      for (const file of readFiles(folder)) {
-        const id = file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) : undefined
-        if (id !== undefined && !byId.has(id)) byId.set(id, path.join(folder, file))
-      }
+  for (const project of readProjects(dir)) {
+    const folder = path.join(projectsDir(dir), project)
+    for (const file of readFiles(folder)) {
+      const id = file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) : undefined
+      if (id !== undefined && !byId.has(id)) byId.set(id, path.join(folder, file))
     }
   }
   return byId
@@ -118,7 +144,7 @@ export function findAgentTranscript(
   dir?: string,
   index: ProfileIndex = createProfileIndex(),
 ): Transcript {
-  const primary = findTranscript(cwd, sessionId, dir)
+  const primary = findTranscript(cwd, sessionId, dir, index)
   if (dir !== undefined || primary.exists || sessionId === '') return primary
   const found = index.lookup(sessionId)
   return found === undefined ? primary : { path: found, exists: true }
@@ -162,8 +188,13 @@ function readProjects(dir?: string): string[] {
  * Telemetry owned by another program, so undefined means "could not tell" and
  * the caller inherits the harness default. session-read skips `<synthetic>`.
  */
-export function observedModel(cwd: string, sessionId: string, dir?: string): string | undefined {
-  const found = findTranscript(cwd, sessionId, dir)
+export function observedModel(
+  cwd: string,
+  sessionId: string,
+  dir?: string,
+  index?: ProfileIndex,
+): string | undefined {
+  const found = findTranscript(cwd, sessionId, dir, index)
   if (!found.exists) return undefined
   const model = readModel(found.path)
   return model?.status === 'observed' ? model.value : undefined
