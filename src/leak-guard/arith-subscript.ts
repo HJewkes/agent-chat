@@ -41,14 +41,33 @@ function subscripts(marked: string): string[] {
   ]
 }
 
+// Words before the command word: keywords the splitter keeps in `words` (as shell-words' COMMAND_PREFIX),
+// and `command`/`builtin`, which run the builtin they name.
+const KEYWORDS = new Set(['{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
+const TRANSPARENT = new Set([...KEYWORDS, 'command', 'builtin'])
+const PASS_OPTIONS = new Set(['-p', '--'])
+const ASSIGNMENT = new RegExp(`^${NAME}(\\[.*\\])?\\+?=`)
+
+/** The command's words and marked words from its command word on, so `if read x` reads as `read x`. */
+function commandHead(cmd: SimpleCommand): { words: string[]; marked: string[] } {
+  let start = 0
+  while (start < cmd.words.length) {
+    const word = cmd.words[start] ?? ''
+    const passOption = PASS_OPTIONS.has(word) && TRANSPARENT.has(cmd.words[start - 1] ?? '')
+    if (!TRANSPARENT.has(word) && !ASSIGNMENT.test(word) && !passOption) break
+    start++
+  }
+  return { words: cmd.words.slice(start), marked: cmd.marked.slice(start) }
+}
+
 const hasIntegerFlag = (words: string[]): boolean =>
   words[0] === 'integer' || words.some(word => /^-[A-Za-z]*i/.test(word))
 
 /** The operands `let` evaluates, and the values a `declare -i`, `typeset -i`, `local -i` or `integer` assigns. */
-function integerOperands(cmd: SimpleCommand): string[] {
-  const [head = '', ...rest] = cmd.words
+function integerOperands(words: string[]): string[] {
+  const [head = '', ...rest] = words
   if (head === 'let') return rest
-  if (!INTEGER_DECLARERS.has(head) || !hasIntegerFlag(cmd.words)) return []
+  if (!INTEGER_DECLARERS.has(head) || !hasIntegerFlag(words)) return []
   return rest.filter(word => word.includes('=')).map(word => word.slice(word.indexOf('=') + 1))
 }
 
@@ -99,10 +118,10 @@ const namesIn = (text: string): string[] =>
 
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
-  const { words } = cmd
+  const { words } = commandHead(cmd)
   const texts = [
     ...cmd.arithBodies,
-    ...integerOperands(cmd),
+    ...integerOperands(words),
     ...cmd.marked.flatMap(subscripts),
     ...comparisonOperands(words)
       .filter(inRange(words))
@@ -159,10 +178,10 @@ function quotedSubstitutions(marked: string): string[] {
 }
 
 /** The marked `let` operands and `declare -i` assignments, name and value, the shell evaluates as arithmetic. */
-function integerWords(cmd: SimpleCommand): string[] {
-  const rest = cmd.marked.slice(1)
-  if (cmd.words[0] === 'let') return rest
-  if (!INTEGER_DECLARERS.has(cmd.words[0] ?? '') || !hasIntegerFlag(cmd.words)) return []
+function integerWords(words: string[], marked: string[]): string[] {
+  const rest = marked.slice(1)
+  if (words[0] === 'let') return rest
+  if (!INTEGER_DECLARERS.has(words[0] ?? '') || !hasIntegerFlag(words)) return []
   return rest.filter(word => word.includes('='))
 }
 
@@ -172,12 +191,12 @@ function integerWords(cmd: SimpleCommand): string[] {
  * substitution is a command already, so it is not listed.
  */
 export function arithSubstitutions(cmd: SimpleCommand): string[] {
-  const { marked, words } = cmd
+  const { marked, words } = commandHead(cmd)
   const operands = [...comparisonOperands(words), ...nameOperands(words)]
     .filter(inRange(words))
     .map(i => marked[i] ?? '')
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
-  const bodies = [...operands, ...integerWords(cmd)].flatMap(quotedSubstitutions)
+  const bodies = [...operands, ...integerWords(words, marked)].flatMap(quotedSubstitutions)
   return [...new Set([...bodies, ...fromBodies])]
 }
