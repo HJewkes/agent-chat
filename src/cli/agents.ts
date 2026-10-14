@@ -232,9 +232,9 @@ function rosterFilter(options: { mine?: boolean; spawner?: string; prefix?: stri
 }
 
 /** A transcript that cannot be read costs that row its model, not the whole listing. */
-function modelOrNull(agent: AgentIdentity): string | null {
+function modelOrNull(agent: AgentIdentity, index: ProfileIndex): string | null {
   try {
-    return observedModel(agent.cwd, agent.sessionId, agent.configDir) ?? null
+    return observedModel(agent.cwd, agent.sessionId, agent.configDir, index) ?? null
   } catch {
     return null
   }
@@ -252,7 +252,7 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     status,
     profile: agent.profile,
     surface: agent.surface,
-    model: modelOrNull(agent),
+    model: modelOrNull(agent, index),
     cwd: agent.cwd,
     sessionId: agent.sessionId,
     transcriptPath: agent.sessionId === '' ? null : transcript.path,
