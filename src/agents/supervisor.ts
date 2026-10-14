@@ -840,8 +840,8 @@ export interface SupervisorOptions {
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
   /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
   profileBaseline?: ProfileBaseline
-  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
-  profileDriftMode?: () => ProfileDriftMode
+  /** CC-1094: `profileDrift` from config, pinned at construction (CC-1202). Injected in tests. */
+  profileDriftMode?: ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -1048,7 +1048,7 @@ export class Supervisor implements TeleportHost {
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
-  private readonly profileDriftMode: () => ProfileDriftMode
+  private readonly profileDriftMode: ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1079,7 +1079,7 @@ export class Supervisor implements TeleportHost {
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
-    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1892,7 +1892,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return profile
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
-    const refused = !human && this.profileDriftMode() === 'refuse'
+    const refused = !human && this.profileDriftMode === 'refuse'
     logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
       return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }

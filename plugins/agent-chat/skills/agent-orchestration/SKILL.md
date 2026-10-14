@@ -314,10 +314,11 @@ its context as the scarce resource, not the agents' time.
   `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
   tree, and removes it at verdict. It keeps one installed checkout per review: base or old
   code comes from `git show`, `git diff` or `git worktree add --detach` without install,
-  because every extra installed tree costs ~100k inodes on Linux's /tmp. A reviewer never runs `git stash`, because refs/stash is
-  shared by every worktree: read a file at a revision with `git show <rev>:<path>`, or copy
-  files into the session scratchpad. Read a diff yourself only where the judgement is the point
-  (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
+  because every extra installed tree costs ~100k inodes and its disk space under
+  `~/.cache/agent-chat/tmp` on Linux's root filesystem (CC-1184). A reviewer never runs
+  `git stash`, because refs/stash is shared by every worktree: read a file at a revision with
+  `git show <rev>:<path>`, or copy files into the session scratchpad. Read a diff yourself only
+  where the judgement is the point (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context

@@ -587,6 +587,12 @@ final head. Seats that merge through their own reviewer and `bin/merge` use it, 
 block comes after the brief and overrode prose that said not to register. The opt-out needs no spawn
 parameter. Without the marker the block is unchanged.
 
+The reviewer block has the same split (CC-1278). Without the marker, a reviewer hands CI to Shepherd:
+it answers `Verdict: MERGE` or `FIX_FIRST` only, treats pending or unread checks as no verdict input
+and never says WAIT, and says FIX_FIRST (`Class: ci-red`) only when a required check-run has already
+failed at the head. With the marker it gets `REVIEWER_WITHOUT_SHEPHERD`, which confirms every
+required check-run before MERGE and may say WAIT for a clean review whose checks have not finished.
+
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
 the broker's own environment. Values are stored in plaintext in the launch plan

@@ -225,7 +225,9 @@ export function resolvePoolPickMode(): PoolPickMode {
 
 /**
  * CC-1094: what an agent spawn of a profile whose file changed since broker start gets: a warning (`flag`,
- * the default, since the owner edits profiles at runtime) or a refusal (`refuse`). Read per spawn.
+ * the default, since the owner edits profiles at runtime) or a refusal (`refuse`). Read once when the broker
+ * starts (CC-1202): an edit takes effect at restart, so a worker that reaches config.json cannot loosen refuse
+ * to flag.
  */
 export function resolveProfileDriftMode(): ProfileDriftMode {
   const value = readConfig().profileDrift

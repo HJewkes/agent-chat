@@ -3,6 +3,7 @@ import { roleOf } from './profiles.js'
 import {
   IMPLEMENTER_WITHOUT_SHEPHERD,
   RETURN_CONTRACT_BLOCKS,
+  REVIEWER_WITHOUT_SHEPHERD,
   SHEPHERD_NONE_MARKER,
 } from './return-contract-blocks.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from './types.js'
@@ -94,10 +95,13 @@ export const optsOutOfShepherd = (brief: string): boolean =>
     .split(/\r?\n/)
     .some(line => line.trim().replace(LIST_MARKER, '').toLowerCase() === SHEPHERD_NONE_MARKER.toLowerCase())
 
+const WITHOUT_SHEPHERD: Readonly<Record<ReturnContract, string>> = {
+  implementer: IMPLEMENTER_WITHOUT_SHEPHERD,
+  reviewer: REVIEWER_WITHOUT_SHEPHERD,
+}
+
 const blockFor = (contract: ReturnContract, brief: string): string =>
-  contract === 'implementer' && optsOutOfShepherd(brief)
-    ? IMPLEMENTER_WITHOUT_SHEPHERD
-    : RETURN_CONTRACT_BLOCKS[contract]
+  (optsOutOfShepherd(brief) ? WITHOUT_SHEPHERD : RETURN_CONTRACT_BLOCKS)[contract]
 
 const pastedWarning = (contract: ReturnContract): string =>
   `the brief already carries the ${contract} return contract; the broker appends it, so stop pasting it`
