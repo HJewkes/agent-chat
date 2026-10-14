@@ -2,8 +2,10 @@
  * Reads a shell invocation (`sh`, `bash`, `dash`, `ksh`, `zsh`) the way the shell does (CC-1288):
  * options and their operands first, then the `-c` string, a script file or stdin. It also reports
  * whether the options may turn on `!` history, which rewrites a script read from stdin or a file
- * after the guard has read it. Observed in bash 5.3 and zsh: `-i`, or the history list together
- * with histexpand, expands `!$` in such a script; a `-c` string stays inert.
+ * after the guard has read it. Observed in bash 5.3 and zsh 5.9: `-i`, or the history list together
+ * with histexpand, expands `!$` in such a script. The options leave a `-c` string inert, but the
+ * string can turn history on itself (`set -H -o history`), so a caller must still check it.
+ * Anything the walk cannot read fails closed: an expanded word is `hidden` and reports history.
  */
 import { LIVE } from './shell-words.js'
 
@@ -22,10 +24,12 @@ export interface ShellCall {
 
 // Option names that turn on the history list, `!` expansion or interactive mode, after `normalise`.
 const HISTORY_OPTION = /^(?:history|histexpand|interactive|banghist)$/
-// bash long options that take the next word as their operand.
-const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file'])
+// Long options that take the next word as their operand: bash's rc files and zsh's `--emulate`.
+const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
 // A `SHELLOPTS` assignment can turn on history and histexpand before the script is read.
 const SHELLOPTS = /^SHELLOPTS=/
+// A long option: `--name`, or zsh's `+-name`, which turns it off.
+const LONG = /^(?:--|\+-)./
 
 /** zsh accepts `BANG_HIST`, `bang-hist` and `banghist` alike, and a `no` prefix inverts the option. */
 function turnsOnHistory(name: string, on: boolean): boolean {
@@ -41,41 +45,69 @@ interface Options {
   command: boolean
   stdin: boolean
   history: boolean
+  /** zsh's `-b` ends the options after the word that holds it. */
+  ended: boolean
 }
 
-/** Reads one short cluster such as `-eo` or `+o`, consuming an operand word for each `o` or `O`. */
+/** Reads the name an `o` or `O` takes, from the rest of its word or else the next word; returns that next index. */
+function readOptionName(
+  rest: string,
+  words: readonly string[],
+  next: number,
+  on: boolean,
+  opts: Options,
+): number {
+  const operand = rest === '' ? words[next++] : rest
+  if (operand?.includes(LIVE)) opts.hidden = true
+  else if (operand !== undefined && turnsOnHistory(operand, on)) opts.history = true
+  return next
+}
+
+/** Reads one short cluster such as `-eo pipefail`, `-ointeractive` or `+o`, consuming any operand words. */
 function readCluster(name: string, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
   const on = word.startsWith('-')
   let next = at + 1
-  for (const letter of word.slice(1)) {
+  for (let i = 1; i < word.length; i++) {
+    const letter = word[i]
+    if (letter === 'o' || letter === 'O') return readOptionName(word.slice(i + 1), words, next, on, opts)
     if (letter === 'c') opts.command = true
     else if (letter === 's') opts.stdin = true
     else if (on && (letter === 'i' || letter === 'H')) opts.history = true
     else if (!on && name === 'zsh' && letter === 'K') opts.history = true
-    else if (letter === 'o' || letter === 'O') {
-      const operand = words[next++]
-      if (operand?.includes(LIVE)) opts.hidden = true
-      else if (operand !== undefined && turnsOnHistory(operand, on)) opts.history = true
-    }
+    else if (name === 'zsh' && letter === 'b') opts.ended = true
   }
   return next
 }
 
-/** Walks the option words, stopping at the first operand, `--`, or a word the shell expands. */
+/** Reads `--name` or zsh's `+-name`, which turns the option off; returns the next index. */
+function readLong(words: readonly string[], at: number, opts: Options): number {
+  const word = words[at] ?? ''
+  if (!LONG_WITH_OPERAND.has(word)) {
+    opts.history ||= turnsOnHistory(word.slice(2), word.startsWith('-'))
+    return at + 1
+  }
+  if (words[at + 1]?.includes(LIVE)) opts.hidden = true
+  return at + 2
+}
+
+/** Walks the option words, stopping at the first operand, `--`, `-b`, or a word the shell expands. */
 function readOptions(name: string, words: readonly string[]): Options {
-  const opts: Options = { end: words.length, hidden: false, command: false, stdin: false, history: false }
+  const opts: Options = {
+    end: words.length,
+    hidden: false,
+    command: false,
+    stdin: false,
+    history: false,
+    ended: false,
+  }
   let at = 0
-  while (at < words.length && !opts.hidden) {
+  while (at < words.length && !opts.hidden && !opts.ended) {
     const word = words[at] ?? ''
     if (word.includes(LIVE)) return { ...opts, end: at, hidden: true }
     if (word === '--' || word === '-') return { ...opts, end: at + 1 }
     if (!word.startsWith('-') && !word.startsWith('+')) return { ...opts, end: at }
-    if (LONG_WITH_OPERAND.has(word)) at += 2
-    else if (word.startsWith('--')) {
-      opts.history ||= turnsOnHistory(word.slice(2), true)
-      at++
-    } else at = readCluster(name, words, at, opts)
+    at = LONG.test(word) ? readLong(words, at, opts) : readCluster(name, words, at, opts)
   }
   return { ...opts, end: Math.min(at, words.length) }
 }

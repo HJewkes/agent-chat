@@ -26,6 +26,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'zsh -o extendedglob',
     'zsh -o nobanghist',
     'zsh -K',
+    'zsh +-interactive',
+    'zsh --no-interactive',
     'bash -s foo -i',
   ])('%s reads stdin without history', line => {
     expect(call(line)).toEqual({ script: { from: 'stdin' }, history: false })
@@ -46,6 +48,13 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'zsh +o nobanghist',
     'zsh --interactive',
     'zsh +K',
+    'zsh -ointeractive',
+    'zsh -xointeractive',
+    'zsh +onobanghist',
+    'zsh +-nointeractive',
+    'zsh --emulate zsh -i',
+    'zsh --emulate ksh -o banghist -i',
+    'zsh -isb',
     'SHELLOPTS=history:histexpand bash',
   ])('%s reads stdin with history', line => {
     expect(call(line)).toEqual({ script: { from: 'stdin' }, history: true })
@@ -57,6 +66,9 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['bash -eo pipefail s.sh', 2, false],
     ['bash --rcfile x s.sh', 2, false],
     ['SHELLOPTS=history bash s.sh', 0, true],
+    ['zsh -b -i', 1, false],
+    ['zsh -ib s.sh', 1, true],
+    ['zsh --emulate sh s.sh', 2, false],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -71,18 +83,25 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ["bash -ic 'x'", 1],
     ["bash -O extglob -c 'x'", 3],
     ["zsh -c -x 'x'", 2],
+    ["zsh --emulate sh -c 'x'", 3],
+    ["zsh -bc 'x'", 1],
     ["SHELLOPTS=history:histexpand bash -c 'x'", 1],
     ['bash -c', undefined],
   ])('%s runs the string at %s, without history', (line, at) => {
     expect(call(line)).toEqual({ script: { from: 'command', at }, history: false })
   })
 
-  it.each(['bash $X', 'bash "-$Y"', 'bash -o $X', 'bash -e "$X" <<<x', 'bash *.sh'])(
-    '%s hides its options',
-    line => {
-      expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
-    },
-  )
+  it.each([
+    'bash $X',
+    'bash "-$Y"',
+    'bash -o $X',
+    'bash -o$X',
+    'zsh --emulate $E -i',
+    'bash -e "$X" <<<x',
+    'bash *.sh',
+  ])('%s hides its options', line => {
+    expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
+  })
 
   it('reads an expansion after the options as an operand', () => {
     expect(call('bash -- $X')).toEqual({ script: { from: 'file', at: 1 }, history: false })
