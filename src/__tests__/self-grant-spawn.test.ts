@@ -139,6 +139,7 @@ describe('arming the self-grant from the supervisor (CC-1110)', () => {
     const agent = await spawnIn('worker-a', makeRepo(), 'skill-writer')
 
     expect(hookCommands(agent.agentId)).toContain(`--self-grant-skills '${agent.cwd}'`)
+    expect(hookCommands(agent.agentId)).toContain('--self-grant-common-dir')
   })
 
   it('gives an isolation:none spawn into a forged common dir no self-grant', async () => {
