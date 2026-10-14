@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionRecord } from '../agents/claude-sessions.js'
 import type { ProcessProbe } from '../agents/detached-reap.js'
+import { EventLog } from '../broker/event-log.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 /**
@@ -43,19 +44,40 @@ function adopt(name: string): string {
   return agentId
 }
 
+/**
+ * CC-1164: one transaction, because each of the 6,900 appends otherwise commits with its
+ * own fsync, which took 35 s on CI's disk and pushed this file past the test timeout.
+ */
+function inOneTransaction<T>(seed: () => T): T {
+  const events = h.core.events
+  if (!(events instanceof EventLog)) throw new Error('boot-reap-backlog expects an EventLog store')
+  const db = events.ledgerHandle()
+  db.exec('BEGIN')
+  try {
+    const result = seed()
+    db.exec('COMMIT')
+    return result
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+}
+
 /** A long agent history, then `BACKLOG` sessions left detached when the broker stops. */
 function seedBacklog(): string[] {
   records = [{ pid: 1, sessionId: 'a-session-nobody-here-holds' }]
   recordReads = 0
   h = startSupervisor({ slots: 5, settleMs: SETTLE_MS, processProbe: probe })
-  for (let i = 0; i < HISTORY; i += 1) {
-    const agentId = adopt(`old-${i}`)
-    h.core.append({ kind: 'agent_exited', actor: `old-${i}`, ref: agentId, meta: { code: '0' } })
-  }
-  return Array.from({ length: BACKLOG }, (_, i) => {
-    const agentId = adopt(`gone-${i}`)
-    h.core.append({ kind: 'agent_detached', actor: `gone-${i}`, ref: agentId })
-    return agentId
+  return inOneTransaction(() => {
+    for (let i = 0; i < HISTORY; i += 1) {
+      const agentId = adopt(`old-${i}`)
+      h.core.append({ kind: 'agent_exited', actor: `old-${i}`, ref: agentId, meta: { code: '0' } })
+    }
+    return Array.from({ length: BACKLOG }, (_, i) => {
+      const agentId = adopt(`gone-${i}`)
+      h.core.append({ kind: 'agent_detached', actor: `gone-${i}`, ref: agentId })
+      return agentId
+    })
   })
 }
 

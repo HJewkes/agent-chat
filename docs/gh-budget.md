@@ -53,6 +53,29 @@ Two sources are merged, and the later end wins per lane:
 `AGENT_CHAT_GH_SHIM_OFF=1` turns off the shim's gate along with its answers. Refusals are still
 recorded.
 
+## Shim reads through the gateway (`shepherd.ghRead`)
+
+The shim's answers (`pr view`, `pr list`, `pr checks`, `run view`, `run watch`) read each REST path
+through serve's `POST /rpc/shepherd.ghRead` first, so every agent shares its ETag cache and throttle
+(CC-1178). The URL is `AGENT_CHAT_GH_BUDGET_URL` with its last segment swapped for `shepherd.ghRead`.
+The request is `{"path", "maxAgeMs": 10000, "caller": $AGENT_CHAT_NAME, "raw": true}`.
+
+- An answer with `source` `github` or `memory` is used as is. Status 200 returns the body, and any
+  other status fails the read as a non-zero `gh api` would. It makes no real-gh call and writes no
+  gh-calls line; serve journals its own.
+- A `stale: true` answer adds `gh-budget: stale <age>s` to stderr.
+- These fall back, for that path only, to the direct `gh api <path> -i`:
+  - `ok: false`, such as a route outside the whitelist or a cold cooldown;
+  - a `snapshot` answer, which is the PR port's shape, not GitHub JSON (a serve that knows `raw`
+    never sends one);
+  - a path with the `{owner}/{repo}` placeholder, which only gh can resolve, so it is never sent;
+  - serve down, slow (2 s) or answering non-JSON. That also skips the gateway for the rest of the
+    process.
+- A direct fallback while the REST lane cools is not sent. The command then takes the usual gate and
+  passes through to the real gh when its own lane is open.
+
+Answerable commands are not gated up front, since the gateway can serve them during a cooldown.
+
 ## Files
 
 Under `$XDG_STATE_HOME/gh-budget/` (default `~/.local/state/gh-budget/`):
@@ -64,4 +87,4 @@ Under `$XDG_STATE_HOME/gh-budget/` (default `~/.local/state/gh-budget/`):
 | `gateway.json`  | `{"at", "cooldowns"}`, the last `shepherd.ghBudget` answer                                                           |
 
 Code: `src/gh-budget/state.ts` (rules and file), `src/gh-shim/rate-limit.ts` (gate, gateway,
-`rate_limit` answer), `src/cli/gh-write.ts` (gh-write's reads).
+`rate_limit` answer), `src/gh-shim/gateway.ts` (`ghRead` reads), `src/cli/gh-write.ts` (gh-write's reads).

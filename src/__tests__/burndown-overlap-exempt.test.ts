@@ -49,7 +49,7 @@ describe('dispatch file-overlap gate with an exempt list', () => {
   it('still refuses when the same PR also touches a real source file', () => {
     const found = collision(work([README, 'src/x.ts']), facts(openPrTouching([README, 'src/x.ts'])))
 
-    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/x.ts' })
+    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/x.ts', pr: 1261 })
   })
 
   it('dispatches over a held claim whose owns overlap only on a nested CAPABILITIES.md', () => {
@@ -117,7 +117,7 @@ describe('shared docs in a repo with no list of its own', () => {
   it('still refuses when that PR also touches the code file', () => {
     const found = collision(work([...docs, 'src/a.ts']), agentChat(openPrTouching([...docs, 'src/a.ts'])))
 
-    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/a.ts' })
+    expect(found).toEqual({ kind: 'file-overlap', reason: '#1261 touches src/a.ts', pr: 1261 })
   })
 
   it('dispatches over a held claim that owns a changeset glob', () => {

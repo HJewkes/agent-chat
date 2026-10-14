@@ -213,7 +213,14 @@ export interface WakeDeps {
   write: (ledger: Ledger) => void
   log: (event: string, detail: Record<string, unknown>) => void
   now: Date
+  /**
+   * CC-1239: builds the message after the counting write and before the resume, so its side effects (brief records)
+   * never outlive a failed write. `undefined` means nothing is left to send, so the wake is uncounted.
+   */
+  compose?: () => string | undefined
 }
+
+type WakeResult = { ledger: Ledger; line: string; delivery: WakeDelivery }
 
 /** Intent first: the wake counts against the caps before the frame is sent, so a crash never under-counts. */
 export async function wakeDecider(
@@ -221,10 +228,41 @@ export async function wakeDecider(
   message: string,
   start: Ledger,
   deps: WakeDeps,
-): Promise<{ ledger: Ledger; line: string; delivery: WakeDelivery }> {
+): Promise<WakeResult> {
   const counted = recordWake(start, deps.now)
   deps.write(counted)
   deps.log('burndown_decider_wake', { name })
+  const composed = deps.compose === undefined ? message : deps.compose()
+  if (composed === undefined) {
+    const reason = 'no brief send could be recorded'
+    return {
+      ledger: uncountWake(start, counted, deps),
+      line: `decider ${name} not woken: ${reason}`,
+      delivery: { sent: false, reason },
+    }
+  }
+  return resumeCounted(name, composed, counted, deps)
+}
+
+/**
+ * A wake that sends nothing must not count: the last wake marks the queue as seen up to then, so a counted empty wake
+ * would hide a question too young to wait yet, and it would spend a cap slot. A failed rollback only over-counts.
+ */
+function uncountWake(start: Ledger, counted: Ledger, deps: WakeDeps): Ledger {
+  try {
+    deps.write(start)
+    return start
+  } catch {
+    return counted
+  }
+}
+
+async function resumeCounted(
+  name: string,
+  message: string,
+  counted: Ledger,
+  deps: WakeDeps,
+): Promise<WakeResult> {
   let reply: SpawnReply
   try {
     reply = await deps.resume(name, message)

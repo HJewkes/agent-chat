@@ -227,15 +227,17 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(edits.at(-1)?.[1]).toContain('auto-approved')
     expect(settled.lines.join('\n')).toContain('auto: slice lint passed')
     expect(settled.routes).toEqual([])
+    expect(settled.approved).toEqual([{ slug: 'demo', taskId: 'T-1' }])
   })
 
   it('routes a lint-failing brief to the decider without recording a send while settling', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)
 
-    const { routes } = settle()
+    const { routes, approved } = settle()
 
     expect(edits).toEqual([])
+    expect(approved).toEqual([])
     expect(routes).toHaveLength(1)
     expect(routes[0]?.tag).toBe(SENT)
     expect(routes[0]?.section).toContain('over the 3-point limit')
@@ -294,6 +296,26 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
 
     expect(recorded).toEqual([])
     expect(lines.join('\n')).toContain('could not record the send')
+  })
+
+  it('un-writes a record whose add exited non-zero, so the next tick routes it again', () => {
+    writeTask([PROPOSED])
+    writePlan(UNLINTED)
+    const addFails = {
+      edit: (_slug: string, _id: string, args: string[]) => {
+        edits.push(args)
+        if (args[0] === '--add-tag') throw new Error('synthetic exit after write')
+      },
+    }
+
+    const { recorded, lines } = recordBriefRoutes(settle().routes, addFails)
+
+    expect(edits).toEqual([
+      ['--add-tag', SENT],
+      ['--remove-tag', SENT],
+    ])
+    expect(recorded).toEqual([])
+    expect(lines.join('\n')).toContain('retried next tick')
   })
 
   it('keeps the record when the wake went out unanswered, since it may have landed', () => {
@@ -370,7 +392,7 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     writeTask([PROPOSED], 'done')
     writePlan(LINTED)
 
-    expect(settle()).toEqual({ lines: [], routes: [] })
+    expect(settle()).toEqual({ lines: [], routes: [], approved: [] })
     expect(edits).toEqual([])
   })
 

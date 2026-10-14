@@ -16,7 +16,7 @@ import {
 } from './off-ledger-adopt.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { readSlices, type PlannedSlice } from './report.js'
-import { mergedFlagKey, slicesSettled } from './slices-complete.js'
+import { mergedFlagKey, slicesReleasedUnclaimed, slicesSettled } from './slices-complete.js'
 
 /**
  * CC-927 (item 179 S3): a seat-written `sources/<ID>-plan.md` is the brief. A brief-ready task
@@ -91,6 +91,7 @@ export function sliceClaims(parent: Parent, slices: readonly PlannedSlice[], now
     ...(s.owns.length === 0 ? {} : { owns: s.owns }),
     ...(s.repo === undefined ? {} : { repo: s.repo }),
     ...((s.contracts ?? []).length === 0 ? {} : { contracts: s.contracts }),
+    ...((s.overlapsAccepted ?? []).length === 0 ? {} : { overlapsAccepted: s.overlapsAccepted }),
     ...(parent.seat === undefined ? {} : { seat: parent.seat }),
     ...(parent.namePrefix === undefined ? {} : { namePrefix: parent.namePrefix }),
   }))
@@ -128,9 +129,25 @@ export function sliceRunsIn(records: readonly DispatchRecord[], taskId: string, 
 }
 
 /**
+ * Why a task whose slices were seeded before is not seeded again. A held slice claim reads "already queued";
+ * CC-1256: released slices with none held name the slices and how to reseed.
+ */
+function alreadySeeded(taskId: string, planPath: string, ledger: Ledger): string | undefined {
+  if (slicesReleasedUnclaimed(ledger, taskId))
+    return (
+      `${planPath}: slices ${(ledger.slicesReleased?.[taskId] ?? []).join(', ')} of ${taskId} were released ` +
+      `and none is held; close the task, or run agent-chat burndown release ${taskId} to reseed`
+    )
+  const held = ledger.claims.some(c => c.taskId === taskId && c.slice !== undefined && c.phase !== 'done')
+  if (held || ledger.slicesReleased?.[taskId] !== undefined)
+    return `${planPath}: slices of ${taskId} were already queued; close the task or replan it`
+  return undefined
+}
+
+/**
  * The task's slices from its plan file, why the plan blocks it, or undefined when there is no
  * plan file and the planner runs as before. A task whose slices were queued, or had one released, is not seeded
- * twice; CC-1233: slices whose agents ran outside the ledger are adopted by their branch PRs, and seeding waits a
+ * twice (`alreadySeeded`); CC-1233: slices whose agents ran outside the ledger are adopted by their branch PRs, and seeding waits a
  * tick while any of those PRs could not be read.
  */
 export function seedSlices(
@@ -149,13 +166,8 @@ export function seedSlices(
       now,
       ranOffLedger?.(parent.taskId, parent.initiative) ?? [],
     )
-  const seeded =
-    ledger.claims.some(c => c.taskId === parent.taskId && c.slice !== undefined && c.phase !== 'done') ||
-    ledger.slicesReleased?.[parent.taskId] !== undefined
-  if (seeded)
-    return {
-      blocked: `${plan.path}: slices of ${parent.taskId} were already queued; close the task or replan it`,
-    }
+  const seeded = alreadySeeded(parent.taskId, plan.path, ledger)
+  if (seeded !== undefined) return { blocked: seeded }
   const read = readSlices(plan.text)
   if (read.slices === undefined) return { blocked: `${plan.path}: ${read.problems.join('; ')}` }
   const runs = ranOffLedger?.(parent.taskId, parent.initiative) ?? []
@@ -209,7 +221,7 @@ export interface Resync {
   notes: string[]
 }
 
-type SliceFields = Pick<Claim, 'owns' | 'dependsOn' | 'repo' | 'contracts'>
+type SliceFields = Pick<Claim, 'owns' | 'dependsOn' | 'repo' | 'contracts' | 'overlapsAccepted'>
 
 /** The fields `sliceClaims` sets, with `undefined` where it would leave one out. */
 function sliceFields(s: PlannedSlice): SliceFields {
@@ -218,6 +230,7 @@ function sliceFields(s: PlannedSlice): SliceFields {
     dependsOn: s.dependsOn,
     repo: s.repo,
     contracts: (s.contracts ?? []).length === 0 ? undefined : s.contracts,
+    overlapsAccepted: (s.overlapsAccepted ?? []).length === 0 ? undefined : s.overlapsAccepted,
   }
 }
 
@@ -227,9 +240,10 @@ const shown = (f: SliceFields): Record<keyof SliceFields, string> => ({
   dependsOn: JSON.stringify([...(f.dependsOn ?? [])].sort()),
   repo: JSON.stringify(f.repo ?? null),
   contracts: JSON.stringify((f.contracts ?? []).map(c => `${c.op} ${c.scope}`).sort()),
+  overlapsAccepted: JSON.stringify((f.overlapsAccepted ?? []).map(a => `#${a.pr} ${a.path}`).sort()),
 })
 
-const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts'] as const
+const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts', 'overlapsAccepted'] as const
 
 function resyncClaim(claim: Claim, slice: PlannedSlice, plan: string): Resync {
   const next = sliceFields(slice)

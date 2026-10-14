@@ -10,9 +10,10 @@ import type { BrokerView } from '../agents/burndown/collision.js'
 import { egressRunner, type EgressRunner } from '../agents/burndown/egress-runner.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
-import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
+import { ShadowRecordV1, type ShadowRecord } from '../agents/burndown/shadow-record.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
@@ -182,6 +183,7 @@ function fakeBroker(
         fake.resumes.push({ name, message })
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
+      retireFinished: async () => ({ ok: true, plan: [], results: [] }),
       collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
       seatSender: async () => {
         fake.senders.opened += 1
@@ -793,7 +795,7 @@ describe('burndown tick gates', () => {
 
   it('pins the dry-run output of a tick with no seats configured', async () => {
     // The brief names the fixture repo twice, so its length moves with the temp dir.
-    const BRIEF_CHARS_BESIDE_PATHS = 1918
+    const BRIEF_CHARS_BESIDE_PATHS = 1986
     initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2), 'DM-3': 'id: DM-3\nstatus: open\n' })
     writeLedger(burndownLedgerPath(), {
       version: 1,
@@ -1462,6 +1464,83 @@ describe("burndown tick claims a slice's owns at spawn (CC-952)", () => {
 
     expect(fake.frames).toEqual([])
     expect(lines.join('\n')).toMatch(/refused demo DM-1 \[claimed\]: \S+ is under peer-1's file claim/)
+  })
+})
+
+describe('burndown tick writes its shadow decision record (CC-1193)', () => {
+  const shadowDir = (): string => path.join(world, 'home', 'burndown-shadow')
+  const records = (): ShadowRecord[] =>
+    fs
+      .readdirSync(path.join(shadowDir(), 'records'))
+      .map(n =>
+        ShadowRecordV1.parse(JSON.parse(fs.readFileSync(path.join(shadowDir(), 'records', n), 'utf8'))),
+      )
+  const ledgerOf = (record: ShadowRecord): Ledger =>
+    JSON.parse(fs.readFileSync(path.join(shadowDir(), 'ledgers', `${record.ledgerSha}.json`), 'utf8'))
+
+  beforeEach(() => {
+    seatPolicy()
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          slice: 'a',
+          owns: ['src/a/**'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'queued',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+  })
+
+  // Mutation caught: capturing the ledger after writeLedger records the claim as spawning.
+  it('records the ledger as read and names the queued claim it dispatches with its profile and account', async () => {
+    config({ seats: ['seat-t'] })
+
+    await tick(fakeBroker())
+
+    const [record, ...rest] = records()
+    expect(rest).toEqual([])
+    expect(record!.ts).toBe(NOON.toISOString())
+    expect(ledgerOf(record!).claims.map(c => [c.slice, c.phase])).toEqual([['a', 'queued']])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.phase).not.toBe('queued')
+    expect(record!.decisions.dispatches).toEqual([
+      {
+        seat: 'seat-t',
+        initiative: 'demo',
+        task: 'DM-1',
+        slice: 'a',
+        profile: 'bd-implementer',
+        account: 'pool-t',
+        name: 'st-dm-1-a',
+      },
+    ])
+  })
+
+  it('writes no record when shadowOut is false, or for a dry run', async () => {
+    config({ seats: ['seat-t'], shadowOut: false })
+    await tick(fakeBroker())
+    config({ seats: ['seat-t'] })
+    await tick(fakeBroker(), true)
+
+    expect(fs.existsSync(shadowDir())).toBe(false)
+  })
+
+  it('logs a record it cannot write and still finishes the tick', async () => {
+    config({ seats: ['seat-t'] })
+    write(shadowDir(), 'not a directory')
+    const events: string[] = []
+
+    await tick(fakeBroker(), false, e => events.push(e))
+
+    expect(events).toContain('burndown_shadow_record_failed')
+    expect(readLedger(burndownLedgerPath()).lastTickAt).toBe(NOON.toISOString())
   })
 })
 
@@ -3320,5 +3399,44 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
     await tickWith(done, exec)
 
     expect(calls).toEqual([])
+  })
+})
+
+describe('burndown tick sweeps exited trees park-at-exit kept (CC-1257)', () => {
+  function sweepFixture(): { fake: Fake; parks: string[] } {
+    const tree = path.join(repo(), '.worktrees', 'bd-old')
+    fs.mkdirSync(tree, { recursive: true })
+    const parks: string[] = []
+    const fake = fakeBroker({
+      agents: [{ ...row('bd-old', 'exited', tree), exitedAt: NOON.getTime() - 60_000 }],
+    })
+    fake.broker = {
+      ...fake.broker,
+      park: async name => {
+        parks.push(name)
+        return { ok: true }
+      },
+    }
+    return { fake, parks }
+  }
+
+  it('parks an exited tree no claim reads and logs the counts', async () => {
+    const { fake, parks } = sweepFixture()
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(parks).toEqual(['bd-old'])
+    expect(lines).toContain('parked bd-old')
+    expect(logged).toContainEqual({ event: 'burndown_park_sweep', detail: { parked: 1, kept: 0, left: 0 } })
+  })
+
+  it('a dry run parks nothing and names the candidate', async () => {
+    const { fake, parks } = sweepFixture()
+
+    const lines = await tick(fake, true)
+
+    expect(parks).toEqual([])
+    expect(lines).toContain('would park 1: bd-old')
   })
 })

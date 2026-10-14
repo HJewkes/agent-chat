@@ -153,9 +153,16 @@ export interface BriefRoute {
   section: string
 }
 
+/** CC-1193: a brief this tick approved, which edited its task file before the world was read. */
+export interface BriefApproval {
+  slug: string
+  taskId: string
+}
+
 export interface SettledBriefs {
   lines: string[]
   routes: BriefRoute[]
+  approved: BriefApproval[]
 }
 
 interface Proposal {
@@ -167,11 +174,12 @@ interface Proposal {
 
 /** CC-1234: every open `brief:proposed` task is approved on this tick when its plan lints; the rest are routes for the decider wake. */
 export function settleProposedBriefs(ports: AutoApprovePorts, deps: AutoApproveDeps): SettledBriefs {
-  const settled: SettledBriefs = { lines: [], routes: [] }
+  const settled: SettledBriefs = { lines: [], routes: [], approved: [] }
   for (const proposal of proposals(ports)) {
     const one = settleBrief(proposal, ports, deps)
     settled.lines.push(...one.lines)
     settled.routes.push(...one.routes)
+    settled.approved.push(...one.approved)
   }
   return settled
 }
@@ -186,7 +194,7 @@ function proposals(ports: AutoApprovePorts): Proposal[] {
   )
 }
 
-const linesOnly = (...lines: string[]): SettledBriefs => ({ lines, routes: [] })
+const linesOnly = (...lines: string[]): SettledBriefs => ({ lines, routes: [], approved: [] })
 
 function settleBrief(p: Proposal, ports: AutoApprovePorts, deps: AutoApproveDeps): SettledBriefs {
   const verdict = briefVerdict(p.task, ports.readPlan(p.planFile))
@@ -198,10 +206,11 @@ function settleBrief(p: Proposal, ports: AutoApprovePorts, deps: AutoApproveDeps
   if (deps.dryRun) return linesOnly(`would approve brief ${p.task.id}: slice lint passed`)
   const report = promoteBrief(p.slug, p.task.id, ports, deps.today)
   if (!report.ok) return routeBrief(p, verdict.plan, report.errors ?? [], deps)
-  return linesOnly(
+  const lines = [
     ...report.lines.map(line => `${line} (auto: slice lint passed)`),
     ...auditNote(p, ports, deps.today),
-  )
+  ]
+  return { lines, routes: [], approved: [{ slug: p.slug, taskId: p.task.id }] }
 }
 
 function auditNote(p: Proposal, ports: ApprovePorts, today: string): string[] {
@@ -222,12 +231,14 @@ function routeBrief(p: Proposal, plan: string, problems: string[], deps: AutoApp
   if (!deps.decider) return linesOnly(`${head}; no decider configured, left for the seat`)
   const stale = p.task.tags.filter(t => t.startsWith(DECIDER_SENT) && t !== tag)
   const section = briefReviewSection(p.slug, id, p.planFile, problems)
-  return { lines: [`${head}; for the decider`], routes: [{ slug: p.slug, taskId: id, tag, stale, section }] }
+  const route = { slug: p.slug, taskId: id, tag, stale, section }
+  return { lines: [`${head}; for the decider`], routes: [route], approved: [] }
 }
 
 /**
  * Intent first, written only once the tick has decided to wake the decider and right before the resume, so a tick
- * that fails earlier leaves no record and the next tick sends the brief. A route whose record fails is not sent.
+ * that fails earlier leaves no record and the next tick sends the brief. A route whose record fails is not sent,
+ * and its tag is removed in case the add wrote it before failing, so the next tick routes it again.
  */
 export function recordBriefRoutes(
   routes: readonly BriefRoute[],
@@ -237,10 +248,12 @@ export function recordBriefRoutes(
   const lines: string[] = []
   for (const route of routes)
     if (tryEdit(ports, route.slug, route.taskId, ['--add-tag', route.tag])) recorded.push(route)
-    else
+    else {
+      tryEdit(ports, route.slug, route.taskId, ['--remove-tag', route.tag])
       lines.push(
         `brief ${route.taskId} not sent to the decider: could not record the send; retried next tick`,
       )
+    }
   return { recorded, lines }
 }
 

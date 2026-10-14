@@ -12,6 +12,7 @@ import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 import {
   diskPlanReader,
+  resyncQueuedSlices,
   seedSlices,
   seedSteps,
   sliceRunsIn,
@@ -264,6 +265,33 @@ describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b, C
   })
 })
 
+describe('refusing a task whose slices were seeded before (CC-1256)', () => {
+  const PARENT = { taskId: 'A-1', initiative: 'alpha' }
+  const PLAN = { path: PLAN_PATH, text: planText(SLICES) }
+  const queuedB = plannerSlices().filter(c => c.slice === 'b')
+
+  it('refuses a parent whose slices were all released, and none is held, as released', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, slicesReleased: { 'A-1': ['a', 'b'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices a, b of A-1 were released and none is held; close the task, or run agent-chat burndown release A-1 to reseed`,
+    })
+  })
+
+  it('still refuses a parent with a held slice and a released one as already queued', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: queuedB, slicesReleased: { 'A-1': ['a'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(queuedB.map(c => c.phase)).toEqual(['queued'])
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices of A-1 were already queued; close the task or replan it`,
+    })
+  })
+})
+
 describe('sliceRunsIn', () => {
   const run = (agent: string, task: string | null = 'AB-408'): DispatchRecord =>
     ({ agent, task, outcome: 'abandoned' }) as DispatchRecord
@@ -311,5 +339,69 @@ describe('diskPlanReader', () => {
     expect(read('alpha', 'A-1')).toEqual({ path: `${root}/alpha/sources/A-1-plan.md`, text: 'plan text' })
     expect(read('alpha', 'A-2').text).toBeUndefined()
     fs.rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('carrying overlapsAccepted from the plan to the claim (CC-1259)', () => {
+  const INDEX = 'packages/authority/src/index.ts'
+  const ACCEPT = { pr: 1083, path: INDEX, why: 'line 3 only; #1083 appends at :10' }
+  const TP_2440_A = {
+    n: 'a',
+    title: 'authority conditions',
+    dependsOn: [],
+    owns: [INDEX, 'packages/authority/src/conditions.ts'],
+    points: 2,
+    doneWhen: 'Conditions test passes.',
+  }
+  const queuedA: Claim = {
+    taskId: 'A-1',
+    initiative: 'alpha',
+    spawnedAt: NOW.toISOString(),
+    phase: 'queued',
+    phaseAt: NOW.toISOString(),
+    slice: 'a',
+    dependsOn: [],
+    owns: TP_2440_A.owns,
+  }
+
+  // Mutation caught: sliceClaims dropping the field.
+  it('queues the slice with the overlaps its plan accepts', () => {
+    const result = plan({ ...ON, readPlan: reader(planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])) })
+
+    expect(result.seeds.map(c => c.overlapsAccepted)).toEqual([[ACCEPT]])
+  })
+
+  // Mutation caught: overlapsAccepted missing from the resync FIELDS.
+  it('resyncs an already-queued claim when its plan adds an accepted overlap', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queuedA] }
+    const text = planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])
+
+    const out = resyncQueuedSlices(ledger, () => ({ path: PLAN_PATH, text }), NOW)
+
+    expect(out.notes).toEqual([
+      `resynced alpha A-1 slice a from ${PLAN_PATH}: overlapsAccepted [] -> ["#1083 ${INDEX}"]`,
+    ])
+    expect(applyActions(ledger, out.actions, NOW).claims[0]?.overlapsAccepted).toEqual([ACCEPT])
+  })
+
+  // Mutation caught: a requeue that loses the acceptance and re-blocks the slice.
+  it('keeps the accepted overlaps on a released slice that is requeued', () => {
+    const live: Claim = {
+      ...queuedA,
+      phase: 'implementing',
+      agentName: 'sa-a-1-a',
+      overlapsAccepted: [ACCEPT],
+    }
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [live] }
+    const release: Action = {
+      kind: 'release',
+      key: { taskId: 'A-1', slice: 'a' },
+      requeue: true,
+      names: ['sa-a-1-a'],
+    }
+
+    const [requeued] = applyActions(ledger, [release], NOW).claims
+
+    expect(requeued).toMatchObject({ phase: 'queued', overlapsAccepted: [ACCEPT] })
   })
 })

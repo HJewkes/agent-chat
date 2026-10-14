@@ -210,7 +210,7 @@ async function headBranch(target: ParkTarget): Promise<HeadBranch> {
 }
 
 /** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
-const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
+const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo', '.api-extractor-temp']
 
 /** Tool caches that sit at any depth as single files. */
 const REGENERABLE_FILES = ['.eslintcache']
