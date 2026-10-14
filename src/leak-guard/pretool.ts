@@ -220,7 +220,20 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
-const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env', 'sudo']
+const OPTION_WRAPPERS = [
+  'exec',
+  'nice',
+  'stdbuf',
+  'ionice',
+  'caffeinate',
+  'timeout',
+  'repeat',
+  'xargs',
+  'env',
+  'sudo',
+]
+const STDBUF_VALUE = ['-i', '-o', '-e', '--input', '--output', '--error']
+const IONICE_VALUE = ['-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid', '--uid']
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
@@ -414,6 +427,8 @@ function wrapperEnd(words: readonly string[], at: number, name: string): number 
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
   if (name === 'exec') return dropOptions(words, at + 1, ['-a'])
   if (name === 'nice') return dropOptions(words, at + 1, ['-n'])
+  if (name === 'stdbuf') return dropOptions(words, at + 1, STDBUF_VALUE)
+  if (name === 'ionice') return dropOptions(words, at + 1, IONICE_VALUE)
   if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'])
   if (name === 'timeout' || name === 'repeat') return dropOptions(words, at + 1, ['-s', '-k']) + 1
   return undefined
