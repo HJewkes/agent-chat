@@ -4,7 +4,7 @@
  * git read the config and hooks of a repository someone else owns.
  */
 import { CLONE_OPTIONS, readConfigCall } from './git-programs.js'
-import { isSet, optionSpec, parseOptions, type SubArgs } from './git-parse-options.js'
+import { isSet, optionSpec, parseOptions, type OptionSpec, type SubArgs } from './git-parse-options.js'
 
 /** Which trust input an environment variable sets. */
 export type TrustEnv = 'shellStartup' | 'execPath' | 'templateDir'
@@ -90,19 +90,32 @@ export const INIT_OPTIONS = optionSpec(
 )
 
 /**
- * Whether `git init` or `git clone`, given its words after the subcommand, takes a template from a
+ * The builtins that create a repository and so copy a template, each with its options. `init-db`
+ * is `init` under its old name; `git submodule` runs `git clone`, which reads only config and env.
+ */
+export const REPO_CREATORS: ReadonlyMap<string, OptionSpec> = new Map([
+  ['init', INIT_OPTIONS],
+  ['init-db', INIT_OPTIONS],
+  ['clone', CLONE_OPTIONS],
+])
+
+/**
+ * Whether a `REPO_CREATORS` builtin (`git init`, `init-db` or `clone`), given its words after the subcommand, takes a template from a
  * directory: true for `--template` (any unique prefix) with a non-empty or unread value, `option`
  * when an option is one the guard cannot match or a word before `--` that is no option's value is
  * unread: both commands read options anywhere, so that word may be `--template=<dir>`. An empty
  * value and `--no-template` use none.
  */
-export function templateOption(sub: 'init' | 'clone', args: SubArgs): boolean | 'option' {
-  const parsed = parseOptions(args, sub === 'init' ? INIT_OPTIONS : CLONE_OPTIONS)
-  if (parsed === undefined || parsed.positionals.slice(0, parsed.beforeDashDash).includes(undefined))
-    return 'option'
-  if (isSet(parsed, 'help') || !parsed.options.has('template')) return false
+export function templateOption(sub: string, args: SubArgs): boolean | 'option' {
+  const spec = REPO_CREATORS.get(sub)
+  if (spec === undefined) return false
+  const parsed = parseOptions(args, spec)
+  if (parsed === undefined) return 'option'
   const value = parsed.options.get('template')
-  return value === undefined || (typeof value === 'string' && value !== '')
+  const set =
+    parsed.options.has('template') && (value === undefined || (typeof value === 'string' && value !== ''))
+  if (set && !isSet(parsed, 'help')) return true
+  return parsed.positionals.slice(0, parsed.beforeDashDash).includes(undefined) ? 'option' : false
 }
 
 /** Whether a git leading option sets the exec path; bare `--exec-path` only prints it. */
