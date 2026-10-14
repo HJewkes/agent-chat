@@ -168,3 +168,84 @@ describe('finding the transcript of an adopted agent with no recorded config dir
     expect(found).toEqual({ path: transcriptPath(CWD, SESSION), exists: false })
   })
 })
+
+describe('a per-dir index shared by one listing (CC-1311)', () => {
+  const CWD = '/Users/alice/projects/agent-chat'
+  const SESSION = '0d6c1f8e-5a5b-4d0e-9a51-3f2b2b8c9e10'
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-index-'))
+    process.env.CLAUDE_PROFILE_ROOT = path.join(root, 'profiles')
+  })
+
+  afterEach(() => {
+    delete process.env.CLAUDE_PROFILE_ROOT
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const writeIn = (dir: string, slug: string, sessionId: string): string => {
+    const folder = path.join(dir, 'projects', slug)
+    fs.mkdirSync(folder, { recursive: true })
+    const file = path.join(folder, `${sessionId}.jsonl`)
+    fs.writeFileSync(file, '{"type":"user"}\n')
+    return file
+  }
+
+  // Mutation caught: inDir rebuilding its map on every call, which re-lists each dir per row.
+  it('lists each recorded projects dir once however many rows miss', () => {
+    const dirs = ['a', 'b', 'c'].map(n => path.join(root, n))
+    const real = dirs.map(dir => {
+      for (let p = 0; p < 50; p++) fs.mkdirSync(path.join(dir, 'projects', `-p${p}`), { recursive: true })
+      return writeIn(dir, '-elsewhere', `${SESSION}-${path.basename(dir)}`)
+    })
+    const index = createProfileIndex()
+    const spy = vi.spyOn(fs, 'readdirSync')
+
+    const found = dirs.map(dir => {
+      for (let m = 0; m < 20; m++) findTranscript(CWD, `missing-${m}`, dir, index)
+      return findTranscript(CWD, `${SESSION}-${path.basename(dir)}`, dir, index)
+    })
+    const reads = spy.mock.calls.map(([dir]) => String(dir))
+    spy.mockRestore()
+
+    expect(found).toEqual(real.map(file => ({ path: file, exists: true })))
+    expect(new Set(reads).size).toBe(reads.length)
+    for (const dir of dirs) expect(reads).toContain(path.join(dir, 'projects'))
+  })
+
+  // Mutation caught: inDir keyed on the dir argument rather than its projects root.
+  it('agrees with the unindexed lookup', () => {
+    const derived = writeIn(configDir, projectSlug(CWD), `${SESSION}-derived`)
+    writeIn(configDir, projectSlug('/elsewhere'), `${SESSION}-moved`)
+    fs.writeFileSync(path.join(configDir, 'projects', projectSlug('/elsewhere'), `${SESSION}-txt`), '')
+    const index = createProfileIndex()
+    const cases: [string, string | undefined][] = [
+      [`${SESSION}-derived`, undefined],
+      [`${SESSION}-moved`, undefined],
+      [`${SESSION}-moved`, configDir],
+      [`${SESSION}-txt`, undefined],
+      [`${SESSION}-absent`, undefined],
+      ['', undefined],
+    ]
+
+    for (const [id, dir] of cases) {
+      expect(findTranscript(CWD, id, dir, index)).toEqual(findTranscript(CWD, id, dir))
+    }
+    expect(findTranscript(CWD, `${SESSION}-derived`, undefined, index).path).toBe(derived)
+    expect(findTranscript(CWD, `${SESSION}-moved`, undefined, index).exists).toBe(true)
+  })
+
+  // Mutation caught: an indexed miss consulting every profile's map instead of the recorded dir's.
+  it('never crosses a recorded dir once the shared index holds another profile', () => {
+    writeIn(path.join(root, 'profiles', 'agents'), '-elsewhere', SESSION)
+    const recordedOther = path.join(root, 'profiles', 'other')
+    const index = createProfileIndex()
+    expect(findAgentTranscript(CWD, SESSION, undefined, index).exists).toBe(true)
+
+    const found = findAgentTranscript(CWD, SESSION, recordedOther, index)
+
+    expect(found.exists).toBe(false)
+    expect(found.path.startsWith(recordedOther)).toBe(true)
+  })
+})

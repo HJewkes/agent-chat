@@ -652,7 +652,9 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       expect.objectContaining({
         task: 'A-2',
         kind: 'budget',
-        reason: expect.stringContaining('seven_day 80% at or above line 80%'),
+        reason: expect.stringContaining(
+          '(reading 40% + 40 charged: 1 dispatch(es) this tick at 40 each, charter) at or above line 80%',
+        ),
       }),
     ])
   })

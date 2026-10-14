@@ -1404,7 +1404,7 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
       'refused demo DM-1 [claimed]: seat seat-t dispatched it earlier this tick as st-dm-1',
     )
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, charter)",
     )
   })
 
@@ -1897,7 +1897,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
 
     expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-r0'])
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, default)",
     )
   })
 
@@ -2855,7 +2855,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(fake.frames).toEqual([])
     expect(fake.sends.map(s => s.text)).toEqual([
-      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report\nstale DM-1: other: proposed read the report and settle by hand`,
+      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report; holds: task; class failed\nstale DM-1: other: proposed read the report and settle by hand`,
     ])
     expect(claimOf()?.triage).toBeUndefined()
   })
@@ -2913,7 +2913,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(fake.frames).toEqual([])
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: task; class failed'])
     expect(lines).toContain(
       'triage of DM-1# falls back to the owner: triage is not ready: no exceptions.triage in the burndown config',
     )
@@ -2926,7 +2926,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(triageFrames(fake)).toHaveLength(1)
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: task; class failed'])
     expect(claimOf()?.triage).toMatchObject({
       outcome: 'refused',
       detail: 'triage triage-dm-1-1 refused: no slot',
@@ -2946,7 +2946,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(triageFrames(fake)).toHaveLength(1)
     expect(stalledLines(fake)).toEqual([
-      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled); holds: task; class failed',
     ])
     expect(claimOf()?.triage?.outcome).toBe('ended')
   })
@@ -2963,7 +2963,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(before).toEqual([])
     expect(stalledLines(fake)).toEqual([
-      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled)',
+      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled); holds: task; class failed',
     ])
   })
 
@@ -2990,7 +2990,9 @@ describe('burndown tick triage jobs (CC-649)', () => {
     await tickAt(fake, 0)
 
     expect(fake.frames).toEqual([])
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: Shepherd refused demo/repo#5'])
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: Shepherd refused demo/repo#5; holds: task; class gate-trip',
+    ])
   })
 
   it('starts one job under maxPerDay 1 and sends the second stall to the owner with a cap note', async () => {
@@ -3001,7 +3003,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(triageFrames(fake).map(f => f.name)).toEqual(['triage-dm-1-1'])
-    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report; holds: task; class failed'])
     expect(lines).toContain(
       'triage of DM-2# falls back to the owner: triage day cap spent (1 of maxPerDay 1)',
     )
@@ -3020,7 +3022,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     expect(triageFrames(fake)).toEqual([])
     expect(before).toEqual([])
     expect(waiting.join('\n')).toContain('triage of DM-1# waits: no agent capacity')
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: lane + task; class failed'])
     expect(late).toContain(
       'triage of DM-1# falls back to the owner: no agent capacity for triage in maxMinutes 30',
     )

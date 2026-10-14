@@ -32,7 +32,9 @@ import {
   renderStatus,
   seatPlanFromDisk,
   type SeatPlanOptions,
+  type ShareWhatIfRequest,
 } from '../../agents/burndown/tick.js'
+import type { ProjectShares } from '../../agents/burndown/project-shares.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -57,6 +59,7 @@ import {
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 import { burndownLandedVerb } from './burndown-landed.js'
+import { burndownClassifyVerb } from './burndown-classify.js'
 import { kicksInBroker, sendJobKick } from './job-kick.js'
 
 const refused = (err: unknown): Report => ({
@@ -74,14 +77,21 @@ const PlanArgs = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
     .optional(),
+  shares: z.string().optional(),
+  picks: z.coerce.number().int().positive().optional(),
 })
 type PlanArgs = z.infer<typeof PlanArgs>
 
 /** score.py's default `--top`. */
 const DEFAULT_TOP = 20
+/** CC-1107: picks the `--shares` what-if forecasts by default. */
+const DEFAULT_PICKS = 20
 
 /** Refuses scored-only flags without `--scored`, so a plain `burndown plan` never changes meaning. */
-export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanArgs): string | undefined {
+export function planFlagError(args: PlanArgs): string | undefined {
+  const { seat, scored, top, autonomyRoot, today } = args
+  const whatIf = whatIfFlagError(args)
+  if (whatIf !== undefined) return whatIf
   if (scored === true) return seat === undefined ? 'burndown plan --scored needs --seat <name>' : undefined
   if (seat !== undefined)
     return top === undefined && today === undefined
@@ -90,6 +100,29 @@ export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanAr
   if (top !== undefined || autonomyRoot !== undefined || today !== undefined)
     return 'burndown plan --top, --autonomy-root and --today apply only with --seat <name> --scored'
   return undefined
+}
+
+/** CC-1107: the share what-if forecasts a seat's dispatch order, so it needs `--seat` and not `--scored`. */
+function whatIfFlagError({ seat, scored, shares, picks }: PlanArgs): string | undefined {
+  if (shares === undefined)
+    return picks === undefined ? undefined : 'burndown plan --picks applies only with --shares'
+  if (seat === undefined) return 'burndown plan --shares needs --seat <name>'
+  return scored === true ? 'burndown plan --shares does not apply with --scored' : undefined
+}
+
+/** `<slug>=<share>,...` as project shares; throws on a malformed pair, a repeated slug or a negative share. */
+export function parseShares(text: string): ProjectShares {
+  const initiatives: Record<string, number> = {}
+  for (const pair of text.split(',')) {
+    const [slug, value, extra] = pair.trim().split('=')
+    const share = Number(value)
+    if (!slug || value === undefined || value.trim() === '' || extra !== undefined || !Number.isFinite(share))
+      throw new Error(`--shares wants <slug>=<share>,...; got '${pair}'`)
+    if (share < 0) throw new Error(`--shares ${slug}=${value} is negative`)
+    if (slug in initiatives) throw new Error(`--shares names ${slug} twice`)
+    initiatives[slug] = share
+  }
+  return { initiatives }
 }
 
 export const burndownPlanVerb = defineVerb({
@@ -104,6 +137,15 @@ export const burndownPlanVerb = defineVerb({
       top: { long: '--top', description: `picks to print with --scored (default ${DEFAULT_TOP})` },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding charter.md and seats/' },
       today: { long: '--today', description: 'pin the staleness clock (YYYY-MM-DD) with --scored' },
+      shares: {
+        long: '--shares',
+        description:
+          'with --seat: what-if project shares, <slug>=<share>,...; prints the next picks by project before -> after',
+      },
+      picks: {
+        long: '--picks',
+        description: `picks the --shares what-if forecasts (default ${DEFAULT_PICKS})`,
+      },
     },
   },
   async run(args) {
@@ -112,7 +154,7 @@ export const burndownPlanVerb = defineVerb({
     try {
       if (args.seat === undefined) return await plainPlan()
       if (args.scored === true) return { ok: true, lines: scoredSeatPlan(args.seat, args) }
-      return await seatDispatchPlan(args.seat, args.autonomyRoot)
+      return await seatDispatchPlan(args.seat, args.autonomyRoot, whatIfOf(args))
     } catch (err) {
       return refused(err)
     }
@@ -126,10 +168,18 @@ async function plainPlan(): Promise<Report> {
   return { ok: true, lines: renderPlan(planned, now) }
 }
 
-async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
+const whatIfOf = ({ shares, picks }: PlanArgs): ShareWhatIfRequest | undefined =>
+  shares === undefined ? undefined : { shares: parseShares(shares), picks: picks ?? DEFAULT_PICKS }
+
+async function seatDispatchPlan(
+  seat: string,
+  autonomyRoot: string | undefined,
+  whatIf: ShareWhatIfRequest | undefined,
+): Promise<Report> {
   const unusable = watchdogUnusable()
   if (unusable !== undefined) {
     logEvent('burndown_seat_paths_skipped', { reason: unusable })
+    if (whatIf !== undefined) throw new Error(`seat paths skipped, no --shares what-if: ${unusable}`)
     const plain = await plainPlan()
     return {
       ...plain,
@@ -137,7 +187,9 @@ async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined):
     }
   }
   const opts = await seatPlanOptions(seat, autonomyRoot)
-  return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
+  const planned = seatPlanFromDisk({ ...opts, ...(whatIf !== undefined && { whatIf }) })
+  const mix = planned.shareMix === undefined ? [] : [planned.shareMix]
+  return { ok: true, lines: [...renderPlan(planned, opts.now), ...mix] }
 }
 
 export const burndownSeatsCompareVerb = defineVerb({
@@ -469,12 +521,21 @@ export const burndownUnstallVerb = defineVerb({
 
 export const burndownBriefApproveVerb = defineVerb({
   name: 'burndown.brief.approve',
-  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
-  args: z.object({ task: requiredString('task') }),
+  description:
+    "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when off plan",
+  args: z.object({ task: requiredString('task'), offPlanOk: z.string().optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
-    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  cli: {
+    positional: ['task'],
+    options: {
+      offPlanOk: {
+        long: '--off-plan-ok <reason>',
+        description: 'approve an off-plan task for owner-ordered work; the reason is logged as a task note',
+      },
+    },
+  },
+  async run({ task, offPlanOk }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()), offPlanOk)
   },
 })
 
@@ -539,6 +600,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
   addVerb(burndown, burndownLandedVerb)
+  addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),

@@ -85,6 +85,64 @@ describe('which exited trees the tick may park (CC-1257)', () => {
   })
 })
 
+describe('detached trees a previous broker left (CC-1064)', () => {
+  const detached = (name: string, lastEventAt: number, over: Partial<AgentIdentity> = {}): AgentIdentity =>
+    agent(name, { state: 'detached', lastEventAt, ...over })
+
+  it('takes detached spawned worktree rows after every exited row, oldest event first', () => {
+    const agents = [
+      detached('tc-d-new', T0 + 2000),
+      agent('tc-x-late', { exitedAt: T0 + 9000 }),
+      detached('tc-d-old', T0 - 5000),
+      agent('tc-x-early', { exitedAt: T0 + 1000 }),
+    ]
+
+    const names = parkCandidates({ agents }, ledgerOf([]), ['tc'], exists).map(a => a.name)
+
+    expect(names).toEqual(['tc-x-early', 'tc-x-late', 'tc-d-old', 'tc-d-new'])
+  })
+
+  it('never offers a name that has a spawning or live row, whatever its older rows say', () => {
+    const agents = [
+      detached('tc-a', T0),
+      agent('tc-a', { state: 'live' }),
+      agent('tc-b'),
+      agent('tc-b', { state: 'spawning' }),
+      detached('tc-c', T0),
+      agent('tc-c'),
+    ]
+
+    const names = parkCandidates({ agents }, ledgerOf([]), ['tc'], exists).map(a => a.name)
+
+    expect(names).toEqual(['tc-c'])
+  })
+
+  it('leaves a detached reviewer, adopted or non-worktree row alone', () => {
+    const agents = [
+      detached('tc-rv-a', T0, { profile: 'rv-readonly' }),
+      detached('rv-tc-b', T0),
+      detached('tc-adopted', T0, { origin: 'adopted' }),
+      detached('tc-shared', T0, { isolation: 'shared' }),
+    ]
+
+    expect(parkCandidates({ agents }, ledgerOf([]), ['tc', 'rv'], exists)).toEqual([])
+  })
+
+  it('tries an exited tree before an older detached one when only one fits', async () => {
+    const candidates = parkCandidates(
+      { agents: [detached('tc-d', T0 - 60_000), agent('tc-x', { exitedAt: T0, lastEventAt: T0 })] },
+      ledgerOf([]),
+      ['tc'],
+      exists,
+    )
+    const parked: string[] = []
+
+    await parkSweep(candidates, async name => (parked.push(name), { ok: true }), 1)
+
+    expect(parked).toEqual(['tc-x'])
+  })
+})
+
 describe('the bounded park sweep (CC-1257)', () => {
   it('parks the first eight in order and names the rest', async () => {
     const candidates = Array.from({ length: 19 }, (_, i) => agent(`tc-old-${i}`))
