@@ -1,8 +1,8 @@
 /**
  * A best-effort POSIX shell word splitter for the PreToolUse guard (CC-270). It is not a shell:
- * it splits simple commands, removes quotes, and reads heredocs and command substitutions,
- * which is enough to see what an ordinary command line runs. Anything it misreads is a gap
- * in a speed bump, never a boundary; see docs/leak-guard.md.
+ * it splits simple commands, removes quotes, and reads heredocs, command substitutions and
+ * bash 5.3's `${ cmd;}` / `${|cmd;}` (funsub), which is enough to see what an ordinary command
+ * line runs. Anything it misreads is a gap in a speed bump, never a boundary; see docs/leak-guard.md.
  */
 
 /** Precedes each `$`, leading `~`, glob character and substitution the shell would expand in a marked word. */
@@ -10,7 +10,7 @@ export const LIVE = '\0'
 
 export const unmark = (word: string): string => word.replaceAll(LIVE, '')
 
-/** One `$(...)` or backtick pair: its source text and the commands inside it. */
+/** One `$(...)`, backtick pair or funsub: its source text and the commands inside it. */
 export interface Substitution {
   raw: string
   commands: SimpleCommand[]
@@ -112,6 +112,17 @@ function nestedClose(src: string, start: number): number {
   return -1
 }
 
+/** Where the body of a funsub opening at `at` starts: `${` and a blank, tab or newline, or `${|`. */
+function funsubBody(src: string, at: number): number | undefined {
+  if (!src.startsWith('${', at)) return undefined
+  const c = src[at + 2] ?? ''
+  if (c === '|') return at + 3
+  return ' \t\n'.includes(c) && c !== '' ? at + 2 : undefined
+}
+
+// A `}` before one of these, or at the end, is a word of its own; bash closes a funsub at its `}` even without one.
+const METACHAR = /[\s;&|()<>]/
+
 function bracedRisk(src: string, start: number, text: string): ExpansionRisk | undefined {
   if (UNREADABLE_BRACED.test(text)) return 'unreadable'
   const close = nestedClose(src, start)
@@ -189,6 +200,10 @@ class ShellLexer {
   private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
+  /** Reading a funsub body, which a `}` in command position outside any `{ }` group closes. */
+  closesOnBrace = false
+  private braceDepth = 0
+  private braceClosed = false
 
   constructor(
     private readonly src: string,
@@ -232,6 +247,7 @@ class ShellLexer {
   private step(): void {
     const c = this.src[this.pos] as string
     if (c === '\\' && this.src[this.pos + 1] === '\n') return void (this.pos += 2)
+    if (this.braceWord(c)) return
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
     if (c === '(' || c === ')') return this.paren(c)
@@ -239,6 +255,29 @@ class ShellLexer {
     if (c === '#' && this.word === null) return this.skipComment()
     if (c === '<' || c === '>') return this.redirect()
     this.wordPart(c)
+  }
+
+  /**
+   * In a funsub, counts `{ }` groups and closes at the `}` that ends none. bash closes only at a `}` in
+   * command position; zsh also at a `}` argument, so one makes the line unreadable rather than guessed.
+   */
+  private braceWord(c: string): boolean {
+    if (!this.closesOnBrace || this.word !== null || (c !== '{' && c !== '}')) return false
+    const next = this.src[this.pos + 1]
+    const command = this.cur.words.length === 0
+    if (c === '{') {
+      if (command && next !== undefined && ' \t\n'.includes(next)) this.braceDepth++
+      return false
+    }
+    if (command && this.braceDepth === 0) {
+      this.endCommand()
+      this.closed = this.braceClosed = true
+      return true
+    }
+    if (next !== undefined && !METACHAR.test(next)) return false
+    if (!command) this.budget.expansion = 'unreadable'
+    else this.braceDepth--
+    return false
   }
 
   private skip(then: () => void): void {
@@ -469,6 +508,8 @@ class ShellLexer {
     if (c === '$' && next === "'") return this.ansiC()
     if (c === '$' && next === '[') this.noteBracket()
     if (c === '$' && next === '(') return this.split(this.substitution(false))
+    const fun = this.funsub(false)
+    if (fun !== undefined) return this.split(fun)
     if (c === '$' && next === '{') return this.split(this.braced())
     if (c === '`') return this.split(this.backtick(false))
     if (c === '\\') {
@@ -531,7 +572,9 @@ class ShellLexer {
       const c = this.src[this.pos] as string
       const next = this.src[this.pos + 1] ?? ''
       if (c === '$' && next === '[') this.noteBracket()
-      if (c === '$' && next === '(') this.append(this.substitution(true), true)
+      const fun = this.funsub(true)
+      if (fun !== undefined) this.append(fun, true)
+      else if (c === '$' && next === '(') this.append(this.substitution(true), true)
       else if (c === '`') this.append(this.backtick(true), true)
       else if (c === '$' && next === '{') {
         this.bracedAt()
@@ -568,6 +611,20 @@ class ShellLexer {
     if (arith !== undefined) this.cur.arithBodies.push(arith.text)
     const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget, arith)
     const commands = inner.run()
+    this.pos = Math.min(inner.pos + 1, this.src.length)
+    if (inner.mark !== undefined) this.unsettled()
+    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
+  }
+
+  /** Reads the body of a funsub at the cursor as commands; with no `}` where bash closes it, the line is unreadable. */
+  private funsub(quoted: boolean): string | undefined {
+    const body = funsubBody(this.src, this.pos)
+    if (body === undefined) return undefined
+    const start = this.pos
+    const inner = new ShellLexer(this.src, body, true, this.budget)
+    inner.closesOnBrace = true
+    const commands = inner.run()
+    if (!inner.braceClosed) this.budget.expansion = 'unreadable'
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
