@@ -1,0 +1,149 @@
+import { describe, expect, it } from 'vitest'
+import { mergeTarget } from '../gh-write/merge-target.js'
+
+const NO_ENV = {}
+const kindOf = (args: string[], env: Record<string, string> = NO_ENV): string => mergeTarget(args, env).kind
+
+describe('mergeTarget for gh api', () => {
+  it('names the PR a PUT to the merge endpoint would merge', () => {
+    const target = mergeTarget(
+      ['api', '-X', 'PUT', 'repos/o/r/pulls/12/merge', '-f', 'merge_method=squash'],
+      NO_ENV,
+    )
+
+    expect(target).toEqual({ kind: 'merge', repo: 'o/r', pr: 12 })
+  })
+
+  it.each([
+    ['a leading slash', '/repos/o/r/pulls/12/merge'],
+    ['the full API URL', 'https://api.github.com/repos/o/r/pulls/12/merge'],
+    ['a query string', 'repos/o/r/pulls/12/merge?x=1'],
+    ['URL encoding', 'repos%2Fo%2Fr%2Fpulls%2F12%2Fmerge'],
+    ['double URL encoding', 'repos%252Fo%252Fr%252Fpulls%252F12%252Fmerge'],
+    ['upper case', 'REPOS/O/R/PULLS/12/MERGE'],
+    ['a trailing slash', 'repos/o/r/pulls/12/merge/'],
+  ])('reads a merge endpoint spelled with %s', (_, endpoint) => {
+    const target = mergeTarget(['api', '-X', 'PUT', endpoint], NO_ENV)
+
+    expect(target).toMatchObject({ kind: 'merge', pr: 12 })
+    expect(target.kind === 'merge' && target.repo?.toLowerCase()).toBe('o/r')
+  })
+
+  it.each([
+    ['a GET', ['api', '-X', 'GET', 'repos/o/r/pulls/12/merge']],
+    ['no method', ['api', 'repos/o/r/pulls/12/merge']],
+    ['a method override header', ['api', '-H', 'X-HTTP-Method-Override: PUT', 'repos/o/r/pulls/12/merge']],
+    ['an attached method', ['api', '-XPUT', 'repos/o/r/pulls/12/merge']],
+    ['a --method= form', ['api', '--method=PUT', 'repos/o/r/pulls/12/merge']],
+    ['a leading -R pair', ['-R', 'x/y', 'api', 'repos/o/r/pulls/12/merge']],
+    ['the endpoint after --', ['api', '-X', 'PUT', '--', 'repos/o/r/pulls/12/merge']],
+  ])('treats %s as a merge whatever the method', (_, args) => {
+    expect(mergeTarget(args, NO_ENV)).toEqual({ kind: 'merge', repo: 'o/r', pr: 12 })
+  })
+
+  it.each([
+    ['a gh placeholder', 'repos/{owner}/{repo}/pulls/12/merge'],
+    ['a shell variable', 'repos/o/r/pulls/$N/merge'],
+    ['another host', 'https://ghe.example.com/api/v3/repos/o/r/pulls/12/merge'],
+  ])('refuses to name a merge endpoint with %s', (_, endpoint) => {
+    expect(kindOf(['api', '-X', 'PUT', endpoint])).toBe('unresolved')
+  })
+
+  it('refuses two different merge endpoints in one call', () => {
+    expect(kindOf(['api', 'repos/o/r/pulls/12/merge', 'repos/o/r/pulls/13/merge'])).toBe('unresolved')
+  })
+
+  it.each([
+    [
+      'a field value that mentions a merge',
+      ['api', 'repos/o/r/issues/1/comments', '-f', 'body=see repos/o/r/pulls/12/merge'],
+    ],
+    [
+      'a --raw-field value',
+      ['api', 'repos/o/r/issues/1/comments', '--raw-field', 'repos/o/r/pulls/12/merge'],
+    ],
+    ['a jq filter', ['api', 'repos/o/r/pulls/12', '--jq', 'repos/o/r/pulls/12/merge']],
+    ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
+    ['a PR read', ['api', 'repos/o/r/pulls/12']],
+    ['a merges endpoint', ['api', '-X', 'POST', 'repos/o/r/merges']],
+  ])('passes %s as no merge', (_, args) => {
+    expect(kindOf(args)).toBe('none')
+  })
+})
+
+describe('mergeTarget for gh pr merge', () => {
+  it.each([
+    ['a number and -R', ['pr', 'merge', '12', '-R', 'o/r', '--squash']],
+    ['a leading -R and #n', ['-R', 'o/r', 'pr', 'merge', '#12']],
+    ['-R between group and verb', ['pr', '-R', 'o/r', 'merge', '12']],
+    ['a PR URL with a suffix', ['pr', 'merge', 'https://github.com/o/r/pull/12/files']],
+    ['a cluster and a host on -R', ['pr', 'merge', '12', '-sd', '-R', 'github.com/o/r']],
+    ['--repo=', ['pr', 'merge', '12', '--repo=o/r', '--admin', '--match-head-commit', 'abc']],
+    ['an attached -R', ['pr', 'merge', '12', '-Ro/r']],
+    ['a value cluster', ['pr', 'merge', '12', '-sb', 'body text', '-R', 'o/r']],
+    ['the same repo twice', ['pr', 'merge', '12', '-R', 'o/r', '--repo', 'O/R']],
+  ])('names the PR from %s', (_, args) => {
+    expect(mergeTarget(args, NO_ENV)).toMatchObject({ kind: 'merge', pr: 12 })
+    expect(mergeTarget(args, NO_ENV)).not.toMatchObject({ repo: undefined })
+  })
+
+  it('leaves the repo for the caller to resolve when nothing names it', () => {
+    const args = ['pr', 'merge', '1495', '--squash', '--admin', '--match-head-commit', 'abc']
+
+    expect(mergeTarget(args, NO_ENV)).toEqual({ kind: 'merge', pr: 1495 })
+  })
+
+  it('takes the repo from GH_REPO when no flag names one', () => {
+    expect(mergeTarget(['pr', 'merge', '12'], { GH_REPO: 'o/r' })).toEqual({
+      kind: 'merge',
+      repo: 'o/r',
+      pr: 12,
+    })
+  })
+
+  it('prefers -R over GH_REPO', () => {
+    expect(mergeTarget(['pr', 'merge', '12', '-R', 'o/r'], { GH_REPO: 'x/y' })).toEqual({
+      kind: 'merge',
+      repo: 'o/r',
+      pr: 12,
+    })
+  })
+
+  it.each([
+    ['a branch name', ['pr', 'merge', 'feature-branch']],
+    ['no selector', ['pr', 'merge']],
+    ['two selectors', ['pr', 'merge', '12', '13']],
+    ['an unknown flag', ['pr', 'merge', '12', '--unknown']],
+    ['an unknown short letter', ['pr', 'merge', '12', '-sz']],
+    ['two different -R repos', ['pr', 'merge', '12', '-R', 'o/r', '-R', 'o/s']],
+    ['a URL that disagrees with -R', ['pr', 'merge', 'https://github.com/o/r/pull/12', '-R', 'o/s']],
+    ['a URL on another host', ['pr', 'merge', 'https://ghe.example.com/o/r/pull/12']],
+    ['-R on another host', ['pr', 'merge', '12', '-R', 'ghe.example.com/o/r']],
+    ['a malformed -R', ['pr', 'merge', '12', '-R', 'o']],
+    ['-R with no value', ['pr', 'merge', '12', '-R']],
+    ['a flag before the verb', ['pr', '--squash', 'merge', '12']],
+    ['a flag before the group', ['--squash', 'pr', 'merge', '12']],
+  ])('refuses to name %s', (_, args) => {
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
+  it('refuses a GH_REPO it cannot name', () => {
+    expect(kindOf(['pr', 'merge', '12'], { GH_REPO: 'ghe.example.com/o/r' })).toBe('unresolved')
+  })
+
+  it('refuses a bare repo when GH_HOST points elsewhere', () => {
+    expect(kindOf(['pr', 'merge', '12', '-R', 'o/r'], { GH_HOST: 'ghe.example.com' })).toBe('unresolved')
+  })
+
+  it.each([
+    ['--disable-auto', ['pr', 'merge', '12', '--disable-auto']],
+    ['pr view', ['pr', 'view', '12']],
+    ['a comment whose body says merge', ['pr', 'comment', '12', '--body', 'merge']],
+    ['update-branch', ['pr', 'update-branch', '12']],
+    ['issue close', ['issue', 'close', '12']],
+    ['a repo command', ['repo', 'view']],
+    ['no words', []],
+  ])('passes %s as no merge', (_, args) => {
+    expect(kindOf(args)).toBe('none')
+  })
+})
