@@ -351,9 +351,21 @@ type Unwrapped =
       assigns: string[]
       fed?: Fed | undefined
       /** Commands that also run, each read as a command line of its own: find's later action clauses. */
-      siblings?: string[][]
+      siblings?: Sibling[]
     }
   | { reason: string }
+
+/** What the wrappers before a command have set up, carried to a command that runs beside it. */
+interface Lead {
+  assigns: readonly string[]
+  chdir: boolean
+  fed: Fed | undefined
+}
+
+/** A find clause read apart from the find's first, under the wrappers that came before that find. */
+interface Sibling extends Lead {
+  words: string[]
+}
 
 /**
  * xargs runs its command with words it reads: in place of each word holding the `replace` string,
@@ -373,15 +385,15 @@ const ANY_WORD = ''
 const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
-function unwrap(words: readonly string[], splits: readonly string[] = []): Unwrapped {
+function unwrap(words: readonly string[], splits: readonly string[] = [], lead?: Lead): Unwrapped {
   let rest = words
   let at = 0
-  let chdir = false
-  let fed: Fed | undefined
+  let chdir = lead?.chdir ?? false
+  let fed = lead?.fed
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
-  let siblings: string[][] | undefined
-  const assigns: string[] = []
+  let siblings: Sibling[] | undefined
+  const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
@@ -416,8 +428,14 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
     } else if (name === 'find') {
       const run = findRun(rest, at)
       if (run === undefined) return done()
+      const before: Lead = { assigns: [...assigns], chdir, fed }
       fed = fed === undefined ? FIND_FED : nestedFed(fed, FIND_FED)
-      if (run.siblings.length > 0) siblings = run.siblings
+      // A find inside a clause keeps the outer find's later clauses alongside its own.
+      siblings = [
+        ...(siblings ?? []),
+        ...run.later.map(words => ({ ...before, words })),
+        ...run.tail.map(words => ({ ...before, fed, words })),
+      ]
       rest = run.words.map(w => placeFed(w, '{}'))
       at = run.at
     } else if (name === 'sudo') {
@@ -463,24 +481,23 @@ function placeFed(word: string, replace: string): string {
 const FIND_FED: Fed = { replace: '{}', append: false }
 
 /**
- * The command a `find` at `at` runs: its first action clause, with every later clause as a find of its
+ * The command a `find` at `at` runs: its first action clause, with every `later` clause as a find of its
  * own to check apart. A word the guard cannot read may expand to `-exec`, or to a `;` that ends a clause
- * early, so the words from the first one on are also checked as a command. Undefined when find runs nothing.
+ * early, so the words from the first one on are also checked as a command, the `tail`. Undefined when
+ * find runs nothing.
  */
 function findRun(
   rest: readonly string[],
   at: number,
-): { words: string[]; at: number; siblings: string[][] } | undefined {
+): { words: string[]; at: number; later: string[][]; tail: string[][] } | undefined {
   const { clauses, hiddenAt } = findClauses(rest, at + 1)
-  const prefix = rest.slice(0, at + 1)
-  const alone = (clause: FindClause): string[] => [...prefix, clause.action, ...clause.words, ';']
+  const alone = (clause: FindClause): string[] => [rest[at] as string, clause.action, ...clause.words, ';']
   const inClause = clauses.flatMap(c => c.words.flatMap((w, i) => (unreadable(w) ? [c.at + i] : [])))
   const tailAt = Math.min(hiddenAt ?? Infinity, inClause[0] ?? Infinity)
   const tail = tailAt < Infinity ? [rest.slice(tailAt).map(w => placeFed(w, '{}'))] : []
   const [first, ...later] = clauses
-  const siblings = [...later.map(alone), ...tail]
-  if (first !== undefined) return { words: [...first.words], at: 0, siblings }
-  return tailAt < Infinity ? { words: [...rest], at: tailAt, siblings: [] } : undefined
+  if (first !== undefined) return { words: [...first.words], at: 0, later: later.map(alone), tail }
+  return tailAt < Infinity ? { words: [...rest], at: tailAt, later: [], tail: [] } : undefined
 }
 
 /** A word holding an expansion, other than the bare `{}` the shell leaves alone. */
@@ -2025,11 +2042,12 @@ function checkSimple(
   scope: Scope,
   depth: number,
   outermost = true,
+  lead?: Lead,
 ): string | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
+  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped) return unwrapped.reason
-  const sibling = firstReason(unwrapped.siblings ?? [], words =>
-    checkSimple(suffixCommand(cmd, words), ctx, scope, depth, outermost),
+  const sibling = firstReason(unwrapped.siblings ?? [], s =>
+    checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )
   if (sibling !== undefined) return sibling
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope

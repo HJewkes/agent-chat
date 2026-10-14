@@ -50,6 +50,16 @@ describe('find runs each action clause with the paths it finds in place of {} (C
   })
 
   it.each([
+    'find . -ok find . -exec true {} + -exec true \\; -o -exec git push --no-verify \\;',
+    'find . -ok find . -exec true {} + -exec true \\; -o -exec env -u GIT_CONFIG_COUNT git push \\;',
+    'find . -ok find . -exec true {} + -exec true \\; -o -exec git -c core.hooksPath=/tmp/h push \\;',
+    'find . -ok find . -exec true {} + -exec true \\; -o -exec gh pr create --body zq7privateseat \\;',
+    'GH_CONFIG_DIR=/tmp/x find . -ok find . -exec true {} + -exec gh pr create --body ok \\; \\;',
+  ])('keeps the outer clauses after a find that has clauses of its own: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
+  it.each([
     "find . -name '*.ts' -exec grep -n foo {} \\;",
     'find . -exec grep -l x {} +',
     'find . -type f -print',
