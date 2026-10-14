@@ -276,6 +276,39 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(find("$\\\n'\\x67it' push --no-verify", 'git')?.words).toEqual(['git', 'push', '--no-verify'])
   })
 
+  // bash 5.3.9 closes at a `}` right after fi, done, esac, `}`, `]]`, `))` or a subshell's `)`, even before `"` or x.
+  it.each(
+    [
+      'if :; then :; fi }"',
+      'if :; then :; fi }x"',
+      '(:) }"',
+      '(:) }x"',
+      'for a in b; do :; done }x"',
+      'case a in a) ;; esac }x"',
+      '[[ a ]] }x"',
+      '(( 1 )) }x"',
+      '{ :; } }x"',
+      '{ :; } }"',
+      'while false; do :; done }"',
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}; git push --no-verify; #"\n}"`)),
+  )('%j closes after the compound command, so the push is a command', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(false)
+  })
+
+  it.each(['echo ${ a=() }x; git push --no-verify; }', 'echo ${ [[ a &&\n}x ]]; git push --no-verify; }'])(
+    '%j has a }-word it cannot place, so it is unreadable',
+    src => {
+      expect(expansionRisk(src)).toBe('unreadable')
+    },
+  )
+
+  it.each(['${ ', '${|'])('%j keeps }x after another word a plain argument', open => {
+    expect(expansionRisk(`echo "${open}echo a }x; date; }"`)).toBeUndefined()
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {

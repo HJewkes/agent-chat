@@ -135,7 +135,10 @@ function funsubBody(src: string, at: number): number | undefined {
 }
 
 // Words after which a `{` still opens a group, as COMMAND_PREFIX is for a `(`.
-type ParenKind = 'subshell' | 'function' | 'header' | 'text'
+type ParenKind = 'subshell' | 'function' | 'header' | 'arith' | 'text'
+
+// A command that is one of these words, or a whole `[[ ]]`, ends a compound command, after which `}` is reserved.
+const COMPOUND_END = new Set(['fi', 'done', 'esac', '}'])
 
 const BRACE_PREFIX = new Set([
   '{',
@@ -239,6 +242,8 @@ class ShellLexer {
   private parens: ParenKind[] = []
   /** The current command began where bash starts one, so its first word may be reserved. */
   private atStart = true
+  /** The current command follows a subshell's `)` or an arithmetic `))`, so a `}` may close. */
+  private afterCompound = false
   /** Inside `[[ ]]`, where neither an operator nor a newline starts a command. */
   private testOpen = false
   /** A word of the current command was quoted, so it is not a reserved word. */
@@ -302,24 +307,58 @@ class ShellLexer {
    * In a funsub, counts `{ }` groups and closes at the `}` that ends none. A brace is reserved only
    * where bash starts a command: after an operator or newline outside `[[ ]]`, a subshell `(`, a
    * function's `()`, a case pattern, or reserved words (see `groupOpens`), and never inside `[[ ]]`,
-   * arithmetic or an array. A `{` or `}` word anywhere else makes the line unreadable.
+   * arithmetic or an array; a `}` also after a compound command's closing word (see `reservedClose`).
+   * A `{` or `}` word anywhere else makes the line unreadable.
    */
   private braceWord(c: string): boolean {
     // After a redirect operator bash reads a `{` or `}` as the file name, never as a reserved word.
     if (!this.closesOnBrace || this.word !== null || this.patternNext || this.pending !== null) return false
-    if (c !== '{' && c !== '}') return false
-    const spot = this.atStart && !this.testOpen && !this.parens.includes('text')
-    const reserved = spot && (c === '{' ? this.groupOpens() : this.cur.words.length === 0)
-    if (c === '}' && reserved && this.braceDepth === 0) {
+    if (c === '{') this.openBrace()
+    return c === '}' && this.closeBrace()
+  }
+
+  private openBrace(): void {
+    const next = this.peek(this.pos + 1)
+    if (next !== undefined && !METACHAR.test(next)) return
+    if (this.atStart && !this.testOpen && !this.inText() && this.groupOpens()) this.braceDepth++
+    else this.budget.expansion = 'unreadable'
+  }
+
+  /**
+   * bash closes at a reserved `}` even with no blank after it (`}x`). A `}` word that is neither reserved
+   * and alone nor a plain argument after another word is unreadable.
+   */
+  private closeBrace(): boolean {
+    const reserved = this.reservedClose()
+    if (reserved && this.braceDepth === 0) {
       this.endCommand()
       this.closed = this.braceClosed = true
       return true
     }
     const next = this.peek(this.pos + 1)
-    if (next !== undefined && !METACHAR.test(next)) return false
-    if (!reserved) this.budget.expansion = 'unreadable'
-    else this.braceDepth += c === '{' ? 1 : -1
+    const alone = next === undefined || METACHAR.test(next)
+    if (reserved && alone) this.braceDepth--
+    else if (reserved || alone || this.cur.words.length === 0) this.budget.expansion = 'unreadable'
     return false
+  }
+
+  /** A `}` here is reserved: at a command start, or right after a compound command's closing word. */
+  private reservedClose(): boolean {
+    if (this.testOpen || this.inText()) return false
+    if (this.cur.words.length === 0) return this.atStart || this.afterCompound
+    return this.atStart && !this.quotedWord && this.endsCompound()
+  }
+
+  private endsCompound(): boolean {
+    const words = this.cur.words
+    if (words.length === 1 && COMPOUND_END.has(words[0] as string)) return true
+    const head = words.findIndex(word => !BRACE_PREFIX.has(word))
+    return words[head] === '[[' && words[words.length - 1] === ']]'
+  }
+
+  /** Inside `(( ))`, an array or another `(` that is no subshell, where bash reads a brace as text. */
+  private inText(): boolean {
+    return this.parens.some(kind => kind === 'text' || kind === 'arith')
   }
 
   private unjoin(at: number): number {
@@ -421,6 +460,7 @@ class ShellLexer {
     if (c === '(') this.parens.push(kind)
     const closed = c === ')' ? this.parens.pop() : undefined
     this.atStart = c === '(' ? kind === 'subshell' : closed === 'function' || closed === 'header'
+    this.afterCompound = closed === 'subshell' || closed === 'arith'
     this.depth += c === '(' ? 1 : -1
     this.trackArith(c, opensCommand)
     this.pos++
@@ -437,7 +477,8 @@ class ShellLexer {
     const doubled = this.peek(this.pos + 1) === '('
     // `for ((;;))` is followed by a `{ }` or `do` body, so its close starts a command.
     if (doubled && words[prefix] === 'for' && prefix === words.length - 1) return 'header'
-    if (doubled || this.inArith()) return 'text'
+    if (this.inArith()) return 'text'
+    if (doubled) return prefix < 0 ? 'arith' : 'text'
     return prefix < 0 ? 'subshell' : 'text'
   }
 
@@ -832,6 +873,7 @@ class ShellLexer {
     this.cur = this.newCommand()
     this.quotedWord = false
     this.atStart = false
+    this.afterCompound = false
   }
 
   private readHeredocs(): void {
