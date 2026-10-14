@@ -303,10 +303,9 @@ export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCom
   return [...new Set(names)]
 }
 
-// bash 5.3's `${ list; }` and `${| list; }`. The splitter cuts their words at the first `}`, even a quoted one, so
-// their text cannot be read here; until a real funsub reader lands (CC-1327 a) the rest of the command is
-// reported whole as one raw text that starts with `${`. That is not a command: the guard (slice b) must deny
-// any body that starts with `${` rather than check it as one.
+// bash 5.3's `${ list; }` and `${| list; }`. This module does not read a funsub's text: the rest of the command
+// from its `${` is reported whole as one raw text that starts with `${`, a live `${ date; }` included. That is
+// not a command: the guard (slice b) must deny any body that starts with `${` rather than check it as one.
 const FUNSUB = new RegExp(`${LIVE}\\$\\{[\\s|]`)
 
 /** The command's text from its first live funsub on, unmarked, or nothing when it holds none. */
@@ -322,21 +321,38 @@ function funsubRest(marked: readonly string[]): string[] {
 const funsubAt = (text: string, i: number): boolean =>
   text.startsWith('${', i) && /[\s|]/.test(text[i + 2] ?? '')
 
+// Past these, a text is not read at all: the rest from its first opener is the fail-closed sentinel. They keep
+// the walk well inside the guard's deadline, which allows on timeout (failopen.ts), so padding cannot buy a pass.
+const MAX_TEXT = 1 << 20
+const MAX_OPENERS = 20_000
+const SUBSTITUTION_OPENER = /\$\(|`/g
+
 /**
- * The exact text bash reads for the `$(`, `$((` or backtick opener at the start of `rest`, found by the
- * guard's own lexer rather than by counting parens, so a `case`, `#` comment or heredoc inside it ends where
- * bash ends it. `undefined` when the lexer finds no well-formed close, so the caller fails closed.
+ * Where each outermost `$(`, `$((` or backtick substitution in `plain` from `from` on starts, with its exact
+ * raw text, from one `parseShell` of that tail: the lexer the guard trusts ends it, so a `case`, `#` comment or
+ * heredoc inside is not cut short. The tail starts at an opener, so quote characters in the data before it
+ * are not read as quotes. The raws come in source order, so each is found from the end of the one before.
  */
-function openerRaw(rest: string): string | undefined {
-  const raws = parseShell(rest)
-    .flatMap(cmd => cmd.substitutions.map(sub => sub.raw))
-    .filter(raw => rest.startsWith(raw))
-    .sort((a, b) => b.length - a.length)
-  const raw = raws[0]
-  if (raw === undefined) return undefined
-  const closed = raw.endsWith(')') || (raw.length > 1 && raw.endsWith('`'))
-  return closed ? raw : undefined
+function substitutionStarts(plain: string, from: number): Map<number, string> {
+  const tail = plain.slice(from)
+  const parsed = parseShell(tail)
+  const inner = new Set(parsed.flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)))
+  const starts = new Map<number, string>()
+  let cursor = 0
+  for (const cmd of parsed) {
+    if (inner.has(cmd)) continue
+    for (const { raw } of cmd.substitutions) {
+      const at = tail.indexOf(raw, cursor)
+      if (at < 0) continue
+      starts.set(from + at, raw)
+      cursor = at + raw.length
+    }
+  }
+  return starts
 }
+
+// A raw the lexer closed: `$(...)` ends with `)`, a backtick pair with a backtick.
+const closed = (raw: string): boolean => raw.endsWith(')') || (raw.length > 1 && raw.endsWith('`'))
 
 // The command inside an opener's raw: `$(cmd)`/`$((cmd))` to the text past `$(`, `` `cmd` `` to the text past the tick.
 const openerBody = (raw: string): string => (raw[0] === '`' ? raw.slice(1, -1) : raw.slice(2, -1))
@@ -360,18 +376,24 @@ function recorded(counts: Map<string, number>, raw: string): boolean {
  */
 function quotedSubstitutions(text: string, counts: Map<string, number>): string[] {
   const plain = unmark(text)
+  const first = plain.search(/\$\(|`|\$\{[\s|]/)
+  if (first < 0) return []
+  if (plain.length > MAX_TEXT || (plain.match(SUBSTITUTION_OPENER)?.length ?? 0) > MAX_OPENERS)
+    return [plain.slice(first)]
+  let starts = new Map<number, string>()
+  // Characters parsed so far may not pass a linear bound; past it the rest fails closed rather than slow down.
+  let budget = 4 * plain.length + 4096
   const bodies: string[] = []
-  for (let i = 0; i < plain.length; i++) {
-    if (funsubAt(plain, i)) {
-      bodies.push(plain.slice(i))
-      break
-    }
+  for (let i = first; i < plain.length; i++) {
+    if (funsubAt(plain, i)) return [...bodies, plain.slice(i)]
     if (!plain.startsWith('$(', i) && plain[i] !== '`') continue
-    const raw = openerRaw(plain.slice(i))
-    if (raw === undefined) {
-      bodies.push(plain.slice(i))
-      break
+    if (!starts.has(i) && budget >= plain.length - i) {
+      budget -= plain.length - i
+      starts = substitutionStarts(plain, i)
     }
+    const raw = starts.get(i)
+    // An opener the lexer did not end here (never closed, or past the budget): fail closed.
+    if (raw === undefined || !closed(raw)) return [...bodies, plain.slice(i)]
     if (!recorded(counts, raw)) bodies.push(openerBody(raw))
     i += raw.length - 1
   }

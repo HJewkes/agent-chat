@@ -392,3 +392,29 @@ describe('the pretool guard and arithSubstitutions share one list of name-operan
     expect(bodiesOf(`${head} 'x[$(${P})]'`)).toEqual([P])
   })
 })
+
+// The guard allows a call it cannot decide within its deadline (failopen.ts), so a slow read is a fail-open:
+// each text is parsed from its first opener once, re-parses are bounded, and past a cap the rest fails closed.
+describe('arithSubstitutions stays linear on long texts', () => {
+  const lines = (line: string): string => Array.from({ length: 3000 }, () => line).join('\n')
+  const timed = (line: string): { ms: number; bodies: string[] } => {
+    const parsed = parseShell(line)
+    const start = performance.now()
+    const bodies = arithSubstitutions(parsed)
+    return { ms: performance.now() - start, bodies }
+  }
+
+  it.each([
+    ['a heredoc', `cat <<'E'\n${lines('Run `npm test` then `git status` here')}\nE`],
+    ['a quoted word', `n='${lines('Run `npm test` then `git status` here')}'`],
+    ['a heredoc with a quote on every line', `cat <<'E'\n${lines("it's `npm test` and x' `ls`")}\nE`],
+  ])('3000 lines of backticked markdown in %s finish well under the deadline', (_, line) => {
+    expect(timed(line).ms).toBeLessThan(2000)
+  })
+
+  it('a text past the opener cap reports the rest as the sentinel, without reading it', () => {
+    const { ms, bodies } = timed(`n='${'`a`'.repeat(10_001)}'`)
+    expect(ms).toBeLessThan(2000)
+    expect(bodies).toEqual(['`a`'.repeat(10_001)])
+  })
+})
