@@ -152,6 +152,7 @@ import {
   tickSummary,
   tickSummaryWriter,
   type RegisterRecord,
+  type ServiceCheckSummary,
   type SummaryInputs,
   type SummaryPlan,
 } from './tick-summary.js'
@@ -1098,6 +1099,7 @@ async function decide(
       outcomes: planned.outcomes,
       dispatch: planned.dispatch,
       tasks: dispatchCtx.tasks,
+      ...(service === undefined ? {} : { serviceCheck: service.summary }),
     },
     notes,
     failures,
@@ -1116,12 +1118,18 @@ function serviceGate(
   ledger: Ledger,
   opts: TickOptions,
   now: Date,
-): { read: PersistedRead; lineStop?: SeatPlanDeps['lineStop']; note?: string } {
+): {
+  read: PersistedRead
+  summary: ServiceCheckSummary
+  lineStop?: SeatPlanDeps['lineStop']
+  note?: string
+} {
   const current = readServiceCheck(opts.exec ?? run)
   const lineStop = lineStopFrom(current, ledger.serviceCheck, now)
   const note = serviceCheckNote(current)
   return {
     read: persisted(current, now),
+    summary: { cause: current.cause, stopped: lineStop !== undefined, message: current.message },
     ...(lineStop === undefined ? {} : { lineStop }),
     ...(note === undefined ? {} : { note }),
   }
