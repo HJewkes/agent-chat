@@ -126,7 +126,16 @@ const namePart = (word: string): string => word.slice(0, nameEnd(word))
  */
 function integerValues(words: string[], source: string[], operands: number[]): string[] {
   if (words[0] === 'let') return source.slice(1)
-  if (!DECLARERS.has(words[0] ?? '') || !hasIntegerFlag(words)) return []
+  return hasIntegerFlag(words) ? declaredValues(words, source, operands) : []
+}
+
+/** The values a `declare -n`, `typeset -n` or `local -n` assigns: names, whose subscripts are arithmetic. */
+const namerefValues = (words: string[], source: string[], operands: number[]): string[] =>
+  words.some(word => /^-[A-Za-z]*n/.test(word)) ? declaredValues(words, source, operands) : []
+
+/** The value part of each declarer operand in `source` that has one. */
+function declaredValues(words: string[], source: string[], operands: number[]): string[] {
+  if (!DECLARERS.has(words[0] ?? '')) return []
   return operands.flatMap(i => {
     const word = source[i] ?? ''
     const at = word.indexOf('=', nameEnd(word))
@@ -183,6 +192,23 @@ function nameTexts(words: string[], source: string[], assignments: string[]): st
   return [...assignments, ...nameOperands(words).map(i => source[i] ?? ''), ...attached].map(namePart)
 }
 
+// A compound array element `[key]=value` or `[key]+=value`, which the splitter reads as a command of its own
+// after `x=(`; bash evaluates the key as a subscript. The `[` is unquoted, so LIVE-marked.
+const ELEMENT_KEY = new RegExp(`^${LIVE}\\[(.*)\\]\\+?=`, 's')
+
+/**
+ * The key of each marked word that may be a compound array element. With `failClosed`, a word that opens
+ * with an unquoted `[` but whose `]=` cannot be found gives the rest of the word.
+ */
+function elementKeys(marked: string[], failClosed: boolean): string[] {
+  return marked.flatMap(word => {
+    if (!word.startsWith(`${LIVE}[`) || ['[', '[['].includes(unmark(word))) return []
+    const key = ELEMENT_KEY.exec(word)?.[1]
+    if (key !== undefined) return [key]
+    return failClosed ? [word.slice(2)] : []
+  })
+}
+
 /** A variable name's own `$` expansions, whose values become the name, and the names its subscript reads. */
 function nameOperandNames(word: string): string[] {
   const open = word.indexOf('[')
@@ -196,13 +222,16 @@ const namesIn = (text: string): string[] =>
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
   const { words, assignments } = commandHead(cmd)
+  const operands = nameOperands(words)
   const texts = [
     ...cmd.arithBodies,
-    ...integerValues(words, words, nameOperands(words)),
+    ...integerValues(words, words, operands),
     ...cmd.marked.flatMap(subscripts),
     ...comparisonOperands(words).map(i => words[i] ?? ''),
+    ...elementKeys(cmd.marked, false).map(unmark),
   ]
-  const names = [...texts.flatMap(namesIn), ...nameTexts(words, words, assignments).flatMap(nameOperandNames)]
+  const nameWords = [...nameTexts(words, words, assignments), ...namerefValues(words, words, operands)]
+  const names = [...texts.flatMap(namesIn), ...nameWords.flatMap(nameOperandNames)]
   return [...new Set(names)]
 }
 
@@ -254,10 +283,13 @@ function quotedSubstitutions(marked: string): string[] {
  */
 export function arithSubstitutions(cmd: SimpleCommand): string[] {
   const { marked, words, markedAssignments } = commandHead(cmd)
+  const operands = nameOperands(words)
   const texts = [
     ...comparisonOperands(words).map(i => marked[i] ?? ''),
     ...nameTexts(words, marked, markedAssignments),
-    ...integerValues(words, marked, nameOperands(words)),
+    ...integerValues(words, marked, operands),
+    ...namerefValues(words, marked, operands),
+    ...elementKeys(cmd.marked, true),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
