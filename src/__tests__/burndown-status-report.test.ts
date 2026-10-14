@@ -94,14 +94,14 @@ describe('an exited implementer that ended on prose after a Shepherd resume (CC-
     taskId: 'CC-1',
     initiative: 'demo',
     agentId: 'a1',
-    agentName: 'tc-cc-1',
-    spawned: ['tc-cc-1'],
+    agentName: 'bd-cc-1',
+    spawned: ['bd-cc-1'],
     spawnedAt: EARLIER,
     phase: 'implementing',
     phaseAt: EARLIER,
     worktree: '/parked/tree',
   }
-  const row = { agentId: 'a1', name: 'tc-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+  const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
 
   async function tickActions(deps: Partial<ObserveDeps>): Promise<Action[]> {
     const { observations } = await observe(
