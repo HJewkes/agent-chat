@@ -215,7 +215,7 @@ export interface WakeDeps {
   now: Date
   /**
    * CC-1239: builds the message after the counting write and before the resume, so its side effects (brief records)
-   * never outlive a failed write. `undefined` means nothing is left to send; the wake stays counted.
+   * never outlive a failed write. `undefined` means nothing is left to send, so the wake is uncounted.
    */
   compose?: () => string | undefined
 }
@@ -236,12 +236,25 @@ export async function wakeDecider(
   if (composed === undefined) {
     const reason = 'no brief send could be recorded'
     return {
-      ledger: counted,
+      ledger: uncountWake(start, counted, deps),
       line: `decider ${name} not woken: ${reason}`,
       delivery: { sent: false, reason },
     }
   }
   return resumeCounted(name, composed, counted, deps)
+}
+
+/**
+ * A wake that sends nothing must not count: the last wake marks the queue as seen up to then, so a counted empty wake
+ * would hide a question too young to wait yet, and it would spend a cap slot. A failed rollback only over-counts.
+ */
+function uncountWake(start: Ledger, counted: Ledger, deps: WakeDeps): Ledger {
+  try {
+    deps.write(start)
+    return start
+  } catch {
+    return counted
+  }
 }
 
 async function resumeCounted(

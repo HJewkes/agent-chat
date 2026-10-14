@@ -1,11 +1,12 @@
 import os from 'node:os'
 import { describe, expect, it } from 'vitest'
 import type { BriefRoute } from '../agents/burndown/brief-approve.js'
-import type { DeciderVerdict } from '../agents/burndown/decider.js'
+import { type DeciderVerdict, waitingQuestions } from '../agents/burndown/decider.js'
 import type { SpawnReply } from '../agents/burndown/execute.js'
 import { EMPTY_LEDGER, type Ledger } from '../agents/burndown/ledger.js'
 import { actOnDeciderAndBriefs, type TickBroker } from '../agents/burndown/run-tick.js'
 import { TickConfigSchema } from '../agents/burndown/source.js'
+import type { QueueItem } from '../protocol.js'
 
 const SENT = 'brief:decider=abc123'
 const ROUTE: BriefRoute = {
@@ -17,6 +18,7 @@ const ROUTE: BriefRoute = {
 }
 const OTHER: BriefRoute = { ...ROUTE, taskId: 'T-2', tag: 'brief:decider=def456', section: 'T-2 failed too.' }
 const config = TickConfigSchema.parse({ enabled: true, decider: { name: 'decider' } })
+const MINUTE_MS = 60_000
 const now = new Date('2026-10-13T12:00:00Z')
 const wake = (waiting: number, briefs = 1): DeciderVerdict => ({
   wake: true,
@@ -107,7 +109,30 @@ describe('the decider wake records brief sends after its ledger write (CC-1239)'
 
     expect(state.resumed).toEqual([])
     expect(acted.lines.join('\n')).toContain('not woken: no brief send could be recorded')
-    expect(state.written).toHaveLength(1)
-    expect(state.written[0]?.decider?.wakes).toEqual([now.toISOString()])
+    expect(state.written.at(-1)).toEqual(EMPTY_LEDGER)
+    expect(acted.ledger).toEqual(EMPTY_LEDGER)
+  })
+
+  it('still offers a question too young to wait at an empty wake on the next tick', async () => {
+    const { deps, opts } = rig({ addFails: () => true })
+    const young = {
+      msgId: 'q1',
+      kind: 'question',
+      from: 'peer',
+      text: '?',
+      at: now.getTime() - MINUTE_MS,
+      meta: {},
+    }
+
+    const acted = await actOnDeciderAndBriefs(
+      config,
+      { decider: wake(0), briefRoutes: [ROUTE] },
+      EMPTY_LEDGER,
+      deps,
+      opts,
+    )
+    const nextTick = new Date(now.getTime() + 5 * MINUTE_MS)
+
+    expect(waitingQuestions([young as QueueItem], acted.ledger.decider, nextTick)).toHaveLength(1)
   })
 })
