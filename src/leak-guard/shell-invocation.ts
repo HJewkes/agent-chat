@@ -24,10 +24,18 @@ export type ShellScript =
 export interface ShellCall {
   script: ShellScript
   history: boolean
+  /**
+   * The index in the words of a startup file (`--rcfile F`, `--init-file F`) the shell runs before its
+   * script, set when the options may make it interactive. bash runs it under `-i` and `-ic` (observed).
+   */
+  rcfile?: number
 }
 
-/** What an option does to the script source: read stdin, run the operand, turn on history, end the options. */
-type Effect = 'stdin' | 'command' | 'history' | 'end'
+/**
+ * What an option does to the script source: read stdin, run the operand, turn on history, end the
+ * options, or hide the call where the shells a name may stand for read it differently.
+ */
+type Effect = 'stdin' | 'command' | 'history' | 'end' | 'hidden'
 
 /** A short letter: the option name it sets, and how its sign reads. */
 interface Letter {
@@ -36,6 +44,8 @@ interface Letter {
   inverted?: boolean
   /** Observed to take effect under `+` as well as `-`, as `bash +c`, `bash +s` and `zsh +b` do. */
   anySign?: boolean
+  /** Under `+` the shells the name may stand for disagree (`sh +s`: bash reads stdin, dash the file). */
+  plusHides?: boolean
 }
 
 /**
@@ -53,8 +63,13 @@ interface Grammar {
   named: Readonly<Record<string, NameRule>>
   /** Words that end the options. zsh also ends them at a bare `+` or `+-`, which bash ignores or rejects. */
   ends: ReadonlySet<string>
-  /** Long options that take the next word as their operand. */
-  longOperands: ReadonlySet<string>
+  /** Long options that take the next word as their operand, and whether it names a startup file. */
+  longOperands: Readonly<Record<string, 'rcfile' | 'operand'>>
+  /**
+   * What runs when both `-s` and `-c` are on: bash and zsh run only the string, dash runs the string
+   * and then stdin (observed), which no single script source describes.
+   */
+  stdinWithCommand: 'command' | 'hidden'
 }
 
 // Names for letters that have no long spelling. `normalise` strips `-`, so no long option reaches them.
@@ -88,15 +103,11 @@ const BASH_LETTERS = { ...COMMON_LETTERS, s: { name: 'shinstdin', anySign: true 
 
 const DASH_ENDS = new Set(['-', '--'])
 
-const BASH: Grammar = {
-  letters: BASH_LETTERS,
-  named: { o: 'next', O: 'next' },
-  ends: DASH_ENDS,
-  longOperands: new Set(['--rcfile', '--init-file']),
-}
+const BASH_LONG = { '--rcfile': 'rcfile', '--init-file': 'rcfile' } as const
 
 // Observed grammars: zsh 5.9, bash 5.3 and dash. zsh's `-O` is a plain flag and dash rejects it. `sh`
-// may be bash or dash, so it takes bash's, the wider of the two.
+// may be bash or dash: it takes bash's grammar, which dash rejects where it is wider (`-O`, `--rcfile`),
+// and hides the call where the two read the script source differently (`+s`, `-s` with `-c`).
 const GRAMMARS: Readonly<Record<string, Grammar>> = {
   zsh: {
     letters: {
@@ -106,11 +117,30 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
     },
     named: { o: 'rest' },
     ends: new Set([...DASH_ENDS, '+', '+-']),
-    longOperands: new Set(['--emulate']),
+    longOperands: { '--emulate': 'operand' },
+    stdinWithCommand: 'command',
   },
-  bash: BASH,
-  sh: BASH,
-  dash: { letters: COMMON_LETTERS, named: { o: 'next' }, ends: DASH_ENDS, longOperands: new Set() },
+  bash: {
+    letters: BASH_LETTERS,
+    named: { o: 'next', O: 'next' },
+    ends: DASH_ENDS,
+    longOperands: BASH_LONG,
+    stdinWithCommand: 'command',
+  },
+  sh: {
+    letters: { ...BASH_LETTERS, s: { name: 'shinstdin', plusHides: true } },
+    named: { o: 'next', O: 'next' },
+    ends: DASH_ENDS,
+    longOperands: BASH_LONG,
+    stdinWithCommand: 'hidden',
+  },
+  dash: {
+    letters: COMMON_LETTERS,
+    named: { o: 'next' },
+    ends: DASH_ENDS,
+    longOperands: {},
+    stdinWithCommand: 'hidden',
+  },
 }
 
 // Any other shell takes every letter's effect under either sign, hides a name glued to `o` or `O`, reads a bare
@@ -124,7 +154,8 @@ const UNOBSERVED: Grammar = {
   },
   named: { o: 'unread', O: 'unread' },
   ends: DASH_ENDS,
-  longOperands: new Set(['--rcfile', '--init-file', '--emulate']),
+  longOperands: { ...BASH_LONG, '--emulate': 'operand' },
+  stdinWithCommand: 'hidden',
 }
 
 // `SHELLOPTS` can turn on history and histexpand before the script is read, and a startup file named
@@ -148,6 +179,7 @@ function nameEffect(name: string, on: boolean): Effect | undefined {
 function letterEffect(grammar: Grammar, letter: string, on: boolean): Effect | undefined {
   const known = grammar.letters[letter]
   if (known === undefined) return undefined
+  if (!on && known.plusHides === true) return 'hidden'
   return known.anySign === true || on !== (known.inverted === true) ? NAMES[known.name] : undefined
 }
 
@@ -160,6 +192,8 @@ interface Options {
   history: boolean
   /** zsh's `-b` ends the options after the word that holds it. */
   ended: boolean
+  /** The index of the last `--rcfile` or `--init-file` operand. */
+  rcfile?: number
 }
 
 function apply(effect: Effect | undefined, opts: Options): void {
@@ -167,6 +201,7 @@ function apply(effect: Effect | undefined, opts: Options): void {
   else if (effect === 'command') opts.command = true
   else if (effect === 'history') opts.history = true
   else if (effect === 'end') opts.ended = true
+  else if (effect === 'hidden') opts.hidden = true
 }
 
 /** Reads an option name: its effect, or a hidden call when the shell expands it. */
@@ -198,11 +233,13 @@ function readCluster(grammar: Grammar, words: readonly string[], at: number, opt
 /** Reads `--name` or zsh's `+-name`, which turns the option off; returns the next index. */
 function readLong(grammar: Grammar, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
-  if (!grammar.longOperands.has(word)) {
+  const kind = grammar.longOperands[word]
+  if (kind === undefined) {
     readName(word.slice(2), word.startsWith('-'), opts)
     return at + 1
   }
   if (words[at + 1]?.includes(LIVE)) opts.hidden = true
+  if (kind === 'rcfile' && at + 1 < words.length) opts.rcfile = at + 1
   return at + 2
 }
 
@@ -238,7 +275,18 @@ export function readShellCall(
 ): ShellCall {
   const grammar = GRAMMARS[name] ?? UNOBSERVED
   const opts = readOptions(grammar, marked)
-  if (opts.hidden) return { script: { from: 'hidden' }, history: true }
+  const call = readScript(grammar, opts, marked, assigns)
+  return opts.history && opts.rcfile !== undefined ? { ...call, rcfile: opts.rcfile } : call
+}
+
+function readScript(
+  grammar: Grammar,
+  opts: Options,
+  marked: readonly string[],
+  assigns: readonly string[],
+): ShellCall {
+  const both = opts.command && opts.stdin && grammar.stdinWithCommand === 'hidden'
+  if (opts.hidden || both) return { script: { from: 'hidden' }, history: true }
   if (opts.command)
     return {
       script: { from: 'command', at: opts.end < marked.length ? opts.end : undefined },

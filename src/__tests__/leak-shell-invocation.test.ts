@@ -243,7 +243,8 @@ describe('every spelling of an option reaches its effect (CC-1288)', () => {
 /**
  * Each observed shell's operand-taking options, with an operand the shell accepts, and the letters
  * observed to take none (zsh's `-O`). Every row ends `-i s.sh`, so an operand read wrongly either
- * swallows `-i` or leaves the operand as the script file. Run against zsh 5.9, bash 5.3 and dash.
+ * swallows `-i` or leaves the operand as the script file. Run against zsh 5.9, bash 5.3 and dash;
+ * the `sh` rows hold for bash as `sh`, and dash as `sh` rejects `-O` and runs nothing.
  */
 const OPERANDS: Record<
   string,
@@ -252,7 +253,10 @@ const OPERANDS: Record<
   zsh: { named: { o: 'extendedglob' }, plain: ['O'], long: { '--emulate': 'zsh' } },
   bash: { named: { o: 'pipefail', O: 'extglob' }, plain: [], long: { '--rcfile': 'x', '--init-file': 'x' } },
   dash: { named: { o: 'nolog' }, plain: [], long: {} },
+  sh: { named: { o: 'nolog', O: 'extglob' }, plain: [], long: {} },
 }
+
+const RCFILES = new Set(['--rcfile', '--init-file'])
 
 const operandRows = Object.entries(OPERANDS).flatMap(([shell, { named, long }]) => [
   ...Object.entries(named).flatMap(([letter, operand]) =>
@@ -261,16 +265,66 @@ const operandRows = Object.entries(OPERANDS).flatMap(([shell, { named, long }]) 
   ...Object.entries(long).map(([option, operand]) => `${shell} ${option} ${operand}`),
 ])
 
+const sourced = (line: string) => (RCFILES.has(line.split(' ')[1] ?? '') ? { rcfile: 1 } : {})
+
 const plainRows = Object.entries(OPERANDS).flatMap(([shell, { plain }]) =>
   plain.flatMap(letter => ['-', '+'].map(sign => `${shell} ${sign}${letter}`)),
 )
 
 describe("each shell's options that take an operand (CC-1288)", () => {
   it.each(operandRows)('%s -i s.sh reads the operand and then -i', line => {
-    expect(call(`${line} -i s.sh`)).toEqual({ script: { from: 'file', at: 3 }, history: true })
+    expect(call(`${line} -i s.sh`)).toEqual({
+      script: { from: 'file', at: 3 },
+      history: true,
+      ...sourced(line),
+    })
   })
 
   it.each(plainRows)('%s -i s.sh takes no operand', line => {
     expect(call(`${line} -i s.sh`)).toEqual({ script: { from: 'file', at: 2 }, history: true })
+  })
+})
+
+describe('where dash and bash read the script source differently (CC-1288)', () => {
+  // Observed: dash runs f.sh, bash reads stdin; `sh` may be either.
+  it.each(['sh +s f.sh', 'sh +es f.sh', 'sh +is f.sh', 'sh +xs f.sh', 'sh +ls f.sh', 'sh +sx f.sh'])(
+    '%s hides the call',
+    line => {
+      expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
+    },
+  )
+
+  // Observed: dash runs the -c string and then stdin.
+  it.each([
+    "dash -s -c 'x'",
+    "dash -sc 'x'",
+    "dash -cs 'x'",
+    "dash -o stdin -c 'x'",
+    "sh -s -c 'x'",
+    "sh -sc 'x'",
+  ])('%s runs two scripts, so it hides the call', line => {
+    expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
+  })
+
+  // Observed: bash and zsh run only the -c string, and dash +s leaves stdin off.
+  it.each([
+    ["bash -s -c 'x'", 2],
+    ["bash -sc 'x'", 1],
+    ["bash -cs 'x'", 1],
+    ["zsh -sc 'x'", 1],
+    ["dash +s -c 'x'", 2],
+  ])('%s runs only the string at %s', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'command', at }, history: false })
+  })
+})
+
+describe('a startup file bash runs when interactive (CC-1288)', () => {
+  it.each([
+    ['bash --rcfile rc -i f.sh', { script: { from: 'file', at: 3 }, history: true, rcfile: 1 }],
+    ['bash --init-file rc -i f.sh', { script: { from: 'file', at: 3 }, history: true, rcfile: 1 }],
+    ["bash --init-file rc -ic 'x'", { script: { from: 'command', at: 3 }, history: false, rcfile: 1 }],
+    ['bash --rcfile rc f.sh', { script: { from: 'file', at: 2 }, history: false }],
+  ])('%s', (line, expected) => {
+    expect(call(line)).toEqual(expected)
   })
 })
