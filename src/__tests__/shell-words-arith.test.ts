@@ -68,7 +68,7 @@ describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
     ['echo $[ x<y ]', 'echo', ['x', 'y']],
     ['echo "$[ x<y ]"', 'echo', ['x', 'y']],
   ])('%s: %s yields %j', (line, head, names) => {
-    expect(arithSubscriptNames(commandOf(line, head))).toEqual(names)
+    expect(arithSubscriptNames(commandOf(line, head), parseShell(line))).toEqual(names)
   })
 
   it.each([
@@ -82,7 +82,7 @@ describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
     ['echo $(( $(date) ))', 'echo'],
     ['((git push) )', 'git'],
   ])('%s: %s yields none', (line, head) => {
-    expect(arithSubscriptNames(commandOf(line, head))).toEqual([])
+    expect(arithSubscriptNames(commandOf(line, head), parseShell(line))).toEqual([])
   })
 })
 

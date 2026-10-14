@@ -23,12 +23,13 @@ const readAt =
     return read(found, commands)
   }
 const namesOf = readAt(arithSubscriptNames)
-const bodiesOf = readAt(arithSubstitutions)
+/** Every quoted substitution the whole parsed `line` runs as arithmetic or as a name. */
+const bodiesOf = (line: string): string[] => arithSubstitutions(parseShell(line))
 
-/** What `read` finds across every command of `line`, so a none row cannot pass by looking at the wrong one. */
-const everyCommand = (read: (cmd: SimpleCommand, line: SimpleCommand[]) => string[]) => (line: string) => {
+/** The names every command of `line` lists, so a none row cannot pass by looking at the wrong one. */
+const everyName = (line: string): string[] => {
   const commands = parseShell(line)
-  return commands.flatMap(cmd => read(cmd, commands))
+  return commands.flatMap(cmd => arithSubscriptNames(cmd, commands))
 }
 
 describe('arithSubscriptNames lists the names arithmetic operands and resolved names read', () => {
@@ -53,6 +54,8 @@ describe('arithSubscriptNames lists the names arithmetic operands and resolved n
     ['declare -n r="x[$i]"', ['i']],
     ['local -n r="$a"', ['a']],
     ['x=([ k ]=1)', ['k'], 0],
+    ['echo "$(x=([$i]=1))"', ['i'], 0],
+    ['cat <(x=([$i]=1))', ['i'], 1],
     ['declare -ai x=(n "y[$i]")', ['n', 'y', 'i'], 0],
     ['declare -a x=(n "y[$i]")', [], 0],
     ['local "x[$i]+=1"', ['i']],
@@ -73,7 +76,7 @@ describe('arithSubscriptNames lists the names arithmetic operands and resolved n
   it.each(['[[ $a == 0 ]]', '[ "$a" -eq 0 ]', 'test "$a" -gt 1', 'printf %s "$a"', 'echo -v "$a"'])(
     '%s yields none',
     line => {
-      expect(everyCommand(arithSubscriptNames)(line)).toEqual([])
+      expect(everyName(line)).toEqual([])
     },
   )
 })
@@ -82,7 +85,7 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
   it.each([
     [`[[ 'x[$(${P})]' -eq 1 ]]`, [P]],
     [`[[ 1 -gt 'x[$(${P})]' ]]`, [P]],
-    [`[[ 'x[$(${P})]' -eq 1 && b -lt 2 ]]`, [P], 0],
+    [`[[ 'x[$(${P})]' -eq 1 && b -lt 2 ]]`, [P]],
     [`test -v 'x[$(${P})]'`, [P]],
     [`[ -v 'x[$(${P})]' ]`, [P]],
     [`[[ -v 'x[$(${P})]' ]]`, [P]],
@@ -97,85 +100,95 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     ["test -v 'x[`" + P + "`]'", [P]],
     [`let 'x[$(git push $(echo --no-verify))]=1'`, ['git push $(echo --no-verify)']],
     // The splitter keeps keywords before the command word, and command/builtin run the builtin they name.
-    [`while read 'x[$(${P})]'; do :; done <<< 1`, [P], 0],
-    [`if test -v 'x[$(${P})]'; then :; fi`, [P], 0],
-    [`if [ -v 'x[$(${P})]' ]; then :; fi`, [P], 0],
+    [`while read 'x[$(${P})]'; do :; done <<< 1`, [P]],
+    [`if test -v 'x[$(${P})]'; then :; fi`, [P]],
+    [`if [ -v 'x[$(${P})]' ]; then :; fi`, [P]],
     [`! printf -v 'x[$(${P})]' 1`, [P]],
-    [`if let 'x[$(${P})]=1'; then :; fi`, [P], 0],
-    [`while let 'x[$(${P})]=1'; do :; done`, [P], 0],
-    [`if declare -i 'n=x[$(${P})]'; then :; fi`, [P], 0],
+    [`if let 'x[$(${P})]=1'; then :; fi`, [P]],
+    [`while let 'x[$(${P})]=1'; do :; done`, [P]],
+    [`if declare -i 'n=x[$(${P})]'; then :; fi`, [P]],
     [`time read 'x[$(${P})]' <<< 1`, [P]],
     [`time -p read 'x[$(${P})]' <<< 1`, [P]],
-    [`{ read 'x[$(${P})]'; } <<< 1`, [P], 0],
+    [`{ read 'x[$(${P})]'; } <<< 1`, [P]],
     [`command read 'x[$(${P})]' <<< 1`, [P]],
     [`command -p printf -v 'x[$(${P})]' 1`, [P]],
     [`builtin printf -v 'x[$(${P})]' 1`, [P]],
-    [`if command let 'x[$(${P})]=1'; then :; fi`, [P], 0],
+    [`if command let 'x[$(${P})]=1'; then :; fi`, [P]],
     [`LC_ALL=C read 'x[$(${P})]' <<< 1`, [P]],
     // A declarer or unset resolves each operand's name, subscript included, with or without -i.
     [`declare -a x; declare 'x[$(${P})]=1'`, [P]],
     [`declare -A x; declare 'x[$(${P})]=1'`, [P]],
     [`typeset -a x; typeset 'x[$(${P})]=1'`, [P]],
-    [`f() { local 'x[$(${P})]=1'; }`, [P], -2],
+    [`f() { local 'x[$(${P})]=1'; }`, [P]],
     [`readonly 'x[$(${P})]=1'`, [P]],
     [`declare -g 'x[$(${P})]'`, [P]],
     [`! declare 'x[$(${P})]=1'`, [P]],
     [`declare 'x[$(echo a=b; ${P})]=1'`, [`echo a=b; ${P}`]],
     [`unset 'x[$(${P})]'`, [P]],
     [`unset -v 'x[$(${P})]'`, [P]],
-    [`if unset 'x[$(${P})]'; then :; fi`, [P], 0],
+    [`if unset 'x[$(${P})]'; then :; fi`, [P]],
     [`builtin unset 'x[$(${P})]'`, [P]],
     // An assignment word, an attached -vNAME and a coproc's command resolve names too.
     [`x['$(${P})']=1`, [P]],
     [`a=1 x['$(${P})']=1`, [P]],
     [`x['$(${P})']+=1`, [P]],
     [`x['$(${P})']=1 true`, [P]],
-    [`if x['$(${P})']=1; then :; fi`, [P], 0],
+    [`if x['$(${P})']=1; then :; fi`, [P]],
     [`printf -vx'[$(${P})]' 1`, [P]],
     [`printf '-vx[$(${P})]' 1`, [P]],
     [`builtin printf -vx'[$(${P})]' 1`, [P]],
     [`coproc read 'x[$(${P})]'`, [P]],
-    [`coproc r { read 'x[$(${P})]'; }`, [P], 0],
-    [`coproc { read 'x[$(${P})]'; }`, [P], 0],
-    [`coproc r while read 'x[$(${P})]'; do :; done`, [P], 0],
+    [`coproc r { read 'x[$(${P})]'; }`, [P]],
+    [`coproc { read 'x[$(${P})]'; }`, [P]],
+    [`coproc r while read 'x[$(${P})]'; do :; done`, [P]],
     // A compound array element's key and a nameref's value are names too, though they sit in a value.
-    [`x=(['$(${P})']=1)`, [P], 0],
-    [`x+=(['$(${P})']=1)`, [P], 0],
-    [`declare -a x=(['$(${P})']=1)`, [P], 0],
-    [`typeset -A x=(['$(${P})']=1)`, [P], 0],
-    [`local -a x=(['$(${P})']+=1)`, [P], 0],
-    [`x=( a  ['$(${P})']=1  b )`, [P], 0],
-    [`x=( [0]=a ['$(${P})']=1 )`, [P], 0],
-    [`x=( [$'$(${P})']=1 )`, [P], 0],
-    [`x=( ["k"'$(${P})']=1 )`, [P], 0],
-    [`x=(['$(echo "]"; ${P})']=1)`, [`echo "]"; ${P}`], 0],
-    [`f() { x=(['$(${P})']=1); }`, [P], 1],
+    [`x=(['$(${P})']=1)`, [P]],
+    [`x+=(['$(${P})']=1)`, [P]],
+    [`declare -a x=(['$(${P})']=1)`, [P]],
+    [`typeset -A x=(['$(${P})']=1)`, [P]],
+    [`local -a x=(['$(${P})']+=1)`, [P]],
+    [`x=( a  ['$(${P})']=1  b )`, [P]],
+    [`x=( [0]=a ['$(${P})']=1 )`, [P]],
+    [`x=( [$'$(${P})']=1 )`, [P]],
+    [`x=( ["k"'$(${P})']=1 )`, [P]],
+    [`x=(['$(echo "]"; ${P})']=1)`, [`echo "]"; ${P}`]],
+    [`f() { x=(['$(${P})']=1); }`, [P]],
     // The splitter ends this element at the `)` in its key; with no `]=` to find, the rest of the word is read.
-    [`x=(['$(echo ])')']=1)`, ['echo ]'], 0],
+    [`x=(['$(echo ])')']=1)`, ['echo ]']],
     // The list after x=( is one element list: a key may span words, and -i makes every value arithmetic.
-    [`declare -ai x=([0]='y[$(${P})]')`, [P], 0],
-    [`declare -i x=('y[$(${P})]')`, [P], 0],
-    [`declare -ai x=('y[$(${P})]')`, [P], 0],
-    [`declare -ai x=(1 'y[$(${P})]' 3)`, [P], 0],
-    [`declare -Ai x=(['k']='y[$(${P})]')`, [P], 0],
-    [`local -ai x=('y[$(${P})]')`, [P], 0],
-    [`typeset -ia x=('y[$(${P})]' 2)`, [P], 0],
-    [`integer x=('y[$(${P})]')`, [P], 0],
-    [`x=([ '$(${P})' ]=1)`, [P], 0],
-    [`x+=([ '$(${P})' ]+=1)`, [P], 0],
-    [`x=( [ 'k' '$(${P})' ]=1 )`, [P], 0],
-    [`declare -a x=( [ '$(${P})' ]+=1 )`, [P], 0],
-    [`x=(\n  ['$(${P})']=1\n)`, [P], 0],
-    [`declare -ai x=(\n  1\n  'y[$(${P})]'\n)`, [P], 0],
-    [`x=( [ '$(${P})' )`, [P], 0],
+    [`declare -ai x=([0]='y[$(${P})]')`, [P]],
+    [`declare -i x=('y[$(${P})]')`, [P]],
+    [`declare -ai x=('y[$(${P})]')`, [P]],
+    [`declare -ai x=(1 'y[$(${P})]' 3)`, [P]],
+    [`declare -Ai x=(['k']='y[$(${P})]')`, [P]],
+    [`local -ai x=('y[$(${P})]')`, [P]],
+    [`typeset -ia x=('y[$(${P})]' 2)`, [P]],
+    [`integer x=('y[$(${P})]')`, [P]],
+    [`x=([ '$(${P})' ]=1)`, [P]],
+    [`x+=([ '$(${P})' ]+=1)`, [P]],
+    [`x=( [ 'k' '$(${P})' ]=1 )`, [P]],
+    [`declare -a x=( [ '$(${P})' ]+=1 )`, [P]],
+    [`x=(\n  ['$(${P})']=1\n)`, [P]],
+    [`declare -ai x=(\n  1\n  'y[$(${P})]'\n)`, [P]],
+    [`x=( [ '$(${P})' )`, [P]],
+    // A list inside a substitution is read from that substitution's own commands.
+    [`echo "$(x=(['$(${P})']=1))"`, [P]],
+    ["echo `x=(['$(" + P + ")']=1)`", [P]],
+    [`echo $(echo $(x=(['$(${P})']=1)))`, [P]],
+    [`echo "$(echo "$(declare -ai x=('y[$(${P})]'))")"`, [P]],
+    [`cat <(x=(['$(${P})']=1))`, [P]],
+    [`echo \${ x=(['$(${P})']=1); }`, [P]],
+    [`echo \${| x=(['$(${P})']=1); }`, [P]],
+    [`echo "\${ declare -ai x=('y[$(${P})]'); }"`, [P]],
+    [`echo \${ echo \${ x=([ '$(${P})' ]=1); }; }`, [P]],
     [`declare -n r='x[$(${P})]'`, [P]],
     [`local -n r='x[$(${P})]'`, [P]],
     [`typeset -n r='x[$(${P})]'`, [P]],
     [`declare -gn r='x[$(${P})]'`, [P]],
-    [`if declare -n r='x[$(${P})]'; then :; fi`, [P], 0],
+    [`if declare -n r='x[$(${P})]'; then :; fi`, [P]],
     [`let 'x[$(echo ")"; ${P})]=1'`, [`echo ")"; ${P}`]],
-  ] satisfies Row[])('%s yields %j', (line: string, bodies: string[], index = -1) => {
-    expect(bodiesOf(line, index)).toEqual(bodies)
+  ] satisfies Row[])('%s yields %j', (line: string, bodies: string[]) => {
+    expect(bodiesOf(line)).toEqual(bodies)
   })
 
   it.each([
@@ -201,6 +214,8 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `declare -A x=(['k']='y[$(${P})]')`,
     `declare -ai x=(1); echo 'y[$(${P})]'`,
     `x=(a b) && echo '[$(${P})]=1'`,
+    `echo \${ echo 'y[$(${P})]'; }`,
+    `echo '\${ x=([k]=1); }' 'x[$(${P})]'`,
     `declare r='x[$(${P})]'`,
     `[ -v x ]`,
     `[[ -v x ]]`,
@@ -209,7 +224,7 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `! test 'x[$(${P})]' -eq 1`,
     `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
-    expect(everyCommand(arithSubstitutions)(line)).toEqual([])
+    expect(bodiesOf(line)).toEqual([])
   })
 })
 

@@ -5,7 +5,7 @@
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question.
  */
-import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
+import { LIVE, NAME, parseShell, type SimpleCommand, unmark } from './shell-words.js'
 
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
 const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
@@ -209,8 +209,20 @@ interface Element {
  * The marked words of the compound array list `cmd` opens, read from the commands after it in `line`
  * and skipping the commands of the substitutions inside it; undefined when `cmd` opens none.
  */
-function compoundList(cmd: SimpleCommand, line: readonly SimpleCommand[]): string[] | undefined {
+/**
+ * The command list that holds `cmd` innermost: a substitution's own commands for a `cmd` inside one, which
+ * the splitter also lists, flattened, in `line` and in every enclosing substitution; else `line` itself.
+ */
+function containingList(cmd: SimpleCommand, line: readonly SimpleCommand[]): readonly SimpleCommand[] {
+  const lists = [line, ...line.flatMap(c => c.substitutions.map(sub => sub.commands))]
+  return lists
+    .filter(list => list.includes(cmd))
+    .reduce((best, list) => (list.length < best.length ? list : best), line)
+}
+
+function compoundList(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] | undefined {
   if (!OPENER.test(cmd.marked.at(-1) ?? '')) return undefined
+  const line = containingList(cmd, parsed)
   const inner = new Set(line.flatMap(c => c.substitutions.flatMap(sub => sub.commands)))
   const words: string[] = []
   for (const next of line.slice(line.indexOf(cmd) + 1)) {
@@ -267,7 +279,7 @@ const namesIn = (text: string): string[] =>
  * Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. `line` is the
  * parsed command line `cmd` came from; a compound array's elements are read from the commands after it.
  */
-export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCommand[] = [cmd]): string[] {
+export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCommand[]): string[] {
   const { words, assignments } = commandHead(cmd)
   const operands = nameOperands(words)
   const texts = [
@@ -283,17 +295,29 @@ export function arithSubscriptNames(cmd: SimpleCommand, line: readonly SimpleCom
 }
 
 /** Where the `$(...)` whose body starts at `from` closes, past quotes and nested parentheses; the end when it never does. */
-function bodyEnd(text: string, from: number): number {
+function bodyEnd(text: string, from: number, open = '(', close = ')'): number {
   let depth = 0
   for (let i = from; i < text.length; i++) {
     const c = text[i]
     if (c === '\\') i++
     else if (c === "'" || c === '"') i = quoteEnd(text, i)
-    else if (c === '(') depth++
-    else if (c === ')' && depth-- === 0) return i
+    else if (c === open) depth++
+    else if (c === close && depth-- === 0) return i
   }
   return text.length
 }
+
+// bash 5.3's `${ list; }` and `${| list; }`, which run `list` in the current shell; the splitter does not read them.
+const FUNSUB = new RegExp(`${LIVE}\\$\\{[\\s|]`, 'g')
+
+/** The body of each live funsub in the marked words, to its matching `}`, or the rest of the word when it has none. */
+const funsubBodies = (marked: readonly string[]): string[] =>
+  marked.flatMap(word =>
+    [...word.matchAll(FUNSUB)].map(match => {
+      const from = match.index + match[0].length
+      return unmark(word.slice(from, bodyEnd(word, from, '{', '}')))
+    }),
+  )
 
 function quoteEnd(text: string, open: number): number {
   const quote = text[open]
@@ -323,13 +347,8 @@ function quotedSubstitutions(marked: string): string[] {
   return bodies.map(unmark)
 }
 
-/**
- * The text of each quoted `$(...)` or backtick the shell runs when it evaluates an operand as arithmetic
- * or resolves it as a variable name (CC-1334), which the splitter never read as a command. A live
- * substitution is a command already, so it is not listed. Pass the parsed `line` so that a compound
- * array `cmd` opens is read too.
- */
-export function arithSubstitutions(cmd: SimpleCommand, line: readonly SimpleCommand[] = [cmd]): string[] {
+/** The quoted substitutions one command of `parsed` runs as arithmetic or as a name. */
+function substitutionsOf(cmd: SimpleCommand, parsed: readonly SimpleCommand[]): string[] {
   const { marked, words, markedAssignments } = commandHead(cmd)
   const operands = nameOperands(words)
   const texts = [
@@ -337,10 +356,23 @@ export function arithSubstitutions(cmd: SimpleCommand, line: readonly SimpleComm
     ...nameTexts(words, marked, markedAssignments),
     ...integerValues(words, marked, operands),
     ...namerefValues(words, marked, operands),
-    ...compoundTexts(cmd, line),
+    ...compoundTexts(cmd, parsed),
   ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
-  const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
-  const bodies = texts.flatMap(quotedSubstitutions)
-  return [...new Set([...bodies, ...fromBodies])]
+  return [...texts, ...cmd.arithBodies].flatMap(quotedSubstitutions)
+}
+
+/**
+ * The text of each quoted `$(...)` or backtick the shell runs when it evaluates an operand as arithmetic
+ * or resolves it as a variable name (CC-1334), which the splitter never read as a command, across every
+ * command of `parsed`, the whole output of `parseShell`. A live substitution is a command already, so it
+ * is not listed. It takes the whole line so a compound array's elements, which follow its opener in the
+ * list that holds it, cannot be missed by passing the wrong commands; a funsub's body is parsed here.
+ */
+export function arithSubstitutions(parsed: readonly SimpleCommand[]): string[] {
+  const bodies = parsed.flatMap(cmd => [
+    ...substitutionsOf(cmd, parsed),
+    ...funsubBodies(cmd.marked).flatMap(body => arithSubstitutions(parseShell(body))),
+  ])
+  return [...new Set(bodies)]
 }
