@@ -150,6 +150,8 @@ const tick = (exec: Runner, dryRun = false) => {
 }
 
 const ledger = (): Ledger => readLedger(burndownLedgerPath())
+const tickRow = (): { serviceCheck?: unknown } =>
+  JSON.parse(fs.readFileSync(path.join(world, 'home', 'burndown-ticks.jsonl'), 'utf8'))
 const previous = (cause: string | null, at = ago(TICK_MS)): void =>
   writeLedger(burndownLedgerPath(), { version: 1, claims: [], serviceCheck: { at, cause } })
 
@@ -194,6 +196,25 @@ describe('the tick under the two-read rule', () => {
     expect(frames).toEqual([])
     expect(lines).toContain(`refused demo T-1 [stop-line]: ${STOP_REASON}`)
     expect(ledger().serviceCheck).toEqual({ at: NOW.toISOString(), cause: 'crash loop' })
+  })
+
+  it('the tick row records the read that stopped the line, and a single stopping read as not stopped', async () => {
+    previous('stale pid')
+    await tick(factory('crash loop', 'serve restarted 3 times').exec)
+    expect(tickRow().serviceCheck).toEqual({
+      cause: 'crash loop',
+      stopped: true,
+      message: 'serve restarted 3 times',
+    })
+
+    fs.rmSync(path.join(world, 'home', 'burndown-ticks.jsonl'))
+    previous(null)
+    await tick(factory('stale pid', 'one probe failed').exec)
+    expect(tickRow().serviceCheck).toEqual({
+      cause: 'stale pid',
+      stopped: false,
+      message: 'one probe failed',
+    })
   })
 
   it('an ok read clears a stop', async () => {
