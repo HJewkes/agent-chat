@@ -536,6 +536,32 @@ describe('profiles resolve by name only', () => {
     expect((result as { error: string }).error).toMatch(/known: explorer/)
   })
 
+  it('an unknown name over an unlistable profiles dir is an error, not a throw', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    let result: ReturnType<typeof loadProfile> | undefined
+    expect(() => (result = loadProfile('nope', file))).not.toThrow()
+    expect((result as { error: string }).error).toContain(
+      `no profile named "nope"; cannot list profiles in ${file} (ENOTDIR`,
+    )
+  })
+
+  it('a missing profiles dir still lists the builtins', () => {
+    expect(listProfileNames(path.join(tmpdir(), 'absent'))).toEqual(BUILTIN_PROFILES.map(p => p.name).sort())
+  })
+
+  it('a builtin still loads over an unlistable profiles dir', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    expect(loadProfile('explorer', file)).toMatchObject({ name: 'explorer' })
+  })
+
+  it('listing an unlistable profiles dir throws a message naming the dir', () => {
+    const file = path.join(tmpdir(), 'profiles')
+    fs.writeFileSync(file, '')
+    expect(() => listProfileNames(file)).toThrow(`cannot list profiles in ${file}`)
+  })
+
   it('lets a user profile override a builtin of the same name', () => {
     const dir = tmpdir()
     fs.writeFileSync(

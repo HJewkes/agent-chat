@@ -28,9 +28,10 @@ class FakeFs implements TmpFs {
 
 const reviewer = { AGENT_CHAT_NAME: 'pr-9-review', AGENT_CHAT_PROFILE: 'reviewer' }
 const implementer = { AGENT_CHAT_NAME: 'seat-a-impl', AGENT_CHAT_PROFILE: 'implementer' }
+const coordinator = { AGENT_CHAT_NAME: 'seat-a', AGENT_CHAT_PROFILE: 'coordinator' }
 
 function baseEnvFor(env: Record<string, string>, platform: NodeJS.Platform): Record<string, string> {
-  const root = launchTmpRoot(env, platform, HOME)
+  const root = launchTmpRoot(platform, HOME)
   const options = launchOptions('agent-1', env.AGENT_CHAT_NAME, {
     root,
     platform,
@@ -48,7 +49,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('a launch TMPDIR root (CC-1184)', () => {
+describe('a launch TMPDIR root (CC-1184, CC-1264)', () => {
   it('puts a Linux reviewer TMPDIR under the home disk root', () => {
     const env = baseEnvFor(reviewer, 'linux')
 
@@ -56,26 +57,34 @@ describe('a launch TMPDIR root (CC-1184)', () => {
     expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([own, own, own])
   })
 
-  it('keeps a Linux implementer TMPDIR under /tmp', () => {
+  it('puts a Linux implementer TMPDIR under the home disk root', () => {
     const env = baseEnvFor(implementer, 'linux')
 
-    expect(env.TMPDIR).toBe(`/tmp/ac-seat-a-impl-${process.pid}`)
+    const own = `${DISK_ROOT}/ac-seat-a-impl-${process.pid}`
+    expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([own, own, own])
   })
 
-  it('leaves a macOS reviewer TMPDIR off the disk root', () => {
-    expect(launchTmpRoot(reviewer, 'darwin', HOME)).toBe('/tmp')
+  it('puts a Linux coordinator TMPDIR under the home disk root', () => {
+    const env = baseEnvFor(coordinator, 'linux')
 
+    expect(env.TMPDIR).toBe(`${DISK_ROOT}/ac-seat-a-${process.pid}`)
+  })
+
+  it('leaves a macOS launch TMPDIR off the disk root', () => {
+    expect(launchTmpRoot('darwin', HOME)).toBe('/tmp')
+
+    expect(baseEnvFor(implementer, 'darwin').TMPDIR).toBe('/tmp')
     expect(baseEnvFor(reviewer, 'darwin').TMPDIR).toBe('/tmp')
   })
 
   it('removes the TMPDIR at exit from the root it was made under', () => {
     const removeTmp = vi.fn()
-    const hook = launchExitHook('agent-1', 'pr-9-review', DISK_ROOT, { reap: vi.fn(), removeTmp })
+    const hook = launchExitHook('agent-1', 'seat-a-impl', DISK_ROOT, { reap: vi.fn(), removeTmp })
 
     hook()
 
     expect(removeTmp).toHaveBeenCalledWith(
-      'pr-9-review',
+      'seat-a-impl',
       'agent-1',
       process.pid,
       expect.anything(),
