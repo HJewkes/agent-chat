@@ -26,8 +26,9 @@ export interface ShellCall {
 const HISTORY_OPTION = /^(?:history|histexpand|interactive|banghist)$/
 // Long options that take the next word as their operand: bash's rc files and zsh's `--emulate`.
 const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
-// A `SHELLOPTS` assignment can turn on history and histexpand before the script is read.
-const SHELLOPTS = /^SHELLOPTS=/
+// `SHELLOPTS` can turn on history and histexpand before the script is read, and a startup file named
+// by `BASH_ENV` or `ENV` can run `set -H -o history` first; each fails closed whatever its value.
+const STARTUP_ASSIGNMENT = /^(?:SHELLOPTS|BASH_ENV|ENV)=/
 // A long option: `--name`, or zsh's `+-name`, which turns it off.
 const LONG = /^(?:--|\+-)./
 // Shells observed to take an `o`'s name from the next word even when letters follow it in the cluster.
@@ -60,8 +61,8 @@ function readOptionName(operand: string | undefined, on: boolean, opts: Options)
 /**
  * Reads one short cluster such as `-eo pipefail` or `+o`, consuming any operand words. zsh takes the
  * rest of the word after `o` as the name (`-ointeractive`); bash and dash take the next word and keep
- * reading the letters after `o` as flags (`bash -oi pipefail` is interactive). For any other shell the
- * letters after `o` may be either, so they are read as flags and also report history.
+ * reading the letters after `o` as flags (`bash -oi pipefail` is interactive). Any other shell's
+ * reading is unobserved and either guess can reach the `-c` branch, so letters after `o` hide the call.
  */
 function readCluster(name: string, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
@@ -71,12 +72,12 @@ function readCluster(name: string, words: readonly string[], at: number, opts: O
     const letter = word[i]
     const rest = word.slice(i + 1)
     if (letter === 'o' || letter === 'O') {
-      if (name === 'zsh' && rest !== '') {
-        readOptionName(rest, on, opts)
+      if (rest !== '' && !NEXT_WORD_NAME.has(name)) {
+        if (name === 'zsh') readOptionName(rest, on, opts)
+        else opts.hidden = true
         return next
       }
       readOptionName(words[next++], on, opts)
-      if (!NEXT_WORD_NAME.has(name) && rest !== '') opts.history = true
     } else if (letter === 'c') opts.command = true
     else if (letter === 's') opts.stdin = true
     else if (on && (letter === 'i' || letter === 'H')) opts.history = true
@@ -134,7 +135,7 @@ export function readShellCall(
       script: { from: 'command', at: opts.end < marked.length ? opts.end : undefined },
       history: false,
     }
-  const history = opts.history || assigns.some(word => SHELLOPTS.test(word))
+  const history = opts.history || assigns.some(word => STARTUP_ASSIGNMENT.test(word))
   if (opts.stdin || opts.end >= marked.length) return { script: { from: 'stdin' }, history }
   return { script: { from: 'file', at: opts.end }, history }
 }

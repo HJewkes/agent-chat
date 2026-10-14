@@ -73,7 +73,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['bash -oO pipefail extglob s.sh', 3, false],
     ['dash -oi nolog s.sh', 2, true],
     ['sh -ox pipefail s.sh', 2, false],
-    ['ksh -ox pipefail s.sh', 2, true],
+    ['BASH_ENV=./rc bash s.sh', 0, true],
+    ['ENV=./rc sh s.sh', 0, true],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -104,6 +105,11 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'bash -o $X',
     'bash -o$X',
     'zsh --emulate $E -i',
+    'ksh -ox pipefail s.sh',
+    'ksh -oemacs s.sh',
+    'ksh -ointeractive s.sh',
+    'ksh -oposix s.sh',
+    "ksh -oemacs <<'EOF'\necho hi\nEOF",
     'bash -e "$X" <<<x',
     'bash *.sh',
   ])('%s hides its options', line => {
