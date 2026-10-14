@@ -38,8 +38,26 @@ export interface SimpleCommand {
   after: string
   /** Inside parentheses or a substitution, so it runs in a subshell. */
   nested: boolean
-  /** The body of `(( ))` or `$(( ))`, which the shell evaluates as arithmetic and does not run (CC-1249). */
+  /** Inside the body of a `(( ))` or `$(( ))` the shell evaluates as arithmetic, not as a command (CC-1249). */
   arith: boolean
+  /** That body's raw text, since splitting it into words drops `<y`, `>y` and the like; '' when not arithmetic. */
+  arithText: string
+}
+
+/** Where the `))` that ends arithmetic opened at `from` begins; -1 when a `)` closes it alone, so it is a subshell. */
+export function arithClose(src: string, from: number): number {
+  let depth = 0
+  for (let i = from; i < src.length; i++) {
+    if (src[i] === '(') depth++
+    else if (src[i] === ')' && depth-- === 0) return src[i + 1] === ')' ? i : -1
+  }
+  return -1
+}
+
+/** The arithmetic a lexer is inside: commands at `depth` or deeper are its body. */
+interface Arith {
+  depth: number
+  text: string
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
@@ -170,8 +188,6 @@ class ShellLexer {
   private carried: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
-  /** The depth at and below which commands are arithmetic, while inside a `((`. */
-  private arithDepth = Infinity
   private closed = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
@@ -181,6 +197,7 @@ class ShellLexer {
     start = 0,
     private readonly nested = false,
     private readonly budget: Budget = { forks: MAX_FORKS, expansion: undefined },
+    private arith?: Arith,
   ) {
     this.pos = start
     this.cur = this.newCommand()
@@ -203,7 +220,8 @@ class ShellLexer {
       before: '',
       after: '',
       nested,
-      arith: this.depth >= this.arithDepth,
+      arith: this.inArith(),
+      arithText: this.inArith() ? (this.arith?.text ?? '') : '',
     }
   }
 
@@ -254,6 +272,7 @@ class ShellLexer {
   private paren(c: string): void {
     if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
+    const opensCommand = this.word === null && !fed
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
@@ -262,15 +281,21 @@ class ShellLexer {
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     this.depth += c === '(' ? 1 : -1
-    this.trackArith(c)
+    this.trackArith(c, opensCommand)
     this.pos++
     this.cur = this.newCommand()
   }
 
-  /** A `(` straight after a `(` opens `((` or, in a substitution's lexer, `$((`; a blank between them keeps a subshell. */
-  private trackArith(c: string): void {
-    if (c === '(' && this.src[this.pos - 1] === '(') this.arithDepth = Math.min(this.arithDepth, this.depth)
-    else if (this.depth < this.arithDepth) this.arithDepth = Infinity
+  private inArith(): boolean {
+    return this.arith !== undefined && this.depth >= this.arith.depth
+  }
+
+  /** A `((` at command position is arithmetic when bash finds its `))`; `((a) )` and `((a)|b)` are subshells. */
+  private trackArith(c: string, opensCommand: boolean): void {
+    if (c === ')' && !this.inArith()) this.arith = undefined
+    if (c !== '(' || !opensCommand || this.arith !== undefined || this.src[this.pos + 1] !== '(') return
+    const end = arithClose(this.src, this.pos + 2)
+    if (end >= 0) this.arith = { depth: this.depth + 1, text: this.src.slice(this.pos + 2, end) }
   }
 
   /**
@@ -508,7 +533,9 @@ class ShellLexer {
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
   private substitution(quoted: boolean): string {
     const start = this.pos
-    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget)
+    const close = this.src.startsWith('$((', start) ? arithClose(this.src, start + 3) : -1
+    const arith = close < 0 ? undefined : { depth: 1, text: this.src.slice(start + 3, close) }
+    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget, arith)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()

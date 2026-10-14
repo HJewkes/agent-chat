@@ -30,6 +30,10 @@ describe('the splitter tags the body of (( )) and $(( )) as arithmetic', () => {
     ['x=(a b)', 'a'],
     ['(( x )); git status', 'git'],
     ['echo $(( $(git status) ))', 'git'],
+    ['((git push) )', 'git'],
+    ['((git push)|cat)', 'git'],
+    ['echo $((git push) )', 'git'],
+    ['((x)); ( ( git status ) )', 'git'],
   ])('%s leaves %s a command', (line, head) => {
     expect(commandOf(line, head).arith).toBe(false)
   })
@@ -37,18 +41,24 @@ describe('the splitter tags the body of (( )) and $(( )) as arithmetic', () => {
 
 describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
   it.each([
-    ['(( arr[$i] ))', 'arr[$i]', ['i']],
-    ['echo $(( arr[$i] + n ))', 'echo', ['i', 'n']],
+    ['(( arr[$i] ))', 'arr[$i]', ['arr', 'i']],
+    ['(( arr[0] ))', 'arr[0]', ['arr']],
+    ['(( x < y ))', 'x', ['x', 'y']],
+    ['(( x > y ))', 'x', ['x', 'y']],
+    ['(( a[1<y] ))', 'a[1', ['a', 'y']],
+    ['for ((i=0;i<y;i++)); do :; done', 'i=0', ['i', 'y']],
+    ['echo $(( x < y ))', 'echo', ['x', 'y']],
+    ['echo $(( arr[$i] + n ))', 'echo', ['arr', 'i', 'n']],
     ['echo $(( i ))', 'echo', ['i']],
     ['echo "${arr[$i]}"', 'echo', ['i']],
     ['echo ${arr[$i]}', 'echo', ['i']],
     ['echo $arr[$i]', 'echo', ['i']],
     ['arr[$i]=1', 'arr[$i]=1', ['i']],
-    ['declare -i n=arr[$i]', 'declare', ['i']],
-    ['typeset -i x=arr[$i]', 'typeset', ['i']],
-    ['integer y=arr[$i]', 'integer', ['i']],
-    ['let "arr[$i]"', 'let', ['i']],
-    ['echo $[ arr[$i] ]', 'echo', ['i']],
+    ['declare -i n=arr[$i]', 'declare', ['arr', 'i']],
+    ['typeset -i x=arr[$i]', 'typeset', ['arr', 'i']],
+    ['integer y=arr[$i]', 'integer', ['arr', 'i']],
+    ['let "arr[$i]"', 'let', ['arr', 'i']],
+    ['echo $[ arr[$i] ]', 'echo', ['arr', 'i']],
     ['(( n + 1 ))', 'n', ['n']],
   ])('%s: %s yields %j', (line, head, names) => {
     expect(arithSubscriptNames(commandOf(line, head))).toEqual(names)
@@ -63,6 +73,7 @@ describe('arithSubscriptNames lists the names arithmetic re-evaluates', () => {
     ['(( 5 ))', '5'],
     ['(( 16#ff + 0x1f ))', '16#ff'],
     ['echo $(( $(date) ))', 'echo'],
+    ['((git push) )', 'git'],
   ])('%s: %s yields none', (line, head) => {
     expect(arithSubscriptNames(commandOf(line, head))).toEqual([])
   })

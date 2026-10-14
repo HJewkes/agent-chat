@@ -5,11 +5,11 @@
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question.
  */
-import { LIVE, NAME, type SimpleCommand } from './shell-words.js'
+import { arithClose, LIVE, NAME, type SimpleCommand } from './shell-words.js'
 
 const INTEGER_DECLARERS = new Set(['declare', 'typeset', 'local', 'integer'])
-// A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; a name before `[` is the array, not a value.
-const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_]|\\s*\\[)`, 'g')
+// A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
+const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
 // A literal `$(...)` or backtick is parsed and checked as a command already, so its words are not names.
 const SUBSTITUTION = /\$\([^()]*\)|`[^`]*`/g
 // `arr[...]=` and zsh's `$arr[...]` subscript a variable when the `[` is unquoted.
@@ -43,8 +43,10 @@ function subscripts(marked: string): string[] {
 
 /** The `$((...))` and `$[...]` bodies in a command's words and substitutions. */
 function arithExpansions(cmd: SimpleCommand): string[] {
-  const raws = cmd.substitutions.map(sub => sub.raw).filter(raw => raw.startsWith('$(('))
-  const bodies = raws.map(raw => raw.slice(3, -2))
+  const raws = cmd.substitutions
+    .map(sub => sub.raw)
+    .filter(raw => raw.startsWith('$((') && arithClose(raw, 3) >= 0)
+  const bodies = raws.map(raw => raw.slice(3, arithClose(raw, 3)))
   const joined = cmd.words.join(' ')
   return [...bodies, ...bracketBodies(joined, openingsOf(joined, /\$\[/g))]
 }
@@ -63,7 +65,7 @@ function integerOperands(cmd: SimpleCommand): string[] {
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
   const texts = [
-    ...(cmd.arith ? cmd.words : []),
+    cmd.arithText,
     ...arithExpansions(cmd),
     ...integerOperands(cmd),
     ...cmd.marked.flatMap(subscripts),
