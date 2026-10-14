@@ -2091,9 +2091,33 @@ function quotesInput(words: readonly string[], call: ParallelCall, script: strin
   const marked = (text: string): string[] => parseShell(text).flatMap(cmd => cmd.marked)
   return (
     marked(script).some(word => word.replaceAll(XARGS_ARGS, '').includes('$@')) ||
-    (!call.quote && marked(parallelScript(words, call, INPUT_PROBE)).some(word => word.includes(INPUT_PROBE)))
+    (!call.quote &&
+      marked(parallelScript(words, call, INPUT_PROBE)).some(word => word.includes(INPUT_PROBE))) ||
+    (!call.quote && inputLeavesArgv(words, call))
   )
 }
+
+/**
+ * Whether some input lands outside every command word: in a redirect target, a here-string or a
+ * heredoc body, where the shell still expands a `$(...)` in it but the guard never reads it.
+ */
+function inputLeavesArgv(words: readonly string[], call: ParallelCall): boolean {
+  let placed = 0
+  const script = parallelScript(words, call, INPUT_PROBE).replaceAll(
+    INPUT_PROBE,
+    () => `'\x02${placed++}\x03'`,
+  )
+  const argv = parseShell(script).flatMap(cmd => cmd.marked)
+  return Array.from({ length: placed }, (_, i) => `\x02${i}\x03`).some(
+    probe => !argv.some(w => w.includes(probe)),
+  )
+}
+
+/** The scope a parallel script or input runs in: it names git whenever the line may reach it. */
+const parallelScope = (scope: Scope, ctx: GuardContext): Scope => ({
+  ...scope,
+  namesGit: scope.namesGit || lineMayReachGit(scope, ctx),
+})
 
 /** Whether an input stands where `script` names a command, as `parallel {} ::: git ::: push` puts it; like xargs' fed head. */
 const inputRuns = (script: string): boolean =>
@@ -2102,11 +2126,22 @@ const inputRuns = (script: string): boolean =>
     return !('reason' in unwrapped) && (unwrapped.words[0] ?? '').includes(XARGS_ARGS)
   })
 
+/** Whether `script` hands an input to eval or a shell, which run it as code the guard cannot read. */
+const inputEvaluated = (script: string): boolean =>
+  parseShell(script).some(cmd => {
+    const unwrapped = unwrap(cmd.marked)
+    if ('reason' in unwrapped) return false
+    const [name = '', ...args] = unwrapped.words
+    return (name === 'eval' || SHELLS.has(path.basename(name))) && args.some(arg => arg.includes(XARGS_ARGS))
+  })
+
 /** Checks parallel's no-command form, where each input is a command line of its own. */
 function checkParallelInputs(inputs: ParallelInputs, ctx: GuardContext, scope: Scope, depth: number) {
   if (inputs.kind === 'unread' || inputs.groups.length !== 1)
     return lineMayReachGit(scope, ctx) ? REASONS.hiddenScript : undefined
-  return firstReason(inputs.groups[0] ?? [], input => checkAt(input, ctx, scope, depth + 1))
+  return firstReason(inputs.groups[0] ?? [], input =>
+    checkAt(input, ctx, parallelScope(scope, ctx), depth + 1),
+  )
 }
 
 /**
@@ -2131,7 +2166,8 @@ function checkParallel(
   const script = parallelScript(read, call)
   if (lineMayReachGit(scope, ctx) && quotesInput(read, call, script)) return REASONS.parallelQuoted
   if (inputRuns(script)) return REASONS.hiddenCommand
-  return checkAt(script, ctx, scope, depth + 1)
+  if (lineMayReachGit(scope, ctx) && inputEvaluated(script)) return REASONS.hiddenScript
+  return checkAt(script, ctx, parallelScope(scope, ctx), depth + 1)
 }
 
 /** Whether unwrapping only dropped leading words, rather than splitting new ones out as `env -S` does. */

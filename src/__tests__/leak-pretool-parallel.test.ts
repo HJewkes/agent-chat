@@ -67,6 +67,27 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
     expect(checkCommand(command, ctx)).toBe(reason)
   })
 
+  it.each([
+    `parallel 'eval echo {}' ::: '$(g=gi; \${g}t push --no-verify)'`,
+    `parallel -q eval 'echo {}' ::: '$(g=gi; \${g}t push --no-verify)'`,
+    `parallel -q bash -c 'echo {}' ::: '$(g=gi; \${g}t push --no-verify)'`,
+    `echo '$(g=gi; \${g}t push --no-verify)' | parallel`,
+  ])('denies a script or input that may run a hidden git: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.hiddenScript)
+  })
+
+  it.each([
+    `parallel 'cat <<< "{}"' ::: '$(git push --no-verify)'`,
+    `parallel 'cat <<< {}' ::: '$(git push --no-verify)'`,
+    `parallel 'echo hi > "{}"' ::: '$(git push --no-verify)'`,
+    `parallel 'echo hi > {}' ::: '$(git push --no-verify)'`,
+    `parallel 'cat < "{}"' ::: '$(git push --no-verify)'`,
+    `parallel 'cat <<X\n"{}"\nX' ::: '$(git push --no-verify)'`,
+    `parallel 'cat <<X\n{}\nX' ::: '$(g=gi; \${g}t push --no-verify)'`,
+  ])('denies an input in a redirect, here-string or heredoc body: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.parallelQuoted)
+  })
+
   it('denies an input inside double quotes, where the shell expands what parallel quoted', () => {
     expect(checkCommand(`parallel 'git log "{}"' ::: a`, ctx)).toBe(REASONS.parallelQuoted)
   })
