@@ -24,7 +24,7 @@ const bashVersion = (): [number, number] => {
     const v = execFileSync('bash', ['-c', 'echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}'], {
       encoding: 'utf8',
     })
-    const [major, minor] = v.trim().split(' ').map(Number)
+    const [major = 0, minor = 0] = v.trim().split(' ').map(Number)
     return [major, minor]
   } catch {
     return [0, 0]
