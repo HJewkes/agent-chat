@@ -30,6 +30,7 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { findClauses, type FindClause } from './run-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -263,7 +264,7 @@ const CHECKED_NAMES = new Set([
   ...SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
-  ...['function', 'eval', 'git', 'gh', 'agent-chat'],
+  ...['function', 'eval', 'git', 'gh', 'agent-chat', 'find'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
@@ -344,7 +345,15 @@ const NAMES_GH = /\bgh\b/
  * `assigns` are the command's own `NAME=value` words, and a bare `NAME` that `env -u` unsets.
  */
 type Unwrapped =
-  { words: string[]; chdir?: boolean; assigns: string[]; fed?: Fed | undefined } | { reason: string }
+  | {
+      words: string[]
+      chdir?: boolean
+      assigns: string[]
+      fed?: Fed | undefined
+      /** Commands that also run, each read as a command line of its own: find's later action clauses. */
+      siblings?: string[][]
+    }
+  | { reason: string }
 
 /**
  * xargs runs its command with words it reads: in place of each word holding the `replace` string,
@@ -371,11 +380,12 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
   let fed: Fed | undefined
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
+  let siblings: string[][] | undefined
   const assigns: string[] = []
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
-      : { words: rest.slice(at), chdir, assigns, fed }
+      : { words: rest.slice(at), chdir, assigns, fed, ...(siblings && { siblings }) }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
@@ -403,6 +413,13 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       const { replace } = fed
       if (replace !== undefined)
         rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
+    } else if (name === 'find') {
+      const run = findRun(rest, at)
+      if (run === undefined) return done()
+      fed = fed === undefined ? FIND_FED : nestedFed(fed, FIND_FED)
+      if (run.siblings.length > 0) siblings = run.siblings
+      rest = run.words.map(w => placeFed(w, '{}'))
+      at = run.at
     } else if (name === 'sudo') {
       const after = dropSudoOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.sudoOption }
@@ -441,6 +458,33 @@ function placeFed(word: string, replace: string): string {
   const pattern = [...replace].map(c => `${LIVE}?${c.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}`).join('')
   return word.replace(new RegExp(pattern, 'g'), () => XARGS_ARGS)
 }
+
+/** find fills each `{}` in an action clause with a path the guard cannot read, and appends nothing. */
+const FIND_FED: Fed = { replace: '{}', append: false }
+
+/**
+ * The command a `find` at `at` runs: its first action clause, with every later clause as a find of its
+ * own to check apart. A word the guard cannot read may expand to `-exec`, or to a `;` that ends a clause
+ * early, so the words from the first one on are also checked as a command. Undefined when find runs nothing.
+ */
+function findRun(
+  rest: readonly string[],
+  at: number,
+): { words: string[]; at: number; siblings: string[][] } | undefined {
+  const { clauses, hiddenAt } = findClauses(rest, at + 1)
+  const prefix = rest.slice(0, at + 1)
+  const alone = (clause: FindClause): string[] => [...prefix, clause.action, ...clause.words, ';']
+  const inClause = clauses.flatMap(c => c.words.flatMap((w, i) => (unreadable(w) ? [c.at + i] : [])))
+  const tailAt = Math.min(hiddenAt ?? Infinity, inClause[0] ?? Infinity)
+  const tail = tailAt < Infinity ? [rest.slice(tailAt).map(w => placeFed(w, '{}'))] : []
+  const [first, ...later] = clauses
+  const siblings = [...later.map(alone), ...tail]
+  if (first !== undefined) return { words: [...first.words], at: 0, siblings }
+  return tailAt < Infinity ? { words: [...rest], at: tailAt, siblings: [] } : undefined
+}
+
+/** A word holding an expansion, other than the bare `{}` the shell leaves alone. */
+const unreadable = (word: string): boolean => word.replaceAll(BRACE_PAIR, '{}').includes(LIVE)
 
 /** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
 const nestedFed = (outer: Fed, inner: Fed): Fed => ({
@@ -1984,6 +2028,10 @@ function checkSimple(
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
   if ('reason' in unwrapped) return unwrapped.reason
+  const sibling = firstReason(unwrapped.siblings ?? [], words =>
+    checkSimple(suffixCommand(cmd, words), ctx, scope, depth, outermost),
+  )
+  if (sibling !== undefined) return sibling
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
   const marked = words.slice(1)
