@@ -80,6 +80,12 @@ export const COUNTDOWN_MS = 30_000
  */
 export const HANDOFF_MAX_BYTES = 8 * 1024
 
+/**
+ * TP-1600 f: a seat's successor prompt is composed from its folded SeatState, so what the seat
+ * still writes by hand is a short frame; the rest belongs in `seat_note`.
+ */
+export const SEAT_HANDOFF_MAX_CHARS = 1_500
+
 /** How long to wait for the predecessor's socket to go before claiming its name. */
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
@@ -749,6 +755,23 @@ export class Teleport {
 
     // CC-881: a reported other host runs its own relaunch; an unreported one cannot, so it is refused.
     if (subject.host === undefined) return this.cannotComplete(subject, hostReason(subject)).reason
+
+    return this.oversizedHandoff(req)
+  }
+
+  /** Why the handoff is too long to store, checked on the seat cap before the byte cap. */
+  private oversizedHandoff(req: TeleportRequest): string | undefined {
+    const chars = [...req.handoff].length
+    if (
+      chars > SEAT_HANDOFF_MAX_CHARS &&
+      readSeatFile(this.seatTeleport.autonomyRoot, req.subject.name) !== undefined
+    )
+      return (
+        `a seat's handoff is capped at ${SEAT_HANDOFF_MAX_CHARS} chars and this one is ${chars}. ` +
+        'Your successor already gets your SeatState, In flight, worktree claims, budget and inbox ' +
+        'from the broker; write continuations, standing rules, open questions and next/why with ' +
+        'seat_note, then teleport with a short handoff.'
+      )
 
     const size = bytes(req.handoff)
     if (size > HANDOFF_MAX_BYTES)
