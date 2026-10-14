@@ -236,14 +236,17 @@ describe('agent ls --json transcript lookups share one index (CC-1311)', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  const exitedRow = (n: number, configDir?: string): AgentIdentity => ({
-    ...liveAgent(),
-    name: `row-${n}`,
-    agentId: `id-${n}`,
-    state: 'exited',
-    sessionId: `missing-${n}`,
-    configDir,
-  })
+  const exitedRow = (n: number, configDir?: string): AgentIdentity => {
+    const { configDir: _recorded, ...base } = liveAgent()
+    return {
+      ...base,
+      name: `row-${n}`,
+      agentId: `id-${n}`,
+      state: 'exited',
+      sessionId: `missing-${n}`,
+      ...(configDir === undefined ? {} : { configDir }),
+    }
+  }
 
   const writeModel = (dir: string, sessionId: string, model: string): string => {
     const folder = path.join(dir, 'projects', projectSlug('/somewhere/else'))
