@@ -464,6 +464,8 @@ Options:
   --initiative <value>  an active-work initiative whose open tasks to classify (repeatable)
   --out-dir <value>     where off-plan-<date>.md goes (default claude-channels factory-review)
   --write               write the file; without it the run is a dry run
+  --ask <label>         ask the owner on/off once per ambiguous task under this service label, and
+                        apply answers (needs --write)
   --json                one JSON record per task, one per line
   -h, --help            display help for command
 
