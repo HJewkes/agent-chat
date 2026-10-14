@@ -4,7 +4,9 @@ import { EMPTY_LEDGER } from '../agents/burndown/ledger.js'
 import { describe, expect, it } from 'vitest'
 import type { Claim } from '../agents/burndown/ledger.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
-import { healSlice, isInitiativeDir, taskRepo } from '../agents/burndown/slice-repo.js'
+import { healSlice, isInitiativeDir, sliceRepo, taskRepo } from '../agents/burndown/slice-repo.js'
+import { readSlices } from '../agents/burndown/report.js'
+import { sliceClaims } from '../agents/burndown/seed-slices.js'
 
 /** CC-1228: a queued slice whose repo the seat does not list moves to the ticking seat that lists it, else parks once. */
 
@@ -166,5 +168,35 @@ describe('planSeat with peers', () => {
   it('keeps today’s refusal without peers', () => {
     const planned = plan([slice({ repo: 'gamma-svc' })], undefined)
     expect(planned.refusals).toEqual([expect.objectContaining({ kind: 'no-repo' })])
+  })
+})
+
+describe('a plan Repo: header routes a new-file-only slice (CC-1293)', () => {
+  const NOW = new Date('2026-10-14T12:00:00.000Z')
+  const SEAT = seatOf('seat-t', {
+    'titan-platform': ['/tmp/repos/titan-platform'],
+    'claude-channels': ['/tmp/repos/agent-chat'],
+  })
+  const PARENT = { taskId: 'TP-2853', initiative: 'titan-platform', seat: 'seat-t', namePrefix: 'tp' }
+  const SLICES = [
+    {
+      n: 'a',
+      title: 'shell startup',
+      points: 1,
+      doneWhen: 'a test passes',
+      dependsOn: [],
+      owns: ['src/leak-guard/shell-startup.ts'],
+    },
+  ]
+  const fence = `\`\`\`burndown-slices\n${JSON.stringify(SLICES)}\n\`\`\``
+  const routed = (plan: string) =>
+    sliceRepo(SEAT, 'titan-platform', [], sliceClaims(PARENT, readSlices(plan).slices!, NOW)[0]!, () => false)
+
+  it('dispatches into the checkout the header names', () => {
+    expect(routed(`Repo: \`~/projects/agent-chat\`\n\n${fence}`)).toEqual({ repo: '/tmp/repos/agent-chat' })
+  })
+
+  it('falls back to the task repo without a header', () => {
+    expect(routed(fence)).toEqual({ repo: '/tmp/repos/titan-platform' })
   })
 })
