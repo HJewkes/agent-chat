@@ -198,6 +198,47 @@ describe('observe reads exited work only for a silent exit', () => {
 
     expect(reads).toBe(0)
   })
+
+  it('reads a stalled implementing claim whose roster row is gone on a complete roster (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir, stalledReason: 'no final report' })
+    const work = { openPr: null, ahead: 0 }
+
+    const { observations } = await observe([c], { agents: [] }, deps({ exitedWork: () => work }))
+
+    expect(observations.get(claimKey(c))?.exitedWork).toEqual(work)
+  })
+
+  it('reads nothing for a claim whose row is missing from a partial roster (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir, stalledReason: 'no final report' })
+    let reads = 0
+
+    const { observations } = await observe(
+      [c],
+      { agents: [], partial: 'the roster read timed out' },
+      deps({ exitedWork: () => ((reads += 1), { openPr: null, ahead: 0 }) }),
+    )
+
+    expect(reads).toBe(0)
+    expect(observations.has(claimKey(c))).toBe(false)
+  })
+
+  it('reads nothing for a gone row whose claim is not stalled (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir })
+    let reads = 0
+
+    await observe([c], { agents: [] }, deps({ exitedWork: () => ((reads += 1), undefined) }))
+
+    expect(reads).toBe(0)
+  })
+
+  it('reads nothing for a gone row whose worktree no longer exists (CC-1230 a)', async () => {
+    const c = claim({ worktree: path.join(dir, 'parked'), stalledReason: 'no final report' })
+    let reads = 0
+
+    await observe([c], { agents: [] }, deps({ exitedWork: () => ((reads += 1), undefined) }))
+
+    expect(reads).toBe(0)
+  })
 })
 
 describe('an adopted PR is fenced by its owns (CC-1023)', () => {

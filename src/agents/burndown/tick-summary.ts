@@ -5,7 +5,7 @@ import { briefRefusal, type Task } from './eligibility.js'
 import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
 import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
-import type { SeatOutcome } from './no-dispatch.js'
+import { firstRefusalPerTask, refusalTally, type SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
 import { bindingOf, type Binding } from './gate-reading.js'
 import { onPlan } from './seat-scope.js'
@@ -33,8 +33,11 @@ import type { TickStep } from './step-timer.js'
  *                   the planning on both sides of `collision`; factory
  *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
  *                   decider-triage, T7 write-ledger and this row's write
+ *   serviceCheck    CC-1127: {cause, stopped, message} of the tick's one service-check read: cause null when the
+ *                   check passed, stopped true when this read and the previous one stopped the line, message on
+ *                   one line of at most 200 chars; seats mode only
  *
- * Rows from before CC-1192 lack durationMs, lockHeldMs and steps.
+ * Rows from before CC-1192 lack durationMs, lockHeldMs and steps; rows from before CC-1127 lack serviceCheck.
  *
  * SeatSummary:
  *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
@@ -43,13 +46,15 @@ import type { TickStep } from './step-timer.js'
  *   unbriefed       considered tasks with no valid brief:ready tag
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
- *   refusals        {[refusal kind]: count}
- *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refusals whose task the seat's plan_file section 2
- *                   names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent when the seat has no
- *                   readable plan_file
+ *   refusals        {[refusal kind]: count}: CC-1186: each refused (initiative, task) once, under the kind of its
+ *                   first refusal, and each refusal that names no task once. Rows from before CC-1186 counted a
+ *                   task once per refusal, so a task with refused slices counted again for its own row
+ *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refused tasks, counted as in `refusals`, that the seat's
+ *                   plan_file section 2 names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent
+ *                   when the seat has no readable plan_file
  *   trust           CC-1077: [{initiative, task?, reason}] for each distinct trust refusal, reason on one line of at
- *                   most 200 chars, at most 10 entries (the exact count stays in `refusals.trust`); absent when
- *                   the seat refused nothing on trust
+ *                   most 200 chars, at most 10 entries (the exact count of tasks first refused on trust stays in
+ *                   `refusals.trust`); absent when the seat refused nothing on trust
  *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` is what the seat's role caps
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
@@ -87,6 +92,15 @@ export interface NamedRefusal {
   reason: string
 }
 
+/** CC-1127: the tick's service-check read, so a stop's cause is in the row rather than only in burndown.log. */
+export interface ServiceCheckSummary {
+  /** Null when the check passed. */
+  cause: string | null
+  /** The line stopped this tick: this read and the previous one both stopped. */
+  stopped: boolean
+  message: string
+}
+
 export interface TickSummaryRow {
   v: typeof TICK_SUMMARY_VERSION
   ts: string
@@ -96,6 +110,7 @@ export interface TickSummaryRow {
   lockHeldMs?: number
   steps?: TickStep[]
   orphanQueues?: OrphanQueue[]
+  serviceCheck?: ServiceCheckSummary
 }
 
 export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
@@ -112,6 +127,8 @@ export interface SummaryPlan {
   outcomes: readonly SeatOutcome[]
   dispatch: readonly Dispatch[]
   tasks: ReadonlyMap<string, readonly Task[]>
+  /** Seats mode only: the tick's service-check read. */
+  serviceCheck?: ServiceCheckSummary
 }
 
 export interface SummaryInputs extends SummaryPlan {
@@ -171,12 +188,12 @@ function namedTrustRefusals(outcome: SeatOutcome): NamedRefusal[] {
   return [...named.values()].slice(0, MAX_NAMED_TRUST)
 }
 
-/** CC-1128: refusals of on-plan tasks by kind; a refused task not in the inputs is matched by its id alone. */
+/** CC-1128: on-plan refused tasks by their first refusal's kind; a task not in the inputs is matched by its id alone. */
 function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<string, number> | undefined {
   const plan = outcome.plan
   if (plan === undefined) return undefined
   const counts: Record<string, number> = {}
-  for (const r of outcome.refusals) {
+  for (const r of firstRefusalPerTask(outcome.refusals)) {
     if (r.task === undefined) continue
     const task = inputs.tasks.get(r.initiative)?.find(t => t.id === r.task) ?? { id: r.task, tags: [] }
     if (onPlan(plan, task)) counts[r.kind] = (counts[r.kind] ?? 0) + 1
@@ -185,8 +202,7 @@ function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<str
 }
 
 function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
-  const refusals: Record<string, number> = {}
-  for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
+  const refusals = Object.fromEntries(refusalTally(outcome.refusals))
   const cap = inputs.caps[outcome.seat]
   const used = outcome.roles
   const trust = namedTrustRefusals(outcome)
@@ -220,6 +236,9 @@ export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickS
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
     ...(orphans.length === 0 ? {} : { orphanQueues: orphans }),
+    ...(inputs.serviceCheck === undefined
+      ? {}
+      : { serviceCheck: { ...inputs.serviceCheck, message: oneLine(inputs.serviceCheck.message) } }),
     ...timings,
   }
 }

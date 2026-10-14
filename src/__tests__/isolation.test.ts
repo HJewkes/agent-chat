@@ -639,6 +639,53 @@ describe('worktree branch base (CC-151)', () => {
     expect(alloc.warnings?.[0]).toContain('failed or timed out')
   })
 
+  describe('stack base record (CC-1281)', () => {
+    const KEY = 'branch.agent-chat/alice.agent-chat-base'
+    const stackedOrigin = (): string => {
+      const { peer, local } = clonedFromOrigin()
+      git(['checkout', '--quiet', '-b', 'agent-chat/p'], peer)
+      commitIn(peer, 'parent.ts')
+      git(['push', '--quiet', 'origin', 'agent-chat/p'], peer)
+      return local
+    }
+    const recorded = (repo: string): string | null => {
+      try {
+        return git(['config', '--get', KEY], repo)
+      } catch {
+        return null
+      }
+    }
+
+    it("records the parent's branch name, without origin/, for a stacked spawn", async () => {
+      const local = stackedOrigin()
+
+      const alloc = await worktreeStrategy.allocate(ctxFor(local, { baseRef: 'origin/agent-chat/p' }))
+
+      expect(recorded(local)).toBe('agent-chat/p')
+      expect(alloc.warnings).toBeUndefined()
+    })
+
+    it('leaves no record for a default-base spawn, clearing one a reused branch name inherited', async () => {
+      const { local } = clonedFromOrigin()
+      git(['config', KEY, 'agent-chat/stale'], local)
+
+      await worktreeStrategy.allocate(ctxFor(local))
+
+      expect(recorded(local)).toBeNull()
+    })
+
+    it('still spawns, with a warning, when the record cannot be written', async () => {
+      const local = stackedOrigin()
+      git(['config', '--add', KEY, 'x'], local)
+      git(['config', '--add', KEY, 'y'], local)
+
+      const alloc = await worktreeStrategy.allocate(ctxFor(local, { baseRef: 'origin/agent-chat/p' }))
+
+      expect(fs.existsSync(path.join(alloc.cwd, 'parent.ts'))).toBe(true)
+      expect(alloc.warnings).toEqual([expect.stringContaining(`could not record ${KEY}=agent-chat/p`)])
+    })
+  })
+
   it('warns that there is no origin when the repository has none', async () => {
     const repo = makeRepo()
 

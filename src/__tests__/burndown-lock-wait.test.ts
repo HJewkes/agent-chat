@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { addClaim, EMPTY_LEDGER, readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
-import { burndownLedgerPath } from '../paths.js'
+import { burndownConfigPath, burndownLedgerPath } from '../paths.js'
 
 /**
  * CC-1181: release, link and a dry run wait (bounded) for the ledger lock a tick holds, instead of
@@ -129,5 +129,71 @@ describe('manual burndown verbs wait for a running tick (CC-1181)', () => {
     expect(polls).toHaveLength(1)
     expect(lines.join('\n')).toContain('(dry run)')
     expect(lines.join('\n')).not.toContain('ledger lock')
+  })
+})
+
+/** A real tick needs an enabled config with a reportTo to get as far as the lock. */
+const enableTicks = (): void =>
+  fs.writeFileSync(burndownConfigPath(), JSON.stringify({ enabled: true, reportTo: 'coord', maxAgents: 3 }))
+
+/** A broker whose roster never answers until `free`, so a tick that took the lock keeps holding it. */
+const stalledBroker = () => {
+  let free = (): void => {}
+  const released = new Promise<void>(resolve => (free = resolve))
+  let rosterCalls = 0
+  const broker: TickBroker = {
+    ...noBroker,
+    roster: async () => {
+      rosterCalls += 1
+      await released
+      return { agents: [], slots: { held: 0, cap: 36 } }
+    },
+  }
+  return { broker, free, rosterCalls: () => rosterCalls }
+}
+
+describe('a real tick yields the ledger lock to a waiting release (CC-1181)', () => {
+  it('skips while a live release is waiting and takes no lock', async () => {
+    enableTicks()
+    fs.writeFileSync(`${burndownLedgerPath()}.lock.wait`, `${process.ppid}\n`)
+    const stalled = stalledBroker()
+
+    const lines = await tickFromDisk({ dryRun: false, broker: stalled.broker, log: () => {} })
+
+    expect(lines.join('\n')).toContain(`a release is waiting on the ledger lock (pid ${process.ppid})`)
+    expect(stalled.rosterCalls()).toBe(0)
+    expect(fs.existsSync(`${burndownLedgerPath()}.lock`)).toBe(false)
+  })
+
+  it('lands a release though two ticks run back to back, the second starting in the gap', async () => {
+    enableTicks()
+    writeLedger(burndownLedgerPath(), addClaim(EMPTY_LEDGER, held))
+    holdLock()
+    const stalled = stalledBroker()
+    let second: Promise<string[]> | undefined
+    let clock = 0
+    const sleep = async (ms: number): Promise<void> => {
+      clock += ms
+      if (second === undefined) {
+        fs.rmSync(`${burndownLedgerPath()}.lock`, { force: true })
+        second = tickFromDisk({ dryRun: false, broker: stalled.broker, log: () => {} })
+      }
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    try {
+      const report = await releaseTask('DM-9', async () => ({ ok: true }), new Date(), undefined, undefined, {
+        waitMs: 5000,
+        now: () => clock,
+        sleep,
+      })
+
+      expect(report.ok).toBe(true)
+      expect(readLedger(burndownLedgerPath()).claims).toEqual([])
+      expect((await second)?.join('\n')).toContain('a release is waiting on the ledger lock')
+      expect(fs.existsSync(`${burndownLedgerPath()}.lock.wait`)).toBe(false)
+    } finally {
+      stalled.free()
+    }
   })
 })

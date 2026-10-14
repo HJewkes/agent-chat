@@ -452,7 +452,19 @@ export function readySlices(
   })
 }
 
-export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number; waited?: number }
+/** `waiter` (CC-1181): the refusal names a release waiting on the lock, not a holder of it. */
+export type LockResult<T> =
+  { ran: true; value: T } | { ran: false; holder: number; waited?: number; waiter?: true }
+
+/**
+ * `wait` polls a held lock; `announce` also marks this process as waiting in `<file>.lock.wait`
+ * while it polls; `yieldToWaiter` refuses before taking the lock while a live process is marked.
+ */
+export interface LockOptions {
+  wait?: LockWait
+  announce?: boolean
+  yieldToWaiter?: boolean
+}
 
 /** CC-1181: how long release, link and a dry run poll a held ledger lock before refusing. */
 export const LEDGER_WAIT_MS = 300_000
@@ -474,16 +486,38 @@ export interface LockWait {
 export async function withLedgerLock<T>(
   file: string,
   fn: () => T | Promise<T>,
-  opts: { wait?: LockWait } = {},
+  opts: LockOptions = {},
 ): Promise<LockResult<T>> {
   const lock = `${file}.lock`
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const holder = opts.wait === undefined ? tryAcquire(lock) : await acquireWithin(lock, opts.wait)
+  const waiter = opts.yieldToWaiter ? ledgerLockWaiter(file) : undefined
+  if (waiter !== undefined) return { ran: false, holder: waiter, waiter: true }
+  const holder = await acquire(lock, opts)
   if (holder !== undefined) return holder
   try {
     return { ran: true, value: await fn() }
   } finally {
     if (readHolder(lock) === process.pid) fs.rmSync(lock, { force: true })
+  }
+}
+
+/**
+ * Why the marker: ticks run back to back, so a poller alone never finds the gap between them.
+ * A tick that checked for a waiter just before the marker landed still takes the lock once;
+ * the tick after it sees the marker and yields, so a release waits for at most one tick.
+ */
+async function acquire(
+  lock: string,
+  opts: LockOptions,
+): Promise<Extract<LockResult<never>, { ran: false }> | undefined> {
+  if (opts.wait === undefined) return tryAcquire(lock)
+  if (!opts.announce) return acquireWithin(lock, opts.wait)
+  const marker = `${lock}.wait`
+  fs.writeFileSync(marker, `${process.pid}\n`, { mode: 0o600 })
+  try {
+    return await acquireWithin(lock, opts.wait)
+  } finally {
+    if (readHolder(marker) === process.pid) fs.rmSync(marker, { force: true })
   }
 }
 
@@ -517,6 +551,12 @@ async function acquireWithin(
 export function ledgerLockHolder(file: string): number | undefined {
   const holder = readHolder(`${file}.lock`)
   return holder !== undefined && isAlive(holder) ? holder : undefined
+}
+
+/** CC-1181: the live pid of a release waiting on `<file>.lock`, or undefined when none is. */
+export function ledgerLockWaiter(file: string): number | undefined {
+  const waiter = readHolder(`${file}.lock.wait`)
+  return waiter !== undefined && isAlive(waiter) ? waiter : undefined
 }
 
 /** Link-in a complete pid file, which fails atomically when the lock exists; returns the holder then. */
