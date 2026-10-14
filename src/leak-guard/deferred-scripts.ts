@@ -94,13 +94,24 @@ export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
 }
 
 // `source /dev/stderr 2< <(…)` reads a script from any descriptor, so every standard stream counts.
-const STREAM_PATH = /^\/dev\/(?:stdin|stdout|stderr|fd\/.+)$|^\/proc\/[^/]+\/fd\/.+$/
+const STREAM_PATH = /^\/dev\/(?:stdin|stdout|stderr|tty|fd\/.+)$|^\/proc\/[^/]+\/(?:task\/[^/]+\/)?fd\/.+$/
+// The last part of a stream path, which a `~` or a cwd the shell sets at run time can put under /dev or /proc.
+const STREAM_TAIL = /(?:^|\/)(?:stdin|stdout|stderr|tty|\d+|fd\/[^/]+)$/
 
-const isStreamPath = (word: string): boolean => word === '-' || STREAM_PATH.test(path.posix.normalize(word))
+/**
+ * A `~` or relative path has a base the shell sets at run time (HOME, the cwd), so it may be a stream
+ * when it climbs with `..` or ends like one. Normalising first would let `~/../..` cancel the `~`.
+ */
+function isStreamPath(word: string): boolean {
+  if (word === '-') return true
+  if (word.startsWith('/')) return STREAM_PATH.test(path.posix.normalize(word))
+  return word.split('/').includes('..') || STREAM_TAIL.test(path.posix.normalize(word))
+}
 
 /**
  * Whether any operand of `cmd` may name a stream rather than a file: `/dev/stdin`, `/dev/stdout`,
- * `/dev/stderr`, `/dev/fd/N`, `/proc/<pid>/fd/N`, `-`, or any word the shell settles at run time. That
+ * `/dev/stderr`, `/dev/tty`, `/dev/fd/N`, `/proc/<pid>[/task/<tid>]/fd/N`, `-`, a `~` or relative path
+ * that may resolve to one, or any word the shell settles at run time. That
  * includes `<(…)` and `>(…)`, which leave a word that is only a mark, zsh's `=(…)`, and `. "$F"`. It reads
  * every operand, so `diff <(a) <(b)` is true too; the guard asks only of a shell, `.` or `source`.
  */
