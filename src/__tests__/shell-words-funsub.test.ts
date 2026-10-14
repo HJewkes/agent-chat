@@ -310,9 +310,17 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(`echo "${open}[[ }x ]]; date; }"`)).toBeUndefined()
   })
 
-  it.each(['${ ', '${|'])('%j never takes }x after a reserved word for an argument', open => {
-    expect(expansionRisk(`echo "${open}x=1 fi }x; date; }"`)).toBe('unreadable')
+  // bash 5.3.9 reads `fi` after an assignment as a command name, so `}x` is its argument.
+  it.each(['${ ', '${|'])('%j takes }x after a word that is not reserved for an argument', open => {
+    expect(expansionRisk(`echo "${open}x=1 fi }x; date; }"`)).toBeUndefined()
   })
+
+  it.each(['${ ', '${|'])(
+    '%j never takes }x after a reserved word that a name follows for an argument',
+    open => {
+      expect(expansionRisk(`echo "${open}case }x in a) ;; esac; date; }"`)).toBe('unreadable')
+    },
+  )
 
   // bash 5.3.9 closes at the `}` after chained compound ends, as reserved_word_acceptable allows.
   it.each(
@@ -345,6 +353,93 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(commands.map(cmd => cmd.words[0])).toEqual(['date', 'echo'])
     expect(commands[1]?.words).toEqual(['echo', '${ date;}', 'tail'])
     expect(commands[1]?.splits).toHaveLength(1)
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+})
+
+// bash 5.3.9 reads a quoted or escaped reserved word as a plain word, so it opens no case, test or
+// group; each row was checked against it for CC-1327.
+const OPENERS = ['${ ', '${|']
+const spellings = (word: string): string[] => [`"${word}"`, `'${word}'`, `\\${word}`]
+const opened = (body: string): string[] => OPENERS.map(open => `echo "${open}${body}`)
+
+describe('a quoted reserved word changes no parser state', () => {
+  it.each(
+    ['"if"', "'then'", '"{"', '"!"', '"time"', '"do"', 'i\\f'].flatMap(prefix =>
+      opened(`${prefix} case a in ; } '"; git push --no-verify; : "'\n) }"`),
+    ),
+  )('%j opens no case, so the } closes and the push is a command', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(false)
+  })
+
+  const plain = [
+    '{',
+    '}',
+    'then',
+    'do',
+    'done',
+    'fi',
+    'esac',
+    'if',
+    '!',
+    'time',
+    'else',
+    'elif',
+    'while',
+    'until',
+  ]
+  it.each(plain.flatMap(word => spellings(word).flatMap(q => opened(`${q} }x; git push --no-verify; }"`))))(
+    '%j is a command name, so }x is its argument and the push stays inside',
+    src => {
+      expect(find(src, 'git')?.nested).toBe(true)
+      expect(expansionRisk(src)).toBeUndefined()
+    },
+  )
+
+  it.each(
+    [
+      ...spellings('esac').map(q => `case a in ${q}|}) ;; esac; git push --no-verify; }"`),
+      ...spellings('in').map(q => `case ${q} in ${q}|}) ;; esac; git push --no-verify; }"`),
+      ...spellings('}').map(q => `{ :; ${q}; } ; git push --no-verify; }"`),
+    ].flatMap(opened),
+  )('%j keeps the } a pattern or the group open, so the push stays inside', src => {
+    expect(find(src, 'git')?.nested).toBe(true)
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+
+  it.each(spellings('[[').flatMap(q => opened(`${q} a; } #"; git push --no-verify\n}"`)))(
+    '%j opens no test, so the } closes and the push is a command',
+    src => {
+      expect(find(src, 'git')?.nested).toBe(false)
+      expect(expansionRisk(src)).toBeUndefined()
+    },
+  )
+
+  it.each(spellings(']]').flatMap(q => opened(`[[ a == ${q} || } ]]; git push --no-verify; }"`)))(
+    '%j closes no test, and a lone } operand is unreadable',
+    src => {
+      expect(expansionRisk(src)).toBe('unreadable')
+    },
+  )
+})
+
+// bash 5.3.9 opens these from the token before them, wherever the words of the command stand.
+describe('reserved words read token by token', () => {
+  it.each(
+    [
+      'case a\nin }) ;; esac; git push --no-verify; }"',
+      'case in in in|}) ;; esac; git push --no-verify; }"',
+      'case a in a) case b in }) ;; esac ;; esac; git push --no-verify; }"',
+      'for i do { :; }; done; git push --no-verify; }"',
+      'for i\ndo { :; }; done; git push --no-verify; }"',
+      'time -p { :; }; git push --no-verify; }"',
+      'function f () { :; }; git push --no-verify; }"',
+    ].flatMap(opened),
+  )('%j reads the case or group, so the push stays inside', src => {
+    expect(find(src, 'git')?.nested).toBe(true)
     expect(expansionRisk(src)).toBeUndefined()
   })
 })
