@@ -320,7 +320,7 @@ export class SocketServer {
       core.registry,
       (conn, events) => reply(conn, { t: 'system_events', events }),
       undefined,
-      (agentId, exit) => core.reportedSpawner(agentId, exit),
+      (agentId, exit, later) => core.reportedSpawner(agentId, exit, later),
     )
     // Fed from the single write path, so a subscriber sees exactly what the log
     // recorded rather than a second notion of what happened.

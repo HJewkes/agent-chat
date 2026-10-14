@@ -82,3 +82,66 @@ describe('observedDispatchCost', () => {
     expect(observedDispatchCost(withOld, spawns(69, '12:00', '13:20'), NOW)?.fiveHour).toBeCloseTo(24 / 69, 3)
   })
 })
+
+describe('the seven_day rise', () => {
+  const WEEK_END = Date.parse('2026-10-17T18:00:00Z')
+  const resetting = (r: CostReading, resetsAt: number): CostReading => ({ ...r, sevenDayResetsAt: resetsAt })
+  /** Pool personal on 2026-10-11, from the watchdog's pool-readings.jsonl; 08:08Z reads 18 between two 19s. */
+  const PERSONAL = (
+    [
+      ['07:38', 38, 18],
+      ['07:53', 40, 19],
+      ['08:08', 40, 18],
+      ['08:23', 43, 19],
+      ['08:38', 44, 19],
+      ['08:53', 45, 19],
+      ['09:08', 0, 19],
+      ['09:23', 1, 19],
+      ['09:38', 2, 20],
+      ['09:53', 3, 20],
+      ['10:08', 7, 21],
+      ['10:23', 10, 21],
+      ['10:38', 11, 21],
+      ['10:53', 13, 22],
+      ['11:08', 19, 23],
+      ['11:23', 23, 24],
+      ['11:38', 25, 24],
+      ['11:53', 27, 24],
+      ['12:23', 28, 24],
+    ] as const
+  ).map(([hhmm, fiveHour, sevenDay]) => resetting(reading(hhmm, fiveHour, sevenDay), WEEK_END))
+  const PERSONAL_NOW = at('12:30')
+
+  it('reads a one-point dip and its recovery as noise', () => {
+    const spawned = spawns(80, '08:00', '12:10')
+    const withoutDip = PERSONAL.filter(r => r.at !== at('08:08'))
+
+    const cost = observedDispatchCost(PERSONAL, spawned, PERSONAL_NOW)
+
+    expect(cost?.basis).toContain('+6 seven_day')
+    expect(cost?.sevenDay).toBeCloseTo(6 / 80, 5)
+    expect(cost).toEqual(observedDispatchCost(withoutDip, spawned, PERSONAL_NOW))
+  })
+
+  it('counts from zero after the prior reading’s resets_at has passed', () => {
+    const readings = [
+      resetting(reading('12:00', 10, 3), at('12:30')),
+      resetting(reading('13:00', 10, 1), WEEK_END),
+      resetting(reading('13:30', 10, 2), WEEK_END),
+    ]
+
+    expect(observedDispatchCost(readings, spawns(10, '12:00', '13:20'), NOW)?.basis).toContain('+2 seven_day')
+  })
+
+  it('counts a drop of five or more from zero when resets_at is unknown', () => {
+    const readings = [reading('12:00', 10, 30), reading('12:30', 10, 2), reading('13:30', 10, 4)]
+
+    expect(observedDispatchCost(readings, spawns(10, '12:00', '13:20'), NOW)?.basis).toContain('+4 seven_day')
+  })
+
+  it('reads a four-point dip as noise', () => {
+    const readings = [reading('12:00', 10, 20), reading('12:30', 10, 16), reading('13:30', 10, 21)]
+
+    expect(observedDispatchCost(readings, spawns(10, '12:00', '13:20'), NOW)?.basis).toContain('+1 seven_day')
+  })
+})
