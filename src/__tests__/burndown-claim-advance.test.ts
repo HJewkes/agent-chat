@@ -361,7 +361,7 @@ describe('burndown release --slice and link (CC-978)', () => {
           inboxSince: async () => [],
           root: '/nowhere',
           shepherdRows: () => [],
-          openPrs: [],
+          openPrs: () => [],
           spendCap: () => undefined,
           progress: () => 'unreadable',
           activity: () => ({ ok: false, reason: 'stub' }) as never,
