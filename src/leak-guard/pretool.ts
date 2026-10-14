@@ -19,6 +19,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { ENV_DECL, NAME_OPERAND_BUILTINS } from './arith-subscript.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
@@ -2283,9 +2284,6 @@ const LITERAL_NAME = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[|\\+?=|$)`
 /** Whether a word in an assignment's place holds an expansion and does not name its variable literally. */
 const hiddenName = (word: string): boolean => word.includes(LIVE) && !LITERAL_NAME.test(word)
 
-// Builtins whose operands are all variable names or may be read as such (`getopts` optstring and
-// args, `read -p` prompt): an expansion in any of them fails closed.
-const NAME_OPERAND_BUILTINS = new Set(['read', 'getopts', 'mapfile', 'readarray', 'unset'])
 // env options whose value is a variable name or a string env splits and expands itself.
 const ENV_NAME_OPTIONS = new Set(['-u', '--unset', '-S', '--split-string'])
 const ENV_VALUE_OPTIONS = new Set([...ENV_NAME_OPTIONS, '-C', '--chdir'])
@@ -2353,7 +2351,6 @@ function hidesVariableName(words: readonly string[]): boolean {
   }
   return false
 }
-const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
 
 /** The roles of `env`'s arguments from `i`: its own assignments, and the names `-u` removes. */

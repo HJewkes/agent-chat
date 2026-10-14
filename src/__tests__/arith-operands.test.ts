@@ -1,5 +1,11 @@
+import fs from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { arithSubscriptNames, arithSubstitutions } from '../leak-guard/arith-subscript.js'
+import {
+  arithSubscriptNames,
+  arithSubstitutions,
+  ENV_DECL,
+  NAME_OPERAND_BUILTINS,
+} from '../leak-guard/arith-subscript.js'
 import { parseShell, type SimpleCommand } from '../leak-guard/shell-words.js'
 
 // Operands bash evaluates as arithmetic or resolves as a subscripted name, where a quoted `$(...)` runs (CC-1334).
@@ -25,7 +31,16 @@ describe('arithSubscriptNames lists the names arithmetic operands and resolved n
     ['printf -v "$a" 1', ['a']],
     ['read -r "$a" b', ['a']],
     ['while read -r "$a"; do :; done', ['a'], 0],
+    ['declare "x[$i]=1"', ['i']],
+    ['local "x[$i]+=1"', ['i']],
+    ['unset "x[$i]"', ['i']],
+    ['unset -v "x[$i]" "y[$j]"', ['i', 'j']],
+    ['if unset "x[$i]"; then :; fi', ['i'], 0],
+    ['mapfile -d , -u 3 "x[$i]"', ['i']],
+    ['declare -i "x[$i]=n"', ['n', 'i']],
     ['if let "x + y"; then :; fi', ['x', 'y'], 0],
+    ['declare "n=$v"', []],
+    ['export "x=y[$i]"', []],
     ['builtin printf -v "$a" 1', ['a']],
     ['read -p "$p" -t 1 "x[$i]"', ['i']],
   ] satisfies Row[])('%s yields %j', (line: string, names: string[], index = -1) => {
@@ -74,6 +89,19 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     [`builtin printf -v 'x[$(${P})]' 1`, [P]],
     [`if command let 'x[$(${P})]=1'; then :; fi`, [P], 0],
     [`LC_ALL=C read 'x[$(${P})]' <<< 1`, [P]],
+    // A declarer or unset resolves each operand's name, subscript included, with or without -i.
+    [`declare -a x; declare 'x[$(${P})]=1'`, [P]],
+    [`declare -A x; declare 'x[$(${P})]=1'`, [P]],
+    [`typeset -a x; typeset 'x[$(${P})]=1'`, [P]],
+    [`f() { local 'x[$(${P})]=1'; }`, [P], -2],
+    [`readonly 'x[$(${P})]=1'`, [P]],
+    [`declare -g 'x[$(${P})]'`, [P]],
+    [`! declare 'x[$(${P})]=1'`, [P]],
+    [`declare 'x[$(echo a=b; ${P})]=1'`, [`echo a=b; ${P}`]],
+    [`unset 'x[$(${P})]'`, [P]],
+    [`unset -v 'x[$(${P})]'`, [P]],
+    [`if unset 'x[$(${P})]'; then :; fi`, [P], 0],
+    [`builtin unset 'x[$(${P})]'`, [P]],
     [`let 'x[$(echo ")"; ${P})]=1'`, [`echo ")"; ${P}`]],
   ] satisfies Row[])('%s yields %j', (line: string, bodies: string[], index = -1) => {
     expect(arithSubstitutions(commandOf(line, index))).toEqual(bodies)
@@ -87,11 +115,26 @@ describe('arithSubstitutions returns each quoted substitution the shell runs as 
     `echo 'x[$(${P})]'`,
     `declare 'n=x[$(${P})]'`,
     `read -a 'x[$(${P})]'`,
+    `declare 'n=$(${P})'`,
+    `export 'n=x[$(${P})]'`,
+    `unset -f 'f'`,
     `[[ $n -eq 3 ]]`,
     `let i=i+1`,
     `! test 'x[$(${P})]' -eq 1`,
     `command echo 'x[$(${P})]'`,
   ])('%s yields none', line => {
     expect(arithSubstitutions(commandOf(line))).toEqual([])
+  })
+})
+
+describe('the pretool guard and arithSubstitutions share one list of name-operand builtins', () => {
+  it('pretool.ts imports both sets rather than defining its own', () => {
+    const source = fs.readFileSync(new URL('../leak-guard/pretool.ts', import.meta.url), 'utf8')
+    expect(source).toMatch(/import \{ ENV_DECL, NAME_OPERAND_BUILTINS \} from '\.\/arith-subscript\.js'/)
+    expect(source).not.toMatch(/const (ENV_DECL|NAME_OPERAND_BUILTINS)\b/)
+  })
+
+  it.each([...NAME_OPERAND_BUILTINS, ...ENV_DECL])('%s resolves a quoted subscript in its operand', head => {
+    expect(arithSubstitutions(commandOf(`${head} 'x[$(${P})]'`))).toEqual([P])
   })
 })

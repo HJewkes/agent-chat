@@ -7,7 +7,6 @@
  */
 import { LIVE, NAME, type SimpleCommand, unmark } from './shell-words.js'
 
-const INTEGER_DECLARERS = new Set(['declare', 'typeset', 'local', 'integer'])
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
 const ARITH_NAME = new RegExp(`\\$\\{?(${NAME})|(?<![A-Za-z0-9_#$])(${NAME})(?![A-Za-z0-9_])`, 'g')
 // A literal `$(...)` or backtick in an operand or subscript is checked as a command already, so its words are not names.
@@ -60,51 +59,97 @@ function commandHead(cmd: SimpleCommand): { words: string[]; marked: string[] } 
   return { words: cmd.words.slice(start), marked: cmd.marked.slice(start) }
 }
 
+/**
+ * Builtins whose operands are all variable names or may be read as such (`getopts` optstring and args,
+ * `read -p` prompt). Shared with the pretool guard, which fails closed on an expansion in any of them,
+ * so the two readers of a variable-name operand cannot drift (CC-1334).
+ */
+export const NAME_OPERAND_BUILTINS: ReadonlySet<string> = new Set([
+  'read',
+  'getopts',
+  'mapfile',
+  'readarray',
+  'unset',
+])
+/** Builtins whose operands are `NAME` or `NAME=value` assignments. Shared with the pretool guard. */
+export const ENV_DECL: ReadonlySet<string> = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+const DECLARERS = new Set([...ENV_DECL, 'integer'])
+// Options that take the next word as their argument, which is not a name.
+const ARG_OPTIONS: Readonly<Record<string, RegExp>> = {
+  read: /^-[ersE]*[adinNptu]$/,
+  mapfile: /^-t*[dnOsuCc]$/,
+  readarray: /^-t*[dnOsuCc]$/,
+}
+
 const hasIntegerFlag = (words: string[]): boolean =>
   words[0] === 'integer' || words.some(word => /^-[A-Za-z]*i/.test(word))
 
-/** The operands `let` evaluates, and the values a `declare -i`, `typeset -i`, `local -i` or `integer` assigns. */
-function integerOperands(words: string[]): string[] {
-  const [head = '', ...rest] = words
-  if (head === 'let') return rest
-  if (!INTEGER_DECLARERS.has(head) || !hasIntegerFlag(words)) return []
-  return rest.filter(word => word.includes('=')).map(word => word.slice(word.indexOf('=') + 1))
+/** Where the assignment `=` (or `+=`) of a `NAME[...]=value` word is, past its subscript; the end when there is none. */
+function nameEnd(word: string): number {
+  let depth = 0
+  for (let i = 0; i < word.length; i++) {
+    if (word[i] === '[') depth++
+    else if (word[i] === ']') depth--
+    else if (word[i] === '=' && depth <= 0) return word[i - 1] === '+' ? i - 1 : i
+  }
+  return word.length
+}
+
+const namePart = (word: string): string => word.slice(0, nameEnd(word))
+
+/**
+ * The values a `declare -i`, `typeset -i`, `local -i` or `integer` assigns, and every `let` operand, taken
+ * from `source`: the words themselves or their marked form.
+ */
+function integerValues(words: string[], source: string[], operands: number[]): string[] {
+  if (words[0] === 'let') return source.slice(1)
+  if (!DECLARERS.has(words[0] ?? '') || !hasIntegerFlag(words)) return []
+  return operands.flatMap(i => {
+    const word = source[i] ?? ''
+    const at = word.indexOf('=', nameEnd(word))
+    return at < 0 ? [] : [word.slice(at + 1)]
+  })
 }
 
 // `[[ ]]` evaluates both sides of these as arithmetic; bash's `test` and `[` want an integer instead (CC-1334).
 const ARITH_COMPARISONS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge'])
 const TEST_HEADS = new Set(['test', '['])
-// bash `read` options that take the next word as their argument.
-const READ_ARG_OPTIONS = /^-[ersE]*[adinNptu]$/
 const DOLLAR_NAME = new RegExp(`\\$\\{?(${NAME})`, 'g')
 
 /** Indexes of the words around each arithmetic comparison; `&&`, `||` and `(` split a `[[ ]]`, so any head but test or `[`. */
 function comparisonOperands(words: string[]): number[] {
   if (TEST_HEADS.has(words[0] ?? '')) return []
-  return words.flatMap((word, i) => (ARITH_COMPARISONS.has(word) ? [i - 1, i + 1] : []))
+  return words
+    .flatMap((word, i) => (ARITH_COMPARISONS.has(word) ? [i - 1, i + 1] : []))
+    .filter(i => i >= 0 && i < words.length)
 }
 
 const inConditional = (words: string[]): boolean =>
   TEST_HEADS.has(words[0] ?? '') || words[0] === '-v' || words.includes('[[') || words.at(-1) === ']]'
 
-/** Indexes of the variable names a `-v` test, `printf -v` or `read` resolves, whose subscripts are arithmetic. */
+/**
+ * Indexes of the words the shell resolves as variable names, whose subscripts it evaluates as arithmetic:
+ * the operands of a name-operand builtin or declarer, and the name after a `-v` test or `printf -v`.
+ */
 function nameOperands(words: string[]): number[] {
-  if (words[0] === 'read') return readNames(words)
-  if (words[0] !== 'printf' && !inConditional(words)) return []
-  return words.flatMap((word, i) => (word === '-v' ? [i + 1] : []))
+  const head = words[0] ?? ''
+  if (NAME_OPERAND_BUILTINS.has(head) || DECLARERS.has(head)) return operandIndexes(words, ARG_OPTIONS[head])
+  if (head !== 'printf' && !inConditional(words)) return []
+  return words.flatMap((word, i) => (word === '-v' && i + 1 < words.length ? [i + 1] : []))
 }
 
-function readNames(words: string[]): number[] {
-  const names: number[] = []
+/** The indexes of the operands after the head, past options and the arguments `argOption` says they take. */
+function operandIndexes(words: string[], argOption: RegExp | undefined): number[] {
+  const operands: number[] = []
+  let options = true
   for (let i = 1; i < words.length; i++) {
     const word = words[i] ?? ''
-    if (READ_ARG_OPTIONS.test(word)) i++
-    else if (!word.startsWith('-')) names.push(i)
+    if (options && word === '--') options = false
+    else if (options && argOption?.test(word)) i++
+    else if (!options || !/^[-+]./.test(word)) operands.push(i)
   }
-  return names
+  return operands
 }
-
-const inRange = (words: string[]) => (i: number) => i >= 0 && i < words.length
 
 /** A variable name's own `$` expansions, whose values become the name, and the names its subscript reads. */
 function nameOperandNames(word: string): string[] {
@@ -119,19 +164,16 @@ const namesIn = (text: string): string[] =>
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
   const { words } = commandHead(cmd)
+  const operands = nameOperands(words)
   const texts = [
     ...cmd.arithBodies,
-    ...integerOperands(words),
+    ...integerValues(words, words, operands),
     ...cmd.marked.flatMap(subscripts),
-    ...comparisonOperands(words)
-      .filter(inRange(words))
-      .map(i => words[i] ?? ''),
+    ...comparisonOperands(words).map(i => words[i] ?? ''),
   ]
   const names = [
     ...texts.flatMap(namesIn),
-    ...nameOperands(words)
-      .filter(inRange(words))
-      .flatMap(i => nameOperandNames(words[i] ?? '')),
+    ...operands.flatMap(i => nameOperandNames(namePart(words[i] ?? ''))),
   ]
   return [...new Set(names)]
 }
@@ -177,14 +219,6 @@ function quotedSubstitutions(marked: string): string[] {
   return bodies.map(unmark)
 }
 
-/** The marked `let` operands and `declare -i` assignments, name and value, the shell evaluates as arithmetic. */
-function integerWords(words: string[], marked: string[]): string[] {
-  const rest = marked.slice(1)
-  if (words[0] === 'let') return rest
-  if (!INTEGER_DECLARERS.has(words[0] ?? '') || !hasIntegerFlag(words)) return []
-  return rest.filter(word => word.includes('='))
-}
-
 /**
  * The text of each quoted `$(...)` or backtick the shell runs when it evaluates an operand as arithmetic
  * or resolves it as a variable name (CC-1334), which the splitter never read as a command. A live
@@ -192,11 +226,14 @@ function integerWords(words: string[], marked: string[]): string[] {
  */
 export function arithSubstitutions(cmd: SimpleCommand): string[] {
   const { marked, words } = commandHead(cmd)
-  const operands = [...comparisonOperands(words), ...nameOperands(words)]
-    .filter(inRange(words))
-    .map(i => marked[i] ?? '')
+  const names = nameOperands(words)
+  const texts = [
+    ...comparisonOperands(words).map(i => marked[i] ?? ''),
+    ...names.map(i => namePart(marked[i] ?? '')),
+    ...integerValues(words, marked, names),
+  ]
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const fromBodies = cmd.arithBodies.flatMap(quotedSubstitutions)
-  const bodies = [...operands, ...integerWords(words, marked)].flatMap(quotedSubstitutions)
+  const bodies = texts.flatMap(quotedSubstitutions)
   return [...new Set([...bodies, ...fromBodies])]
 }
