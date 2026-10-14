@@ -1805,7 +1805,8 @@ describe('a seat teleport (CC-863)', () => {
 
     const stdin = planFor(result.agentId as string).stdin ?? ''
     expect(stdin.startsWith('Teleport: alpha handed off')).toBe(true)
-    expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
+    expect(stdin).toContain(`== inbox after ${cursor}`)
+    expect(stdin).not.toContain('`agent-chat seats boot')
     expect(stdin).toContain('## State at teleport 1 (agent-chat)\n- al-fix-7')
     expect(stdin).toContain("Your predecessor's handoff:\n\nmine\n\n---\n\n## Broker appendix")
   })
@@ -1831,7 +1832,8 @@ describe('a seat teleport (CC-863)', () => {
 
     const stdin = planFor(result.agentId as string).stdin ?? ''
     expect(seatLog()).toBe(own)
-    expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
+    expect(stdin).toContain(`== inbox after ${cursor}`)
+    expect(stdin).not.toContain('`agent-chat seats boot')
     expect(stdin).toContain('## State at teleport 4\n- al-fix-7 mid-review')
   })
 

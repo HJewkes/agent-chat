@@ -5,7 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
-import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
+import { runWorktreeSetup, setupWorktree, type SetupRunner, type SetupTarget } from './worktree-setup.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
@@ -898,16 +898,29 @@ export async function reattachWorktree(
     boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
   )
   copyClaudeDir(gitRoot, worktree)
-  const warnings = [
-    ...reattachWarnings(record, source, base),
-    ...(await runWorktreeSetup(setupTarget(gitRoot, worktree, base), opts.runSetup)),
-  ]
+  const setup = await setupWorktree(setupTarget(gitRoot, worktree, base), opts.runSetup)
+  const warnings = [...reattachWarnings(record, source, base), ...setup.warnings]
   return {
     cwd: worktree,
-    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
-    ref: { branch, worktree, gitRoot, base: base.sha, base_ref: base.ref, reattached: source },
+    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. ${dependencyNote(setup.outcome)} Commit your work there; nothing outside it is yours to change.`,
+    ref: {
+      branch,
+      worktree,
+      gitRoot,
+      base: base.sha,
+      base_ref: base.ref,
+      reattached: source,
+      setup: setup.outcome,
+    },
     ...(warnings.length === 0 ? {} : { warnings }),
   }
+}
+
+/** CC-1046: a re-created tree has none of its ignored files, so say whether anything put the dependencies back. */
+function dependencyNote(outcome: string | undefined): string {
+  return outcome === 'ran'
+    ? "The repository's setup step reinstalled its dependencies; build outputs such as dist were not rebuilt, so build before relying on them."
+    : 'Ignored files such as node_modules and dist were not restored and no setup step reinstalled them, so install dependencies and build before running checks.'
 }
 
 /**
@@ -920,7 +933,7 @@ async function readoptWorktree(record: WorktreeRecord, opts: WorktreeOptions): P
   const allocation = await reattachWorktree(record, opts, true)
   return {
     ...allocation,
-    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. You may be sharing it with other agents, so stay inside the paths you were given.`,
+    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. ${dependencyNote(allocation.ref?.setup)} You may be sharing it with other agents, so stay inside the paths you were given.`,
     ref: { ...allocation.ref, assigned: 'true' },
   }
 }
