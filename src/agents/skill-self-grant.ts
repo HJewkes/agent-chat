@@ -22,6 +22,9 @@ import path from 'node:path'
  * so a process in the worktree could swap a checked directory for a symlink in between
  * (TOCTOU). Only the spawn itself works in its worktree, so this guards against mistakes
  * and planted links, not a racing writer.
+ *
+ * git runs with every inherited `GIT_*` variable removed, so it answers for the root
+ * passed to `-C` and not for a repository the hook or launch process was pointed at.
  */
 
 export const REPO_SKILLS_RULE = 'Edit(./.claude/skills/**)'
@@ -103,7 +106,7 @@ export function gitCommonDir(root: string): string | undefined {
     const commonDir = execFileSync(
       'git',
       ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: gitEnv() },
     ).trim()
     return fs.realpathSync(commonDir)
   } catch {
@@ -111,12 +114,17 @@ export function gitCommonDir(root: string): string | undefined {
   }
 }
 
+/** An inherited GIT_DIR or GIT_COMMON_DIR makes git answer for another repository than `-C` (CC-1205). */
+function gitEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+}
+
 /** Hand-written `.git` and admin files can mimic the pointers, so ask git where the admin dir sits. */
 function isRegisteredByGit(realRoot: string): boolean {
   const [gitDir, commonDir] = execFileSync(
     'git',
     ['-C', realRoot, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: gitEnv() },
   )
     .trim()
     .split('\n')
