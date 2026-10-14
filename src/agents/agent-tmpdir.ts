@@ -17,7 +17,9 @@ import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orpha
  * live process has its cwd or an open fd inside.
  *
  * CC-1184: a launch may put its dir under an on-disk root, `<home>/.cache/agent-chat/tmp`, instead
- * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes.
+ * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes. CC-1264 made it the
+ * default for every Linux launch; /tmp stays an accepted root for launches made before that and
+ * for the sweep.
  *
  * CC-1266: Claude Code writes each Bash call's output under `CLAUDE_CODE_TMPDIR`, falling back to
  * TMPDIR. A launch's harness dir lives under its own root, `<home>/.cache/agent-chat/harness`, so
