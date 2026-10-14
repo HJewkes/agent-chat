@@ -62,6 +62,11 @@ describe('standing rules in every spawned agent’s system prompt (CC-281 a)', (
     expect(prompt).toContain(STANDING_RULES)
   })
 
+  // A pane or a teleported adopted session may have a human reading it (CC-135, teleport PARK_LINE).
+  it('claim nothing that is true only of a headless launch', () => {
+    expect(STANDING_RULES).not.toMatch(/stdout|reaches no one|no human/i)
+  })
+
   it('stay within their per-spawn budget and name the report channel and the own-call rule', () => {
     expect(STANDING_RULES.length).toBeLessThanOrEqual(STANDING_RULES_MAX_CHARS)
     expect(STANDING_RULES).toContain('chat_send')
