@@ -281,7 +281,8 @@ class ShellLexer {
    * unreadable: counted, it reads past bash's close; uncounted, its `}` may close early.
    */
   private braceWord(c: string): boolean {
-    if (!this.closesOnBrace || this.word !== null || this.patternNext) return false
+    // After a redirect operator bash reads a `{` or `}` as the file name, never as a reserved word.
+    if (!this.closesOnBrace || this.word !== null || this.patternNext || this.pending !== null) return false
     if (c !== '{' && c !== '}') return false
     const next = this.src[this.pos + 1]
     const command = this.cur.words.length === 0

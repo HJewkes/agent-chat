@@ -113,6 +113,32 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     },
   )
 
+  // bash 5.3.9 reads a `{` or `}` after a redirect operator as the file name, so it neither opens nor closes.
+  it.each([
+    'echo "${ >} ; git push --no-verify ;}"',
+    'echo ${ >} ; git push --no-verify ;}',
+    'echo "${ 2>} ; git push --no-verify ;}"',
+    'echo "${|>} ; git push --no-verify ;}"',
+    'echo "${ <<<} ; git push --no-verify ;}"',
+    'echo "${ >>} ; git push --no-verify ;}"',
+  ])('%j reads the } file name and the push inside the funsub', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(true)
+  })
+
+  it.each([
+    'echo "${ >{ ;} #"; git push --no-verify\n}"',
+    'echo "${ 2>{ ;} #"; git push --no-verify\n}"',
+    'echo "${|>{ ;} #"; git push --no-verify\n}"',
+  ])('%j reads the { file name and closes where bash does', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(push?.nested).toBe(false)
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
