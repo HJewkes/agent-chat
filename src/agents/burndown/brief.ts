@@ -299,8 +299,9 @@ function slicesRequirement(): string {
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
     'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
-    'A slice that must share a file with an open PR on different lines may list it in `overlapsAccepted` as { pr, path, why }; ' +
-    'the path must be an exact owns entry, and every other overlap still refuses. ' +
+    'A slice sharing a file with an open PR on other lines may list it in `overlapsAccepted` as { pr, path, why }, ' +
+    'path an exact owns entry; any other overlap refuses. ' +
+    'A slice outside the task\'s repo sets "repo" to its checkout name; the plan\'s `Repo:` header is the default. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
     'The tick lints this block; a plan without it, or failing the lint, stalls. ' +
