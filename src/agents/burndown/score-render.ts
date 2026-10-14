@@ -10,6 +10,7 @@ import { readScoredTasks } from './score-source.js'
 import { planPathFor } from './brief.js'
 import { readSlices } from './report.js'
 import { classifyTask, profileFor } from './classify-task.js'
+import { sharedDefaults, type ProjectShares } from './project-shares.js'
 import { readWorkflowTable, type Prior, type Profile, type WorkflowTable } from './workflow-table.js'
 import {
   checkToday,
@@ -164,6 +165,8 @@ export interface ScoredPlanDiskOptions {
   activeWorkRoot: string
   /** CC-935: order as an `on` brief gate does (CC-926), with no share caps or initiative decay. */
   readySet?: boolean
+  /** CC-1107: order under project shares' scoring defaults (decay 1, default K, kind caps from `kinds`). */
+  shares?: ProjectShares
 }
 
 /** Reads the seat's policy from `autonomyRoot` and its scope's open tasks from the active-work root. */
@@ -188,8 +191,7 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
     seat: opts.seat,
     ...(read?.file !== undefined && { milestones: read.file }),
     weights,
-    defaults:
-      opts.readySet === true ? { ...policy.defaults, share_caps: {}, initiative_decay: 1 } : policy.defaults,
+    defaults: diskDefaults(policy.defaults, opts),
     exclusions: { tags: policy.seat.excluded_tags, titlePatterns: policy.seat.excluded_title_patterns },
     hardStops: policy.hardStops,
     today: opts.today,
@@ -203,6 +205,11 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
       : { week: read.week, errors: read.errors.map(describeError) }
   const withWeek = { ...plan, milestones }
   return { plan: withPriors(withWeek, tasks, opts), tasks, policy }
+}
+
+function diskDefaults(defaults: ScoringDefaults, opts: ScoredPlanDiskOptions): ScoringDefaults {
+  if (opts.shares !== undefined) return sharedDefaults(defaults, opts.shares)
+  return opts.readySet === true ? { ...defaults, share_caps: {}, initiative_decay: 1 } : defaults
 }
 
 function withPriors(plan: ScoredPlan, tasks: readonly ScoredTask[], opts: ScoredPlanDiskOptions): ScoredPlan {

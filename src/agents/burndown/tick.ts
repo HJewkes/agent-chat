@@ -1,7 +1,7 @@
 import os from 'node:os'
 import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
-import { gateAccount, type AccountReading } from './budget-gate.js'
+import { gateAccount, RUN_CAP_MS, type AccountReading } from './budget-gate.js'
 import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
@@ -10,12 +10,16 @@ import type { Runner } from './exec.js'
 import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { lineStopFrom, readServiceCheck, serviceCheckLine } from './service-check.js'
-import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
+import { defaultAutonomyRoot, loadCharterPools, seatScope, type CharterPool } from './policy.js'
 import { expandHome } from './seat-dispatch.js'
+import { projectMix, shareOrder, type ProjectShares, type ShareRow } from './project-shares.js'
+import { scoredSeatFromDisk } from './score-render.js'
+import { priorPicksOf } from './seat-plan.js'
 import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  localDate,
   planSeats,
   type LoadedSeats,
   type SeatPlanDeps,
@@ -104,6 +108,13 @@ export interface SeatPlanOptions {
   roster?: Roster
   /** Runs `titan-factory` and `git` for the service-check read; defaults to the real runner. */
   exec?: Runner
+  /** CC-1107: forecast the next picks by project under these shares, beside the plan. */
+  whatIf?: ShareWhatIfRequest
+}
+
+export interface ShareWhatIfRequest {
+  shares: ProjectShares
+  picks: number
 }
 
 /** The ledger, the seat as the tick loads it, and the planning deps the tick passes; shared by `plan --seat` and `seats compare`. */
@@ -135,18 +146,100 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
 }
 
 /** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
-export function seatPlanFromDisk(opts: SeatPlanOptions): Plan {
-  const { seats, deps, serviceCheck } = seatPlanSetup(opts)
+export function seatPlanFromDisk(opts: SeatPlanOptions): Plan & { shareMix?: string } {
+  const { ledger, seats, deps, serviceCheck } = seatPlanSetup(opts)
   const planned = planSeats(seats.loaded, deps, opts.root)
   const [skipped] = [...seats.skipped, ...planned.skipped]
   if (skipped !== undefined) throw new Error(skipped.reason)
+  const [seat] = seats.loaded
+  const shareMix =
+    opts.whatIf === undefined || seat === undefined
+      ? undefined
+      : renderShareMix(
+          shareWhatIfFromDisk(opts, opts.whatIf, {
+            priorPicks: priorPicksOf(ledger, opts.seat, runStartOf(seat.budget)),
+            readySet: deps.brief?.briefGate[opts.seat] === 'on',
+          }),
+        )
   return {
     dispatch: planned.dispatch,
     refusals: planned.refusals,
     notOptedIn: [],
     skippedTasks: planned.skippedTasks.flatMap(s => s.files),
     serviceCheck,
+    ...(shareMix !== undefined && { shareMix }),
   }
+}
+
+/** The start of the seat's run as `planSeat` bounds its prior picks: the meter's start, at most 12 h back. */
+const runStartOf = ({ runStartAt, ctx }: { runStartAt: number; ctx: { now: Date } }): number =>
+  Math.max(runStartAt, ctx.now.getTime() - RUN_CAP_MS)
+
+/** Each initiative's count of the next `picks` whole-task picks, before and after the shares. */
+export interface ShareWhatIf {
+  picks: number
+  /** Initiatives in report order: the shares' own, then any other the forecast picks from. */
+  slugs: string[]
+  before: Record<string, number>
+  after: Record<string, number>
+}
+
+/**
+ * CC-1107: the next picks by project. `before` is the seat's order as it stands; `after` is the order
+ * scored under the shares' defaults and interleaved by `shareOrder` from the run's prior picks.
+ */
+export function shareWhatIf(
+  before: readonly ShareRow[],
+  after: readonly ShareRow[],
+  { shares, picks }: ShareWhatIfRequest,
+  priorPicks: Readonly<Record<string, number>> = {},
+): ShareWhatIf {
+  const mix = {
+    before: projectMix(before, picks),
+    after: projectMix(shareOrder(after, shares, priorPicks), picks),
+  }
+  const slugs = [
+    ...new Set([...Object.keys(shares.initiatives), ...Object.keys(mix.before), ...Object.keys(mix.after)]),
+  ]
+  return { picks, slugs, ...mix }
+}
+
+export function renderShareMix({ picks, slugs, before, after }: ShareWhatIf): string {
+  const counts = slugs.map(slug => `${slug} ${before[slug] ?? 0} -> ${after[slug] ?? 0}`)
+  return `next ${picks} picks by project: ${counts.join(', ')}`
+}
+
+/**
+ * The what-if over the seat's scored order (`burndown plan --seat --scored`), every open row in scope;
+ * throws on a share naming an initiative outside the seat's scope.
+ */
+export function shareWhatIfFromDisk(
+  opts: Pick<SeatPlanOptions, 'seat' | 'now' | 'root' | 'autonomyRoot'>,
+  whatIf: ShareWhatIfRequest,
+  live: { priorPicks: Readonly<Record<string, number>>; readySet: boolean },
+): ShareWhatIf {
+  const disk = {
+    seat: opts.seat,
+    top: Number.MAX_SAFE_INTEGER,
+    today: localDate(opts.now),
+    autonomyRoot: opts.autonomyRoot,
+    activeWorkRoot: opts.root,
+  }
+  const before = scoredSeatFromDisk({ ...disk, readySet: live.readySet })
+  checkShareScope(before.policy, opts, whatIf.shares)
+  const after = scoredSeatFromDisk({ ...disk, shares: whatIf.shares }).plan.order
+  return shareWhatIf(before.plan.order, after, whatIf, live.priorPicks)
+}
+
+function checkShareScope(
+  policy: ReturnType<typeof scoredSeatFromDisk>['policy'],
+  opts: Pick<SeatPlanOptions, 'seat' | 'root'>,
+  shares: ProjectShares,
+): void {
+  const scope = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.root))
+  const unknown = Object.keys(shares.initiatives).filter(slug => !(slug in scope))
+  if (unknown.length > 0)
+    throw new Error(`--shares names ${unknown.join(', ')}, not in seat ${opts.seat}'s scope`)
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {

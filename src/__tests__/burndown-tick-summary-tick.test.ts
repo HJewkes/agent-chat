@@ -265,6 +265,7 @@ describe('the burndown tick summary in the live tick', () => {
           },
         },
       },
+      serviceCheck: { cause: null, stopped: false, message: 'ok' },
     })
   })
 
