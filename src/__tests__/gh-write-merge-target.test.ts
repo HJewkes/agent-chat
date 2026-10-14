@@ -49,6 +49,32 @@ describe('mergeTarget for gh api', () => {
     expect(kindOf(['api', '-X', 'PUT', endpoint])).toBe('unresolved')
   })
 
+  it.each([
+    ['an empty segment before the owner', 'repos//o/r/pulls/12/merge'],
+    ['an empty segment before pulls', 'repos/o/r//pulls/12/merge'],
+    ['an empty segment before the PR', 'repos/o/r/pulls//12/merge'],
+    ['an empty segment before merge', 'repos/o/r/pulls/12//merge'],
+    ['a dot segment', 'repos/o/r/./pulls/12/merge'],
+    ['a dot-dot segment', 'repos/o/r/pulls/12/x/../merge'],
+    ['an encoded dot-dot segment', 'repos/o/r/pulls/12/x/%2e%2e/merge'],
+  ])('refuses a non-canonical merge path with %s', (_, endpoint) => {
+    expect(kindOf(['api', '-X', 'PUT', endpoint])).toBe('unresolved')
+  })
+
+  it.each([
+    ['--hostname', ['api', '--hostname', 'ghe.example.com', 'repos/o/r/pulls/12/merge'], NO_ENV],
+    ['--hostname=', ['api', '--hostname=ghe.example.com', 'repos/o/r/pulls/12/merge'], NO_ENV],
+    ['GH_HOST', ['api', 'repos/o/r/pulls/12/merge'], { GH_HOST: 'ghe.example.com' }],
+  ])('refuses a merge endpoint on another host named by %s', (_, args, env) => {
+    expect(kindOf(args, env)).toBe('unresolved')
+  })
+
+  it('names a merge when --hostname is github.com', () => {
+    const args = ['api', '--hostname', 'github.com', 'repos/o/r/pulls/12/merge']
+
+    expect(mergeTarget(args, { GH_HOST: 'ghe.example.com' })).toEqual({ kind: 'merge', repo: 'o/r', pr: 12 })
+  })
+
   it('refuses two different merge endpoints in one call', () => {
     expect(kindOf(['api', 'repos/o/r/pulls/12/merge', 'repos/o/r/pulls/13/merge'])).toBe('unresolved')
   })
@@ -129,6 +155,12 @@ describe('mergeTarget for gh pr merge', () => {
 
   it('refuses a GH_REPO it cannot name', () => {
     expect(kindOf(['pr', 'merge', '12'], { GH_REPO: 'ghe.example.com/o/r' })).toBe('unresolved')
+  })
+
+  it.each(['false', '0', 'true'])('refuses --disable-auto=%s, whose value gh may read as a merge', value => {
+    expect(kindOf(['pr', 'merge', '12', '-R', 'o/r', `--disable-auto=${value}`, '--squash'])).toBe(
+      'unresolved',
+    )
   })
 
   it('refuses a bare repo when GH_HOST points elsewhere', () => {

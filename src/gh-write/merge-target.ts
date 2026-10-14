@@ -96,7 +96,7 @@ function longFlag(word: string, next: string | undefined, table: Flags, parsed: 
     parsed.flags.push({ name, value: eq === -1 ? next : word.slice(eq + 1) })
     return eq === -1 ? 1 : 0
   }
-  if (table.boolLong.has(name)) parsed.flags.push({ name })
+  if (table.boolLong.has(name)) parsed.flags.push({ name, value: eq === -1 ? undefined : word.slice(eq + 1) })
   else parsed.unknown.push(word)
   return 0
 }
@@ -131,7 +131,7 @@ const mightMerge = (args: readonly string[]): boolean =>
 export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
   const start = groupIndex(args)
   if (start === undefined) return mightMerge(args) ? unresolved('a flag before the gh group') : NONE
-  if (args[start] === 'api') return apiTarget(args.slice(start + 1))
+  if (args[start] === 'api') return apiTarget(args.slice(start + 1), env)
   if (args[start] === 'pr') return prTarget(args, start, env)
   return NONE
 }
@@ -159,18 +159,29 @@ function decoded(word: string): string {
 }
 
 /** The method is ignored on purpose: a method-override header could turn a GET into the merge. */
-function apiTarget(rest: readonly string[]): MergeTarget {
-  const targets = parseWords(rest, API_FLAGS).positionals.map(endpointTarget)
-  const merges = targets.filter(target => target.kind !== 'none')
+function apiTarget(rest: readonly string[], env: Env): MergeTarget {
+  const parsed = parseWords(rest, API_FLAGS)
+  const merges = parsed.positionals.map(endpointTarget).filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
+  const host = parsed.flags.findLast(flag => flag.name === '--hostname')?.value ?? env.GH_HOST
+  if (host !== undefined && host.toLowerCase() !== 'github.com') return unresolved('a merge on another host')
   const first = merges[0] as MergeTarget
   const key = (target: MergeTarget): string => JSON.stringify(target).toLowerCase()
   const same = merges.every(target => key(target) === key(first))
   return same ? first : unresolved('more than one merge endpoint')
 }
 
+/** False for a path with an empty, `.` or `..` segment, which a later hop may collapse into another path. */
+function isCanonical(path: string): boolean {
+  const segments = (path.split(/[?#]/)[0] ?? '').replace(/^\//, '').replace(/\/$/, '').split('/')
+  return segments.every(segment => segment !== '' && segment !== '.' && segment !== '..')
+}
+
+const MENTIONS_MERGE = /pulls[\s\S]*merge/i
+
 function endpointTarget(word: string): MergeTarget {
   const path = decoded(word).replace(API_PREFIX, '')
+  if (!isCanonical(path) && MENTIONS_MERGE.test(path)) return unresolved('a non-canonical pulls merge path')
   const match = MERGE_PATH.exec(path)
   if (match === null) return NONE
   if (OTHER_HOST.test(path)) return unresolved('a merge endpoint on another host')
@@ -194,7 +205,9 @@ function prTarget(args: readonly string[], start: number, env: Env): MergeTarget
   if (args[verbIndex] !== 'merge') return NONE
   const before = [...args.slice(0, start), ...args.slice(start + 1, verbIndex)]
   const parsed = parseWords([...before, ...args.slice(verbIndex + 1)], MERGE_FLAGS)
-  if (parsed.flags.some(flag => flag.name === '--disable-auto')) return NONE
+  const disables = parsed.flags.filter(flag => flag.name === '--disable-auto')
+  if (disables.some(flag => flag.value !== undefined)) return unresolved('--disable-auto with a value')
+  if (disables.length > 0) return NONE
   if (parsed.unknown.length > 0) return unresolved(`an unknown pr merge flag ${parsed.unknown[0]}`)
   if (parsed.positionals.length !== 1) return unresolved('pr merge needs exactly one PR number or URL')
   return selectorTarget(parsed.positionals[0] ?? '', repoFlags(parsed), env)
