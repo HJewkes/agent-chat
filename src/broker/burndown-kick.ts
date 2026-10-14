@@ -143,6 +143,21 @@ export function launchDetached(job: JobCommand, logName: string, failEvent: stri
   }
 }
 
+/** CC-1111: every kicked tick appends its full stdout, about 120 MB a day unrotated. */
+export const KICK_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+const KICK_LOG = 'burndown-kick.log'
+
+/** Keeps one `.1` generation. A running child keeps its fd, so its output lands in `.1`; kicks are single-flight. */
+export function rotateKickLog(file: string, maxBytes: number): void {
+  try {
+    if (fs.statSync(file).size > maxBytes) fs.renameSync(file, `${file}.1`)
+  } catch {
+    // Missing file or unwritable directory: the launch's open decides what happens next.
+  }
+}
+
 function launchTick(done: () => void): void {
-  launchDetached(kickCommand(process.env), 'burndown-kick.log', 'burndown_kick_failed', done)
+  rotateKickLog(path.join(home(), KICK_LOG), KICK_LOG_MAX_BYTES)
+  launchDetached(kickCommand(process.env), KICK_LOG, 'burndown_kick_failed', done)
 }
