@@ -325,7 +325,7 @@ describe('an xargs option the shell may split (CC-1219)', () => {
     'xargs -P $(nproc) bash',
     'xargs -P $(nproc) env grep foo',
     'xargs -P $(nproc) GIT_DIR=x grep',
-    'xargs -P $(nproc) $CMD git',
+    'xargs -P $(nproc) $CMD foo',
     'xargs -I{} $X {} foo',
     'xargs -I{} {} foo',
     'xargs -I% -P $(nproc) % foo',
@@ -334,6 +334,23 @@ describe('an xargs option the shell may split (CC-1219)', () => {
     'xargs -P $(nproc) grep include',
     'xargs $X grep git push',
   ])('still denies a command that may start another or reach git: %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
+  it.each([
+    'echo --no-verify | xargs $X -P push origin',
+    'xargs $X -I git status',
+    'xargs $X -E sh -c x',
+    'xargs $X -E env grep foo',
+    'xargs $X -I git grep foo',
+    'xargs $X -E git grep foo',
+    'xargs $X -P git grep foo',
+    'xargs $X -n git grep foo',
+    'xargs $X -L git grep foo',
+    'xargs $X -s git grep foo',
+    'xargs $X -d git grep foo',
+    'xargs $X -a git grep foo',
+  ])('denies an option value after the split that may become the command: %s', command => {
     expect(checkCommand(command, ctx)).toBeDefined()
   })
 

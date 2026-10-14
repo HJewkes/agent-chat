@@ -558,7 +558,8 @@ const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
 
 /**
  * The feed past an xargs option word the guard cannot read, at `i`: the options before it and from `after` on, with the
- * split's words read as put before the command. Any later word that may start a command or reach git keeps every word unknown.
+ * split's words read as put before the command. The split may move where xargs' options end, so any later word, an
+ * option value included, that may start a command or reach git keeps every word unknown.
  */
 function splitFeed(
   words: readonly string[],
@@ -570,9 +571,9 @@ function splitFeed(
   const rest = dropXargsOptions(words, after, splits)
   if (rest === undefined) return undefined
   const unknown = { at: i, fed: UNKNOWN_FEED }
-  const command = words.slice(rest.at).map(word => word.replaceAll(BRACE_PAIR, '{}'))
-  if (rest.fed === UNKNOWN_FEED || command.length === 0) return unknown
-  if (command.some(word => mayStartCommand(word) || wordMayBeGit(word))) return unknown
+  if (rest.fed === UNKNOWN_FEED || rest.at >= words.length) return unknown
+  const later = words.slice(after).map(word => word.replaceAll(BRACE_PAIR, '{}'))
+  if (later.some(word => mayStartCommand(word) || wordMayBeGit(word))) return unknown
   return { at: rest.at, fed: { replace: rest.fed.replace ?? replace, append: true, hidden: true } }
 }
 
