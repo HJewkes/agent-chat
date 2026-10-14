@@ -165,6 +165,31 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(expansionRisk(src)).toBeUndefined()
   })
 
+  // bash 5.3.9 starts no command at a newline or && in `[[ ]]`, after an array's `)`, or at `(\<newline>(`.
+  it.each(
+    [
+      '[[ x &&\n( {  ) ]] ;} #"; git push --no-verify\n}"',
+      '[[\n( } )\n]] ; git push --no-verify ;}"',
+      '[[ x ||\n} ]] ; git push --no-verify ;}"',
+      '[[\n} ]] ; git push --no-verify ;}"',
+      'a=( x ) { ;} #"; git push --no-verify\n}"',
+      'a=( x ) } ; git push --no-verify ;}"',
+      'a=() } ; git push --no-verify ;}"',
+      'a=(x) b=(y) } ; git push --no-verify ;}"',
+      '(\\\n({  )) ;} #"; git push --no-verify\n}"',
+      '(\\\n( } )) ; git push --no-verify ;}"',
+    ].flatMap(body => ['${ ', '${|'].map(open => `echo "${open}${body}`)),
+  )('%j has a brace where bash starts no command, so it is unreadable', src => {
+    expect(expansionRisk(src)).toBe('unreadable')
+  })
+
+  it.each(['${ ', '${|'])('%j{\\<newline> opens a group, so the push stays inside', open => {
+    const src = `echo "${open}{\\\n :; }; git push --no-verify; }"`
+
+    expect(find(src, 'git')?.nested).toBe(true)
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {

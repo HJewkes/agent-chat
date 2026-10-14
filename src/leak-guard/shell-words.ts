@@ -121,6 +121,8 @@ function funsubBody(src: string, at: number): number | undefined {
 }
 
 // Words after which a `{` still opens a group, as COMMAND_PREFIX is for a `(`.
+type ParenKind = 'subshell' | 'function' | 'header' | 'text'
+
 const BRACE_PREFIX = new Set([
   '{',
   '!',
@@ -219,8 +221,12 @@ class ShellLexer {
   closesOnBrace = false
   private braceDepth = 0
   private braceClosed = false
-  /** Whether each open `(` starts a subshell, where `{` and `}` can still be reserved words. */
-  private parens: boolean[] = []
+  /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
+  private parens: ParenKind[] = []
+  /** The current command began where bash starts one, so its first word may be reserved. */
+  private atStart = true
+  /** Inside `[[ ]]`, where neither an operator nor a newline starts a command. */
+  private testOpen = false
   /** A word of the current command was quoted, so it is not a reserved word. */
   private quotedWord = false
 
@@ -277,48 +283,45 @@ class ShellLexer {
   }
 
   /**
-   * In a funsub, counts `{ }` groups and closes at the `}` that ends none. bash closes only at a `}` in
-   * command position; zsh also at a `}` argument, so one makes the line unreadable rather than guessed.
-   * A `{` word opens a group only where `groupOpens` places it. One it cannot place makes the line
-   * unreadable: counted, it reads past bash's close; uncounted, its `}` may close early.
+   * In a funsub, counts `{ }` groups and closes at the `}` that ends none. A brace is reserved only
+   * where bash starts a command: after an operator or newline outside `[[ ]]`, a subshell `(`, a
+   * function's `()`, a case pattern, or reserved words (see `groupOpens`), and never inside `[[ ]]`,
+   * arithmetic or an array. A `{` or `}` word anywhere else makes the line unreadable.
    */
   private braceWord(c: string): boolean {
     // After a redirect operator bash reads a `{` or `}` as the file name, never as a reserved word.
     if (!this.closesOnBrace || this.word !== null || this.patternNext || this.pending !== null) return false
     if (c !== '{' && c !== '}') return false
-    // Inside `(( ))`, `a=( )` or `[[ ( ) ]]` bash reads a brace as text, and where it ends is not modelled.
-    if (this.parens.includes(false)) {
-      this.budget.expansion = 'unreadable'
-      return false
-    }
-    const next = this.src[this.pos + 1]
-    const command = this.cur.words.length === 0
-    if (c === '{') {
-      if (next !== undefined && !METACHAR.test(next)) return false
-      if (this.groupOpens()) this.braceDepth++
-      else this.budget.expansion = 'unreadable'
-      return false
-    }
-    if (command && this.braceDepth === 0) {
+    const spot = this.atStart && !this.testOpen && !this.parens.includes('text')
+    const reserved = spot && (c === '{' ? this.groupOpens() : this.cur.words.length === 0)
+    if (c === '}' && reserved && this.braceDepth === 0) {
       this.endCommand()
       this.closed = this.braceClosed = true
       return true
     }
+    const next = this.peek(this.pos + 1)
     if (next !== undefined && !METACHAR.test(next)) return false
-    if (!command) this.budget.expansion = 'unreadable'
-    else this.braceDepth--
+    if (!reserved) this.budget.expansion = 'unreadable'
+    else this.braceDepth += c === '{' ? 1 : -1
     return false
   }
 
-  /** Every word before the `{` is an unquoted reserved word, bar `time`'s `-p` and `coproc`'s name. */
+  /** The character at `at`, past any backslash-newline, which bash removes before it reads tokens. */
+  private peek(at: number): string | undefined {
+    while (this.src.startsWith('\\\n', at)) at += 2
+    return this.src[at]
+  }
+
+  /** Every word before the `{` is an unquoted reserved word, bar `time -p`, `coproc NAME` and `function NAME`. */
   private groupOpens(): boolean {
     if (this.quotedWord) return false
     const words = this.cur.words
-    const reserved = words.findIndex(word => !BRACE_PREFIX.has(word))
-    if (reserved < 0) return true
-    const before = words[reserved - 1]
-    const option = before === 'time' && words[reserved] === '-p'
-    return reserved === words.length - 1 && (option || before === 'coproc')
+    const at = words.findIndex(word => !BRACE_PREFIX.has(word))
+    if (at < 0) return true
+    const tail = words.slice(at)
+    const before = words[at - 1]
+    if (tail.length === 2) return tail[0] === 'function'
+    return tail.length === 1 && ((before === 'time' && tail[0] === '-p') || before === 'coproc')
   }
 
   private skip(then: () => void): void {
@@ -328,6 +331,7 @@ class ShellLexer {
 
   private newline(): void {
     this.endCommand()
+    this.atStart = !this.testOpen
     this.join('\n')
     this.pos++
     this.readHeredocs()
@@ -338,6 +342,7 @@ class ShellLexer {
     if (c === ';' && this.caseDepth > 0 && ';&'.includes(this.src[this.pos + 1] ?? '.'))
       this.patternNext = true
     this.endCommand()
+    this.atStart = !this.testOpen
     this.join(op)
     this.pos += op.length
   }
@@ -356,7 +361,7 @@ class ShellLexer {
     if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
     const opensCommand = this.word === null && !fed
-    const subshell = c === '(' && opensCommand && this.opensSubshell()
+    const kind = this.parenKind(opensCommand)
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
@@ -364,22 +369,39 @@ class ShellLexer {
     if (defined >= 0 && /^\(\s*\)/.test(this.src.slice(this.pos))) this.cur.marked[defined] += LIVE
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
-    if (c === '(') this.parens.push(subshell)
-    else this.parens.pop()
+    if (c === '(') this.parens.push(kind)
+    const closed = c === ')' ? this.parens.pop() : undefined
+    this.atStart = c === '(' ? kind === 'subshell' : closed === 'function' || closed === 'header'
     this.depth += c === '(' ? 1 : -1
     this.trackArith(c, opensCommand)
     this.pos++
     this.cur = this.newCommand()
   }
 
-  /** A `(` in command position that is not `((`, an array, a `[[` operand or arithmetic grouping. */
-  private opensSubshell(): boolean {
-    if (this.src[this.pos + 1] === '(' || this.inArith() || this.quotedWord) return false
-    return this.cur.words.every(word => BRACE_PREFIX.has(word))
+  /** A `(` at a command start that is not `((`, `[[` or arithmetic opens a subshell; `name()` is a function's. */
+  private parenKind(opensCommand: boolean): ParenKind {
+    if (!this.atStart || this.testOpen || this.quotedWord || this.quoted) return 'text'
+    if (/^\(\s*\)/.test(this.src.slice(this.pos))) return this.defines() ? 'function' : 'text'
+    if (!opensCommand) return 'text'
+    const words = this.cur.words
+    const prefix = words.findIndex(word => !BRACE_PREFIX.has(word))
+    const doubled = this.peek(this.pos + 1) === '('
+    // `for ((;;))` is followed by a `{ }` or `do` body, so its close starts a command.
+    if (doubled && words[prefix] === 'for' && prefix === words.length - 1) return 'header'
+    if (doubled || this.inArith()) return 'text'
+    return prefix < 0 ? 'subshell' : 'text'
+  }
+
+  /** `name()` or `function name()` at a command start; `a=()` is an array. */
+  private defines(): boolean {
+    const words = [...this.cur.words, ...(this.word === null ? [] : [this.word])]
+    const name = words[words[0] === 'function' ? 1 : 0]
+    return words.length === (words[0] === 'function' ? 2 : 1) && name !== undefined && !name.includes('=')
   }
 
   private endPattern(): void {
     this.endCommand()
+    this.atStart = true
     this.patternNext = false
     this.pos++
   }
@@ -718,10 +740,17 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       if (!quoted) this.trackCase()
+      if (!quoted) this.trackTest(word)
       this.quotedWord ||= quoted
     } else if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
+  }
+
+  private trackTest(word: string): void {
+    if (word === ']]') this.testOpen = false
+    else if (word === '[[' && this.atStart && this.cur.words.slice(0, -1).every(w => BRACE_PREFIX.has(w)))
+      this.testOpen = true
   }
 
   /** zsh feeds a command every heredoc and here-string it is given and bash only the last, so a second one is unsure. */
@@ -742,6 +771,7 @@ class ShellLexer {
     }
     this.cur = this.newCommand()
     this.quotedWord = false
+    this.atStart = false
   }
 
   private readHeredocs(): void {
