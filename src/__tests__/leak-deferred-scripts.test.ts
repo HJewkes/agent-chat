@@ -76,9 +76,19 @@ describe('aliasDefinitions', () => {
     expect(aliasDefinitions(wordsOf(line))).toEqual([])
   })
 
-  it('marks a definition global and suffix after a first operand the shell expands', () => {
-    const definitions = aliasDefinitions(markedOf('alias $G X=push'))
-    expect(definitions[1]).toMatchObject({ name: 'X', value: 'push', global: true, suffix: true })
+  it.each([
+    ['alias $G X=push', 'X'],
+    ['alias {-g,a=b} P=push', 'P'],
+    ['alias ${=X}=y Q=push', 'Q'],
+    ['alias $E $G X=push', 'X'],
+  ])('%s marks %s global and suffix, since an operand before it may expand to -g', (line, name) => {
+    const definition = aliasDefinitions(markedOf(line)).find(found => found.name === name)
+    expect(definition).toMatchObject({ value: 'push', global: true, suffix: true })
+  })
+
+  it('leaves a definition plain when a settled operand ends the options before a live one', () => {
+    const definition = aliasDefinitions(markedOf('alias a=b $G X=push')).find(found => found.name === 'X')
+    expect(definition).toMatchObject({ global: false, suffix: false })
   })
 
   const hidden = (word: string) => ({ name: word, value: word, global: true, suffix: true, blank: true })
@@ -160,6 +170,9 @@ describe('streamScript', () => {
     ['. proc/self/cwd/x.sh', '.'],
     ['. console', '.'],
     ['. tty1', '.'],
+    ['. ~/environ', '.'],
+    ['. self/cmdline', '.'],
+    ['. comm', '.'],
     ['. 3', '.'],
     ['bash -', 'bash'],
     ['diff <(a) <(b)', 'diff'],

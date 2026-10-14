@@ -63,38 +63,60 @@ export function trapActions(words: readonly string[]): string[] {
 const hasFlag = (options: string[], flag: string): boolean =>
   options.some(option => option.startsWith('-') && option.includes(flag))
 
-/** An operand whose expansion may hold the `=` that splits name from value, so the shell may define anything. */
-function hiddenDefinition(word: string): AliasDefinition | undefined {
+/** The text before an operand's first `=`, which the shell reads as the alias name, or all of it. */
+function namePart(word: string): string {
   const eq = word.indexOf('=')
-  if (!isLive(eq < 0 ? word : word.slice(0, eq))) return undefined
-  return { name: word, value: word, global: true, suffix: true, blank: true }
+  return eq < 0 ? word : word.slice(0, eq)
+}
+
+/** An operand whose expansion may hold the `=` that splits name from value, so the shell may define anything. */
+const hiddenDefinition = (word: string): AliasDefinition => ({
+  name: word,
+  value: word,
+  global: true,
+  suffix: true,
+  blank: true,
+})
+
+/**
+ * For each operand, whether one before it may have expanded to `-g` or `-s`: a live name part while every
+ * operand before it was live too, since a settled one ends the options (`{-g,a=b}`, `${=X}=y`, `$E $G`).
+ */
+function flagsUnsure(operands: readonly string[]): boolean[] {
+  let open = true
+  let unsure = false
+  return operands.map(word => {
+    const before = unsure
+    const live = isLive(namePart(word))
+    unsure ||= open && live
+    open &&= live
+    return before
+  })
 }
 
 /**
  * The definitions an `alias` makes, in bash or zsh, skipping the bare names it prints. `-g` and `-s` mark
- * them global or suffix. A first operand the shell expands might be either flag, so it marks them both,
- * and an operand that may expand to a definition is returned whole, as its own name and value.
+ * them global or suffix, as does a live operand that may have expanded to either flag. An operand whose
+ * name part is live may expand to any definition, so it is returned whole, as its own name and value.
  */
 export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
   if (unmark(words[0] ?? '') !== 'alias') return []
   const { options, operands } = splitOptions(words)
-  const first = operands[0] ?? ''
-  const unsure = isLive(first) && !first.includes('=')
-  const global = unsure || hasFlag(options, 'g')
-  const suffix = unsure || hasFlag(options, 's')
-  return operands.flatMap(word => {
-    const hidden = hiddenDefinition(word)
-    if (hidden !== undefined) return [hidden]
+  const unsure = flagsUnsure(operands)
+  return operands.flatMap((word, at) => {
+    if (isLive(namePart(word))) return [hiddenDefinition(word)]
     const eq = word.indexOf('=')
     if (eq < 0) return []
     const value = word.slice(eq + 1)
+    const global = unsure[at] === true || hasFlag(options, 'g')
+    const suffix = unsure[at] === true || hasFlag(options, 's')
     const blank = isLive(value) || /[ \t\n]$/.test(unmark(value))
     return [{ name: word.slice(0, eq), value, global, suffix, blank }]
   })
 }
 
 // The last part of a stream path, which a `~` or a cwd the shell sets at run time can put under /dev or /proc.
-const STREAM_TAIL = /(?:^|\/)(?:stdin|stdout|stderr|tty\w*|console|\d+|fd\/[^/]+)$/
+const STREAM_TAIL = /(?:^|\/)(?:stdin|stdout|stderr|tty\w*|console|environ|cmdline|comm|\d+|fd\/[^/]+)$/
 // A `~`, `~user`, `~+` or `~-` with no `/` after it is a directory the shell picks at run time, all of it.
 const BARE_TILDE = /^~[^/]*$/
 
