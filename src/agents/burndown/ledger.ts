@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
 import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
-import { Contract } from './report.js'
+import { AcceptedOverlap, Contract } from './report.js'
 import { STALE_CLASSES } from './stale-claim.js'
 import { STALL_CODES } from './stall-code.js'
 
@@ -13,7 +13,8 @@ import { STALL_CODES } from './stall-code.js'
  *
  * A claim holds its task until its phase is `done`, and a lane only while an
  * agent works on it. A stalled claim (a `stalledReason`, or past its phase
- * timeout) keeps both: the design files it to the backlog rather than
+ * timeout) keeps its task, and a lane only while its agent may run (CC-978,
+ * see claim-hold.ts): the design files it to the backlog rather than
  * respawning it. Moves onto the lifecycle ledger once that is read from
  * (CC-118, CC-102).
  */
@@ -35,8 +36,17 @@ export type Phase = (typeof PHASES)[number]
 export const AGENT_PHASES = ['planning', 'implementing', 'reviewing'] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
-/** CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. */
-const StackedOn = z.object({ taskId: z.string(), slice: z.string(), pr: z.string(), branch: z.string() })
+/**
+ * CC-1158: the unmerged parent slice a claim was admitted on, and the parent PR's head branch. `forkHead` is the
+ * parent head the child's worktree was cut from, recorded once the spawn answers, to diagnose a restack against.
+ */
+const StackedOn = z.object({
+  taskId: z.string(),
+  slice: z.string(),
+  pr: z.string(),
+  branch: z.string(),
+  forkHead: z.string().optional(),
+})
 export type StackedOn = z.infer<typeof StackedOn>
 
 const Claim = z.object({
@@ -62,6 +72,8 @@ const Claim = z.object({
   repo: z.string().optional(),
   /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
   contracts: z.array(Contract).optional(),
+  /** CC-1259: the open PRs and exact paths the planner accepts sharing; absent means none. */
+  overlapsAccepted: z.array(AcceptedOverlap).optional(),
   /** The agent the claim is waiting on now. */
   agentName: z.string().optional(),
   /** Every agent spawned for this claim, oldest first; retired newest first. */
@@ -81,6 +93,10 @@ const Claim = z.object({
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
   prHead: z.string().optional(),
   lastReport: z.string().optional(),
+  /** CC-1229: Shepherd runs the tick re-registered after a transient failure: how many, when last, and for which head. */
+  reregistered: z
+    .object({ n: z.number().int().positive(), at: z.string(), head: z.string().optional() })
+    .optional(),
   stalledReason: z.string().optional(),
   /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
@@ -237,6 +253,8 @@ const LadderRecord = z.object({
   /** The branch the last release kept, the stall code that sent it there, and the seat to tell. */
   branch: z.string().optional(),
   code: z.enum(STALL_CODES).optional(),
+  /** CC-1158 d: why a release that is no stall (`stack-broken`) happened; it replaces any earlier `code`. */
+  reason: z.string().optional(),
   seat: z.string().optional(),
   /** Set when the seat's `released` notice failed to send, and cleared once one lands (CC-829). */
   releaseDue: z.literal(true).optional(),
@@ -270,6 +288,11 @@ const Ledger = z.object({
   decider: DeciderState.optional(),
   /** Per-seat pool samples, keyed by seat name (CC-205). */
   seats: z.record(z.string(), SeatState).optional(),
+  /**
+   * When each seat's finished agents were last retired, by seat name (TP-1974 c). Beside `seats`, not in it:
+   * a seat state needs pool samples, and a seat with none still retires.
+   */
+  dailyRetire: z.record(z.string(), z.string().datetime()).optional(),
   /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
   humanFiled: z.array(z.string()).optional(),
   /** The scanner state the leak check last recorded, so a missing scanner is logged once rather than every tick. */
@@ -291,6 +314,8 @@ const Ledger = z.object({
    * dropped slice no longer gates the slices that depend on it. A whole-task release clears the entry.
    */
   slicesReleased: z.record(z.string(), z.array(z.string())).optional(),
+  /** Tasks whose merged slices were told to their seat (CC-1049), as `<initiative>/<id>`, so each is told once. */
+  slicesFlagged: z.array(z.string()).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
@@ -428,22 +453,48 @@ export function readySlices(
   })
 }
 
-export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number }
+/** `waiter` (CC-1181): the refusal names a release waiting on the lock, not a holder of it. */
+export type LockResult<T> =
+  { ran: true; value: T } | { ran: false; holder: number; waited?: number; waiter?: true }
+
+/**
+ * `wait` polls a held lock; `announce` also marks this process as waiting in `<file>.lock.wait`
+ * while it polls; `yieldToWaiter` refuses before taking the lock while a live process is marked.
+ */
+export interface LockOptions {
+  wait?: LockWait
+  announce?: boolean
+  yieldToWaiter?: boolean
+}
+
+/** CC-1181: how long release, link and a dry run poll a held ledger lock before refusing. */
+export const LEDGER_WAIT_MS = 300_000
+
+/** CC-1181: a bounded wait for the ledger lock; `sleep` and `now` are injected by tests. */
+export interface LockWait {
+  waitMs: number
+  pollMs?: number
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+}
 
 /**
  * Runs `fn` while holding `<file>.lock`, which carries the holder's pid. A
  * lock whose pid is dead is taken over; a live one means another tick is
- * running, so `fn` does not run.
+ * running, so `fn` does not run. With `wait` (CC-1181), a live lock is polled
+ * until it frees or the wait runs out.
  */
-export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>): Promise<LockResult<T>> {
+export async function withLedgerLock<T>(
+  file: string,
+  fn: () => T | Promise<T>,
+  opts: LockOptions = {},
+): Promise<LockResult<T>> {
   const lock = `${file}.lock`
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  let holder = tryLock(lock)
-  if (holder !== undefined && !isAlive(holder)) {
-    if (readHolder(lock) === holder) fs.rmSync(lock, { force: true })
-    holder = tryLock(lock)
-  }
-  if (holder !== undefined) return { ran: false, holder }
+  const waiter = opts.yieldToWaiter ? ledgerLockWaiter(file) : undefined
+  if (waiter !== undefined) return { ran: false, holder: waiter, waiter: true }
+  const holder = await acquire(lock, opts)
+  if (holder !== undefined) return holder
   try {
     return { ran: true, value: await fn() }
   } finally {
@@ -451,10 +502,62 @@ export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>):
   }
 }
 
+/**
+ * Why the marker: ticks run back to back, so a poller alone never finds the gap between them.
+ * A tick that checked for a waiter just before the marker landed still takes the lock once;
+ * the tick after it sees the marker and yields, so a release waits for at most one tick.
+ */
+async function acquire(
+  lock: string,
+  opts: LockOptions,
+): Promise<Extract<LockResult<never>, { ran: false }> | undefined> {
+  if (opts.wait === undefined) return tryAcquire(lock)
+  if (!opts.announce) return acquireWithin(lock, opts.wait)
+  const marker = `${lock}.wait`
+  fs.writeFileSync(marker, `${process.pid}\n`, { mode: 0o600 })
+  try {
+    return await acquireWithin(lock, opts.wait)
+  } finally {
+    if (readHolder(marker) === process.pid) fs.rmSync(marker, { force: true })
+  }
+}
+
+/** Takes the lock, taking over a dead holder's; returns the refusal naming a live holder, else undefined. */
+function tryAcquire(lock: string): { ran: false; holder: number } | undefined {
+  let holder = tryLock(lock)
+  if (holder !== undefined && !isAlive(holder)) {
+    if (readHolder(lock) === holder) fs.rmSync(lock, { force: true })
+    holder = tryLock(lock)
+  }
+  return holder === undefined ? undefined : { ran: false, holder }
+}
+
+async function acquireWithin(
+  lock: string,
+  wait: LockWait,
+): Promise<{ ran: false; holder: number; waited: number } | undefined> {
+  const now = wait.now ?? Date.now
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const start = now()
+  for (;;) {
+    const refused = tryAcquire(lock)
+    if (refused === undefined) return undefined
+    const waited = now() - start
+    if (waited >= wait.waitMs) return { ...refused, waited }
+    await sleep(Math.min(wait.pollMs ?? 500, wait.waitMs - waited))
+  }
+}
+
 /** CC-1111: the live pid holding `<file>.lock`, or undefined when no live process does; takes nothing. */
 export function ledgerLockHolder(file: string): number | undefined {
   const holder = readHolder(`${file}.lock`)
   return holder !== undefined && isAlive(holder) ? holder : undefined
+}
+
+/** CC-1181: the live pid of a release waiting on `<file>.lock`, or undefined when none is. */
+export function ledgerLockWaiter(file: string): number | undefined {
+  const waiter = readHolder(`${file}.lock.wait`)
+  return waiter !== undefined && isAlive(waiter) ? waiter : undefined
 }
 
 /** Link-in a complete pid file, which fails atomically when the lock exists; returns the holder then. */

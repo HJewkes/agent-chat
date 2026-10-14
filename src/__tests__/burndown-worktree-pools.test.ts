@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { binaryGate } from '../agents/burndown/gate-reading.js'
 import { worktreeUse } from '../agents/burndown/observe.js'
 import { capacityRefusal, type Capacity, type Tally } from '../agents/burndown/plan.js'
 
@@ -7,7 +8,12 @@ const REPO = '/tmp/repos/alpha'
 const reviewerTrees = Array.from({ length: 8 }, (_, i) => `rv-a-b-${i + 1}`)
 
 function capacityOver(names: string[] | undefined): Capacity {
-  return { agents: 5, agentsReason: 'free', worktrees: () => worktreeUse(names, 12, config) }
+  return {
+    agents: 5,
+    agentsReason: 'free',
+    agentsGate: () => binaryGate('agentSlots', 'test'),
+    worktrees: () => worktreeUse(names, 12, config),
+  }
 }
 
 const emptyTally = (): Tally => ({ agents: 0, worktrees: new Map() })

@@ -34,11 +34,13 @@ import type { Allocation } from './isolation/index.js'
 import { recordedRole } from './profiles.js'
 import { seatSurfaceFor } from './seats/charter.js'
 import { teleportConfig } from './teleport-config.js'
-import { shepherdRowsAsync } from './burndown/shepherd.js'
+import { shepherdRowsAsync } from '../shepherd-client.js'
 import { latestTeleportSection } from './seats/boot-read.js'
 import { defaultAutonomyRoot } from './seats/io.js'
 import { renderTeleportHandoff } from './seats/relaunch-handoff.js'
 import { readSeatFile, writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
+import { appendSeatEvent } from './seats/seat-event-log.js'
+import { brokerSeatStateSources, composeSeatState, type SeatStateSources } from './seats/seat-state-ports.js'
 import {
   appendixFacts,
   renderAppendix,
@@ -447,6 +449,8 @@ interface Pending {
   destination: string
   /** CC-951: a caller-site successor opens before its predecessor ends; only a caller that ends itself on `endSelf`. */
   successorFirst: boolean
+  /** TP-1600 e: when a seat's successor prompt was rendered; its generation closes only once the teleport completes. */
+  seatRenderedAt?: Date
 }
 
 /** CC-402: typed into the predecessor's own pane, so it can only launch once the predecessor has ended. */
@@ -471,10 +475,21 @@ const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
+/** One read shared by every caller, so the State block and In flight cost one Shepherd subprocess. */
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let result: Promise<T> | undefined
+  return () => (result ??= read())
+}
+
 /** The successor waits on this read, so it gets less time than burndown's. */
 const TELEPORT_SHEPHERD_MS = 5_000
 
-export const defaultSeatTeleportDeps = (): SeatTeleportDeps => ({
+export interface SeatHandoffDeps extends SeatTeleportDeps {
+  /** TP-1600 e: where a seat successor's state section is read from; unset reads the broker's own. */
+  stateSources?: (seat: string, shepherd: SeatTeleportDeps['shepherd']) => SeatStateSources
+}
+
+export const defaultSeatTeleportDeps = (): SeatHandoffDeps => ({
   autonomyRoot: defaultAutonomyRoot(),
   now: () => new Date(),
   shepherd: () => shepherdRowsAsync(undefined, TELEPORT_SHEPHERD_MS),
@@ -495,7 +510,7 @@ export class Teleport {
     private readonly host: TeleportHost,
     private readonly countdownMs: number = COUNTDOWN_MS,
     private readonly readArgv: ArgvReader = psArgvReader,
-    private readonly seatTeleport: SeatTeleportDeps = defaultSeatTeleportDeps(),
+    private readonly seatTeleport: SeatHandoffDeps = defaultSeatTeleportDeps(),
     private readonly hosts: LauncherSite = NO_LAUNCHERS,
   ) {
     this.unwatch = core.onAppend(row => {
@@ -954,12 +969,12 @@ export class Teleport {
 
   /** The successor holds the name now, so the predecessor is ended without waiting for it to free. */
   private endPredecessor(entry: Pending): void {
-    const { subject, descendantId } = entry
+    const { subject } = entry
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.host.standDown(subject.agentId)
     this.retirePredecessor(entry, this.endSession(entry))
     this.pending.delete(subject.agentId)
-    logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId })
+    this.completed(entry)
   }
 
   /**
@@ -1051,7 +1066,7 @@ export class Teleport {
     try {
       const paneFree = await this.waitForPaneFree(subject)
       await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
-      logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
+      this.completed(entry)
     } catch (err) {
       if (err instanceof SuccessorNotStarted) return
       // The one genuinely bad state this feature can reach: predecessor gone,
@@ -1187,12 +1202,18 @@ export class Teleport {
       body: 'superseded by teleport',
     })
     this.pending.delete(subject.agentId)
-    logEvent('teleport_completed', {
-      name: subject.name,
-      from: subject.agentId,
-      to: entry.descendantId,
-      remote: true,
-    })
+    this.completed(entry, { remote: true })
+  }
+
+  /**
+   * Every launch path's one success point. TP-1600 e: a seat's generation closes here and not at
+   * render, so a teleport that keeps its predecessor live leaves the seat log as it was.
+   */
+  private completed(entry: Pending, detail: Record<string, unknown> = {}): void {
+    const { subject, descendantId, seatRenderedAt } = entry
+    if (seatRenderedAt !== undefined)
+      this.closeSeatGeneration(this.seatTeleport.autonomyRoot, subject.name, descendantId, seatRenderedAt)
+    logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId, ...detail })
   }
 
   /**
@@ -1327,20 +1348,53 @@ export class Teleport {
   private async seatHandoff(entry: Pending): Promise<string | undefined> {
     const seat = entry.subject.name
     try {
-      const written = await writeTeleportState(this.seatTeleport, {
-        seat,
-        running: runningSpawnedBy(this.core.agents, seat),
-        inboxThrough: entry.inboxThrough,
-        sessionStart: entry.since,
-      })
+      const shepherd = once(this.seatTeleport.shepherd)
+      const written = await writeTeleportState(
+        { ...this.seatTeleport, shepherd },
+        {
+          seat,
+          running: runningSpawnedBy(this.core.agents, seat),
+          inboxThrough: entry.inboxThrough,
+          sessionStart: entry.since,
+        },
+      )
       if (written === undefined) return undefined
       const { autonomyRoot: root, now } = this.seatTeleport
       const found = latestTeleportSection(root, seat, now())
       const { after, cursorMissing } = written
-      return renderTeleportHandoff({ root, seat, found, after, cursorMissing })
+      const sections = await composeSeatState(this.stateSources(seat, shepherd), {
+        root,
+        seat,
+        inboxAfter: after,
+        ...(cursorMissing === true ? { cursorMissing } : {}),
+        sessionStart: new Date(entry.since).toISOString(),
+        now: now().getTime(),
+      })
+      entry.seatRenderedAt = now()
+      return renderTeleportHandoff({ root, seat, found, after, cursorMissing, sections })
     } catch (err) {
       logEvent('teleport_seat_state_failed', { name: seat, error: (err as Error).message })
       return undefined
+    }
+  }
+
+  private stateSources(seat: string, shepherd: SeatTeleportDeps['shepherd']): SeatStateSources {
+    if (this.seatTeleport.stateSources !== undefined) return this.seatTeleport.stateSources(seat, shepherd)
+    return brokerSeatStateSources(this.seatTeleport.autonomyRoot, seat, {
+      roster: () => this.core.agents.roster({ includeRetired: false }),
+      events: this.core.events,
+      liveClaims: () => this.core.claims.list(),
+      shepherd,
+    })
+  }
+
+  /** TP-1600 e: the rendered block is the successor's now, so the next generation starts from none. */
+  private closeSeatGeneration(root: string, seat: string, successor: string, at: Date): void {
+    try {
+      appendSeatEvent(root, seat, { kind: 'authored', text: '' }, at.toISOString())
+      appendSeatEvent(root, seat, { kind: 'teleport', successor }, at.toISOString())
+    } catch (err) {
+      logEvent('teleport_seat_events_failed', { name: seat, error: (err as Error).message })
     }
   }
 

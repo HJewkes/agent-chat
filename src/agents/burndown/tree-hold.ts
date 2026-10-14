@@ -1,4 +1,4 @@
-import type { Phase } from './ledger.js'
+import type { Ledger, Phase } from './ledger.js'
 import { heldClaims, LedgerMalformedError, readLedger } from './ledger.js'
 import { canonicalPath } from '../spawn-cwd.js'
 
@@ -11,15 +11,20 @@ const RELEASED_PHASES: ReadonlySet<Phase> = new Set(['awaiting-merge', 'shepherd
 
 /** Why the burndown tick still needs `tree`, or undefined when no held claim reads it. */
 export function burndownTreeHold(ledgerFile: string, tree: string): string | undefined {
-  let held
+  let ledger
   try {
-    held = heldClaims(readLedger(ledgerFile))
+    ledger = readLedger(ledgerFile)
   } catch (err) {
     if (err instanceof LedgerMalformedError) return 'burndown ledger unreadable'
     throw err
   }
+  return ledgerTreeHold(ledger, tree)
+}
+
+/** `burndownTreeHold` over a ledger already read, for the tick that holds one (CC-1257). */
+export function ledgerTreeHold(ledger: Ledger, tree: string): string | undefined {
   const root = canonicalPath(tree)
-  const claim = held.find(
+  const claim = heldClaims(ledger).find(
     c => c.worktree !== undefined && !RELEASED_PHASES.has(c.phase) && canonicalPath(c.worktree) === root,
   )
   if (claim === undefined) return undefined

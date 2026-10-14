@@ -143,6 +143,7 @@ const broker: TickBroker = {
   retire: async () => ({ ok: true }),
   queue: async () => [],
   resume: async name => ({ ok: true, agentId: `id-${name}` }),
+  retireFinished: async () => ({ ok: true, plan: [], results: [] }),
   collisionView: async () => ({ names: [], claims: [] }),
   seatSender: async () => ({
     send: async () => ({ ok: true }),
@@ -169,6 +170,7 @@ async function tick(
 
 const IN_LOCK_STEPS = [
   'read-ledger',
+  'brief-approve',
   'roster',
   'world',
   'seats',
@@ -177,6 +179,7 @@ const IN_LOCK_STEPS = [
   'plan',
   'collision',
   'scope-exhausted',
+  'daily-retire',
   'execute',
   'adopt',
   'decider-triage',
@@ -250,8 +253,19 @@ describe('the burndown tick summary in the live tick', () => {
             cap: { implementers: 1, reviewers: 1, planners: 1 },
           },
           registrations: { ok: 0, refused: 0, failed: 0 },
+          binding: {
+            kind: 'role-cap',
+            initiative: 'demo',
+            task: expect.any(String),
+            lever: 'concurrency.implementers',
+            value: 1,
+            reading: 1,
+            headroom: 0,
+            source: expect.any(String),
+          },
         },
       },
+      serviceCheck: { cause: null, stopped: false, message: 'ok' },
     })
   })
 

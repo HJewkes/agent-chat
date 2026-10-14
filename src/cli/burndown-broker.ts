@@ -48,6 +48,20 @@ export function tickBroker(
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
     },
+    async park(name) {
+      const res = (await client.request({ t: 'park', name }, 'spawn_result')) as Reply<'spawn_result'>
+      return spawnReply(res)
+    },
+    async retireFinished(spawner) {
+      const frame = { t: 'retire_finished' as const, spawner }
+      const res = (await client.request(frame, 'retire_finished_result')) as Reply<'retire_finished_result'>
+      return {
+        ok: res.ok,
+        plan: res.plan,
+        results: res.results,
+        ...(res.reason === undefined ? {} : { reason: res.reason }),
+      }
+    },
     collisionView: () => collisionView(client, now()),
     seatSender,
   }
@@ -114,4 +128,5 @@ const spawnReply = (res: Reply<'spawn_result'>): SpawnReply => ({
   ...(res.reason === undefined ? {} : { reason: res.reason }),
   ...(res.code === undefined ? {} : { code: res.code }),
   ...(res.retryable === undefined ? {} : { retryable: res.retryable }),
+  ...(res.base === undefined ? {} : { base: res.base }),
 })

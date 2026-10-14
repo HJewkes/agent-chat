@@ -1019,6 +1019,8 @@ export type ClientMessage =
        * and is accepted with a worktree profile.
        */
       claimPaths?: string[]
+      /** CC-1158: the `origin/<branch>` a worktree spawn is cut from; a stacked slice names its parent's PR branch. */
+      baseRef?: string
       /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
@@ -1087,6 +1089,8 @@ export type ClientMessage =
        * session is already named by its registration; the row then records it in place of the human.
        */
       spawnedAs?: 'burndown' | 'shepherd'
+      /** CC-1206: the agent identity in the CLI caller's env; only lowers trust, read only from an unregistered connection. */
+      callerAgent?: string
       /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
       task?: string
       /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
@@ -1214,7 +1218,9 @@ export type ClientMessage =
    * CC-951: a host launcher announces the machine it launches on. Refused from a registered
    * session connection: a launcher is its own connection, never a session's.
    */
-  | { t: 'host_hello'; host: string; platform: string; surfaces: string[] }
+  | { t: 'host_hello'; host: string; platform: string; surfaces: string[]; proof?: string }
+  /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
+  | { t: 'host_challenge' }
   /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
   | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
@@ -1389,6 +1395,8 @@ export type ServerMessage =
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
   | { t: 'host_hello_result'; ok: boolean; reason?: string }
+  /** CC-1063: the nonce for the next `host_hello` on this connection; HMAC it with the host's key. */
+  | { t: 'host_challenge_result'; nonce: string }
   /** CC-951: broker -> launcher; does `cwd`, `configDir` and `surface` work on its machine. */
   | { t: 'host_probe'; id: string; probe: HostProbe }
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */

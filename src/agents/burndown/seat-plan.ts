@@ -12,15 +12,33 @@ import {
   type BriefCheck,
   type BriefGateMode,
   type Refusal,
+  type RefusalKind,
   type Task,
 } from './eligibility.js'
-import { contractOverlap, liveOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
-import { stopLineRefusal, type LineStop } from './flow-gate.js'
+import { binaryGate, capGate } from './gate-reading.js'
+import { holdsSlot, roleOf, type Role } from './claim-hold.js'
+import {
+  contractOverlap,
+  liveOverlap,
+  type Collision,
+  type CollisionWork,
+  type SameTickClaim,
+} from './collision.js'
+import {
+  reviewBackpressureRefusal,
+  stopLineRefusal,
+  type FlowRefusal,
+  type FlowWork,
+  type LineStop,
+  type ReviewBackpressure,
+} from './flow-gate.js'
+import type { ReviewBacklog } from './review-backlog.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, slotMismatch, type Claim, type Ledger } from './ledger.js'
 import type { AgentIdentity } from '../../protocol.js'
 import {
   agentNameFor,
+  BURNDOWN_CONFIG,
   capacityRefusal,
   orphanRefusal,
   type Capacity,
@@ -40,9 +58,11 @@ import {
   type ScoringDefaults,
   type ShareCapRefusals,
 } from './score.js'
-import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
-import { sliceRepo, type PathExists } from './slice-repo.js'
+import { healSlice, sliceRepo, taskRepo, type PathExists } from './slice-repo.js'
+import type { Action } from './advance.js'
+import { parkUpdate } from './stall-code.js'
 import { seedSlices, type PlanReader, type SliceRuns } from './seed-slices.js'
 import { OFF_PLAN_REASON } from './off-plan.js'
 import { offPlanRefusals, planningCandidates, readyDepth } from './planning-supply.js'
@@ -50,6 +70,8 @@ import { worktreePathFor } from './trust-gate.js'
 import { planFacts, priorRoute, type PriorRouter, type Routed } from './prior-route.js'
 import { shareOrder, sharedDefaults, type ProjectShares } from './project-shares.js'
 import type { TaskFacts } from './classify-task.js'
+import type { Blocker } from './refusal-snapshot.js'
+import { parseTaskTags } from './task-tags.js'
 
 /**
  * CC-205 D2: one seat's dispatches for a tick. Walks the seat's scored order
@@ -88,6 +110,10 @@ export interface SeatPlanInputs {
   activeTree?: (claim: Claim) => boolean
   /** Set while the service check has failed twice running (CC-629); absent, the line runs. */
   lineStop?: LineStop
+  /** CC-1106: Shepherd's review queue this tick; absent, review backpressure is not applied. */
+  reviewBacklog?: ReviewBacklog
+  /** CC-1106: `burndown.reviewBackpressure`; absent or `off`, no implementer waits on the review queue. */
+  reviewBackpressure?: ReviewBackpressure
   /** The seat's `scope_tags` and backlog (CC-779); absent, every scored row is in scope. */
   scope?: SeatScope
   /** The broker's roster (CC-779): the seat's running agents count against its caps; absent, only claims do. */
@@ -110,6 +136,10 @@ export interface SeatPlanInputs {
   priorRouter?: PriorRouter
   /** CC-1107: project shares of the seat's whole-task picks; absent, the legacy order (decay, kind weights, share caps). */
   shares?: ProjectShares
+  /** CC-1158: admits a queued slice onto its one unmerged parent; absent, none stacks. */
+  stack?: PlanInputs['stack']
+  /** CC-1228: the other seats this tick runs; set, a queued slice the seat cannot place moves to one that can or parks `no-repo`. Absent, it is refused each tick. */
+  peers?: readonly SeatDispatch[]
 }
 
 export interface SeatBriefGate {
@@ -129,6 +159,8 @@ export interface SeatPlan {
   notes: string[]
   /** `queued` slice claims seeded from seat-written plans in place of a planner (CC-927). */
   seeds: Claim[]
+  /** CC-1228: ledger updates that rehome or park queued slices the seat cannot place. */
+  heals: Action[]
   priorPicks: Record<string, number>
   shareCapped: ShareCapRefusals
   /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
@@ -158,9 +190,8 @@ export interface Placement {
   intangibleHeld: string[]
 }
 
-type Role = keyof SeatDispatch['caps']
 const ROLES: readonly Role[] = ['implementers', 'reviewers', 'planners']
-type Refused = Pick<Refusal, 'kind' | 'reason'>
+type Refused = Pick<Refusal, 'kind' | 'reason' | 'gate' | 'blocker' | 'slice'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
 /** CC-986: an implementer-routed task with no plan to seed from; a planner writes the one at this path. */
@@ -175,16 +206,6 @@ const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
 
 /** CC-986: the route a brief:ready task with no plan takes, so a planner writes the slices that declare its owns. */
 const PLANNER_ROUTE = { role: 'planners', profile: PLANNER_PROFILE } as const
-
-const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
-  planning: 'planners',
-  implementing: 'implementers',
-  reviewing: 'reviewers',
-}
-
-/** A spawning claim counts toward the role it lands in. */
-const roleOf = (claim: Claim): Role | undefined =>
-  ROLE_OF_PHASE[claim.phase === 'spawning' ? (claim.nextPhase ?? 'spawning') : claim.phase]
 
 /** The seat's whole-task claims dispatched since `runStartAt`, by initiative; a planner's slices are the same pick. */
 export function priorPicksOf(ledger: Ledger, seat: string, runStartAt: number): Record<string, number> {
@@ -213,6 +234,8 @@ interface Walk {
   capacity: Capacity | undefined
   tally: Tally
   notes: string[]
+  /** CC-1106: whether this seat already noted an unread or shadow review backpressure; it notes once. */
+  backpressureNoted?: boolean
 }
 
 /** Ready slices of the seat's planners first, since their tasks are underway; then the scored order. */
@@ -228,6 +251,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     refusals: [],
     notes: [],
     seeds: [],
+    heals: [],
     priorPicks,
     shareCapped: refused,
     ...(placement !== undefined && { placement }),
@@ -249,7 +273,8 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  const slices = readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat)
+  const own = readySlices(inputs.ledger, walk.held, inputs.stack).filter(c => c.seat === inputs.seat.seat)
+  const slices = healSlices(own, walk, plan)
   // Rows are counted first: a taken slice claims its task, which would hide that task's row.
   const rowDepth = supplyDepth(order, walk)
   const depth = rowDepth + takeSlices(slices, walk, take)
@@ -266,8 +291,14 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     },
   )
   planBelowFloor(plan, depth, walk, take)
-  for (const { initiative, task, reason } of planRefusals)
-    plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
+  for (const { initiative, task, reason, blocker } of planRefusals)
+    plan.refusals.push({
+      initiative,
+      task,
+      kind: 'plan-blocked',
+      reason,
+      ...(blocker !== undefined && { blocker }),
+    })
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
   plan.notes.push(...idleNotes(inputs.seat.seat, walk))
@@ -304,7 +335,7 @@ function supplyDepth(order: readonly DispatchRow[], walk: Walk): number {
     const { seat } = walk.inputs
     if (taskRefusal(task, seat.grants, walk.claimed, walk.held) !== undefined) return false
     if (briefRefusal(task, check) !== undefined) return false
-    const repo = repoForTask(seat, row.initiative, task.tags)
+    const repo = taskRepo(seat, row.initiative, task.tags)
     if (repo === undefined || ROUTES[row.route] === undefined) return false
     const work = { taskId: row.id, tags: task.tags, owns: [] }
     return walk.inputs.collision?.(repo, work, landedRepos(seat)) === undefined
@@ -333,26 +364,50 @@ function planBelowFloor(
     refusal.kind = 'off-plan'
     refusal.reason = OFF_PLAN_REASON
   }
+  const { planned, skipped } = briefCandidates(
+    plan,
+    planningCandidates(plan.refusals, tasks, offPlanIds),
+    reason,
+    walk,
+    take,
+  )
+  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks${skippedNote(skipped)}`)
+}
+
+/** Briefs each candidate in turn; a skipped briefer's refusal kind is counted, since the row keeps its no-brief refusal. */
+function briefCandidates(
+  plan: Pick<SeatPlan, 'refusals'>,
+  candidates: readonly Refusal[],
+  reason: string,
+  walk: Walk,
+  take: (initiative: string, task: string, outcome: Taken) => void,
+): { planned: number; skipped: Map<RefusalKind, number> } {
   let planned = 0
-  for (const refusal of planningCandidates(plan.refusals, tasks, offPlanIds)) {
+  const skipped = new Map<RefusalKind, number>()
+  for (const refusal of candidates) {
     const outcome = briefFor(refusal, reason, walk)
     if (outcome === undefined) continue
     if ('kind' in outcome) {
       if (STOPS_PLANNING.has(outcome.kind)) break
+      skipped.set(outcome.kind, (skipped.get(outcome.kind) ?? 0) + 1)
       continue
     }
     plan.refusals.splice(plan.refusals.indexOf(refusal), 1)
     take(refusal.initiative, outcome.work.taskId, outcome)
     planned += 1
   }
-  walk.notes.push(`seat ${seat.seat} ${reason}: planning ${planned} no-brief tasks`)
+  return { planned, skipped }
 }
+
+/** CC-1302: e.g. `; refused trust 104, orphan 2`; empty when no briefer was skipped. */
+const skippedNote = (skipped: ReadonlyMap<RefusalKind, number>): string =>
+  skipped.size === 0 ? '' : `; refused ${[...skipped].map(([kind, n]) => `${kind} ${n}`).join(', ')}`
 
 /** A briefer for a no-brief row, as `consider` sends one for a `brief:wanted` task; undefined with no repo. */
 function briefFor(refusal: Refusal, reason: string, walk: Walk): Taken | Refused | undefined {
   const { seat, tasks } = walk.inputs
   const task = tasks.get(refusal.initiative)?.find(t => t.id === refusal.task)
-  const repo = task === undefined ? undefined : repoForTask(seat, refusal.initiative, task.tags)
+  const repo = task === undefined ? undefined : taskRepo(seat, refusal.initiative, task.tags)
   if (task === undefined || repo === undefined) return undefined
   const work = { initiative: refusal.initiative, task: task.id, profile: PLANNER_PROFILE }
   const dispatch = { ...dispatchFor(work, repo, reason, walk), briefer: true }
@@ -409,7 +464,7 @@ interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
   refused: ShareCapRefusals
   /** Rows `planOrder` dropped for a tag reason, one per task. */
-  planRefusals: { initiative: string; task: string; reason: string }[]
+  planRefusals: { initiative: string; task: string; reason: string; blocker?: Blocker }[]
   placement?: Placement
 }
 
@@ -455,7 +510,7 @@ function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
   return {
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
-    planRefusals: tagRefusals(rows, planned, base),
+    planRefusals: tagRefusals(rows, planned, base, inputs.ledger),
     placement: placementOf(planned, inputs.shares === undefined ? inputs.defaults.initiative_decay : 1),
   }
 }
@@ -535,6 +590,7 @@ function tagRefusals(
   rows: readonly ScoreRow[],
   planned: ReturnType<typeof planOrder>,
   base: Omit<Parameters<typeof planOrder>[0], 'rows' | 'n'>,
+  ledger: Ledger,
 ): Ordered['planRefusals'] {
   if (!Object.keys(planned.refused).some(key => !HOLDS(key))) return []
   const placed = new Set(planned.order.map(row => row.id))
@@ -543,8 +599,31 @@ function tagRefusals(
     .flatMap(row => {
       const alone = planOrder({ ...base, rows: [row], n: 1 })
       const reason = Object.keys(alone.refused).find(key => !HOLDS(key))
-      return reason === undefined ? [] : [{ initiative: row.initiative, task: row.id, reason }]
+      if (reason === undefined) return []
+      const refusal = { initiative: row.initiative, task: row.id, reason }
+      return [reason === 'dep-blocked' ? { ...refusal, ...namedDeps(row.id, base.tasks, ledger) } : refusal]
     })
+}
+
+/** CC-1241: `dep-blocked` names each open dep with its claim state; the first one is the snapshot's blocker. */
+function namedDeps(
+  id: string,
+  tasks: readonly ScoredTask[],
+  ledger: Ledger,
+): { reason: string; blocker?: Blocker } {
+  const task = tasks.find(t => t.id === id)
+  const open = new Set(tasks.map(t => t.id))
+  const deps = task === undefined ? [] : parseTaskTags(task).task.deps.filter(dep => open.has(dep))
+  const blockers = deps.map(dep => ({ task: dep, state: depState(dep, ledger) }))
+  const [first] = blockers
+  if (first === undefined) return { reason: 'dep-blocked' }
+  const named = blockers.map(b => `${b.task} (${b.state})`).join(', ')
+  return { reason: `dep-blocked: ${named}`, blocker: first }
+}
+
+function depState(taskId: string, ledger: Ledger): string {
+  const claim = heldClaims(ledger).find(c => c.taskId === taskId)
+  return claim === undefined ? 'open, no claim' : `open, claim ${claim.phase}`
 }
 
 function startWalk(inputs: SeatPlanInputs): Walk {
@@ -576,13 +655,6 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     notes: [],
   }
 }
-
-/**
- * CC-1098: a claim holds its role's slot while it is spawning, its agent may run, or a ladder respawn is about to
- * spawn its successor. One whose agent is gone is ledger state, not live work, even with a PR open at Shepherd.
- */
-const holdsSlot = (claim: Claim, live: SeatPlanInputs['liveAgent']): boolean =>
-  claim.phase === 'spawning' || live === undefined || claim.respawn !== undefined || live(claim.agentName)
 
 /** CC-978: what a role counts against its cap, beside the ledger's own count when the two differ. */
 export const roleUsed = (role: Role, used: number, idle: number): string => {
@@ -663,7 +735,7 @@ function consider(
   const route = ROUTES[row.route]
   if (route === undefined)
     return { kind: 'untriaged', reason: "route triage; triage stays with the seat's Discovery" }
-  const repo = repoForTask(seat, row.initiative, task.tags)
+  const repo = taskRepo(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const seeded = seedFromPlan(row, task, route.role, walk)
@@ -750,6 +822,11 @@ function seedFromPlan(
   const seeding = seedSlices(parent, plan, ledger, budget.ctx.now, sliceRuns)
   if (seeding === undefined) return undefined
   if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
+  if ('merged' in seeding) return { seeds: [] }
+  if ('pending' in seeding) {
+    walk.notes.push(...seeding.notes)
+    return { seeds: seeding.claims }
+  }
   walk.claimed.add(row.id)
   const slices = seeding.claims.map(c => c.slice).join(', ')
   walk.notes.push(
@@ -757,6 +834,7 @@ function seedFromPlan(
   )
   for (const warning of seeding.warnings)
     walk.notes.push(`slice-lint ${row.initiative} ${row.id}: ${warning}`)
+  walk.notes.push(...seeding.notes)
   return { seeds: seeding.claims }
 }
 
@@ -768,6 +846,37 @@ function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): und
   walk.notes.push(`would-plan ${row.initiative} ${row.id} (seat ${seat}): no plan at ${plan.path}`)
   return undefined
 }
+
+/**
+ * CC-1228: a slice the seat cannot place is rehomed or parked in the ledger and leaves this pass; a parked one waits
+ * silently, so its refusal no longer repeats. A slice the seat can place now clears an earlier park.
+ */
+function healSlices(slices: readonly Claim[], walk: Walk, plan: Pick<SeatPlan, 'heals'>): Claim[] {
+  const { seat, tasks, peers, pathExists } = walk.inputs
+  if (peers === undefined) return [...slices]
+  return slices.filter(claim => {
+    const tags = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)?.tags ?? []
+    const heal = healSlice(seat, peers, claim.initiative, tags, claim, pathExists)
+    const key = { taskId: claim.taskId, slice: claim.slice }
+    if (heal === undefined) return true
+    if (heal.kind === 'unpark') {
+      plan.heals.push({ kind: 'update', key, patch: UNPARKED })
+      return true
+    }
+    if (heal.kind === 'rehome') {
+      const patch = { seat: heal.to, ...UNPARKED }
+      plan.heals.push({ kind: 'update', key, patch })
+      walk.notes.push(`rehomed ${claim.taskId} slice ${claim.slice ?? '?'} from ${seat.seat} to ${heal.to}`)
+    }
+    if (heal.kind === 'park') {
+      plan.heals.push(parkUpdate(key, 'no-repo', heal.reason))
+      walk.notes.push(`parked ${claim.taskId} slice ${claim.slice ?? '?'} no-repo: ${heal.reason}`)
+    }
+    return false
+  })
+}
+
+const UNPARKED = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
 
 /** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */
 function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
@@ -794,6 +903,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   const dispatch = {
     ...dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk),
     ...(claim.owns?.length ? { owns: claim.owns } : {}),
+    ...(claim.stackedOn === undefined ? {} : { stackedOn: claim.stackedOn }),
   }
   const checked = sliceWork(claim, tags)
   const refused = blocker(dispatch, checked, 'implementers', walk)
@@ -816,7 +926,12 @@ function takeSlices(
   for (const claim of slices) {
     const outcome = considerSlice(claim, walk)
     if (!('kind' in outcome) || outcome.kind === 'role-cap') supply += 1
-    take(claim.initiative, claim.taskId, outcome)
+    const { slice } = claim
+    take(
+      claim.initiative,
+      claim.taskId,
+      'kind' in outcome && slice !== undefined ? { ...outcome, slice } : outcome,
+    )
   }
   return supply
 }
@@ -827,6 +942,8 @@ const sliceWork = (claim: Claim, tags: string[]): CollisionWork => ({
   tags,
   owns: claim.owns ?? [],
   contracts: claim.contracts ?? [],
+  ...(claim.stackedOn === undefined ? {} : { stackedOn: claim.stackedOn }),
+  ...(claim.overlapsAccepted === undefined ? {} : { overlapsAccepted: claim.overlapsAccepted }),
 })
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
@@ -884,7 +1001,7 @@ function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Disp
   }
 }
 
-/** In D6's order: stop-line, collision, orphan, trust, role cap, worktree caps, then the pool gate. */
+/** In D6's order: stop-line, review backpressure, collision, orphan, trust, role cap, worktree caps, then the pool gate. */
 function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
   const flow = { tags: work.tags, planner: role === 'planners' }
@@ -893,9 +1010,10 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     const reason = inputs.trust?.(d.repo, d.cwd, inputs.seat.configDir)
     return reason === undefined ? undefined : { kind: 'trust', reason }
   }
-  return (
+  const refused =
     stopLineRefusal(flow, inputs.lineStop) ??
-    inputs.collision?.(d.repo, work, landedRepos(inputs.seat)) ??
+    backpressure(flow, walk) ??
+    collided(inputs.collision?.(d.repo, work, landedRepos(inputs.seat)), d.repo) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
     (d.slice === undefined
       ? orphanRefusal(at, d.task, d.profile, inputs.orphan, inputs.ledger)
@@ -904,8 +1022,37 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??
     budgetRefusal(d.profile, walk.gate)
-  )
+  return refused === undefined || ('gate' in refused && refused.gate !== undefined)
+    ? refused
+    : {
+        ...refused,
+        gate: binaryGate(`gate.${refused.kind}`, BINARY_SOURCES[refused.kind] ?? COLLISION_SOURCE),
+      }
 }
+
+/** CC-1106: a refusal from the review queue; an unread queue or a shadow gate notes once per seat instead. */
+function backpressure(flow: FlowWork, walk: Walk): FlowRefusal | undefined {
+  const verdict = reviewBackpressureRefusal(flow, walk.inputs.reviewBacklog, walk.inputs.reviewBackpressure)
+  if (verdict === undefined || 'kind' in verdict) return verdict
+  if (!walk.backpressureNoted) walk.notes.push(`seat ${walk.inputs.seat.seat} ${verdict.note}`)
+  walk.backpressureNoted = true
+  return undefined
+}
+
+/** CC-1241: a collision naming an open PR carries it as the refusal's blocker. */
+function collided(hit: Collision | undefined, repo: string): Refused | undefined {
+  if (hit === undefined) return undefined
+  const { kind, reason, pr } = hit
+  return pr === undefined ? { kind, reason } : { kind, reason, blocker: { pr, repo } }
+}
+
+/** CC-1097: where a binary stop is read; every collision kind reads the ledger and the open PRs. */
+const BINARY_SOURCES: Partial<Record<RefusalKind, string>> = {
+  'stop-line': 'service line stop',
+  orphan: 'repo branches and worktrees no claim accounts for',
+  trust: "the seat config dir's Claude trust state",
+}
+const COLLISION_SOURCE = 'ledger claims and open PR files'
 
 function roleCap(role: Role, walk: Walk): Refused | undefined {
   const { seat } = walk.inputs
@@ -913,7 +1060,11 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
   const cap = seat.caps[role]
   const ledger = walk.idle[role] > 0 ? ` (ledger ${used + walk.idle[role]})` : ''
   if (used >= cap)
-    return { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}${ledger}` }
+    return {
+      kind: 'role-cap',
+      reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}${ledger}`,
+      gate: capGate(`concurrency.${role}`, cap, used, SEAT_SOURCE),
+    }
   const reserve = role === 'implementers' ? (walk.inputs.handReserve ?? 0) : 0
   const tickUsed = used - walk.handImplementers
   return reserve === 0 || tickUsed < cap - reserve
@@ -921,6 +1072,7 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
     : {
         kind: 'role-cap',
         reason: `seat ${seat.seat} holds ${tickUsed} tick ${role} of ${cap - reserve}; handReserve keeps ${reserve} of ${cap}`,
+        gate: capGate('burndown.handReserve', cap - reserve, tickUsed, BURNDOWN_CONFIG),
       }
 }
 
@@ -931,13 +1083,21 @@ function worktreeCap(d: Dispatch, walk: Walk): Refused | undefined {
     return {
       kind: 'worktrees',
       reason: `seat ${d.seat ?? '?'} holds ${ours} active worktrees under ${d.repo}/.worktrees; ${capName} is ${perRepoPerSeat}`,
+      gate: capGate(capName, perRepoPerSeat, ours, SEAT_SOURCE),
     }
   return capacityRefusal(d, walk.capacity, walk.tally)
 }
 
 function budgetRefusal(profile: string, gate: PoolGateResult): Refused | undefined {
-  if (!gate.open) return { kind: 'budget', reason: gate.reason }
+  if (!gate.open) return { kind: 'budget', reason: gate.reason, gate: gate.gate }
   if (gate.sonnetOnly && !SONNET_PROFILES.has(profile))
-    return { kind: 'budget', reason: `${gate.reason}; task needs ${profile}` }
+    return {
+      kind: 'budget',
+      reason: `${gate.reason}; task needs ${profile}`,
+      // The band's figure is the window reading the reason already shows, so the lever stays binary.
+      gate: binaryGate(`pools.${gate.pool}.sonnet_band_points`, 'autonomy charter pools'),
+    }
   return undefined
 }
+
+const SEAT_SOURCE = 'seats/<seat>.md'

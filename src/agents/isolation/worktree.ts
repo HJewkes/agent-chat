@@ -5,7 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
-import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
+import { runWorktreeSetup, setupWorktree, type SetupRunner, type SetupTarget } from './worktree-setup.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
@@ -455,6 +455,45 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
   }
 }
 
+/** CC-1158: a stacked slice's base, fetched fresh; a stale or default-branch cut would lose its parent's work. */
+export async function resolveRequestedBase(
+  gitRoot: string,
+  ref: string,
+  timeoutMs: number,
+): Promise<BranchBase> {
+  const branch = ref.startsWith('origin/') ? ref.slice('origin/'.length) : ''
+  const valid =
+    branch !== '' &&
+    !branch.startsWith('-') &&
+    (await gitOrNull(['check-ref-format', '--branch', branch], gitRoot)) !== null
+  if (!valid) throw new Error(`base ${ref} is not a branch on origin; not spawned`)
+  const sha = await fetchTip(gitRoot, branch, timeoutMs)
+  if (sha === null)
+    throw new Error(`fetching base ${ref} failed or timed out; not cut from the default branch instead`)
+  return { sha, ref }
+}
+
+/**
+ * CC-1281: pr-ready reads `branch.<b>.agent-chat-base` to rebase a stacked branch onto its
+ * parent rather than the default branch. The key outlives the worktree in the shared config,
+ * so a default-base cut clears one a reused branch name inherited. Best effort: a spawn never
+ * fails over it.
+ */
+async function recordStackBase(
+  gitRoot: string,
+  branch: string,
+  baseRef: string | undefined,
+): Promise<string[]> {
+  const key = `branch.${branch}.agent-chat-base`
+  if (baseRef === undefined) {
+    await gitOrNull(['config', '--unset', key], gitRoot)
+    return []
+  }
+  const parent = baseRef.slice('origin/'.length)
+  if ((await gitOrNull(['config', key, parent], gitRoot)) !== null) return []
+  return [warn(`could not record ${key}=${parent}; pr-ready may not find this branch's stack base`)]
+}
+
 /** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
 const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): SetupTarget => ({
   gitRoot,
@@ -859,16 +898,29 @@ export async function reattachWorktree(
     boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
   )
   copyClaudeDir(gitRoot, worktree)
-  const warnings = [
-    ...reattachWarnings(record, source, base),
-    ...(await runWorktreeSetup(setupTarget(gitRoot, worktree, base), opts.runSetup)),
-  ]
+  const setup = await setupWorktree(setupTarget(gitRoot, worktree, base), opts.runSetup)
+  const warnings = [...reattachWarnings(record, source, base), ...setup.warnings]
   return {
     cwd: worktree,
-    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
-    ref: { branch, worktree, gitRoot, base: base.sha, base_ref: base.ref, reattached: source },
+    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. ${dependencyNote(setup.outcome)} Commit your work there; nothing outside it is yours to change.`,
+    ref: {
+      branch,
+      worktree,
+      gitRoot,
+      base: base.sha,
+      base_ref: base.ref,
+      reattached: source,
+      setup: setup.outcome,
+    },
     ...(warnings.length === 0 ? {} : { warnings }),
   }
+}
+
+/** CC-1046: a re-created tree has none of its ignored files, so say whether anything put the dependencies back. */
+function dependencyNote(outcome: string | undefined): string {
+  return outcome === 'ran'
+    ? "The repository's setup step reinstalled its dependencies; build outputs such as dist were not rebuilt, so build before relying on them."
+    : 'Ignored files such as node_modules and dist were not restored and no setup step reinstalled them, so install dependencies and build before running checks.'
 }
 
 /**
@@ -881,7 +933,7 @@ async function readoptWorktree(record: WorktreeRecord, opts: WorktreeOptions): P
   const allocation = await reattachWorktree(record, opts, true)
   return {
     ...allocation,
-    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. You may be sharing it with other agents, so stay inside the paths you were given.`,
+    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. ${dependencyNote(allocation.ref?.setup)} You may be sharing it with other agents, so stay inside the paths you were given.`,
     ref: { ...allocation.ref, assigned: 'true' },
   }
 }
@@ -985,7 +1037,11 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))
-      const base = await resolveBranchBase(gitRoot, opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
+      const fetchTimeout = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+      const base =
+        ctx.baseRef === undefined
+          ? await resolveBranchBase(gitRoot, fetchTimeout)
+          : await resolveRequestedBase(gitRoot, ctx.baseRef, fetchTimeout)
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
         base: base.sha,
         force: ctx.forceReset === true,
@@ -994,6 +1050,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       await excludeBasePath(gitRoot, basePath)
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
+        ...(await recordStackBase(gitRoot, branch, ctx.baseRef)),
         ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
       ]
 

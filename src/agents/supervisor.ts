@@ -622,6 +622,8 @@ export interface SpawnRequest {
   parentAgentId?: string
   requestedBy: string
   forceReset?: boolean
+  /** CC-1158: the `origin/<branch>` a new worktree is cut from; absent, origin's default branch. */
+  baseRef?: string
   /** Applied at the spawned agent's own registration, before its first turn. */
   tags?: string[]
   subscriptions?: Subscription[]
@@ -2108,6 +2110,7 @@ export class Supervisor implements TeleportHost {
         ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
       },
       ...(req.forceReset ? { forceReset: true } : {}),
+      ...(req.baseRef === undefined ? {} : { baseRef: req.baseRef }),
     }
 
     const floor = floorWarning(isolationName, profile.isolation)

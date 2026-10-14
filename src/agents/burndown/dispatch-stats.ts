@@ -1,7 +1,9 @@
 import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
+import { SEAT_HAND_RESERVE, SEAT_SPAWN_OVERLAP, SEAT_SPAWN_UNPREFIXED } from '../seats/spawn-gate.js'
 import { inferWorkRole } from '../spawn-provenance.js'
 import type { Ledger } from './ledger.js'
 import { NO_DISPATCH_PREFIX } from './no-dispatch.js'
+import { orphanQueueLine, orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import { BRIEF_SOURCES, type BriefSource } from './task-tags.js'
 import type { VerdictObservation } from './waste.js'
 import {
@@ -29,10 +31,40 @@ export interface DispatchStatsPorts {
   journal: (seat: string, day: Date) => string | undefined
   /** The tick status file's last good tick, the fallback when no tick row is in the window. */
   lastOkAt: () => string | undefined
-  /** The tick config's `maxAgents`; the ready floor is twice it. */
+  /** The tick config's `maxAgents`; the ready floor is twice it unless `readyFloor` sets one. */
   maxAgents: () => number
+  /** CC-1106: the tick config's `readyFloor`; absent or undefined keeps twice `maxAgents`. */
+  readyFloor?: () => number | undefined
   /** CC-938: the review verdicts on the PRs of `runs`' tasks since `sinceMs`; throws when the event log cannot be read. */
   verdicts: (runs: readonly DispatchRecord[], sinceMs: number) => VerdictObservation[]
+  /** CC-965: the seat spawn gate's warn and refuse rows since `sinceMs`, each attributed to a seat where one owns it. */
+  gateRows: (sinceMs: number) => GateRows
+}
+
+export const GATE_CODES = [SEAT_HAND_RESERVE, SEAT_SPAWN_OVERLAP, SEAT_SPAWN_UNPREFIXED] as const
+export type GateCode = (typeof GATE_CODES)[number]
+
+export interface GateRow {
+  seat?: string
+  code: GateCode
+  refused: boolean
+  ts: number
+}
+
+export interface GateRows {
+  rows: GateRow[]
+  /** True when the stores do not reach back to the window's start, so the counts may be short. */
+  partial: boolean
+}
+
+export interface GateCounts {
+  reserveWarn: number
+  reserveRefused: number
+  overlapWarn: number
+  overlapRefused: number
+  unprefixedWarn: number
+  unprefixedRefused: number
+  partial: boolean
 }
 
 export interface RefusalMix {
@@ -72,12 +104,15 @@ export interface SeatDispatchStats {
     implementers: ImplementerCounts
   }
   queue: { depth: number; p50Minutes: number | null; maxMinutes: number | null }
+  /** CC-1226: set when the seat holds queued claims but the window's last tick planned nothing for it. */
+  orphan: OrphanQueue | null
   ready: Pick<SeatSummary, 'ready' | 'unbriefed' | 'stale'> | null
   readyFloor: ReadyFloor
   caps: SeatSummary['roles'] | null
   refusals: RefusalMix | null
   trust: NamedRefusal[] | null
   registrations: RegisterCounts
+  gate: GateCounts
   tick: {
     lastAt: string | null
     source: 'tick-summary' | 'status' | null
@@ -153,6 +188,29 @@ export function implementerCounts(log: string | undefined, sinceMs: number): Imp
   }
   const total = counts.tick + counts.hand
   return { ...counts, handShare: total === 0 ? null : round2(counts.hand / total) }
+}
+
+const GATE_KEYS: Record<GateCode, 'reserve' | 'overlap' | 'unprefixed'> = {
+  [SEAT_HAND_RESERVE]: 'reserve',
+  [SEAT_SPAWN_OVERLAP]: 'overlap',
+  [SEAT_SPAWN_UNPREFIXED]: 'unprefixed',
+}
+
+/** The seat's gate rows, warns apart from refusals. */
+export function gateCounts({ rows, partial }: GateRows, seat: string): GateCounts {
+  const counts: GateCounts = {
+    reserveWarn: 0,
+    reserveRefused: 0,
+    overlapWarn: 0,
+    overlapRefused: 0,
+    unprefixedWarn: 0,
+    unprefixedRefused: 0,
+    partial,
+  }
+  for (const row of rows) {
+    if (row.seat === seat) counts[`${GATE_KEYS[row.code]}${row.refused ? 'Refused' : 'Warn'}`] += 1
+  }
+  return counts
 }
 
 /** The seat's `queued` claims, aged from when they entered the queue. */
@@ -263,6 +321,13 @@ export function readyFloor(rows: readonly TickSummaryRow[], seat: string, floor:
   }
 }
 
+/** The seat's queue as an orphan: no plan for it in the last tick row, or no tick row in the window at all. */
+function orphanOf(w: Window, seat: string, now: Date): OrphanQueue | null {
+  const planned = Object.entries(w.rows.at(-1)?.seats ?? {}).filter(([, s]) => s.skipped === undefined)
+  const found = orphanQueues(w.ledger, new Set(planned.map(([name]) => name)), now)
+  return found.find(o => o.seat === seat) ?? null
+}
+
 const perHour = (n: number, windowMs: number): number => round2(n / (windowMs / HOUR_MS))
 
 interface Window {
@@ -271,6 +336,7 @@ interface Window {
   rows: readonly TickSummaryRow[]
   ledger: Ledger
   floor: number
+  gate: GateRows
 }
 
 function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDispatchStats {
@@ -292,6 +358,7 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
       implementers: implementerCounts(log, w.sinceMs),
     },
     queue: queueAges(w.ledger, seat, ports.now),
+    orphan: orphanOf(w, seat, ports.now),
     ready:
       summary === undefined
         ? null
@@ -301,14 +368,15 @@ function seatStats(ports: DispatchStatsPorts, seat: string, w: Window): SeatDisp
     refusals: fromRow ?? latestJournalRefusals(ports, seat, w.sinceMs),
     trust: summary === undefined ? null : (summary.trust ?? []),
     registrations: sumRegistrations(w.rows, seat),
+    gate: gateCounts(w.gate, seat),
     tick: tickHealth(ports, last, seat),
   }
 }
 
-/** CC-967: the ready depth a seat should hold, twice the config's `maxAgents`; CC-986 plans below it. */
-export const readyFloorFor = (maxAgents: number): number => 2 * maxAgents
+/** CC-967: the ready depth a seat should hold, the configured floor or twice `maxAgents`; CC-986 plans below it. */
+export const readyFloorFor = (maxAgents: number, configured?: number): number => configured ?? 2 * maxAgents
 
-/** One record per seat, in seat-name order. `floor` overrides the ready floor of twice the config's `maxAgents`. */
+/** One record per seat, in seat-name order. `floor` overrides the config's ready floor. */
 export function dispatchStats(
   ports: DispatchStatsPorts,
   windowMs: number,
@@ -320,7 +388,8 @@ export function dispatchStats(
     windowMs,
     rows: tickRowsSince(ports.tickRows(), sinceMs),
     ledger: ports.ledger(),
-    floor: floor ?? readyFloorFor(ports.maxAgents()),
+    floor: floor ?? readyFloorFor(ports.maxAgents(), ports.readyFloor?.()),
+    gate: ports.gateRows(sinceMs),
   }
   return [...ports.seats()].sort().map(seat => seatStats(ports, seat, w))
 }
@@ -352,6 +421,18 @@ function handShareLine({ tick, hand, fixRound, handShare }: ImplementerCounts): 
   return `${dash(handShare)} (hand ${hand}, tick ${tick}, fix rounds ${fixRound})`
 }
 
+function gateLine(g: GateCounts): string {
+  const pair = (name: string, warn: number, refused: number): string =>
+    `${name} warn ${warn} refused ${refused}`
+  return (
+    [
+      pair('reserve', g.reserveWarn, g.reserveRefused),
+      pair('overlap', g.overlapWarn, g.overlapRefused),
+      pair('unprefixed', g.unprefixedWarn, g.unprefixedRefused),
+    ].join(', ') + (g.partial ? ' (partial window)' : '')
+  )
+}
+
 function tickLine({ tick, spawns }: SeatDispatchStats): string {
   const dispatched = tick.dispatched === null ? 'unknown' : tick.dispatched ? 'yes' : 'no'
   const skipped = tick.skipped === undefined ? '' : `, skipped: ${tick.skipped}`
@@ -367,7 +448,9 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
       `${s.seat} (since ${s.since})`,
       `  spawns/h       tick ${spawns.tickPerHour} (${spawns.tick}), hand ${spawns.handPerHour} (${spawns.hand})`,
       `  hand share     ${handShareLine(spawns.implementers)}`,
+      `  spawn gate     ${gateLine(s.gate)}`,
       `  queue          ${queue.depth} queued, age p50 ${dash(queue.p50Minutes)}m, max ${dash(queue.maxMinutes)}m`,
+      ...(s.orphan === null ? [] : [`  ${orphanQueueLine(s.orphan)}`]),
       `  ready depth    ${ready === null ? '-' : `ready ${ready.ready}, unbriefed ${ready.unbriefed}, stale ${ready.stale}`}`,
       `  ready floor    ${floorLine(s.readyFloor)}`,
       `  cap use        ${capsLine(s.caps)}`,

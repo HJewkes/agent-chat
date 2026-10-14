@@ -56,6 +56,25 @@ const runsClaudeCode = (pid: number, ports: PeerPorts): boolean => {
   return ['node', 'bun'].includes(path.basename(exe)) && (entry?.includes('/claude-code/') ?? false)
 }
 
+/**
+ * CC-1206: the first pid running Claude Code in the peer's ancestry, the peer included, or
+ * undefined when none is found within `maxDepth`. A hit only lowers trust (an agent, not
+ * the human, is behind the connection), so unlike `provePeerLocal` it does not stop at a
+ * socket forwarder: walking past one cannot grant anything. Real defense in depth, not a fix: a caller detached from its own tree
+ * (`setsid`, `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from
+ * such a process has no Claude Code ancestor and is not caught here.
+ */
+export function claudeCodeAncestor(conn: net.Socket, ports: PeerPorts, maxDepth = 64): number | undefined {
+  const seen = new Set<number>()
+  let pid = ports.peerPid(conn)
+  while (pid !== undefined && pid > 1 && seen.size < maxDepth && !seen.has(pid)) {
+    if (runsClaudeCode(pid, ports)) return pid
+    seen.add(pid)
+    pid = ports.process(pid)?.ppid
+  }
+  return undefined
+}
+
 const forwarderAt = (pid: number, ports: PeerPorts): boolean => {
   const proc = ports.process(pid)
   return proc === undefined || FORWARDERS.test(proc.comm)
@@ -107,15 +126,21 @@ function socketInode(conn: net.Socket): string | undefined {
   }
 }
 
-/** Linux only: elsewhere there is no peer pid to read, so every session stays remote. */
-export const linuxPeerPorts: PeerPorts = {
+/** One dump of every unix socket with its holders; throws when `ss` fails or outruns its cap. */
+export const defaultSs = (): string =>
+  execFileSync('ss', ['-xnpH'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 })
+
+/**
+ * Linux only: elsewhere there is no peer pid to read, so every session stays remote.
+ * `runSs` is injectable so a test can see why a real read came back empty (CC-1164).
+ */
+export const linuxPeerPortsWith = (runSs: () => string): PeerPorts => ({
   peerPid(conn) {
     if (process.platform !== 'linux') return undefined
     const inode = socketInode(conn)
     if (inode === undefined) return undefined
     try {
-      const out = execFileSync('ss', ['-xnpH'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 })
-      return peerPidFromSs(out, inode)
+      return peerPidFromSs(runSs(), inode)
     } catch {
       return undefined
     }
@@ -128,4 +153,6 @@ export const linuxPeerPorts: PeerPorts = {
       return undefined
     }
   },
-}
+})
+
+export const linuxPeerPorts: PeerPorts = linuxPeerPortsWith(defaultSs)

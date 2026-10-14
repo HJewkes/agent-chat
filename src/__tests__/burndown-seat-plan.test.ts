@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { briefGateOf } from '../agents/burndown/seat-tick.js'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
+import { collision, type CollisionFacts } from '../agents/burndown/collision.js'
 import type { Initiative, Task } from '../agents/burndown/eligibility.js'
+import { binaryGate } from '../agents/burndown/gate-reading.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
@@ -421,6 +423,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 5,
       agentsReason: 'free',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 5, ours: 0, totalCeiling: 7, oursCeiling: 5 }),
     }
 
@@ -435,6 +438,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 0,
       agentsReason: '3 of maxAgents 3',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 0, ours: 0, totalCeiling: 10, oursCeiling: 5 }),
     }
 
@@ -648,7 +652,9 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       expect.objectContaining({
         task: 'A-2',
         kind: 'budget',
-        reason: expect.stringContaining('seven_day 80% at or above line 80%'),
+        reason: expect.stringContaining(
+          '(reading 40% + 40 charged: 1 dispatch(es) this tick at 40 each, charter) at or above line 80%',
+        ),
       }),
     ])
   })
@@ -739,6 +745,42 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         kind: 'file-overlap',
         reason: "src/a/x.ts is under sa-a-1-b's owns",
       }),
+    ])
+  })
+
+  it('dispatches a ready slice whose plan accepts its overlap with an open PR, and refuses it without (CC-1259)', () => {
+    const INDEX = 'packages/authority/src/index.ts'
+    const accept = [{ pr: 1083, path: INDEX, why: 'line 3 only; #1083 appends at :10' }]
+    const facts: CollisionFacts = {
+      repo: REPO,
+      subjects: [],
+      prs: [{ number: 1083, title: 'Owner approval', branch: 'feat/1083', body: '' }],
+      prFiles: () => [INDEX],
+      names: [],
+      claims: [],
+      ours: new Set(),
+      held: [],
+      heldOwns: [],
+    }
+    const planned = (overlapsAccepted?: typeof accept) => {
+      const ledger: Ledger = {
+        ...EMPTY_LEDGER,
+        claims: [
+          queued('A-1', { owns: [INDEX], ...(overlapsAccepted === undefined ? {} : { overlapsAccepted }) }),
+        ],
+      }
+      return planSeat(
+        inputs([], [task('A-1')], { ledger, collision: (_repo, work) => collision(work, facts) }),
+      )
+    }
+
+    const accepted = planned(accept)
+    const undeclared = planned()
+
+    expect(accepted.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(undeclared.dispatch).toEqual([])
+    expect(undeclared.refusals).toEqual([
+      expect.objectContaining({ task: 'A-1', kind: 'file-overlap', reason: `#1083 touches ${INDEX}` }),
     ])
   })
 

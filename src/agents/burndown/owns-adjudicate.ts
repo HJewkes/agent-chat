@@ -23,18 +23,21 @@ export interface AdjudicateCtx {
   openPrs: () => readonly OtherPr[] | undefined
 }
 
-export type Adjudication = { kind: 'amend'; files: string[] } | { kind: 'escalate'; reason: string }
+/** CC-1235: `protectedPath` is set when the refusal is a protected file, which only a wider plan owns line can clear. */
+export type Adjudication =
+  { kind: 'amend'; files: string[] } | { kind: 'escalate'; reason: string; protectedPath?: string }
 
 export const UNREADABLE_PRS = 'could not read open PRs'
 
 export function adjudicateOutside(outside: readonly string[], ctx: AdjudicateCtx): Adjudication {
-  const reason = protectedOrHeld(outside, ctx.held) ?? inOpenPr(outside, ctx.openPrs())
+  const guarded = outside.find(isProtectedPath)
+  if (guarded !== undefined)
+    return { kind: 'escalate', reason: `${guarded} is a protected path`, protectedPath: guarded }
+  const reason = heldBy(outside, ctx.held) ?? inOpenPr(outside, ctx.openPrs())
   return reason === undefined ? { kind: 'amend', files: [...outside] } : { kind: 'escalate', reason }
 }
 
-function protectedOrHeld(outside: readonly string[], held: readonly HeldOwns[]): string | undefined {
-  const guarded = outside.find(isProtectedPath)
-  if (guarded !== undefined) return `${guarded} is a protected path`
+function heldBy(outside: readonly string[], held: readonly HeldOwns[]): string | undefined {
   for (const file of outside) {
     const holder = held.find(h => h.owns.some(own => patternsOverlap(file, own)))
     if (holder !== undefined) return `${file} is under ${holder.holder}'s owns`

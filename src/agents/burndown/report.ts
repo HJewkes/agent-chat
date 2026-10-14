@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { z } from 'zod'
 import { OPS } from './ops.js'
 import { lintSlices, sliceWarnings } from './slice-lint.js'
@@ -66,12 +67,23 @@ export const Contract = z.object({
 })
 export type Contract = z.infer<typeof Contract>
 
+/** CC-1259: one open PR the slice may share one exact owns path with, because the planner read both edits as line-local. */
+export const AcceptedOverlap = z.object({
+  pr: z.number().int().positive(),
+  path: z.string().min(1),
+  why: z.string().trim().min(1),
+})
+export type AcceptedOverlap = z.infer<typeof AcceptedOverlap>
+
 const PlannedSlice = z.object({
   n: z.string().min(1),
   title: z.string(),
   dependsOn: z.array(z.string()).default([]),
   owns: z.array(z.string()).default([]),
-  /** The checkout's basename or path when the work is not in the task's own repo (CC-946). */
+  /**
+   * The checkout's basename or path when the work is not in the task's own repo (CC-946). Defaults to the
+   * plan's singular `Repo:` header (CC-1293).
+   */
   repo: z.string().optional(),
   points: z.number().optional(),
   doneWhen: z.string().optional(),
@@ -80,6 +92,8 @@ const PlannedSlice = z.object({
   ops: z.array(z.enum(OPS)).optional(),
   /** CC-1155: the semantic reason a slice waits on one whose owns it does not share. */
   dependsWhy: z.string().optional(),
+  /** CC-1259: file-overlaps with an open PR the planner accepted; every other overlap still refuses. */
+  overlapsAccepted: z.array(AcceptedOverlap).optional(),
 })
 /** `contracts` is optional on the type so fixtures built by hand stay valid; `readSlices` always fills it. */
 export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { contracts?: Contract[] }
@@ -104,8 +118,31 @@ export function readSlices(planText: string): SliceRead {
   const parsed = z.array(PlannedSlice).min(1).safeParse(json)
   if (!parsed.success) return { problems: parsed.error.issues.map(shapeProblem) }
   const problems = lintSlices(parsed.data)
-  return problems.length === 0 ? { slices: parsed.data, warnings: sliceWarnings(parsed.data) } : { problems }
+  if (problems.length > 0) return { problems }
+  const slices = withDefaultRepo(parsed.data, planRepo(planText))
+  return { slices, warnings: sliceWarnings(slices) }
 }
+
+const REPO_HEADER = /^\**Repo\**:\**(.*)$/m
+
+/**
+ * CC-1293: the checkout basename a plan's singular `Repo:` header names, read before the slices block.
+ * A `Repos:` header names several, so each slice must name its own and this returns undefined.
+ */
+export function planRepo(planText: string): string | undefined {
+  const fence = SLICES_BLOCK.exec(planText)?.index ?? planText.length
+  const value = REPO_HEADER.exec(planText.slice(0, fence))?.[1]
+  if (value === undefined) return undefined
+  const token = value
+    .replace(/[`*]/g, '')
+    .trim()
+    .split(/[\s,(;]/)[0]!
+    .replace(/\.+$/, '')
+  return token === '' ? undefined : path.basename(token)
+}
+
+const withDefaultRepo = (slices: PlannedSlice[], repo: string | undefined): PlannedSlice[] =>
+  repo === undefined ? slices : slices.map(s => (s.repo === undefined ? { ...s, repo } : s))
 
 const shapeProblem = (issue: z.core.$ZodIssue): string =>
   issue.path.length === 0

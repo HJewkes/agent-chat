@@ -1,6 +1,8 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
+import type { GateReading } from './gate-reading.js'
 import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag, publishOnlyProblem } from './ops.js'
+import type { Blocker } from './refusal-snapshot.js'
 import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
@@ -62,6 +64,7 @@ export type RefusalKind =
   | 'backoff'
   | 'plan-blocked'
   | 'stop-line'
+  | 'review-backpressure'
   | 'out-of-scope'
   | 'no-brief'
   | 'off-plan'
@@ -76,6 +79,12 @@ export interface Refusal {
   reason: string
   /** CC-945: the task's own tags, set on an `out-of-scope` refusal so the log can name the tag that failed. */
   tags?: readonly string[]
+  /** CC-1097: the lever behind a refusal `blocker()` made, with its figures when it is a capacity cap. */
+  gate?: GateReading
+  /** CC-1241: the slice letter of a refused ready slice. */
+  slice?: string
+  /** CC-1241: the task or PR the refusal waits on, for the refusal snapshot. */
+  blocker?: Blocker
 }
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']

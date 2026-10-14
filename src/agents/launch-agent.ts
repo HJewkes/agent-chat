@@ -18,6 +18,7 @@ import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
 import {
+  diskHarnessRoot,
   diskTmpRoot,
   realExitTmpDeps,
   removeOwnTmpDir,
@@ -148,16 +149,23 @@ export interface LaunchExitSteps {
 
 const realExitSteps: LaunchExitSteps = { reap: reapOwnLaunch, removeTmp: removeOwnTmpDir }
 
-/** Reaps the launch's orphans, then removes its TMPDIR from the same root it was made under. */
+/**
+ * Reaps the launch's orphans, then removes its TMPDIR from the same root it was made under, and
+ * its Claude Code harness dir (CC-1266).
+ */
 export function launchExitHook(
   agentId: string,
   name: string | undefined,
   root: string,
   steps: LaunchExitSteps = realExitSteps,
+  homeDir: string = os.homedir(),
 ): () => void {
   return () => {
     steps.reap(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
-    if (name !== undefined) steps.removeTmp(name, agentId, process.pid, realExitTmpDeps(logEvent), root)
+    if (name === undefined) return
+    const deps = realExitTmpDeps(logEvent)
+    steps.removeTmp(name, agentId, process.pid, deps, root)
+    steps.removeTmp(name, agentId, process.pid, deps, diskHarnessRoot(homeDir))
   }
 }
 

@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { PROBE_SANDBOX_RULE } from '../agents/return-contract-blocks.js'
 import {
   ANSWER_TEXT_MAX_BYTES,
+  briefFacts,
   briefWriterBrief,
   dataFence,
   PLANNER_BRIEF_MAX_BYTES,
   plannerBrief,
+  PRE_PUSH_CHECKS_MAX_BYTES,
+  prePushSection,
   QUESTION_TEXT_MAX_BYTES,
   REVIEW_TEXT_MAX_BYTES,
   REVIEWER_BRIEF_MAX_BYTES,
@@ -15,6 +18,7 @@ import {
   VERIFY_STEPS_MAX_BYTES,
   WORKER_BRIEF_MAX_BYTES,
   successorAfterAnswer,
+  successorAfterExit,
   successorAfterReview,
   successorAfterStall,
   verifySection,
@@ -218,6 +222,105 @@ describe('verifySection', () => {
   })
 })
 
+/** Shaped like the section TP-2410 adds to titan-platform's CLAUDE.md, between its neighbours. */
+const TP_PRE_PUSH = [
+  'Scoped checks for a worker under a named-tests-only rule; run them before the first push.',
+  '1. For each touched package: `pnpm exec eslint --config eslint.typed.config.js --suppressions-location eslint-suppressions.typed.json "packages/<pkg>/src/**/*.{ts,mts,cts,tsx}"` (CI: lint-types).',
+  '2. Once: `pnpm --filter @titan-design/code-graph... run build`, then `BASE_REF=origin/main pnpm dead:check`; on exit 75 (dag-check lock busy) retry once (CI: dag-check).',
+].join('\n')
+
+const TP_CLAUDE_MD = [
+  '# titan-platform',
+  '## Before you finish any change',
+  '`pnpm build && pnpm test && pnpm docs:build`',
+  '## Pre-push checks',
+  TP_PRE_PUSH,
+  '## Rules',
+  '- Never publish by hand.',
+  '',
+].join('\n\n')
+
+const TYPED_ESLINT =
+  'eslint --config eslint.typed.config.js --suppressions-location eslint-suppressions.typed.json'
+
+describe('the repo pre-push checks a worker brief carries (CC-1084)', () => {
+  const answer = { question: 'q', answer: 'a', provenance: 'decided' } as const
+
+  it('renders the titan-platform section in the worker brief and nothing past it', () => {
+    const brief = workerBrief(task(briefFacts(TP_CLAUDE_MD)))
+
+    expect(brief).toContain(TYPED_ESLINT)
+    expect(brief).toContain('"packages/<pkg>/src/**/*.{ts,mts,cts,tsx}"')
+    expect(brief).toContain('pnpm dead:check')
+    expect(brief).toContain('on exit 75 (dag-check lock busy) retry once')
+    expect(brief).not.toContain('docs:build')
+    expect(brief).not.toContain('Never publish by hand')
+  })
+
+  it('gives every worker successor the same section', () => {
+    const t = task(briefFacts(TP_CLAUDE_MD))
+    const successors = [
+      successorAfterAnswer(t, answer),
+      successorAfterReview(t, 'fix it'),
+      successorAfterStall(t, { code: 'phase-timeout', diffSummary: ' src/a.ts | 2 +-' }),
+      successorAfterExit(t, 2),
+    ]
+
+    for (const brief of successors) {
+      expect(brief).toContain(TYPED_ESLINT)
+      expect(brief).toContain('pnpm dead:check')
+    }
+  })
+
+  it('places the section after the verify block and before the machine rule', () => {
+    const brief = workerBrief(task({ verifySteps: '1. verify step', prePushChecks: TP_PRE_PUSH }))
+    const at = (s: string): number => brief.indexOf(s)
+
+    expect(at('1. verify step')).toBeGreaterThan(-1)
+    expect(at('1. verify step')).toBeLessThan(at('Scoped pre-push checks'))
+    expect(at(TYPED_ESLINT)).toBeLessThan(at('Machine rule'))
+  })
+
+  it('renders no block for a repo without the section', () => {
+    const facts = briefFacts('# r\n\n## Verify\n\n1. test\n')
+
+    expect(facts).toEqual({ verifySteps: '1. test' })
+    expect(workerBrief(task(facts))).not.toContain('Scoped pre-push checks')
+    expect(briefFacts(undefined)).toEqual({})
+  })
+
+  it('keeps a verify section and a pre-push section apart', () => {
+    const facts = briefFacts(
+      `# r\n\n## Verify\n\n1. npm run verify\n\n## Pre-push checks\n\n${TP_PRE_PUSH}\n`,
+    )
+
+    expect(facts.verifySteps).toBe('1. npm run verify')
+    expect(facts.prePushChecks).toBe(TP_PRE_PUSH)
+  })
+
+  it('cuts an oversized section and keeps every worker brief inside its budget', () => {
+    const checks = prePushSection(`## Pre-push checks\n\n${longText('Check', 50)}\n`) ?? ''
+    const kept = checks.slice(0, checks.lastIndexOf('\n'))
+    const t = largest({ verifySteps: verifySection(LARGE_VERIFY_MD) ?? '', prePushChecks: checks })
+
+    expect(bytes(kept)).toBeLessThanOrEqual(PRE_PUSH_CHECKS_MAX_BYTES)
+    expect(checks).toContain("`## Pre-push checks` in the repo's `CLAUDE.md`")
+    expect(bytes(workerBrief(t))).toBeLessThanOrEqual(WORKER_BRIEF_MAX_BYTES)
+    expect(bytes(successorAfterReview(t, longText('Finding', 300)))).toBeLessThanOrEqual(
+      SUCCESSOR_BRIEF_MAX_BYTES,
+    )
+    expect(
+      bytes(
+        successorAfterAnswer(t, {
+          question: longText('Q', 100),
+          answer: longText('A', 300),
+          provenance: 'human',
+        }),
+      ),
+    ).toBeLessThanOrEqual(SUCCESSOR_BRIEF_MAX_BYTES)
+  })
+})
+
 describe('the worker hands its PR to Shepherd (TP-468)', () => {
   it('registers with --kind, stops at pushed and falls back to a refusal line', () => {
     const brief = workerBrief(task())
@@ -242,10 +345,11 @@ describe('the worker hands its PR to Shepherd (TP-468)', () => {
 describe('a burndown worker on a busy machine (CC-803)', () => {
   const slice = { n: 'b', title: 'Wire it', planPath: '/aw/p.md' }
   const machineRule =
+    'run named tests and the scoped pre-push checks above only, as ' +
     "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
-    'never the full suite or `npm run verify`, and never `run_in_background`.'
+    "never the full suite, `npm run verify` or the repo's whole verify chain, and never `run_in_background`."
 
-  it('limits a plain and a slice worker to named tests', () => {
+  it('limits a plain and a slice worker to named tests and the scoped pre-push checks', () => {
     expect(workerBrief(task())).toContain(machineRule)
     expect(workerBrief(task({ slice }))).toContain(machineRule)
   })
@@ -457,5 +561,21 @@ describe('successor brief byte budgets (CC-757)', () => {
       ].join('\n\n'),
     )
     expect(successorAfterAnswer(base, answer)).not.toContain('truncated')
+  })
+})
+
+describe('a stacked worker brief', () => {
+  const stacked = { pr: 'acme/widgets#10', branch: 'agent/parent' }
+
+  it('tells the child to fall back to the default branch when the parent has already merged', () => {
+    const brief = workerBrief(task({ stackedOn: stacked, defaultBranch: 'trunk' }))
+
+    const fallback =
+      'If PR acme/widgets#10 has merged, `git merge origin/trunk` and open with `--base trunk`, without `--after`.'
+    expect(brief.split(fallback)).toHaveLength(3)
+  })
+
+  it('names no merged-parent fallback for an unstacked brief', () => {
+    expect(workerBrief(task())).not.toContain('has merged')
   })
 })

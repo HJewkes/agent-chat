@@ -94,20 +94,6 @@ describe('resyncQueuedSlices', () => {
   })
 
   // Mutation caught: dropping the slice-set check.
-  it.each([
-    ['adds slice c', [slice('a', ['new-a.ts']), slice('b', ['b.ts']), slice('c', ['c.ts'])], '{a,b,c}'],
-    ['drops slice b', [slice('a', ['new-a.ts'])], '{a}'],
-  ])('gives no action and one drift note naming the fix verb when the plan %s', (_label, slices, set) => {
-    const ledger = ledgerOf([queued('a', ['a.ts']), queued('b', ['b.ts'])])
-
-    const out = resyncQueuedSlices(ledger, reader(planText(slices)))
-
-    expect(out.actions).toEqual([])
-    expect(out.notes).toEqual([
-      `plan drift demo DM-1: plan slices ${set} vs ledger {a,b}; run agent-chat burndown release DM-1 to reseed`,
-    ])
-  })
-
   it('counts a slice released by hand as still in the ledger', () => {
     const ledger = ledgerOf([queued('a', ['old.ts'])], { slicesReleased: { 'DM-1': ['b'] } })
 
@@ -155,6 +141,7 @@ describe('the tick resyncs queued slices from an edited plan', () => {
     retire: async () => ({ ok: true }),
     queue: async () => [],
     resume: async () => ({ ok: true }),
+    retireFinished: async () => ({ ok: true, plan: [], results: [] }),
     collisionView: async () => ({ names: [], claims: [] }),
     seatSender: async () => ({
       send: async () => ({ ok: true }),

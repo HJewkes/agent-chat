@@ -13,8 +13,9 @@ import {
 } from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import { liveAgentOf } from '../agents/burndown/seat-tick.js'
-import { seedSlices } from '../agents/burndown/seed-slices.js'
+import { seedSlices, type PlanReader } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import { slicesReleasedComplete } from '../agents/burndown/slices-complete.js'
 import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
 import type { AgentIdentity } from '../protocol.js'
 
@@ -230,9 +231,9 @@ describe('burndown release --slice and link (CC-978)', () => {
     const ledger = readLedger(file())
     const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
     expect(ledger.claims).toEqual([])
-    expect(seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)).toEqual({
-      blocked: expect.stringContaining('already queued'),
-    })
+    const result = seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)
+    expect(result).toEqual({ blocked: expect.stringContaining('released') })
+    expect(result).toEqual({ blocked: expect.not.stringContaining('already queued') })
   })
 
   it('lets a whole-task release re-seed again', async () => {
@@ -242,10 +243,90 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(readLedger(file()).slicesReleased).toBeUndefined()
   })
 
+  it('lets a whole-task release re-seed a task whose slices were all released, as the refusal advises', async () => {
+    for (const n of ['a', 'b', 'c']) await releaseTask('CC-1', retire, NOW, n)
+    const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
+    const parent = { taskId: 'CC-1', initiative: 'demo' }
+    expect(seedSlices(parent, plan, readLedger(file()), NOW)).toEqual({
+      blocked: expect.stringContaining('agent-chat burndown release CC-1 to reseed'),
+    })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(ledger.slicesReleased).toBeUndefined()
+    expect(ledger.releases).toBeUndefined()
+    expect(seedSlices(parent, plan, ledger, NOW)).toEqual({
+      blocked: expect.not.stringContaining('released'),
+    })
+  })
+
+  it('leaves a task with a done slice and a released one released-complete on a whole-task release', async () => {
+    const ledger = {
+      ...EMPTY_LEDGER,
+      claims: [slice('a', { phase: 'done' })],
+      slicesReleased: { 'CC-1': ['b'] },
+    }
+    writeLedger(file(), ledger)
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1'] })
+    expect(readLedger(file())).toEqual(ledger)
+    expect(slicesReleasedComplete(readLedger(file()), 'CC-1')).toBe(true)
+  })
+
+  it('drops a held whole-task claim with released slices, retiring it and counting a backoff', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [claim()], slicesReleased: { 'CC-1': ['a'] } })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(retire).toHaveBeenCalledWith('bd-cc-1')
+    expect(ledger.claims).toEqual([])
+    expect(ledger.releases?.['CC-1']?.n).toBe(1)
+    expect(ledger.slicesReleased).toBeUndefined()
+  })
+
   it('refuses a slice with no held claim', async () => {
     const report = await releaseTask('CC-1', retire, NOW, 'z')
 
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+  })
+
+  describe('an unclaimed slice of a task whose claims are all done (CC-1240)', () => {
+    const planned =
+      (slices: string[], ran: string[]): PlanReader =>
+      () => ({
+        path: '/plan.md',
+        text: `\`\`\`burndown-slices\n${JSON.stringify(slices.map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+        ranOffLedger: ran.map(n => `bd-cc-1-${n}`),
+      })
+
+    beforeEach(() => {
+      writeLedger(file(), { ...EMPTY_LEDGER, claims: [slice('a', { phase: 'done' })] })
+    })
+
+    it('is released when an off-ledger run holds it, so the task stops waiting on that run', async () => {
+      const retireNone = vi.fn(async (_name: string) => ({ ok: true }))
+
+      const report = await releaseTask('CC-1', retireNone, NOW, 'b', planned(['a', 'b'], ['b']))
+
+      expect(report.ok).toBe(true)
+      expect(readLedger(file()).slicesReleased).toEqual({ 'CC-1': ['b'] })
+      expect(retireNone).not.toHaveBeenCalled()
+    })
+
+    it('is refused when the plan does not list it or no run holds it', async () => {
+      const notPlanned = await releaseTask('CC-1', retire, NOW, 'z', planned(['a', 'b'], ['b']))
+      const noRun = await releaseTask('CC-1', retire, NOW, 'b', planned(['a', 'b'], []))
+
+      expect(notPlanned).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+      expect(noRun).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice b'] })
+      expect(readLedger(file()).slicesReleased).toBeUndefined()
+    })
   })
 
   it('links a PR to a queued slice and refuses one that is not queued', async () => {

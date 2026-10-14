@@ -90,6 +90,27 @@ describe('planSeat below the ready floor (CC-986)', () => {
     expect(planned.notes).toContain('seat seat-a ready 0 below floor 4: planning 2 no-brief tasks')
   })
 
+  it('names the refusal kind and count of every briefer the trust gate refuses (CC-1302)', () => {
+    const tasks = IDS.map(id => task(id))
+
+    const planned = planSeat({
+      seat: SEAT,
+      rows: ROWS,
+      defaults: { initiative_decay: 0.5, share_caps: {} } as unknown as ScoringDefaults,
+      tasks: new Map([['alpha', tasks]]),
+      ledger: EMPTY_LEDGER,
+      budget: POOL,
+      brief: GATE,
+      readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
+      trust: () => 'installed Claude Code 9.9.9 is not a verified release',
+    })
+
+    expect(briefers(planned)).toEqual([])
+    expect(planned.notes).toContain(
+      'seat seat-a ready 0 below floor 4: planning 0 no-brief tasks; refused trust 5',
+    )
+  })
+
   it('dispatches no briefer when the ready depth is at the floor', () => {
     const ready = ['R-1', 'R-2', 'R-3', 'R-4']
     const tasks = [...IDS.map(id => task(id)), ...ready.map(id => task(id, [FRESH]))]
@@ -273,9 +294,9 @@ describe('planSeat slice supply counts only dispatchable slices (CC-1160)', () =
 })
 
 describe('planSeat off-plan tasks (CC-1112)', () => {
-  it('sends no briefer to an off-plan task and refuses it as off-plan', () => {
+  it('refuses marked and listed tasks as off-plan and briefs an unmarked one at a default priority', () => {
     const tasks = [
-      { ...task('A-1'), priority: 99 },
+      { ...task('A-1'), priority: 1842 },
       { ...task('A-2'), notes: 'outside accepted factory plan P-list' },
       task('A-3'),
       task('A-4'),
@@ -293,9 +314,8 @@ describe('planSeat off-plan tasks (CC-1112)', () => {
       readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
     })
 
-    expect(briefers(planned)).toEqual(['A-4', 'A-5'])
+    expect(briefers(planned)).toEqual(['A-1', 'A-4'])
     expect(planned.refusals.filter(r => r.kind === 'off-plan').map(r => [r.task, r.reason])).toEqual([
-      ['A-1', 'off-plan'],
       ['A-2', 'off-plan'],
       ['A-3', 'off-plan'],
     ])

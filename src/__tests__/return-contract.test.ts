@@ -24,7 +24,7 @@ import {
 } from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
-import type { ServerMessage } from '../protocol.js'
+import { HUMAN, type ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -117,6 +117,12 @@ const flat = (text: string): string => text.replace(/\s+/g, ' ')
 
 /** Counted with whitespace collapsed, because a pasted block is rewrapped. */
 const occurrences = (text: string, part: string): number => flat(text).split(flat(part)).length - 1
+
+/** The system prompt the launched process is handed, where a profile's prelude lands. */
+function appendedPrompt(agentId: string): string {
+  const args = readLaunchPlan(agentId).args
+  return args[args.indexOf('--append-system-prompt') + 1] ?? ''
+}
 
 /** One phrase per contract that only that contract's block contains. */
 const MARKER: Record<ReturnContract, string> = {
@@ -494,11 +500,13 @@ describe('a conversation that continues', () => {
     fs.writeFileSync(file, '{}\n')
   }
 
-  /** An implementer that got the block at spawn and has since exited, with a transcript to resume. */
-  async function finishedWorker(): Promise<string> {
-    const spawned = await supervisor.spawn(spawnReq({ spawnerConfigDir: tmp('agent-chat-account-') }))
+  /** An agent that got the block at spawn and has since exited, with a transcript to resume. */
+  async function finishedWorker(profile: ReturnContract = 'implementer'): Promise<string> {
+    const spawned = await supervisor.spawn(
+      spawnReq({ profile, spawnerConfigDir: tmp('agent-chat-account-') }),
+    )
     const agentId = spawned.agentId as string
-    expect(readLaunchPlan(agentId).stdin).toContain(MARKER.implementer)
+    expect(readLaunchPlan(agentId).stdin).toContain(MARKER[profile])
     const exit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
       .recordExit
     await exit.call(supervisor, agentId, { code: 0, signal: null })
@@ -530,6 +538,17 @@ describe('a conversation that continues', () => {
     expect(readLaunchPlan(agentId).stdin).toBe('fix the review items')
   })
 
+  // CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
+  it('still tells a resumed builtin reviewer the probe-sandbox rule', async () => {
+    const agentId = await finishedWorker('reviewer')
+
+    const resumed = await supervisor.resume('worker', { message: 'recheck', requestedBy: 'coord' })
+
+    expect(resumed.ok).toBe(true)
+    expect(readLaunchPlan(agentId).stdin).toBe('recheck')
+    expect(appendedPrompt(agentId)).toContain(PROBE_SANDBOX_RULE)
+  })
+
   it('is not handed the block again by a seat watchdog resume', async () => {
     const agentId = await finishedWorker()
 
@@ -554,6 +573,20 @@ describe('a conversation that continues', () => {
     })
 
     expect(readLaunchPlan('successor-1').stdin).toBe('carry on from the handoff')
+  })
+})
+
+// CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
+describe('a builtin reviewer launched without the contract block', () => {
+  it.each([
+    ['from the CLI', { requestedBy: HUMAN }],
+    ['with return_contract none', { returnContract: 'none' }],
+  ])('is told the probe-sandbox rule when started %s', async (_route, over) => {
+    const result = await supervisor.spawn(spawnReq({ profile: 'reviewer', ...over }))
+    const agentId = result.agentId as string
+
+    expect(readLaunchPlan(agentId).stdin).not.toContain(MARKER.reviewer)
+    expect(appendedPrompt(agentId)).toContain(PROBE_SANDBOX_RULE)
   })
 })
 

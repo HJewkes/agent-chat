@@ -650,6 +650,37 @@ describe('refusing to park what the removal would lose', () => {
     expect((await sup.park('worker-a')).ok).toBe(true)
     expect(fs.existsSync(agent.cwd)).toBe(false)
   })
+
+  it('parks a tree whose only ignored files are api-extractor temp reports in a package dir', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses a scratch file beside api-extractor temp, naming only the scratch file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\nscratch.md\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.md'), 'notes\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(scratch\.md\)/) })
+    expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
+  })
 })
 
 describe('refusing to park a running or shared agent', () => {
@@ -853,5 +884,107 @@ describe('parking a tree pushed under another branch name (CC-1039)', () => {
     expect(resumed.reason).toBeUndefined()
     expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe('side')
     expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(pushed)
+  })
+})
+
+describe('parking a squash-merged tree whose head branch origin deleted (CC-1064)', () => {
+  const branch = 'agent-chat/worker-a'
+
+  /** A tree whose HEAD was pushed as its PR branch, which origin then deleted and a fetch pruned. */
+  async function mergedAndDeleted(): Promise<{ repo: string; tree: string; head: string }> {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const head = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', `HEAD:${branch}`], agent.cwd)
+    git(['branch', '-q', '-D', branch], git(['remote', 'get-url', 'origin'], repo))
+    git(['fetch', '-q', '--prune', 'origin'], repo)
+    return { repo, tree: agent.cwd, head }
+  }
+
+  const targetOf = (repo: string, tree: string) => ({
+    gitRoot: repo,
+    worktree: tree,
+    branch,
+    assigned: false,
+  })
+
+  it('parks when a merged PR on the branch has HEAD as its head commit, keeping the branch', async () => {
+    const { repo, tree, head } = await mergedAndDeleted()
+    const asked: string[] = []
+    const reader = async (_root: string, b: string) => (asked.push(b), [{ number: 7, headSha: head }])
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toEqual({ ok: true, head, branch, mergedPr: 7 })
+    expect(asked).toEqual([branch])
+    expect(fs.existsSync(tree)).toBe(false)
+    expect(branchHead(repo, branch)).toBe(head)
+  })
+
+  it('refuses when no merged PR is on the branch', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const parked = await parkWorktree(
+      targetOf(repo, tree),
+      () => undefined,
+      undefined,
+      async () => [],
+    )
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses when gh cannot answer', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+    const reader = async () => Promise.reject(new Error('gh: not logged in'))
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses a commit made after the merged PR head', async () => {
+    const { repo, tree, head } = await mergedAndDeleted()
+    commitIn(tree, 'more.ts')
+
+    const reader = async () => [{ number: 7, headSha: head }]
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses a PR head commit whose object is not local', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const reader = async () => [{ number: 7, headSha: 'f'.repeat(40) }]
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('parks a tree on a local side branch whose merged PR holds HEAD, keeping that branch', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '-b', 'side'], agent.cwd)
+    const head = commitIn(agent.cwd, 'feature.ts')
+    const reader = async (_root: string, b: string) => (b === 'side' ? [{ number: 9, headSha: head }] : [])
+
+    const parked = await parkWorktree(targetOf(repo, agent.cwd), () => undefined, undefined, reader)
+
+    expect(parked).toEqual({ ok: true, head, branch: 'side', mergedPr: 9 })
+    expect(branchHead(repo, 'side')).toBe(head)
+  })
+
+  it('refuses as before when no reader is passed', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined)
+
+    expect(parked).toEqual({ ok: false, reason: `${branch} is not on origin; push it first` })
+    expect(fs.existsSync(tree)).toBe(true)
   })
 })

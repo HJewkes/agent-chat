@@ -109,6 +109,7 @@ import {
   withRunningBroker,
   type Reply,
 } from './seat-broker.js'
+import { kicksInBroker, refusedKickFlags, sendJobKick, type JobKickFrame } from './job-kick.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
 import { respawnSeat } from './seat-respawn.js'
@@ -383,6 +384,16 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
   return { ok: true, lines }
 }
 
+async function kickJob(frame: JobKickFrame, flags: Record<string, unknown>): Promise<Report> {
+  const flagRefusal = refusedKickFlags(frame.job, flags)
+  if (flagRefusal !== undefined) return flagRefusal
+  try {
+    return await sendJobKick(frame)
+  } catch (err) {
+    return refused(err)
+  }
+}
+
 export const seatsWatchdogVerb = defineVerb({
   name: 'seats.watchdog',
   description:
@@ -420,6 +431,11 @@ export const seatsWatchdogVerb = defineVerb({
     },
   },
   async run({ dryRun, replay: day, seat, reading, root, fireCap }) {
+    if (kicksInBroker() && dryRun !== true && day === undefined)
+      return kickJob(
+        { t: 'job_kick', job: 'seats_watchdog' },
+        { '--root': root, '--seat': seat, '--fire-cap': fireCap },
+      )
     const offLease = hostLeaseRefusal()
     if (offLease !== undefined) return refused(new Error(offLease))
     const dir = root ?? defaultAutonomyRoot()
@@ -457,9 +473,11 @@ export const seatsHeartbeatCheckVerb = defineVerb({
     },
   },
   async run({ seat, root, dryRun }) {
+    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
+    if (kicksInBroker() && dryRun !== true)
+      return kickJob({ t: 'job_kick', job: 'seats_heartbeat_check', seat }, { '--root': root })
     const offLease = hostLeaseRefusal()
     if (offLease !== undefined) return refused(new Error(offLease))
-    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
     const dir = root ?? defaultAutonomyRoot()
     try {
       const result = await withRunningBroker(client =>

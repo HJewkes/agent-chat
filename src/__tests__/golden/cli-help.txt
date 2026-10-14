@@ -21,6 +21,8 @@ Commands:
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
+  port                       JSON envelope ports for the dispatch factory; none of them starts a
+                             broker
   machine                    operator HOLDs, owner stops and the machine stop
   host                       host launchers: machines a teleport can land a successor on
   debug                      diagnostics: sessions, history, routing
@@ -36,6 +38,8 @@ Agent commands:
   profiles [name]            agent profiles available to spawn with
   gh-calls [options]         read the GitHub call log: top callers and routes, and 403s split by
                              limit
+  counts [options]           every count derived from live state, beside what each surface shows,
+                             with a verdict per difference
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -266,6 +270,8 @@ Commands:
                             place, keeping its PR and agents
   landed [options]          every open, unreconciled task in a seat's scope that a recent
                             default-branch subject or Covers clause names (CC-611); writes nothing
+  classify [options]        classify every open task on, off or ambiguous against section 2 of the
+                            accepted plan; --write publishes off-plan-<date>.md (TP-2418)
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -289,6 +295,9 @@ Options:
   --top <value>            picks to print with --scored (default 20)
   --autonomy-root <value>  directory holding charter.md and seats/
   --today <value>          pin the staleness clock (YYYY-MM-DD) with --scored
+  --shares <value>         with --seat: what-if project shares, <slug>=<share>,...; prints the next
+                           picks by project before -> after
+  --picks <value>          picks the --shares what-if forecasts (default 20)
   -h, --help               display help for command
 
 === agent-chat burndown milestone
@@ -331,20 +340,23 @@ Usage: agent-chat burndown brief [options] [command]
 task brief lifecycle (item 179)
 
 Options:
-  -h, --help      display help for command
+  -h, --help                display help for command
 
 Commands:
-  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
-                  plan file
-  help [command]  display help for command
+  approve [options] <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused
+                            without a plan file or when off plan
+  help [command]            display help for command
 
 === agent-chat burndown brief approve
 Usage: agent-chat burndown brief approve [options] <task>
 
-promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when
+off plan
 
 Options:
-  -h, --help  display help for command
+  --off-plan-ok <reason>  approve an off-plan task for owner-ordered work; the reason is logged as a
+                          task note
+  -h, --help              display help for command
 
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
@@ -443,6 +455,22 @@ Options:
   --json                   one JSON record per row, one per line
   --autonomy-root <value>  directory holding charter.md and seats/
   -h, --help               display help for command
+
+=== agent-chat burndown classify
+Usage: agent-chat burndown classify [options]
+
+classify every open task on, off or ambiguous against section 2 of the accepted plan; --write
+publishes off-plan-<date>.md (TP-2418)
+
+Options:
+  --plan <value>        the accepted factory plan whose "## 2." section names on-plan ids
+  --initiative <value>  an active-work initiative whose open tasks to classify (repeatable)
+  --out-dir <value>     where off-plan-<date>.md goes (default claude-channels factory-review)
+  --write               write the file; without it the run is a dry run
+  --ask <label>         ask the owner on/off once per ambiguous task under this service label, and
+                        apply answers (needs --write)
+  --json                one JSON record per task, one per line
+  -h, --help            display help for command
 
 === agent-chat burndown config
 Usage: agent-chat burndown config [options] [command]
@@ -862,6 +890,103 @@ Options:
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
 
+=== agent-chat port
+Usage: agent-chat port [options] [command]
+
+JSON envelope ports for the dispatch factory; none of them starts a broker
+
+Options:
+  -h, --help                              display help for command
+
+Commands:
+  roster                                  print every agent row, retired ones included, and the slot
+                                          count as one JSON line
+  inbox-since [options] <name> <afterId>  print a session's messages after a cursor as one JSON
+                                          line; delivers nothing
+  queue                                   print the human queue as one JSON envelope line; never
+                                          starts a broker
+  files-claims                            print live names, recently exited agents and every files
+                                          claim as one JSON line
+  spawn [options]                         spawn from burndown's spawn frame on stdin as one JSON
+                                          envelope line; never starts a broker
+  retire <name>                           retire one agent as burndown does, as one JSON envelope
+                                          line; never starts a broker
+  resume [options] <name>                 resume an agent headless on a message from stdin, as one
+                                          JSON envelope line
+  send [options] [to]                     send or notify as burndown, text on stdin, as one JSON
+                                          envelope line; never starts a broker
+  help [command]                          display help for command
+
+=== agent-chat port roster
+Usage: agent-chat port roster [options]
+
+print every agent row, retired ones included, and the slot count as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port inbox-since
+Usage: agent-chat port inbox-since [options] <name> <afterId>
+
+print a session's messages after a cursor as one JSON line; delivers nothing
+
+Options:
+  --limit <value>  most messages to return (default 200)
+  -h, --help       display help for command
+
+=== agent-chat port queue
+Usage: agent-chat port queue [options]
+
+print the human queue as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port files-claims
+Usage: agent-chat port files-claims [options]
+
+print live names, recently exited agents and every files claim as one JSON line
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port spawn
+Usage: agent-chat port spawn [options]
+
+spawn from burndown's spawn frame on stdin as one JSON envelope line; never starts a broker
+
+Options:
+  --frame-stdin  read the spawn frame JSON from stdin
+  -h, --help     display help for command
+
+=== agent-chat port retire
+Usage: agent-chat port retire [options] <name>
+
+retire one agent as burndown does, as one JSON envelope line; never starts a broker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat port resume
+Usage: agent-chat port resume [options] <name>
+
+resume an agent headless on a message from stdin, as one JSON envelope line
+
+Options:
+  --message-stdin  read the wake message from stdin
+  -h, --help       display help for command
+
+=== agent-chat port send
+Usage: agent-chat port send [options] [to]
+
+send or notify as burndown, text on stdin, as one JSON envelope line; never starts a broker
+
+Options:
+  --as <sender>  the sender label; only burndown
+  --notify       file a notice on the human queue instead of messaging an agent
+  --task <id>    the task a notice is about (with --notify)
+  -h, --help     display help for command
+
 === agent-chat machine
 Usage: agent-chat machine [options] [command]
 
@@ -1255,6 +1380,18 @@ Options:
   --json           print the summary as one JSON object
   -h, --help       display help for command
 
+=== agent-chat counts
+Usage: agent-chat counts [options]
+
+every count derived from live state, beside what each surface shows, with a verdict per difference
+
+Options:
+  --check         exit 1 on an unexplained difference, 2 when a live reader failed
+  --json          one JSON object: the exit status and K1 counts
+  --seat <value>  only this seat's counts, plus the machine-wide ones
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
+
 === agent-chat gh-write
 Usage: agent-chat gh-write [options] <gh-args...>
 
@@ -1361,9 +1498,11 @@ Options:
 Usage: agent-chat permission-hook [options]
 
 Options:
-  --deadline <seconds>        give up and withdraw the prompt after this long (default: "1790")
-  --self-grant-skills <root>  allow writes under this worktree's .claude/skills/<name>/ (CC-694)
-  -h, --help                  display help for command
+  --deadline <seconds>           give up and withdraw the prompt after this long (default: "1790")
+  --self-grant-skills <root>     allow writes under this worktree's .claude/skills/<name>/ (CC-694)
+  --self-grant-common-dir <dir>  the git common dir pinned at launch; self-grant refuses without it
+                                 (CC-1200)
+  -h, --help                     display help for command
 
 === agent-chat stale-session-guard
 Usage: agent-chat stale-session-guard [options] <agentId>

@@ -1,4 +1,5 @@
 import { planPathFor } from '../agents/burndown/brief.js'
+import { briefVersion } from '../agents/burndown/brief-approve.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -9,9 +10,10 @@ import type { BrokerView } from '../agents/burndown/collision.js'
 import { egressRunner, type EgressRunner } from '../agents/burndown/egress-runner.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
-import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
+import { ShadowRecordV1, type ShadowRecord } from '../agents/burndown/shadow-record.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
@@ -181,6 +183,7 @@ function fakeBroker(
         fake.resumes.push({ name, message })
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
+      retireFinished: async () => ({ ok: true, plan: [], results: [] }),
       collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
       seatSender: async () => {
         fake.senders.opened += 1
@@ -792,7 +795,7 @@ describe('burndown tick gates', () => {
 
   it('pins the dry-run output of a tick with no seats configured', async () => {
     // The brief names the fixture repo twice, so its length moves with the temp dir.
-    const BRIEF_CHARS_BESIDE_PATHS = 1918
+    const BRIEF_CHARS_BESIDE_PATHS = 1986
     initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2), 'DM-3': 'id: DM-3\nstatus: open\n' })
     writeLedger(burndownLedgerPath(), {
       version: 1,
@@ -1401,7 +1404,7 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
       'refused demo DM-1 [claimed]: seat seat-t dispatched it earlier this tick as st-dm-1',
     )
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, charter)",
     )
   })
 
@@ -1461,6 +1464,83 @@ describe("burndown tick claims a slice's owns at spawn (CC-952)", () => {
 
     expect(fake.frames).toEqual([])
     expect(lines.join('\n')).toMatch(/refused demo DM-1 \[claimed\]: \S+ is under peer-1's file claim/)
+  })
+})
+
+describe('burndown tick writes its shadow decision record (CC-1193)', () => {
+  const shadowDir = (): string => path.join(world, 'home', 'burndown-shadow')
+  const records = (): ShadowRecord[] =>
+    fs
+      .readdirSync(path.join(shadowDir(), 'records'))
+      .map(n =>
+        ShadowRecordV1.parse(JSON.parse(fs.readFileSync(path.join(shadowDir(), 'records', n), 'utf8'))),
+      )
+  const ledgerOf = (record: ShadowRecord): Ledger =>
+    JSON.parse(fs.readFileSync(path.join(shadowDir(), 'ledgers', `${record.ledgerSha}.json`), 'utf8'))
+
+  beforeEach(() => {
+    seatPolicy()
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          slice: 'a',
+          owns: ['src/a/**'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'queued',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+  })
+
+  // Mutation caught: capturing the ledger after writeLedger records the claim as spawning.
+  it('records the ledger as read and names the queued claim it dispatches with its profile and account', async () => {
+    config({ seats: ['seat-t'] })
+
+    await tick(fakeBroker())
+
+    const [record, ...rest] = records()
+    expect(rest).toEqual([])
+    expect(record!.ts).toBe(NOON.toISOString())
+    expect(ledgerOf(record!).claims.map(c => [c.slice, c.phase])).toEqual([['a', 'queued']])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.phase).not.toBe('queued')
+    expect(record!.decisions.dispatches).toEqual([
+      {
+        seat: 'seat-t',
+        initiative: 'demo',
+        task: 'DM-1',
+        slice: 'a',
+        profile: 'bd-implementer',
+        account: 'pool-t',
+        name: 'st-dm-1-a',
+      },
+    ])
+  })
+
+  it('writes no record when shadowOut is false, or for a dry run', async () => {
+    config({ seats: ['seat-t'], shadowOut: false })
+    await tick(fakeBroker())
+    config({ seats: ['seat-t'] })
+    await tick(fakeBroker(), true)
+
+    expect(fs.existsSync(shadowDir())).toBe(false)
+  })
+
+  it('logs a record it cannot write and still finishes the tick', async () => {
+    config({ seats: ['seat-t'] })
+    write(shadowDir(), 'not a directory')
+    const events: string[] = []
+
+    await tick(fakeBroker(), false, e => events.push(e))
+
+    expect(events).toContain('burndown_shadow_record_failed')
+    expect(readLedger(burndownLedgerPath()).lastTickAt).toBe(NOON.toISOString())
   })
 })
 
@@ -1817,7 +1897,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
 
     expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-r0'])
     expect(lines).toContain(
-      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; seven_day 42% (reading 40% + 2 charged: 1 dispatch(es) this tick at 2 each, default)",
     )
   })
 
@@ -2114,6 +2194,136 @@ describe('burndown tick wakes the decider', () => {
     expect(lines.join('\n')).toContain('would wake decider decider (headless) for 1 waiting question(s)')
     expect(fake.resumes).toEqual([])
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
+  })
+})
+
+describe('burndown tick settles proposed briefs through one decider gate (CC-1234)', () => {
+  const TODAY = '2026-09-26'
+  const PROPOSED = `brief:proposed=${TODAY}`
+  const slice = { n: 'a', title: 'one slice', points: 2, doneWhen: 'tests pass', owns: ['src/a.ts'] }
+  const planWith = (slices: unknown[]): string =>
+    `# Plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
+  const LINTED = planWith([slice])
+  const UNLINTED = planWith([{ ...slice, points: 8 }])
+  const taskFile = (id: string): string => path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`)
+  const tagsOf = (id: string): string[] =>
+    fs
+      .readFileSync(taskFile(id), 'utf8')
+      .split('\n')
+      .filter(l => l.startsWith('  - '))
+      .map(l => l.slice(4))
+
+  /** Stands in for `active-work task edit`: tags are the fixture's last block, so a tag line is appended or dropped. */
+  const briefEdit = (_slug: string, id: string, args: string[]): void => {
+    const [flag, value] = args
+    const text = fs.readFileSync(taskFile(id), 'utf8')
+    if (flag === '--add-tag') fs.writeFileSync(taskFile(id), `${text}  - ${value}\n`)
+    if (flag === '--remove-tag')
+      fs.writeFileSync(
+        taskFile(id),
+        text
+          .split('\n')
+          .filter(l => l !== `  - ${value}`)
+          .join('\n'),
+      )
+  }
+
+  const proposedBriefs = (briefs: Record<string, string>): void => {
+    initiative(Object.fromEntries(Object.keys(briefs).map(id => [id, `${task(id)}  - ${PROPOSED}\n`])))
+    for (const [id, plan] of Object.entries(briefs))
+      write(planPathFor(path.join(world, 'aw', 'demo'), id), plan)
+  }
+
+  /** The broker refuses a second resume of an agent the first one made live, as the supervisor does. */
+  const liveAfterFirstResume = (): ((name: string) => SpawnReply) => {
+    let resumed = false
+    return () => {
+      if (resumed) return { ok: false, reason: 'decider is already live; message it instead' }
+      resumed = true
+      return { ok: true, agentId: 'id-decider' }
+    }
+  }
+
+  const tickWithEdits = (fake: Fake) =>
+    tickFromDisk({
+      dryRun: false,
+      broker: fake.broker,
+      now: NOON,
+      log: () => {},
+      exec: stubGh(),
+      egress: CLEAN_SCAN,
+      briefEdit,
+    })
+
+  it('resumes the decider once for a failing brief and an old open question, naming both', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({
+      agents: [deciderRow('exited')],
+      queue: [question(6)],
+      resume: liveAfterFirstResume(),
+    })
+
+    await tickWithEdits(fake)
+
+    expect(fake.resumes).toHaveLength(1)
+    expect(fake.resumes[0]?.message).toContain('`agent-chat queue --questions --json`')
+    expect(fake.resumes[0]?.message).toContain('DM-2')
+    const decider = readLedger(burndownLedgerPath()).decider
+    expect(decider?.wakes).toHaveLength(1)
+    expect(decider?.refused).toBeUndefined()
+  })
+
+  it('approves a lint-passing brief and counts the failing one as a decider wake', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-1': LINTED, 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')], resume: liveAfterFirstResume() })
+
+    const lines = await tickWithEdits(fake)
+
+    expect(tagsOf('DM-1')).toEqual(expect.arrayContaining([`brief:ready=${TODAY}`, 'brief:src=briefer']))
+    expect(tagsOf('DM-1')).not.toContain(PROPOSED)
+    expect(tagsOf('DM-2')).toContain(PROPOSED)
+    expect(tagsOf('DM-2')).toContain(`brief:decider=${briefVersion(PROPOSED, UNLINTED)}`)
+    expect(fake.resumes).toHaveLength(1)
+    expect(readLedger(burndownLedgerPath()).decider?.wakes).toHaveLength(1)
+    expect(lines.join('\n')).toContain('auto: slice lint passed')
+  })
+
+  it('records no decider send when the tick fails before the wake, so the next tick still sends it', async () => {
+    deciderSetup()
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')] })
+    const down: Fake = {
+      ...fake,
+      broker: {
+        ...fake.broker,
+        roster: async () => {
+          throw new Error('synthetic roster failure')
+        },
+      },
+    }
+
+    await tickWithEdits(down)
+    const afterFailure = tagsOf('DM-2')
+    await tickWithEdits(fake)
+
+    expect(afterFailure.some(t => t.startsWith('brief:decider='))).toBe(false)
+    expect(fake.resumes).toHaveLength(1)
+    expect(fake.resumes[0]?.message).toContain('DM-2')
+    expect(tagsOf('DM-2')).toContain(`brief:decider=${briefVersion(PROPOSED, UNLINTED)}`)
+  })
+
+  it('holds a failing brief for the next tick when the decider is at its hourly cap', async () => {
+    deciderSetup('id-decider', { decider: { name: 'decider', maxPerHour: 1 } })
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo([10]) } })
+    proposedBriefs({ 'DM-2': UNLINTED })
+    const fake = fakeBroker({ agents: [deciderRow('exited')] })
+
+    await tickWithEdits(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(tagsOf('DM-2').some(t => t.startsWith('brief:decider='))).toBe(false)
   })
 })
 
@@ -2645,7 +2855,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(fake.frames).toEqual([])
     expect(fake.sends.map(s => s.text)).toEqual([
-      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report\nstale DM-1: other: proposed read the report and settle by hand`,
+      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report; holds: task; class failed\nstale DM-1: other: proposed read the report and settle by hand`,
     ])
     expect(claimOf()?.triage).toBeUndefined()
   })
@@ -2703,7 +2913,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(fake.frames).toEqual([])
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: task; class failed'])
     expect(lines).toContain(
       'triage of DM-1# falls back to the owner: triage is not ready: no exceptions.triage in the burndown config',
     )
@@ -2716,7 +2926,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(triageFrames(fake)).toHaveLength(1)
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: task; class failed'])
     expect(claimOf()?.triage).toMatchObject({
       outcome: 'refused',
       detail: 'triage triage-dm-1-1 refused: no slot',
@@ -2736,7 +2946,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(triageFrames(fake)).toHaveLength(1)
     expect(stalledLines(fake)).toEqual([
-      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled); holds: task; class failed',
     ])
     expect(claimOf()?.triage?.outcome).toBe('ended')
   })
@@ -2753,7 +2963,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(before).toEqual([])
     expect(stalledLines(fake)).toEqual([
-      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled)',
+      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled); holds: task; class failed',
     ])
   })
 
@@ -2780,7 +2990,9 @@ describe('burndown tick triage jobs (CC-649)', () => {
     await tickAt(fake, 0)
 
     expect(fake.frames).toEqual([])
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: Shepherd refused demo/repo#5'])
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: Shepherd refused demo/repo#5; holds: task; class gate-trip',
+    ])
   })
 
   it('starts one job under maxPerDay 1 and sends the second stall to the owner with a cap note', async () => {
@@ -2791,7 +3003,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = await tickAt(fake, 0)
 
     expect(triageFrames(fake).map(f => f.name)).toEqual(['triage-dm-1-1'])
-    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report; holds: task; class failed'])
     expect(lines).toContain(
       'triage of DM-2# falls back to the owner: triage day cap spent (1 of maxPerDay 1)',
     )
@@ -2810,7 +3022,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
     expect(triageFrames(fake)).toEqual([])
     expect(before).toEqual([])
     expect(waiting.join('\n')).toContain('triage of DM-1# waits: no agent capacity')
-    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report; holds: lane + task; class failed'])
     expect(late).toContain(
       'triage of DM-1# falls back to the owner: no agent capacity for triage in maxMinutes 30',
     )
@@ -3011,5 +3223,222 @@ describe('burndown tick reads the real broker view and checkouts (CC-946)', () =
     expect(lines.join('\n')).toContain(
       `refused demo DM-1 [trust]: no accepted trust entry for ${other} or ${other}/.worktrees/st-dm-1-a`,
     )
+  })
+})
+
+describe('burndown tick closes an all-released parent whose slices landed (CC-1238)', () => {
+  const sliceClaim = (n: string): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    seat: 'seat-t',
+    namePrefix: 'st',
+    slice: n,
+    repo: repo(),
+    spawnedAt: NOON.toISOString(),
+    phase: 'done',
+    phaseAt: NOON.toISOString(),
+  })
+  const taskFile = (): string => path.join(world, 'aw', 'demo', 'tasks', 'DM-1.yml')
+
+  const releasedParent = (): void => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [sliceClaim('a')],
+      slicesReleased: { 'DM-1': ['b'] },
+    })
+  }
+
+  const land = (...subjects: string[]): void => {
+    for (const subject of subjects) git(repo(), 'commit', '-q', '--allow-empty', '-m', subject)
+    git(repo(), 'push', '-q', 'origin', 'main')
+  }
+
+  /** Stands in for `active-work task done`: the fixture's status line flips, so the next tick reads it closed. */
+  const doneCalls = (): { calls: string[][]; done: (slug: string, id: string) => void } => {
+    const calls: string[][] = []
+    return {
+      calls,
+      done: (slug, id) => {
+        calls.push([slug, id])
+        fs.writeFileSync(
+          taskFile(),
+          fs.readFileSync(taskFile(), 'utf8').replace('status: open', 'status: done'),
+        )
+      },
+    }
+  }
+
+  const tickWith = (done: (slug: string, id: string) => void, exec: Runner = stubGh()) =>
+    tickFromDisk({
+      dryRun: false,
+      broker: fakeBroker().broker,
+      now: NOON,
+      log: () => {},
+      exec,
+      egress: CLEAN_SCAN,
+      taskDone: done,
+    })
+
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+  })
+
+  it('closes the parent once, however many ticks follow', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+    await tickWith(done)
+
+    expect(calls).toEqual([['demo', 'DM-1']])
+  })
+
+  it('only flags a parent whose released slice has no commit on the default branch', async () => {
+    releasedParent()
+    land('DM-1 a: first slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+    expect(readLedger(burndownLedgerPath()).slicesFlagged).toEqual(['demo/DM-1:released'])
+  })
+
+  it('leaves a parent open when the second commit is a typo fix opening with the id', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1: fix typo in docs')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open when a slice commit was reverted', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1 b: second slice', 'Revert "DM-1 b: second slice"')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it("leaves a parent open when the second commit belongs to another task's subject", async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-9: follow-up filed from DM-1')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open when the open-PR read fails', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(
+      done,
+      stubGh(() => ({ status: 1, stdout: '' })),
+    )
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open when its repo cannot be read', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const unreadable: Runner = (bin, args, cwd) =>
+      bin === GIT_BIN && args.includes('fetch')
+        ? { status: 1, stdout: '', stderr: '' }
+        : stubGh()(bin, args, cwd)
+    const { calls, done } = doneCalls()
+
+    await tickWith(done, unreadable)
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a landed parent open while a plan slice ran off-ledger with no claim (CC-1240)', async () => {
+    releasedParent()
+    const slices = ['a', 'b', 'c'].map(n => ({
+      n,
+      title: n,
+      dependsOn: [],
+      owns: [`${n}.ts`],
+      points: 1,
+      doneWhen: `${n} passes.`,
+    }))
+    write(
+      path.join(world, 'aw', 'demo', 'sources', 'DM-1-plan.md'),
+      `\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`,
+    )
+    const run = { ts: NOON.toISOString(), task: 'DM-1', agent: 'st-dm-1-c', outcome: 'dispatched' }
+    write(
+      path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy', 'logs', 'seat-t', 'dispatch.jsonl'),
+      `${JSON.stringify(run)}\n`,
+    )
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const { calls, done } = doneCalls()
+
+    await tickWith(done)
+
+    expect(calls).toEqual([])
+  })
+
+  it('leaves a parent open while an open PR title names it', async () => {
+    releasedParent()
+    land('DM-1 a: first slice', 'DM-1 b: second slice')
+    const pr = { number: 9, title: 'DM-1 c: more', branch: 'x', body: '' }
+    const exec = stubGh(() => ({ status: 0, stdout: JSON.stringify(pr) }))
+    const { calls, done } = doneCalls()
+
+    await tickWith(done, exec)
+
+    expect(calls).toEqual([])
+  })
+})
+
+describe('burndown tick sweeps exited trees park-at-exit kept (CC-1257)', () => {
+  function sweepFixture(): { fake: Fake; parks: string[] } {
+    const tree = path.join(repo(), '.worktrees', 'bd-old')
+    fs.mkdirSync(tree, { recursive: true })
+    const parks: string[] = []
+    const fake = fakeBroker({
+      agents: [{ ...row('bd-old', 'exited', tree), exitedAt: NOON.getTime() - 60_000 }],
+    })
+    fake.broker = {
+      ...fake.broker,
+      park: async name => {
+        parks.push(name)
+        return { ok: true }
+      },
+    }
+    return { fake, parks }
+  }
+
+  it('parks an exited tree no claim reads and logs the counts', async () => {
+    const { fake, parks } = sweepFixture()
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(parks).toEqual(['bd-old'])
+    expect(lines).toContain('parked bd-old')
+    expect(logged).toContainEqual({ event: 'burndown_park_sweep', detail: { parked: 1, kept: 0, left: 0 } })
+  })
+
+  it('a dry run parks nothing and names the candidate', async () => {
+    const { fake, parks } = sweepFixture()
+
+    const lines = await tick(fake, true)
+
+    expect(parks).toEqual([])
+    expect(lines).toContain('would park 1: bd-old')
   })
 })

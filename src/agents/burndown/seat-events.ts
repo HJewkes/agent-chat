@@ -1,9 +1,11 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import { checkpointHolds, undeliverable } from './checkpoint.js'
+import { claimHold, STALL_AGED_MS, stallAgeMs, type LiveAgent } from './claim-hold.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
 import { BRAKE_WINDOW_MS, brakeSince, releasesDue, releasesSince } from './ladder.js'
 import { factFingerprint } from './liveness.js'
+import { localDate } from './seat-tick.js'
 import { ownerDue, stallDetail } from './triage.js'
 
 /**
@@ -17,11 +19,13 @@ export const EVENT_KINDS = [
   'merged',
   'stalled',
   'stalled-after-claim',
+  'stall-aged',
   'parked',
   'leak',
   'released',
   'brake',
   'stale',
+  'slices-merged',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -34,6 +38,16 @@ export interface SeatEvent {
   code?: StallCode
   /** On a brake event: the braked claims' stalls it stands for, told and journaled with it but given no line (CC-829). */
   covers?: SeatEvent[]
+  /** On a slices-merged event: the `<initiative>/<id>` keys it flags, recorded on the ledger once told (CC-1049). */
+  flagged?: string[]
+  /** On a stall-aged event: the local day it is told for, so an aged stall resurfaces once a day (CC-985). */
+  day?: string
+}
+
+/** The tick's clock, and whose agents may run; without `live` a claim's hold is read from the ledger alone. */
+export interface SeatEventOptions {
+  now: Date
+  live?: LiveAgent
 }
 
 /** One spawn the tick sent; only a delivered spawn counts as a dispatch. */
@@ -67,23 +81,19 @@ const merged = (before: Claim | undefined, after: Claim): boolean =>
     after.notified?.includes('ready-to-merge') === true)
 
 /** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
-function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): SeatEvent[] {
-  const event = (kind: EventKind, detail?: string, code?: StallCode): SeatEvent => ({
-    kind,
-    taskId: after.taskId,
-    ...(after.slice === undefined ? {} : { slice: after.slice }),
-    ...(detail === undefined ? {} : { detail }),
-    ...(code === undefined ? {} : { code }),
-  })
+function kindsOf(
+  before: Claim | undefined,
+  after: Claim,
+  spawned: boolean,
+  opts: SeatEventOptions,
+): SeatEvent[] {
+  const event = eventOf(after)
   const events: SeatEvent[] = []
   if (spawned || after.agentId !== undefined) events.push(event('dispatched'))
   if (after.phase === 'awaiting-merge') events.push(event('ready-to-merge', after.pr))
   if (merged(before, after)) events.push(event('merged', after.pr))
   // CC-649: while a triage job waits or runs the owner is not told; once it settles the event carries that it ran.
-  if (after.stalledReason !== undefined && ownerDue(after))
-    events.push(
-      event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
-    )
+  if (after.stalledReason !== undefined && ownerDue(after)) events.push(...stallEvents(after, opts))
   // CC-663: a dirty, uncommitted claim's notice waits one tick behind its checkpoint request.
   if (after.finding !== undefined && ownerDue(after) && !checkpointHolds(before, after))
     events.push(event('stalled-after-claim', findingDetail(after, after.finding.detail), after.finding.code))
@@ -95,18 +105,56 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   return events
 }
 
+const eventOf =
+  (claim: Claim) =>
+  (kind: EventKind, detail?: string, code?: StallCode): SeatEvent => ({
+    kind,
+    taskId: claim.taskId,
+    ...(claim.slice === undefined ? {} : { slice: claim.slice }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(code === undefined ? {} : { code }),
+  })
+
+/** CC-985: what the stalled claim still takes from the seat, so a notice cannot read as already handled. */
+const holdText = (claim: Claim, live: LiveAgent | undefined, sep: string): string =>
+  `holds: ${claimHold(claim, live)}${sep}class ${claim.stalledClass ?? 'unclassed'}`
+
+const releaseCommand = (claim: Claim): string =>
+  `agent-chat burndown release ${claim.taskId}${claim.slice === undefined ? '' : ` --slice ${claim.slice}`}`
+
+function agedDetail(claim: Claim, opts: SeatEventOptions): string {
+  const hours = Math.floor(stallAgeMs(claim, opts.now) / 3_600_000)
+  const stale = claim.stale === undefined ? '' : `; ${claim.stale.class}: ${claim.stale.proposed}`
+  return `stalled ${hours}h, ${holdText(claim, opts.live, ', ')}${stale}; release: ${releaseCommand(claim)}`
+}
+
+/** The stall notice, and once the stall has lasted past STALL_AGED_MS, its once-a-day reminder. */
+function stallEvents(claim: Claim, opts: SeatEventOptions): SeatEvent[] {
+  const reason = withCode(claim.stallCode, stallDetail(claim, claim.stalledReason ?? ''))
+  const event = eventOf(claim)
+  const stalled = event('stalled', `${reason}; ${holdText(claim, opts.live, '; ')}`, claim.stallCode)
+  if (stallAgeMs(claim, opts.now) <= STALL_AGED_MS) return [stalled]
+  return [stalled, { ...event('stall-aged', agedDetail(claim, opts)), day: localDate(opts.now) }]
+}
+
 const findingDetail = (claim: Claim, detail: string): string =>
   undeliverable(claim) ? `${detail}; checkpoint undeliverable` : detail
 
 const withCode = (code: StallCode | undefined, reason: string): string =>
   code === undefined ? reason : `${code}: ${reason}`
 
-/** The `notified` entry for an event: `kind`, or `kind:code` for a coded stall or finding. */
-const noticeKey = (e: SeatEvent): string => (e.code === undefined ? e.kind : `${e.kind}:${e.code}`)
+/** The `notified` entry for an event: `kind`, `kind:code` for a coded stall or finding, or `kind@day` for a daily one. */
+const noticeKey = (e: SeatEvent): string => {
+  if (e.day !== undefined) return `${e.kind}@${e.day}`
+  return e.code === undefined ? e.kind : `${e.kind}:${e.code}`
+}
 
 /** A bare kind told before CC-663 counts as told for any code, so a deploy does not re-notify open stalls. */
 const told = (notified: readonly string[], e: SeatEvent): boolean =>
-  notified.includes(noticeKey(e)) || notified.includes(e.kind)
+  notified.includes(noticeKey(e)) || (e.day === undefined && notified.includes(e.kind))
+
+const DAILY = '@'
+const isDaily = (entry: string): boolean => entry.includes(DAILY)
 
 /** A coded entry holds only while the claim carries that code; a bare one holds for any. */
 const sameCode = (code: string | undefined, now: StallCode | undefined): boolean =>
@@ -114,6 +162,7 @@ const sameCode = (code: string | undefined, now: StallCode | undefined): boolean
 
 /** Whether a delivered kind still describes the claim; once it does not, the kind may fire again (a second park). */
 function stillHolds(claim: Claim, entry: string): boolean {
+  if (isDaily(entry)) return entry.startsWith('stall-aged@') && claim.stalledReason !== undefined
   const [kind, code] = entry.split(':', 2)
   if (kind === 'parked') return claim.phase === 'parked'
   if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
@@ -200,18 +249,25 @@ export function foldBraked(events: SeatEvents, before: Ledger, after: Ledger): S
 }
 
 /** Events for claims with a seat whose held `notified` lacks that kind, less a stall told with these facts; a claim without a seat yields none. */
-export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
+export function seatEvents(
+  before: Ledger,
+  after: Ledger,
+  spawnResults: readonly SpawnResult[],
+  merged: SeatEvents = {},
+  opts: SeatEventOptions = { now: new Date() },
+): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
     const held = heldNotified(claim)
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(
+    const fresh = kindsOf(at(before, claim), claim, spawned, opts).filter(
       e => !told(held, e) && !unchanged(claim, e),
     )
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   for (const [seat, event] of brakeEvents(before, after)) (out[seat] ??= []).push(event)
+  for (const [seat, events] of Object.entries(merged)) (out[seat] ??= []).push(...events)
   const made = releasesSince(before, after)
   const due = releasesDue(after).filter(d => !made.some(r => claimKey(r) === claimKey(d)))
   for (const r of [...made, ...due]) {
@@ -224,7 +280,7 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
       kind: 'released',
       taskId: r.taskId,
       ...(r.slice === undefined ? {} : { slice: r.slice }),
-      detail: withCode(r.code, detail),
+      detail: r.reason === undefined ? withCode(r.code, detail) : `${r.reason}; ${detail}`,
       ...(r.code === undefined ? {} : { code: r.code }),
     })
   }
@@ -237,7 +293,10 @@ export function markNotified(ledger: Ledger, seat: string, delivered: readonly S
     if (c.seat !== seat) return c
     const mine = delivered.filter(e => claimKey(e) === claimKey(c))
     if (mine.length === 0) return c
-    const notified = [...new Set([...(c.notified ?? []), ...mine.map(noticeKey)])]
+    const keys = mine.map(noticeKey)
+    // A daily key replaces the older day's, so `notified` keeps one per kind however long the stall lasts.
+    const kept = (c.notified ?? []).filter(k => !isDaily(k) || !keys.some(isDaily))
+    const notified = [...new Set([...kept, ...keys])]
     const facts = mine.filter(e => GATED.includes(e.kind)).map(e => [noticeKey(e), noticeFingerprint(c, e)])
     if (facts.length === 0) return { ...c, notified }
     return { ...c, notified, noticeFacts: { ...c.noticeFacts, ...Object.fromEntries(facts) } }
@@ -259,6 +318,8 @@ export function markReleaseDue(ledger: Ledger, events: readonly SeatEvent[], due
 }
 
 const line = (e: SeatEvent): string => {
+  if (e.kind === 'slices-merged')
+    return `slices merged: close or replan: ${e.taskId} (${e.flagged?.length ?? 0} new)`
   const task = e.slice === undefined ? e.taskId : `${e.taskId}#${e.slice}`
   return `${e.kind} ${task}${e.detail === undefined ? '' : `: ${e.detail}`}`
 }
@@ -288,4 +349,11 @@ export function renderSeatEvents(seat: string, events: readonly SeatEvent[], now
     used += text.length + 1
   }
   return [header, ...lines].join('\n')
+}
+
+/** Records the tasks a delivered slices-merged event flagged, so the seat hears of each once (CC-1049). */
+export function markFlagged(ledger: Ledger, delivered: readonly SeatEvent[]): Ledger {
+  const keys = delivered.flatMap(e => e.flagged ?? [])
+  if (keys.length === 0) return ledger
+  return { ...ledger, slicesFlagged: [...new Set([...(ledger.slicesFlagged ?? []), ...keys])] }
 }

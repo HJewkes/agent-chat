@@ -30,6 +30,17 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { findClauses, type FindClause } from './run-wrappers.js'
+import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
+import {
+  execPathOption,
+  SHELL_CODE_ENV,
+  templateOption,
+  TRUST_ENV,
+  trustConfigWrite,
+  trustKey,
+  type TrustEnv,
+} from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
   ghAliasReader,
@@ -52,6 +63,7 @@ import {
   type ReadGhAliases,
 } from './gh-runs.js'
 import {
+  expandsToWords,
   hasOptionAlternation,
   hasSplittableOption,
   hasUnreadableConfig,
@@ -62,6 +74,7 @@ import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } f
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
+  expansionRisk,
   HOLE,
   LIVE,
   mixesParenAndGuarded,
@@ -164,6 +177,7 @@ export const REASONS = {
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
+  sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -172,8 +186,9 @@ export const REASONS = {
   configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  operatorExpansion: `leak-guard: this line holds a \${...} expansion with a quote, a nested expansion or a flag, or one with an operator beside a gh command, which the guard cannot read the way the shell will. Compute the value in an earlier Bash call, or write it out. ${DOCS}`,
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
-  aliasQuotedArgs: `leak-guard: this git ! alias reads an argument with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
+  aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
@@ -190,29 +205,71 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
-  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
+  xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
+  xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
   gitOptionUnmatched: `leak-guard: this git config, remote or submodule call has an option the guard cannot match to exactly one option git knows. git accepts any unique prefix of a long option, so the guard cannot tell which word is the key, URL or verb. Spell each option in full. ${DOCS}`,
+  sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
+  shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
+  gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
-const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env']
+const OPTION_WRAPPERS = [
+  'exec',
+  'nice',
+  'stdbuf',
+  'ionice',
+  'caffeinate',
+  'timeout',
+  'repeat',
+  'xargs',
+  'env',
+  'sudo',
+]
+/** A getopt_long option table: the short letters that take a value, and each long name with whether it takes one. */
+interface Getopt {
+  shortValue: string
+  long: Readonly<Record<string, boolean>>
+}
+// coreutils stdbuf: `+i:o:e:`.
+const STDBUF_GETOPT: Getopt = {
+  shortValue: 'ioe',
+  long: { input: true, output: true, error: true, help: false, version: false },
+}
+// util-linux ionice: `+n:c:p:P:u:tVh`.
+const IONICE_GETOPT: Getopt = {
+  shortValue: 'cnpPu',
+  long: {
+    class: true,
+    classdata: true,
+    pid: true,
+    pgid: true,
+    uid: true,
+    ignore: false,
+    help: false,
+    version: false,
+  },
+}
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
   ...OPTION_WRAPPERS,
   ...SHELLS,
   ...ENV_EDITS,
-  ...['function', 'eval', 'git', 'gh', 'agent-chat'],
+  ...SSH_PROGRAMS,
+  ...['function', 'eval', 'git', 'gh', 'agent-chat', 'find'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
   '--arg-file',
   '--delimiter',
-  '--max-lines',
   '--max-args',
   '--max-chars',
   '--max-procs',
@@ -222,6 +279,7 @@ const XARGS_LONG_FLAG = new Set([
   '--null',
   '--eof',
   '--replace',
+  '--max-lines',
   '--interactive',
   '--open-tty',
   '--no-run-if-empty',
@@ -229,6 +287,42 @@ const XARGS_LONG_FLAG = new Set([
   '--exit',
   '--show-limits',
   '--version',
+  '--help',
+])
+// From sudo's getopt string `+Aa:BbC:c:D:Eeg:Hh::iKklNnPpR:r:SsT:t:U:u:Vv`.
+const SUDO_SHORT_VALUE = new Set('aCcDgpRrTtUu')
+const SUDO_LONG_VALUE = new Set([
+  '--close-from',
+  '--chdir',
+  '--group',
+  '--host',
+  '--prompt',
+  '--chroot',
+  '--role',
+  '--type',
+  '--command-timeout',
+  '--other-user',
+  '--user',
+  '--login-class',
+])
+const SUDO_LONG_FLAG = new Set([
+  '--askpass',
+  '--bell',
+  '--background',
+  '--preserve-env',
+  '--edit',
+  '--set-home',
+  '--login',
+  '--remove-timestamp',
+  '--reset-timestamp',
+  '--list',
+  '--no-update',
+  '--non-interactive',
+  '--preserve-groups',
+  '--stdin',
+  '--shell',
+  '--version',
+  '--validate',
   '--help',
 ])
 
@@ -244,26 +338,77 @@ const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
+const NAMES_GH = /\bgh\b/
 
 /**
  * `chdir` is set when a wrapper such as `env -C` runs the command in another directory.
  * `assigns` are the command's own `NAME=value` words, and a bare `NAME` that `env -u` unsets.
  */
-type Unwrapped = { words: string[]; chdir?: boolean; assigns: string[] } | { reason: string }
+type Unwrapped =
+  | {
+      words: string[]
+      chdir?: boolean
+      assigns: string[]
+      fed?: Fed | undefined
+      /** Commands that also run, each read as a command line of its own: find's later action clauses. */
+      siblings?: Sibling[]
+    }
+  | { reason: string }
+
+/** What the wrappers before a command have set up, carried to a command that runs beside it. */
+interface Lead {
+  assigns: readonly string[]
+  chdir: boolean
+  fed: Fed | undefined
+}
+
+/** A find clause read apart from the find's first, under the wrappers that came before that find. */
+interface Sibling extends Lead {
+  words: string[]
+}
+
+/**
+ * xargs runs its command with words it reads: in place of each word holding the `replace` string,
+ * and appended when `append` is set. A replace mode the guard cannot pin down sets both.
+ */
+interface Fed {
+  replace?: string | undefined
+  append: boolean
+  /** A split option word may have put words of its own before the command. */
+  hidden?: boolean
+}
+
+/** The words xargs adds, read as an unquoted `$@`: unreadable, and may be none or several. */
+const XARGS_ARGS = LIVE + '$@'
+/** A replace string the guard cannot read, which any word may hold. */
+const ANY_WORD = ''
+const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
-function unwrap(words: readonly string[]): Unwrapped {
+function unwrap(words: readonly string[], splits: readonly string[] = [], lead?: Lead): Unwrapped {
   let rest = words
   let at = 0
-  let chdir = false
-  const assigns: string[] = []
+  let chdir = lead?.chdir ?? false
+  let fed = lead?.fed
+  // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
+  let fedCommand = false
+  let siblings: Sibling[] | undefined
+  const assigns = [...(lead?.assigns ?? [])]
+  const done = (): Unwrapped =>
+    fedCommand && at >= rest.length
+      ? { reason: REASONS.hiddenCommand }
+      : { words: rest.slice(at), chdir, assigns, fed, ...(siblings && { siblings }) }
   for (;;) {
     const head = rest[at]
-    if (head === undefined) return { words: rest.slice(at), chdir, assigns }
+    if (head === undefined) return done()
+    // A command word xargs fills, behind any wrappers, is a command its input names.
+    if (fed !== undefined && head.includes(XARGS_ARGS)) return { reason: REASONS.hiddenCommand }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const next = wrapperEnd(rest, at, name)
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
+    if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
+      return { reason: REASONS.xargsWrapper }
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
@@ -271,24 +416,113 @@ function unwrap(words: readonly string[]): Unwrapped {
     } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
     else if (next !== undefined) at = next
     else if (name === 'xargs') {
-      const after = dropXargsOptions(rest, at + 1)
+      const after = dropXargsOptions(rest, at + 1, splits)
       if (after === undefined) return { reason: REASONS.xargsOption }
-      at = after
+      at = after.at
+      fedCommand ||= at < rest.length
+      fed = fed === undefined ? after.fed : nestedFed(fed, after.fed)
+      // Every wrapper and the command after this point parse the words as xargs fills them.
+      const { replace } = fed
+      if (replace !== undefined)
+        rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
+    } else if (name === 'find') {
+      // Words xargs adds land among find's own, where one may be -exec.
+      if (fed?.append === true || fed?.hidden === true) return { reason: REASONS.hiddenCommand }
+      const run = findRun(rest, at)
+      if (run === undefined) return done()
+      const before: Lead = { assigns: [...assigns], chdir, fed }
+      fed = fed === undefined ? FIND_FED : nestedFed(fed, FIND_FED)
+      // A find inside a clause keeps the outer find's later clauses alongside its own.
+      siblings = [
+        ...(siblings ?? []),
+        ...run.later.map(words => ({ ...before, words })),
+        ...run.tail.map(words => ({ ...before, fed, words })),
+      ]
+      chdir ||= run.chdir
+      rest = run.words.map(w => placeFed(w, '{}'))
+      at = run.at
+    } else if (name === 'sudo') {
+      const after = dropSudoOptions(rest, at + 1)
+      if (after === undefined) return { reason: REASONS.sudoOption }
+      // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
+      chdir = true
+      if (after.shell) {
+        const script = rest.slice(after.at)
+        // Words xargs adds, or an expansion sudo then escapes, may hold anything the shell reads, such as $IFS.
+        if (fed !== undefined || script.some(word => word.includes(LIVE)))
+          return { reason: REASONS.hiddenCommand }
+        rest = sudoShell(script)
+        at = 0
+      } else at = after.at
     } else if (name === 'env') {
-      const env = unwrapEnv(rest, at + 1)
+      const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
       assigns.push(...env.assigns)
-    } else return { words: rest.slice(at), chdir, assigns }
+    } else return done()
   }
 }
+
+/** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
+const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] => {
+  const placed = fed?.append === true && words.length > 0 ? [...words, XARGS_ARGS] : [...words]
+  return fed?.hidden === true ? [XARGS_ARGS, ...placed] : placed
+}
+
+/**
+ * A word with each copy of the replace string swapped for the unreadable words, keeping the rest of it
+ * readable, as in the script of `sh -c 'git push {} --no-verify'`. A replace string the guard cannot read may be anywhere.
+ */
+function placeFed(word: string, replace: string): string {
+  if (replace === ANY_WORD) return XARGS_ARGS
+  const pattern = [...replace].map(c => `${LIVE}?${c.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}`).join('')
+  return word.replace(new RegExp(pattern, 'g'), () => XARGS_ARGS)
+}
+
+/** find fills each `{}` in an action clause with a path the guard cannot read, and appends nothing. */
+const FIND_FED: Fed = { replace: '{}', append: false }
+
+/**
+ * The command a `find` at `at` runs: its first action clause, with every `later` clause as a find of its
+ * own to check apart. A word the guard cannot read may expand to `-exec`, or to a `;` that ends a clause
+ * early, so the words from the first one on are also checked as a command, the `tail`. `chdir` is set
+ * when the command runs in each found file's directory. Undefined when find runs nothing.
+ */
+function findRun(
+  rest: readonly string[],
+  at: number,
+): { words: string[]; at: number; chdir: boolean; later: string[][]; tail: string[][] } | undefined {
+  const { clauses, hiddenAt } = findClauses(rest, at + 1)
+  const alone = (clause: FindClause): string[] => [rest[at] as string, clause.action, ...clause.words, ';']
+  const inClause = clauses.flatMap(c => c.words.flatMap((w, i) => (unreadable(w) ? [c.at + i] : [])))
+  const tailAt = Math.min(hiddenAt ?? Infinity, inClause[0] ?? Infinity)
+  const tail = tailAt < Infinity ? [rest.slice(tailAt).map(w => placeFed(w, '{}'))] : []
+  const [first, ...later] = clauses
+  if (first !== undefined) {
+    const chdir = first.action === '-execdir' || first.action === '-okdir'
+    return { words: [...first.words], at: 0, chdir, later: later.map(alone), tail }
+  }
+  return tailAt < Infinity ? { words: [...rest], at: tailAt, chdir: false, later: [], tail: [] } : undefined
+}
+
+/** A word holding an expansion, other than the bare `{}` the shell leaves alone. */
+const unreadable = (word: string): boolean => word.replaceAll(BRACE_PAIR, '{}').includes(LIVE)
+
+/** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
+const nestedFed = (outer: Fed, inner: Fed): Fed => ({
+  append: true,
+  replace: outer.replace === undefined && inner.replace === undefined ? undefined : ANY_WORD,
+  hidden: outer.hidden === true || inner.hidden === true,
+})
 
 /** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
 function wrapperEnd(words: readonly string[], at: number, name: string): number | undefined {
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
   if (name === 'exec') return dropOptions(words, at + 1, ['-a'])
   if (name === 'nice') return dropOptions(words, at + 1, ['-n'])
+  if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT)
+  if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT)
   if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'])
   if (name === 'timeout' || name === 'repeat') return dropOptions(words, at + 1, ['-s', '-k']) + 1
   return undefined
@@ -302,20 +536,216 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
   return Math.min(i, words.length)
 }
 
-/** Returns where the command xargs runs starts, or undefined on a long option this guard does not know. */
-function dropXargsOptions(words: readonly string[], i: number): number | undefined {
+/**
+ * The index of the command after a getopt_long wrapper's options, read as getopt reads them: an unambiguous long-name
+ * prefix, `--name=value`, and a short cluster whose value letter takes the rest of the word or the next one.
+ * A word the guard cannot read stops the scan there, so it is read as the command.
+ */
+function dropGetopt(words: readonly string[], i: number, spec: Getopt): number {
+  while (i < words.length) {
+    const word = words[i] as string
+    if (word === '--') return i + 1
+    if (!word.startsWith('-') || word === '-') return i
+    const width = word.startsWith('--')
+      ? longOptionWidth(word.slice(2), spec)
+      : shortClusterWidth(word.slice(1), spec)
+    if (width === undefined) return i
+    i += width
+  }
+  return words.length
+}
+
+/** How many words a long option takes: 2 when it needs the next word as its value, 1 otherwise. */
+function longOptionWidth(body: string, spec: Getopt): number | undefined {
+  const eq = body.indexOf('=')
+  const name = eq < 0 ? body : body.slice(0, eq)
+  if (name.includes(LIVE)) return undefined
+  const names = Object.keys(spec.long)
+  const matches = name in spec.long ? [name] : names.filter(n => n.startsWith(name))
+  // An ambiguous prefix whose names all take a value still takes one; getopt refuses any other.
+  const takesValue = matches.length > 0 && matches.every(n => spec.long[n] === true)
+  return takesValue && eq < 0 ? 2 : 1
+}
+
+/** How many words a short cluster takes: a value letter ends it, taking the next word when nothing follows it. */
+function shortClusterWidth(cluster: string, spec: Getopt): number | undefined {
+  for (let k = 0; k < cluster.length; k++) {
+    if (cluster[k] === LIVE) return undefined
+    if (spec.shortValue.includes(cluster[k] as string)) return k === cluster.length - 1 ? 2 : 1
+  }
+  return 1
+}
+
+/** What one xargs option sets about how it feeds its command. */
+interface FeedOption {
+  replace?: string | undefined
+  /** The option may make xargs append what it reads: a batch size, or BSD's -J. */
+  appends?: boolean
+}
+
+const BATCH_LONG = new Set(['--max-args', '--max-lines'])
+
+/**
+ * Returns where the command xargs runs starts and how it feeds it, or undefined on a long option this guard does not know.
+ * GNU xargs drops a replace string on a later -n, -L or -l and appends instead; the guard does not track the order and reads both.
+ * An option word or value the shell may split could hold another option, such as -I--, so the feed mode is then unknown.
+ * Past a split the command is read like a hidden command word, unless a later word may start a command or reach git.
+ */
+function dropXargsOptions(
+  words: readonly string[],
+  i: number,
+  splits: readonly string[],
+): { at: number; fed: Fed } | undefined {
+  let replace: string | undefined
+  let appends = false
   for (; i < words.length; i++) {
     const a = words[i] as string
-    if (a === '--') return i + 1
+    if (a === '--') return { at: i + 1, fed: feed(replace, appends) }
+    const option =
+      !a.startsWith('-') || a === '-'
+        ? undefined
+        : a.startsWith('--')
+          ? longFeed(a)
+          : clusterFeed(a, words[i + 1])
+    const width = !a.startsWith('-') ? 0 : a.startsWith('--') ? longValueWords(a) : clusterValueWords(a)
+    const splitting = words.slice(i, i + 1 + width).some(word => mayResplit(word, splits))
+    const unread = a.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && option?.replace === undefined
+    // An expansion here may be an option such as -I--, so the guard cannot tell how xargs feeds the command.
+    if (splitting || unread) return splitFeed(words, i, i + 1 + width, splits, replace)
     if (!a.startsWith('-') || a === '-') break
-    if (a.startsWith('--')) {
-      const name = a.split('=')[0] as string
-      if (XARGS_LONG_VALUE.has(name)) i += a.includes('=') ? 0 : 1
-      else if (!XARGS_LONG_FLAG.has(name)) return undefined
-    } else i += clusterValueWords(a)
+    if (option === undefined) return undefined
+    replace = option.replace ?? replace
+    appends ||= option.appends === true
+    i += width
   }
-  return Math.min(i, words.length)
+  return { at: Math.min(i, words.length), fed: feed(replace, appends) }
 }
+
+/** Every word may be fed, and more appended: where the guard cannot read xargs' options. */
+const UNKNOWN_FEED: Fed = { replace: ANY_WORD, append: true }
+
+/**
+ * The feed past an xargs option word the guard cannot read, at `i`: the options before it and from `after` on, with the
+ * split's words read as put before the command. The split may move where xargs' options end, so any later word, an
+ * option value included, that may start a command or reach git keeps every word unknown.
+ */
+function splitFeed(
+  words: readonly string[],
+  i: number,
+  after: number,
+  splits: readonly string[],
+  replace: string | undefined,
+): { at: number; fed: Fed } | undefined {
+  const rest = dropXargsOptions(words, after, splits)
+  if (rest === undefined) return undefined
+  const unknown = { at: i, fed: UNKNOWN_FEED }
+  if (rest.fed === UNKNOWN_FEED || rest.at >= words.length) return unknown
+  const later = words.slice(after).map(word => word.replaceAll(BRACE_PAIR, '{}'))
+  if (later.some(word => mayStartCommand(word) || wordMayBeGit(word))) return unknown
+  return { at: rest.at, fed: { replace: rest.fed.replace ?? replace, append: true, hidden: true } }
+}
+
+/** A word the shell may split into several; xargs' `{}` is a literal, not a brace list. */
+const mayResplit = (word: string, splits: readonly string[]): boolean =>
+  word.replaceAll(BRACE_PAIR, '{}').includes(LIVE) && expandsToWords(word, splits)
+
+const feed = (replace: string | undefined, appends: boolean): Fed => ({
+  replace,
+  append: replace === undefined || appends,
+})
+
+function longFeed(option: string): FeedOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!XARGS_LONG_VALUE.has(name) && !XARGS_LONG_FLAG.has(name)) return undefined
+  if (name === '--replace')
+    return { replace: option.includes('=') ? replaceString(option.slice(name.length + 1)) : '{}' }
+  return { appends: BATCH_LONG.has(name) }
+}
+
+const longValueWords = (option: string): number =>
+  XARGS_LONG_VALUE.has(option.split('=')[0] as string) && !option.includes('=') ? 1 : 0
+
+/** What a short-flag cluster sets: a replace string (`-I R`, `-J R`, or `-i[R]`, whose bare form means `{}`), or a batch size. */
+function clusterFeed(cluster: string, next: string | undefined): FeedOption {
+  for (let k = 1; k < cluster.length; k++) {
+    const letter = cluster[k] as string
+    const glued = cluster.slice(k + 1)
+    // BSD -J appends when no word is exactly the replace string, so only GNU's -I is known never to append.
+    if (letter === 'I' || letter === 'J')
+      return { replace: replaceString(glued === '' ? (next ?? '') : glued), appends: letter === 'J' }
+    if (letter === 'i') return { replace: glued === '' ? '{}' : replaceString(glued) }
+    if ('nLl'.includes(letter)) return { appends: true }
+    if (XARGS_SHORT_VALUE.has(letter) || letter === 'e') return {}
+  }
+  return {}
+}
+
+/** A replace string as xargs gets it; one the shell expands may be anything, so any word may hold it. */
+const replaceString = (marked: string): string => {
+  const plain = marked.replaceAll(BRACE_PAIR, '{}')
+  return plain.includes(LIVE) ? ANY_WORD : plain
+}
+
+/** Where the command sudo runs starts, and whether -s, -i, --shell or --login hand it to a shell instead. */
+interface SudoRun {
+  at: number
+  shell: boolean
+}
+
+interface SudoOption {
+  width: number
+  shell: boolean
+}
+
+const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
+
+/**
+ * The command sudo runs, or undefined on a long option this guard does not know, an ambiguous -h,
+ * or an option word the shell expands, which may be any option.
+ */
+function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefined {
+  let shell = false
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return { at: i + 1, shell }
+    if (!a.startsWith('-') || a === '-') break
+    if (a.includes(LIVE)) return undefined
+    const option = a.startsWith('--') ? sudoLongOption(a) : sudoCluster(a, i + 1 < words.length)
+    if (option === undefined) return undefined
+    shell ||= option.shell
+    i += option.width
+  }
+  return { at: Math.min(i, words.length), shell }
+}
+
+function sudoLongOption(option: string): SudoOption | undefined {
+  const name = option.split('=')[0] as string
+  if (!SUDO_LONG_VALUE.has(name) && !SUDO_LONG_FLAG.has(name)) return undefined
+  return {
+    width: SUDO_LONG_VALUE.has(name) && !option.includes('=') ? 1 : 0,
+    shell: SUDO_SHELL_LONG.has(name),
+  }
+}
+
+/**
+ * A sudo short-flag cluster takes the next word only when its first value letter ends it; a glued -h takes the rest.
+ * A bare -h before another word is --help in some sudo versions and --host with that word in others, so it is undefined.
+ */
+function sudoCluster(cluster: string, hasNext: boolean): SudoOption | undefined {
+  let shell = false
+  for (let k = 1; k < cluster.length; k++) {
+    const letter = cluster[k] as string
+    const last = k === cluster.length - 1
+    if (SUDO_SHORT_VALUE.has(letter)) return { width: last ? 1 : 0, shell }
+    if (letter === 'h') return last && hasNext ? undefined : { width: 0, shell }
+    shell ||= letter === 's' || letter === 'i'
+  }
+  return { width: 0, shell }
+}
+
+/** sudo -s or -i runs `shell -c` on its words joined, each character but alnum, _, - and $ escaped. */
+const sudoShell = (words: readonly string[]): string[] =>
+  words.length === 0 ? ['sh'] : ['sh', '-c', words.map(w => w.replace(/[^A-Za-z0-9_$-]/g, '\\$&')).join(' ')]
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
 function clusterValueWords(cluster: string): number {
@@ -345,11 +775,28 @@ function splitString(a: string, next: string | undefined): { value: string; widt
 // env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
 const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
-function unwrapEnv(args: readonly string[], i: number): EnvRun {
+const ENV_VALUE_OPTIONS_FED = new Set(['-u', '--unset', '-C', '--chdir', '-P', '-S', '--split-string'])
+const nameOf = (word: string): string => word.split('=')[0] as string
+
+/**
+ * Behind xargs, an env word the guard cannot read may become any option: -i, -u GIT_CONFIG_COUNT,
+ * or -S with a command. Like an unreadable xargs option, it fails closed.
+ */
+function fedEnvWord(a: string, next: string | undefined): string | undefined {
+  if (!a.startsWith('-'))
+    return a.includes('=') && nameOf(a).includes(LIVE) ? REASONS.gitConfigEnv : undefined
+  const value = ENV_VALUE_OPTIONS_FED.has(a) ? (next ?? '') : ''
+  if (!a.includes(LIVE) && !value.includes(LIVE)) return undefined
+  return /^(?:-u|--unset)/.test(a) ? REASONS.gitConfigEnv : REASONS.xargsWrapper
+}
+
+function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
   let chdir = false
   const assigns: string[] = []
   for (; i < args.length; i++) {
     const a = args[i] as string
+    const fedReason = fed ? fedEnvWord(a, args[i + 1]) : undefined
+    if (fedReason !== undefined) return { reason: fedReason }
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
     if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
@@ -363,7 +810,7 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
       const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
-      const inner = unwrapEnv(words, 0)
+      const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
     }
@@ -374,7 +821,8 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       let at = i + 1
       for (; at < args.length && (args[at] as string).includes('='); at++) {
         const operand = args[at] as string
-        if (isGitConfigVar(operand.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+        if (isGitConfigVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
+          return { reason: REASONS.gitConfigEnv }
         assigns.push(operand)
       }
       return { words: args, at, chdir, assigns }
@@ -409,6 +857,9 @@ export function checkGit(args: readonly string[]): string | undefined {
   while (i < args.length && (args[i] as string).startsWith('-')) {
     const { kv, next } = configValue(args, i)
     if (overridesGuard(kv)) return REASONS.gitConfig
+    const trust = kv === undefined ? undefined : trustKey(kv.split('=')[0] as string)
+    if (trust !== undefined) return REASONS[trust]
+    if (execPathOption(args[i] as string)) return REASONS.gitExecPath
     i = next
   }
   const [sub, ...rest] = args.slice(i)
@@ -478,8 +929,36 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkNestedScripts(run, ctx, scope, depth) ??
     checkPrograms(run, ctx, scope, depth) ??
     checkExtEnablers(run, scope) ??
+    checkTrustWrites(run, scope) ??
+    checkFedPush(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/** git push options that take no value, so a `--` after them ends the options. */
+const PUSH_FLAGS = new Set(
+  '-u --set-upstream -f --force -n --dry-run -q --quiet -v --verbose --all --tags --atomic --follow-tags --porcelain --progress --no-progress --prune'.split(
+    ' ',
+  ),
+)
+
+/**
+ * A `git push` that xargs feeds words may take `--no-verify` from them (CC-1117), unless git's own option
+ * parsing ends at a `--` first. An option that may take a value, or a word the guard cannot read, may swallow that `--`.
+ */
+function checkFedPush(run: GitRun, scope: Scope): string | undefined {
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (
+    at < 0 ||
+    run.resolved[at] !== 'push' ||
+    !run.marked.slice(at + 1).some(word => word.includes(XARGS_ARGS))
+  )
+    return undefined
+  for (const word of run.resolved.slice(at + 1)) {
+    if (word === '--') return undefined
+    if (word === undefined || (word.startsWith('-') && !PUSH_FLAGS.has(word))) return REASONS.xargsPush
+  }
+  return REASONS.xargsPush
 }
 
 /**
@@ -518,6 +997,20 @@ function checkExtEnablers(run: GitRun, scope: Scope): string | undefined {
   if (enabler === 'protocol') return REASONS.extProtocol
   if (enabler === 'option') return REASONS.gitOptionUnmatched
   return enabler === 'url' ? REASONS.remoteUrlUnresolved : undefined
+}
+
+/** A `git config` write, or a `git init` or `git clone` template, that sets a trust input (TP-2376). */
+function checkTrustWrites(run: GitRun, scope: Scope): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  const sub = run.resolved[at]
+  const args = { resolved: run.resolved.slice(at + 1), written: run.args.slice(at + 1) }
+  if (sub === 'config') {
+    const trust = trustConfigWrite(args)
+    return trust === 'option' ? REASONS.gitOptionUnmatched : trust && REASONS[trust]
+  }
+  // An unmatched option makes git itself refuse; an unread word naming a template stays the env gap TP-2444 accepts.
+  return sub !== undefined && templateOption(sub, args) === true ? REASONS.templateDir : undefined
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -636,6 +1129,25 @@ const aliasShell = (scope: Scope, call: GitCall, env: Overrides, runsIn: string)
   gitParams: call.params,
 })
 
+/** Re-checks a `!` alias as the shell command git runs, with the words after the alias as its arguments. */
+function checkShellAlias(
+  run: GitRun,
+  call: GitCall,
+  shell: Scope,
+  body: string,
+  ctx: GuardContext,
+  depth: number,
+): string | undefined {
+  // The body takes the words as the shell hands them over, so one the guard cannot resolve (an expansion,
+  // or xargs' stdin) may be any flag, such as --no-verify (CC-1117).
+  const words = run.resolved.slice(call.at + 1)
+  const rest = words.filter((word): word is string => word !== undefined)
+  // A `!` body passes the include to every git it runs and may write the file before one reads it.
+  if (includesConfig(call.params)) return REASONS.includePath
+  if (rest.length < words.length || fillsUnsafely(body, rest)) return REASONS.aliasQuotedArgs
+  return checkAt(shellAlias(body, rest), ctx, shell, depth + 1)
+}
+
 /** Re-checks `git <alias> <rest>` as what the alias expands to, read where and how the command runs. */
 function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const call = gitCall(run.resolved, scope.cwd, scope.gitParams)
@@ -649,22 +1161,32 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   if (alias === undefined) return undefined
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
   const inner = { ...scope, aliases: scope.aliases + 1 }
-  const rest = run.args.slice(call.at + 1)
-  // A `!` body passes the include to every git it runs and may write the file before one reads it.
-  if (alias.value.startsWith('!') && includesConfig(call.params)) return REASONS.includePath
-  if (alias.value.startsWith('!') && fillsUnsafely(alias.value.slice(1), rest)) return REASONS.aliasQuotedArgs
   if (alias.value.startsWith('!'))
-    return checkAt(
-      shellAlias(alias.value.slice(1), rest),
-      ctx,
+    return checkShellAlias(
+      run,
+      call,
       aliasShell(inner, call, env, alias.runsIn),
-      depth + 1,
+      alias.value.slice(1),
+      ctx,
+      depth,
     )
   const value = splitAlias(alias.value)
   if (value === undefined) return undefined
-  const words = [...run.args.slice(0, call.at), ...value, ...rest]
+  // The words around the alias keep their marks, so an expansion or xargs' stdin stays unreadable (CC-1117).
+  const around = <T extends string | undefined>(words: readonly T[]): (T | string)[] => [
+    ...words.slice(0, call.at),
+    ...value,
+    ...words.slice(call.at + 1),
+  ]
   return checkGitRun(
-    { ...run, resolved: words, args: words, marked: words, literal: true, tied: true },
+    {
+      ...run,
+      resolved: around(run.resolved),
+      args: around(run.args),
+      marked: around(run.marked),
+      literal: true,
+      tied: true,
+    },
     ctx,
     inner,
     depth,
@@ -1526,16 +2048,22 @@ function checkSimple(
   scope: Scope,
   depth: number,
   outermost = true,
+  lead?: Lead,
 ): string | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked))
+  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped) return unwrapped.reason
+  const sibling = firstReason(unwrapped.siblings ?? [], s =>
+    checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
+  )
+  if (sibling !== undefined) return sibling
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
-  const marked = unwrapped.words.slice(1)
-  const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
+  const words = stdinArgs(unwrapped.words, unwrapped.fed)
+  const marked = words.slice(1)
+  const head = resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
-    return checkHidden(unwrapped.words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
@@ -1559,6 +2087,8 @@ function checkSimple(
       checkGh(ghArgs, unwrapped.assigns, cmd, ctx, at, defers)
     )
   }
+  if (SSH_PROGRAMS.has(name))
+    return sshRunsLocalProgram(name, marked, cmd.splits) ? REASONS.sshProgram : undefined
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
@@ -1659,7 +2189,18 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
-const ENV_NAMES = [...PROGRAM_ENV, ...OPAQUE_PROGRAM_ENV, ...PROTOCOL_ENV]
+// Regex sources for whole names; SHELL_CODE_ENV holds patterns such as BASH_FUNC_*.
+const TRUST_NAMES: readonly (readonly [string, TrustEnv])[] = [
+  ...TRUST_ENV,
+  ...SHELL_CODE_ENV.map(name => [name, 'shellStartup'] as const),
+]
+const ENV_NAMES = [
+  ...PROGRAM_ENV,
+  ...OPAQUE_PROGRAM_ENV,
+  ...PROTOCOL_ENV,
+  ...TRUST_NAMES.map(([name]) => name),
+]
+const ENV_NAME = new RegExp(`^(?:${ENV_NAMES.join('|')})$`)
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
 const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
@@ -1679,20 +2220,46 @@ const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).so
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
 /**
- * A program-env event: a script to check, null for a use the guard cannot read, or EXT_ON for a
- * protocol list that lets git run `ext::` URLs.
+ * A program-env event: a script to check, null for a use the guard cannot read, EXT_ON for
+ * unsetting the protocol list, or EXT_LISTED for a literal list naming `ext` (CC-1137 d).
  */
 const EXT_ON = Symbol('ext-on')
+// Nothing legitimate lists ext, so this denies on any line; an unset off a git line is left to the CC-1095 pin.
+const EXT_LISTED = Symbol('ext-listed')
 // A variable name the shell builds: a programEnv deny, ranked after the per-command checks so their more specific reason wins.
 const NAME_HIDDEN = Symbol('name-hidden')
-type EnvEvent = string | null | typeof EXT_ON | typeof NAME_HIDDEN
+/** A use of a TRUST_ENV name other than a read or an unset (TP-2376): denied with its own reason. */
+interface TrustOn {
+  trust: TrustEnv
+}
+type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | TrustOn
+
+const TRUST_REFS = TRUST_NAMES.map(([name, trust]) => ({
+  use: nameUse(name),
+  assign: nameAssign(name),
+  trust,
+}))
+const TRUST_REASONS: Readonly<Record<TrustEnv, string>> = {
+  shellStartup: REASONS.shellStartupEnv,
+  execPath: REASONS.gitExecPath,
+  templateDir: REASONS.templateDir,
+}
+
+/** The trust input a word sets by any use of its name but a read; `assignOnly` counts only an assigning `${NAME:=x}`. */
+function trustOn(text: string, assignOnly = false): TrustOn | undefined {
+  const ref = TRUST_REFS.find(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
+  return ref === undefined ? undefined : { trust: ref.trust }
+}
+
+/** A program-env name's event in a word: a trust input's own event, else null for a use the guard cannot read. */
+const nameEvent = (text: string, assignOnly = false): TrustOn | null => trustOn(text, assignOnly) ?? null
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
 
 /**
  * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
- * value, null when the value is unreadable, and for a protocol list EXT_ON when it lists `ext` or
+ * value, null when the value is unreadable, and for a protocol list EXT_LISTED when it lists `ext` or
  * no event at all. undefined when the word is no such assignment.
  */
 function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
@@ -1703,7 +2270,7 @@ function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
   const value = word.slice(name.length + 1)
   if (value.includes(LIVE)) return null
   if (!protocol) return value
-  return listsExt(unmark(value)) ? EXT_ON : 'none'
+  return listsExt(unmark(value)) ? EXT_LISTED : 'none'
 }
 
 type WordRole = 'assign' | 'data' | 'removes' | 'arg'
@@ -1847,7 +2414,9 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const text = unmark(word)
   // Unsetting a program var only drops a command; unsetting the protocol list lifts the one agent-chat pins.
   if (role === 'removes') return namesProtocolEnv(text) ? EXT_ON : undefined
-  if (role === 'data') return liveExpandsProgramEnv(word) ? null : undefined
+  if (role === 'data') return liveExpandsProgramEnv(word) ? nameEvent(text, true) : undefined
+  const trust = trustOn(text)
+  if (trust !== undefined) return trust
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
   if (plain === 'none') return undefined
   if (plain !== undefined) return plain
@@ -1858,7 +2427,7 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
 function scanWord(word: string): string {
   const um = unmark(word)
   const name = ASSIGNMENT.exec(word)?.[1]
-  return name !== undefined && ENV_NAMES.includes(name) ? um.slice(0, um.indexOf('=') + 1) : um
+  return name !== undefined && ENV_NAME.test(name) ? um.slice(0, um.indexOf('=') + 1) : um
 }
 
 /** How many words at the end of `words` are the written words they end with, so not split out of one. */
@@ -1900,7 +2469,10 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   const assigned = assigns.filter(w => ASSIGNMENT.test(w) && !written.has(w) && namesProgramEnv(unmark(w)))
   const used = words.slice(0, words.length - sharedTail(words, cmd.marked)).filter(usesEnv)
   return {
-    events: [...assigned, ...used].map(() => null),
+    events: [
+      ...assigned.map(word => nameEvent(unmark(word))),
+      ...used.map(word => nameEvent(unmark(word), data)),
+    ],
     scan: [...unwrapped.assigns.map(scanWord), ...unwrapped.words.map(unmark)],
   }
 }
@@ -1933,17 +2505,25 @@ function checkProgramEnvLine(
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
+  if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
   if (!mayReachGit(scan, ctx.env)) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
-    if (event === EXT_ON) return REASONS.extProtocol
+    if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
     if (event === NAME_HIDDEN) continue
+    if (typeof event === 'object') return TRUST_REASONS[event.trust]
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
   return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
+}
+
+/** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
+function deniesExpansion(command: string): boolean {
+  const risk = expansionRisk(command)
+  return risk === 'unreadable' || (risk === 'operator' && NAMES_GH.test(command))
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -1962,6 +2542,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
+  if (deniesExpansion(command)) return REASONS.operatorExpansion
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 
@@ -2073,6 +2654,15 @@ const workerConfigPaths = (env: NodeJS.ProcessEnv): string[] => {
     : fragments
 }
 
+const LAUNCHER_KEY_FILES = ['launcher.key', 'launcher-keys']
+
+// The per-host hello secrets (CC-1063) are owner-provisioned only, so every role is denied, coordinators included.
+const launcherKeyPaths = (env: NodeJS.ProcessEnv): string[] => {
+  const fragments = LAUNCHER_KEY_FILES.map(file => `.agent-chat/${file}`)
+  const relocated = env.AGENT_CHAT_HOME
+  return relocated ? [...fragments, ...LAUNCHER_KEY_FILES.map(file => path.join(relocated, file))] : fragments
+}
+
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -2092,6 +2682,7 @@ export function guardContext(
       '.agent-chat/git-hooks',
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
+      ...launcherKeyPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),
