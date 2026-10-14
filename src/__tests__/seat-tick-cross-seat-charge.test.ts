@@ -17,6 +17,9 @@ const DAY_START = new Date(2026, 8, 29, 7).getTime()
 /** pool-x's five_hour ceiling is 75 and a dispatch charges +10, so exactly one dispatch fits under it. */
 const ONE_DISPATCH_LEFT = 62
 
+/** CC-1038 b's gate reason states the reading plus this tick's charge, e.g. `+ 10 charged: 1 dispatch(es) this tick`. */
+const ONE_CHARGED = 'charged: 1 dispatch(es) this tick'
+
 let root: string
 
 function deps(): SeatTickDeps {
@@ -87,7 +90,7 @@ describe('planSeats charges this tick dispatches by pool name', () => {
     const refusal = result.refusals.find(r => r.task === 'BB-1')
     expect(refusal).toMatchObject({ kind: 'budget' })
     expect(refusal?.reason).toContain('pool pool-x:')
-    expect(refusal?.reason).toContain('charged 1 dispatch')
+    expect(refusal?.reason).toContain(ONE_CHARGED)
   })
 
   it('counts a claim spawn already charged to the pool this tick', () => {
@@ -97,7 +100,7 @@ describe('planSeats charges this tick dispatches by pool name', () => {
     const refusal = result.refusals.find(r => r.task === 'AA-1')
     expect(refusal).toMatchObject({ kind: 'budget' })
     expect(refusal?.reason).toContain('pool pool-x:')
-    expect(refusal?.reason).toContain('charged 1 dispatch')
+    expect(refusal?.reason).toContain(ONE_CHARGED)
   })
 
   it('does not charge a seat on another pool for an earlier seat dispatch', () => {
@@ -107,6 +110,6 @@ describe('planSeats charges this tick dispatches by pool name', () => {
       ['AA-1', 'pool-x'],
       ['BB-1', 'pool-y'],
     ])
-    expect(result.dispatch[1]?.reason ?? '').not.toContain('charged 1')
+    expect(result.dispatch[1]?.reason ?? '').not.toContain(ONE_CHARGED)
   })
 })
