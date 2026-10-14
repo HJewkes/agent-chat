@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseReport, parseSlices, readSlices } from '../agents/burndown/report.js'
+import { parseReport, parseSlices, planRepo, readSlices } from '../agents/burndown/report.js'
 
 describe('burndown report parser', () => {
   it('reads the status, PR and plan path from a worker or planner report', () => {
@@ -263,5 +263,48 @@ describe('burndown warns on dependsOn across disjoint owns (CC-1155)', () => {
     )
 
     expect(readSlices(plan).warnings).toEqual([])
+  })
+})
+
+describe('a plan Repo: header is the default slice repo (CC-1293)', () => {
+  const good = {
+    n: 'a',
+    title: 'x',
+    points: 1,
+    doneWhen: 'a test passes',
+    dependsOn: [],
+    owns: ['src/new.ts'],
+  }
+  const fence = (...slices: object[]): string => `\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\``
+  const headed = (header: string, ...slices: object[]): string => `# Plan\n\n${header}\n\n${fence(...slices)}`
+
+  it('fills a missing slice repo with the header checkout basename', () => {
+    const read = readSlices(headed('Repo: `~/projects/agent-chat` (HJewkes/agent-chat)', good))
+    expect(read.slices?.[0]?.repo).toBe('agent-chat')
+  })
+
+  it('keeps an explicit slice repo under a header naming another', () => {
+    const read = readSlices(headed('Repo: agent-chat', { ...good, repo: 'titan-platform' }))
+    expect(read.slices?.[0]?.repo).toBe('titan-platform')
+  })
+
+  it('still refuses a plan that fails the lint', () => {
+    expect(readSlices(headed('Repo: agent-chat', { ...good, owns: [] })).slices).toBeUndefined()
+  })
+
+  it.each([
+    ['Repo: `~/projects/titan-platform`, package `packages/tool-guard`. Read at x', 'titan-platform'],
+    ['Repo: agent-chat (`HJewkes/agent-chat`), read at y', 'agent-chat'],
+    ['Repo: titan-platform, package `packages/tool-guard`', 'titan-platform'],
+    ['**Repo:** agent-chat', 'agent-chat'],
+    ['Repo: agent-chat.', 'agent-chat'],
+    ['Repos: **titan-platform** (x) and **agent-chat** (y)', undefined],
+    ['No header here.', undefined],
+  ])('reads %j as %s', (header, want) => {
+    expect(planRepo(headed(header, good))).toBe(want)
+  })
+
+  it('ignores a Repo: line after the slices block', () => {
+    expect(planRepo(`${fence(good)}\n\nRepo: agent-chat\n`)).toBeUndefined()
   })
 })
