@@ -55,6 +55,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'zsh --emulate zsh -i',
     'zsh --emulate ksh -o banghist -i',
     'zsh -isb',
+    'zsh -O -i',
+    'zsh -Oi',
     'SHELLOPTS=history:histexpand bash',
   ])('%s reads stdin with history', line => {
     expect(call(line)).toEqual({ script: { from: 'stdin' }, history: true })
@@ -84,6 +86,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['bash + -i s.sh', 2, true],
     ['ksh +i s.sh', 1, true],
     ['ksh + -i s.sh', 2, true],
+    ['zsh -O s.sh', 1, false],
+    ['zsh +O x', 1, false],
   ])('%s reads the file at %i', (line, at, history) => {
     expect(call(line)).toEqual({ script: { from: 'file', at }, history })
   })
@@ -233,5 +237,40 @@ describe('every spelling of an option reaches its effect (CC-1288)', () => {
 
   it.each(rows(OFF, 'history'))('%s s.sh reports no history', line => {
     expect(call(`${line} s.sh`).history).toBe(false)
+  })
+})
+
+/**
+ * Each observed shell's operand-taking options, with an operand the shell accepts, and the letters
+ * observed to take none (zsh's `-O`). Every row ends `-i s.sh`, so an operand read wrongly either
+ * swallows `-i` or leaves the operand as the script file. Run against zsh 5.9, bash 5.3 and dash.
+ */
+const OPERANDS: Record<
+  string,
+  { named: Record<string, string>; plain: string[]; long: Record<string, string> }
+> = {
+  zsh: { named: { o: 'extendedglob' }, plain: ['O'], long: { '--emulate': 'zsh' } },
+  bash: { named: { o: 'pipefail', O: 'extglob' }, plain: [], long: { '--rcfile': 'x', '--init-file': 'x' } },
+  dash: { named: { o: 'nolog' }, plain: [], long: {} },
+}
+
+const operandRows = Object.entries(OPERANDS).flatMap(([shell, { named, long }]) => [
+  ...Object.entries(named).flatMap(([letter, operand]) =>
+    ['-', '+'].map(sign => `${shell} ${sign}${letter} ${operand}`),
+  ),
+  ...Object.entries(long).map(([option, operand]) => `${shell} ${option} ${operand}`),
+])
+
+const plainRows = Object.entries(OPERANDS).flatMap(([shell, { plain }]) =>
+  plain.flatMap(letter => ['-', '+'].map(sign => `${shell} ${sign}${letter}`)),
+)
+
+describe("each shell's options that take an operand (CC-1288)", () => {
+  it.each(operandRows)('%s -i s.sh reads the operand and then -i', line => {
+    expect(call(`${line} -i s.sh`)).toEqual({ script: { from: 'file', at: 3 }, history: true })
+  })
+
+  it.each(plainRows)('%s -i s.sh takes no operand', line => {
+    expect(call(`${line} -i s.sh`)).toEqual({ script: { from: 'file', at: 2 }, history: true })
   })
 })

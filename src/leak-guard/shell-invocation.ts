@@ -38,12 +38,23 @@ interface Letter {
   anySign?: boolean
 }
 
+/**
+ * How a letter that takes an option name reads it when more letters follow it in its word: `rest`
+ * takes them as the name (zsh's `-ointeractive`), `next` takes the next word and reads them as flags
+ * (bash's `-oi pipefail`), and `unread` hides the call, since either reading may be wrong. A letter
+ * alone in its word takes the next word as its name under every rule.
+ */
+type NameRule = 'rest' | 'next' | 'unread'
+
+/** One shell's option grammar. Nothing about the options is shared between shells except through this record. */
 interface Grammar {
   letters: Readonly<Record<string, Letter>>
-  /** How an `o` or `O` with letters after it in its word reads its name: from those letters, the next word, or not at all. */
-  glued: 'rest' | 'next' | 'hidden'
+  /** The letters that take an option name, and how each reads it. */
+  named: Readonly<Record<string, NameRule>>
   /** Words that end the options. zsh also ends them at a bare `+` or `+-`, which bash ignores or rejects. */
   ends: ReadonlySet<string>
+  /** Long options that take the next word as their operand. */
+  longOperands: ReadonlySet<string>
 }
 
 // Names for letters that have no long spelling. `normalise` strips `-`, so no long option reaches them.
@@ -77,7 +88,15 @@ const BASH_LETTERS = { ...COMMON_LETTERS, s: { name: 'shinstdin', anySign: true 
 
 const DASH_ENDS = new Set(['-', '--'])
 
-// Observed letter tables. `sh` may be bash or dash, so it takes bash's, the wider of the two.
+const BASH: Grammar = {
+  letters: BASH_LETTERS,
+  named: { o: 'next', O: 'next' },
+  ends: DASH_ENDS,
+  longOperands: new Set(['--rcfile', '--init-file']),
+}
+
+// Observed grammars: zsh 5.9, bash 5.3 and dash. zsh's `-O` is a plain flag and dash rejects it. `sh`
+// may be bash or dash, so it takes bash's, the wider of the two.
 const GRAMMARS: Readonly<Record<string, Grammar>> = {
   zsh: {
     letters: {
@@ -85,15 +104,16 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
       K: { name: 'banghist', inverted: true },
       b: { name: END, anySign: true },
     },
-    glued: 'rest',
+    named: { o: 'rest' },
     ends: new Set([...DASH_ENDS, '+', '+-']),
+    longOperands: new Set(['--emulate']),
   },
-  bash: { letters: BASH_LETTERS, glued: 'next', ends: DASH_ENDS },
-  sh: { letters: BASH_LETTERS, glued: 'next', ends: DASH_ENDS },
-  dash: { letters: COMMON_LETTERS, glued: 'next', ends: DASH_ENDS },
+  bash: BASH,
+  sh: BASH,
+  dash: { letters: COMMON_LETTERS, named: { o: 'next' }, ends: DASH_ENDS, longOperands: new Set() },
 }
 
-// Any other shell takes every letter's effect under either sign, hides a name glued to `o`, reads a bare
+// Any other shell takes every letter's effect under either sign, hides a name glued to `o` or `O`, reads a bare
 // `+` as a letter cluster so the options after it still count, and reports history even under `-c`:
 // nothing shows its `-c` string is inert, and csh substitutes `!` in the text it reads.
 const UNOBSERVED: Grammar = {
@@ -102,12 +122,11 @@ const UNOBSERVED: Grammar = {
     i: { name: 'interactive', anySign: true },
     K: { name: 'banghist', inverted: true },
   },
-  glued: 'hidden',
+  named: { o: 'unread', O: 'unread' },
   ends: DASH_ENDS,
+  longOperands: new Set(['--rcfile', '--init-file', '--emulate']),
 }
 
-// Long options that take the next word as their operand: bash's rc files and zsh's `--emulate`.
-const LONG_WITH_OPERAND = new Set(['--rcfile', '--init-file', '--emulate'])
 // `SHELLOPTS` can turn on history and histexpand before the script is read, and a startup file named
 // by `BASH_ENV` or `ENV` can run `set -H -o history` first; each fails closed whatever its value.
 const STARTUP_ASSIGNMENT = /^(?:SHELLOPTS|BASH_ENV|ENV)=/
@@ -164,10 +183,11 @@ function readCluster(grammar: Grammar, words: readonly string[], at: number, opt
   for (let i = 1; i < word.length; i++) {
     const letter = word[i] ?? ''
     const rest = word.slice(i + 1)
-    if (letter !== 'o' && letter !== 'O') apply(letterEffect(grammar, letter, on), opts)
-    else if (rest === '' || grammar.glued === 'next') readName(words[next++], on, opts)
+    const rule = grammar.named[letter]
+    if (rule === undefined) apply(letterEffect(grammar, letter, on), opts)
+    else if (rest === '' || rule === 'next') readName(words[next++], on, opts)
     else {
-      if (grammar.glued === 'rest') readName(rest, on, opts)
+      if (rule === 'rest') readName(rest, on, opts)
       else opts.hidden = true
       return next
     }
@@ -176,9 +196,9 @@ function readCluster(grammar: Grammar, words: readonly string[], at: number, opt
 }
 
 /** Reads `--name` or zsh's `+-name`, which turns the option off; returns the next index. */
-function readLong(words: readonly string[], at: number, opts: Options): number {
+function readLong(grammar: Grammar, words: readonly string[], at: number, opts: Options): number {
   const word = words[at] ?? ''
-  if (!LONG_WITH_OPERAND.has(word)) {
+  if (!grammar.longOperands.has(word)) {
     readName(word.slice(2), word.startsWith('-'), opts)
     return at + 1
   }
@@ -202,7 +222,7 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
     if (word.includes(LIVE)) return { ...opts, end: at, hidden: true }
     if (grammar.ends.has(word)) return { ...opts, end: at + 1 }
     if (!word.startsWith('-') && !word.startsWith('+')) return { ...opts, end: at }
-    at = LONG.test(word) ? readLong(words, at, opts) : readCluster(grammar, words, at, opts)
+    at = LONG.test(word) ? readLong(grammar, words, at, opts) : readCluster(grammar, words, at, opts)
   }
   return { ...opts, end: Math.min(at, words.length) }
 }
