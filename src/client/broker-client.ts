@@ -134,6 +134,14 @@ const deliveryUnknownError = (): Error =>
 interface Waiter {
   resolve: (msg: ServerMessage) => void
   reject: (err: Error) => void
+  /** Stands in for a timed-out request, to swallow its late reply. */
+  readonly stone?: true
+  /**
+   * A tombstone in front of this waiter swallowed a reply that may have been this
+   * one's (the stone's own reply was lost, not late). Timing out then leaves no
+   * tombstone, so one lost reply cannot carry forward onto every later request.
+   */
+  displaced?: true
 }
 
 /** A waiter that swallows the late reply it stands in for, and leaves the queue after `holdMs`. */
@@ -145,6 +153,7 @@ function tombstone(queue: Waiter[], holdMs: number): Waiter {
   // A short-lived CLI that timed out must still exit without waiting out the hold.
   expiry.unref()
   const stone: Waiter = {
+    stone: true,
     resolve: () => clearTimeout(expiry),
     reject: () => clearTimeout(expiry),
   }
@@ -233,8 +242,12 @@ export class BrokerClient {
       this.onFatal?.(msg.reason)
       return
     }
-    const queue = this.waiters.get(msg.t)
-    queue?.shift()?.resolve(msg)
+    const queue = this.waiters.get(msg.t) ?? []
+    const waiter = queue.shift()
+    waiter?.resolve(msg)
+    if (!waiter?.stone) return
+    const next = queue.find(w => !w.stone)
+    if (next) next.displaced = true
   }
 
   private attach(socket: net.Socket): void {
@@ -428,7 +441,8 @@ export class BrokerClient {
       const timer = setTimeout(() => {
         const index = queue.indexOf(waiter)
         if (index === -1) return
-        queue[index] = tombstone(queue, Math.max(timeoutMs, TOMBSTONE_MIN_MS))
+        if (waiter.displaced) queue.splice(index, 1)
+        else queue[index] = tombstone(queue, Math.max(timeoutMs, TOMBSTONE_MIN_MS))
         reject(new BrokerTimeoutError(replyType))
       }, timeoutMs)
 

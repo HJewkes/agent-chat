@@ -125,6 +125,26 @@ describe('BrokerClient request timeout', () => {
 
     expect(await settled(second)).toMatchObject({ nextCursor: 2 })
   })
+
+  it('costs one more timeout, not every later request, when a reply is lost while traffic continues', async () => {
+    client = await connected()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const lost = client.request(inboxSince(1), 'inbox_since_result').catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(15_000)
+    await lost
+
+    const swallowed = client.request(inboxSince(2), 'inbox_since_result').catch((err: unknown) => err)
+    await until(() => received.length === 2)
+    reply(2)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(await swallowed).toBeInstanceOf(BrokerTimeoutError)
+
+    const third = client.request(inboxSince(3), 'inbox_since_result')
+    await until(() => received.length === 3)
+    reply(3)
+
+    expect(await settled(third)).toMatchObject({ nextCursor: 3 })
+  })
 })
 
 describe('retryOnBrokerTimeout', () => {
