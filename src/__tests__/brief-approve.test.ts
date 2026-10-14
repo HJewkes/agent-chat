@@ -298,6 +298,26 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(lines.join('\n')).toContain('could not record the send')
   })
 
+  it('un-writes a record whose add exited non-zero, so the next tick routes it again', () => {
+    writeTask([PROPOSED])
+    writePlan(UNLINTED)
+    const addFails = {
+      edit: (_slug: string, _id: string, args: string[]) => {
+        edits.push(args)
+        if (args[0] === '--add-tag') throw new Error('synthetic exit after write')
+      },
+    }
+
+    const { recorded, lines } = recordBriefRoutes(settle().routes, addFails)
+
+    expect(edits).toEqual([
+      ['--add-tag', SENT],
+      ['--remove-tag', SENT],
+    ])
+    expect(recorded).toEqual([])
+    expect(lines.join('\n')).toContain('retried next tick')
+  })
+
   it('keeps the record when the wake went out unanswered, since it may have landed', () => {
     writeTask([PROPOSED])
     writePlan(UNLINTED)

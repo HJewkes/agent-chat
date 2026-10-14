@@ -262,10 +262,11 @@ function workerScope(t: TaskBrief): string {
  * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence,
  * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, CC-987 the planner budget by the
  * 234-byte publish-split rule, CC-1158 the worker budget by 200 for a stacked slice's base and `--after`,
- * and CC-1084 the worker budget by 1,000 for a capped pre-push checks section (956 bytes measured).
+ * CC-1084 the worker budget by 1,000 for a capped pre-push checks section (956 bytes measured),
+ * and CC-1259 the planner budget by 200 for the 190-byte overlapsAccepted sentence.
  */
 export const WORKER_BRIEF_MAX_BYTES = 13_200
-export const PLANNER_BRIEF_MAX_BYTES = 11_600
+export const PLANNER_BRIEF_MAX_BYTES = 11_800
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
@@ -298,6 +299,8 @@ function slicesRequirement(): string {
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
     'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
+    'A slice that must share a file with an open PR on different lines may list it in `overlapsAccepted` as { pr, path, why }; ' +
+    'the path must be an exact owns entry, and every other overlap still refuses. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
     'The tick lints this block; a plan without it, or failing the lint, stalls. ' +

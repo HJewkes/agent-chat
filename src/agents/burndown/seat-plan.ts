@@ -922,6 +922,7 @@ const sliceWork = (claim: Claim, tags: string[]): CollisionWork => ({
   owns: claim.owns ?? [],
   contracts: claim.contracts ?? [],
   ...(claim.stackedOn === undefined ? {} : { stackedOn: claim.stackedOn }),
+  ...(claim.overlapsAccepted === undefined ? {} : { overlapsAccepted: claim.overlapsAccepted }),
 })
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
