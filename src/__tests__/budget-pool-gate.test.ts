@@ -6,6 +6,7 @@ import {
   dayStart,
   RUN_CAP_MS,
   gatePool,
+  paceShadow,
   pointsSpent,
   runStartAt,
   type AccountReading,
@@ -46,6 +47,7 @@ interface Case {
   dispatchCost?: PoolGateInput['dispatchCost']
   /** Epoch ms the pool's seven_day window resets. */
   resetsAt?: number
+  pace?: PoolGateInput['pace']
 }
 
 function gate(c: Case) {
@@ -73,6 +75,7 @@ function gate(c: Case) {
       },
       ...(c.dispatched === undefined ? {} : { dispatched: c.dispatched }),
       ...(c.dispatchCost === undefined ? {} : { dispatchCost: c.dispatchCost }),
+      ...(c.pace === undefined ? {} : { pace: c.pace }),
     },
     c.maxReadingAgeSeconds === undefined ? {} : { maxReadingAgeSeconds: c.maxReadingAgeSeconds },
   )
@@ -627,5 +630,101 @@ describe('the charge is priced by charter, then observed cost, then default, and
     expect(result.reason).toBe(
       'pool pool-y: five_hour 46% vs ceiling 95%, seven_day 27% vs line 80% (no seven_day resets_at, flat reserve)',
     )
+  })
+})
+
+describe('pace controller in the pool gate (CC-1104)', () => {
+  const DAY = 24 * HOUR
+  const now = at(15)
+  // Day 4 of the window on pool-y (reserve 20): line 88.57, glide target 56.67, so pace refuses from 59.67.
+  const resetsAt = now.getTime() + 3.5 * DAY
+  const pace = { reserve: 20, resetsAt }
+  const onPace = { now, resetsAt, pace }
+  const overRun: SevenDaySample[] = [
+    { at: dayStart(now) - HOUR, sevenDay: 20 },
+    { at: now.getTime() - 2 * HOUR, sevenDay: 20 },
+  ]
+
+  it('refuses at the R line with the line reason, not pace', () => {
+    const result = gate({ ...onPace, sevenDay: 89 })
+    expect(result.open).toBe(false)
+    if (result.open) return
+    expect(result.reason).toContain('at or above line 88.57%')
+    expect(result.gate.lever).toBe('pools.pool-y.reserve_seven_day')
+  })
+
+  it('refuses at the five-hour ceiling with the ceiling reason, not pace', () => {
+    const result = gate({ ...onPace, sevenDay: 40, fiveHour: 80 })
+    expect(result.open).toBe(false)
+    if (result.open) return
+    expect(result.gate.lever).toBe('pools.pool-y.ceiling_five_hour')
+  })
+
+  it('admits a seat past its per_run_points while the pool is behind its glide', () => {
+    const legacy = gate({
+      now,
+      resetsAt,
+      sevenDay: 40,
+      history: overRun,
+      runStartAt: now.getTime() - 3 * HOUR,
+    })
+    const paced = gate({ ...onPace, sevenDay: 40, history: overRun, runStartAt: now.getTime() - 3 * HOUR })
+    expect(legacy.open).toBe(false)
+    expect(paced.open).toBe(true)
+    if (!paced.open) return
+    expect(paced.pace?.headroom).toBeCloseTo(19.67, 1)
+  })
+
+  it('refuses a pool ahead of its glide plus the buffer and names the pace lever', () => {
+    const result = gate({ ...onPace, sevenDay: 70 })
+    expect(result.open).toBe(false)
+    if (result.open) return
+    expect(result.reason).toContain('pace glide 59.7%')
+    expect(result.gate).toMatchObject({ lever: 'pace', value: 59.7, reading: 70 })
+  })
+
+  it("judges the reading plus this tick's charge", () => {
+    expect(gate({ ...onPace, sevenDay: 56, dispatched: 1 }).open).toBe(true)
+    const tipped = gate({ ...onPace, sevenDay: 56, dispatched: 2 })
+    expect(tipped.open).toBe(false)
+    if (tipped.open) return
+    expect(tipped.gate).toMatchObject({ lever: 'pace', reading: 60 })
+  })
+})
+
+describe('pace shadow beside the legacy gate (CC-1104)', () => {
+  const now = at(15)
+  const resetsAt = now.getTime() + 3.5 * 24 * HOUR
+  const input: PoolGateInput = {
+    pool: SEAT_B.pool,
+    spend: SEAT_B.spend,
+    reading: { fiveHour: 10, sevenDay: 40, ageSeconds: 5, sevenDayResetsAt: resetsAt },
+    history: [
+      { at: dayStart(now) - HOUR, sevenDay: 20 },
+      { at: now.getTime() - 2 * HOUR, sevenDay: 20 },
+    ],
+    runStartAt: now.getTime() - 3 * HOUR,
+    ctx: { now },
+  }
+  const shadow = {
+    pool: SEAT_B.pool,
+    spend: {},
+    pace: { reserve: 20, resetsAt },
+  }
+
+  it('logs a legacy per_run refusal beside an open pace verdict as a disagreement', () => {
+    const legacy = gatePool({ ...input, shadow })
+    const both = paceShadow({ ...input, shadow }, legacy)
+    expect(legacy.open).toBe(false)
+    expect(both).toMatchObject({
+      mode: 'shadow',
+      legacy: { open: false, lever: 'spend.per_run_points', value: 14, reading: 20 },
+      pace: { open: true, lever: 'pace' },
+      agree: false,
+    })
+  })
+
+  it('logs nothing without shadow caps', () => {
+    expect(paceShadow(input, gatePool(input))).toBeUndefined()
   })
 })

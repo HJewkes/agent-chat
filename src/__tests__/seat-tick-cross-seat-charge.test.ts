@@ -22,7 +22,7 @@ const ONE_CHARGED = 'charged: 1 dispatch(es) this tick'
 
 let root: string
 
-function deps(): SeatTickDeps {
+function deps(extra: Partial<SeatTickDeps> = {}): SeatTickDeps {
   return {
     autonomyRoot: root,
     root,
@@ -32,11 +32,12 @@ function deps(): SeatTickDeps {
       run: { since: NOW.getTime() - HOUR, last: 10, spent: 0 },
       day: { since: DAY_START, last: 10, spent: 0 },
     }),
+    ...extra,
   }
 }
 
-function plan(names: string[], charged?: string[]) {
-  const { loaded, skipped } = loadSeats(names, { ...EMPTY_LEDGER }, deps())
+function plan(names: string[], charged?: string[], extra?: Partial<SeatTickDeps>) {
+  const { loaded, skipped } = loadSeats(names, { ...EMPTY_LEDGER }, deps(extra))
   expect(skipped).toEqual([])
   return planSeats(
     loaded,
@@ -111,5 +112,30 @@ describe('planSeats charges this tick dispatches by pool name', () => {
       ['BB-1', 'pool-y'],
     ])
     expect(result.dispatch[1]?.reason ?? '').not.toContain(ONE_CHARGED)
+  })
+})
+
+describe('the pace shadow on a shared pool (CC-1104)', () => {
+  const resetsAt = NOW.getTime() + 3.5 * 24 * HOUR
+  const shadowed: Partial<SeatTickDeps> = {
+    paceController: 'shadow',
+    reading: () => ({ reading: { sevenDay: 10, fiveHour: 10, ageSeconds: 30 }, resetsAt }),
+  }
+
+  it("judges a later seat's pace verdict on the reading plus the earlier seat's charge", () => {
+    moveSeatBToPoolX()
+
+    const result = plan(['seat-a', 'seat-b'], undefined, shadowed)
+
+    expect(result.dispatch.map(d => [d.task, d.account])[0]).toEqual(['AA-1', 'pool-x'])
+    const reading = (seat: string) => result.outcomes.find(o => o.seat === seat)?.pace?.pace.reading
+    expect(reading('seat-a')).toBe(10)
+    expect(reading('seat-b')).toBe(12)
+  })
+
+  it('logs no pace with the controller off', () => {
+    const result = plan(['seat-a'], undefined, { ...shadowed, paceController: 'off' })
+
+    expect(result.outcomes[0]).not.toHaveProperty('pace')
   })
 })

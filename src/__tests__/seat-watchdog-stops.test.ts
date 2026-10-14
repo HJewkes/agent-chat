@@ -341,6 +341,23 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
     expect(paced.spend).toBe(input.spend)
   })
 
+  it('keeps the legacy caps governing under paceController shadow and carries the pace caps beside (CC-1104)', () => {
+    const paced = pacedCaps({ ...input, mode: 'shadow' })
+    expect(paced.spend).toMatchObject({ per_run_points: 6, per_day_points: 15.71 })
+    expect(paced.pace).toBeUndefined()
+    expect(paced.shadow?.spend).toEqual({ per_run_points: undefined, per_day_points: undefined })
+    expect(paced.shadow?.pool?.per_day_points).toBeUndefined()
+    expect(paced.shadow?.pace).toEqual({ reserve: 30, resetsAt: input.resetsAt })
+  })
+
+  it('strips per_run and per_day for the pace controller under paceController on (CC-1104)', () => {
+    const paced = pacedCaps({ ...input, mode: 'on' })
+    expect(paced.spend).toEqual({ per_run_points: undefined, per_day_points: undefined })
+    expect(paced.pool?.per_day_points).toBeUndefined()
+    expect(paced.pace).toEqual({ reserve: 30, resetsAt: input.resetsAt })
+    expect(paced.shadow).toBeUndefined()
+  })
+
   it('returns the caps unchanged for a seat without the key', () => {
     const paced = pacedCaps({ ...input, pacing: undefined })
     expect(paced.pool).toBe(input.pool)

@@ -4,11 +4,14 @@ import {
   runStartAt,
   sevenDayLine,
   spendSince,
+  type PaceInput,
   type PoolRule,
   type SevenDaySample,
+  type ShadowCaps,
   type SpendCaps,
 } from '../burndown/budget-gate.js'
 import { NO_DISPATCH_PREFIX } from '../burndown/no-dispatch.js'
+import type { PaceControllerMode } from './pace.js'
 import type { WatchdogDoc } from './io.js'
 import { isJournalText } from './journal-line.js'
 
@@ -213,16 +216,42 @@ export interface PacingInput {
   /** The pool's earlier seven_day readings, as `gatePool` reads them. */
   history: readonly SevenDaySample[]
   now: Date
+  /** CC-1104: `paceController`; absent is `off`, the legacy caps alone. */
+  mode?: PaceControllerMode
 }
 
 export interface PacedCaps {
   pool: PoolRule | undefined
   spend: SpendCaps
   allowance: DayAllowance
+  /** CC-1104: set under `on`, where the pace controller replaces per_run_points and per_day_points. */
+  pace?: PaceInput
+  /** CC-1104: set under `shadow`, the `on` caps for the gate the tick logs beside the one it obeys. */
+  shadow?: ShadowCaps
 }
 
-/** CC-404: the caps every gate hands `gatePool`, so status, the watchdog and the tick hold a seat at one day stop. */
+/** CC-1104: the caps under `paceController: on`: per_run and per_day stripped, the pace controller in their place. */
+function paceCaps(input: PacingInput): ShadowCaps & { pace: PaceInput } {
+  const { pool, spend } = input
+  return {
+    pool: pool === undefined ? undefined : { ...pool, per_day_points: undefined },
+    spend: { ...spend, per_run_points: undefined, per_day_points: undefined },
+    pace: { reserve: pool?.reserve_seven_day ?? 0, resetsAt: input.resetsAt },
+  }
+}
+
+/**
+ * CC-404: the caps every gate hands `gatePool`, so status, the watchdog and the tick hold a seat at one day stop.
+ * CC-1104: `on` swaps them for the pace controller's; `shadow` keeps them and carries the pace caps beside.
+ */
 export function pacedCaps(input: PacingInput): PacedCaps {
+  const legacy = legacyCaps(input)
+  if (input.mode === 'on') return { ...paceCaps(input), allowance: legacy.allowance }
+  if (input.mode === 'shadow') return { ...legacy, shadow: paceCaps(input) }
+  return legacy
+}
+
+function legacyCaps(input: PacingInput): PacedCaps {
   const { pool, spend, sevenDay, now } = input
   const start = dayStart(now)
   const nowMs = now.getTime()

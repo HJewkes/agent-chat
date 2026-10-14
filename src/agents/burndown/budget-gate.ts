@@ -1,5 +1,6 @@
 import { MAX_ACCOUNT_READING_AGE_SECONDS } from '../budget.js'
 import { binaryGate, capGate, type GateReading } from './gate-reading.js'
+import { paceVerdict, type PaceVerdict } from '../seats/pace.js'
 
 /**
  * Whether the tick may spend on an account right now (design section 7).
@@ -172,7 +173,19 @@ export interface PoolGateInput {
   lastGood?: AccountReading | undefined
   /** CC-1038: per-dispatch cost observed from the pool's history; a charter `dispatch_*_points` still wins. */
   dispatchCost?: DispatchCost | undefined
+  /** CC-1104: set, the pace controller judges the charged seven_day in place of the seat's spend caps. */
+  pace?: PaceInput | undefined
+  /** CC-1104: under `paceController: shadow`, the pace controller's caps, gated beside these and never obeyed. */
+  shadow?: ShadowCaps | undefined
 }
+
+export interface PaceInput {
+  reserve: number
+  /** Epoch ms the pool's seven_day window resets. */
+  resetsAt: number | undefined
+}
+
+export type ShadowCaps = Pick<PoolGateInput, 'pool' | 'spend' | 'pace'>
 
 export interface DispatchCost {
   sevenDay: number
@@ -182,7 +195,7 @@ export interface DispatchCost {
 }
 
 export type PoolGateResult =
-  | { open: true; pool: string; sonnetOnly: boolean; reason: string; staleOk?: true }
+  | { open: true; pool: string; sonnetOnly: boolean; reason: string; staleOk?: true; pace?: PaceVerdict }
   | { open: false; pool: string; reason: string; gate: GateReading; noReading?: true }
 
 type ClosedGate = Extract<PoolGateResult, { open: false }>
@@ -554,7 +567,9 @@ function gateWindows(
     )
   if (sevenDay >= line)
     return closed(`${seven} at or above line ${line}%${why}`, lever('reserve_seven_day', line, sevenDay))
-  const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted)
+  const pace = input.pace === undefined ? undefined : paceStop(input.pace, reading, sevenDay, ctx)
+  const stop =
+    pace === undefined ? spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted) : pace.stop
   if (stop !== undefined) return closed(`${stop.text}${charges ? `; ${seven}` : ''}${basis}`, stop.gate)
   const band = sonnetBand(pool)
   const sonnetOnly = fiveHour >= ceiling - band || sevenDay >= line - band
@@ -563,7 +578,71 @@ function gateWindows(
     pool: pool.name,
     sonnetOnly,
     reason: `pool ${pool.name}: ${five} vs ceiling ${ceiling}%, ${seven} vs line ${line}%${why}${sonnetOnly ? `; within ${band} points, sonnet only` : ''}`,
+    ...(pace === undefined ? {} : { pace: pace.verdict }),
   }
+}
+
+const PACE_SOURCE = 'pace controller (CC-1104)'
+
+/** CC-1104: the pace verdict on the charged seven_day, and the stop it makes when the pool runs ahead of its glide. */
+function paceStop(
+  pace: PaceInput,
+  reading: FullWindows,
+  charged: number,
+  ctx: GateContext,
+): { verdict: PaceVerdict; stop?: SpendStop } {
+  const verdict = paceVerdict(
+    { sevenDay: reading.sevenDay, resetsAt: pace.resetsAt },
+    pace.reserve,
+    ctx.now.getTime(),
+    tenths(charged - reading.sevenDay),
+  )
+  if (verdict.open || verdict.value === null) return { verdict }
+  const value = tenths(verdict.value)
+  return {
+    verdict,
+    stop: {
+      text: `seven_day ${verdict.reading}% at or above the pace glide ${value}% (target plus buffer)`,
+      gate: capGate('pace', value, verdict.reading, PACE_SOURCE),
+    },
+  }
+}
+
+/** One gate decision as the tick row logs it: the lever that refused, or `pace`/`none` when open. */
+export interface GateVerdict {
+  open: boolean
+  lever: string
+  reason: string
+  value?: number | null
+  reading?: number | null
+  headroom?: number | null
+}
+
+/** CC-1104: the governing (legacy) decision and the pace controller's, judged on the same reading and charge. */
+export interface PaceShadow {
+  mode: 'shadow'
+  legacy: GateVerdict
+  pace: GateVerdict
+  agree: boolean
+}
+
+function verdictOf(result: PoolGateResult): GateVerdict {
+  if (!result.open) {
+    const { lever, value, reading, headroom } = result.gate
+    return { open: false, lever, reason: result.reason, value, reading, headroom }
+  }
+  const pace = result.pace
+  if (pace === undefined) return { open: true, lever: 'none', reason: result.reason }
+  const { value, reading, headroom } = pace
+  return { open: true, lever: 'pace', reason: result.reason, value, reading, headroom }
+}
+
+/** CC-1104: under shadow, both decisions for `input`; `legacy` is the gate the tick already obeyed. Undefined without shadow caps. */
+export function paceShadow(input: PoolGateInput, legacy: PoolGateResult): PaceShadow | undefined {
+  if (input.shadow === undefined) return undefined
+  const pace = gatePool({ ...input, ...input.shadow, shadow: undefined })
+  const verdicts = { legacy: verdictOf(legacy), pace: verdictOf(pace) }
+  return { mode: 'shadow', ...verdicts, agree: legacy.open === pace.open }
 }
 
 /** The open account with the most headroom, and every closed one with its reason. */

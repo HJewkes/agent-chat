@@ -263,6 +263,12 @@ describe('the burndown tick summary in the live tick', () => {
             headroom: 0,
             source: expect.any(String),
           },
+          pace: {
+            mode: 'shadow',
+            legacy: expect.objectContaining({ open: true, lever: 'none' }),
+            pace: expect.objectContaining({ open: true, lever: 'pace', reading: 40 }),
+            agree: true,
+          },
         },
       },
       serviceCheck: { cause: null, stopped: false, message: 'ok' },

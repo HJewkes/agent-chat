@@ -1,10 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
-import { resolvePoolPickMode } from '../../config.js'
+import { resolvePaceControllerMode, resolvePoolPickMode } from '../../config.js'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { readPace } from '../seats/pace-file.js'
+import type { PaceControllerMode } from '../seats/pace.js'
 import { pickPool, poolFunds, type PoolPickMode } from '../seats/pool-pick.js'
 import { pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
@@ -82,6 +83,8 @@ export interface SeatTickDeps {
   poolPick?: (seat: string, home: string) => { mode: PoolPickMode; order: string[]; funds?: FundsMap }
   /** CC-1038: the pool's observed per-dispatch cost; absent or undefined, the gate charges the charter's or the default. */
   dispatchCost?: (pool: string) => DispatchCost | undefined
+  /** CC-1104: `paceController`; absent is `off`. */
+  paceController?: PaceControllerMode
 }
 
 export interface LoadedSeat {
@@ -146,18 +149,23 @@ function sampled(
   }
 }
 
+/** CC-1104: the tick only shadows the pace controller; `on` governs the tick once CC-1104 slice c lands. */
+const tickPaceMode = (deps: SeatTickDeps): PaceControllerMode =>
+  (deps.paceController ?? 'off') === 'off' ? 'off' : 'shadow'
+
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
   const saved = usableMeters(deps.meters(name, dispatch.pool.name))
   const { reading, resetsAt, history, runStart, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
-  const { pool, spend } = pacedCaps({
+  const { pool, spend, shadow } = pacedCaps({
     pacing: seat.pacing,
     ...seatBudget(policy.charter, seat),
     sevenDay: reading?.sevenDay,
     resetsAt,
     history,
     now: deps.now,
+    mode: tickPaceMode(deps),
   })
   const loaded: LoadedSeat = {
     dispatch,
@@ -165,6 +173,7 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
     budget: {
       pool,
       spend,
+      ...(shadow === undefined ? {} : { shadow }),
       reading,
       history,
       runStartAt: runStart,
@@ -223,7 +232,7 @@ function otherPoolBudget(
     now: deps.now,
     ownRun: false,
   })
-  const { pool, spend } = pacedCaps({
+  const { pool, spend, shadow } = pacedCaps({
     pacing: undefined,
     pool: { ...found, name },
     spend: {},
@@ -231,10 +240,12 @@ function otherPoolBudget(
     resetsAt,
     history,
     now: deps.now,
+    mode: tickPaceMode(deps),
   })
   return {
     pool,
     spend,
+    ...(shadow === undefined ? {} : { shadow }),
     reading,
     history,
     runStartAt: runStart,
@@ -686,8 +697,14 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       result.heals.push(...planned.heals)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
-      const { dispatch, refusals, roles } = planned
-      const outcome = { seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles }
+      const { dispatch, refusals, roles, pace } = planned
+      const outcome = {
+        seat: seat.dispatch.seat,
+        dispatched: dispatch.length,
+        refusals,
+        roles,
+        ...(pace === undefined ? {} : { pace }),
+      }
       result.outcomes.push(plan === undefined ? outcome : { ...outcome, plan })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
@@ -726,6 +743,7 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
     meters: (seat, pool) => savedMeters(doc, seat, pool),
     poolPick: (seat, home) => diskPoolPick(autonomyRoot, seat, home, now),
     dispatchCost: diskDispatchCosts(autonomyRoot, now.getTime()),
+    paceController: resolvePaceControllerMode(),
   }
 }
 

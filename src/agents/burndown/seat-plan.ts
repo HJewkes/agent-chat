@@ -1,5 +1,12 @@
 import path from 'node:path'
-import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from './budget-gate.js'
+import {
+  gatePool,
+  paceShadow,
+  RUN_CAP_MS,
+  type PaceShadow,
+  type PoolGateInput,
+  type PoolGateResult,
+} from './budget-gate.js'
 import {
   briefRefusal,
   IMPLEMENTER_PROFILE,
@@ -169,6 +176,8 @@ export interface SeatPlan {
   roles: Record<Role, number>
   /** CC-1107: each initiative's configured share and its whole-task picks this run, this tick's included; absent without shares. */
   shareMix?: ShareMix
+  /** CC-1104: the pool gate before this seat dispatched, legacy and pace side by side; absent unless shadowed. */
+  pace?: PaceShadow
 }
 
 export type ShareMix = Record<string, { share: number; picks: number }>
@@ -263,6 +272,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       liveOverlap(work, repo, acceptedOwns(plan)) ??
       contractOverlap(work, acceptedContracts(plan)),
   })
+  const pace = paceShadow(inputs.budget, walk.gate)
   const take = (initiative: string, task: string, outcome: Taken | Refused | Seeded): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
     else if ('seeds' in outcome) plan.seeds.push(...outcome.seeds)
@@ -304,7 +314,12 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   plan.notes.push(...idleNotes(inputs.seat.seat, walk))
   const shareMix =
     inputs.shares === undefined ? undefined : shareMixOf(inputs.shares, priorPicks, plan.dispatch)
-  return { ...plan, roles: { ...walk.roles }, ...(shareMix !== undefined && { shareMix }) }
+  return {
+    ...plan,
+    roles: { ...walk.roles },
+    ...(shareMix !== undefined && { shareMix }),
+    ...(pace !== undefined && { pace }),
+  }
 }
 
 /** Shares count whole-task picks, as `priorPicksOf` does: a slice dispatch is part of its task's pick. */

@@ -1,3 +1,4 @@
+import type { PaceShadow } from './budget-gate.js'
 import type { Refusal, RefusalKind } from './eligibility.js'
 import type { SeatState } from './ledger.js'
 
@@ -23,6 +24,8 @@ export interface SeatOutcome {
   roles?: Record<'implementers' | 'reviewers' | 'planners', number>
   /** The seat's plan section-2 task IDs (CC-1128), for the tick summary; absent without a readable `plan_file`. */
   plan?: ReadonlySet<string>
+  /** CC-1104: the seat's legacy and pace gate decisions under `paceController: shadow`, for the tick summary. */
+  pace?: PaceShadow
 }
 
 export interface NoDispatchReason {

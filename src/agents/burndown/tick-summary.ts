@@ -8,6 +8,7 @@ import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
 import { firstRefusalPerTask, refusalTally, type SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
 import { bindingOf, type Binding } from './gate-reading.js'
+import type { PaceShadow } from './budget-gate.js'
 import { onPlan } from './seat-scope.js'
 import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
@@ -63,6 +64,10 @@ import type { TickStep } from './step-timer.js'
  *                   in rank order, that a capacity lever made (role-cap, worktrees, slots, budget): the lever that
  *                   bound the seat this tick; null when no capacity lever refused; absent when the seat was skipped.
  *                   Rows from before CC-1097 lack it
+ *   pace            CC-1104: {mode, legacy, pace, agree} under `paceController: shadow`: the seat's pool gate before
+ *                   it dispatched, as the legacy caps (per_run, per_day) decided it and as the pace controller
+ *                   would; each verdict is {open, lever, reason, value?, reading?, headroom?}, lever `none` when
+ *                   the legacy gate is open. Legacy governs dispatch. Absent when off, skipped, or before CC-1104
  *   skipped         why the seat was not planned; absent when it was
  */
 
@@ -83,6 +88,7 @@ export interface SeatSummary {
   roles?: { used: Roles; cap: Roles }
   registrations: RegisterCounts
   binding?: Binding | null
+  pace?: PaceShadow
   skipped?: string
 }
 
@@ -215,6 +221,7 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
     ...(trust.length === 0 ? {} : { trust }),
     ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
+    ...(outcome.pace === undefined ? {} : { pace: outcome.pace }),
     ...(outcome.skipped === undefined
       ? { binding: bindingOf(outcome.refusals) }
       : { skipped: outcome.skipped }),
