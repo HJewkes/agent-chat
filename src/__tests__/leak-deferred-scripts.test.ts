@@ -123,15 +123,23 @@ describe('aliasDefinitions', () => {
     ])
   })
 
-  it.each(['alias x=~', 'alias x=~/y', 'alias x=a:~/b'])(
-    '%s reads the HOME it expands to as blank-ended',
-    line => {
-      expect(aliasDefinitions(markedOf(line))).toMatchObject([{ name: 'x', blank: true }])
-    },
-  )
+  it.each([
+    ['alias x=~', 'x', `${LIVE}~`],
+    ['alias x=~/y', 'x', `${LIVE}~/y`],
+    ['alias x=a:~/b', 'x', `a:${LIVE}~/b`],
+    ['alias x=a:~', 'x', `a:${LIVE}~`],
+    ['alias d=x:~/y', 'd', `x:${LIVE}~/y`],
+    ['alias x=~:~', 'x', `${LIVE}~:${LIVE}~`],
+  ])('%s marks the ~ the shell expands to HOME, and reads it as blank-ended', (line, name, value) => {
+    expect(aliasDefinitions(markedOf(line))).toEqual([
+      { name, value, global: false, suffix: false, blank: true },
+    ])
+  })
 
   it('keeps a value with no ~ at its start or after a colon settled', () => {
-    expect(aliasDefinitions(markedOf('alias x=a~b'))).toMatchObject([{ name: 'x', blank: false }])
+    expect(aliasDefinitions(markedOf('alias x=a~b'))).toMatchObject([
+      { name: 'x', value: 'a~b', blank: false },
+    ])
   })
 
   it.each([

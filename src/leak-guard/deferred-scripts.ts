@@ -99,10 +99,11 @@ function flagsUnsure(operands: readonly string[]): boolean[] {
 }
 
 /**
- * bash expands a `~` at the start of an alias value or after a `:` in it, as in an assignment. The splitter
- * marks a `~` only at the start of a word and drops the quoting there, so such a `~` counts quoted or not.
+ * bash and zsh expand a `~` at the start of an alias value or after a `:` in it, as in an assignment. The
+ * splitter marks a `~` only at the start of a word and drops the quoting there, so this marks each such
+ * `~` live, quoted or not, and a reader of the value sees the HOME text the shell stores.
  */
-const isLiveValue = (value: string): boolean => isLive(value) || /(?:^|:)~/.test(value)
+const markValueTildes = (value: string): string => value.replace(/(^|:)~/g, `$1${LIVE}~`)
 
 /**
  * The definitions an `alias` makes, in bash or zsh, skipping the bare names it prints. `-g` and `-s` mark
@@ -117,10 +118,10 @@ export function aliasDefinitions(words: readonly string[]): AliasDefinition[] {
     if (isLive(namePart(word))) return [hiddenDefinition(word)]
     const eq = word.indexOf('=')
     if (eq < 0) return []
-    const value = word.slice(eq + 1)
+    const value = markValueTildes(word.slice(eq + 1))
     const global = unsure[at] === true || hasFlag(options, 'g')
     const suffix = unsure[at] === true || hasFlag(options, 's')
-    const blank = isLiveValue(value) || /[ \t\n]$/.test(unmark(value))
+    const blank = isLive(value) || /[ \t\n]$/.test(unmark(value))
     return [{ name: word.slice(0, eq), value, global, suffix, blank }]
   })
 }
