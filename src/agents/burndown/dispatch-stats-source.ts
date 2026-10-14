@@ -29,6 +29,7 @@ export function dispatchStatsPorts(root: string, now: Date): DispatchStatsPorts 
     journal: (seat, day) => readSeatJournal(root, seat, day),
     lastOkAt: () => readTickStatus(burndownTickStatusPath()).lastOkAt,
     maxAgents: () => loadResolvedConfig().tick.maxAgents,
+    readyFloor: () => loadResolvedConfig().tick.readyFloor,
     verdicts: (runs, sinceMs) => readVerdicts(runs, sinceMs, now),
     gateRows: sinceMs =>
       readGateRows(root, { logFile: logPath(), dbPath: path.join(home(), 'events.db') }, sinceMs, now),
