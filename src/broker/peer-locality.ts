@@ -126,15 +126,21 @@ function socketInode(conn: net.Socket): string | undefined {
   }
 }
 
-/** Linux only: elsewhere there is no peer pid to read, so every session stays remote. */
-export const linuxPeerPorts: PeerPorts = {
+/** One dump of every unix socket with its holders; throws when `ss` fails or outruns its cap. */
+export const defaultSs = (): string =>
+  execFileSync('ss', ['-xnpH'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 })
+
+/**
+ * Linux only: elsewhere there is no peer pid to read, so every session stays remote.
+ * `runSs` is injectable so a test can see why a real read came back empty (CC-1164).
+ */
+export const linuxPeerPortsWith = (runSs: () => string): PeerPorts => ({
   peerPid(conn) {
     if (process.platform !== 'linux') return undefined
     const inode = socketInode(conn)
     if (inode === undefined) return undefined
     try {
-      const out = execFileSync('ss', ['-xnpH'], { encoding: 'utf8', timeout: 2000, maxBuffer: 16 << 20 })
-      return peerPidFromSs(out, inode)
+      return peerPidFromSs(runSs(), inode)
     } catch {
       return undefined
     }
@@ -147,4 +153,6 @@ export const linuxPeerPorts: PeerPorts = {
       return undefined
     }
   },
-}
+})
+
+export const linuxPeerPorts: PeerPorts = linuxPeerPortsWith(defaultSs)
