@@ -126,5 +126,30 @@ export function pickPool(input: PoolPickInput): PoolPick {
     if (row !== undefined && skip === undefined) eligible.push({ pool: pool.name, row })
     return { pool: pool.name, ...behind, ...(skip === undefined ? {} : { skip }) }
   })
-  return { ...ordered(eligible, input.home), candidates }
+  const kept = oneByAccount(eligible, input.home)
+  return {
+    ...ordered(
+      eligible.filter(e => kept.get(e.pool) === e.pool),
+      input.home,
+    ),
+    candidates: candidates.map(c => sameAccountSkip(c, kept)),
+  }
+}
+
+/**
+ * CC-1289: pools whose pace rows share an account are one budget, so the pick offers one of them: the home pool when
+ * it is eligible, else the first in seat order. Maps each eligible pool to the pool kept for its account.
+ */
+function oneByAccount(eligible: readonly Eligible[], home: string | undefined): Map<string, string> {
+  const accountOf = (e: Eligible): string => e.row.account ?? e.pool
+  const keeper = new Map<string, string>()
+  for (const e of eligible) if (e.pool === home) keeper.set(accountOf(e), e.pool)
+  for (const e of eligible) if (!keeper.has(accountOf(e))) keeper.set(accountOf(e), e.pool)
+  return new Map(eligible.map(e => [e.pool, keeper.get(accountOf(e)) ?? e.pool]))
+}
+
+function sameAccountSkip(candidate: PoolCandidate, kept: Map<string, string>): PoolCandidate {
+  const keeper = kept.get(candidate.pool)
+  if (keeper === undefined || keeper === candidate.pool) return candidate
+  return { ...candidate, skip: `same account as ${keeper}` }
 }
