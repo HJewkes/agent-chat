@@ -198,6 +198,8 @@ export interface LaunchPlanInput {
    * origin is how it ends up reporting to a predecessor that no longer exists.
    */
   preamble?: string
+  /** CC-281: a human's own session, which no agent spawned, so it is never told to report to a spawner. */
+  adopted?: boolean
   /** Emit `--remote-control` on an interactive run; a print-mode run cannot use it and ignores this. */
   remoteControl?: boolean
   /** CC-951: channel targets beside agent-chat's own, carried from a teleport predecessor. */

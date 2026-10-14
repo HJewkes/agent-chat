@@ -260,6 +260,9 @@ export interface RelaunchInput {
   successorFirst?: boolean
 }
 
+/** CC-281: the successor of a human's own session has no spawner, whatever its preamble says. */
+export const isAdoptedSuccessor = (input: RelaunchInput): boolean => input.meta.origin === 'adopted'
+
 /** CC-951: one `ps` per teleport, however many flags are read from the predecessor's argv. */
 function readOnce(read: ArgvReader): ArgvReader {
   const seen = new Map<number, string | undefined>()

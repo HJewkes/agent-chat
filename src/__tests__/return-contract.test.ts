@@ -22,6 +22,7 @@ import {
   REVIEWER_BODY_FILE_RULE,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
+import { SESSION_RULES, SPAWNED_RULES } from '../agents/standing-rules.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
 import { HUMAN, type ServerMessage } from '../protocol.js'
@@ -573,6 +574,47 @@ describe('a conversation that continues', () => {
     })
 
     expect(readLaunchPlan('successor-1').stdin).toBe('carry on from the handoff')
+  })
+
+  // CC-281 a: the meta teleport's relaunchFor writes is what decides it, not the preamble.
+  it.each([
+    ['adopted', false],
+    ['spawned', true],
+  ])('tells a teleported %s successor to report to a spawner only if it has one', async (origin, told) => {
+    await supervisor.relaunch({
+      agentId: `successor-${origin}`,
+      name: 'worker',
+      profile: {
+        ...(BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile),
+        isolation: 'none',
+      },
+      brief: 'carry on',
+      cwd: tmp('agent-chat-ws-'),
+      surface: 'headless',
+      preamble: 'you are the continuation',
+      meta: { origin },
+    })
+
+    const prompt = appendedPrompt(`successor-${origin}`)
+    expect(prompt).toContain(SESSION_RULES)
+    expect(prompt.includes(SPAWNED_RULES)).toBe(told)
+  })
+
+  it('marks the remote successor of an adopted session, so the other host drops the spawner line', () => {
+    const relaunch = (agentId: string, origin: string) =>
+      supervisor.prepareRemoteRelaunch({
+        agentId,
+        name: `worker-${origin}`,
+        profile: BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile,
+        brief: 'carry on',
+        cwd: tmp('agent-chat-ws-'),
+        surface: 'headless',
+        preamble: 'you are the continuation',
+        meta: { origin },
+      })
+
+    expect(relaunch('remote-adopted', 'adopted').adopted).toBe(true)
+    expect(relaunch('remote-spawned', 'spawned').adopted).toBeUndefined()
   })
 })
 

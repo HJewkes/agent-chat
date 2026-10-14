@@ -19,6 +19,8 @@ export interface RemoteLaunch {
   profile: RemoteProfile
   brief: string
   preamble: string
+  /** CC-281: the predecessor was a human's own session, so its successor has no spawner to report to. */
+  adopted?: true
   surface: PackageSurfaceName
   tags?: string[]
   subscriptions?: Subscription[]
