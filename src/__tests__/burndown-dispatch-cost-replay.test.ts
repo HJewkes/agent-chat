@@ -7,7 +7,7 @@ import { diskDispatchCosts } from '../agents/burndown/dispatch-cost-source.js'
 
 /**
  * CC-1038 e: the 2026-10-11 13:31Z refusal replayed. The fixture holds pool personal's watchdog readings and
- * titan-coord's dispatched rows from 07:00Z to 13:40Z, copied from the autonomy root, with the seat on personal.
+ * seat-a's dispatched rows from 07:00Z to 13:40Z, copied from the autonomy root, with the seat on personal.
  */
 
 const FIXTURE = path.join(

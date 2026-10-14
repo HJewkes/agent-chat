@@ -1,5 +1,5 @@
 ---
 schema: autonomy-seat/v1
-name: titan-coord
+name: seat-a
 pool: personal
 ---
