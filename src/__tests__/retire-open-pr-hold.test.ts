@@ -54,8 +54,8 @@ async function holdFor(
 
 describe('reviewedAgentName', () => {
   it.each([
-    ['tc-cc-1249-a-review', 'tc-cc-1249-a'],
-    ['tc-cc-1063-b-review-r2', 'tc-cc-1063-b'],
+    ['tc-x-2-a-review', 'tc-x-2-a'],
+    ['tc-x-3-b-review-r2', 'tc-x-3-b'],
     ['tc-x-1-a-r1', 'tc-x-1-a'],
   ])('reads %s as a reviewer of %s', (name, base) => {
     expect(reviewedAgentName(name)).toBe(base)
@@ -77,16 +77,11 @@ describe('openPrHold over heldBranches', () => {
   })
 
   it('holds an attempt-suffixed agent whose allocated branch is open', async () => {
-    const events = [allocated('tc-tp-2705-a3', 'agent-chat/tc-tp-2705-a')]
+    const events = [allocated('tc-x-5-a3', 'agent-chat/tc-x-5-a')]
 
-    const reason = await holdFor(
-      'tc-tp-2705-a3',
-      [agent('tc-tp-2705-a3')],
-      events,
-      openSet('agent-chat/tc-tp-2705-a'),
-    )
+    const reason = await holdFor('tc-x-5-a3', [agent('tc-x-5-a3')], events, openSet('agent-chat/tc-x-5-a'))
 
-    expect(reason).toBe('open PR on agent-chat/tc-tp-2705-a (kept until merged or closed)')
+    expect(reason).toBe('open PR on agent-chat/tc-x-5-a (kept until merged or closed)')
   })
 
   it.each(['tc-x-1-a-review', 'tc-x-1-a-review-r2', 'tc-x-1-a-r1'])(
@@ -102,23 +97,23 @@ describe('openPrHold over heldBranches', () => {
   )
 
   it("holds a reviewer whose base agent works on a non-default branch, read from the base's allocation", async () => {
-    const roster = [agent('tc-tp-2700-lint'), agent('tc-tp-2700-lint-review')]
+    const roster = [agent('tc-x-4-lint'), agent('tc-x-4-lint-review')]
     const events = [
-      allocated('tc-tp-2700-lint', 'fix/tp-2700-lint-wrap'),
-      allocated('tc-tp-2700-lint-review', 'agent-chat/tc-tp-2700-lint-review'),
+      allocated('tc-x-4-lint', 'fix/x-4-lint-wrap'),
+      allocated('tc-x-4-lint-review', 'agent-chat/tc-x-4-lint-review'),
     ]
 
-    const reason = await holdFor('tc-tp-2700-lint-review', roster, events, openSet('fix/tp-2700-lint-wrap'))
+    const reason = await holdFor('tc-x-4-lint-review', roster, events, openSet('fix/x-4-lint-wrap'))
 
-    expect(reason).toBe('open PR on fix/tp-2700-lint-wrap (kept until merged or closed)')
+    expect(reason).toBe('open PR on fix/x-4-lint-wrap (kept until merged or closed)')
   })
 
   it('lets every case go once its PR is merged or closed', async () => {
-    const roster = [agent('tc-tp-2700-lint'), agent('tc-tp-2700-lint-review'), agent('tc-tp-2705-a3')]
+    const roster = [agent('tc-x-4-lint'), agent('tc-x-4-lint-review'), agent('tc-x-5-a3')]
     const events = [
-      allocated('tc-tp-2700-lint', 'fix/tp-2700-lint-wrap'),
-      allocated('tc-tp-2700-lint-review', 'agent-chat/tc-tp-2700-lint-review'),
-      allocated('tc-tp-2705-a3', 'agent-chat/tc-tp-2705-a'),
+      allocated('tc-x-4-lint', 'fix/x-4-lint-wrap'),
+      allocated('tc-x-4-lint-review', 'agent-chat/tc-x-4-lint-review'),
+      allocated('tc-x-5-a3', 'agent-chat/tc-x-5-a'),
     ]
 
     for (const a of roster) expect(await holdFor(a.name, roster, events, openSet())).toBeUndefined()
