@@ -248,6 +248,7 @@ function sliceWork(
     owns: ready.owns ?? [],
     contracts: ready.contracts ?? [],
     ...(ready.stackedOn === undefined ? {} : { stackedOn: ready.stackedOn }),
+    ...(ready.overlapsAccepted === undefined ? {} : { overlapsAccepted: ready.overlapsAccepted }),
   }
   const collided = collisionOf(initiative, work, inputs, accepted)
   if (collided !== undefined) return { refusals: [collided] }

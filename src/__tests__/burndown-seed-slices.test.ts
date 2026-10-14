@@ -12,6 +12,7 @@ import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 import {
   diskPlanReader,
+  resyncQueuedSlices,
   seedSlices,
   seedSteps,
   sliceRunsIn,
@@ -338,5 +339,69 @@ describe('diskPlanReader', () => {
     expect(read('alpha', 'A-1')).toEqual({ path: `${root}/alpha/sources/A-1-plan.md`, text: 'plan text' })
     expect(read('alpha', 'A-2').text).toBeUndefined()
     fs.rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('carrying overlapsAccepted from the plan to the claim (CC-1259)', () => {
+  const INDEX = 'packages/authority/src/index.ts'
+  const ACCEPT = { pr: 1083, path: INDEX, why: 'line 3 only; #1083 appends at :10' }
+  const TP_2440_A = {
+    n: 'a',
+    title: 'authority conditions',
+    dependsOn: [],
+    owns: [INDEX, 'packages/authority/src/conditions.ts'],
+    points: 2,
+    doneWhen: 'Conditions test passes.',
+  }
+  const queuedA: Claim = {
+    taskId: 'A-1',
+    initiative: 'alpha',
+    spawnedAt: NOW.toISOString(),
+    phase: 'queued',
+    phaseAt: NOW.toISOString(),
+    slice: 'a',
+    dependsOn: [],
+    owns: TP_2440_A.owns,
+  }
+
+  // Mutation caught: sliceClaims dropping the field.
+  it('queues the slice with the overlaps its plan accepts', () => {
+    const result = plan({ ...ON, readPlan: reader(planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])) })
+
+    expect(result.seeds.map(c => c.overlapsAccepted)).toEqual([[ACCEPT]])
+  })
+
+  // Mutation caught: overlapsAccepted missing from the resync FIELDS.
+  it('resyncs an already-queued claim when its plan adds an accepted overlap', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queuedA] }
+    const text = planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])
+
+    const out = resyncQueuedSlices(ledger, () => ({ path: PLAN_PATH, text }), NOW)
+
+    expect(out.notes).toEqual([
+      `resynced alpha A-1 slice a from ${PLAN_PATH}: overlapsAccepted [] -> ["#1083 ${INDEX}"]`,
+    ])
+    expect(applyActions(ledger, out.actions, NOW).claims[0]?.overlapsAccepted).toEqual([ACCEPT])
+  })
+
+  // Mutation caught: a requeue that loses the acceptance and re-blocks the slice.
+  it('keeps the accepted overlaps on a released slice that is requeued', () => {
+    const live: Claim = {
+      ...queuedA,
+      phase: 'implementing',
+      agentName: 'sa-a-1-a',
+      overlapsAccepted: [ACCEPT],
+    }
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [live] }
+    const release: Action = {
+      kind: 'release',
+      key: { taskId: 'A-1', slice: 'a' },
+      requeue: true,
+      names: ['sa-a-1-a'],
+    }
+
+    const [requeued] = applyActions(ledger, [release], NOW).claims
+
+    expect(requeued).toMatchObject({ phase: 'queued', overlapsAccepted: [ACCEPT] })
   })
 })
