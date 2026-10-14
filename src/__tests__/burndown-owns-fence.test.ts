@@ -31,6 +31,35 @@ describe('a slice PR against its owns', () => {
     ])
   })
 
+  describe('a companion carries a dir segment of its owned file before the name (CC-832)', () => {
+    it('reports a test whose name only ends with the owned stem', () => {
+      expect(outsideOwns(['src/__tests__/launch-plan.test.ts'], ['src/agents/burndown/plan.ts'])).toEqual([
+        'src/__tests__/launch-plan.test.ts',
+      ])
+      expect(outsideOwns(['src/__tests__/exit-report.test.ts'], ['src/agents/burndown/report.ts'])).toEqual([
+        'src/__tests__/exit-report.test.ts',
+      ])
+    })
+
+    it('reports a test whose prefix is not a dir segment of the owned file', () => {
+      expect(
+        outsideOwns(['src/__tests__/mirror-launchd.test.ts'], ['src/agents/burndown/launchd.ts']),
+      ).toEqual(['src/__tests__/mirror-launchd.test.ts'])
+    })
+
+    it('allows a test with words between the dir segment and the owned stem', () => {
+      expect(
+        outsideOwns(['src/__tests__/burndown-claim-advance.test.ts'], ['src/agents/burndown/advance.ts']),
+      ).toEqual([])
+    })
+
+    it('allows a test named for a hyphenated owned stem under its dir segment', () => {
+      expect(
+        outsideOwns(['src/__tests__/burndown-owns-fence.test.ts'], ['src/agents/burndown/owns-fence.ts']),
+      ).toEqual([])
+    })
+  })
+
   it("allows a test named for a wildcard entry's dir, and reports one named for another", () => {
     const files = ['src/__tests__/burndown-owns-fence.test.ts', 'src/__tests__/seats-owns.test.ts']
 
