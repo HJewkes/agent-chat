@@ -5,7 +5,7 @@ import { briefRefusal, type Task } from './eligibility.js'
 import type { RegisterReply, Registration } from './shepherd.js'
 import type { Ledger } from './ledger.js'
 import { orphanQueues, type OrphanQueue } from './orphan-queue.js'
-import type { SeatOutcome } from './no-dispatch.js'
+import { firstRefusalPerTask, refusalTally, type SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
 import { bindingOf, type Binding } from './gate-reading.js'
 import { onPlan } from './seat-scope.js'
@@ -43,13 +43,15 @@ import type { TickStep } from './step-timer.js'
  *   unbriefed       considered tasks with no valid brief:ready tag
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
- *   refusals        {[refusal kind]: count}
- *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refusals whose task the seat's plan_file section 2
- *                   names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent when the seat has no
- *                   readable plan_file
+ *   refusals        {[refusal kind]: count}: CC-1186: each refused (initiative, task) once, under the kind of its
+ *                   first refusal, and each refusal that names no task once. Rows from before CC-1186 counted a
+ *                   task once per refusal, so a task with refused slices counted again for its own row
+ *   onPlanRefusals  CC-1128: {[refusal kind]: count} of the refused tasks, counted as in `refusals`, that the seat's
+ *                   plan_file section 2 names, by id or by a dep:/parent:/delivered-by:/blocked-by: tag; absent
+ *                   when the seat has no readable plan_file
  *   trust           CC-1077: [{initiative, task?, reason}] for each distinct trust refusal, reason on one line of at
- *                   most 200 chars, at most 10 entries (the exact count stays in `refusals.trust`); absent when
- *                   the seat refused nothing on trust
+ *                   most 200 chars, at most 10 entries (the exact count of tasks first refused on trust stays in
+ *                   `refusals.trust`); absent when the seat refused nothing on trust
  *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` is what the seat's role caps
  *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
  *                   the seat was not planned
@@ -171,12 +173,12 @@ function namedTrustRefusals(outcome: SeatOutcome): NamedRefusal[] {
   return [...named.values()].slice(0, MAX_NAMED_TRUST)
 }
 
-/** CC-1128: refusals of on-plan tasks by kind; a refused task not in the inputs is matched by its id alone. */
+/** CC-1128: on-plan refused tasks by their first refusal's kind; a task not in the inputs is matched by its id alone. */
 function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<string, number> | undefined {
   const plan = outcome.plan
   if (plan === undefined) return undefined
   const counts: Record<string, number> = {}
-  for (const r of outcome.refusals) {
+  for (const r of firstRefusalPerTask(outcome.refusals)) {
     if (r.task === undefined) continue
     const task = inputs.tasks.get(r.initiative)?.find(t => t.id === r.task) ?? { id: r.task, tags: [] }
     if (onPlan(plan, task)) counts[r.kind] = (counts[r.kind] ?? 0) + 1
@@ -185,8 +187,7 @@ function onPlanRefusals(inputs: SummaryInputs, outcome: SeatOutcome): Record<str
 }
 
 function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
-  const refusals: Record<string, number> = {}
-  for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
+  const refusals = Object.fromEntries(refusalTally(outcome.refusals))
   const cap = inputs.caps[outcome.seat]
   const used = outcome.roles
   const trust = namedTrustRefusals(outcome)
