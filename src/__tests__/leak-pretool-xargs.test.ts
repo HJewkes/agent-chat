@@ -310,6 +310,7 @@ describe('an xargs option the shell may split (CC-1219)', () => {
     'xargs -n $N cat',
     'ls | xargs -P $(nproc) -n 1 cat',
     'xargs -P $(nproc) grep foo {}',
+    'xargs xargs $X grep foo',
     'ls | xargs -P $(nproc) grep a | xargs -P $(nproc) grep b | xargs -P $(nproc) grep c',
   ])('keeps a literal non-git command readable: %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
@@ -352,6 +353,10 @@ describe('an xargs option the shell may split (CC-1219)', () => {
     'xargs $X -a git grep foo',
   ])('denies an option value after the split that may become the command: %s', command => {
     expect(checkCommand(command, ctx)).toBeDefined()
+  })
+
+  it('keeps the split hidden when one xargs runs another', () => {
+    expect(checkCommand('xargs xargs $X pr create -t x --body y', ctx)).toBe(REASONS.hiddenCommand)
   })
 
   it('denies an unknown long option after the split', () => {

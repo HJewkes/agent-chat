@@ -446,6 +446,7 @@ function placeFed(word: string, replace: string): string {
 const nestedFed = (outer: Fed, inner: Fed): Fed => ({
   append: true,
   replace: outer.replace === undefined && inner.replace === undefined ? undefined : ANY_WORD,
+  hidden: outer.hidden === true || inner.hidden === true,
 })
 
 /** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
