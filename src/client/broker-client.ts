@@ -16,6 +16,8 @@ import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
+const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
 /**
  * Replies the 5s default is simply wrong for, and why raising it is the right
  * answer rather than a papering-over (CC-95).
@@ -50,6 +52,43 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   teleport_result: 20_000,
   // CC-1059: held until a remote spawn attaches or the broker's attach window (30s) passes.
   spawn_placed_result: 60_000,
+  // CC-1343: answered synchronously, so it waits behind a roster build that can itself take 30s.
+  inbox_since_result: 15_000,
+}
+
+/**
+ * How long a timed-out request's place in its reply queue is held (CC-1343).
+ *
+ * Replies carry no request id and are matched FIFO by type, so a late reply must
+ * be swallowed in its own slot or it answers the next request of that type. The
+ * hold is bounded because a broker handler that throws sends no reply at all, and
+ * a slot held forever would then swallow every later reply of that type.
+ */
+const TOMBSTONE_MIN_MS = 60_000
+
+/** A broker request that got no reply in time. The message is unchanged so `startsWith` checks keep matching. */
+export class BrokerTimeoutError extends Error {
+  override readonly name = 'BrokerTimeoutError'
+  constructor(readonly replyType: ReplyType) {
+    super(`broker did not answer ${replyType}`)
+  }
+}
+
+/** Retries `call` after each delay while it fails on a broker timeout; any other error is thrown at once. */
+export async function retryOnBrokerTimeout<T>(
+  call: () => Promise<T>,
+  delaysMs: readonly number[] = [1000, 3000],
+  sleep: (ms: number) => Promise<void> = wait,
+): Promise<T> {
+  for (const delay of delaysMs) {
+    try {
+      return await call()
+    } catch (err) {
+      if (!(err instanceof BrokerTimeoutError)) throw err
+    }
+    await sleep(delay)
+  }
+  return call()
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
@@ -97,6 +136,21 @@ interface Waiter {
   reject: (err: Error) => void
 }
 
+/** A waiter that swallows the late reply it stands in for, and leaves the queue after `holdMs`. */
+function tombstone(queue: Waiter[], holdMs: number): Waiter {
+  const expiry = setTimeout(() => {
+    const index = queue.indexOf(stone)
+    if (index !== -1) queue.splice(index, 1)
+  }, holdMs)
+  // A short-lived CLI that timed out must still exit without waiting out the hold.
+  expiry.unref()
+  const stone: Waiter = {
+    resolve: () => clearTimeout(expiry),
+    reject: () => clearTimeout(expiry),
+  }
+  return stone
+}
+
 interface HeldFrame {
   message: ClientMessage
   replyType: ReplyType
@@ -111,8 +165,6 @@ interface HeldFrame {
  * exactly the moment the roster is meant to be the trustworthy view.
  */
 type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
-
-const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 export interface BrokerClientOptions {
   /**
@@ -370,15 +422,15 @@ export class BrokerClient {
       if (!socket) return reject(new Error('not connected to the broker'))
 
       const queue = this.waiters.get(replyType) ?? []
+      const timeoutMs = REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS
       // Cleared on reply, otherwise a resolved request would hold the event
       // loop open for the full timeout and delay short-lived CLI commands.
       const timer = setTimeout(() => {
         const index = queue.indexOf(waiter)
-        if (index !== -1) {
-          queue.splice(index, 1)
-          reject(new Error(`broker did not answer ${replyType}`))
-        }
-      }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
+        if (index === -1) return
+        queue[index] = tombstone(queue, Math.max(timeoutMs, TOMBSTONE_MIN_MS))
+        reject(new BrokerTimeoutError(replyType))
+      }, timeoutMs)
 
       const waiter: Waiter = {
         resolve: msg => {
