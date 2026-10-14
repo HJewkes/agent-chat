@@ -429,10 +429,9 @@ record a hand-dispatched PR on a queued or released slice, so the tick never dis
 finishes it on merge
 
 Options:
-  --slice <value>       the queued or released slice the PR implements
-  --pr <value>          the PR, as owner/repo#n or its URL
-  --initiative <value>  the initiative of a task with no claim left on the ledger
-  -h, --help            display help for command
+  --slice <value>  the queued or released slice the PR implements
+  --pr <value>     the PR, as owner/repo#n or its URL
+  -h, --help       display help for command
 
 === agent-chat burndown unstall
 Usage: agent-chat burndown unstall [options] <task>

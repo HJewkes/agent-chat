@@ -154,8 +154,6 @@ export interface LinkPorts {
   plan: PlanReader
   /** The PR's title, state and head branch; undefined when GitHub could not tell. */
   pull: (pr: string) => LinkedPull | undefined
-  /** The initiative of a task with no claim left on the ledger. */
-  initiative?: string
   now?: Date
 }
 
@@ -190,7 +188,7 @@ export const namesTask = (text: string, task: string): boolean =>
 /**
  * CC-978: records a hand-dispatched PR on a queued slice, so the tick never dispatches the slice and
  * finishes it when the PR merges. Refused for a claim that is not queued or a PR Shepherd cannot name.
- * CC-1141 b: with `ports`, a released or never-seeded slice is re-created as a queued claim carrying the PR.
+ * CC-1141 b: with `ports`, a released slice is re-created as a queued claim carrying the PR.
  */
 export async function linkSlicePr(
   task: string,
@@ -264,23 +262,27 @@ function relinkLocked(
   const ledger = readLedger(file)
   const ofTask = ledger.claims.filter(c => c.taskId === task)
   const existing = ofTask.find(c => c.slice === slice)
-  if (existing !== undefined)
-    return `its claim is ${existing.phase}; only a released or unseeded slice re-links`
-  const parent =
-    ofTask[0] ?? (ports.initiative === undefined ? undefined : { taskId: task, initiative: ports.initiative })
-  if (parent === undefined) return 'no claim of the task is left to name its initiative; pass --initiative'
+  if (existing !== undefined) return `its claim is ${existing.phase}; only a released slice re-links`
+  // Only the seeder writes a whole plan, with the seat and name prefix its seat dispatches under; a re-link
+  // copies both from a claim it seeded and adds back the one slice that seeding's plan is missing.
+  const parent = ofTask.find(c => c.slice !== undefined)
+  if (parent === undefined) return `the task holds no slice claim; ${SEED_FIRST}`
   const planned = plannedSlices(ports.plan(parent.initiative, task), slice)
   if (typeof planned === 'string') return planned
-  const released = ledger.slicesReleased?.[task]?.includes(slice) === true
-  // Seeding adds every plan slice at once, which alreadySeeded and slicesMerged rely on: a task with no slice
-  // claim and nothing released gets the whole plan, or its other slices would never run and it would read merged.
-  const seeded = released || ofTask.some(c => c.slice !== undefined)
-  const slices = seeded ? planned.filter(s => s.n === slice) : planned
-  const added = sliceClaims(parent, slices, ports.now ?? new Date()).map(c =>
-    c.slice === slice ? { ...c, pr } : c,
-  )
+  const missing = unseeded(ledger, ofTask, planned, task).filter(n => n !== slice)
+  if (missing.length > 0) return `slices ${missing.join(', ')} have no claim either; ${SEED_FIRST}`
+  const named = planned.filter(s => s.n === slice)
+  const added = sliceClaims(parent, named, ports.now ?? new Date()).map(c => ({ ...c, pr }))
   writeLedger(file, unreleased({ ...ledger, claims: [...ledger.claims, ...added] }, task, slice))
   return undefined
+}
+
+const SEED_FIRST = 'release the task so the tick seeds it, then link the queued slice'
+
+/** The plan slices with neither a claim nor a release: the ones the seeding that this re-link extends never wrote. */
+function unseeded(ledger: Ledger, ofTask: Claim[], planned: PlannedSlice[], task: string): string[] {
+  const covered = new Set([...ofTask.map(c => c.slice), ...(ledger.slicesReleased?.[task] ?? [])])
+  return planned.map(s => s.n).filter(n => !covered.has(n))
 }
 
 /** Every slice of the plan, or why the plan or the named slice cannot be read. */

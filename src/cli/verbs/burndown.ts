@@ -518,7 +518,6 @@ export const burndownLinkVerb = defineVerb({
     task: requiredString('task'),
     slice: requiredString('slice'),
     pr: requiredString('pr'),
-    initiative: z.string().optional(),
   }),
   result: Report,
   cli: {
@@ -526,17 +525,12 @@ export const burndownLinkVerb = defineVerb({
     options: {
       slice: { long: '--slice', description: 'the queued or released slice the PR implements' },
       pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
-      initiative: {
-        long: '--initiative',
-        description: 'the initiative of a task with no claim left on the ledger',
-      },
     },
   },
-  run: ({ task, slice, pr, initiative }) =>
+  run: ({ task, slice, pr }) =>
     linkSlicePr(task, slice, pr, undefined, {
       plan: diskPlanReader(activeWorkRoot()),
       pull: pullReader(run),
-      ...(initiative === undefined ? {} : { initiative }),
     }),
 })
 

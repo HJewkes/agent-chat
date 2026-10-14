@@ -385,29 +385,51 @@ describe('burndown release --slice and link (CC-978)', () => {
       expect(merged.claims.find(c => c.slice === 'a')?.phase).toBe('done')
     })
 
-    it('seeds the whole plan of a task never seeded, linking only the named slice, so it never reads merged early', async () => {
+    it("re-creates a released slice under its seat's name prefix, so that seat's dispatch picks it", async () => {
+      const seated = { seat: 'seat-a', namePrefix: 'bd' }
+      writeLedger(file(), {
+        ...EMPTY_LEDGER,
+        claims: ['a', 'b', 'c'].map(n => slice(n, { ...seated, phase: n === 'a' ? 'done' : 'queued' })),
+      })
+      await releaseTask('CC-1', retire, NOW, 'c')
+
+      await linkSlicePr('CC-1', 'c', 'o/r#41', undefined, pulled({ title: 'CC-1 c: thing' }))
+
+      const linked = readLedger(file())
+      expect(linked.claims.find(c => c.slice === 'c')).toMatchObject({
+        ...seated,
+        phase: 'queued',
+        pr: 'o/r#41',
+      })
+      expect(
+        readySlices(linked)
+          .filter(c => c.seat === 'seat-a')
+          .map(c => c.slice),
+      ).toEqual(['b'])
+    })
+
+    it('refuses a task never seeded, writing nothing, so only the seeder writes its plan', async () => {
       writeLedger(file(), EMPTY_LEDGER)
-      const ports = { ...pulled({ title: 'unrelated', branch: 'agent-chat/bd-cc-1-b' }), initiative: 'demo' }
+      const ports = pulled({ title: 'unrelated', branch: 'agent-chat/bd-cc-1-b' })
 
       const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, ports)
 
-      const linked = readLedger(file())
-      expect(report.ok).toBe(true)
-      expect(linked.claims.map(c => [c.slice, c.pr])).toEqual([
-        ['a', undefined],
-        ['b', 'o/r#41'],
-        ['c', undefined],
-      ])
-      expect(readySlices(linked).map(c => c.slice)).toEqual(['a', 'c'])
-      const merged = await mergedTick(linked, c =>
-        c.pr === undefined ? undefined : { kind: 'merged', pr: c.pr, head: 'h41' },
-      )
-      expect(merged.claims.map(c => c.phase)).toEqual(['queued', 'done', 'queued'])
-      expect(
-        seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan('demo', 'CC-1'), merged, NOW),
-      ).not.toEqual({
-        merged: true,
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('holds no slice claim')] })
+      expect(readLedger(file())).toEqual(EMPTY_LEDGER)
+    })
+
+    it('refuses after a whole-task release left a done slice, naming the other slice it would strand', async () => {
+      writeLedger(file(), {
+        ...EMPTY_LEDGER,
+        claims: [slice('a', { phase: 'done' }), slice('b'), slice('c')],
       })
+      await releaseTask('CC-1', retire, NOW)
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, pulled({ title: 'CC-1 b: thing' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('slices c have no claim')] })
+      expect(readLedger(file())).toEqual(before)
     })
 
     it('adds only the named slice after a slice release, keeping the rest of the plan as seeded', async () => {
