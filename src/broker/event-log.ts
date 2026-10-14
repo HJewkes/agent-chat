@@ -298,6 +298,8 @@ export class EventLog implements EventStore {
     // Another process's write lock (a CLI, or a broker losing the boot race) is waited out, not thrown.
     this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS })
     this.db.exec('PRAGMA journal_mode = WAL')
+    // TP-801: file-backed temp sorts of the roster read wrote 34 GB in a day.
+    this.db.exec('PRAGMA temp_store = MEMORY')
     this.db.exec(SCHEMA)
     restrictToOwner(file)
     const last = this.db.prepare('SELECT MAX(id) AS id FROM events').get() as { id: number | null }
@@ -853,10 +855,13 @@ export class EventLog implements EventStore {
    * The db handle stays private and this returns plain rows rather than the read
    * model reaching in: the fold is then a pure function over a row list, unit
    * testable with no database at all, which is the point of the A1 ordering.
+   *
+   * TP-801: `NOT INDEXED` reads the rowid scan, which is already in id order; the
+   * `events_kind` IN-walk is not, and needs a temp B-tree sort of every agent row.
    */
   agentEvents(): AgentEventRow[] {
     const rows = this.db
-      .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
+      .prepare(`SELECT * FROM events NOT INDEXED WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
       .all() as unknown as Row[]
     return rows.map(toAgentEventRow)
   }

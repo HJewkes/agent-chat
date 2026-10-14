@@ -29,6 +29,8 @@ export interface TeleportHandoffInput extends SeatHandoffInput {
   after: string | undefined
   /** The seat's own block was kept but names no cursor that could be read. */
   cursorMissing?: boolean
+  /** TP-1600 e: the state and inbox sections agent-chat composed, after the capped frame. */
+  sections?: string[]
 }
 
 const seatHeartbeatSource = (root: string, seat: string): HeartbeatSource => {
@@ -46,14 +48,14 @@ const heartbeatLines = (source: HeartbeatSource, queue: string, boot: string): s
     : [`and ${queue}, then the 'State at teleport N' below only. Recreate the`, `heartbeat first. ${boot}`]
 
 /** Charter section 11 step 3, opened by `why` and capped so the first turn stays bounded. */
-function renderSeatHandoff(why: string, boot: string, input: SeatHandoffInput): string {
+function renderSeatHandoff(why: string, boot: string, input: SeatHandoffInput, register: string): string {
   const { root, seat, found } = input
   const source = input.heartbeatSource ?? seatHeartbeatSource(root, seat)
   const text = [
     why,
     `Run the autonomy charter at @${root}/charter.md as seat ${seat}. Read @${root}/seats/${seat}.md`,
     ...heartbeatLines(source, `@${root}/queues/${seat}.md`, boot),
-    BOOT_WITHOUT_CONFIRMATION(seat),
+    register,
     `Latest State at teleport${found === undefined ? '' : ` (from logs/${seat}/${found.day}.md)`}:`,
     found?.section ?? NO_TELEPORT_STATE,
   ].join('\n')
@@ -66,25 +68,39 @@ export const renderRelaunchHandoff = (input: HandoffInput): string =>
     `Watchdog relaunch: ${input.seat} had no heartbeat for ${input.quietMinutes} min and no live session.`,
     `\`agent-chat seats boot ${input.seat}\` prints the same digest with your inbox.`,
     input,
+    BOOT_WITHOUT_CONFIRMATION(input.seat),
   )
 
-/** CC-863: the handoff for a seat's `agent_teleport`, whose boot reads the inbox after the State block's cursor. */
-export const renderTeleportHandoff = (input: TeleportHandoffInput): string =>
-  renderSeatHandoff(
+/** TP-1600 e: a teleport successor acts on what agent-chat composed rather than reading it again. */
+export const ACT_WITHOUT_REVERIFY = (seat: string): string =>
+  `Register as ${seat} with chat_register, then act on the first continuation below, or on the ` +
+  'queue when it lists none. Do not ask the owner for confirmation before registering or acting.'
+
+export const NO_REVERIFY =
+  'Do not re-run seats boot, gh pr view or git status for anything the sections below list: ' +
+  'agent-chat read them at the teleport.'
+
+/** CC-863, TP-1600 e: the handoff for a seat's `agent_teleport`, then the state and inbox agent-chat composed. */
+export function renderTeleportHandoff(input: TeleportHandoffInput): string {
+  const frame = renderSeatHandoff(
     `Teleport: ${input.seat} handed off and ended; you are its successor. agent-chat wrote this ` +
-      'section and the State block below from the roster, Shepherd and the broker inbox.',
+      'prompt and the State block below from the seat event log, the roster, Shepherd, the pace ' +
+      'file, the dispatch log and the broker inbox.',
     teleportBoot(input),
     input,
+    ACT_WITHOUT_REVERIFY(input.seat),
   )
+  const sections = input.sections ?? []
+  return sections.length === 0 ? frame : `${frame}\n\n${sections.join('\n')}`
+}
 
-function teleportBoot({ seat, after, cursorMissing }: TeleportHandoffInput): string {
+function teleportBoot({ cursorMissing }: TeleportHandoffInput): string {
   if (cursorMissing)
     return (
-      `The State block below names no inbox cursor agent-chat could read: find the last message ` +
-      `it handled there and run \`agent-chat seats boot ${seat} --after <msg_id>\` for your inbox.`
+      'The State block below names no inbox cursor agent-chat could read, so the inbox section ' +
+      `lists only the last messages: check them against the block. ${NO_REVERIFY}`
     )
-  const flag = after === undefined ? '' : ` --after ${after}`
-  return `\`agent-chat seats boot ${seat}${flag}\` prints the same digest with your inbox.`
+  return NO_REVERIFY
 }
 
 /** The handoff for `seat`, reading its journals under `root`. */

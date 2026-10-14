@@ -270,6 +270,8 @@ Commands:
                             place, keeping its PR and agents
   landed [options]          every open, unreconciled task in a seat's scope that a recent
                             default-branch subject or Covers clause names (CC-611); writes nothing
+  classify [options]        classify every open task on, off or ambiguous against section 2 of the
+                            accepted plan; --write publishes off-plan-<date>.md (TP-2418)
   config                    resolved burndown settings (CC-955)
   preset                    named burndown settings presets (CC-955)
   override                  a time-boxed patch over the settings (CC-955)
@@ -450,6 +452,22 @@ Options:
   --json                   one JSON record per row, one per line
   --autonomy-root <value>  directory holding charter.md and seats/
   -h, --help               display help for command
+
+=== agent-chat burndown classify
+Usage: agent-chat burndown classify [options]
+
+classify every open task on, off or ambiguous against section 2 of the accepted plan; --write
+publishes off-plan-<date>.md (TP-2418)
+
+Options:
+  --plan <value>        the accepted factory plan whose "## 2." section names on-plan ids
+  --initiative <value>  an active-work initiative whose open tasks to classify (repeatable)
+  --out-dir <value>     where off-plan-<date>.md goes (default claude-channels factory-review)
+  --write               write the file; without it the run is a dry run
+  --ask <label>         ask the owner on/off once per ambiguous task under this service label, and
+                        apply answers (needs --write)
+  --json                one JSON record per task, one per line
+  -h, --help            display help for command
 
 === agent-chat burndown config
 Usage: agent-chat burndown config [options] [command]
