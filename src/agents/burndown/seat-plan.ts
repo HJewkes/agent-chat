@@ -16,6 +16,7 @@ import {
   type Task,
 } from './eligibility.js'
 import { binaryGate, capGate } from './gate-reading.js'
+import { holdsSlot, roleOf, type Role } from './claim-hold.js'
 import {
   contractOverlap,
   liveOverlap,
@@ -177,7 +178,6 @@ export interface Placement {
   intangibleHeld: string[]
 }
 
-type Role = keyof SeatDispatch['caps']
 const ROLES: readonly Role[] = ['implementers', 'reviewers', 'planners']
 type Refused = Pick<Refusal, 'kind' | 'reason' | 'gate' | 'blocker' | 'slice'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
@@ -194,16 +194,6 @@ const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
 
 /** CC-986: the route a brief:ready task with no plan takes, so a planner writes the slices that declare its owns. */
 const PLANNER_ROUTE = { role: 'planners', profile: PLANNER_PROFILE } as const
-
-const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
-  planning: 'planners',
-  implementing: 'implementers',
-  reviewing: 'reviewers',
-}
-
-/** A spawning claim counts toward the role it lands in. */
-const roleOf = (claim: Claim): Role | undefined =>
-  ROLE_OF_PHASE[claim.phase === 'spawning' ? (claim.nextPhase ?? 'spawning') : claim.phase]
 
 /** The seat's whole-task claims dispatched since `runStartAt`, by initiative; a planner's slices are the same pick. */
 export function priorPicksOf(ledger: Ledger, seat: string, runStartAt: number): Record<string, number> {
@@ -651,13 +641,6 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     notes: [],
   }
 }
-
-/**
- * CC-1098: a claim holds its role's slot while it is spawning, its agent may run, or a ladder respawn is about to
- * spawn its successor. One whose agent is gone is ledger state, not live work, even with a PR open at Shepherd.
- */
-const holdsSlot = (claim: Claim, live: SeatPlanInputs['liveAgent']): boolean =>
-  claim.phase === 'spawning' || live === undefined || claim.respawn !== undefined || live(claim.agentName)
 
 /** CC-978: what a role counts against its cap, beside the ledger's own count when the two differ. */
 export const roleUsed = (role: Role, used: number, idle: number): string => {
