@@ -49,7 +49,7 @@ function fleet(): { agents: AgentIdentity[]; ledger: Ledger } {
   const ineligible = [
     agent('tc-rv-a', { profile: 'rv-readonly' }),
     agent('rv-tc-b'),
-    agent('tc-human', { origin: 'human' }),
+    agent('tc-adopted', { origin: 'adopted' }),
     agent('tc-gone', { cwd: MISSING }),
     agent('tc-held-a'),
     agent('tc-held-b'),
