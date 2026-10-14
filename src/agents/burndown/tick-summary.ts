@@ -33,8 +33,11 @@ import type { TickStep } from './step-timer.js'
  *                   the planning on both sides of `collision`; factory
  *                   graph: T2 roster/world/seats/observe/decider/collision, T4/T5 plan, T6 execute/adopt/
  *                   decider-triage, T7 write-ledger and this row's write
+ *   serviceCheck    CC-1127: {cause, stopped, message} of the tick's one service-check read: cause null when the
+ *                   check passed, stopped true when this read and the previous one stopped the line, message on
+ *                   one line of at most 200 chars; seats mode only
  *
- * Rows from before CC-1192 lack durationMs, lockHeldMs and steps.
+ * Rows from before CC-1192 lack durationMs, lockHeldMs and steps; rows from before CC-1127 lack serviceCheck.
  *
  * SeatSummary:
  *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
@@ -89,6 +92,15 @@ export interface NamedRefusal {
   reason: string
 }
 
+/** CC-1127: the tick's service-check read, so a stop's cause is in the row rather than only in burndown.log. */
+export interface ServiceCheckSummary {
+  /** Null when the check passed. */
+  cause: string | null
+  /** The line stopped this tick: this read and the previous one both stopped. */
+  stopped: boolean
+  message: string
+}
+
 export interface TickSummaryRow {
   v: typeof TICK_SUMMARY_VERSION
   ts: string
@@ -98,6 +110,7 @@ export interface TickSummaryRow {
   lockHeldMs?: number
   steps?: TickStep[]
   orphanQueues?: OrphanQueue[]
+  serviceCheck?: ServiceCheckSummary
 }
 
 export type TickTimings = Required<Pick<TickSummaryRow, 'durationMs' | 'lockHeldMs' | 'steps'>>
@@ -114,6 +127,8 @@ export interface SummaryPlan {
   outcomes: readonly SeatOutcome[]
   dispatch: readonly Dispatch[]
   tasks: ReadonlyMap<string, readonly Task[]>
+  /** Seats mode only: the tick's service-check read. */
+  serviceCheck?: ServiceCheckSummary
 }
 
 export interface SummaryInputs extends SummaryPlan {
@@ -221,6 +236,9 @@ export function tickSummary(inputs: SummaryInputs, timings?: TickTimings): TickS
     registrations: countRegistrations(inputs.registrations),
     seats: Object.fromEntries(inputs.outcomes.map(o => [o.seat, seatSummary(inputs, o)])),
     ...(orphans.length === 0 ? {} : { orphanQueues: orphans }),
+    ...(inputs.serviceCheck === undefined
+      ? {}
+      : { serviceCheck: { ...inputs.serviceCheck, message: oneLine(inputs.serviceCheck.message) } }),
     ...timings,
   }
 }
