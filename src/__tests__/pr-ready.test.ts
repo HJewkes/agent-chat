@@ -577,6 +577,78 @@ describe('pr-ready on a branch that is already pushed', () => {
   })
 })
 
+describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () => {
+  const PARENT = 'refs/remotes/origin/agent-chat/parent'
+  const answering =
+    (head: string, output: string): Override =>
+    line =>
+      line.startsWith(`gh pr list --head ${head} `) ? { code: 0, output } : undefined
+
+  /** feature is cut from origin/agent-chat/parent, then main moves on with m.txt. */
+  const stackedRepo = (): string => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'discarded.txt': 'd\n' })
+    const origin = originOf(work)
+    git(origin, 'checkout', '-q', '-b', 'agent-chat/parent')
+    commit(origin, { 'p.txt': 'p\n' }, 'parent')
+    git(origin, 'checkout', '-q', 'main')
+    git(work, 'fetch', '-q', 'origin')
+    git(work, 'checkout', '-q', '--no-track', '-B', 'feature', 'origin/agent-chat/parent')
+    commit(work, { 'f.txt': 'f\n' }, 'feature')
+    advanceOrigin(work, { 'm.txt': 'm\n' })
+    return work
+  }
+  const tree = (work: string): string[] => git(work, 'ls-tree', '--name-only', 'HEAD').split('\n')
+
+  const noMainCommit = (work: string): void => {
+    expect(tree(work)).toEqual(expect.arrayContaining(['f.txt', 'p.txt']))
+    expect(tree(work)).not.toContain('m.txt')
+  }
+
+  it('infers the parent from its open PR and rebases onto it with no main commit', async () => {
+    const work = stackedRepo()
+
+    const result = await runPrReady(
+      work,
+      [],
+      {},
+      { override: answering('agent-chat/parent', '[{"number":5}]') },
+    )
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok base: ${PARENT} (stacked on origin/agent-chat/parent (PR #5))`)
+    expect(result.calls).toContain(`git rebase ${PARENT}`)
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    noMainCommit(work)
+  })
+
+  it("judges a branch with its own open PR against that PR's base, not main", async () => {
+    const work = stackedRepo()
+    const openPr = answering('feature', '[{"number":9,"baseRefName":"agent-chat/parent"}]')
+
+    const result = await runPrReady(work, [], {}, { override: openPr })
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok base: ${PARENT} (PR #9 base)`)
+    expect(result.out).toContain('ok rebase: not behind origin/agent-chat/parent')
+    noMainCommit(work)
+  })
+
+  it('fails the base step without rebasing when the parent has no open PR', async () => {
+    const work = stackedRepo()
+    const head = git(work, 'rev-parse', 'HEAD')
+
+    const result = await runPrReady(work, [], {}, { override: answering('agent-chat/parent', '[]') })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(
+      'FAIL base: HEAD contains commits of origin/agent-chat/parent not on origin/main; cannot tell the base: ' +
+        'record it with git config branch.feature.agent-chat-base <name> (use main if the parent merged)',
+    )
+    expect(result.calls.filter(call => call.startsWith('git rebase'))).toEqual([])
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+})
+
 describe('pr-ready options and discovery', () => {
   it('runs only a root pr-ready script when one exists', async () => {
     const work = fixtureRepo(

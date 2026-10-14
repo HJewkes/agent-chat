@@ -150,9 +150,35 @@ new_case "$CLEAN"; timeline "$HELD" MERGE "$SHA" FIX_FIRST "$SHA" none "$SHA"; r
 check "7c newest Shepherd FIX_FIRST beats an older MERGE, none is skipped" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
 new_case "$CLEAN"; timeline null MERGE "$SHA"; run
 check "7c Shepherd MERGE on an unheld run" 1 "^FAIL .*no verdict from a reviewer"
-new_case "$CLEAN"; run;                                     check "7c titan-factory exits 1" 1 "^FAIL .*no verdict from a reviewer"
+new_case "$CLEAN"; run;                                     check "7c unregistered PR" 1 "^FAIL .*no verdict from a reviewer"
+new_case "$CLEAN"; echo 1 > "$W/case/timeline.rc"; run;    check "7c titan-factory exits 1" 1 "^FAIL .*owner-hold unknown"
 new_case "$CLEAN"; timeline "$HELD" MERGE "$SHA"; add_verdict seat-9-review msg0025 FIX_FIRST "$SHA"; run
 check "7c a counting chat verdict wins over Shepherd's" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
+
+# 7d: an owner-asked Shepherd hold refuses the merge; titan-factory failing in any other way fails closed (TP-2439)
+OWNER='{"reason":"owner-asked: discuss; TP-1"}'
+ok_case; timeline "$OWNER" MERGE "$SHA"; run;               check "7d owner-asked hold" 1 "^FAIL .*owner-hold owner-asked: discuss; TP-1"
+ok_case; timeline '{"reason":"g10-review: x"}' MERGE "$SHA"; run; check "7d non-owner hold passes" 0 "^OK "
+ok_case; timeline '{"reason":"g10-review: owner-asked: quoted"}' MERGE "$SHA"; run
+check "7d owner-asked only as a prefix" 0 "^OK "
+ok_case; timeline null MERGE "$SHA"; run;                   check "7d unheld registered run passes" 0 "^OK "
+grep -q "^  owner-hold: none$" <<<"$out" && echo "PASS 7d verdict line reads none" && pass=$((pass+1)) \
+  || { echo "FAIL 7d verdict line reads none: $out"; failn=$((failn+1)); }
+ok_case; run;                                              check "7d unregistered PR passes" 0 "^OK "
+grep -q "^  owner-hold: unregistered$" <<<"$out" && echo "PASS 7d verdict line reads unregistered" && pass=$((pass+1)) \
+  || { echo "FAIL 7d verdict line reads unregistered: $out"; failn=$((failn+1)); }
+ok_case; echo 70 > "$W/case/timeline.rc"; run;             check "7d titan-factory exits 70" 1 "^FAIL .*owner-hold unknown"
+ok_case; echo 'not json' > "$W/case/timeline.json"; run;   check "7d timeline is not JSON" 1 "^FAIL .*owner-hold unknown"
+ok_case; echo '{"entries":[]}' > "$W/case/timeline.json"; run; check "7d timeline has no row" 1 "^FAIL .*owner-hold unknown"
+# no_factory_path: the stubs and the tools premerge needs, without any titan-factory.
+no_factory_path() {
+  local d=$W/nofactory t; rm -rf "$d"; mkdir -p "$d"
+  for t in "$here"/stubs/*; do [ "${t##*/}" = titan-factory ] || ln -s "$t" "$d/"; done
+  for t in jq git sqlite3 awk head sed tr grep paste cat; do ln -s "$(command -v "$t")" "$d/$t"; done
+  echo "$d"
+}
+ok_case; out=$(PATH=$(no_factory_path) "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "7d titan-factory missing" 1 "^FAIL .*owner-hold unknown"
 
 # 8: arguments are validated before use
 out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check "8 bad repo" 2 "^bad argument"

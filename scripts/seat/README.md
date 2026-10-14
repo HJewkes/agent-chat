@@ -40,6 +40,8 @@ This copy differs from the live one on purpose:
 - `queue`, `log`, `pace` and `scorecard` require a root instead of falling back to their own
   parent directory.
 - `premerge` reads a verdict whose body opens with a code fence (CC-842).
+- `premerge` refuses a PR whose Shepherd run carries an `owner-asked` hold, and fails closed
+  unless `titan-factory` on PATH answers with a timeline or "not registered" (TP-2439).
 - `merge` builds its squash message with `titan-squash-message`.
 - `queue` tries GNU `stat -c` before BSD `stat -f`, because GNU `stat -f` prints a filesystem
   report instead of failing, which broke the stale-lock age on Linux.
