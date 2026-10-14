@@ -449,6 +449,8 @@ interface Pending {
   destination: string
   /** CC-951: a caller-site successor opens before its predecessor ends; only a caller that ends itself on `endSelf`. */
   successorFirst: boolean
+  /** TP-1600 e: when a seat's successor prompt was rendered; its generation closes only once the teleport completes. */
+  seatRenderedAt?: Date
 }
 
 /** CC-402: typed into the predecessor's own pane, so it can only launch once the predecessor has ended. */
@@ -967,12 +969,12 @@ export class Teleport {
 
   /** The successor holds the name now, so the predecessor is ended without waiting for it to free. */
   private endPredecessor(entry: Pending): void {
-    const { subject, descendantId } = entry
+    const { subject } = entry
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.host.standDown(subject.agentId)
     this.retirePredecessor(entry, this.endSession(entry))
     this.pending.delete(subject.agentId)
-    logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId })
+    this.completed(entry)
   }
 
   /**
@@ -1064,7 +1066,7 @@ export class Teleport {
     try {
       const paneFree = await this.waitForPaneFree(subject)
       await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
-      logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
+      this.completed(entry)
     } catch (err) {
       if (err instanceof SuccessorNotStarted) return
       // The one genuinely bad state this feature can reach: predecessor gone,
@@ -1200,12 +1202,18 @@ export class Teleport {
       body: 'superseded by teleport',
     })
     this.pending.delete(subject.agentId)
-    logEvent('teleport_completed', {
-      name: subject.name,
-      from: subject.agentId,
-      to: entry.descendantId,
-      remote: true,
-    })
+    this.completed(entry, { remote: true })
+  }
+
+  /**
+   * Every launch path's one success point. TP-1600 e: a seat's generation closes here and not at
+   * render, so a teleport that keeps its predecessor live leaves the seat log as it was.
+   */
+  private completed(entry: Pending, detail: Record<string, unknown> = {}): void {
+    const { subject, descendantId, seatRenderedAt } = entry
+    if (seatRenderedAt !== undefined)
+      this.closeSeatGeneration(this.seatTeleport.autonomyRoot, subject.name, descendantId, seatRenderedAt)
+    logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId, ...detail })
   }
 
   /**
@@ -1362,7 +1370,7 @@ export class Teleport {
         sessionStart: new Date(entry.since).toISOString(),
         now: now().getTime(),
       })
-      this.closeSeatGeneration(root, seat, entry.descendantId, now())
+      entry.seatRenderedAt = now()
       return renderTeleportHandoff({ root, seat, found, after, cursorMissing, sections })
     } catch (err) {
       logEvent('teleport_seat_state_failed', { name: seat, error: (err as Error).message })

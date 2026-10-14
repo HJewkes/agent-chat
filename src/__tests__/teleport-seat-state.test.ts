@@ -9,7 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { planPath } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
-import type { SeatHandoffDeps } from '../agents/teleport.js'
+import { LAND_WINDOW_MS, type SeatHandoffDeps } from '../agents/teleport.js'
 import { appendSeatEvent, seatEventsPath } from '../agents/seats/seat-event-log.js'
 import { SEAT_PORT_MS, type SeatStateSources } from '../agents/seats/seat-state-ports.js'
 import type { ShepherdFlight } from '../agents/seats/in-flight-read.js'
@@ -161,6 +161,25 @@ async function teleportSeat(agentId: string): Promise<{ ok: boolean; stdin: stri
   return { ok: result.ok, stdin: plan.stdin ?? '' }
 }
 
+const seatLogText = (): string => fs.readFileSync(seatEventsPath(root, SEAT), 'utf8')
+
+/** The seat's own session on the bus, as a successor-first teleport sees its live predecessor. */
+function connectSeat(agentId: string, host = os.hostname()): Conn {
+  const conn = {} as Conn
+  const reply = core.register(conn, {
+    t: 'register',
+    name: SEAT,
+    workingOn: 'coordinate',
+    cwd: '/w',
+    pid: 1,
+    agentId,
+    hostPid: 9999,
+    host,
+  })
+  expect(reply.ok).toBe(true)
+  return conn
+}
+
 const seatEvents = (): Array<Record<string, unknown>> =>
   fs
     .readFileSync(seatEventsPath(root, SEAT), 'utf8')
@@ -230,5 +249,71 @@ describe('a seat teleport whose sources fail', () => {
     expect(ok).toBe(true)
     expect(stdin).toContain(`unavailable: budget (budget did not answer in ${SEAT_PORT_MS} ms)`)
     expect(stdin).toContain(`unavailable: inbox (inbox did not answer in ${SEAT_PORT_MS} ms)`)
+  })
+})
+
+describe('a seat teleport that keeps its predecessor live', () => {
+  it('leaves the seat log unchanged when a successor-first successor never registers', async () => {
+    appendSeatEvent(root, SEAT, { kind: 'authored', text: 'keep me for the live seat' }, AT)
+    const { agentId } = await liveSeat()
+    const predecessor = connectSeat(agentId)
+    stopAutoAttach()
+    const before = seatLogText()
+
+    const result = await supervisor.teleport({
+      subject: {
+        agentId,
+        name: SEAT,
+        cwd: '/w',
+        hostPid: 9999,
+        host: os.hostname(),
+        tags: [],
+        subscriptions: [],
+      },
+      handoff: 'short note',
+    })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(result.ok).toBe(true)
+    expect(fs.readFileSync(planPath(result.agentId as string), 'utf8')).toContain('keep me for the live seat')
+    expect(core.registry.connFor(SEAT)).toBe(predecessor)
+    expect(seatLogText()).toBe(before)
+  })
+
+  it('leaves the seat log unchanged when a remote host reports its launch failed', async () => {
+    appendSeatEvent(root, SEAT, { kind: 'authored', text: 'keep me for the remote seat' }, AT)
+    const { agentId } = await liveSeat()
+    connectSeat(agentId, 'caller-host')
+    stopAutoAttach()
+    const before = seatLogText()
+
+    const result = await supervisor.teleport({
+      subject: {
+        agentId,
+        name: SEAT,
+        cwd: '/w',
+        hostPid: 9999,
+        host: 'caller-host',
+        tags: [],
+        subscriptions: [],
+      },
+      handoff: 'short note',
+      surface: 'iterm-window',
+      hostPlatform: 'darwin',
+      endsSelf: true,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    const plan = await supervisor.teleportPlan(agentId)
+    const reported = supervisor.teleportLaunched(agentId, {
+      successor: result.agentId as string,
+      ok: false,
+      reason: 'the surface did not open',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.ok).toBe(true)
+    expect(plan.launch?.brief ?? '').toContain('keep me for the remote seat')
+    expect(reported).toMatchObject({ ok: true })
+    expect(seatLogText()).toBe(before)
   })
 })
