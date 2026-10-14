@@ -125,20 +125,29 @@ function sourceRuns(marked: readonly string[]): ScriptRuns {
   return { runs: [{ word, args: marked.slice(at + 1), head: false }], stdin: false }
 }
 
+// Where the system installs its shells and `env`; a path anywhere else may be a file the line wrote.
+const SYSTEM_DIRS = new Set(['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'])
+
+/** The base name of an absolute path in a system directory, or undefined: `/bin/../tmp/sh` is not one. */
+function systemProgram(file: string): string | undefined {
+  if (!file.startsWith('/') || path.posix.normalize(file) !== file) return undefined
+  return SYSTEM_DIRS.has(path.posix.dirname(file)) ? path.posix.basename(file) : undefined
+}
+
 /**
- * A `#!` line naming anything but one of `shells`, directly or through `env`, so running the file as a
- * command hands its text to a reader the guard does not follow. A file with no `#!` line runs under a
- * shell. `env` with an option (`env -S bash -e`) is foreign, since the split is not read here. The
- * kernel resolves a relative interpreter (`#!sh`, `#!./bash`) from the current directory, and `env`
- * one holding `/` likewise, so either may be a file the line wrote and is foreign too.
+ * A `#!` line naming anything but one of `shells` in a system directory, directly or through a system
+ * `env`, so running the file as a command hands its text to a reader the guard does not follow. A file
+ * with no `#!` line runs under a shell. Any other interpreter path, relative (`#!./bash`, resolved from
+ * the current directory) or absolute (`#!/tmp/x/bash`), may be a file the line wrote. `env` with an
+ * option (`env -S bash -e`) is foreign, since the split is not read here; a bare name it looks up on PATH.
  */
 export function foreignShebang(body: string, shells: ReadonlySet<string>): boolean {
   const first = body.split('\n', 1)[0] ?? ''
   if (!first.startsWith('#!')) return false
   const [interpreter = '', next = ''] = first.slice(2).trim().split(/\s+/)
-  if (!interpreter.startsWith('/')) return true
-  const name = path.basename(interpreter)
-  if (name !== 'env') return !shells.has(name)
-  if (next.startsWith('-') || (next.includes('/') && !next.startsWith('/'))) return true
-  return !shells.has(path.basename(next))
+  const name = systemProgram(interpreter)
+  if (name !== 'env') return name === undefined || !shells.has(name)
+  if (next.startsWith('-')) return true
+  const program = next.includes('/') ? systemProgram(next) : next
+  return program === undefined || !shells.has(program)
 }

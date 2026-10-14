@@ -166,6 +166,9 @@ describe('foreignShebang', () => {
     '#!/usr/bin/env zsh\nx',
     '#! /bin/dash',
     '#!/usr/bin/env /bin/sh\nx',
+    '#!/usr/bin/env bash\nx',
+    '#!/usr/local/bin/zsh\nx',
+    '#!/opt/homebrew/bin/bash\nx',
   ])('%j runs under a shell', body => {
     expect(foreignShebang(body, SHELLS)).toBe(false)
   })
@@ -180,6 +183,12 @@ describe('foreignShebang', () => {
     '#!bin/sh\nx',
     '#! sh\nx',
     '#!/usr/bin/env ./bash\nx',
+    '#!/tmp/x/bash\nx',
+    '#!/usr/bin/env /tmp/x/bash\nx',
+    '#!/bin/../tmp/sh\nx',
+    '#!/bin/./sh\nx',
+    '#!//bin/sh\nx',
+    '#!/tmp/env bash\nx',
   ])('%j hands the file to another reader', body => {
     expect(foreignShebang(body, SHELLS)).toBe(true)
   })
