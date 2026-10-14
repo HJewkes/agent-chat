@@ -219,6 +219,8 @@ class ShellLexer {
   closesOnBrace = false
   private braceDepth = 0
   private braceClosed = false
+  /** Whether each open `(` starts a subshell, where `{` and `}` can still be reserved words. */
+  private parens: boolean[] = []
   /** A word of the current command was quoted, so it is not a reserved word. */
   private quotedWord = false
 
@@ -284,6 +286,11 @@ class ShellLexer {
     // After a redirect operator bash reads a `{` or `}` as the file name, never as a reserved word.
     if (!this.closesOnBrace || this.word !== null || this.patternNext || this.pending !== null) return false
     if (c !== '{' && c !== '}') return false
+    // Inside `(( ))`, `a=( )` or `[[ ( ) ]]` bash reads a brace as text, and where it ends is not modelled.
+    if (this.parens.includes(false)) {
+      this.budget.expansion = 'unreadable'
+      return false
+    }
     const next = this.src[this.pos + 1]
     const command = this.cur.words.length === 0
     if (c === '{') {
@@ -349,6 +356,7 @@ class ShellLexer {
     if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
     const opensCommand = this.word === null && !fed
+    const subshell = c === '(' && opensCommand && this.opensSubshell()
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
@@ -356,10 +364,18 @@ class ShellLexer {
     if (defined >= 0 && /^\(\s*\)/.test(this.src.slice(this.pos))) this.cur.marked[defined] += LIVE
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
+    if (c === '(') this.parens.push(subshell)
+    else this.parens.pop()
     this.depth += c === '(' ? 1 : -1
     this.trackArith(c, opensCommand)
     this.pos++
     this.cur = this.newCommand()
+  }
+
+  /** A `(` in command position that is not `((`, an array, a `[[` operand or arithmetic grouping. */
+  private opensSubshell(): boolean {
+    if (this.src[this.pos + 1] === '(' || this.inArith() || this.quotedWord) return false
+    return this.cur.words.every(word => BRACE_PREFIX.has(word))
   }
 
   private endPattern(): void {

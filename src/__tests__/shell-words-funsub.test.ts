@@ -139,6 +139,32 @@ describe('bash 5.3 funsub bodies read as commands', () => {
     expect(push?.nested).toBe(false)
   })
 
+  // bash 5.3.9 reads a brace inside `(( ))`, an array or `[[ ( ) ]]` as text, not as a group or the close.
+  it.each([
+    'echo "${ (( { )) ;} #"; git push --no-verify\n}"',
+    'echo "${ a=( { ) ;} #"; git push --no-verify\n}"',
+    'echo "${ a=(\n{ ) ;} #"; git push --no-verify\n}"',
+    'echo "${ [[ ( { ) ]] ;} #"; git push --no-verify\n}"',
+    'echo "${ (( } )) ; git push --no-verify ;}"',
+    'echo "${ a=( } ) ; git push --no-verify ;}"',
+    'echo "${ declare -a a=( } ) ; git push --no-verify ;}"',
+    'echo "${ [[ ( } ) ]] ; git push --no-verify ;}"',
+    'echo "${ ((\n} )) ; git push --no-verify ;}"',
+  ])('%j has a brace inside a ( that is no subshell, so it is unreadable', src => {
+    expect(expansionRisk(src)).toBe('unreadable')
+  })
+
+  it.each([
+    'echo "${ ( { :; } ); git push --no-verify; }"',
+    'echo "${ if ( true ); then { :; }; fi; git push --no-verify; }"',
+    'echo "${ f() { :; }; git push --no-verify; }"',
+  ])('%j keeps reading a group inside or after a subshell', src => {
+    const push = find(src, 'git')
+
+    expect(push?.words).toEqual(['git', 'push', '--no-verify'])
+    expect(expansionRisk(src)).toBeUndefined()
+  })
+
   it.each(['echo ${ git push --no-verify', 'echo ${ a ) ; }'])(
     '%j has no close, so it is unreadable',
     src => {
