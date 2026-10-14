@@ -38,6 +38,19 @@ export interface SimpleCommand {
   after: string
   /** Inside parentheses or a substitution, so it runs in a subshell. */
   nested: boolean
+  /** Inside the body of a `(( ))` or `$(( ))` the shell evaluates as arithmetic, not as a command (CC-1249). */
+  arith: boolean
+  /**
+   * The raw text of each arithmetic it evaluates: its own body when `arith`, and each `$(( ))` and `$[ ]`
+   * in its words, with substitutions blanked. Splitting into words would read `<y` as a redirect.
+   */
+  arithBodies: string[]
+}
+
+/** The arithmetic a lexer is inside: commands at `depth` or deeper are its body. */
+interface Arith {
+  depth: number
+  text: string
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
@@ -71,6 +84,8 @@ interface Mark {
 interface Budget {
   forks: number
   expansion: ExpansionRisk | undefined
+  /** Only finding where a substitution ends, so arithmetic is not looked for. */
+  probe?: boolean
 }
 
 /**
@@ -169,6 +184,9 @@ class ShellLexer {
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
+  /** Open `case` statements, and whether a pattern, whose `)` ends no group, comes next. */
+  private caseDepth = 0
+  private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
 
@@ -177,6 +195,7 @@ class ShellLexer {
     start = 0,
     private readonly nested = false,
     private readonly budget: Budget = { forks: MAX_FORKS, expansion: undefined },
+    private arith?: Arith,
   ) {
     this.pos = start
     this.cur = this.newCommand()
@@ -199,6 +218,8 @@ class ShellLexer {
       before: '',
       after: '',
       nested,
+      arith: this.inArith(),
+      arithBodies: this.inArith() ? [this.arith?.text ?? ''] : [],
     }
   }
 
@@ -234,6 +255,8 @@ class ShellLexer {
 
   private operator(c: string): void {
     const op = c !== ';' && this.src[this.pos + 1] === c ? c + c : c
+    if (c === ';' && this.caseDepth > 0 && ';&'.includes(this.src[this.pos + 1] ?? '.'))
+      this.patternNext = true
     this.endCommand()
     this.join(op)
     this.pos += op.length
@@ -247,8 +270,12 @@ class ShellLexer {
 
   /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
+    if (this.patternNext && this.word === null && c === '(') return void this.pos++
+    if (this.patternNext && c === ')') this.endWord()
+    if (this.patternNext && c === ')') return this.endPattern()
     if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
+    const opensCommand = this.word === null && !fed
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
@@ -257,8 +284,47 @@ class ShellLexer {
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     this.depth += c === '(' ? 1 : -1
+    this.trackArith(c, opensCommand)
     this.pos++
     this.cur = this.newCommand()
+  }
+
+  private endPattern(): void {
+    this.endCommand()
+    this.patternNext = false
+    this.pos++
+  }
+
+  /** `case w in` opens a pattern and `esac` ends the statement, so a pattern's `)` does not close a substitution. */
+  private trackCase(): void {
+    const words = this.cur.words
+    const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
+    const word = words[words.length - 1]
+    if (word === 'esac' && words.length === 1 && this.caseDepth > 0) {
+      this.caseDepth--
+      this.patternNext = false
+    } else if (word === 'in' && head >= 0 && words[head] === 'case' && words.length === head + 3) {
+      this.caseDepth++
+      this.patternNext = true
+    }
+  }
+
+  private inArith(): boolean {
+    return this.arith !== undefined && this.depth >= this.arith.depth
+  }
+
+  /** A `((` at command position is arithmetic when bash finds its `))`; `((a) )` and `((a)|b)` are subshells. */
+  private trackArith(c: string, opensCommand: boolean): void {
+    if (c === ')' && !this.inArith()) this.arith = undefined
+    if (c !== '(' || !opensCommand || this.arith !== undefined || this.src[this.pos + 1] !== '(') return
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ')')
+    if (span && this.src[span.end + 1] === ')') this.arith = { depth: this.depth + 1, text: span.text }
+  }
+
+  /** Notes the body of a `$[ ]` the shell evaluates as arithmetic; the lexer still reads what is inside it. */
+  private noteBracket(): void {
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.pos + 2, ']')
+    if (span !== undefined) this.cur.arithBodies.push(span.text)
   }
 
   /**
@@ -401,6 +467,7 @@ class ShellLexer {
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
     if (c === '$' && next === "'") return this.ansiC()
+    if (c === '$' && next === '[') this.noteBracket()
     if (c === '$' && next === '(') return this.split(this.substitution(false))
     if (c === '$' && next === '{') return this.split(this.braced())
     if (c === '`') return this.split(this.backtick(false))
@@ -463,6 +530,7 @@ class ShellLexer {
     while (this.pos < this.src.length && this.src[this.pos] !== '"') {
       const c = this.src[this.pos] as string
       const next = this.src[this.pos + 1] ?? ''
+      if (c === '$' && next === '[') this.noteBracket()
       if (c === '$' && next === '(') this.append(this.substitution(true), true)
       else if (c === '`') this.append(this.backtick(true), true)
       else if (c === '$' && next === '{') {
@@ -496,11 +564,20 @@ class ShellLexer {
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
   private substitution(quoted: boolean): string {
     const start = this.pos
-    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget)
+    const arith = this.substitutedArith(start)
+    if (arith !== undefined) this.cur.arithBodies.push(arith.text)
+    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget, arith)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
+  }
+
+  /** A `$((` is arithmetic when bash finds its `))`; `$((a) )` is a substitution of a subshell. */
+  private substitutedArith(start: number): Arith | undefined {
+    if (this.budget.probe || !this.src.startsWith('$((', start)) return undefined
+    const span = arithSpan(this.src, start + 3, ')')
+    return span && this.src[span.end + 1] === ')' ? { depth: 1, text: span.text } : undefined
   }
 
   private backtick(quoted: boolean): string {
@@ -533,6 +610,7 @@ class ShellLexer {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
+      if (!quoted) this.trackCase()
     } else if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
@@ -580,6 +658,71 @@ class ShellLexer {
     }
     return lines.join('\n')
   }
+}
+
+/** The index after the `)` that ends the `$(` whose body starts at `from`, found by the lexer; -1 if it never ends. */
+function substitutionEnd(src: string, from: number): number {
+  const probe = new ShellLexer(src, from, true, { forks: MAX_FORKS, expansion: undefined, probe: true })
+  probe.run()
+  return src[probe.pos] === ')' ? probe.pos + 1 : -1
+}
+
+/** Where arithmetic reading goes on from, and the text it keeps for the span it passed. */
+interface Step {
+  next: number
+  text: string
+}
+
+/** The step past the quote, backtick or `${...}` that opens at `at`. */
+function skipQuoted(src: string, at: number): Step | undefined {
+  const c = src[at]
+  if (c === '"') {
+    const inner = arithSpan(src, at + 1, '"')
+    return inner && { next: inner.end + 1, text: `"${inner.text}"` }
+  }
+  const close = c === '$' ? nestedClose(src, at) : src.indexOf(c === '`' ? '`' : "'", at + 1)
+  if (close < 0) return undefined
+  return { next: close + 1, text: c === '`' ? ' ' : src.slice(at, close + 1) }
+}
+
+/**
+ * Where the `closer` that ends arithmetic opened before `from` is, read as bash does: quotes, escapes,
+ * `${...}`, backticks and `$(...)` (by the lexer, so a `)` in a quote or a case pattern does not end it)
+ * are passed over, and each substitution is blanked in the text, since it is checked as a command.
+ */
+function arithSpan(src: string, from: number, closer: string): { end: number; text: string } | undefined {
+  const opener = { ')': '(', ']': '[' }[closer]
+  let depth = 0
+  let text = ''
+  for (let i = from; i < src.length;) {
+    const c = src[i] as string
+    const next = src[i + 1]
+    if (c === closer && depth-- === 0) return { end: i, text }
+    if (c === opener) depth++
+    const skip = skipIn(src, i, c, next, closer === '"')
+    if (skip === undefined) return undefined
+    text += skip.text
+    i = skip.next
+  }
+  return undefined
+}
+
+/** The step from `src[at]` inside arithmetic or, when `quoted`, inside its double quotes. */
+function skipIn(
+  src: string,
+  at: number,
+  c: string,
+  next: string | undefined,
+  quoted: boolean,
+): Step | undefined {
+  if (c === '\\') return { next: at + 2, text: src.slice(at, at + 2) }
+  if (c === '$' && next === '(') {
+    const end = substitutionEnd(src, at + 2)
+    return end < 0 ? undefined : { next: end, text: ' ' }
+  }
+  if ((c === '$' && next === '{') || c === '`' || (!quoted && (c === '"' || c === "'")))
+    return skipQuoted(src, at)
+  return { next: at + 1, text: c }
 }
 
 /** Stands in for a substitution while the rest of its word is expanded; a word that holds one already does not resolve. */
