@@ -452,26 +452,64 @@ export function readySlices(
   })
 }
 
-export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number }
+export type LockResult<T> = { ran: true; value: T } | { ran: false; holder: number; waited?: number }
+
+/** CC-1181: how long release, link and a dry run poll a held ledger lock before refusing. */
+export const LEDGER_WAIT_MS = 300_000
+
+/** CC-1181: a bounded wait for the ledger lock; `sleep` and `now` are injected by tests. */
+export interface LockWait {
+  waitMs: number
+  pollMs?: number
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+}
 
 /**
  * Runs `fn` while holding `<file>.lock`, which carries the holder's pid. A
  * lock whose pid is dead is taken over; a live one means another tick is
- * running, so `fn` does not run.
+ * running, so `fn` does not run. With `wait` (CC-1181), a live lock is polled
+ * until it frees or the wait runs out.
  */
-export async function withLedgerLock<T>(file: string, fn: () => T | Promise<T>): Promise<LockResult<T>> {
+export async function withLedgerLock<T>(
+  file: string,
+  fn: () => T | Promise<T>,
+  opts: { wait?: LockWait } = {},
+): Promise<LockResult<T>> {
   const lock = `${file}.lock`
   fs.mkdirSync(path.dirname(file), { recursive: true })
+  const holder = opts.wait === undefined ? tryAcquire(lock) : await acquireWithin(lock, opts.wait)
+  if (holder !== undefined) return holder
+  try {
+    return { ran: true, value: await fn() }
+  } finally {
+    if (readHolder(lock) === process.pid) fs.rmSync(lock, { force: true })
+  }
+}
+
+/** Takes the lock, taking over a dead holder's; returns the refusal naming a live holder, else undefined. */
+function tryAcquire(lock: string): { ran: false; holder: number } | undefined {
   let holder = tryLock(lock)
   if (holder !== undefined && !isAlive(holder)) {
     if (readHolder(lock) === holder) fs.rmSync(lock, { force: true })
     holder = tryLock(lock)
   }
-  if (holder !== undefined) return { ran: false, holder }
-  try {
-    return { ran: true, value: await fn() }
-  } finally {
-    if (readHolder(lock) === process.pid) fs.rmSync(lock, { force: true })
+  return holder === undefined ? undefined : { ran: false, holder }
+}
+
+async function acquireWithin(
+  lock: string,
+  wait: LockWait,
+): Promise<{ ran: false; holder: number; waited: number } | undefined> {
+  const now = wait.now ?? Date.now
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const start = now()
+  for (;;) {
+    const refused = tryAcquire(lock)
+    if (refused === undefined) return undefined
+    const waited = now() - start
+    if (waited >= wait.waitMs) return { ...refused, waited }
+    await sleep(Math.min(wait.pollMs ?? 500, wait.waitMs - waited))
   }
 }
 

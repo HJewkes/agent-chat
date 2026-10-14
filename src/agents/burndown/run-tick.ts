@@ -19,6 +19,7 @@ import { appendSeatLog } from '../seats/io.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
+import { describeCandidates, parkCandidates, parkSweep } from './park-sweep.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
 import { adoptSeatOf, changedFiles as prChangedFiles, diskAdoptPorts } from './pr-adopt-ports.js'
 import { claimPrReader } from './pr-state.js'
@@ -58,11 +59,13 @@ import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import {
   heldClaims,
+  LEDGER_WAIT_MS,
   readLedger,
   withLedgerLock,
   writeLedger,
   type Claim,
   type Ledger,
+  type LockWait,
   type SeatState,
 } from './ledger.js'
 import {
@@ -182,6 +185,8 @@ export interface TickBroker {
   /** The human queue's open items; read only when a decider is configured. */
   queue: () => Promise<QueueItem[]>
   resume: (name: string, message: string) => Promise<SpawnReply>
+  /** CC-1257: `agent park` by name; absent, the tick sweeps no exited trees. */
+  park?: (name: string) => Promise<SpawnReply>
   /** Live agent and session names and every `files` claim, for the CC-202 collision check. */
   collisionView: () => Promise<BrokerView>
   /** Opens a connection registered as `burndown` for peer `send`s, never the spawn connection (CC-250). */
@@ -208,6 +213,8 @@ export interface TickOptions {
   briefEdit?: ApprovePorts['edit']
   /** CC-1238: the `active-work task done` that closes a landed all-released parent; a test injects one that edits its fixture. */
   taskDone?: (slug: string, id: string) => void
+  /** CC-1181: a dry run's wait for the ledger lock; defaults to LEDGER_WAIT_MS. A real tick never waits. */
+  lockWait?: LockWait
 }
 
 interface ReaderFailure {
@@ -282,6 +289,12 @@ function gateTick(opts: TickOptions): Gate {
   return { config, head }
 }
 
+/** CC-1181: a dry run waited, so its refusal names how long; a real tick did not. */
+const lockRefusal = ({ holder, waited }: { holder: number; waited?: number }): string =>
+  waited === undefined
+    ? `another tick holds the ledger lock (pid ${holder}); did nothing`
+    : `another tick held the ledger lock (pid ${holder}) for the whole ${Math.round(waited / 1000)}s wait; did nothing`
+
 /** CC-1192: the summary row is appended after the lock is released, so its write never counts as lock-held time. */
 async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const monotonic = opts.monotonic ?? (() => performance.now())
@@ -289,14 +302,19 @@ async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const timer = stepTimer(monotonic)
   const gate = await timer.time('config', () => gateTick(opts))
   if ('done' in gate) return gate.done
-  const locked = await withLedgerLock(burndownLedgerPath(), async () => {
-    const lockedAt = monotonic()
-    const ran = await runTick(gate.config, opts, timer)
-    return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
-  })
+  const wait = opts.dryRun ? { wait: opts.lockWait ?? { waitMs: LEDGER_WAIT_MS } } : {}
+  const locked = await withLedgerLock(
+    burndownLedgerPath(),
+    async () => {
+      const lockedAt = monotonic()
+      const ran = await runTick(gate.config, opts, timer)
+      return { ...ran, lockHeldMs: Math.round(monotonic() - lockedAt) }
+    },
+    wait,
+  )
   if (!locked.ran)
     return {
-      lines: [...gate.head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
+      lines: [...gate.head, lockRefusal(locked)],
       outcome: { kind: 'skipped' },
     }
   const { lines, summary, lockHeldMs, shadow } = locked.value
@@ -353,6 +371,7 @@ async function runTick(config: TickConfig, opts: TickOptions, timer: StepTimer):
         ),
         ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
         ...dailyRetireDue(config.seats, ledger.dailyRetire, now).map(s => `would retire finished (${s})`),
+        ...describeCandidates(sweepCandidates(decided.sweep, planned)),
         ...notes,
       ],
     }
@@ -388,6 +407,7 @@ async function actOn(
     humanStepSeats,
     merged,
     closing,
+    sweep,
   }: Decided,
   now: Date,
   timer: StepTimer,
@@ -426,6 +446,7 @@ async function actOn(
     }),
   )
   logLadder(ledger, executed.ledger, log)
+  const swept = await sweepTrees(sweepCandidates(sweep, executed.ledger), opts.broker.park, log)
   const adopted = await timer.time('adopt', () => adoptPrs(adopt, executed.ledger, opts, now, registrations))
   const woken = await timer.time('decider-triage', async () =>
     actOnTriage(
@@ -477,6 +498,7 @@ async function actOn(
       ...routed,
       ...retired.lines,
       ...executed.lines,
+      ...swept,
       ...adopted,
       ...woken.lines,
       ...leaks.lines,
@@ -855,6 +877,28 @@ interface Decided {
   merged: SeatEvents
   /** CC-1238: all-released parents whose slices landed on the default branch, closed by the tick. */
   closing: ClosingParent[]
+  /** CC-1257: what the park sweep reads, judged against the ledger the tick ends on. */
+  sweep: SweepInputs
+}
+
+interface SweepInputs {
+  roster: Roster
+  prefixes: readonly string[]
+}
+
+const sweepCandidates = ({ roster, prefixes }: SweepInputs, ledger: Ledger) =>
+  parkCandidates(roster, ledger, prefixes, dir => fs.existsSync(dir))
+
+/** CC-1257: re-tries the park that park-at-exit refused, once its claim has moved on or gone. */
+async function sweepTrees(
+  candidates: ReturnType<typeof sweepCandidates>,
+  park: TickBroker['park'],
+  log: NonNullable<TickOptions['log']>,
+): Promise<string[]> {
+  if (park === undefined || candidates.length === 0) return []
+  const { lines, parked, kept, left } = await parkSweep(candidates, park)
+  log('burndown_park_sweep', { parked, kept, left })
+  return lines
 }
 
 interface ClosingParent {
@@ -1037,6 +1081,7 @@ async function decide(
         ? {}
         : mergedEvents(ledger, dispatchCtx.tasks, (i, id) => closing.has(mergedFlagKey(i, id)), pending),
     closing: closingParents,
+    sweep: { roster, prefixes },
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),

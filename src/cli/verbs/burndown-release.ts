@@ -2,11 +2,14 @@ import { burndownLedgerPath } from '../../paths.js'
 import { heldUntil } from '../../agents/burndown/backoff.js'
 import { shepherdTarget } from '../../agents/burndown/shepherd.js'
 import {
+  LEDGER_WAIT_MS,
   readLedger,
   withLedgerLock,
   writeLedger,
   type Claim,
   type Ledger,
+  type LockResult,
+  type LockWait,
 } from '../../agents/burndown/ledger.js'
 import { pendingOffLedger, type PlanReader } from '../../agents/burndown/seed-slices.js'
 import { slicesReleasedUnclaimed } from '../../agents/burndown/slices-complete.js'
@@ -15,6 +18,12 @@ import type { Report } from '../command.js'
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
 
 const refusedReport = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
+
+/** CC-1181: the refusal after a wait that a tick held the lock through. */
+const lockRefusal = (locked: Extract<LockResult<unknown>, { ran: false }>): Report =>
+  refusedReport(
+    `a tick held the ledger lock (pid ${locked.holder}) for the whole ${Math.round((locked.waited ?? 0) / 1000)}s wait; try again`,
+  )
 
 /** Newest first, the order `retireAll` in advance.ts uses; `spawned` is kept oldest first. */
 const newestFirst = (claim: Claim): string[] => [...new Set([...(claim.spawned ?? [])].reverse())]
@@ -44,36 +53,41 @@ export async function releaseTask(
   now = new Date(),
   slice?: string,
   readPlan?: PlanReader,
+  wait: LockWait = { waitMs: LEDGER_WAIT_MS },
 ): Promise<Report> {
   const file = burndownLedgerPath()
-  const locked = await withLedgerLock(file, () => {
-    const ledger = readLedger(file)
-    const dropped = ledger.claims.filter(
-      c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
-    )
-    if (dropped.length === 0 && slice !== undefined && waitsOnRun(ledger, task, slice, readPlan)) {
-      writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
-      return { dropped, hold: undefined, unclaimed: true }
-    }
-    if (dropped.length === 0 && slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
-      writeLedger(file, withoutSliceReleases(ledger, task))
-      return { dropped, hold: undefined, reseedable: true }
-    }
-    if (dropped.length === 0) return { dropped, hold: undefined }
-    const claims = ledger.claims.filter(c => !dropped.includes(c))
-    if (slice !== undefined) {
-      writeLedger(file, releaseSlice(ledger, claims, task, slice))
-      return { dropped, hold: undefined }
-    }
-    const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
-    writeLedger(file, {
-      ...withoutSliceReleases(ledger, task),
-      claims,
-      releases: { ...ledger.releases, [task]: record },
-    })
-    return { dropped, hold: record }
-  })
-  if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
+  const locked = await withLedgerLock(
+    file,
+    () => {
+      const ledger = readLedger(file)
+      const dropped = ledger.claims.filter(
+        c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
+      )
+      if (dropped.length === 0 && slice !== undefined && waitsOnRun(ledger, task, slice, readPlan)) {
+        writeLedger(file, releaseSlice(ledger, ledger.claims, task, slice))
+        return { dropped, hold: undefined, unclaimed: true }
+      }
+      if (dropped.length === 0 && slice === undefined && slicesReleasedUnclaimed(ledger, task)) {
+        writeLedger(file, withoutSliceReleases(ledger, task))
+        return { dropped, hold: undefined, reseedable: true }
+      }
+      if (dropped.length === 0) return { dropped, hold: undefined }
+      const claims = ledger.claims.filter(c => !dropped.includes(c))
+      if (slice !== undefined) {
+        writeLedger(file, releaseSlice(ledger, claims, task, slice))
+        return { dropped, hold: undefined }
+      }
+      const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
+      writeLedger(file, {
+        ...withoutSliceReleases(ledger, task),
+        claims,
+        releases: { ...ledger.releases, [task]: record },
+      })
+      return { dropped, hold: record }
+    },
+    { wait },
+  )
+  if (!locked.ran) return lockRefusal(locked)
   const { dropped, hold } = locked.value
   const what = slice === undefined ? task : `${task} slice ${slice}`
   if ('unclaimed' in locked.value)
@@ -125,18 +139,27 @@ function withoutSliceReleases(ledger: Ledger, task: string): Ledger {
  * CC-978: records a hand-dispatched PR on a queued slice, so the tick never dispatches the slice and
  * finishes it when the PR merges. Refused for a claim that is not queued or a PR Shepherd cannot name.
  */
-export async function linkSlicePr(task: string, slice: string, pr: string): Promise<Report> {
+export async function linkSlicePr(
+  task: string,
+  slice: string,
+  pr: string,
+  wait: LockWait = { waitMs: LEDGER_WAIT_MS },
+): Promise<Report> {
   if (shepherdTarget(pr) === undefined)
     return refusedReport(`${pr} is not a GitHub PR (owner/repo#n or its URL)`)
   const file = burndownLedgerPath()
-  const locked = await withLedgerLock(file, () => {
-    const ledger = readLedger(file)
-    const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
-    if (claim?.phase !== 'queued') return claim?.phase ?? 'no held claim'
-    writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
-    return undefined
-  })
-  if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
+  const locked = await withLedgerLock(
+    file,
+    () => {
+      const ledger = readLedger(file)
+      const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
+      if (claim?.phase !== 'queued') return claim?.phase ?? 'no held claim'
+      writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
+      return undefined
+    },
+    { wait },
+  )
+  if (!locked.ran) return lockRefusal(locked)
   if (locked.value !== undefined)
     return refusedReport(
       `${task} slice ${slice} is not queued (${locked.value}); only a queued slice takes a link`,
