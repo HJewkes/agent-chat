@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { Refusal } from '../agents/burndown/eligibility.js'
+import type { Refusal, Task } from '../agents/burndown/eligibility.js'
 import { isOffPlan, readOffPlanIds } from '../agents/burndown/off-plan.js'
 import { renderClassFile } from '../agents/burndown/plan-class.js'
 import { offPlanRefusals, planningCandidates } from '../agents/burndown/planning-supply.js'
@@ -25,32 +25,35 @@ const reviewDir = (files: Record<string, string>): string => {
 }
 
 describe('isOffPlan', () => {
+  const task = (id: string, priority: number, notes?: string): Pick<Task, 'id' | 'priority' | 'notes'> =>
+    notes === undefined ? { id, priority } : { id, priority, notes }
+
   it('flags the plan note in any case', () => {
     const notes = 'Triage: Outside Accepted Factory Plan P-list.'
-    expect(isOffPlan({ id: 'X-1', priority: 5, notes })).toBe(true)
+    expect(isOffPlan(task('X-1', 5, notes))).toBe(true)
   })
 
   it('leaves a fresh task at a default priority on plan', () => {
-    expect(isOffPlan({ id: 'X-1', priority: 1842 })).toBe(false)
+    expect(isOffPlan(task('X-1', 1842))).toBe(false)
   })
 
   it('leaves a triage-ranked 99 without the marker on plan', () => {
-    expect(isOffPlan({ id: 'X-1', priority: 99 })).toBe(false)
+    expect(isOffPlan(task('X-1', 99))).toBe(false)
   })
 
   it('flags the notes marker at any priority', () => {
     const notes = 'outside accepted factory plan P-list'
-    expect(isOffPlan({ id: 'X-1', priority: 1, notes })).toBe(true)
-    expect(isOffPlan({ id: 'X-1', priority: 1842, notes })).toBe(true)
+    expect(isOffPlan(task('X-1', 1, notes))).toBe(true)
+    expect(isOffPlan(task('X-1', 1842, notes))).toBe(true)
   })
 
   it('flags a listed id at a default priority', () => {
-    expect(isOffPlan({ id: 'X-1', priority: 1842 }, new Set(['X-1']))).toBe(true)
+    expect(isOffPlan(task('X-1', 1842), new Set(['X-1']))).toBe(true)
   })
 
   it('flags an id the file listed and leaves an unlisted one', () => {
-    expect(isOffPlan({ id: 'X-1', priority: 5 }, new Set(['X-1']))).toBe(true)
-    expect(isOffPlan({ id: 'X-2', priority: 5 }, new Set(['X-1']))).toBe(false)
+    expect(isOffPlan(task('X-1', 5), new Set(['X-1']))).toBe(true)
+    expect(isOffPlan(task('X-2', 5), new Set(['X-1']))).toBe(false)
   })
 })
 
