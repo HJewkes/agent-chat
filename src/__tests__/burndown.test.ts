@@ -688,6 +688,40 @@ describe('claim ledger', () => {
     expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: true, value: 'ran' })
   })
 
+  it('waits for a held lock and runs once the holder lets go (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    const sleeps: number[] = []
+    const sleep = async (ms: number): Promise<void> => {
+      sleeps.push(ms)
+      if (sleeps.length === 2) fs.rmSync(`${file}.lock`)
+    }
+
+    const result = await withLedgerLock(file, () => 'ran', { wait: { waitMs: 60_000, sleep } })
+
+    expect(result).toEqual({ ran: true, value: 'ran' })
+    expect(sleeps).toHaveLength(2)
+  })
+
+  it('gives up after the wait and names the holder (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    let clock = 0
+    const wait = { waitMs: 1000, now: () => clock, sleep: async (ms: number) => void (clock += ms) }
+
+    const result = await withLedgerLock(file, () => 'ran', { wait })
+
+    expect(result).toEqual({ ran: false, holder: process.ppid, waited: 1000 })
+    expect(fs.readFileSync(`${file}.lock`, 'utf8')).toBe(`${process.ppid}\n`)
+  })
+
+  it('still refuses a held lock at once without a wait (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+
+    expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: false, holder: process.ppid })
+  })
+
   it('marks an implementing claim stalled after four hours', () => {
     expect(isStalled(claim, new Date('2026-09-26T11:59:00.000Z'))).toBe(false)
     expect(isStalled(claim, new Date('2026-09-26T12:01:00.000Z'))).toBe(true)
