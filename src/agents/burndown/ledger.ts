@@ -13,7 +13,8 @@ import { STALL_CODES } from './stall-code.js'
  *
  * A claim holds its task until its phase is `done`, and a lane only while an
  * agent works on it. A stalled claim (a `stalledReason`, or past its phase
- * timeout) keeps both: the design files it to the backlog rather than
+ * timeout) keeps its task, and a lane only while its agent may run (CC-978,
+ * see claim-hold.ts): the design files it to the backlog rather than
  * respawning it. Moves onto the lifecycle ledger once that is read from
  * (CC-118, CC-102).
  */

@@ -1,4 +1,8 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ProfileIndex } from '../agents/transcript.js'
 import type { AgentIdentity } from '../protocol.js'
 
 const roster = vi.hoisted(() => ({ agents: [] as unknown[], sessions: [] as unknown[] }))
@@ -10,8 +14,8 @@ vi.mock('../agents/transcript.js', async importOriginal => {
   const original = await importOriginal<typeof import('../agents/transcript.js')>()
   return {
     ...original,
-    observedModel: (cwd: string, sessionId: string, dir?: string) =>
-      modelReads.read ? modelReads.read(cwd) : original.observedModel(cwd, sessionId, dir),
+    observedModel: (cwd: string, sessionId: string, dir?: string, index?: ProfileIndex) =>
+      modelReads.read ? modelReads.read(cwd) : original.observedModel(cwd, sessionId, dir, index),
   }
 })
 
@@ -27,6 +31,7 @@ vi.mock('../cli/client.js', async importOriginal => ({
 }))
 
 const { buildProgram } = await import('../cli/index.js')
+const { observedModel, projectSlug } = await import('../agents/transcript.js')
 
 const SESSION_ID = '11111111-2222-3333-4444-555555555555'
 
@@ -206,5 +211,77 @@ describe('agent ls filters (CC-888)', () => {
     expect(await lsOutput('--format', 'line', '--state', 'retired')).toBe(
       'gamma retired implementer id-gamma /tmp/cc176-nowhere',
     )
+  })
+})
+
+describe('agent ls --json transcript lookups share one index (CC-1311)', () => {
+  let root: string
+  let recorded: string
+  let fallback: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-ls-index-'))
+    recorded = path.join(root, 'recorded')
+    fallback = path.join(root, 'default')
+    process.env.CLAUDE_PROFILE_ROOT = path.join(root, 'profiles')
+    process.env.CLAUDE_CONFIG_DIR = fallback
+    for (const dir of [recorded, fallback])
+      fs.mkdirSync(path.join(dir, 'projects', '-other'), { recursive: true })
+    roster.sessions = []
+  })
+
+  afterEach(() => {
+    delete process.env.CLAUDE_PROFILE_ROOT
+    delete process.env.CLAUDE_CONFIG_DIR
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const exitedRow = (n: number, configDir?: string): AgentIdentity => {
+    const { configDir: _recorded, ...base } = liveAgent()
+    return {
+      ...base,
+      name: `row-${n}`,
+      agentId: `id-${n}`,
+      state: 'exited',
+      sessionId: `missing-${n}`,
+      ...(configDir === undefined ? {} : { configDir }),
+    }
+  }
+
+  const writeModel = (dir: string, sessionId: string, model: string): string => {
+    const folder = path.join(dir, 'projects', projectSlug('/somewhere/else'))
+    fs.mkdirSync(folder, { recursive: true })
+    const file = path.join(folder, `${sessionId}.jsonl`)
+    const row = { type: 'assistant', sessionId, message: { role: 'assistant', model, content: [] } }
+    fs.writeFileSync(file, `${JSON.stringify(row)}\n`)
+    return file
+  }
+
+  // Mutation caught: modelOrNull not forwarding the index, which scans again per row.
+  it('lists each projects dir at most once across rows and model reads', async () => {
+    roster.agents = Array.from({ length: 20 }, (_, n) => exitedRow(n, n % 2 === 0 ? recorded : undefined))
+    const spy = vi.spyOn(fs, 'readdirSync')
+
+    await lsOutput('--json')
+    const reads = spy.mock.calls.map(([dir]) => String(dir)).filter(dir => dir.startsWith(root))
+
+    expect(reads.filter(dir => dir === path.join(recorded, 'projects'))).toHaveLength(1)
+    expect(reads.filter(dir => dir === path.join(fallback, 'projects'))).toHaveLength(1)
+    expect(new Set(reads).size).toBe(reads.length)
+  })
+
+  // Mutation caught: the model read through findAgentTranscript, which would fill Y's model.
+  it('reads the model only from the recorded or default dir', async () => {
+    const x = { ...exitedRow(1, recorded), sessionId: 'session-x' }
+    const y = { ...exitedRow(2), sessionId: 'session-y' }
+    writeModel(recorded, 'session-x', 'claude-opus-5-5')
+    writeModel(path.join(root, 'profiles', 'agents'), 'session-y', 'claude-sonnet-5-5')
+    roster.agents = [x, y]
+
+    const rows = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+
+    expect(rows[0]?.model).toBe(observedModel(x.cwd, x.sessionId, recorded))
+    expect(rows[0]?.model).toBe('claude-opus-5-5')
+    expect(rows[1]).toMatchObject({ model: null, transcriptExists: true })
   })
 })
