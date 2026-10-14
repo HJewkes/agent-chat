@@ -78,7 +78,7 @@ const floorNotesAtDepth = (depth: number, brief: SeatBriefGate | undefined): str
     tasks: new Map([['alpha', tasks]]),
     ledger: EMPTY_LEDGER,
     budget: POOL,
-    brief,
+    ...(brief === undefined ? {} : { brief }),
     readPlan: () => ({ path: '/tmp/plan.md', text: undefined }),
   })
   return planned.notes.filter(n => n.includes('below floor'))
