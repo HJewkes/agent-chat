@@ -67,7 +67,7 @@ const input = (over: Partial<SeatStateRenderInput> = {}): SeatStateRenderInput =
 })
 
 const headings = (lines: string[]): string[] =>
-  lines.filter(l => l.startsWith('== ')).map(l => l.split(' ')[1])
+  lines.filter(l => l.startsWith('== ')).map(l => l.split(' ')[1] ?? '')
 
 describe('renderSeatState', () => {
   it('lists every section in prompt order with relaunch lines and reading age', () => {
@@ -117,7 +117,8 @@ describe('renderSeatState', () => {
   })
 
   it('falls back to the stored authored text and marks an empty block', () => {
-    const stored = renderSeatState(input({ authored: undefined, state: state({ authored: 'raw block' }) }))
+    const { authored: _authored, ...rest } = input({ state: state({ authored: 'raw block' }) })
+    const stored = renderSeatState(rest)
     const empty = renderSeatState(input({ authored: '' }))
 
     expect(stored).toContain('raw block')
