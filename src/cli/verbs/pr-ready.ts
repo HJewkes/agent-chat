@@ -16,6 +16,7 @@ import {
   type BasementTarget,
 } from './pr-ready-basement.js'
 import { depsStep, packageManager } from './pr-ready-deps.js'
+import { resolveBase as resolveStackedBase } from './pr-ready-base.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
 import { hasPrivacyTest, privacyStep } from './pr-ready-privacy.js'
 
@@ -152,7 +153,8 @@ async function abortRebase(run: Run, cwd: string, gitDir: string): Promise<strin
 export async function rebaseStep(run: Run, cwd: string, base: string, gitDir: string): Promise<StepOutcome> {
   const branch = base.slice(REMOTE_PREFIX.length)
   const fetch = await run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${base}`], cwd)
-  if (fetch.code !== 0) return { ok: false, reason: `git fetch failed: ${lastLine(fetch.output)}` }
+  if (fetch.code !== 0)
+    return { ok: false, reason: `git fetch of ${branch} failed: ${lastLine(fetch.output)}` }
   const rebase = await run('git', ['rebase', base], cwd)
   if (rebase.code === 0) return { ok: true }
   if (!rebaseInProgress(gitDir)) return { ok: false, reason: `git rebase failed: ${lastLine(rebase.output)}` }
@@ -404,6 +406,8 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 }
 
 /**
+ * Base: the open PR's base branch, else `branch.<b>.agent-chat-base`, else the stacked origin branch
+ * with an open PR, else origin/HEAD (see pr-ready-base.ts).
  * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, privacy
  * (agent-chat only), changeset, scan. A dirty tree, a failed rebase or a failed install stops the
  * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
@@ -415,8 +419,9 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   const fail = (): number => (deps.out('PR-READY FAIL exit=1'), 1)
   let base = ''
   const resolveBase = async (): Promise<StepOutcome> => {
-    base = await defaultBaseRef(run, cwd)
-    return { ok: true, reason: base }
+    const resolved = await resolveStackedBase(run, cwd, await defaultBaseRef(run, cwd))
+    base = resolved.ref
+    return { ok: true, reason: resolved.reason }
   }
   const rebase = async (): Promise<StepOutcome> => {
     if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }

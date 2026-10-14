@@ -30,6 +30,7 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { findClauses, type FindClause } from './run-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -263,7 +264,7 @@ const CHECKED_NAMES = new Set([
   ...SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
-  ...['function', 'eval', 'git', 'gh', 'agent-chat'],
+  ...['function', 'eval', 'git', 'gh', 'agent-chat', 'find'],
 ])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
@@ -344,7 +345,27 @@ const NAMES_GH = /\bgh\b/
  * `assigns` are the command's own `NAME=value` words, and a bare `NAME` that `env -u` unsets.
  */
 type Unwrapped =
-  { words: string[]; chdir?: boolean; assigns: string[]; fed?: Fed | undefined } | { reason: string }
+  | {
+      words: string[]
+      chdir?: boolean
+      assigns: string[]
+      fed?: Fed | undefined
+      /** Commands that also run, each read as a command line of its own: find's later action clauses. */
+      siblings?: Sibling[]
+    }
+  | { reason: string }
+
+/** What the wrappers before a command have set up, carried to a command that runs beside it. */
+interface Lead {
+  assigns: readonly string[]
+  chdir: boolean
+  fed: Fed | undefined
+}
+
+/** A find clause read apart from the find's first, under the wrappers that came before that find. */
+interface Sibling extends Lead {
+  words: string[]
+}
 
 /**
  * xargs runs its command with words it reads: in place of each word holding the `replace` string,
@@ -364,18 +385,19 @@ const ANY_WORD = ''
 const BRACE_PAIR = LIVE + '{}'
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
-function unwrap(words: readonly string[], splits: readonly string[] = []): Unwrapped {
+function unwrap(words: readonly string[], splits: readonly string[] = [], lead?: Lead): Unwrapped {
   let rest = words
   let at = 0
-  let chdir = false
-  let fed: Fed | undefined
+  let chdir = lead?.chdir ?? false
+  let fed = lead?.fed
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
-  const assigns: string[] = []
+  let siblings: Sibling[] | undefined
+  const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
-      : { words: rest.slice(at), chdir, assigns, fed }
+      : { words: rest.slice(at), chdir, assigns, fed, ...(siblings && { siblings }) }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
@@ -403,6 +425,22 @@ function unwrap(words: readonly string[], splits: readonly string[] = []): Unwra
       const { replace } = fed
       if (replace !== undefined)
         rest = [...rest.slice(0, at), ...rest.slice(at).map(w => placeFed(w, replace))]
+    } else if (name === 'find') {
+      // Words xargs adds land among find's own, where one may be -exec.
+      if (fed?.append === true || fed?.hidden === true) return { reason: REASONS.hiddenCommand }
+      const run = findRun(rest, at)
+      if (run === undefined) return done()
+      const before: Lead = { assigns: [...assigns], chdir, fed }
+      fed = fed === undefined ? FIND_FED : nestedFed(fed, FIND_FED)
+      // A find inside a clause keeps the outer find's later clauses alongside its own.
+      siblings = [
+        ...(siblings ?? []),
+        ...run.later.map(words => ({ ...before, words })),
+        ...run.tail.map(words => ({ ...before, fed, words })),
+      ]
+      chdir ||= run.chdir
+      rest = run.words.map(w => placeFed(w, '{}'))
+      at = run.at
     } else if (name === 'sudo') {
       const after = dropSudoOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.sudoOption }
@@ -441,6 +479,35 @@ function placeFed(word: string, replace: string): string {
   const pattern = [...replace].map(c => `${LIVE}?${c.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}`).join('')
   return word.replace(new RegExp(pattern, 'g'), () => XARGS_ARGS)
 }
+
+/** find fills each `{}` in an action clause with a path the guard cannot read, and appends nothing. */
+const FIND_FED: Fed = { replace: '{}', append: false }
+
+/**
+ * The command a `find` at `at` runs: its first action clause, with every `later` clause as a find of its
+ * own to check apart. A word the guard cannot read may expand to `-exec`, or to a `;` that ends a clause
+ * early, so the words from the first one on are also checked as a command, the `tail`. `chdir` is set
+ * when the command runs in each found file's directory. Undefined when find runs nothing.
+ */
+function findRun(
+  rest: readonly string[],
+  at: number,
+): { words: string[]; at: number; chdir: boolean; later: string[][]; tail: string[][] } | undefined {
+  const { clauses, hiddenAt } = findClauses(rest, at + 1)
+  const alone = (clause: FindClause): string[] => [rest[at] as string, clause.action, ...clause.words, ';']
+  const inClause = clauses.flatMap(c => c.words.flatMap((w, i) => (unreadable(w) ? [c.at + i] : [])))
+  const tailAt = Math.min(hiddenAt ?? Infinity, inClause[0] ?? Infinity)
+  const tail = tailAt < Infinity ? [rest.slice(tailAt).map(w => placeFed(w, '{}'))] : []
+  const [first, ...later] = clauses
+  if (first !== undefined) {
+    const chdir = first.action === '-execdir' || first.action === '-okdir'
+    return { words: [...first.words], at: 0, chdir, later: later.map(alone), tail }
+  }
+  return tailAt < Infinity ? { words: [...rest], at: tailAt, chdir: false, later: [], tail: [] } : undefined
+}
+
+/** A word holding an expansion, other than the bare `{}` the shell leaves alone. */
+const unreadable = (word: string): boolean => word.replaceAll(BRACE_PAIR, '{}').includes(LIVE)
 
 /** xargs running xargs: the outer one's words reach the inner command too, wherever the guard cannot say. */
 const nestedFed = (outer: Fed, inner: Fed): Fed => ({
@@ -1981,9 +2048,14 @@ function checkSimple(
   scope: Scope,
   depth: number,
   outermost = true,
+  lead?: Lead,
 ): string | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
+  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped) return unwrapped.reason
+  const sibling = firstReason(unwrapped.siblings ?? [], s =>
+    checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
+  )
+  if (sibling !== undefined) return sibling
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
   const marked = words.slice(1)
