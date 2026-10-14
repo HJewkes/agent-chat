@@ -38,6 +38,8 @@ export interface SimpleCommand {
   after: string
   /** Inside parentheses or a substitution, so it runs in a subshell. */
   nested: boolean
+  /** The body of `(( ))` or `$(( ))`, which the shell evaluates as arithmetic and does not run (CC-1249). */
+  arith: boolean
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
@@ -168,6 +170,8 @@ class ShellLexer {
   private carried: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
+  /** The depth at and below which commands are arithmetic, while inside a `((`. */
+  private arithDepth = Infinity
   private closed = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
@@ -199,6 +203,7 @@ class ShellLexer {
       before: '',
       after: '',
       nested,
+      arith: this.depth >= this.arithDepth,
     }
   }
 
@@ -257,8 +262,15 @@ class ShellLexer {
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     this.depth += c === '(' ? 1 : -1
+    this.trackArith(c)
     this.pos++
     this.cur = this.newCommand()
+  }
+
+  /** A `(` straight after a `(` opens `((` or, in a substitution's lexer, `$((`; a blank between them keeps a subshell. */
+  private trackArith(c: string): void {
+    if (c === '(' && this.src[this.pos - 1] === '(') this.arithDepth = Math.min(this.arithDepth, this.depth)
+    else if (this.depth < this.arithDepth) this.arithDepth = Infinity
   }
 
   /**
