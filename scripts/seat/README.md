@@ -77,8 +77,9 @@ the install has no `scripts/seat/queue`.
   as the normal merge path; TP-1626 decides whether premerge grows or Shepherd absorbs the
   case). `seat-merge` retires with them.
 - `pace`: retires when CC-742 lands and the charter says "read `agent-chat seats status`".
-- `log`: retires with TP-1570. It is not named in the charter today, so it can probably go
-  sooner.
+- `log`: retires now that charter section 10 names `agent-chat seats log <seat> "<text>"`
+  (CC-1058), which stamps the line with the machine clock. Removal itself stays with CC-1021 /
+  TP-1570.
 - `queue`: stays while seats keep a queue file. `agent-chat seats boot` names it (below).
 - `task-note`: retires when `active-work task edit --append` is lock-safe.
 - `scorecard`: no TS home. It stays until a TP task (TP-1537 or a new one) ports its rows.

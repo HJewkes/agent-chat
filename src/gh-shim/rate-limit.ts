@@ -199,16 +199,16 @@ export interface ShimBudget {
   settled(): Promise<void>
 }
 
-function answerRateLimit(
+async function answerRateLimit(
   query: { jq?: string },
   cooldowns: Cooldowns,
   ctx: BudgetContext,
-): number | undefined {
+): Promise<number | undefined> {
   if (query.jq !== undefined && ctx.jqBin === undefined) return undefined
   const io = processIo(ctx.realGh, ctx.jqBin, ctx.log)
   let base: unknown
   try {
-    base = io.api('rate_limit')
+    base = await io.api('rate_limit')
   } catch {
     base = undefined
   }
@@ -232,7 +232,7 @@ async function gateCall(argv: readonly string[], ctx: BudgetContext): Promise<nu
   const now = Date.now()
   const cooldowns = await currentCooldowns(ctx.env, now)
   if (query !== undefined)
-    return LANES.some(lane => cooldowns[lane]) ? answerRateLimit(query, cooldowns, ctx) : undefined
+    return LANES.some(lane => cooldowns[lane]) ? await answerRateLimit(query, cooldowns, ctx) : undefined
   const cooldown = shape === undefined ? undefined : cooldowns[shape.api]
   if (shape === undefined || cooldown === undefined) return undefined
   process.stderr.write(refusal(shape.api, cooldown, now))

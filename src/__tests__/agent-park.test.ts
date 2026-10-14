@@ -650,6 +650,37 @@ describe('refusing to park what the removal would lose', () => {
     expect((await sup.park('worker-a')).ok).toBe(true)
     expect(fs.existsSync(agent.cwd)).toBe(false)
   })
+
+  it('parks a tree whose only ignored files are api-extractor temp reports in a package dir', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses a scratch file beside api-extractor temp, naming only the scratch file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\nscratch.md\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.md'), 'notes\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(scratch\.md\)/) })
+    expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
+  })
 })
 
 describe('refusing to park a running or shared agent', () => {

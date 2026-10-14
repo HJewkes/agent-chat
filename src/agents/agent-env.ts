@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
+import { diskHarnessRoot, ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
 import { clearLaunchTmpDirs } from '../launch-identity.js'
 import { pinGitProtocols } from '../git.js'
 
@@ -167,9 +167,23 @@ export interface AgentEnvOptions {
 const isSharedTmp = (dir: string | undefined): boolean =>
   dir === undefined || dir === '' || path.resolve(dir) === TMP_ROOT
 
+const homeOf = (env: Record<string, string>): string => env.HOME || os.homedir()
+
+/**
+ * CC-1266: Claude Code writes each Bash call's output under CLAUDE_CODE_TMPDIR, else os.tmpdir().
+ * Kept on disk apart from the scratch dir, a full scratch dir no longer fails every Bash call.
+ * An operator's own value is kept; when the dir cannot be made the harness falls back as before.
+ */
+function withHarnessDir(env: Record<string, string>, agentTmp: AgentTmpRequest | undefined): void {
+  if (agentTmp === undefined || (env.CLAUDE_CODE_TMPDIR ?? '') !== '') return
+  const dir = ensureAgentTmpDir({ ...agentTmp, root: diskHarnessRoot(homeOf(env)) })
+  if (dir !== undefined) env.CLAUDE_CODE_TMPDIR = dir
+}
+
 function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void {
   // Another launch's private dir is never passed on: it goes when that launch exits (CC-901).
   clearLaunchTmpDirs(env)
+  withHarnessDir(env, options.agentTmp)
   const own =
     options.agentTmp !== undefined && isSharedTmp(env.TMPDIR)
       ? ensureAgentTmpDir(options.agentTmp)
@@ -192,7 +206,8 @@ function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void
  * `/usr/sbin` (CC-500). TMPDIR is set only when absent and PATH only gains missing dirs.
  *
  * On Linux an agent launch gets its own TMPDIR, TMP and TEMP under /tmp when the parent's is /tmp
- * or absent (CC-901); macOS keeps the per-user temp dir.
+ * or absent (CC-901); macOS keeps the per-user temp dir. It also gets its own CLAUDE_CODE_TMPDIR
+ * under `<home>/.cache/agent-chat/harness`, apart from TMPDIR, unless the parent set one (CC-1266).
  *
  * Node's compile cache defaults under TMPDIR, which on Linux is one /tmp shared by
  * every agent (CC-899), so an absent NODE_COMPILE_CACHE points under HOME instead.
@@ -212,7 +227,7 @@ export function agentEnv(
   kept.PATH = withRequiredPathDirs(kept.PATH)
   withTmpDir(kept, options)
   if (kept.NODE_COMPILE_CACHE === undefined || kept.NODE_COMPILE_CACHE === '') {
-    kept.NODE_COMPILE_CACHE = path.join(kept.HOME || os.homedir(), '.cache', 'node-compile-cache')
+    kept.NODE_COMPILE_CACHE = path.join(homeOf(kept), '.cache', 'node-compile-cache')
   }
   kept.GIT_ALLOW_PROTOCOL = pinGitProtocols(kept.GIT_ALLOW_PROTOCOL)
   return kept

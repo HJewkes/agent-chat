@@ -260,7 +260,8 @@ async function observeClaim(
     claim.worktree !== undefined
   )
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
-  if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
+  if (row === undefined) return goneWork(obs, claim, deps)
+  if (!FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
   if (claim.phase === 'planning' && claim.briefer === true) {
@@ -429,6 +430,18 @@ export function changedFiles(cwd: string, exec: Runner = run): string[] | undefi
   const result = exec(GIT_BIN, ['diff', '--no-renames', '--name-only', `${base}...HEAD`], cwd)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
+
+/**
+ * CC-1230 a: a stalled implementing claim whose row was pruned left no report, so what its worktree holds is all
+ * there is to read. Only a stalled one, since only a stall is classified.
+ */
+const goneWork = (obs: Observation, claim: Claim, deps: ObserveDeps): Observation =>
+  claim.phase === 'implementing' &&
+  claim.stalledReason !== undefined &&
+  claim.agentName !== undefined &&
+  claim.worktree !== undefined
+    ? withExitedWork(obs, claim.worktree, deps)
+    : obs
 
 /** Read only for an exit with no status line: a report already says what the agent left. */
 function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {

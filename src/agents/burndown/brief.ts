@@ -19,6 +19,8 @@ export interface Seat {
   defaultBranch: string
   /** The repo `CLAUDE.md`'s verify-before-PR section, from `verifySection`, when the repo has one. */
   verifySteps?: string
+  /** The repo `CLAUDE.md`'s scoped pre-push checks, from `prePushSection`; workers run them under the machine rule. */
+  prePushChecks?: string
 }
 
 export interface TaskBrief extends Seat {
@@ -103,17 +105,49 @@ function capLines(text: string, max: number, note: (kept: number, total: number)
 /** UTF-8 bytes of a repo verify section a brief embeds. The largest real one (agent-chat) is 1.1 kB. */
 export const VERIFY_STEPS_MAX_BYTES = 1_500
 
+/** UTF-8 bytes of a repo pre-push checks section a brief embeds. The titan-platform one is about 560 B. */
+export const PRE_PUSH_CHECKS_MAX_BYTES = 800
+
+/** The body of the first `## <heading>...` section of `claudeMd`, trimmed, or undefined when absent or empty. */
+function sectionBody(claudeMd: string, heading: string): string | undefined {
+  const match = new RegExp(`^## ${heading}[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm').exec(claudeMd)
+  const body = match?.[1]?.trim()
+  return body === '' ? undefined : body
+}
+
 /** The `## Verify ...` section of a repo `CLAUDE.md`, without its heading, or undefined when there is none. */
 export function verifySection(claudeMd: string): string | undefined {
-  const match = /^## Verify[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(claudeMd)
-  const body = match?.[1]?.trim()
-  if (body === undefined || body === '') return undefined
+  const body = sectionBody(claudeMd, 'Verify')
+  if (body === undefined) return undefined
   return capLines(
     body,
     VERIFY_STEPS_MAX_BYTES,
     (kept, total) =>
       `(Verify steps truncated to ${kept} of their ${total} bytes; read the rest under \`## Verify\` in the repo's \`CLAUDE.md\`.)`,
   )
+}
+
+/** CC-1084: the `## Pre-push checks` section of a repo `CLAUDE.md`, the scoped checks a named-tests worker runs. */
+export function prePushSection(claudeMd: string): string | undefined {
+  const body = sectionBody(claudeMd, 'Pre-push checks')
+  if (body === undefined) return undefined
+  return capLines(
+    body,
+    PRE_PUSH_CHECKS_MAX_BYTES,
+    (kept, total) =>
+      `(Pre-push checks truncated to ${kept} of their ${total} bytes; read the rest under \`## Pre-push checks\` in the repo's \`CLAUDE.md\`.)`,
+  )
+}
+
+/** What a worker brief takes from the repo `CLAUDE.md`; empty when the repo has none. */
+export function briefFacts(claudeMd: string | undefined): Pick<Seat, 'verifySteps' | 'prePushChecks'> {
+  if (claudeMd === undefined) return {}
+  const verifySteps = verifySection(claudeMd)
+  const prePushChecks = prePushSection(claudeMd)
+  return {
+    ...(verifySteps === undefined ? {} : { verifySteps }),
+    ...(prePushChecks === undefined ? {} : { prePushChecks }),
+  }
 }
 
 const UNATTENDED =
@@ -154,6 +188,11 @@ const parkLine = (handoff: string): string =>
 const verifyBlock = (steps: string | undefined): string[] =>
   steps === undefined ? [] : ['Verify before opening a PR, in this order (from the repo CLAUDE.md):', steps]
 
+const prePushBlock = (checks: string | undefined): string[] =>
+  checks === undefined
+    ? []
+    : ['Scoped pre-push checks (from the repo CLAUDE.md); run them before the first push:', checks]
+
 function reportContract(reportTo: string, lines: string): string {
   return (
     `Report via \`chat_send\` to ${reportTo}; plain stdout is invisible to them. ` +
@@ -165,9 +204,9 @@ function reportContract(reportTo: string, lines: string): string {
 const WORKER_REPORT = '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `PR: <url>`'
 
 const MACHINE_RULE =
-  'Machine rule, over any verify steps above: run named tests only, as ' +
+  'Machine rule, over any verify steps above: run named tests and the scoped pre-push checks above only, as ' +
   "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
-  'never the full suite or `npm run verify`, and never `run_in_background`.'
+  "never the full suite, `npm run verify` or the repo's whole verify chain, and never `run_in_background`."
 
 /** A slice registers with `--slice` so its merge notes the task instead of closing it. */
 function shepherdStep(t: TaskBrief): string {
@@ -195,6 +234,7 @@ function workerTail(t: TaskBrief): string[] {
     accountLine(t.configDir),
     parkLine(handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)),
     ...verifyBlock(t.verifySteps),
+    ...prePushBlock(t.prePushChecks),
     MACHINE_RULE,
     shepherdStep(t),
     '## Report',
@@ -221,10 +261,12 @@ function workerScope(t: TaskBrief): string {
  * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.6 kB),
  * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence,
  * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, CC-987 the planner budget by the
- * 234-byte publish-split rule, and CC-1158 the worker budget by 200 for a stacked slice's base and `--after`.
+ * 234-byte publish-split rule, CC-1158 the worker budget by 200 for a stacked slice's base and `--after`,
+ * CC-1084 the worker budget by 1,000 for a capped pre-push checks section (956 bytes measured),
+ * and CC-1259 the planner budget by 200 for the 190-byte overlapsAccepted sentence.
  */
-export const WORKER_BRIEF_MAX_BYTES = 12_200
-export const PLANNER_BRIEF_MAX_BYTES = 11_600
+export const WORKER_BRIEF_MAX_BYTES = 13_200
+export const PLANNER_BRIEF_MAX_BYTES = 11_800
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
@@ -257,6 +299,8 @@ function slicesRequirement(): string {
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
     'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
+    'A slice that must share a file with an open PR on different lines may list it in `overlapsAccepted` as { pr, path, why }; ' +
+    'the path must be an exact owns entry, and every other overlap still refuses. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
     'The tick lints this block; a plan without it, or failing the lint, stalls. ' +
@@ -337,9 +381,9 @@ function cappedFence(label: string, text: string, max: number, rest: string): st
 
 /**
  * UTF-8 byte budget for a successor brief, held by the brief tests: capped question, answer or review text
- * and a capped verify section (10.9 kB after an answer, 7.5 kB after a review), plus headroom.
+ * and capped verify and pre-push checks sections (11.9 kB after an answer, 8.6 kB after a review), plus headroom.
  */
-export const SUCCESSOR_BRIEF_MAX_BYTES = 11_500
+export const SUCCESSOR_BRIEF_MAX_BYTES = 12_500
 
 export function successorAfterAnswer(t: TaskBrief, a: Answer): string {
   const handoff = handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)

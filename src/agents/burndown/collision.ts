@@ -6,7 +6,7 @@ import { run, type Runner } from './exec.js'
 import { heldClaims, sameClaim, type Claim, type Ledger, type StackedOn } from './ledger.js'
 import { defaultBranch } from './observe.js'
 import { exemptFromOverlap, overlapExemptFor } from './overlap-exempt.js'
-import { DESTRUCTIVE_OPS, type Contract } from './report.js'
+import { DESTRUCTIVE_OPS, type AcceptedOverlap, type Contract } from './report.js'
 import { shepherdTarget } from './shepherd.js'
 import { GIT_BIN } from './review-diff.js'
 
@@ -26,6 +26,8 @@ export type CollisionKind = Extract<
 export interface Collision {
   kind: CollisionKind
   reason: string
+  /** CC-1241: the open PR a `file-overlap` hit names, for the refusal snapshot's blocker. */
+  pr?: number
 }
 
 export interface CollisionWork {
@@ -39,6 +41,8 @@ export interface CollisionWork {
   contracts?: Contract[]
   /** CC-1158 c: the parent a stacked slice builds on; its PR's files are the child's own base, so file-overlap skips that PR. */
   stackedOn?: StackedOn
+  /** CC-1259: open-PR overlaps the planner accepted, each waiving one exact owns path for one PR only. */
+  overlapsAccepted?: AcceptedOverlap[]
 }
 
 /** A dispatch planned this tick with the work its collision check saw, so a later seat's check sees it too. */
@@ -85,6 +89,8 @@ export interface CollisionFacts {
   held: readonly HeldContracts[]
   /** Owns on dispatched, undone claims other than the work's own: their PRs may not be open yet (CC-952). */
   heldOwns: readonly HeldOwns[]
+  /** Agents on dispatched, undone claims with owns: `heldOwns` gates them, so their spawn-time broker claim is stale (CC-1276). */
+  burndownAgents?: ReadonlySet<string>
   /** Index and generated files that merge-up resolves at land, so overlap on them alone never refuses (charter 6.2, CC-1153). */
   overlapExempt?: readonly string[]
 }
@@ -155,7 +161,10 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
   )
   if (gone !== undefined)
     return { kind: 'claimed', reason: `agent ${gone} carrying ${work.taskId} exited less than one tick ago` }
-  for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
+  const foreign = facts.claims.filter(
+    c => c.repo === facts.repo && !facts.ours.has(c.owner) && !facts.burndownAgents?.has(c.owner),
+  )
+  for (const claim of foreign) {
     const path = overlapping(work.owns, claim.patterns)
     if (path !== undefined) return { kind: 'claimed', reason: `${path} is under ${claim.owner}'s file claim` }
   }
@@ -171,6 +180,10 @@ export const isReleasePr = (pr: Pick<OpenPr, 'branch'>): boolean => pr.branch.st
 /** One changeset file per change, never edited together, so two of them cannot conflict. */
 const isChangeset = (path: string): boolean => path.startsWith('.changeset/')
 
+/** Two changeset paths collide only as the same literal file, so a `.changeset/*` owns never holds another task's changeset (CC-1276). */
+const pathsCollide = (a: string, b: string): boolean =>
+  isChangeset(a) && isChangeset(b) ? a === b : patternsOverlap(a, b)
+
 function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   const owns = work.owns.filter(path => !isChangeset(path))
   if (owns.length === 0 || facts.prs === undefined) return undefined
@@ -180,13 +193,17 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
     if (files === undefined)
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
     const path = overlapping(
-      owns,
+      owns.filter(own => !accepted(work, pr.number, own)),
       files.filter(path => !isChangeset(path)),
     )
-    if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
+    if (path !== undefined)
+      return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}`, pr: pr.number }
   }
   return undefined
 }
+
+const accepted = (work: CollisionWork, pr: number, path: string): boolean =>
+  (work.overlapsAccepted ?? []).some(a => a.pr === pr && a.path === path)
 
 /** Also the same-pass check: a seat passes the dispatches it has already accepted this pass as `held`. */
 export function liveOverlap(
@@ -261,7 +278,7 @@ export function sameTickCollision(
 }
 
 const overlapping = (owns: string[], others: string[]): string | undefined =>
-  owns.find(own => others.some(other => patternsOverlap(own, other)))
+  owns.find(own => others.some(other => pathsCollide(own, other)))
 
 const TASK_ID = '[A-Za-z][A-Za-z0-9]*-\\d+'
 const ID_SEPARATOR = '[ \\t]*(?:,[ \\t]*(?:and[ \\t]+)?|and[ \\t]+|&[ \\t]*)'
@@ -386,6 +403,7 @@ export function collisionCheck(
       lineage: lineageOf(ledger, work.taskId),
       held: heldContracts(ledger, work),
       heldOwns: heldOwns(ledger, work),
+      burndownAgents: heldAgents(ledger),
     })
   }
 }
@@ -456,11 +474,26 @@ const heldContracts = (ledger: Ledger, work: CollisionWork): HeldContracts[] =>
       contracts: c.contracts ?? [],
     }))
 
-/** As `heldContracts`, for owns; a claim's repo is its worktree's (`<repo>/.worktrees/<name>`), else the plan's. */
+/** A claim's repo is its worktree's (`<repo>/.worktrees/<name>`), else the plan's. */
+const claimRepo = (c: Claim): string | undefined =>
+  c.worktree === undefined ? c.repo : dirname(dirname(c.worktree))
+
+/** A dispatched claim whose owns `liveOverlap` can gate. */
+const holdsOwns = (c: Claim): boolean =>
+  c.phase !== 'queued' && (c.owns ?? []).length > 0 && claimRepo(c) !== undefined
+
+/** As `heldContracts`, for owns. */
 const heldOwns = (ledger: Ledger, work: CollisionWork): HeldOwns[] =>
   heldClaims(ledger).flatMap(c => {
-    const repo = c.worktree === undefined ? c.repo : dirname(dirname(c.worktree))
-    if (c.phase === 'queued' || sameClaim(c, work) || (c.owns ?? []).length === 0 || repo === undefined)
-      return []
+    const repo = claimRepo(c)
+    if (!holdsOwns(c) || sameClaim(c, work) || repo === undefined) return []
     return [{ holder: holderOf(c), repo, owns: c.owns ?? [] }]
   })
+
+/** The agents of every claim `heldOwns` reports; the work's own claim is left in, since `ours` skips it anyway. */
+const heldAgents = (ledger: Ledger): ReadonlySet<string> =>
+  new Set(
+    heldClaims(ledger)
+      .filter(holdsOwns)
+      .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
+  )

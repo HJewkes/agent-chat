@@ -22,15 +22,27 @@ The 2.1.284 bundle is no longer on disk, so each later release was compared with
 above and with `trust.ts`, not with 2.1.284's code. Checked 2026-10-05 against the
 bundles in `~/.local/share/claude/versions/`.
 
-| Release | Checked against                | (a) | (b) | (c) | (d) |
-| ------- | ------------------------------ | --- | --- | --- | --- |
-| 2.1.284 | itself (original reproduction) | yes | yes | yes | yes |
-| 2.1.287 | 2.1.284 rule                   | yes | yes | yes | yes |
-| 2.1.288 | 2.1.284 rule                   | yes | yes | yes | yes |
-| 2.1.289 | 2.1.284 rule                   | yes | yes | yes | yes |
-| 2.1.290 | 2.1.289                        | yes | yes | yes | yes |
-| 2.1.295 | 2.1.292 (2026-10-08)           | yes | yes | yes | yes |
-| 2.1.296 | 2.1.295 (2026-10-10)           | yes | yes | yes | yes |
+| Release | Checked against                | (a)   | (b) | (c) | (d) |
+| ------- | ------------------------------ | ----- | --- | --- | --- |
+| 2.1.284 | itself (original reproduction) | yes   | yes | yes | yes |
+| 2.1.287 | 2.1.284 rule                   | yes   | yes | yes | yes |
+| 2.1.288 | 2.1.284 rule                   | yes   | yes | yes | yes |
+| 2.1.289 | 2.1.284 rule                   | yes   | yes | yes | yes |
+| 2.1.290 | 2.1.289                        | yes   | yes | yes | yes |
+| 2.1.295 | 2.1.292 (2026-10-08)           | yes   | yes | yes | yes |
+| 2.1.296 | 2.1.295 (2026-10-10)           | yes   | yes | yes | yes |
+| 2.1.299 | 2.1.296 (2026-10-14)           | yes\* | yes | yes | yes |
+
+\* 2.1.299, check (a): read by hand from the installed 2.1.299 bundle, not by script. Its
+config-file picker (`W_()`) prefers a legacy `.config.json` only when it is a non-empty file (or a
+writable empty one while `.claude.json` is absent); otherwise it reads `.claude<suffix>.json` in
+`CLAUDE_CONFIG_DIR` or the home directory. 2.1.296 accepted any `.config.json`. The host has no
+`.config.json` and every profile has `.claude.json`, so the same file is read. The owner accepted
+this as equivalent (decisions.md 365(4), 2026-10-14). Checks (b), (c) and (d) match by
+`node scripts/verify-trust-rule.mjs 2.1.299`.
+
+Standing rule (decisions.md 365(5)): a future 2.1.x patch release whose four checks all match, by
+script or by a recorded hand read, is added without asking the owner.
 
 2.1.287, 2.1.288, 2.1.289 and 2.1.290 are identical in all four snippets below once minified
 identifiers are renamed (a token-level comparison; only the names differ).

@@ -10,11 +10,11 @@ on:
   # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
-# A newer push cancels a superseded PR run; a push to main is never cancelled.
-# Each main push gets its own group (the run id) because a shared group still
-# cancels a pending run when a third arrives, even without cancel-in-progress.
+# A newer push cancels a superseded PR run. Main pushes share one group without
+# cancel-in-progress: a newer push replaces a queued run, a running one finishes.
+# Owner decision 319 (2026-10-13) reverses the old "every main push runs" choice for queued runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The whole grant. A called workflow can never hold more than its caller grants,
@@ -37,6 +37,10 @@ jobs:
   # A merge gate behind the pre-push hook `prepare` installs. CI has no private term list.
   egress-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lists earlier main runs to find the last one that succeeded.
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,10 +49,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
+      # A superseded queued main run never scans its commits, so a main push scans
+      # from the last successful main run, not from the previous tip.
+      - name: Find the last scanned main commit
+        id: base
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=30" --jq '.workflow_runs')
+          # Assigned on its own line so a node failure fails the step; inside
+          # `echo "sha=$(...)"` the exit status would be masked and sha left empty.
+          sha=$(node scripts/ci/egress-base.mjs "$GITHUB_SHA" <<<"$runs")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       # The PR head sha, not the merge ref, so GitHub's synthetic merge commit is not scanned.
       - name: Scan the pushed commits
         env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: npx --yes @titan-design/egress-scan@0.1.0 range "$BASE_SHA" "$HEAD_SHA"
 
