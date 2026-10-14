@@ -55,6 +55,8 @@ ok_case; add_verdict seat-9-review msg0002 FIX_FIRST "$SHA"; run
 check "FAIL FIX_FIRST" 1 "^FAIL "; no_put "FIX_FIRST"
 new_case "$CONF"; add_verdict seat-9-review msg0003 MERGE "$SHA"; run
 check "FAIL merge-tree conflict" 1 "^FAIL "; no_put "merge-tree conflict"
+ok_case; echo '{"row":{"held":{"reason":"owner-asked: discuss; TP-1"}},"entries":[]}' > "$W/case/timeline.json"; run
+check "FAIL owner-asked Shepherd hold" 1 "^FAIL premerge: .*owner-hold owner-asked: discuss"; no_put "owner-asked hold"
 
 ok_case; out=$(env -u SEAT "$BIN/merge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
 check "FAIL without SEAT" 1 "^FAIL SEAT"; no_put "no SEAT"

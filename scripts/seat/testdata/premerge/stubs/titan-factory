@@ -1,5 +1,7 @@
 #!/bin/bash
-# Stub titan-factory: `shepherd timeline <ref> --json` prints $FIXDIR/timeline.json, and exits 1 when it is absent (no Shepherd run).
+# Stub titan-factory: `shepherd timeline <ref> --json` prints $FIXDIR/timeline.json, and exits 66 like the real one when it
+# is absent (not registered). $FIXDIR/timeline.rc, when present, is the exit code instead.
 [ "${1:-} ${2:-}" = "shepherd timeline" ] || { echo "stub titan-factory: unsupported: $*" >&2; exit 2; }
-[ -f "$FIXDIR/timeline.json" ] || { echo "no shepherd run for ${3:-}" >&2; exit 1; }
+[ -f "$FIXDIR/timeline.rc" ] && { echo "stub titan-factory: failing" >&2; exit "$(cat "$FIXDIR/timeline.rc")"; }
+[ -f "$FIXDIR/timeline.json" ] || { echo "${3:-} is not registered with shepherd" >&2; exit 66; }
 cat "$FIXDIR/timeline.json"
