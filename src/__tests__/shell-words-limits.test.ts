@@ -30,30 +30,34 @@ describe('parseShell on deeply nested input', { timeout: 60000 }, () => {
 
   it('still yields the inner command at 199 levels', () => {
     const src = '$('.repeat(199) + 'git push --no-verify' + ')'.repeat(199)
-    const found = parseShell(src).some((c) => c.words.join(' ') === 'git push --no-verify')
+    const found = parseShell(src).some(c => c.words.join(' ') === 'git push --no-verify')
     expect(found).toBe(true)
     expect(expansionRisk(src)).toBeUndefined()
   })
 
-  it('reads 201 levels as unreadable', () => {
-    const src = '$('.repeat(201) + 'git push --no-verify' + ')'.repeat(201)
+  it.each([200, 201])('reads %i levels as unreadable', depth => {
+    const src = '$('.repeat(depth) + 'git push --no-verify' + ')'.repeat(depth)
     expect(expansionRisk(src)).toBe('unreadable')
   })
 })
 
+// A worker thread has a larger stack than the main thread, so the spread limit is reached at the larger
+// size here; the smaller size is what the hook meets on the main thread.
 describe('parseShell on very wide input', () => {
   it.each([
-    ['$(', ')'],
-    ['`', '`'],
-  ])('reads a %s substitution holding 300K commands', (open, close) => {
-    const src = open + 'a;'.repeat(300000) + close
+    { open: '$(', close: ')', count: 300000 },
+    { open: '$(', close: ')', count: 600000 },
+    { open: '`', close: '`', count: 300000 },
+    { open: '`', close: '`', count: 600000 },
+  ])('reads a $open substitution holding $count commands', ({ open, close, count }) => {
+    const src = open + 'a;'.repeat(count) + close
     let commands: unknown[] = []
     expect(() => (commands = parseShell(src))).not.toThrow()
-    expect(commands.length).toBeGreaterThanOrEqual(300000)
+    expect(commands.length).toBeGreaterThanOrEqual(count)
   })
 
-  it('reads 2000 lines of a call followed by an open paren in a comment', () => {
-    const src = '$(el).css(x) // note: (see below\n'.repeat(2000)
+  it.each([2000, 4000])('reads %i lines of a call followed by an open paren in a comment', lines => {
+    const src = '$(el).css(x) // note: (see below\n'.repeat(lines)
     expect(() => parseShell(src)).not.toThrow()
   })
 

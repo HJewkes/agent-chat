@@ -70,11 +70,24 @@ const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
 const MAX_FORKS = 64
+// Each level of `$(`, backtick, funsub or arithmetic span is a nested `run()`; far more would exhaust the stack.
+const MAX_NESTING = 200
 
 /** The commands after `after`, bar `skip`, are checked when the span is not settled. */
 interface Mark {
   after: number
   skip: SimpleCommand
+}
+
+/** Shared by reference, so a probe lexer made inside an arithmetic span counts against the same nesting. */
+interface Limits {
+  level: number
+  /** Set when `run()` refused to nest deeper; the parse then reads as unreadable. */
+  capped: boolean
+}
+
+function newBudget(): Budget {
+  return { forks: MAX_FORKS, expansion: undefined, limits: { level: 0, capped: false } }
 }
 
 /**
@@ -84,6 +97,7 @@ interface Mark {
 interface Budget {
   forks: number
   expansion: ExpansionRisk | undefined
+  limits: Limits
   /** Only finding where a substitution ends, so arithmetic is not looked for. */
   probe?: boolean
 }
@@ -319,7 +333,7 @@ class ShellLexer {
     private readonly src: string,
     start = 0,
     private readonly nested = false,
-    private readonly budget: Budget = { forks: MAX_FORKS, expansion: undefined },
+    private readonly budget: Budget = newBudget(),
     private arith?: Arith,
   ) {
     this.pos = start
@@ -327,7 +341,7 @@ class ShellLexer {
   }
 
   get expansion(): ExpansionRisk | undefined {
-    return this.budget.expansion
+    return this.budget.limits.capped ? 'unreadable' : this.budget.expansion
   }
 
   private newCommand(): SimpleCommand {
@@ -349,9 +363,20 @@ class ShellLexer {
   }
 
   run(): SimpleCommand[] {
-    while (this.pos < this.src.length && !this.closed) this.step()
-    this.endCommand()
-    return this.out
+    const { limits } = this.budget
+    if (limits.level >= MAX_NESTING) {
+      limits.capped = true
+      this.closed = true
+      return this.out
+    }
+    limits.level++
+    try {
+      while (this.pos < this.src.length && !this.closed && !limits.capped) this.step()
+      this.endCommand()
+      return this.out
+    } finally {
+      limits.level--
+    }
   }
 
   private step(): void {
@@ -644,13 +669,13 @@ class ShellLexer {
   private trackArith(c: string, opensCommand: boolean): void {
     if (c === ')' && !this.inArith()) this.arith = undefined
     if (c !== '(' || !opensCommand || this.arith !== undefined || this.peek(this.pos + 1) !== '(') return
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ')')
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ')', this.budget.limits)
     if (span && this.doubled(span.end)) this.arith = { depth: this.depth + 1, text: span.text }
   }
 
   /** Notes the body of a `$[ ]` the shell evaluates as arithmetic; the lexer still reads what is inside it. */
   private noteBracket(): void {
-    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ']')
+    const span = this.budget.probe ? undefined : arithSpan(this.src, this.after(2), ']', this.budget.limits)
     if (span !== undefined) this.cur.arithBodies.push(span.text)
   }
 
@@ -690,7 +715,7 @@ class ShellLexer {
   private readRestAsCommand(): void {
     if (this.budget.forks-- <= 0) return this.unsettled()
     const rest = new ShellLexer(this.src, this.pos, this.nested || this.depth !== 0, this.budget)
-    this.out.push(...rest.run())
+    appendAll(this.out, rest.run())
   }
 
   /** A span whose end or reading the splitter cannot be sure of: the commands after it are held to account. */
@@ -940,7 +965,7 @@ class ShellLexer {
   /** A `$((` is arithmetic when bash finds its `))`; `$((a) )` is a substitution of a subshell. */
   private substitutedArith(start: number): Arith | undefined {
     if (this.budget.probe || this.ahead(3) !== '$((') return undefined
-    const span = arithSpan(this.src, skipChars(this.src, start, 3), ')')
+    const span = arithSpan(this.src, skipChars(this.src, start, 3), ')', this.budget.limits)
     return span && this.doubled(span.end) ? { depth: 1, text: span.text } : undefined
   }
 
@@ -955,7 +980,7 @@ class ShellLexer {
   }
 
   private substituted(raw: string, commands: SimpleCommand[], quoted: boolean): string {
-    this.out.push(...commands)
+    appendAll(this.out, commands)
     this.cur.substitutions.push({ raw, commands, quoted })
     return raw
   }
@@ -990,9 +1015,9 @@ class ShellLexer {
 
   private endCommand(): void {
     this.endWord()
-    if (this.cur.words.length === 0) this.carried.push(...this.cur.writes)
+    if (this.cur.words.length === 0) appendAll(this.carried, this.cur.writes)
     else {
-      this.cur.writes.unshift(...this.carried.splice(0))
+      this.cur.writes = [...this.carried.splice(0), ...this.cur.writes]
       this.cur.before = this.joiner
       this.joiner = ''
       this.last = this.cur
@@ -1051,9 +1076,19 @@ class ShellLexer {
   }
 }
 
+/** Appends one at a time: a spread of a long list as call arguments throws a RangeError. */
+function appendAll<T>(into: T[], items: readonly T[]): void {
+  for (const item of items) into.push(item)
+}
+
 /** The index after the `)` that ends the `$(` whose body starts at `from`, found by the lexer; -1 if it never ends. */
-function substitutionEnd(src: string, from: number): number {
-  const probe = new ShellLexer(src, from, true, { forks: MAX_FORKS, expansion: undefined, probe: true })
+function substitutionEnd(src: string, from: number, limits: Limits): number {
+  const probe = new ShellLexer(src, from, true, {
+    forks: MAX_FORKS,
+    expansion: undefined,
+    limits,
+    probe: true,
+  })
   probe.run()
   return src[probe.pos] === ')' ? probe.pos + 1 : -1
 }
@@ -1065,10 +1100,10 @@ interface Step {
 }
 
 /** The step past the quote, backtick or `${...}` that opens at `at`. */
-function skipQuoted(src: string, at: number): Step | undefined {
+function skipQuoted(src: string, at: number, limits: Limits): Step | undefined {
   const c = src[at]
   if (c === '"') {
-    const inner = arithSpan(src, at + 1, '"')
+    const inner = arithSpan(src, at + 1, '"', limits)
     return inner && { next: inner.end + 1, text: `"${inner.text}"` }
   }
   const close = c === '$' ? nestedClose(src, at) : src.indexOf(c === '`' ? '`' : "'", at + 1)
@@ -1081,7 +1116,12 @@ function skipQuoted(src: string, at: number): Step | undefined {
  * `${...}`, backticks and `$(...)` (by the lexer, so a `)` in a quote or a case pattern does not end it)
  * are passed over, and each substitution is blanked in the text, since it is checked as a command.
  */
-function arithSpan(src: string, from: number, closer: string): { end: number; text: string } | undefined {
+function arithSpan(
+  src: string,
+  from: number,
+  closer: string,
+  limits: Limits,
+): { end: number; text: string } | undefined {
   const opener = { ')': '(', ']': '[' }[closer]
   let depth = 0
   let text = ''
@@ -1090,7 +1130,7 @@ function arithSpan(src: string, from: number, closer: string): { end: number; te
     const next = src[unjoinAt(src, i + 1)]
     if (c === closer && depth-- === 0) return { end: i, text }
     if (c === opener) depth++
-    const skip = skipIn(src, i, c, next, closer === '"')
+    const skip = skipIn(src, i, c, next, closer === '"', limits)
     if (skip === undefined) return undefined
     text += skip.text
     i = skip.next
@@ -1105,14 +1145,15 @@ function skipIn(
   c: string,
   next: string | undefined,
   quoted: boolean,
+  limits: Limits,
 ): Step | undefined {
   if (c === '\\') return { next: at + 2, text: src.slice(at, at + 2) }
   if (c === '$' && next === '(') {
-    const end = substitutionEnd(src, skipChars(src, at, 2))
+    const end = substitutionEnd(src, skipChars(src, at, 2), limits)
     return end < 0 ? undefined : { next: end, text: ' ' }
   }
   if ((c === '$' && next === '{') || c === '`' || (!quoted && (c === '"' || c === "'")))
-    return skipQuoted(src, at)
+    return skipQuoted(src, at, limits)
   return { next: at + 1, text: c }
 }
 
