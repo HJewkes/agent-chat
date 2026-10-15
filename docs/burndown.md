@@ -38,7 +38,8 @@ agent-chat burndown unstall <task> --slice <n>
                                         reload an outside-owns slice's owns from its plan; keep its PR and agents
 agent-chat burndown done <task> --slice <n> --evidence <path>
                                         finish a PR-less implementing or queued slice by hand; retire its agents
-agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file;
+                                        lifts a brief:held hold
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
@@ -184,6 +185,13 @@ For each listed seat, in order, the tick:
   the lint requires it. An implementer-routed task with no plan is refused `no-owns`; a
   planner-routed one spawns its planner as before. Under `shadow` the implementer still
   dispatches, with a `would-refuse no-owns` note (CC-952);
+- auto-approves a brief: an open `brief:proposed` task whose plan passes the slice lint is
+  promoted to `brief:ready`, and one that fails is routed to the decider (CC-1234). A seat
+  holds a plan by tagging the task `brief:held=<kebab-reason>` (or bare `brief:held`,
+  `blocked` or `needs-decision`) before the next tick; the tick then neither approves nor
+  routes it, and logs the hold each tick. A seat log line or queue entry alone does not
+  hold anything: the tick reads only tags. `burndown brief approve` (which drops
+  `brief:held*`) or removing the tag releases the hold (CC-1349);
 - spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
   new claims carry `seat` and `namePrefix`.
 
