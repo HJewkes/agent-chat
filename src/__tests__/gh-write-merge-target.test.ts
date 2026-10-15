@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeTarget } from '../gh-write/merge-target.js'
+import { MERGE_OPERATIONS, mergeTarget } from '../gh-write/merge-target.js'
 
 const NO_ENV = {}
 const kindOf = (args: string[], env: Record<string, string> = NO_ENV): string => mergeTarget(args, env).kind
@@ -342,6 +342,56 @@ describe('mergeTarget with empty words, which cobra drops when it picks the comm
 
   it('passes a non-merge with an empty word as no merge', () => {
     expect(kindOf(['', 'issue', 'view', '12'])).toBe('none')
+  })
+})
+
+describe('each merge operation reads the same over REST and GraphQL', () => {
+  // Spellings from both surfaces per row; each is tried as a REST write path and as a GraphQL mutation.
+  const SPELLINGS: Record<string, string[]> = {
+    'a PR merge or auto-merge': [
+      'pulls/12/merge',
+      'pulls/12/auto-merge',
+      'mergePullRequest',
+      'enablePullRequestAutoMerge',
+      'disablePullRequestAutoMerge',
+    ],
+    'a branch merge': ['merges', 'mergeBranch'],
+    'a merge queue change': ['merge-queue', 'enqueuePullRequest', 'dequeuePullRequest'],
+    'any ref create, update or delete': [
+      'git/refs',
+      'git/refs/heads/main',
+      'git/refs/tags/v1',
+      'createRef',
+      'updateRef',
+      'updateRefs',
+      'deleteRef',
+    ],
+  }
+
+  it('has spellings for every row', () => {
+    expect(Object.keys(SPELLINGS).sort()).toEqual(MERGE_OPERATIONS.map(({ covers }) => covers).sort())
+  })
+
+  it.each(Object.entries(SPELLINGS))('refuses every spelling of %s on both surfaces', (_, spellings) => {
+    const passed = spellings.flatMap(spelling => [
+      ['api', '-X', 'PATCH', `repos/o/r/${spelling}`, '-f', 'a=b'],
+      ['api', 'graphql', '-f', `query=mutation{${spelling}(input:{}){clientMutationId}}`],
+    ])
+
+    expect(passed.filter(args => kindOf(args) === 'none')).toEqual([])
+  })
+
+  it('passes a GraphQL query, which cannot write, even when it names a merge', () => {
+    const query =
+      'query=query{repository(owner:"o",name:"r"){pullRequest(number:1){mergeable}ref(qualifiedName:"main"){id}}}'
+
+    expect(kindOf(['api', 'graphql', '-f', query])).toBe('none')
+  })
+
+  it('passes a mutation that names no merge operation', () => {
+    expect(
+      kindOf(['api', 'graphql', '-f', 'query=mutation{addComment(input:{body:"hi"}){clientMutationId}}']),
+    ).toBe('none')
   })
 })
 

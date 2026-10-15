@@ -143,32 +143,26 @@ export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
 // --- api ------------------------------------------------------------------------------------------
 
 /**
- * Every operation that can land a PR's commits on its base, one row each, so the REST and GraphQL
- * readers cannot drift apart. `mentions` runs on every decoded API path, whatever its prefix
- * (`repos/`, `repositories/<id>/`, anything else) or suffix: a path naming a row's vocabulary is
- * unresolved unless it is exactly `PR_MERGE_PATH`, the one spelling that names a target.
- * `writesOnly` skips GET reads. A ref write is here because it can fast-forward a PR's base.
+ * Every operation that can land a PR's commits on its base, one row each. A row states what it
+ * covers once, as `vocabulary`, and both readers apply that same pattern, so neither can be
+ * narrower than the other:
+ * - REST runs it on every decoded API path past its repo, whatever its prefix or suffix. A match is
+ *   unresolved unless the path is exactly `PR_MERGE_PATH`, the one spelling that names a target.
+ * - GraphQL runs it on every field of a call to exactly `graphql` whose document is a mutation.
+ * `writesOnly` rows skip REST reads; a GraphQL query cannot write, so only mutations are read.
+ * Refs are here because a ref write can fast-forward a PR's base.
  */
 interface MergeOperation {
-  name: string
-  graphql: readonly string[]
-  rest?: { mentions: RegExp; writesOnly: boolean }
+  covers: string
+  vocabulary: RegExp
+  writesOnly: boolean
 }
 
-const MERGE_OPERATIONS: readonly MergeOperation[] = [
-  {
-    name: 'a PR merge',
-    graphql: ['mergePullRequest'],
-    rest: { mentions: /pull[\s\S]*merge/i, writesOnly: false },
-  },
-  { name: 'a branch merge', graphql: ['mergeBranch'], rest: { mentions: /merges/i, writesOnly: false } },
-  { name: 'an auto-merge', graphql: ['enablePullRequestAutoMerge'] },
-  { name: 'a merge queue entry', graphql: ['enqueuePullRequest'] },
-  {
-    name: 'a branch ref write',
-    graphql: ['updateRef', 'updateRefs'],
-    rest: { mentions: /ref/i, writesOnly: true },
-  },
+export const MERGE_OPERATIONS: readonly MergeOperation[] = [
+  { covers: 'a PR merge or auto-merge', vocabulary: /pull[\s\S]*merge|merge[\s\S]*pull/i, writesOnly: false },
+  { covers: 'a branch merge', vocabulary: /merge(?:s|branch)/i, writesOnly: false },
+  { covers: 'a merge queue change', vocabulary: /queue/i, writesOnly: false },
+  { covers: 'any ref create, update or delete', vocabulary: /ref/i, writesOnly: true },
 ]
 
 const PR_MERGE_PATH = /^\/?repos\/([^/]+)\/([^/]+)\/pulls\/([^/?#]+)\/merge(?:[/?#]|$)/i
@@ -225,21 +219,21 @@ const EXACT_GRAPHQL = /^\/?graphql$/i
 const mentionsGraphql = (word: string): boolean => /graphql/i.test(apiPath(word) ?? '')
 
 const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
-const GRAPHQL_MERGE = new RegExp(MERGE_OPERATIONS.flatMap(operation => operation.graphql).join('|'), 'i')
 
 /**
- * True only when every flag is known, every field is inline and none names a merge mutation;
- * `-F x=@file` and `--input` are unread.
+ * True only when every flag is known, every field is inline, and the document is no mutation or
+ * names no row's vocabulary; `-F x=@file` and `--input` are unread.
  */
 function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
   if (parsed.unknown.length > 0 || parsed.flags.some(flag => flag.name === '--input')) return false
-  return parsed.flags
-    .filter(flag => FIELD_FLAGS.has(flag.name))
-    .every(({ name, value }) => {
-      const plain = value === undefined ? undefined : decoded(value)
-      if (plain === undefined || GRAPHQL_MERGE.test(plain)) return false
-      return !(name === '-F' || name === '--field') || !plain.slice(plain.indexOf('=') + 1).startsWith('@')
-    })
+  const fields = parsed.flags.filter(flag => FIELD_FLAGS.has(flag.name))
+  const values = fields.map(({ value }) => (value === undefined ? undefined : decoded(value)))
+  if (values.some(value => value === undefined)) return false
+  const plain = values as string[]
+  if (fields.some(({ name }, at) => /^(?:-F|--field)$/.test(name) && /^[^=]*=@/.test(plain[at] ?? '')))
+    return false
+  if (!plain.some(value => /mutation/i.test(value))) return true
+  return !plain.some(value => MERGE_OPERATIONS.some(({ vocabulary }) => vocabulary.test(value)))
 }
 
 /** False for a path with an empty, `.` or `..` segment, which a later hop may collapse into another path. */
@@ -268,11 +262,11 @@ function endpointTarget(word: string, writes: boolean): MergeTarget {
   // A read's query string cannot merge, so a GET is scanned only up to `?`.
   const scanned = afterRepo(writes ? path : (path.split('?')[0] ?? ''))
   const named = MERGE_OPERATIONS.find(
-    ({ rest }) => rest !== undefined && (writes || !rest.writesOnly) && rest.mentions.test(scanned),
+    ({ vocabulary, writesOnly }) => (writes || !writesOnly) && vocabulary.test(scanned),
   )
   if (named === undefined) return NONE
   const exact = isCanonical(path) ? PR_MERGE_PATH.exec(path) : null
-  return exact === null ? unresolved(`a path that may be ${named.name}`) : prMergeTarget(exact)
+  return exact === null ? unresolved(`a path that may be ${named.covers}`) : prMergeTarget(exact)
 }
 
 function prMergeTarget(match: RegExpExecArray): MergeTarget {
