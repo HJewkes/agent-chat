@@ -2,8 +2,14 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { gitCommonDir, REPO_SKILLS_RULE, type SelfGrantPin, selfGrant } from '../agents/skill-self-grant.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  gitCommonDir,
+  linkedWorktreeRoot,
+  REPO_SKILLS_RULE,
+  type SelfGrantPin,
+  selfGrant,
+} from '../agents/skill-self-grant.js'
 
 /**
  * CC-694 b. The hook may answer `allow` for a repo skill write without the owner, so what
@@ -80,6 +86,7 @@ function write(filePath: string): { file_path: string; content: string } {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -308,5 +315,47 @@ describe('writes the self-grant still sends to the owner', () => {
 
     expect(selfGrant(pinOf(root), 'Write', undefined)).toBe(false)
     expect(selfGrant(pinOf(root), 'Write', { file_path: 42 })).toBe(false)
+  })
+})
+
+/** The admin dir git keeps for a linked worktree, under the repository's `.git/worktrees`. */
+function adminDirOf(root: string): string {
+  return fs.readFileSync(path.join(root, '.git'), 'utf8').slice('gitdir: '.length).trim()
+}
+
+describe('git variables inherited by the hook or launch process (CC-1205)', () => {
+  it("refuses a forged worktree even when GIT_DIR names a registered sibling's admin dir", () => {
+    const sibling = linkedWorktree()
+    const forged = forgedWorktree()
+    vi.stubEnv('GIT_DIR', adminDirOf(sibling))
+    const pin = pinOf(forged)
+
+    expect(linkedWorktreeRoot(forged)).toBeUndefined()
+    expect(selfGrant(pin, 'Write', write(path.join(forged, '.claude/skills/probe/SKILL.md')))).toBe(false)
+  })
+
+  it("resolves the worktree's own common dir when GIT_DIR names another repository", () => {
+    const repo = initRepo()
+    const root = linkedWorktree(repo)
+    const other = initRepo()
+    vi.stubEnv('GIT_DIR', path.join(other, '.git'))
+
+    expect(gitCommonDir(root)).toBe(path.join(repo, '.git'))
+  })
+
+  it('still self-grants in the pinned worktree when GIT_COMMON_DIR names another repository', () => {
+    const root = linkedWorktree()
+    const pin = pinOf(root)
+    vi.stubEnv('GIT_COMMON_DIR', path.join(initRepo(), '.git'))
+
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(true)
+  })
+
+  it('scrubs every GIT_ prefixed variable, not only GIT_DIR and GIT_COMMON_DIR', () => {
+    const root = linkedWorktree()
+    const pin = pinOf(root)
+    vi.stubEnv('GIT_CONFIG_COUNT', '1')
+
+    expect(selfGrant(pin, 'Write', write(path.join(root, '.claude/skills/probe/SKILL.md')))).toBe(true)
   })
 })
