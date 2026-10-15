@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { POLL_SESSION_ID } from '@titan-design/anthropic-account'
 import {
   readAccountBudget,
   readStatusLineBudget,
@@ -13,17 +14,16 @@ import { accountName, defaultConfigDir, profileRoot } from './config-dir.js'
 
 /**
  * One row per Claude account on this machine (CC-891): both rate-limit windows,
- * where they came from and how old they are. The usage poller (item 94) writes
- * `usage-poller.json` into each account's status cache from the OAuth usage
- * endpoint every two minutes, so it is the reading of record; the freshest
+ * where they came from and how old they are. The usage poller
+ * (`anthropic-account poll --write`, on `anthropic-account-poll.timer`) writes
+ * `usage-poll.json` into each account's status cache from the OAuth usage
+ * endpoint every 150s, so it is the reading of record; the freshest
  * status-line reading stands in where the poller has not written. Nothing here
  * calls the API.
  */
 
-export const POLLER_SESSION = 'usage-poller'
-
-/** Two missed polls plus slack: the poller runs every 120s, so an older reading means it stopped. */
-export const POLLER_STALE_AFTER_SECONDS = 300
+/** Two missed polls: a 150s interval plus up to 30s jitter, so an older reading means it stopped. */
+export const POLLER_STALE_AFTER_SECONDS = 360
 
 /** The poller's log names each account by its config dir's basename; these kinds mean it holds no login. */
 const AUTH_FAILURES = new Set(['AUTH-FAIL', 'AUTH-EXPIRED', 'TOKEN-EXPIRED'])
@@ -94,7 +94,7 @@ function pickReading(
   dir: string,
   now: number,
 ): { read: BudgetRead; source: UsageSource; staleAfter: number } {
-  const poller = readStatusLineBudget(POLLER_SESSION, now, dir)
+  const poller = readStatusLineBudget(POLL_SESSION_ID, now, dir)
   if (poller.found) return { read: poller, source: 'usage-poller', staleAfter: POLLER_STALE_AFTER_SECONDS }
   return { read: readAccountBudget(dir, now), source: 'status-line', staleAfter: STALE_AFTER_SECONDS }
 }

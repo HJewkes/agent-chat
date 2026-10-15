@@ -1399,6 +1399,8 @@ export type ServerMessage =
       warnings?: string[]
       /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
       remote?: boolean
+      /** Where the successor opens: typed into this pane, a fresh surface here, or on another machine. */
+      placement?: 'same-pane' | 'new-surface' | 'other-machine'
     }
   /** CC-951: `endSelf` means the successor attached, so the caller ends its own Claude Code. */
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
