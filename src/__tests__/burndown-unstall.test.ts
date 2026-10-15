@@ -3,7 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { advance, applyActions, type Action } from '../agents/burndown/advance.js'
-import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import {
+  EMPTY_LEDGER,
+  readLedger,
+  readySlices,
+  writeLedger,
+  type Claim,
+  type Ledger,
+} from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import type { PlanFile } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
@@ -42,6 +49,29 @@ const planOwning = (owns: string[]): PlanFile => ({
     '```',
   ].join('\n'),
 })
+
+const twoSlicePlan = (ownsA: string[]): PlanFile => ({
+  path: '/plans/CC-1-plan.md',
+  text: [
+    '```burndown-slices',
+    JSON.stringify([
+      { n: 'a', title: 'slice a', points: 1, doneWhen: 'a is done', dependsOn: [], owns: ownsA },
+      { n: 'b', title: 'slice b', points: 1, doneWhen: 'b is done', dependsOn: ['a'], owns: ['src/c.ts'] },
+    ]),
+    '```',
+  ].join('\n'),
+})
+
+const queuedB: Claim = {
+  taskId: 'CC-1',
+  initiative: 'demo',
+  slice: 'b',
+  dependsOn: ['a'],
+  owns: ['src/c.ts'],
+  spawnedAt: EARLIER,
+  phase: 'queued',
+  phaseAt: EARLIER,
+}
 
 const ports = (plan: PlanFile, files: string[] | undefined): UnstallPorts => ({
   plan: () => plan,
@@ -129,6 +159,27 @@ describe('burndown unstall (CC-1141)', () => {
     )
     expect(handed.actions.filter(a => a.kind === 'retire')).toEqual([])
     expect(merged.ledger.claims[0]).toMatchObject({ phase: 'done', agentName: 'bd-cc-1-a' })
+  })
+
+  it('keeps the slice linked and its dependent gated, recording no release (CC-1159)', async () => {
+    const parked = (await tick({ ...EMPTY_LEDGER, claims: [implementing(), queuedB] })).ledger
+    writeLedger(file(), parked)
+
+    const report = await unstallSlice('CC-1', 'a', ports(twoSlicePlan(BRANCH_FILES), BRANCH_FILES))
+    const unstalled = readLedger(file())
+    const next = await tick(unstalled)
+
+    expect(parked.claims[0]).toMatchObject({ stallCode: 'outside-owns' })
+    expect(report.ok).toBe(true)
+    expect(unstalled.claims.find(c => c.slice === 'a')).toMatchObject({
+      pr: 'o/r#41',
+      agentName: 'bd-cc-1-a',
+      spawned: ['bd-cc-1-a'],
+    })
+    expect(unstalled.slicesReleased?.['CC-1']).toBeUndefined()
+    expect(readySlices(unstalled).map(c => c.slice)).not.toContain('b')
+    expect(unstalled.claims.find(c => c.slice === 'b')).toMatchObject({ phase: 'queued' })
+    expect(next.actions.filter(a => a.kind === 'retire')).toEqual([])
   })
 
   it('refuses while a file is still outside the new owns, and writes nothing', async () => {
