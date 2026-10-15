@@ -299,6 +299,7 @@ function addAgentCommands(program: Command): void {
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
         'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
         'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
+        'A root lint:types script runs here after <pm> run build, before the push, never deferred.',
       ].join('\n'),
     )
     .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean; strict?: boolean }) => {
