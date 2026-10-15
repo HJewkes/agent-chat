@@ -6,7 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import type { Supervisor } from '../agents/supervisor.js'
+import { RELAUNCH_RETRY_MS, type Supervisor } from '../agents/supervisor.js'
 import { moveTranscript } from '../agents/account-move.js'
 import { planPath } from '../agents/launch-files.js'
 import { PANE_EXIT_TIMEOUT_MS } from '../agents/teleport.js'
@@ -75,7 +75,15 @@ const isolatedSeatTeleport = (): SeatTeleportDeps => ({
   shepherd: async () => undefined,
 })
 
-function startServer(accountMoves: AccountMoves): void {
+/** Answers iTerm's "is running" probe; `paneOpens` false makes every pane launch fail. */
+const fakeAppleScript =
+  (paneOpens: boolean) =>
+  (script: string): Promise<string> => {
+    if (script.includes('is running')) return Promise.resolve('true')
+    return paneOpens ? Promise.resolve('fake-pane-uuid') : Promise.reject(new Error('iTerm refused'))
+  }
+
+function startServer(accountMoves: AccountMoves, paneOpens = true): void {
   server = new SocketServer(core, {
     countdownMs: 60_000,
     seatTeleport: isolatedSeatTeleport(),
@@ -85,7 +93,7 @@ function startServer(accountMoves: AccountMoves): void {
     surface: {
       platform: 'darwin',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
-      runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
+      runAppleScript: fakeAppleScript(paneOpens),
     },
   })
 }
@@ -349,6 +357,30 @@ describe('an account move that goes through', () => {
     expect(spawnRowFor(result.agentId as string)?.meta.account_from).toBeUndefined()
     const notices = core.events.humanQueue().map(item => item.text)
     expect(notices.join('\n')).toContain('EBUSY: injected')
+  })
+})
+
+describe('an account move whose pane cannot open (CC-1372)', () => {
+  it('falls back headless, resuming the same id on the target account', async () => {
+    stopAutoAttach()
+    stopAutoAttach = () => undefined
+    startServer(fakeAccounts(), false)
+    registerSubject()
+    writeSourceTranscript()
+    vi.useFakeTimers()
+
+    const result = await humanMove()
+    await vi.advanceTimersByTimeAsync(PANE_EXIT_TIMEOUT_MS + 2 * RELAUNCH_RETRY_MS)
+
+    const plan = await vi.waitFor(() => {
+      const current = planFor(result.agentId as string)
+      if (current.surface !== 'headless') throw new Error('not headless yet')
+      return current
+    })
+    expect(plan.args).toEqual(expect.arrayContaining(['--resume', SESSION]))
+    expect(plan.args).not.toContain('--session-id')
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe(toDir)
+    expect(spawnRowFor(result.agentId as string)?.meta.session_id).toBe(SESSION)
   })
 })
 
