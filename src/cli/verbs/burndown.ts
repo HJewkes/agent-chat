@@ -48,7 +48,7 @@ import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
-import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
+import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
 import { unstallSlice } from './burndown-unstall.js'
 import { changedFiles } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
@@ -513,17 +513,25 @@ export const burndownReleaseVerb = defineVerb({
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
   description:
-    'record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on merge',
-  args: z.object({ task: requiredString('task'), slice: requiredString('slice'), pr: requiredString('pr') }),
+    'record a hand-dispatched PR on a queued or released slice, so the tick never dispatches it and finishes it on merge',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    pr: requiredString('pr'),
+  }),
   result: Report,
   cli: {
     positional: ['task'],
     options: {
-      slice: { long: '--slice', description: 'the queued slice the PR implements' },
+      slice: { long: '--slice', description: 'the queued or released slice the PR implements' },
       pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
     },
   },
-  run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
+  run: ({ task, slice, pr }) =>
+    linkSlicePr(task, slice, pr, undefined, {
+      plan: diskPlanReader(activeWorkRoot()),
+      pull: pullReader(run),
+    }),
 })
 
 export const burndownUnstallVerb = defineVerb({

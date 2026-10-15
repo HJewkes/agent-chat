@@ -186,6 +186,12 @@ const planFor = (agentId: string): LaunchPlan =>
 
 const readBrokerLog = (): string => fs.readFileSync(logPath(), 'utf8')
 
+const refusals = (): Array<Record<string, unknown>> =>
+  readBrokerLog()
+    .split('\n')
+    .filter(line => line.includes('"teleport_refused"'))
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+
 /** A successor's first turn up to the broker's appendix (CC-524), which is everything the predecessor wrote. */
 const handoffPart = (agentId: string): string =>
   (planFor(agentId).stdin ?? '').split('\n\n---\n\n## Broker appendix')[0] ?? ''
@@ -937,6 +943,50 @@ describe('a visible predecessor', () => {
 
     const again = await supervisor.teleport({ subject: subject(agentId), handoff: 'h2' })
     expect(again.reason).toMatch(/already teleporting/)
+  })
+})
+
+/** CC-1358: one `teleport_refused` line per refusal, with the stage that turned the request away. */
+describe('every refusal is logged with its stage (CC-1358)', () => {
+  it('logs one questions line for an unnamed open question', async () => {
+    const agentId = await spawnAgent()
+    core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'which branch?' })
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'questions' })])
+  })
+
+  it('logs a preflight line for a session that reported no pid', async () => {
+    const agentId = await spawnAgent()
+    const { hostPid: _omitted, ...noPid } = subject(agentId)
+
+    await supervisor.teleport({ subject: noPid, handoff: 'h' })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'preflight' })])
+  })
+
+  it('logs a preflight line for a caller that reported no host, once', async () => {
+    const agentId = await spawnAgent()
+    const { host: _omitted, ...noHost } = subject(agentId)
+
+    await supervisor.teleport({ subject: noHost, handoff: 'h' })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'preflight' })])
+  })
+
+  it('logs an identity line for a subject the broker has no identity for', async () => {
+    await supervisor.teleport({ subject: subject('no-such-agent'), handoff: 'h' })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'identity' })])
+  })
+
+  it('logs a config line for a worker that asks for Remote Control', async () => {
+    const agentId = await spawnAgent({ surface: 'iterm-pane' })
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h', remoteControl: true })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'config' })])
   })
 })
 
@@ -2315,6 +2365,21 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
     expect(killed).toEqual([])
+  })
+
+  it('logs a route line for a cwd that does not exist on the broker host', async () => {
+    const missing = path.join(workspace(), 'only-on-the-mac')
+    const agentId = await spawnAgent()
+    connectFromAway(agentId, missing)
+
+    await supervisor.teleport({
+      subject: subject(agentId, { cwd: missing, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+      endsSelf: true,
+    })
+
+    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'route' })])
   })
 
   it('refuses a caller whose agent-chat cannot end itself, and ends nothing', async () => {
