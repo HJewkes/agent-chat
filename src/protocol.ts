@@ -681,12 +681,15 @@ export const SURFACE_NAMES = PACKAGE_SURFACE_NAMES
 export type SurfaceName = PackageSurfaceName
 
 /** Why a session teleported; absent is the ordinary build-refresh case. */
-export const TELEPORT_REASONS = ['park'] as const
+export const TELEPORT_REASONS = ['park', 'account'] as const
 
 export type TeleportReason = (typeof TELEPORT_REASONS)[number]
 
-export const isTeleportReason = (value: unknown): value is TeleportReason =>
-  (TELEPORT_REASONS as readonly unknown[]).includes(value)
+/** CC-892: `account` is set by the human's `account_move` alone, so a session's own frame cannot claim it. */
+export const AGENT_TELEPORT_REASONS = ['park'] as const satisfies readonly TeleportReason[]
+
+export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TELEPORT_REASONS)[number] =>
+  (AGENT_TELEPORT_REASONS as readonly unknown[]).includes(value)
 
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
@@ -1186,6 +1189,13 @@ export type ClientMessage =
    * could already retire or kill anything on a 0600 socket.
    */
   | { t: 'teleport_abort'; name: string }
+  /**
+   * CC-892: move the named live session to another account, resuming its same conversation there.
+   * `to` is `claude`, a profile name or a config dir; `force` lifts the usage refusals only. Human-only
+   * like `teleport_abort`: the broker refuses it from a REGISTERED connection. Answered with
+   * `teleport_result`.
+   */
+  | { t: 'account_move'; name: string; to: string; force?: boolean }
   /**
    * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
    * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
