@@ -124,7 +124,7 @@ export const budgetDir = (dir?: string): string =>
 export const budgetPath = (sessionId: string, dir?: string): string =>
   path.join(budgetDir(dir), `${safeSessionId(sessionId)}.json`)
 
-const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/
+export const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/
 
 function safeSessionId(sessionId: string): string {
   if (!SESSION_ID_SHAPE.test(sessionId)) throw new Error(`unusable session id: ${sessionId}`)
