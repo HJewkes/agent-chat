@@ -22,6 +22,7 @@ import { planPath, readRuntimeState, supersededMarkerPath } from '../agents/laun
 import { transcriptPath } from '../agents/transcript.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
+import type { MachineLimits, MemoryReading } from '../agents/machine-guard.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import type { JournalEntry } from '../agents/seats/journal-line.js'
 import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
@@ -1004,6 +1005,8 @@ describe('a successor that does not start (CC-402)', () => {
   let launcherUp: boolean | undefined
   /** iTerm answers "not running" to this many probes, as it did after launchservicesd restarted under memory pressure. */
   let itermDownFor: number
+  let memory: MemoryReading
+  let limits: MachineLimits
 
   beforeEach(() => {
     supervisor.close()
@@ -1013,10 +1016,13 @@ describe('a successor that does not start (CC-402)', () => {
     closed = []
     launcherUp = false
     itermDownFor = 0
+    memory = { freePercent: 60 }
+    limits = { headlessAgents: 10, memoryFreePercent: 15 }
     supervisor = new Supervisor(core, {
       countdownMs: COUNTDOWN_MS,
       seatJournal: entry => journal.push(entry),
       launcherRunning: async () => launcherUp,
+      machineGuard: { readMemoryFree: () => memory, limits: () => limits },
       surface: {
         platform: 'darwin',
         spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
@@ -1151,6 +1157,61 @@ describe('a successor that does not start (CC-402)', () => {
     expect(headlessNotices()).toEqual([])
     expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
     expect(readBrokerLog().match(/"event":"teleport_failed"/g)).toHaveLength(1)
+  })
+
+  /** iTerm refuses the launch and its retry, then `guard` sets the machine reading the fallback sees. */
+  async function teleportPastITerm(guard: () => void): Promise<{ successorId: string; surfaces: string[] }> {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    itermDownFor = 2
+    const surfaces = recordSurfaces()
+    guard()
+    const result = await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+    return { successorId: result.agentId as string, surfaces }
+  }
+
+  function expectRefusedHeadless(
+    successorId: string,
+    surfaces: string[],
+    guardText: string,
+    code: string,
+  ): void {
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane'])
+    const notices = successorNotices()
+    expect(notices).toHaveLength(1)
+    expect(notices[0]?.text).toContain('still not running after one retry')
+    expect(notices[0]?.text).toContain(guardText)
+    expect(headlessNotices()).toEqual([])
+    expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
+    expect(readBrokerLog()).toMatch(new RegExp(`"event":"teleport_headless_refused".*"code":"${code}"`))
+    expect(planFor(successorId).surface).toBe('iterm-pane')
+  }
+
+  it('keeps the lost-teleport notice when the machine is at its headless-agent total (CC-1377)', async () => {
+    const { successorId, surfaces } = await teleportPastITerm(() => {
+      limits = { ...limits, headlessAgents: 0 }
+    })
+
+    expectRefusedHeadless(successorId, surfaces, 'live headless agents', 'machine_headless_limit')
+  })
+
+  it('keeps the lost-teleport notice when memory is below the floor (CC-1377)', async () => {
+    const { successorId, surfaces } = await teleportPastITerm(() => {
+      memory = { freePercent: 5 }
+    })
+
+    expectRefusedHeadless(successorId, surfaces, 'memory 5% free', 'machine_memory_floor')
+  })
+
+  it('falls back when one headless slot remains, since the successor is not yet counted (CC-1377)', async () => {
+    const { surfaces } = await teleportPastITerm(() => {
+      limits = { ...limits, headlessAgents: 1 }
+    })
+
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane', 'headless'])
+    expect(headlessNotices()).toHaveLength(1)
+    expect(readBrokerLog()).not.toContain('"event":"teleport_headless_refused"')
   })
 
   it('does not fall back to headless when run-agent appeared during the retry', async () => {
