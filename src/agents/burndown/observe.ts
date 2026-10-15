@@ -256,6 +256,15 @@ export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRo
   return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
+/** CC-1343: a slow broker's failed inbox read leaves this claim unread instead of failing the whole tick. */
+async function readInbox(deps: ObserveDeps, name: string, afterId: number): Promise<InboxMessage[] | string> {
+  try {
+    return await deps.inboxSince(name, afterId)
+  } catch (err) {
+    return `inbox unread (${err instanceof Error ? err.message : String(err)})`
+  }
+}
+
 async function observeClaim(
   claim: Claim,
   roster: Roster,
@@ -268,7 +277,9 @@ async function observeClaim(
   const obs: Observation = row === undefined ? {} : { agent: { id: row.agentId, state: row.state } }
   if (claim.phase === 'parked' && claim.agentName !== undefined) {
     const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
-    obs.inbox = await deps.inboxSince(claim.agentName, Number.isInteger(afterId) ? afterId : 0)
+    const inbox = await readInbox(deps, claim.agentName, Number.isInteger(afterId) ? afterId : 0)
+    if (typeof inbox === 'string') return inbox
+    obs.inbox = inbox
   }
   const spend = await claimSpend(claim, roster, deps)
   if (spend !== undefined) obs.spend = spend

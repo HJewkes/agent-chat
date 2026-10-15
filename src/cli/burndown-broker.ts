@@ -1,4 +1,4 @@
-import { BrokerClient } from '../client/broker-client.js'
+import { BrokerClient, retryOnBrokerTimeout } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
 import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
@@ -23,7 +23,8 @@ export function tickBroker(
     roster: () => tickRoster(client),
     async inboxSince(name, afterId) {
       const frame = { t: 'inbox_since' as const, name, afterId, limit: INBOX_PAGE }
-      const res = (await client.request(frame, 'inbox_since_result')) as Reply<'inbox_since_result'>
+      const read = () => client.request(frame, 'inbox_since_result')
+      const res = (await retryOnBrokerTimeout(read)) as Reply<'inbox_since_result'>
       return res.messages.map(m => ({
         msgId: m.msgId,
         from: m.from,
