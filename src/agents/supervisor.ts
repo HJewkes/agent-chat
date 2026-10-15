@@ -154,6 +154,7 @@ import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftM
 import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
+import { watchSeatFollow } from './seat-follow.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
 import {
@@ -1033,6 +1034,7 @@ export class Supervisor implements TeleportHost {
   private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
+  private readonly unwatchSeatFollow: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
@@ -1091,6 +1093,13 @@ export class Supervisor implements TeleportHost {
       this.reapIfDead(agentId, probe),
     )
     this.unwatch = core.onAppend(row => this.onRow(row))
+    this.unwatchSeatFollow = watchSeatFollow(core, {
+      onError: err =>
+        logEvent('seat_follow_failed', {
+          level: 'warn',
+          reason: err instanceof Error ? err.message : String(err),
+        }),
+    })
     this.teleporter = new Teleport(
       core,
       this,
@@ -4576,6 +4585,7 @@ export class Supervisor implements TeleportHost {
 
   close(): void {
     this.unwatch()
+    this.unwatchSeatFollow()
     this.teleporter.close()
     this.attachWaiters.clear()
     this.reaper.close()
