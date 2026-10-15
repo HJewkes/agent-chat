@@ -139,8 +139,8 @@ function loginRefusals(input: AccountCheckInput, usage: AccountUsage): string[] 
   if (target !== undefined && target === readers.identity(from))
     refusals.push(`${to.dir} bills the same Anthropic login as ${from.dir}, so the move buys no headroom`)
   if (target === undefined) refusals.push(`${to.dir} has no oauthAccount in its .claude.json`)
-  if (usage.auth_fail) refusals.push(`the usage poller reports an auth failure for ${to.dir}`)
   if (!readers.hasLogin(to)) refusals.push(`${to.dir} holds no login (${keychainService(to)})`)
+  else if (usage.auth_fail) refusals.push(`${to.dir}'s login is refused, or expired with no refresh token`)
   return refusals
 }
 
