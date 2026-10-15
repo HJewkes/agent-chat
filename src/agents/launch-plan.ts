@@ -60,7 +60,7 @@ export const HOOK_DENIAL_NOTE =
 const systemPrompt = (input: LaunchPlanInput, hooked: boolean): string =>
   [
     input.preamble ?? PEER_PREAMBLE,
-    standingRulesFor(input.adopted === true),
+    standingRulesFor(input.adopted),
     hooked ? HOOK_DENIAL_NOTE : '',
     input.profile.promptPrelude,
   ]

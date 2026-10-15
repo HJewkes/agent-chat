@@ -28,6 +28,7 @@ const input = (over: Partial<LaunchPlanInput> = {}): LaunchPlanInput => ({
   brief: 'find every caller of foo()',
   cwd: '/repo',
   cwdHoldsUserSettings: false,
+  adopted: false,
   mcpConfigPath: '/state/agents/ag000001/mcp.json',
   ...over,
 })

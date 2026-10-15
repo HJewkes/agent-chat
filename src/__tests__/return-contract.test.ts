@@ -22,6 +22,7 @@ import {
   REVIEWER_BODY_FILE_RULE,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
+import { identityTranscript } from '../agents/resume-session.js'
 import { SESSION_RULES, SPAWNED_RULES } from '../agents/standing-rules.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
@@ -598,6 +599,42 @@ describe('a conversation that continues', () => {
     const prompt = appendedPrompt(`successor-${origin}`)
     expect(prompt).toContain(SESSION_RULES)
     expect(prompt.includes(SPAWNED_RULES)).toBe(told)
+  })
+
+  // `resume` finds agents by byName, which today skips adopted ones, so this drives its launch half directly.
+  it('keeps the spawner line off an adopted successor that a resume relaunches', async () => {
+    const profile: AgentProfile = {
+      ...(BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile),
+      isolation: 'none',
+    }
+    await supervisor.relaunch({
+      agentId: 'successor-resumed',
+      name: 'worker',
+      profile,
+      brief: 'carry on',
+      cwd: tmp('agent-chat-ws-'),
+      surface: 'headless',
+      preamble: 'you are the continuation',
+      meta: { origin: 'adopted' },
+    })
+    const agent = core.agents.get('successor-resumed')!
+    writeTranscript(agent.cwd, agent.sessionId, agent.configDir)
+    const relaunchResumed = (
+      supervisor as unknown as { relaunchResumed: (...args: unknown[]) => Promise<void> }
+    ).relaunchResumed
+
+    await relaunchResumed.call(
+      supervisor,
+      agent,
+      profile,
+      { message: 'pick it up' },
+      identityTranscript(agent),
+    )
+
+    expect(agent.origin).toBe('adopted')
+    expect(readLaunchPlan('successor-resumed').stdin).toBe('pick it up')
+    expect(appendedPrompt('successor-resumed')).toContain(SESSION_RULES)
+    expect(appendedPrompt('successor-resumed')).not.toContain(SPAWNED_RULES)
   })
 
   it('marks the remote successor of an adopted session, so the other host drops the spawner line', () => {
