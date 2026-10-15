@@ -840,8 +840,8 @@ export interface SupervisorOptions {
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
   /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
   profileBaseline?: ProfileBaseline
-  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
-  profileDriftMode?: () => ProfileDriftMode
+  /** CC-1094: `profileDrift` from config, pinned at construction (CC-1202). Injected in tests. */
+  profileDriftMode?: ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -1048,7 +1048,7 @@ export class Supervisor implements TeleportHost {
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
-  private readonly profileDriftMode: () => ProfileDriftMode
+  private readonly profileDriftMode: ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1079,7 +1079,7 @@ export class Supervisor implements TeleportHost {
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
-    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1892,7 +1892,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return profile
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
-    const refused = !human && this.profileDriftMode() === 'refuse'
+    const refused = !human && this.profileDriftMode === 'refuse'
     logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
       return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
@@ -4406,11 +4406,7 @@ export class Supervisor implements TeleportHost {
     }
     await pause(RELAUNCH_RETRY_MS)
     const refusal = await this.retryRefusal(input)
-    if (refusal !== undefined) {
-      if (refusal.tell) this.finishFailedLaunch(executionId, failure)
-      this.refuseRetry(input, failure, refusal)
-      throw new SuccessorNotStarted(refusal.reason)
-    }
+    if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
@@ -4418,6 +4414,29 @@ export class Supervisor implements TeleportHost {
       this.finishFailedLaunch(executionId, reason)
       this.reportDeadSuccessor(input, reason)
       throw new SuccessorNotStarted(reason)
+    }
+  }
+
+  /**
+   * CC-602: a retry skipped because the successor is running or attached adopts it with a
+   * handle, so `relaunch` tracks, binds and announces it as if its launch returned. The handle
+   * names a pane only when the launch aimed at the predecessor's own, so a pane the broker owns
+   * still closes on retire. Only a refusal the human is told about fails the launch.
+   */
+  private skippedRetry(
+    launch: SuccessorLaunch,
+    executionId: string | undefined,
+    failure: string,
+    refusal: RetryRefusal,
+  ): { handle: LaunchHandle; retried: boolean } {
+    const { input } = launch
+    if (refusal.tell) this.finishFailedLaunch(executionId, failure)
+    this.refuseRetry(input, failure, refusal)
+    if (refusal.tell) throw new SuccessorNotStarted(refusal.reason)
+    const paneRef = input.reuseAnchor === true ? launch.predecessor?.handle.paneRef : undefined
+    return {
+      handle: { surface: input.surface, ...(paneRef === undefined ? {} : { paneRef }) },
+      retried: true,
     }
   }
 

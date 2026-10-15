@@ -166,7 +166,8 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   const prRuns = deps.shepherdRows === undefined ? undefined : once
   const openPrs = deps.openPrs ?? (deps.shepherdRows === undefined ? undefined : tickOpenPrs())
   const adjudicate = openPrs === undefined ? undefined : adjudicator(claims, openPrs)
-  for (const claim of claims) {
+  for (const listed of claims) {
+    const claim = landedView(listed, roster)
     const result = await observeClaim(claim, roster, once, adjudicate)
     if (typeof result === 'string') {
       const settled = mergedOnGitHub(claim, deps.prState)
@@ -178,6 +179,17 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
     }
   }
   return { observations, unread }
+}
+
+/**
+ * CC-980 b: a spawning claim whose agent already exited is observed as the claim it lands as, so advance lands it
+ * and reads its report in one tick. The phase and agent are all that change; the observation key is the same.
+ */
+function landedView(claim: Claim, roster: Roster): Claim {
+  if (claim.phase !== 'spawning') return claim
+  const row = rowNamed(roster, claim.agentName)
+  if (row === undefined || !FINISHED.has(row.state)) return claim
+  return { ...claim, phase: claim.nextPhase ?? 'implementing', agentId: row.agentId, nextPhase: undefined }
 }
 
 /**
@@ -209,11 +221,14 @@ const PR_STATE_PHASES: ReadonlySet<Phase> = new Set(['implementing', 'reviewing'
 /**
  * CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. CC-1074:
  * and for a shepherding claim, so its merge finishes it when Shepherd's row is gone, ended or behind. CC-1098:
- * and for a reviewing claim, so a PR merged under review closes it in the same tick.
+ * and for a reviewing claim, so a PR merged under review closes it in the same tick. CC-1141 b: and for a
+ * queued claim linked to a PR, which may have no Shepherd run to finish it.
  */
 function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
   const reads =
-    PR_STATE_PHASES.has(claim.phase) || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+    PR_STATE_PHASES.has(claim.phase) ||
+    (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase)) ||
+    (claim.phase === 'queued' && claim.pr !== undefined)
   if (read === undefined || !reads) return obs
   return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
@@ -266,7 +281,7 @@ async function observeClaim(
   )
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
   if (row === undefined) return goneWork(obs, claim, deps)
-  if (!FINISHED.has(row.state) || claim.phase === 'spawning') return obs
+  if (!FINISHED.has(row.state)) return obs
   const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
   if (report !== undefined) obs.report = report
   if (claim.phase === 'planning' && claim.briefer === true) {

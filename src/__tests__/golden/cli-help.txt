@@ -256,6 +256,8 @@ Commands:
   seats                     seats mode checks (CC-205)
   brief                     task brief lifecycle (item 179)
   status                    claim ledger, stalled claims and each account budget gate
+  relint-deps [options]     dry run: queued slices' dependsOn edges over disjoint owns with no
+                            dependsWhy (CC-1155 lint)
   dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
                             refusal mix, registrations, tick health
   tick [options]            one pass: advance every claim a phase, then spawn new work inside the
@@ -264,10 +266,12 @@ Commands:
   resume [options]          let the tick spawn again
   release [options] <task>  drop every claim on a task, stalled or not, so the tick may pick it
                             again; --slice drops only that slice
-  link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
-                            dispatches it and finishes it on merge
+  link [options] <task>     record a hand-dispatched PR on a queued or released slice, so the tick
+                            never dispatches it and finishes it on merge
   unstall [options] <task>  reload an outside-owns slice's owns from its plan and clear the stall in
                             place, keeping its PR and agents
+  done [options] <task>     finish a PR-less implementing or queued slice by hand, so its dependents
+                            dispatch; retires its agents
   landed [options]          every open, unreconciled task in a seat's scope that a recent
                             default-branch subject or Covers clause names (CC-611); writes nothing
   classify [options]        classify every open task on, off or ambiguous against section 2 of the
@@ -366,6 +370,16 @@ claim ledger, stalled claims and each account budget gate
 Options:
   -h, --help  display help for command
 
+=== agent-chat burndown relint-deps
+Usage: agent-chat burndown relint-deps [options]
+
+dry run: queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint)
+
+Options:
+  --seat <value>  only this seat's claims
+  --json          one JSON array of edges
+  -h, --help      display help for command
+
 === agent-chat burndown dispatch-stats
 Usage: agent-chat burndown dispatch-stats [options]
 
@@ -425,11 +439,11 @@ Options:
 === agent-chat burndown link
 Usage: agent-chat burndown link [options] <task>
 
-record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on
-merge
+record a hand-dispatched PR on a queued or released slice, so the tick never dispatches it and
+finishes it on merge
 
 Options:
-  --slice <value>  the queued slice the PR implements
+  --slice <value>  the queued or released slice the PR implements
   --pr <value>     the PR, as owner/repo#n or its URL
   -h, --help       display help for command
 
@@ -442,6 +456,17 @@ agents
 Options:
   --slice <value>  the stalled slice whose plan owns were fixed
   -h, --help       display help for command
+
+=== agent-chat burndown done
+Usage: agent-chat burndown done [options] <task>
+
+finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its
+agents
+
+Options:
+  --slice <value>     the slice whose work was done and verified outside git
+  --evidence <value>  an existing file that shows the work is done
+  -h, --help          display help for command
 
 === agent-chat burndown landed
 Usage: agent-chat burndown landed [options]

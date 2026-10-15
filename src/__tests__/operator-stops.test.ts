@@ -13,6 +13,7 @@ import {
   type MachineStopStatus,
   type StopInputs,
 } from '../agents/seats/operator-stops.js'
+import type { MachineStopReadings } from '../agents/seats/stops.js'
 import { liveStopInputs, machineStatusReport } from '../cli/verbs/machine.js'
 import { configPath, home, logPath, operatorHoldPath } from '../paths.js'
 
@@ -35,6 +36,16 @@ function writeSeatFiles(seats: string[]): void {
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
 }
+
+/**
+ * CC-1363: readings under every machine-stop limit, so `stopped` comes from the fixtures and never
+ * from the host's load, memory, swap or pressure. Memory reads 100% free so it clears `TRIPWIRE` too.
+ */
+const CALM: MachineStopReadings = { memoryFreePercent: 100, load5: 0, swapUsedPercent: 0, pressureLevel: 1 }
+const liveInputs = (now: Date): StopInputs => liveStopInputs(now, CALM)
+
+/** A memory-stop limit every real host breaches, so a call that reads the host's readings stops everywhere. */
+const TRIPWIRE = { machineStopMemoryFreePercent: 100 }
 
 const NOW = new Date('2026-10-06T13:00:00Z')
 const MIN = 60_000
@@ -116,14 +127,15 @@ function writeAt(file: string, content: string | 'dir'): void {
 
 function status(world: World): MachineStopStatus {
   const operators = world.operators === undefined ? OPERATORS : world.operators
-  if (operators !== null) fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: operators }))
+  const operatorConfig = operators === null ? {} : { machineHoldOperators: operators }
+  fs.writeFileSync(configPath(), JSON.stringify({ ...operatorConfig, ...TRIPWIRE }))
   if (world.chat !== undefined) writeChat(world.chat)
   if (world.presence !== undefined) writePresence(world.presence)
   if (world.routes !== undefined) writeRoutes(world.routes)
   if (world.stopFile !== undefined) writeAt(operatorHoldPath(), world.stopFile)
   if (world.watchdog !== undefined)
     writeAt(watchdogStatePath(), world.watchdog === 'dir' ? 'dir' : JSON.stringify(world.watchdog))
-  return machineStopStatus(liveStopInputs(NOW))
+  return machineStopStatus(liveInputs(NOW))
 }
 
 const holdsBy = (world: World): string[] => status(world).holds.map(h => h.by)
@@ -145,7 +157,17 @@ describe('machine status from the live readers', () => {
     const quiet = status({ chat: [['peer', 5, 'merged #1']] })
 
     expect(quiet).toMatchObject({ holds: [], ownerStops: [], errors: [] })
-    expect(quiet.stopped).toBe(quiet.machine.stop !== null)
+    expect(quiet.stopped).toBe(false)
+    expect(quiet.machine.stop).toBeNull()
+  })
+
+  it("decides stopped from the fixtures, not the host's machine pressure", () => {
+    const calm = status({ chat: [] })
+    const lowMemory = machineStopStatus(liveStopInputs(NOW, { ...CALM, memoryFreePercent: 5 }))
+
+    expect(calm).toMatchObject({ stopped: false, machine: { stop: null } })
+    expect(lowMemory.stopped).toBe(true)
+    expect(lowMemory.machine.stop).toContain('memory 5% free')
   })
 
   it('reports a broadcast HOLD once with who, since and reason, though it fanned out to three seats', () => {
@@ -518,11 +540,11 @@ describe('the classifier against live operator phrasings', () => {
       recipients,
     ])
     writeChat(chat)
-    fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: OPERATORS }))
+    fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: OPERATORS, ...TRIPWIRE }))
 
     const holdsAfter = LIVE.map((_, i) => {
       const now = new Date(at(LIVE.length - i) + 1)
-      return machineStopStatus(liveStopInputs(now)).holds.length > 0
+      return machineStopStatus(liveInputs(now)).holds.length > 0
     })
 
     const expected = LIVE.reduce<boolean[]>((held, [, , kind]) => {
@@ -556,11 +578,11 @@ describe('a fan-out HOLD lifted one seat at a time by DM', () => {
     lift(300, 'seat-4', 3),
   ]
   const seatsHeldAt = (minutesAgo: number): string[] | undefined =>
-    machineStopStatus(liveStopInputs(new Date(at(minutesAgo) + 1))).holds[0]?.seats
+    machineStopStatus(liveInputs(new Date(at(minutesAgo) + 1))).holds[0]?.seats
 
   it("ends each seat's part at its own lift and the machine stop at the last lift", () => {
     writeChat(chat)
-    fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: OPERATORS }))
+    fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: OPERATORS, ...TRIPWIRE }))
 
     const held = [590, 421, 420, 301, 300, 0].map(seatsHeldAt)
 
@@ -607,7 +629,7 @@ describe('a fan-out HOLD whose one unlifted seat leaves the bus', () => {
   /** Every 5 minutes from the HOLD to now, all within the cap: whether the machine reads stopped. */
   const stoppedThroughout = (): boolean[] => {
     const minutesAgo = Array.from({ length: 121 }, (_, i) => 600 - i * 5)
-    return minutesAgo.map(m => machineStopStatus(liveStopInputs(new Date(at(m) + 1))).stopped)
+    return minutesAgo.map(m => machineStopStatus(liveInputs(new Date(at(m) + 1))).stopped)
   }
 
   it.each<[string, NonNullable<World['presence']>]>([
@@ -655,7 +677,7 @@ describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', ()
     lift('2026-10-08T04:00:36Z', 'seat-y'),
   ]
   const VOLTRAS_STOPPED = { stopped: { 'seat-x': 'owner stop 10-07 15:05' } }
-  const statusAt = (iso: string): MachineStopStatus => machineStopStatus(liveStopInputs(new Date(iso)))
+  const statusAt = (iso: string): MachineStopStatus => machineStopStatus(liveInputs(new Date(iso)))
 
   it('ends the hold at the last lift when the unlifted seat is stopped', () => {
     status({ chat, watchdog: VOLTRAS_STOPPED })

@@ -298,6 +298,19 @@ interface Destination {
   platform?: NodeJS.Platform
 }
 
+/** CC-1358: where a teleport request was turned away, so a refusal that never reaches the human still leaves a log line. */
+export type RefusalStage = 'preflight' | 'questions' | 'route' | 'config' | 'blocker' | 'identity'
+
+export function refused(
+  subject: Pick<TeleportSubject, 'name'>,
+  stage: RefusalStage,
+  logged: string,
+  reason: string = logged,
+): { ok: false; reason: string } {
+  logEvent('teleport_refused', { name: subject.name, stage, reason: logged })
+  return { ok: false, reason }
+}
+
 type Route = ({ ok: true } & Destination) | { ok: false; reason: string }
 
 /** CC-951: fail closed on a path a launcher would otherwise be handed unchecked. */
@@ -527,9 +540,9 @@ export class Teleport {
    */
   async start(req: TeleportRequest): Promise<TeleportOutcome> {
     const blocked = this.preflight(req)
-    if (blocked) return { ok: false, reason: blocked }
+    if (blocked) return refused(req.subject, 'preflight', blocked)
     const asks = this.restatedQuestions(req)
-    if ('reason' in asks) return { ok: false, reason: asks.reason }
+    if ('reason' in asks) return refused(req.subject, 'questions', asks.reason)
     // CC-951: held from preflight until the entry is pending or refused, across the launcher
     // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
     this.starting.add(req.subject.agentId)
@@ -544,10 +557,10 @@ export class Teleport {
     const { subject } = req
 
     const identity = this.core.agents.get(subject.agentId)
-    if (!identity) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
+    if (!identity) return refused(subject, 'identity', `no durable identity for ${subject.agentId}`)
     const { configDir } = this.configDirOf(subject)
     const route = routeFor(req, identity.isolation, configDir, this.hosts.launchers())
-    if (!route.ok) return { ok: false, reason: `${route.reason}. ${subject.name} was not ended.` }
+    if (!route.ok) return refused(subject, 'route', `${route.reason}. ${subject.name} was not ended.`)
 
     const remote = onAnotherHost(subject)
     const config = teleportConfig({
@@ -558,17 +571,18 @@ export class Teleport {
       seatSurface: seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), route.host),
       platform: this.platformAt(route, req.hostPlatform),
     })
-    if ('error' in config) return { ok: false, reason: config.error }
+    if ('error' in config) return refused(subject, 'config', config.error)
     const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
-    if (gone !== undefined) return { ok: false, reason: gone }
+    if (gone !== undefined) return refused(subject, 'blocker', gone)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
-      return {
-        ok: false,
-        reason: `${subject.name} is a worker, so its successor cannot run with Remote Control; only a coordinator may`,
-      }
+      return refused(
+        subject,
+        'config',
+        `${subject.name} is a worker, so its successor cannot run with Remote Control; only a coordinator may`,
+      )
 
     const descendantId = newMsgId()
     const read = readOnce(this.readArgv)
@@ -734,7 +748,7 @@ export class Teleport {
    * CC-880: a teleport this broker cannot finish is refused up front, to the caller and to the
    * human, because failing after the predecessor ended is silent and leaves nobody in the session.
    */
-  private cannotComplete(subject: TeleportSubject, why: string): { ok: false; reason: string } {
+  private cannotComplete(subject: TeleportSubject, why: string, log = true): { ok: false; reason: string } {
     const reason = `teleport cannot be completed: ${why}. ${subject.name} was not ended.`
     this.core.append({
       kind: 'notice',
@@ -742,8 +756,7 @@ export class Teleport {
       target: HUMAN,
       body: `${subject.name} asked to teleport and the broker refused: ${why}`,
     })
-    logEvent('teleport_refused', { name: subject.name, reason: why })
-    return { ok: false, reason }
+    return log ? refused(subject, 'blocker', why, reason) : { ok: false, reason }
   }
 
   /** Everything checkable before the handoff is written and the sequence is entered. */
@@ -763,7 +776,7 @@ export class Teleport {
       )
 
     // CC-881: a reported other host runs its own relaunch; an unreported one cannot, so it is refused.
-    if (subject.host === undefined) return this.cannotComplete(subject, hostReason(subject)).reason
+    if (subject.host === undefined) return this.cannotComplete(subject, hostReason(subject), false).reason
 
     const size = bytes(req.handoff)
     if (size > HANDOFF_MAX_BYTES)
@@ -904,8 +917,8 @@ export class Teleport {
       input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
       await this.launchSuccessor(entry, input)
     } catch (err) {
-      // A real failure already settled the arrival through `successorFailed`. One that
-      // throws without it is a retry skipped because the successor may yet attach.
+      // A host that throws `SuccessorNotStarted` already settled the arrival through
+      // `successorFailed`. A skipped retry no longer throws (CC-602): it tracks the successor.
       if (!(err instanceof SuccessorNotStarted))
         this.successorFailed(entry.descendantId, (err as Error).message)
     }
