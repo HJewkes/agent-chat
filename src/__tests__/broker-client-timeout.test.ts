@@ -4,18 +4,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerClient, BrokerTimeoutError, retryOnBrokerTimeout } from '../client/broker-client.js'
-import { encode, lineReader, type ClientMessage, type ServerMessage } from '../protocol.js'
+import { encode, lineReader, type ClientMessage, type Correlated, type ServerMessage } from '../protocol.js'
 
 /**
  * CC-1343: a broker request that times out, against a fake broker that answers
- * only when the test says so. Replies carry no request id, so what matters is
- * which waiter a LATE reply lands on.
+ * only when the test says so. What matters is which waiter a late reply, or the
+ * reply after a lost one, lands on.
  */
 
 let dir: string
 let server: net.Server
 let brokerSide: net.Socket | undefined
-let received: ClientMessage[]
+let received: (ClientMessage & Correlated)[]
 let client: BrokerClient | undefined
 const previousHome = process.env['AGENT_CHAT_HOME']
 
@@ -28,8 +28,19 @@ async function until(predicate: () => boolean): Promise<void> {
 
 const inboxSince = (afterId: number): ClientMessage => ({ t: 'inbox_since', name: 'x', afterId, limit: 10 })
 
-const reply = (nextCursor: number): void => {
-  brokerSide?.write(encode({ t: 'inbox_since_result', messages: [], nextCursor } as ServerMessage))
+/** Answers the `index`th request received, echoing its id unless `echo` is false (a broker older than CC-1343). */
+const reply = (index: number, { echo = true } = {}): void => {
+  const request = received[index]
+  if (request?.t !== 'inbox_since') throw new Error(`no inbox_since request at ${index}`)
+  const frame: ServerMessage = { t: 'inbox_since_result', messages: [], nextCursor: request.afterId }
+  brokerSide?.write(encode(echo ? { ...frame, rid: request.rid } : frame))
+}
+
+/** Times out one request whose reply the broker never sends, as when its handler throws. */
+async function timeOut(c: BrokerClient, afterId: number): Promise<void> {
+  const pending = c.request(inboxSince(afterId), 'inbox_since_result').catch((err: unknown) => err)
+  await vi.advanceTimersByTimeAsync(15_000)
+  expect(await pending).toBeInstanceOf(BrokerTimeoutError)
 }
 
 /** Settles without advancing fake time, so a reply that never lands fails fast instead of hanging. */
@@ -61,7 +72,7 @@ beforeEach(async () => {
     brokerSide = conn
     conn.on(
       'data',
-      lineReader<ClientMessage>(
+      lineReader<ClientMessage & Correlated>(
         msg => received.push(msg),
         () => undefined,
       ),
@@ -86,8 +97,7 @@ describe('BrokerClient request timeout', () => {
     client = await connected()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
 
-    const pending = client.request(inboxSince(1), 'inbox_since_result')
-    const outcome = pending.catch((err: unknown) => err)
+    const outcome = client.request(inboxSince(1), 'inbox_since_result').catch((err: unknown) => err)
     await vi.advanceTimersByTimeAsync(15_000)
     const err = await outcome
 
@@ -96,54 +106,80 @@ describe('BrokerClient request timeout', () => {
     expect((err as Error).message.startsWith('broker did not answer inbox_since_result')).toBe(true)
   })
 
-  it('gives a late reply to the timed-out request, not to the next one of the same type', async () => {
+  it('sends each request with its own id', async () => {
+    client = await connected()
+
+    void client.request(inboxSince(1), 'inbox_since_result').catch(() => undefined)
+    void client.request(inboxSince(2), 'inbox_since_result').catch(() => undefined)
+    await until(() => received.length === 2)
+
+    expect(typeof received[0]?.rid).toBe('number')
+    expect(received[1]?.rid).not.toBe(received[0]?.rid)
+  })
+})
+
+describe('BrokerClient reply matching', () => {
+  it('drops a late reply to a timed-out request instead of answering the next one', async () => {
     client = await connected()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const first = client.request(inboxSince(1), 'inbox_since_result').catch((err: unknown) => err)
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(await first).toBeInstanceOf(BrokerTimeoutError)
+    await timeOut(client, 1)
 
     const second = client.request(inboxSince(2), 'inbox_since_result')
     await until(() => received.length === 2)
+    reply(0)
     reply(1)
-    reply(2)
 
     expect(await settled(second)).toMatchObject({ t: 'inbox_since_result', nextCursor: 2 })
   })
 
-  it('stops holding a timed-out slot once the hold passes, so a reply that never comes cannot wedge the queue', async () => {
+  it('answers the next request at once when an earlier reply was lost', async () => {
     client = await connected()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const first = client.request(inboxSince(1), 'inbox_since_result').catch((err: unknown) => err)
-    await vi.advanceTimersByTimeAsync(15_000)
-    await first
-    await vi.advanceTimersByTimeAsync(60_000)
+    await timeOut(client, 1)
 
     const second = client.request(inboxSince(2), 'inbox_since_result')
     await until(() => received.length === 2)
-    reply(2)
+    reply(1)
 
     expect(await settled(second)).toMatchObject({ nextCursor: 2 })
   })
 
-  it('costs one more timeout, not every later request, when a reply is lost while traffic continues', async () => {
+  it('gives each of two in-flight requests its own reply after a lost one, whatever order they arrive in', async () => {
     client = await connected()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const lost = client.request(inboxSince(1), 'inbox_since_result').catch((err: unknown) => err)
-    await vi.advanceTimersByTimeAsync(15_000)
-    await lost
+    await timeOut(client, 1)
 
-    const swallowed = client.request(inboxSince(2), 'inbox_since_result').catch((err: unknown) => err)
-    await until(() => received.length === 2)
-    reply(2)
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(await swallowed).toBeInstanceOf(BrokerTimeoutError)
-
-    const third = client.request(inboxSince(3), 'inbox_since_result')
+    const b = client.request(inboxSince(2), 'inbox_since_result')
+    const c = client.request(inboxSince(3), 'inbox_since_result')
     await until(() => received.length === 3)
-    reply(3)
+    reply(2)
+    reply(1)
 
-    expect(await settled(third)).toMatchObject({ nextCursor: 3 })
+    expect(await settled(b)).toMatchObject({ nextCursor: 2 })
+    expect(await settled(c)).toMatchObject({ nextCursor: 3 })
+  })
+
+  it('hands the caller a reply without the correlation id', async () => {
+    client = await connected()
+
+    const pending = client.request(inboxSince(1), 'inbox_since_result')
+    await until(() => received.length === 1)
+    reply(0)
+
+    expect(await settled(pending)).toEqual({ t: 'inbox_since_result', messages: [], nextCursor: 1 })
+  })
+
+  it('matches in send order when the broker echoes no id', async () => {
+    client = await connected()
+
+    const b = client.request(inboxSince(2), 'inbox_since_result')
+    const c = client.request(inboxSince(3), 'inbox_since_result')
+    await until(() => received.length === 2)
+    reply(0, { echo: false })
+    reply(1, { echo: false })
+
+    expect(await settled(b)).toMatchObject({ nextCursor: 2 })
+    expect(await settled(c)).toMatchObject({ nextCursor: 3 })
   })
 })
 

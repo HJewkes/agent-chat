@@ -5,6 +5,7 @@ import {
   encode,
   lineReader,
   type ClientMessage,
+  type Correlated,
   type DeliveredMessage,
   type PermissionBehavior,
   type SystemEvent,
@@ -56,15 +57,8 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   inbox_since_result: 15_000,
 }
 
-/**
- * How long a timed-out request's place in its reply queue is held (CC-1343).
- *
- * Replies carry no request id and are matched FIFO by type, so a late reply must
- * be swallowed in its own slot or it answers the next request of that type. The
- * hold is bounded because a broker handler that throws sends no reply at all, and
- * a slot held forever would then swallow every later reply of that type.
- */
-const TOMBSTONE_MIN_MS = 60_000
+/** Timed-out request ids remembered so their late replies are dropped; bounded against a broker that never answers. */
+const MAX_TIMED_OUT_RIDS = 256
 
 /** A broker request that got no reply in time. The message is unchanged so `startsWith` checks keep matching. */
 export class BrokerTimeoutError extends Error {
@@ -134,30 +128,7 @@ const deliveryUnknownError = (): Error =>
 interface Waiter {
   resolve: (msg: ServerMessage) => void
   reject: (err: Error) => void
-  /** Stands in for a timed-out request, to swallow its late reply. */
-  readonly stone?: true
-  /**
-   * A tombstone in front of this waiter swallowed a reply that may have been this
-   * one's (the stone's own reply was lost, not late). Timing out then leaves no
-   * tombstone, so one lost reply cannot carry forward onto every later request.
-   */
-  displaced?: true
-}
-
-/** A waiter that swallows the late reply it stands in for, and leaves the queue after `holdMs`. */
-function tombstone(queue: Waiter[], holdMs: number): Waiter {
-  const expiry = setTimeout(() => {
-    const index = queue.indexOf(stone)
-    if (index !== -1) queue.splice(index, 1)
-  }, holdMs)
-  // A short-lived CLI that timed out must still exit without waiting out the hold.
-  expiry.unref()
-  const stone: Waiter = {
-    stone: true,
-    resolve: () => clearTimeout(expiry),
-    reject: () => clearTimeout(expiry),
-  }
-  return stone
+  readonly rid: number
 }
 
 interface HeldFrame {
@@ -203,8 +174,11 @@ export class BrokerClient {
   /** True between a drop and the reconnect's outcome: the gap frames are held or refused in. */
   private reconnecting = false
   private held: HeldFrame[] = []
-  /** FIFO per reply type; the socket answers in order, so this stays aligned. */
+  /** Per reply type, in send order; the order is only the fallback for a broker that echoes no request id. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
+  private nextRid = 1
+  /** Ids of requests that timed out, whose replies may still arrive and must answer nothing. */
+  private readonly timedOut = new Set<number>()
 
   /**
    * `onFatal` fires when the broker says stop rather than retry. The only sender
@@ -242,19 +216,33 @@ export class BrokerClient {
       this.onFatal?.(msg.reason)
       return
     }
-    const queue = this.waiters.get(msg.t) ?? []
-    const waiter = queue.shift()
-    waiter?.resolve(msg)
-    if (!waiter?.stone) return
-    const next = queue.find(w => !w.stone)
-    if (next) next.displaced = true
+    this.settle(msg)
+  }
+
+  /**
+   * By request id when the reply echoes one (CC-1343), so a late reply to a
+   * timed-out request is dropped instead of answering the next one. A broker that
+   * predates the echo sends none, and those replies keep the old FIFO match.
+   */
+  private settle({ rid, ...msg }: ServerMessage & Correlated): void {
+    if (rid !== undefined && this.timedOut.delete(rid)) return
+    const queue = this.waiters.get(msg.t as ReplyType) ?? []
+    const byId = rid === undefined ? -1 : queue.findIndex(waiter => waiter.rid === rid)
+    const [waiter] = queue.splice(Math.max(byId, 0), 1)
+    waiter?.resolve(msg as ServerMessage)
+  }
+
+  private forgetTimedOut(rid: number): void {
+    this.timedOut.add(rid)
+    const oldest = this.timedOut.values().next().value
+    if (this.timedOut.size > MAX_TIMED_OUT_RIDS && oldest !== undefined) this.timedOut.delete(oldest)
   }
 
   private attach(socket: net.Socket): void {
     this.socket = socket
     socket.on(
       'data',
-      lineReader<ServerMessage>(
+      lineReader<ServerMessage & Correlated>(
         msg => this.handle(msg),
         () => undefined,
       ),
@@ -435,18 +423,19 @@ export class BrokerClient {
       if (!socket) return reject(new Error('not connected to the broker'))
 
       const queue = this.waiters.get(replyType) ?? []
-      const timeoutMs = REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS
+      const rid = this.nextRid++
       // Cleared on reply, otherwise a resolved request would hold the event
       // loop open for the full timeout and delay short-lived CLI commands.
       const timer = setTimeout(() => {
         const index = queue.indexOf(waiter)
         if (index === -1) return
-        if (waiter.displaced) queue.splice(index, 1)
-        else queue[index] = tombstone(queue, Math.max(timeoutMs, TOMBSTONE_MIN_MS))
+        queue.splice(index, 1)
+        this.forgetTimedOut(rid)
         reject(new BrokerTimeoutError(replyType))
-      }, timeoutMs)
+      }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
 
       const waiter: Waiter = {
+        rid,
         resolve: msg => {
           clearTimeout(timer)
           resolve(msg)
@@ -458,7 +447,7 @@ export class BrokerClient {
       }
       queue.push(waiter)
       this.waiters.set(replyType, queue)
-      socket.write(encode(message))
+      socket.write(encode({ ...message, rid }))
     })
   }
 
