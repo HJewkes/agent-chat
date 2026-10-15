@@ -396,7 +396,17 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
-The splitter ends an unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
+bash 5.3 runs a funsub, `${ cmd;}` (`${` followed by a blank, tab or newline) or `${|cmd;}`, as
+commands in the current shell, so `echo ${ git push --no-verify;}` pushes (CC-1327). The splitter
+reads a funsub's body as commands, quoted or unquoted, in an assignment, inside `$(...)` and in a
+`bash -c` or `zsh -c` script, and checks them like the commands of `$(...)`. It closes the body
+where bash does, at a `}` in command position, counting nested `{ ... }` groups. Because the commands
+run in the current shell, a `cd` or export inside one makes the shell's directory and environment
+unsure after it. A funsub with no close, or one holding a bare `}` argument such as
+`${ echo }; ...; }`, where zsh would close and bash does not, denies the line as unreadable.
+`echo ${ date;}` and `echo "${|REPLY=x;}"` stay allowed.
+
+The splitter ends any other unquoted or double-quoted `${...}` at its first `}` (CC-718). So in
 `echo ${X:-'${Y}'}; g''h pr create ...` it opens a quote that it never closes, and that quote hides the
 command after it however it is spelt. zsh's `(e)` flag runs the text it expands, which can define a
 function that posts. Any line is denied when such an expansion holds a quote, a backslash, a nested
@@ -1342,6 +1352,9 @@ Not covered, by design or by cost:
   `sh -c 'git push origin $0' --no-verify` all pass. So do `xargs -I{} sh -c '{}'`, whose whole
   script is the replace word, and a bare `xargs sh -c`, whose script comes from stdin;
 - a command word that is an expansion, when the group or verb after it is one too (`$G pr $V`);
+- a `$(...)`, backtick or funsub in the body of a heredoc with an unquoted delimiter, as in
+  `cat <<X`, a `$(git push --no-verify)` line and `X`. The shell runs it; the splitter reads the
+  body as text (CC-1328);
 - text in a place the guard does not scan: the query string of a `gh api` path
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;

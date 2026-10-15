@@ -36,7 +36,12 @@ agent-chat burndown pause|resume [--by <who>]
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
 agent-chat burndown unstall <task> --slice <n>
                                         reload an outside-owns slice's owns from its plan; keep its PR and agents
-agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
+agent-chat burndown reload-owns <task> --slice <n>
+                                        reload a live, not outside-owns slice's owns from its plan; keep the rest
+agent-chat burndown done <task> --slice <n> --evidence <path>
+                                        finish a PR-less implementing or queued slice by hand; retire its agents
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file;
+                                        lifts a brief:held hold
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
@@ -182,6 +187,13 @@ For each listed seat, in order, the tick:
   the lint requires it. An implementer-routed task with no plan is refused `no-owns`; a
   planner-routed one spawns its planner as before. Under `shadow` the implementer still
   dispatches, with a `would-refuse no-owns` note (CC-952);
+- auto-approves a brief: an open `brief:proposed` task whose plan passes the slice lint is
+  promoted to `brief:ready`, and one that fails is routed to the decider (CC-1234). A seat
+  holds a plan by tagging the task `brief:held=<kebab-reason>` (or bare `brief:held`,
+  `blocked` or `needs-decision`) before the next tick; the tick then neither approves nor
+  routes it, and logs the hold each tick. A seat log line or queue entry alone does not
+  hold anything: the tick reads only tags. `burndown brief approve` (which drops
+  `brief:held*`) or removing the tag releases the hold (CC-1349);
 - spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
   new claims carry `seat` and `namePrefix`.
 
@@ -477,8 +489,15 @@ A claim with a `stalledReason` keeps its task and worktree but never respawns; o
 `outside-owns` stall whose plan owns have since been fixed, `agent-chat burndown unstall <task>
 --slice <n>` reloads the slice's owns from the plan and clears the stall in place when the
 branch fits them. It keeps the claim's PR, phase and agents and retires nobody, so the next tick
-hands the PR to Shepherd with the implementer as fixer. `agent-chat doctor` reports the stalled
-count.
+hands the PR to Shepherd with the implementer as fixer. For a live slice that is not stalled
+`outside-owns`, `agent-chat burndown reload-owns <task> --slice <n>` reloads its owns from the plan
+under the same branch check and changes nothing else (CC-1276); a queued slice is refused, since the
+tick already reloads its owns. A slice whose work was done and verified
+outside git has no PR to merge; `agent-chat burndown done <task> --slice <n> --evidence <path>`
+finishes an implementing or queued one by hand, clears its stall, records the evidence path and
+retires its agents, so its dependents dispatch. It refuses a claim with a PR, and nothing checks
+that a git slice really had none, so the evidence file and the `burndown_slice_finished_by_hand`
+event row are the audit trail. `agent-chat doctor` reports the stalled count.
 
 The tick can route a stall to a read-only triager before the owner hears about it. The exception
 classes and the `exceptions.route` dial (default `owner`) are on `main`; the triage job is not

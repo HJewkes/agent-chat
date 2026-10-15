@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { POLL_SESSION_ID, type LoginState } from '@titan-design/anthropic-account'
+import { readLoginState } from '@titan-design/anthropic-account/node'
 import {
   readAccountBudget,
   readStatusLineBudget,
@@ -8,24 +10,23 @@ import {
   type BudgetRead,
   type BudgetWindow,
 } from './budget.js'
+import { accountIdentity } from './account-identity.js'
 import { accountName, defaultConfigDir, profileRoot } from './config-dir.js'
 
 /**
  * One row per Claude account on this machine (CC-891): both rate-limit windows,
- * where they came from and how old they are. The usage poller (item 94) writes
- * `usage-poller.json` into each account's status cache from the OAuth usage
- * endpoint every two minutes, so it is the reading of record; the freshest
- * status-line reading stands in where the poller has not written. Nothing here
- * calls the API.
+ * where they came from and how old they are. The usage poller
+ * (`anthropic-account poll --write`, on `anthropic-account-poll.timer`) writes
+ * `usage-poll.json` into each account's status cache from the OAuth usage
+ * endpoint every 150s, so it is the reading of record; the freshest
+ * status-line reading stands in where the poller has not written. `auth_fail` is
+ * the dir's own login state, read token-free from its `.credentials.json`; on macOS
+ * an absent file means the login is in the Keychain, so only a present file can fail
+ * there. Nothing here calls the API.
  */
 
-export const POLLER_SESSION = 'usage-poller'
-
-/** Two missed polls plus slack: the poller runs every 120s, so an older reading means it stopped. */
-export const POLLER_STALE_AFTER_SECONDS = 300
-
-/** The poller's log names each account by its config dir's basename; these kinds mean it holds no login. */
-const AUTH_FAILURES = new Set(['AUTH-FAIL', 'AUTH-EXPIRED', 'TOKEN-EXPIRED'])
+/** Two missed polls: a 150s interval plus up to 30s jitter, so an older reading means it stopped. */
+export const POLLER_STALE_AFTER_SECONDS = 360
 
 export type UsageSource = 'usage-poller' | 'status-line'
 
@@ -44,11 +45,15 @@ export interface AccountsOptions {
   home?: string
   env?: NodeJS.ProcessEnv
   now?: number
-  pollerLog?: string
+  platform?: NodeJS.Platform
+  /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `home`. */
+  identify?: (configDir: string) => string | undefined
 }
 
-export const defaultPollerLog = (home: string): string =>
-  path.join(home, '.local', 'state', 'usage-poller', 'poller.log')
+/** CC-1289: one account's row, naming every config dir that logs in to it. */
+export interface AccountRow extends AccountUsage {
+  config_dirs: string[]
+}
 
 /** `~/.claude` first, then every profile dir, in name order. */
 export function accountDirs(home: string, env: NodeJS.ProcessEnv): string[] {
@@ -66,42 +71,41 @@ export function accountDirs(home: string, env: NodeJS.ProcessEnv): string[] {
   return [defaultConfigDir(home), ...profiles]
 }
 
-/** The basenames whose latest poller log line is an auth failure. An absent log is no failures. */
-export function authFailures(logFile: string): Set<string> {
-  let text: string
+/**
+ * A login Claude Code cannot use and the poller cannot renew; an expired one that can refresh renews
+ * within a tick. On macOS Claude Code keeps the login in the Keychain, so a missing file is not a failure.
+ */
+export function loginFailed(state: LoginState, platform: NodeJS.Platform): boolean {
+  if (state.status === 'missing') return platform !== 'darwin'
+  return state.status === 'refused' || (state.status === 'expired' && !state.canRefresh)
+}
+
+/** A login we cannot read is not one we can use; the thrown error is already redacted and is dropped. */
+export function readLoginFailed(dir: string, now: number, platform: NodeJS.Platform): boolean {
   try {
-    text = fs.readFileSync(logFile, 'utf8')
+    return loginFailed(readLoginState(dir, { now }), platform)
   } catch {
-    return new Set()
+    return true
   }
-  const latest = new Map<string, string>()
-  for (const line of text.split('\n')) {
-    const [, kind, name] = line.split(' ')
-    if (kind !== undefined && name !== undefined) latest.set(name.replace(/:$/, ''), kind)
-  }
-  return new Set([...latest].filter(([, kind]) => AUTH_FAILURES.has(kind)).map(([name]) => name))
 }
 
 function pickReading(
   dir: string,
   now: number,
 ): { read: BudgetRead; source: UsageSource; staleAfter: number } {
-  const poller = readStatusLineBudget(POLLER_SESSION, now, dir)
+  const poller = readStatusLineBudget(POLL_SESSION_ID, now, dir)
   if (poller.found) return { read: poller, source: 'usage-poller', staleAfter: POLLER_STALE_AFTER_SECONDS }
   return { read: readAccountBudget(dir, now), source: 'status-line', staleAfter: STALE_AFTER_SECONDS }
 }
 
-export function readAccountUsage(
-  dir: string,
-  options: AccountsOptions = {},
-  failures: Set<string> = authFailures(options.pollerLog ?? defaultPollerLog(options.home ?? os.homedir())),
-): AccountUsage {
+export function readAccountUsage(dir: string, options: AccountsOptions = {}): AccountUsage {
   const home = options.home ?? os.homedir()
-  const { read, source, staleAfter } = pickReading(dir, options.now ?? Date.now())
+  const now = options.now ?? Date.now()
+  const { read, source, staleAfter } = pickReading(dir, now)
   const base = {
     account: accountName(dir, home),
     config_dir: dir,
-    auth_fail: failures.has(path.basename(dir)),
+    auth_fail: readLoginFailed(dir, now, options.platform ?? process.platform),
   }
   if (!read.found) {
     return { ...base, source: null, five_hour: null, seven_day: null, age_seconds: null, stale: false }
@@ -132,14 +136,50 @@ export function formatAccountUsage(usage: AccountUsage, width: number): string {
   return `${name}  ${windows}  ${usage.age_seconds}s old via ${usage.source}${marks}`
 }
 
+const fresher = (a: AccountUsage, b: AccountUsage): AccountUsage =>
+  b.age_seconds !== null && (a.age_seconds === null || b.age_seconds < a.age_seconds) ? b : a
+
+/**
+ * One row per Anthropic login, named by its first config dir and showing the freshest reading
+ * among them, since every dir on one login reads the same limits. A dir with no readable login is
+ * its own row.
+ */
+export function groupByAccount(
+  rows: readonly AccountUsage[],
+  identify: (configDir: string) => string | undefined,
+): AccountRow[] {
+  const groups = new Map<string, AccountUsage[]>()
+  for (const row of rows) {
+    const key = identify(row.config_dir) ?? `dir:${row.config_dir}`
+    groups.set(key, [...(groups.get(key) ?? []), row])
+  }
+  return [...groups.values()].map(members => {
+    const head = members[0] as AccountUsage
+    return {
+      ...members.reduce(fresher),
+      account: head.account,
+      config_dir: head.config_dir,
+      auth_fail: members.some(r => r.auth_fail),
+      config_dirs: members.map(r => r.config_dir),
+    }
+  })
+}
+
+/** `default (+personal)`: the account's first config dir, naming the others that log in to it. */
+function accountLabel(row: AccountRow, home: string): string {
+  const others = row.config_dirs.slice(1).map(dir => `+${accountName(dir, home)}`)
+  return others.length === 0 ? row.account : `${row.account} (${others.join(', ')})`
+}
+
 /** The `agent budget --accounts` report: one line per account, or one JSON array of the same rows. */
 export function accountsBudget(json: boolean, options: AccountsOptions = {}) {
   const home = options.home ?? os.homedir()
-  const failures = authFailures(options.pollerLog ?? defaultPollerLog(home))
-  const rows = accountDirs(home, options.env ?? process.env).map(dir =>
-    readAccountUsage(dir, { ...options, home }, failures),
+  const usages = accountDirs(home, options.env ?? process.env).map(dir =>
+    readAccountUsage(dir, { ...options, home }),
   )
+  const rows = groupByAccount(usages, options.identify ?? (dir => accountIdentity(dir, home)))
   if (json) return { ok: true, lines: [JSON.stringify(rows)] }
-  const width = Math.max(...rows.map(r => r.account.length))
-  return { ok: true, lines: rows.map(row => formatAccountUsage(row, width)) }
+  const named = rows.map(row => ({ ...row, account: accountLabel(row, home) }))
+  const width = Math.max(...named.map(r => r.account.length))
+  return { ok: true, lines: named.map(row => formatAccountUsage(row, width)) }
 }

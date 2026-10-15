@@ -1,18 +1,33 @@
+import { existsSync, readFileSync } from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
-import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import {
+  gateOrdered,
+  renderScored,
+  scoredPlanFromDisk,
+  scoredSeatFromDisk,
+  type ScoredPlanDiskOptions,
+} from '../../agents/burndown/score-render.js'
 import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
-import { localDate, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { localDate, readSeatScope, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
+import type { TickConfig } from '../../agents/burndown/source.js'
 import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
-import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
+import {
+  heldClaims,
+  LEDGER_WAIT_MS,
+  readLedger,
+  withLedgerLock,
+  writeLedger,
+} from '../../agents/burndown/ledger.js'
 import { prFilesReader, tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { run } from '../../agents/burndown/exec.js'
 import {
@@ -39,11 +54,24 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { planBrokerReads } from '../port-reads.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
-import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
-import { unstallSlice } from './burndown-unstall.js'
-import { changedFiles } from '../../agents/burndown/observe.js'
+import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
+import { reloadSliceOwns, unstallSlice } from './burndown-unstall.js'
+import { finishSlice } from './burndown-done.js'
+import { changedFiles, type Roster } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
+import {
+  applyApproved,
+  falseEdges,
+  parseApproved,
+  renderEdgeKey,
+  renderFalseEdge,
+  type ApplyResult,
+  type ApprovedEdge,
+  type PlanOf,
+} from '../../agents/burndown/relint-queued.js'
+import type { Ledger } from '../../agents/burndown/ledger.js'
 import {
   burndownConfigShowVerb,
   burndownOverrideClearVerb,
@@ -216,16 +244,12 @@ export const burndownSeatsCompareVerb = defineVerb({
   },
 })
 
-/**
- * The seat plan's live inputs. The collision view and the roster are read apart, so a roster read
- * that fails only counts every held tree instead of losing the view and refusing every task as `claimed`.
- */
+/** The seat plan's live inputs, from one broker read (CC-1318). */
 export async function seatPlanOptions(
   seat: string,
   autonomyRoot: string | undefined,
 ): Promise<SeatPlanOptions> {
-  const view = await readCollisionView()
-  const roster = await readBroker(client => tickBroker(client).roster())
+  const { view, roster } = await seatBrokerReads()
   const root = activeWorkRoot()
   return {
     seat,
@@ -237,24 +261,55 @@ export async function seatPlanOptions(
   }
 }
 
-function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
-  const plan = scoredPlanFromDisk({
+export type ScoredGateConfig = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'scopeTagAliases'>
+
+/** CC-988: under the seat's `on` brief gate, the order its tick walks; otherwise `planOrder`'s decayed order. */
+export function scoredSeatPlan(
+  seat: string,
+  { top, autonomyRoot, today }: PlanArgs,
+  tick: ScoredGateConfig = loadResolvedConfig().tick,
+): string[] {
+  const disk = {
     seat,
     top: top ?? DEFAULT_TOP,
     today: today ?? localDate(new Date()),
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
     activeWorkRoot: activeWorkRoot(),
-  })
-  return renderScored(plan)
+  }
+  if (tick.briefGate[seat] === 'on') return renderScored(gatedPlan(disk, tick, today))
+  return renderScored(scoredPlanFromDisk(disk))
+}
+
+/** Reads every row, as the tick does, so the gate re-ranks the whole scope before `--top` cuts it. */
+function gatedPlan(disk: ScoredPlanDiskOptions, tick: ScoredGateConfig, today: string | undefined) {
+  const { plan, tasks, policy } = scoredSeatFromDisk({ ...disk, top: Infinity, readySet: true })
+  const { scope } = readSeatScope(policy.seats, disk.seat, disk.autonomyRoot, tick.scopeTagAliases)
+  const now = today === undefined ? new Date() : new Date(`${today}T00:00:00`)
+  const gated = gateOrdered(plan, tasks, { maxAgeDays: tick.briefMaxAgeDays, now, scope })
+  return { ...gated, order: gated.order.slice(0, disk.top) }
 }
 
 const readCollisionView = (): Promise<BrokerView | undefined> => readBroker(collisionView)
 
+/**
+ * Both undefined when the broker does not answer: the collision check then refuses as `claimed`,
+ * and the plan counts every held tree, as when the broker is down.
+ */
+export async function seatBrokerReads(
+  client: BrokerClient = plainClient(),
+): Promise<{ view: BrokerView | undefined; roster: Roster | undefined }> {
+  const reads = await readBroker(planBrokerReads, client)
+  return { view: reads?.view, roster: reads?.roster }
+}
+
+const plainClient = (): BrokerClient =>
+  new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, { autoStart: false })
+
 /** Undefined when no broker answers, which the collision check reports as a `claimed` refusal it could not rule out. */
-async function readBroker<T>(read: (client: BrokerClient) => Promise<T>): Promise<T | undefined> {
-  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-    autoStart: false,
-  })
+async function readBroker<T>(
+  read: (client: BrokerClient) => Promise<T>,
+  client: BrokerClient = plainClient(),
+): Promise<T | undefined> {
   try {
     await client.connect()
     return await read(client)
@@ -388,6 +443,88 @@ export const burndownStatusVerb = defineVerb({
   },
 })
 
+/** CC-1156: the relint-deps dry run's body, taking the ledger and plan reader so a test can point it at fixtures. */
+export function relintDepsLines(
+  ledger: Ledger,
+  planOf: PlanOf,
+  seat: string | undefined,
+  json: boolean,
+): Report {
+  const edges = falseEdges(ledger, planOf, seat)
+  if (json) return { ok: true, lines: [JSON.stringify(edges, null, 2)] }
+  const total = `${edges.length} queued dependsOn edge(s) over disjoint owns with no dependsWhy`
+  return { ok: true, lines: [...edges.map(renderFalseEdge), total] }
+}
+
+/** Writes one event-log line per cleared edge; tests inject a recorder. */
+export type EdgeJournal = (edge: ApprovedEdge) => void
+
+const logClearedEdge: EdgeJournal = edge => logEvent('burndown_relint_dep_cleared', { ...edge })
+
+/**
+ * CC-1156 b: clears the seat-approved edges in `approvedFile` that the live ledger still lists, under the ledger
+ * lock (waiting out a running tick), with one journal line per cleared edge.
+ */
+export async function relintDepsApply(
+  ledgerFile: string,
+  approvedFile: string,
+  planOf: PlanOf,
+  journal: EdgeJournal = logClearedEdge,
+): Promise<Report> {
+  const approved = parseApproved(readFileSync(approvedFile, 'utf8'))
+  const locked = await withLedgerLock(
+    ledgerFile,
+    (): ApplyResult => {
+      const result = applyApproved(readLedger(ledgerFile), approved, planOf)
+      if (result.cleared.length > 0) writeLedger(ledgerFile, result.ledger)
+      return result
+    },
+    { wait: { waitMs: LEDGER_WAIT_MS }, announce: true },
+  )
+  if (!locked.ran) return refused(new Error(`a tick holds the ledger lock (pid ${locked.holder}); try again`))
+  const { cleared, skipped } = locked.value
+  cleared.forEach(journal)
+  const lines = [
+    ...cleared.map(e => `cleared ${renderEdgeKey(e)}`),
+    ...skipped.map(s => `skipped ${renderEdgeKey(s.edge)}: ${s.reason}`),
+    `${cleared.length} edge(s) cleared, ${skipped.length} skipped`,
+  ]
+  return { ok: true, lines }
+}
+
+export const burndownRelintDepsVerb = defineVerb({
+  name: 'burndown.relint-deps',
+  description:
+    "queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint); --apply clears approved ones",
+  args: z.object({
+    seat: z.string().optional(),
+    json: z.boolean().optional(),
+    apply: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: "only this seat's claims" },
+      json: { long: '--json', description: 'one JSON array of edges' },
+      apply: {
+        long: '--apply <approved.json>',
+        description:
+          'clear only the edges in this seat-approved file (dry-run --json rows), under the ledger lock',
+      },
+    },
+  },
+  async run({ seat, json, apply }) {
+    try {
+      const readPlan = diskPlanReader(activeWorkRoot())
+      const planOf: PlanOf = claim => readPlan(claim.initiative, claim.taskId)
+      if (apply !== undefined) return await relintDepsApply(burndownLedgerPath(), apply, planOf)
+      return relintDepsLines(readLedger(burndownLedgerPath()), planOf, seat, json === true)
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
 /** CC-1151: a dry tick still reads gh and titan-factory through the caller's PATH, so an agent plans instead. */
 async function kickTick(dryRun: boolean): Promise<Report> {
   if (dryRun)
@@ -464,41 +601,57 @@ export const burndownReleaseVerb = defineVerb({
       },
     },
   },
-  async run({ task, slice }) {
-    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
-    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-      autoStart: false,
-    })
-    let connected = false
-    const retire: RetireCall = async name => {
-      if (!connected) {
-        await client.connect()
-        connected = true
-      }
-      return tickBroker(client).retire(name)
-    }
-    try {
-      return await releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot()))
-    } finally {
-      client.close()
-    }
-  },
+  run: ({ task, slice }) =>
+    withBrokerRetire(retire =>
+      releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot())),
+    ),
 })
+
+/** Runs `use` with a retire that connects on first use; never autostarts, since a verb that brought up a broker would own it. */
+async function withBrokerRetire(use: (retire: RetireCall) => Promise<Report>): Promise<Report> {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let connected = false
+  const retire: RetireCall = async name => {
+    if (!connected) {
+      await client.connect()
+      connected = true
+    }
+    return tickBroker(client).retire(name)
+  }
+  try {
+    return await use(retire)
+  } finally {
+    client.close()
+  }
+}
 
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
   description:
-    'record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on merge',
-  args: z.object({ task: requiredString('task'), slice: requiredString('slice'), pr: requiredString('pr') }),
+    'record a hand-dispatched PR on a queued, released or unlinked implementing slice, so the tick finishes it on merge',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    pr: requiredString('pr'),
+  }),
   result: Report,
   cli: {
     positional: ['task'],
     options: {
-      slice: { long: '--slice', description: 'the queued slice the PR implements' },
+      slice: {
+        long: '--slice',
+        description: 'the queued, released or unlinked implementing slice the PR implements',
+      },
       pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
     },
   },
-  run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
+  run: ({ task, slice, pr }) =>
+    linkSlicePr(task, slice, pr, undefined, {
+      plan: diskPlanReader(activeWorkRoot()),
+      pull: pullReader(run),
+    }),
 })
 
 export const burndownUnstallVerb = defineVerb({
@@ -517,6 +670,45 @@ export const burndownUnstallVerb = defineVerb({
       changedFiles: cwd => changedFiles(cwd),
       prFiles: prFilesReader(run),
     }),
+})
+
+export const burndownReloadOwnsVerb = defineVerb({
+  name: 'burndown.reload-owns',
+  description:
+    "reload a live slice's owns from its plan when its branch fits them, keeping its phase, PR and agents",
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: { slice: { long: '--slice', description: 'the live slice whose plan owns changed' } },
+  },
+  run: ({ task, slice }) =>
+    reloadSliceOwns(task, slice, {
+      plan: diskPlanReader(activeWorkRoot()),
+      changedFiles: cwd => changedFiles(cwd),
+      prFiles: prFilesReader(run),
+    }),
+})
+
+export const burndownDoneVerb = defineVerb({
+  name: 'burndown.done',
+  description:
+    'finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its agents',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    evidence: requiredString('evidence'),
+  }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the slice whose work was done and verified outside git' },
+      evidence: { long: '--evidence', description: 'an existing file that shows the work is done' },
+    },
+  },
+  run: ({ task, slice, evidence }) =>
+    withBrokerRetire(retire => finishSlice(task, slice, evidence, { retire, exists: existsSync })),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
@@ -592,6 +784,7 @@ export function addBurndownCommands(program: Commander): void {
   const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
+  addVerb(burndown, burndownRelintDepsVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)
@@ -599,6 +792,8 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownReloadOwnsVerb)
+  addVerb(burndown, burndownDoneVerb)
   addVerb(burndown, burndownLandedVerb)
   addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)

@@ -279,6 +279,13 @@ describe('a seat agent’s retire', () => {
     expect(plain).not.toHaveProperty('tier')
   })
 
+  it('writes the config dir a local spawn ran under on its dispatched row (CC-1038)', async () => {
+    const req = spawnReq(AGENT)
+    await supervisorWith(writerOver(root)).spawn(req)
+
+    expect(dispatchedRows()[0]).toMatchObject({ agent: AGENT, config_dir: req.spawnerConfigDir })
+  })
+
   it('records burndown as the spawner of a CLI spawn it marks, with the seat in a seat field (CC-802)', async () => {
     const s = supervisorWith(writerOver(root))
     await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown', task: 'AB-12' })

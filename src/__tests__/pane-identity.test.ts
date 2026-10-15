@@ -54,6 +54,7 @@ describe('the session name Claude Code shows', () => {
         brief: 'b',
         cwd: '/repo',
         cwdHoldsUserSettings: false,
+        adopted: false,
         mcpConfigPath: '/m.json',
         surface,
       })

@@ -118,6 +118,7 @@ export function buildLaunch(
     cwdHoldsUserSettings: cwdHoldsUserSettings(site.cwd, configDir),
     surface: spec.surface,
     preamble: spec.preamble,
+    adopted: spec.adopted === true,
     mcpConfigPath: mcpConfigPath(spec.agentId),
     hookSettingsPath: hookSettingsPath(spec.agentId),
     ...(spec.tags?.length ? { tags: spec.tags } : {}),

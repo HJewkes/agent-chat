@@ -221,7 +221,7 @@ function readSu(words: readonly string[], i: number): PrivilegeRun | undefined {
     if (a === '--') {
       const rest = words.slice(i + 1)
       if (rest.some(word => word.includes(LIVE))) return undefined
-      operands.push(...rest)
+      for (const operand of rest) operands.push(operand)
       break
     }
     // An expanded word may be an option wherever it sits, since su reads options past the user.
