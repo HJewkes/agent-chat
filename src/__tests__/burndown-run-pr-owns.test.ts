@@ -26,7 +26,8 @@ const claim = (patch: Partial<Claim> = {}): Claim => ({
   agentId: 'a1',
   agentName: 'bd-cc-1',
   spawned: ['bd-cc-1'],
-  worktree: '/nowhere/.worktrees/bd-cc-1',
+  /** Not under `.worktrees` and absent, so no exited or parked work is read: the run is the only PR source. */
+  worktree: '/nowhere/bd-cc-1',
   spawnedAt: EARLIER,
   phase: 'implementing',
   phaseAt: EARLIER,
@@ -57,7 +58,6 @@ const deps = (over: Partial<ObserveDeps>, rows: ShepherdRow[] = [run()]): Observ
   finalText: () => 'Status: unknown',
   diff: () => ({ reviewable: false, reason: 'clean and level' }),
   changedFiles: () => [],
-  exitedWork: () => null,
   shepherdRows: () => rows,
   openPrs: () => [COLLIDING],
   landed: () => true,
