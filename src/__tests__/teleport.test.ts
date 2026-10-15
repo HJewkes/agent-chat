@@ -1114,6 +1114,24 @@ describe('a successor that does not start (CC-402)', () => {
     expect(supervisor.liveIds()).toContain(successorId)
   })
 
+  it('records the fallback successor as headless, so the command its notice names can surface it', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    itermDownFor = 2
+    const surfaces = recordSurfaces()
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    const switched = await supervisor.switchSurface({
+      name: 'scout',
+      to: 'interactive',
+      requestedBy: 'human',
+    })
+
+    expect(switched.ok).toBe(true)
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane', 'headless', 'iterm-tab'])
+  })
+
   it('tells the human and the seat log once when the headless fallback fails too', async () => {
     const agentId = await spawnAgent(visible)
     stopAutoAttach()
@@ -1129,6 +1147,7 @@ describe('a successor that does not start (CC-402)', () => {
     expect(notices).toHaveLength(1)
     expect(notices[0]?.text).toContain('still not running after one retry: spawn claude ENOENT')
     expect(notices[0]?.text).toContain(`${result.agentId as string}/relaunch`)
+    expect(planFor(result.agentId as string).surface).toBe('iterm-pane')
     expect(headlessNotices()).toEqual([])
     expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
     expect(readBrokerLog().match(/"event":"teleport_failed"/g)).toHaveLength(1)

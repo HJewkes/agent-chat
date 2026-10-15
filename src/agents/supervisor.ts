@@ -4435,8 +4435,11 @@ export class Supervisor implements TeleportHost {
     try {
       handle = await this.launchOn('headless', this.headlessPlan(launch))
     } catch (err) {
+      // The relaunch script the lost-teleport notice names must start the surface the human asked for.
+      this.writeSuccessorFiles(launch, launch.plan)
       return this.lostSuccessor(input, executionId, (err as Error).message)
     }
+    this.recordHeadlessSuccessor(launch)
     this.noticeHeadlessSuccessor(input, failure)
     logEvent('teleport_relaunch_headless', { name: input.name, agentId: input.agentId, reason: failure })
     return { handle, retried: true }
@@ -4444,14 +4447,38 @@ export class Supervisor implements TeleportHost {
 
   /** The successor's plan and launch files rewritten for headless, under the session id already recorded. */
   private headlessPlan(launch: SuccessorLaunch): LaunchPlan {
-    const { input, sessionId, allocation, isolation } = launch
+    const { input, sessionId, allocation } = launch
     const { plan } = this.successorPlan(input, allocation, { sessionId, surface: 'headless' })
+    this.writeSuccessorFiles(launch, plan)
+    return plan
+  }
+
+  private writeSuccessorFiles(launch: SuccessorLaunch, plan: LaunchPlan): void {
+    const { input, allocation, isolation } = launch
     writeLaunchFiles(
       plan,
-      buildMcpConfig(input.profile, cliEntry(), 'headless'),
+      buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
     )
-    return plan
+  }
+
+  /** As a mode switch records it, so the identity, `agent surface` and the roster see the process that runs. */
+  private recordHeadlessSuccessor(launch: SuccessorLaunch): void {
+    const { input, sessionId } = launch
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: 'agent-chat',
+      target: input.name,
+      ref: input.agentId,
+      body: 'teleport successor started headless',
+      meta: {
+        session_id: sessionId,
+        surface: 'headless',
+        from_surface: input.surface,
+        perm_mode: permModeFor('headless'),
+        cause: 'teleport-headless-fallback',
+      },
+    })
   }
 
   private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {
