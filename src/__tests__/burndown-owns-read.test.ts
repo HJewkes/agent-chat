@@ -158,6 +158,17 @@ describe('an outside-owns stall whose agent row was pruned', () => {
     expect(after.claims[0]?.stale).toBeUndefined()
   })
 
+  it('hands the cleared PR to Shepherd past the phase timeout instead of laddering', async () => {
+    const held = [outsideStall({ phaseAt: '2026-10-14T06:00:00.000Z' })]
+    const { observations } = await observe(held, PRUNED, baseDeps({ prFiles: () => ['src/a.ts'] }))
+    const actions = advance(held, observations, NOW)
+    const after = applyActions(ledgerOf(held[0] as Claim), actions, NOW)
+
+    expect(after.claims[0]).toMatchObject({ phase: 'shepherding', pr: 'o/r#41' })
+    expect(after.claims[0]?.stallCode).toBeUndefined()
+    expect(actions.map(a => a.kind)).toContain('register')
+  })
+
   it('stays unchanged while a file is still outside', async () => {
     const stalled = outsideStall({ stale: { class: 'outside-owns', proposed: 'widen owns', since: RECENT } })
     const held = [stalled]
