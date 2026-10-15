@@ -158,6 +158,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...(input.gitHooksDir === undefined ? {} : gitHooksEnv(input.gitHooksDir)),
   // The push-time git shim (TP-596) checks that same hooks path; AGENT_CHAT_ keeps a profile from moving it.
   ...(input.gitHooksDir === undefined ? {} : { [GIT_SHIM_DIR_ENV]: gitShimDirFor(input.gitHooksDir) }),
+  // CC-1346: a Playwright install's GC prunes browsers other checkouts still use from the shared cache.
+  PLAYWRIGHT_SKIP_BROWSER_GC: '1',
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which
