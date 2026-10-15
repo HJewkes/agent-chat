@@ -1,4 +1,4 @@
-import type { BrokerClient } from '../client/broker-client.js'
+import { retryOnBrokerTimeout, type BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE, type Roster } from '../agents/burndown/observe.js'
@@ -14,7 +14,7 @@ type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
 /**
  * Every row, retired ones included, so observe can read a finished agent's report.
  * A slow retired read falls back to the live rows and says so (CC-777): failing the
- * whole tick on it would also cost the collision view.
+ * whole tick on it would also cost the collision view. The live read retries a broker timeout (CC-1343).
  */
 export async function tickRoster(client: BrokerClient): Promise<Roster> {
   const read = async (includeRetired: boolean): Promise<Roster> => {
@@ -26,7 +26,7 @@ export async function tickRoster(client: BrokerClient): Promise<Roster> {
     return await read(true)
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    return { ...(await read(false)), partial: `retired rows unread (${reason})` }
+    return { ...(await retryOnBrokerTimeout(() => read(false))), partial: `retired rows unread (${reason})` }
   }
 }
 
