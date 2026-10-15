@@ -76,7 +76,9 @@ spend limit. Pass `config_dir` only to bill an account deliberately; it must exi
 under your home directory, and a bad value is refused rather than quietly replaced. The
 resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
 that is also how a peer's transcript and budget stay findable when it is not on your
-account.
+account. A teleport keeps the account: the successor spends the same `CLAUDE_CONFIG_DIR`,
+and `agent_teleport` cannot change it. To move to another account, ask your human to move
+you.
 
 ### Splitting a large assignment: explore, then implement
 
@@ -274,6 +276,22 @@ thing — `agent_teleport` ends this session and starts a successor on the curre
 keeping your name so peers can still reach you. Your transcript does not travel, so the
 handoff you write is all the successor gets. That is why 95% says stop now: past it there
 is not enough room left to write a good one.
+
+### Teleporting
+
+- Teleport when your context is filling (a `[budget]` line), when you are parked waiting on
+  the human, or when your instructions or code have moved since you started.
+- Write the handoff in this order: what you were mid-way through; state on disk; what you
+  would do next and why; what you tried that did not work; who you are owed a reply to or
+  owe one; files to read first as `@`-prefixed absolute paths. It is stored verbatim and
+  capped at 8 KB; a longer one is refused, not truncated.
+- Name every open `chat_ask` id in the handoff, or answer it first. A refusal lists the ids
+  the handoff leaves out. Answers to the name are held and pushed to your successor.
+- `reason: "park"` marks an idle hand-off: restate your open question in the handoff, and the
+  successor asks it first.
+- `surface` and `to` choose where the successor opens (a surface or machine you cannot run
+  is refused and never ends you). A named surface opens fresh, not in your pane.
+- The account stays the same. Teleport cannot change it.
 
 **The account rate limit is per account and shared.** It is not billed to you, and nothing
 pushes it. `agent_list` prints one header line per account, each from the freshest reading
