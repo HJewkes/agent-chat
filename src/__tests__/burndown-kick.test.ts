@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,6 +17,9 @@ import { jobEnv } from '../mirror/plist.js'
 import type { AppendInput } from '../broker/event-store.js'
 
 const BURNDOWN_AGENTS = new Set(['bd-1', 'bd-2', 'bd-3'])
+
+/** The pid of a process that has already exited. */
+const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid
 
 const exited = (ref: string): AppendInput => ({ kind: 'agent_exited', actor: ref, ref })
 const retired = (ref: string): AppendInput => ({ kind: 'agent_retired', actor: 'human', target: ref, ref })
@@ -205,7 +209,7 @@ describe('ledgerLockHolder', () => {
 
   it('treats a lock left by a dead process as free', () => {
     const file = path.join(dir, 'burndown.json')
-    fs.writeFileSync(`${file}.lock`, '999999\n')
+    fs.writeFileSync(`${file}.lock`, `${deadPid()}\n`)
 
     expect(ledgerLockHolder(file)).toBeUndefined()
   })
