@@ -192,9 +192,10 @@ function decoded(word: string): string | undefined {
 /** A merge path ignores the method on purpose: a method-override header could turn a GET into the merge. */
 function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const parsed = parseWords(rest, API_FLAGS)
-  const graphql = parsed.positionals.map(graphqlEndpoint)
-  if (graphql.includes('odd')) return unresolved('a non-canonical GraphQL path')
-  if (graphql.includes('exact') && !graphqlIsReadableNonMerge(parsed))
+  const graphql = parsed.positionals.filter(mentionsGraphql)
+  if (!graphql.every(word => EXACT_GRAPHQL.test(apiPath(word) ?? '')))
+    return unresolved('a GraphQL path that is not exactly graphql')
+  if (graphql.length > 0 && !graphqlIsReadableNonMerge(parsed))
     return unresolved('a GraphQL call that may merge')
   const writes = isWrite(parsed)
   const merges = parsed.positionals
@@ -209,13 +210,15 @@ function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   return same ? first : unresolved('more than one merge endpoint')
 }
 
-/** `odd` for a non-canonical path mentioning graphql, which a later hop may collapse into the endpoint. */
-function graphqlEndpoint(word: string): 'exact' | 'odd' | 'no' {
-  const path = (decoded(word) ?? '').replace(API_PREFIX, '')
-  if (!/graphql/i.test(path)) return 'no'
-  if (!isCanonical(path)) return 'odd'
-  return /^\/?graphql\/?(?:[?#]|$)/i.test(path) ? 'exact' : 'no'
-}
+/** The decoded path with any api.github.com prefix stripped; `undefined` when it never stops decoding. */
+const apiPath = (word: string): string | undefined => decoded(word)?.replace(API_PREFIX, '')
+
+/**
+ * Any path that names graphql is the GraphQL endpoint unless proven otherwise: only exactly
+ * `graphql` has its fields read, and every other spelling (`graphql.json`, `v3/graphql`) is unresolved.
+ */
+const EXACT_GRAPHQL = /^\/?graphql$/i
+const mentionsGraphql = (word: string): boolean => /graphql/i.test(apiPath(word) ?? '')
 
 const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
 const GRAPHQL_MERGE = new RegExp(MERGE_OPERATIONS.flatMap(operation => operation.graphql).join('|'), 'i')
@@ -229,8 +232,9 @@ function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
   return parsed.flags
     .filter(flag => FIELD_FLAGS.has(flag.name))
     .every(({ name, value }) => {
-      if (value === undefined || GRAPHQL_MERGE.test(value)) return false
-      return !(name === '-F' || name === '--field') || !value.slice(value.indexOf('=') + 1).startsWith('@')
+      const plain = value === undefined ? undefined : decoded(value)
+      if (plain === undefined || GRAPHQL_MERGE.test(plain)) return false
+      return !(name === '-F' || name === '--field') || !plain.slice(plain.indexOf('=') + 1).startsWith('@')
     })
 }
 
@@ -250,11 +254,12 @@ function isWrite(parsed: Parsed): boolean {
 }
 
 function endpointTarget(word: string, writes: boolean): MergeTarget {
-  const plain = decoded(word)
-  if (plain === undefined) return unresolved('a path encoded too deeply to read')
-  const path = plain.replace(API_PREFIX, '')
+  const path = apiPath(word)
+  if (path === undefined) return unresolved('a path encoded too deeply to read')
+  // A read's query string cannot merge, so a GET is scanned only up to `?`.
+  const scanned = writes ? path : (path.split('?')[0] ?? '')
   const named = MERGE_OPERATIONS.find(
-    ({ rest }) => rest !== undefined && (writes || !rest.writesOnly) && rest.mentions.test(path),
+    ({ rest }) => rest !== undefined && (writes || !rest.writesOnly) && rest.mentions.test(scanned),
   )
   if (named === undefined) return NONE
   const exact = isCanonical(path) ? PR_MERGE_PATH.exec(path) : null

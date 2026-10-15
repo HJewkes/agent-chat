@@ -141,6 +141,34 @@ describe('mergeTarget for gh api', () => {
     expect(kindOf(args)).toBe('unresolved')
   })
 
+  it.each([
+    ['graphql.json', ['graphql.json', '-f', 'query=mutation{mergePullRequest(input:{}){x}}']],
+    ['graphql;x', ['graphql;x', '-f', 'query=mutation{mergePullRequest(input:{}){x}}']],
+    ['graphql/x', ['graphql/x', '-f', 'query=mutation{mergePullRequest(input:{}){x}}']],
+    ['an encoded mutation name', ['graphql', '-f', 'query=mutation{merge%50ullRequest(input:{}){x}}']],
+  ])('refuses a GraphQL merge sent to %s', (_, rest) => {
+    expect(kindOf(['api', ...rest])).toBe('unresolved')
+  })
+
+  it('never passes a merge mutation sent to any spelling of the GraphQL endpoint', () => {
+    const PATHS = ['graphql', 'graphql.json', 'graphql;x', 'graphql/x', 'v3/graphql', '/graphql', 'GRAPHQL']
+    const MUTATIONS = ['mergePullRequest', 'mergeBranch', 'enablePullRequestAutoMerge', 'enqueuePullRequest']
+    const passed = PATHS.flatMap(path =>
+      [...MUTATIONS, 'updateRef', 'updateRefs'].map(name => [
+        'api',
+        path,
+        '-f',
+        `query=mutation{${name}(input:{}){x}}`,
+      ]),
+    ).filter(args => kindOf(args) !== 'unresolved')
+
+    expect(passed).toEqual([])
+  })
+
+  it('refuses a harmless query sent to a GraphQL path that is not exactly graphql', () => {
+    expect(kindOf(['api', 'v3/graphql', '-f', 'query=query{viewer{login}}'])).toBe('unresolved')
+  })
+
   it('passes a harmless inline GraphQL query as no merge', () => {
     expect(kindOf(['api', 'graphql', '-f', 'query=query{viewer{login}}', '-F', 'n=1'])).toBe('none')
   })
@@ -162,6 +190,7 @@ describe('mergeTarget for gh api', () => {
     ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
     ['a PR read', ['api', 'repos/o/r/pulls/12']],
     ['a branch ref read', ['api', 'repos/o/r/git/refs/heads/main']],
+    ['a search read whose query names merges', ['api', 'search/issues?q=is:pull-request+is:merged']],
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
   })
