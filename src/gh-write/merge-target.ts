@@ -140,50 +140,35 @@ export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
 
 /**
  * Every operation that can land a PR's commits on its base, one row each, so the REST and GraphQL
- * readers cannot drift apart. `rest` matches a canonical, decoded path and `mentions` a
- * non-canonical one; `writesOnly` skips GET reads. Only the PR merge path names a target; every
- * other row is unresolved. A ref write is here because it can fast-forward a PR's base.
+ * readers cannot drift apart. `mentions` runs on every decoded API path, whatever its prefix
+ * (`repos/`, `repositories/<id>/`, anything else) or suffix: a path naming a row's vocabulary is
+ * unresolved unless it is exactly `PR_MERGE_PATH`, the one spelling that names a target.
+ * `writesOnly` skips GET reads. A ref write is here because it can fast-forward a PR's base.
  */
 interface MergeOperation {
   name: string
   graphql: readonly string[]
-  rest?: { path: RegExp; mentions: RegExp; writesOnly: boolean }
+  rest?: { mentions: RegExp; writesOnly: boolean }
 }
-
-const REPO_PATH = String.raw`(?:^|\/)repos\/([^/]+)\/([^/]+)\/`
-const PATH_END = String.raw`(?:[/?#]|$)`
 
 const MERGE_OPERATIONS: readonly MergeOperation[] = [
   {
     name: 'a PR merge',
     graphql: ['mergePullRequest'],
-    rest: {
-      path: new RegExp(String.raw`${REPO_PATH}pulls\/([^/?#]+)\/merge${PATH_END}`, 'i'),
-      mentions: /pulls[\s\S]*merge/i,
-      writesOnly: false,
-    },
+    rest: { mentions: /pull[\s\S]*merge/i, writesOnly: false },
   },
-  {
-    name: 'a branch merge',
-    graphql: ['mergeBranch'],
-    rest: { path: new RegExp(`${REPO_PATH}merges${PATH_END}`, 'i'), mentions: /merges/i, writesOnly: false },
-  },
+  { name: 'a branch merge', graphql: ['mergeBranch'], rest: { mentions: /merges/i, writesOnly: false } },
   { name: 'an auto-merge', graphql: ['enablePullRequestAutoMerge'] },
   { name: 'a merge queue entry', graphql: ['enqueuePullRequest'] },
   {
     name: 'a branch ref write',
     graphql: ['updateRef', 'updateRefs'],
-    rest: {
-      path: new RegExp(String.raw`${REPO_PATH}git\/refs(?:\/heads(?:\/[^?#]*)?)?(?:[?#]|$)`, 'i'),
-      mentions: /git[\s\S]*refs/i,
-      writesOnly: true,
-    },
+    rest: { mentions: /ref/i, writesOnly: true },
   },
 ]
 
-const PR_MERGE = MERGE_OPERATIONS[0] as MergeOperation
+const PR_MERGE_PATH = /^\/?repos\/([^/]+)\/([^/]+)\/pulls\/([^/?#]+)\/merge(?:[/?#]|$)/i
 const API_PREFIX = /^https?:\/\/api\.github\.com\//i
-const OTHER_HOST = /^[a-z][a-z0-9+.-]*:\/\//i
 
 const ASCII_ESCAPE = /%([0-7][0-9A-Fa-f])/g
 const MAX_DECODE_ROUNDS = 8
@@ -268,18 +253,15 @@ function endpointTarget(word: string, writes: boolean): MergeTarget {
   const plain = decoded(word)
   if (plain === undefined) return unresolved('a path encoded too deeply to read')
   const path = plain.replace(API_PREFIX, '')
-  for (const { name, rest } of MERGE_OPERATIONS) {
-    if (rest === undefined || (rest.writesOnly && !writes)) continue
-    if (!isCanonical(path) && rest.mentions.test(path)) return unresolved(`a non-canonical path for ${name}`)
-    if (rest.path.test(path) && name !== PR_MERGE.name) return unresolved(`${name}, which names no PR`)
-  }
-  return prMergeTarget(path)
+  const named = MERGE_OPERATIONS.find(
+    ({ rest }) => rest !== undefined && (writes || !rest.writesOnly) && rest.mentions.test(path),
+  )
+  if (named === undefined) return NONE
+  const exact = isCanonical(path) ? PR_MERGE_PATH.exec(path) : null
+  return exact === null ? unresolved(`a path that may be ${named.name}`) : prMergeTarget(exact)
 }
 
-function prMergeTarget(path: string): MergeTarget {
-  const match = PR_MERGE.rest?.path.exec(path)
-  if (match == null) return NONE
-  if (OTHER_HOST.test(path)) return unresolved('a merge endpoint on another host')
+function prMergeTarget(match: RegExpExecArray): MergeTarget {
   const [, owner = '', repo = '', pr = ''] = match
   if (!NAME.test(owner) || !NAME.test(repo)) return unresolved('a merge endpoint whose repo is not literal')
   if (!PR_NUMBER.test(pr)) return unresolved('a merge endpoint whose PR is not a number')

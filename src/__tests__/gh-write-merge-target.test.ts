@@ -162,7 +162,6 @@ describe('mergeTarget for gh api', () => {
     ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
     ['a PR read', ['api', 'repos/o/r/pulls/12']],
     ['a branch ref read', ['api', 'repos/o/r/git/refs/heads/main']],
-    ['a tag ref write', ['api', '-X', 'PATCH', 'repos/o/r/git/refs/tags/v1', '-f', 'sha=abc']],
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
   })
@@ -228,6 +227,63 @@ describe('mergeTarget for every merge-capable operation', () => {
 
   it.each(['enablePullRequestAutoMerge', 'enqueuePullRequest'])('refuses the GraphQL-only %s', name => {
     expect(kindOf(mutation(name))).toBe('unresolved')
+  })
+
+  it.each([
+    ['a PR merge by repository id', ['-X', 'PUT', 'repositories/123456/pulls/12/merge']],
+    ['a branch merge by repository id', ['-X', 'POST', 'repositories/123456/merges', '-f', 'head=pr']],
+    [
+      'a ref write by repository id',
+      ['-X', 'PATCH', 'repositories/123456/git/refs/heads/main', '-f', 'sha=a'],
+    ],
+    ['a PR merge with a suffix', ['-X', 'PUT', 'repos/o/r/pulls/12/merge.json']],
+    ['a PR merge under an unknown prefix', ['-X', 'PUT', 'v3/repos/o/r/pulls/12/merge']],
+    [
+      'a PR merge under another host',
+      ['-X', 'PUT', 'https://ghe.example.com/api/v3/repos/o/r/pulls/12/merge'],
+    ],
+    ['any ref write, even a tag', ['-X', 'PATCH', 'repos/o/r/git/refs/tags/v1', '-f', 'sha=abc']],
+  ])('refuses %s, a spelling the exact path does not name', (_, rest) => {
+    expect(kindOf(['api', ...rest])).toBe('unresolved')
+  })
+
+  const VOCABULARY = [
+    'pulls/12/merge',
+    'pull/12/merge',
+    'merges',
+    'git/refs/heads/main',
+    'git/ref/heads/main',
+  ]
+  const PREFIXES = [
+    '',
+    '/',
+    'repos/o/r/',
+    'repositories/1/',
+    'x/',
+    'repos/o/r/x/',
+    'https://api.github.com/repos/o/r/',
+  ]
+  const SUFFIXES = ['', '/', '.json', '/x', '?a=b', '#f']
+  const WRITES = [
+    ['-X', 'PUT'],
+    ['-X', 'PATCH'],
+    ['-X', 'post'],
+    ['-f', 'a=b'],
+    ['-H', 'X-HTTP-Method-Override: PUT'],
+  ]
+
+  it("never passes a write whose path names any row's vocabulary", () => {
+    const passed = VOCABULARY.flatMap(vocabulary =>
+      PREFIXES.flatMap(prefix =>
+        SUFFIXES.flatMap(suffix =>
+          [vocabulary, vocabulary.toUpperCase()].flatMap(word =>
+            WRITES.map(write => ['api', ...write, `${prefix}${word}${suffix}`]),
+          ),
+        ),
+      ),
+    ).filter(args => kindOf(args) === 'none')
+
+    expect(passed).toEqual([])
   })
 })
 
