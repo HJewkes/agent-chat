@@ -132,6 +132,45 @@ describe('writtenText', () => {
   })
 
   it.each([
+    '( x ) > ./s',
+    '( x ) >| s',
+    '( x ) >> s',
+    '( x ) &> s',
+    '( x ) &>> s',
+    '( x ) <> s',
+    '( x ) 3> s',
+    '( x ) >& s',
+    '(x)>s',
+    '( ( x ) ) > s',
+    '{ x; } > s',
+    'while a; do x; done > s',
+    'until a; do x; done > s',
+    'for i in a; do x; done > s',
+    'select i in a; do x; done > s',
+    'if a; then x; fi > s',
+    'case a in b) x;; esac > s',
+    '[[ a ]] > s',
+    '(( 1 )) > s',
+    'f() { x; } > s',
+    'f() ( x ) > s',
+    'coproc ( x ) > s',
+    'x >& ./s',
+    ': $( > s )',
+  ])('reads no text when %j also opens the file', other => {
+    expect(writtenText(pushWriter(`printf 'git push' > s & ${other}`))).toBeUndefined()
+    expect(writtenText(pushWriter(`printf 'git push' > s; ${other}`))).toBeUndefined()
+  })
+
+  it('reads no text a later compound command overwrites', () => {
+    const line = "printf ok > s; ( printf 'git push --no-verify' ) > s"
+    expect(writtenText(firstCommand(line))).toBeUndefined()
+  })
+
+  it('reads no text for a command after a compound redirect it does not own', () => {
+    expect(writtenText(lastCommand("( x ) > s; printf 'git push'"))).toBeUndefined()
+  })
+
+  it.each([
     ["printf 'git push' > s; : $(printf x > t)", 'git push'],
     ["printf 'git push' > s; printf x | tee t", 'git push'],
     ["printf 'git push' > s; exec 3>t", 'git push'],
@@ -139,6 +178,9 @@ describe('writtenText', () => {
     ["printf 'git push' > d/s; printf x > d/t/", 'git push'],
     ["printf 'git push' > ./s & printf x > /tmp/t", 'git push'],
     ["printf 'git push' > s", 'git push'],
+    ["printf 'git push' > s; ( x ) 2>&1", 'git push'],
+    ["printf 'git push' > s; x >&-", 'git push'],
+    ["printf 'git push' > s; ( x ) > t", 'git push'],
   ])('%j still reads the text when other opens name other files', (line, text) => {
     expect(writtenText(pushWriter(line))).toBe(text)
   })

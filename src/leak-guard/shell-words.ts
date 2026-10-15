@@ -61,7 +61,7 @@ interface Arith {
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
-type Pending = 'discard' | 'write' | 'append' | 'herestring' | { strip: boolean; aside: boolean }
+type Pending = 'discard' | 'write' | 'append' | 'dup' | 'herestring' | { strip: boolean; aside: boolean }
 
 interface Heredoc {
   delim: string
@@ -362,6 +362,7 @@ class ShellLexer {
   run(): SimpleCommand[] {
     while (this.pos < this.src.length && !this.closed) this.step()
     this.endCommand()
+    this.recordUnclaimed()
     for (const cmd of this.out) cmd.shared.push(...cmd.writes.filter(target => this.kept.has(target)))
     return this.out
   }
@@ -776,7 +777,8 @@ class ShellLexer {
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
     const op = this.redirectOperator()
     const keeps = APPEND_OPERATORS.has(op) || fd > 2
-    this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : keeps ? 'append' : 'write'
+    if (op === '>&') this.pending = 'dup'
+    else this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : keeps ? 'append' : 'write'
   }
 
   /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
@@ -991,11 +993,36 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       this.afterWord(word, quoteStart)
-    } else if (pending === 'write' || pending === 'append') {
-      this.cur.writes.push(this.marked)
-      if (pending === 'append') this.kept.add(this.marked)
-    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
+    } else if (pending === 'write' || pending === 'append' || pending === 'dup')
+      this.recordWrite(word, pending)
+    else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
+  }
+
+  /**
+   * A write target, kept when it may not be the file's whole text: opened without truncating, by a
+   * `>&file` the shell reads as `&>`, or before any command word. The last is a prefix (`> s cmd`) or
+   * the redirect of a compound command (`( x ) > s`, `(( 1 )) > s`), whose output the words do not show.
+   */
+  private recordWrite(word: string, pending: 'write' | 'append' | 'dup'): void {
+    // `>&2` and `>&-` copy or close a descriptor; any other word names a file.
+    if (pending === 'dup' && !this.marked.includes(LIVE) && /^(?:\d+-?|-)$/.test(word)) return
+    this.cur.writes.push(this.marked)
+    if (pending !== 'write' || this.cur.words.length === 0) this.kept.add(this.marked)
+  }
+
+  /**
+   * Redirects no command word followed, as after `( x ) > s` at the end of a line or a substitution,
+   * still open their files. They are kept as a `: > s` the shell runs in effect, so every open counts.
+   */
+  private recordUnclaimed(): void {
+    if (this.carried.length === 0) return
+    const cmd = this.newCommand()
+    cmd.words.push(':')
+    cmd.marked.push(':')
+    cmd.writes.push(...this.carried.splice(0))
+    for (const target of cmd.writes) this.kept.add(target)
+    this.out.push(cmd)
   }
 
   /** zsh feeds a command every heredoc and here-string it is given and bash only the last, so a second one is unsure. */
