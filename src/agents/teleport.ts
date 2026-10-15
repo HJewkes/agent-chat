@@ -917,8 +917,8 @@ export class Teleport {
       input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
       await this.launchSuccessor(entry, input)
     } catch (err) {
-      // A real failure already settled the arrival through `successorFailed`. One that
-      // throws without it is a retry skipped because the successor may yet attach.
+      // A host that throws `SuccessorNotStarted` already settled the arrival through
+      // `successorFailed`. A skipped retry no longer throws (CC-602): it tracks the successor.
       if (!(err instanceof SuccessorNotStarted))
         this.successorFailed(entry.descendantId, (err as Error).message)
     }

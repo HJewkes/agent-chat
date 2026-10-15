@@ -18,7 +18,7 @@ import {
   PARK_LINE,
   REMOTE_LAUNCH_TIMEOUT_MS,
 } from '../agents/teleport.js'
-import { planPath, supersededMarkerPath } from '../agents/launch-files.js'
+import { planPath, readRuntimeState, supersededMarkerPath } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -1125,6 +1125,76 @@ describe('a successor that does not start (CC-402)', () => {
 
     expect(launches()).toBe(1)
     expect(successorNotices()[0]?.text).toContain('cannot be ruled out')
+    expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
+  })
+
+  /** The first launch throws, as an osascript that timed out after typing would. */
+  function throwFirstLaunch(): () => number {
+    const spy = vi
+      .spyOn(supervisor as unknown as { launchOn: () => Promise<object> }, 'launchOn')
+      .mockRejectedValueOnce(new Error('Command failed: osascript timed out'))
+    return () => spy.mock.calls.length
+  }
+
+  it('tracks a successor whose first launch threw while its run-agent was already running', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = throwFirstLaunch()
+    launcherUp = true
+
+    const result = await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    const successorId = result.agentId as string
+    expect(launches()).toBe(1)
+    expect(supervisor.liveIds()).toContain(successorId)
+    expect(readRuntimeState(successorId)).toBeDefined()
+    expect(readBrokerLog()).toContain('"event":"teleport_relaunch_skipped"')
+    expect(readBrokerLog()).toContain('"event":"agent_teleported"')
+    expect(readBrokerLog()).toContain('"event":"teleport_completed"')
+    expect(readBrokerLog()).not.toContain('"event":"teleport_failed"')
+    expect(successorNotices()).toEqual([])
+  })
+
+  it('tracks a successor that attached during the pause before its retry', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = throwFirstLaunch()
+
+    const result = await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + 1_000)
+    const successorId = result.agentId as string
+    expect(launches()).toBe(1)
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: successorId,
+    })
+    await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS)
+
+    expect(launches()).toBe(1)
+    expect(supervisor.liveIds()).toContain(successorId)
+    expect(readBrokerLog()).toContain('"event":"teleport_completed"')
+    expect(readBrokerLog()).not.toContain('"event":"teleport_failed"')
+  })
+
+  it('tells the human and tracks nothing when the first launch threw and the process table cannot be read', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = throwFirstLaunch()
+    launcherUp = undefined
+
+    const result = await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(launches()).toBe(1)
+    const notices = successorNotices()
+    expect(notices).toHaveLength(1)
+    expect(notices[0]?.text).toContain('cannot be ruled out')
+    expect(supervisor.liveIds()).not.toContain(result.agentId as string)
     expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
   })
 
@@ -2242,7 +2312,8 @@ describe('successor-first ordering (CC-951)', () => {
     expect(scripts.some(script => script.includes('to close'))).toBe(true)
   })
 
-  it('keeps waiting when a retry is skipped because the successor run-agent is already running', async () => {
+  /** A predecessor teleporting under a broker whose first successor launch throws while run-agent runs. */
+  async function teleportWhoseLaunchThrew(): Promise<{ agentId: string; successorId: string }> {
     supervisor.close()
     supervisor = new Supervisor(core, {
       countdownMs: COUNTDOWN_MS,
@@ -2260,11 +2331,16 @@ describe('successor-first ordering (CC-951)', () => {
     vi.spyOn(supervisor as unknown as { launchOn: () => Promise<object> }, 'launchOn').mockRejectedValueOnce(
       new Error('launch check timed out'),
     )
-
     const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    return { agentId, successorId: result.agentId as string }
+  }
+
+  it('keeps waiting when a retry is skipped because the successor run-agent is already running', async () => {
+    const { successorId } = await teleportWhoseLaunchThrew()
     await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS + 1_000)
-    const successorId = result.agentId as string
     expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(supervisor.liveIds()).toContain(successorId)
+    expect(readRuntimeState(successorId)).toBeDefined()
 
     core.register(fakeConn(), {
       t: 'register',
@@ -2276,6 +2352,19 @@ describe('successor-first ordering (CC-951)', () => {
     })
     await vi.advanceTimersByTimeAsync(0)
     expect(signalled()[0]).toEqual({ pid: PREDECESSOR_PID, signal: 'SIGTERM' })
+  })
+
+  it('stops a skipped-retry successor that never attaches, and keeps the predecessor', async () => {
+    const { agentId, successorId } = await teleportWhoseLaunchThrew()
+    await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS + 1_000)
+    expect(supervisor.liveIds()).toContain(successorId)
+
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(supervisor.liveIds()).not.toContain(successorId)
+    expect(supervisor.liveIds()).toContain(agentId)
+    expect(signalled()).toEqual([])
+    expect(readBrokerLog()).toMatch(/"event":"teleport_failed".*"kept":true/)
   })
 
   it('still ends the predecessor first when the successor reuses its pane', async () => {
