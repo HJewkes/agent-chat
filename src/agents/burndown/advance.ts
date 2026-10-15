@@ -235,13 +235,25 @@ const UNSTALLED: ClaimPatch = { stalledReason: undefined, stalledClass: undefine
 function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.owned === undefined || obs.owned === 'unreadable') return []
   const cleared: ClaimPatch = obs.planOwns === undefined ? UNSTALLED : { ...UNSTALLED, owns: obs.planOwns }
-  const moveOn: Resume = (c, o) => [update(c, cleared), ...advanceClaim({ ...c, ...cleared }, o, now)]
+  const moveOn: Resume = (c, o) => {
+    const next = { ...c, ...cleared }
+    return [update(c, cleared), ...(prunedHandOff(next, o) ?? advanceClaim(next, o, now))]
+  }
   const held = fenced(claim, obs, moveOn)
   if (held === undefined) return moveOn(claim, obs) ?? []
   const [restall] = held
   const same =
     held.length === 1 && restall?.kind === 'update' && restall.patch.stalledReason === claim.stalledReason
   return same ? [] : held
+}
+
+/**
+ * CC-832 b: a fence cleared after the agent's row was pruned hands its PR to Shepherd. No agent is left to report,
+ * so otherwise the claim would wait into a phase-timeout and the ladder would respawn work the PR already holds.
+ */
+function prunedHandOff(claim: Claim, obs: Observation): Action[] | undefined {
+  if (obs.agent !== undefined || claim.agentName === undefined || claim.pr === undefined) return undefined
+  return handOff(claim, claim.pr, claim.agentName, {}, obs.shepherd?.row)
 }
 
 /** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
