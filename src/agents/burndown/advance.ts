@@ -181,7 +181,12 @@ const ladderFirst = (claim: Claim, after: Claim): boolean =>
 type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
 const STEPS: Partial<Record<Claim['phase'], Step>> = {
-  spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
+  spawning: (claim, obs, now) =>
+    obs.agent === undefined
+      ? []
+      : finished(obs)
+        ? landAndRead(claim, obs.agent.id, obs, now)
+        : [landed(claim, obs.agent.id)],
   planning: (claim, obs, now) =>
     !finished(obs) ? [] : claim.briefer === true ? afterBriefer(claim, obs) : afterPlanner(claim, obs, now),
   implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : linkPr(claim, obs)),
@@ -259,8 +264,19 @@ const stall = (claim: Claim, reason: string, cls: ExceptionClass, code?: StallCo
 
 const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
 
-const landed = (claim: Claim, agentId: string): Action =>
-  update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
+const landedPatch = (claim: Claim, agentId: string): ClaimPatch => ({
+  phase: claim.nextPhase ?? 'implementing',
+  agentId,
+  nextPhase: undefined,
+})
+
+const landed = (claim: Claim, agentId: string): Action => update(claim, landedPatch(claim, agentId))
+
+/** CC-980 b: an agent that exited before its claim landed is read in the same tick, not one tick later. */
+function landAndRead(claim: Claim, agentId: string, obs: Observation, now: Date): Action[] {
+  const patch = landedPatch(claim, agentId)
+  return [update(claim, patch), ...advanceClaim({ ...claim, ...patch }, obs, now)]
+}
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.slices === undefined)

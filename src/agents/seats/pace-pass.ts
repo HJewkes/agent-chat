@@ -56,6 +56,20 @@ export function nextPaceDoc(
 const sameReading = (a: PoolPace | undefined, b: PoolPace): boolean =>
   a?.sevenDay === b.sevenDay && a.fiveHour === b.fiveHour && a.resetsAt === b.resetsAt
 
+/**
+ * CC-1364: usage only rises inside one seven_day window, so a lower figure under the same reset, before
+ * that reset, is a stale file's repeat and no reading.
+ */
+const fallInWindow = (before: PoolPace | undefined, row: PoolPace, nowMs: number): boolean =>
+  row.rolled !== true &&
+  before?.sevenDay != null &&
+  row.sevenDay !== null &&
+  before.sevenDay > row.sevenDay &&
+  before.resetsAt != null &&
+  row.resetsAt !== null &&
+  Math.abs(before.resetsAt - row.resetsAt) <= RESET_TOLERANCE_MS &&
+  nowMs < before.resetsAt
+
 /** A row for each pool whose reading differs from the pass before; a stale one is recorded with its age. */
 export function changedReadings(
   previous: PaceDoc | undefined,
@@ -65,7 +79,8 @@ export function changedReadings(
   return rows.flatMap(row => {
     const { sevenDay, fiveHour, resetsAt, ageSeconds } = row
     if (sevenDay === null || fiveHour === null || resetsAt === null || ageSeconds === null) return []
-    if (sameReading(previous?.pools[row.pool], row)) return []
+    const before = previous?.pools[row.pool]
+    if (sameReading(before, row) || fallInWindow(before, row, nowMs)) return []
     return [
       {
         ts: Math.round(nowMs / 1000),

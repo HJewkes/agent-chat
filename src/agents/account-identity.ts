@@ -30,6 +30,13 @@ function identityIn(text: string | undefined): string | undefined {
 }
 
 /**
+ * The login `<configDir>/.claude.json` names, never falling back to `~/.claude.json`: a session with
+ * `CLAUDE_CONFIG_DIR` set to `~/.claude` reads only that file and its own hashed Keychain login (CC-200).
+ */
+export const explicitDirIdentity = (configDir: string, read: ReadText = readFile): string | undefined =>
+  identityIn(read(path.join(configDir, '.claude.json')))
+
+/**
  * CC-1289: the Anthropic login a config dir bills, or undefined when no login can be read.
  * The default dir keeps its login in `~/.claude.json` when `CLAUDE_CONFIG_DIR` is unset, so
  * that file is read first and `<dir>/.claude.json` only when it names no login.
