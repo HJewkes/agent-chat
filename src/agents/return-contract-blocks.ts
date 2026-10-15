@@ -64,7 +64,10 @@ export const PROBE_SANDBOX_RULE =
   '$TMPDIR/<your name> whose origin is a local bare repo (git init --bare); never in a real ' +
   'checkout, never against a real remote, never piped to a shell from a real checkout.'
 
-/** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
+/**
+ * CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path.
+ * CC-1278: it also gives the reviewer the variant that reads CI itself and may say WAIT.
+ */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
@@ -135,32 +138,49 @@ export const REVIEW_TREE_RULE =
   '`git show <rev>:<path>`, `git diff` or `git worktree add --detach <dir> <rev>` without installing; ' +
   'never `git stash` (refs/stash is shared). Remove trees at verdict.'
 
-const REVIEWER = [
-  `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
-  'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
-  'exactly these three lines:',
-  'Verdict: MERGE            (or FIX_FIRST or WAIT)',
-  'PR: <owner>/<repo>#<n>',
-  'Head: <full 40-hex head sha>',
+/** CC-1278: Shepherd owns CI on a registered PR, so a WAIT on pending checks only cost a resume round. */
+const SHEPHERD_CI_RULE = [
+  "CI is Shepherd's: judge the code; pending or unread checks are no verdict input, never WAIT.",
+  'FIX_FIRST (Class: ci-red) only if a required check-run already failed at the head.',
+]
+
+const OWN_CI_CHECK = [
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
   'with `gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure. WAIT only for a clean review whose',
-  'required checks have not finished. On FIX_FIRST add a fourth line naming the first blocker:',
-  'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
-  'then one line `Defect class: <what the blocking items share; the one boundary where a single fix',
-  'covers them all>`. On a re-review (brief, PR comments or commits show an earlier FIX_FIRST) add',
-  '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
-  '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
-  '`Earlier findings: none found`.',
-  PROBE_SANDBOX_RULE,
-  REVIEW_TREE_RULE,
-  MUTANT_RULE,
-  SHIM_RULE,
-  REVIEWER_BODY_FILE_RULE,
-  QUOTE_RULE,
-  "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
-  FOLLOW_UPS_RULE,
-].join('\n')
+  'required checks have not finished.',
+]
+
+const reviewerBlock = (verdicts: string, ciRule: string[]): string =>
+  [
+    `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
+    'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
+    'exactly these three lines:',
+    `Verdict: MERGE            ${verdicts}`,
+    'PR: <owner>/<repo>#<n>',
+    'Head: <full 40-hex head sha>',
+    ...ciRule,
+    'On FIX_FIRST add a fourth line naming the first blocker:',
+    'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
+    'then one line `Defect class: <what the blocking items share; the one boundary where a single fix',
+    'covers them all>`. On a re-review (brief, PR comments or commits show an earlier FIX_FIRST) add',
+    '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
+    '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
+    '`Earlier findings: none found`.',
+    PROBE_SANDBOX_RULE,
+    REVIEW_TREE_RULE,
+    MUTANT_RULE,
+    SHIM_RULE,
+    REVIEWER_BODY_FILE_RULE,
+    QUOTE_RULE,
+    "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
+    FOLLOW_UPS_RULE,
+  ].join('\n')
+
+const REVIEWER = reviewerBlock('(or FIX_FIRST)', SHEPHERD_CI_RULE)
+
+/** The reviewer block for a brief carrying `SHEPHERD_NONE_MARKER`: a seat merging on its own reads CI itself. */
+export const REVIEWER_WITHOUT_SHEPHERD = reviewerBlock('(or FIX_FIRST or WAIT)', OWN_CI_CHECK)
 
 export const RETURN_CONTRACT_BLOCKS: Readonly<Record<ReturnContract, string>> = {
   implementer: IMPLEMENTER,

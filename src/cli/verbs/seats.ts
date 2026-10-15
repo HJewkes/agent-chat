@@ -113,6 +113,7 @@ import { kicksInBroker, refusedKickFlags, sendJobKick, type JobKickFrame } from 
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
 import { respawnSeat } from './seat-respawn.js'
+import { seatsCoordinatorsVerb } from './seats-coordinators.js'
 import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -832,7 +833,7 @@ export const seatsDispatchesVerb = defineVerb({
   },
 })
 
-function runStartDeps(root: string): RunStartDeps {
+export function runStartDeps(root: string): RunStartDeps {
   return {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),
@@ -974,4 +975,5 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsHeartbeatInstallVerb)
   addVerb(seats, seatsHeartbeatCheckVerb)
   addVerb(seats, seatsHeartbeatGapsVerb)
+  addVerb(seats, seatsCoordinatorsVerb)
 }

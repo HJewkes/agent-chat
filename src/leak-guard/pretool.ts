@@ -459,7 +459,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
-      assigns.push(...env.assigns)
+      for (const assign of env.assigns) assigns.push(assign)
     } else return done()
   }
 }
@@ -1337,8 +1337,9 @@ function pathKey(file: string, scope: Scope): string {
 /** The files a command writes by redirect or `tee`; undefined for a target the guard cannot resolve. */
 function writtenBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): (string | undefined)[] {
   const targets = [...cmd.writes]
-  if (path.basename(cmd.words[0] ?? '') === 'tee')
-    targets.push(...cmd.marked.slice(1).filter(w => !w.startsWith('-')))
+  if (path.basename(cmd.words[0] ?? '') === 'tee') {
+    for (const word of cmd.marked.slice(1)) if (!word.startsWith('-')) targets.push(word)
+  }
   return targets.map(word => {
     const file = resolveWord(word, cmd, ctx, scope)
     return file === undefined ? undefined : pathKey(file, scope)

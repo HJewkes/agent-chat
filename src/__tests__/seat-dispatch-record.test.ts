@@ -93,6 +93,15 @@ describe('broker rows', () => {
     expect(dispatched({ task: null }).task).toBeNull()
   })
 
+  it('records the config dir a spawn ran under on its dispatched row', () => {
+    expect(dispatched({ configDir: '/accounts/personal' }).config_dir).toBe('/accounts/personal')
+  })
+
+  it('omits config_dir when the spawn ran under no known dir', () => {
+    expect(Object.keys(dispatched())).not.toContain('config_dir')
+    expect(JSON.stringify(dispatched())).not.toContain('config_dir')
+  })
+
   it('leaves the spend and every seat-owned key null at dispatch', () => {
     expect(dispatched()).toMatchObject({
       outcome: 'dispatched',

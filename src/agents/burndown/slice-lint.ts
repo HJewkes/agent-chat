@@ -135,8 +135,11 @@ function undeclaredPublish(slice: PlannedSlice): string[] {
 
 type ByName = ReadonlyMap<string, PlannedSlice>
 
-const disjoint = (a: PlannedSlice, b: PlannedSlice): boolean =>
-  !a.owns.some(own => b.owns.some(other => patternsOverlap(own, other)))
+/** CC-1156 reuses this predicate on ledger claims, so it takes bare owns lists. */
+export const ownsDisjoint = (a: readonly string[], b: readonly string[]): boolean =>
+  !a.some(own => b.some(other => patternsOverlap(own, other)))
+
+const disjoint = (a: PlannedSlice, b: PlannedSlice): boolean => ownsDisjoint(a.owns, b.owns)
 
 function unexplainedEdges(slice: PlannedSlice, byName: ByName): string[] {
   if ((slice.dependsWhy ?? '').trim() !== '') return []

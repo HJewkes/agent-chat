@@ -40,14 +40,18 @@ function pushTo<T>(map: Map<string, T[]>, key: string, value: T): void {
 
 const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 
-/** The pool's watchdog readings; a rolled row is an assumed 0, no measurement, so it is left out. */
+/**
+ * The pool's watchdog readings; a rolled row is an assumed 0, no measurement, so it is left out. A `resets_at` of 0
+ * or none is unknown.
+ */
 function poolReadings(autonomyRoot: string): Map<string, CostReading[]> {
   const byPool = new Map<string, CostReading[]>()
   for (const row of jsonlRows(readingHistoryPath(autonomyRoot))) {
-    const { ts, pool, seven_day: sevenDay, five_hour: fiveHour } = row
+    const { ts, pool, seven_day: sevenDay, five_hour: fiveHour, resets_at: resetsAt } = row
     if (typeof pool !== 'string' || !isNumber(ts) || !isNumber(sevenDay) || !isNumber(fiveHour)) continue
     if (row.rolled === true) continue
-    pushTo(byPool, pool, { at: ts * 1000, sevenDay, fiveHour })
+    const known = isNumber(resetsAt) && resetsAt > 0 ? { sevenDayResetsAt: resetsAt * 1000 } : {}
+    pushTo(byPool, pool, { at: ts * 1000, sevenDay, fiveHour, ...known })
   }
   return byPool
 }

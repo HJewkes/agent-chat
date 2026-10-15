@@ -27,6 +27,30 @@ const isSubscribable = (kind: string): kind is SubscribableKind =>
  */
 const subjectOf = (row: { actor?: string; target?: string }): string | undefined => row.target ?? row.actor
 
+/**
+ * CC-321: the one session, by name, that already holds an exit's report and is not told now.
+ * `deferred` (CC-337): its report is still held, so the verdict comes later, once it is written.
+ */
+export interface ExitJudgement {
+  spawner: string
+  deferred: boolean
+}
+
+type ExitJudge = (
+  agentId: string | undefined,
+  exit: Record<string, string> | undefined,
+  later: (spawner: string, muted: boolean) => void,
+) => ExitJudgement | undefined
+
+type Offered = {
+  kind: string
+  actor?: string
+  target?: string
+  ref?: string
+  body?: string
+  meta?: Record<string, string>
+}
+
 export class SystemEventFeed<C> {
   private readonly pending = new Map<C, SystemEvent[]>()
   private timer: NodeJS.Timeout | null = null
@@ -35,21 +59,10 @@ export class SystemEventFeed<C> {
     private readonly registry: Registry<C>,
     private readonly push: (conn: C, events: SystemEvent[]) => void,
     private readonly coalesceMs: number = COALESCE_MS,
-    /** CC-321: the one session, by name, that already holds this exit's report and is not told again. */
-    private readonly reportedTo: (
-      agentId: string | undefined,
-      exit: Record<string, string> | undefined,
-    ) => string | undefined = () => undefined,
+    private readonly reportedTo: ExitJudge = () => undefined,
   ) {}
 
-  offer(row: {
-    kind: string
-    actor?: string
-    target?: string
-    ref?: string
-    body?: string
-    meta?: Record<string, string>
-  }): void {
+  offer(row: Offered): void {
     if (!isSubscribable(row.kind)) return
     // An adopted identity is minted the moment an ordinary session registers, and
     // that same event already goes out as `registered`. Pushing both would mean a
@@ -59,18 +72,24 @@ export class SystemEventFeed<C> {
     const subject = subjectOf(row)
     if (subject === undefined) return
 
-    const reported = row.kind === 'agent_exited' ? this.reportedTo(row.ref, row.meta) : undefined
-    const recipients = this.registry
-      .subscribersFor({ kind: row.kind, subject })
-      .filter(conn => !this.alreadyReported(conn, reported, row.ref))
-    if (recipients.length === 0) return
-
     const event: SystemEvent = {
       kind: row.kind,
       subject,
       at: Date.now(),
       ...(row.body ? { detail: row.body } : {}),
     }
+    const reported =
+      row.kind === 'agent_exited'
+        ? this.reportedTo(row.ref, row.meta, (spawner, muted) => this.settle(event, spawner, row.ref, muted))
+        : undefined
+    const recipients = this.registry
+      .subscribersFor({ kind: row.kind, subject })
+      .filter(conn => !this.alreadyReported(conn, reported, row.ref))
+    this.queue(recipients, event)
+  }
+
+  private queue(recipients: readonly C[], event: SystemEvent): void {
+    if (recipients.length === 0) return
     for (const conn of recipients) {
       const queued = this.pending.get(conn)
       if (queued) queued.push(event)
@@ -82,10 +101,26 @@ export class SystemEventFeed<C> {
   }
 
   /** Only the push is skipped: the `agent_exited` row is in the log and on the roster either way. */
-  private alreadyReported(conn: C, spawner: string | undefined, agentId: string | undefined): boolean {
-    if (spawner === undefined || this.registry.nameOf(conn) !== spawner) return false
-    logEvent('exit_notice_suppressed', { agentId, spawner })
+  private alreadyReported(
+    conn: C,
+    reported: ExitJudgement | undefined,
+    agentId: string | undefined,
+  ): boolean {
+    if (reported === undefined || this.registry.nameOf(conn) !== reported.spawner) return false
+    logEvent(reported.deferred ? 'exit_notice_deferred' : 'exit_notice_suppressed', {
+      agentId,
+      spawner: reported.spawner,
+    })
     return true
+  }
+
+  /** CC-337: the spawner's held report is written; tell it of the exit unless that report closed the run. */
+  private settle(event: SystemEvent, spawner: string, agentId: string | undefined, muted: boolean): void {
+    if (muted) return void logEvent('exit_notice_suppressed', { agentId, spawner })
+    const recipients = this.registry
+      .subscribersFor({ kind: event.kind, subject: event.subject })
+      .filter(conn => this.registry.nameOf(conn) === spawner)
+    this.queue(recipients, event)
   }
 
   /** A subscriber that disconnected mid-window is simply dropped, not pushed to. */

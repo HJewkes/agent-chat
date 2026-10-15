@@ -22,12 +22,18 @@ import {
   type SurfaceName,
 } from '../protocol.js'
 import { buildCallerLaunch, type LocalHost } from './caller-teleport.js'
-import { checkLaunch } from './remote-launch.js'
+import {
+  checkLaunch,
+  defaultSpawnHost,
+  placeRemoteSpawn,
+  prepareRemoteSpawn,
+  type SpawnHost,
+} from './remote-launch.js'
 
 /**
  * CC-951 g2: the machine side of a host launcher. It holds a connection of its own to the broker,
  * announces its machine with `host_hello`, answers `host_probe` about its own disk, and launches
- * a teleport successor from a `host_launch` spec. Every check that matters is made here, on this
+ * a teleport successor from a `host_launch` spec and a spawn from a `host_spawn` one (CC-1062). Every check that matters is made here, on this
  * machine: the broker checked the paths only lexically, so they are resolved through realpath
  * and checked again before anything is written or opened.
  *
@@ -52,6 +58,8 @@ export interface LauncherDeps {
   markSuperseded(agentId: string): void
   /** CC-1063: this machine's launcher key, read from its 0600 file on every connect, never from env. */
   readKey(): string | null
+  /** CC-1062: the shared executor's view of this machine, for a `host_spawn`. */
+  spawnHost: SpawnHost
 }
 
 /** Answered before the broker's own launch window closes, so an answer is not lost to its timeout. */
@@ -189,6 +197,40 @@ export async function answerLaunch(
   return refused(`the ${spec.surface} surface did not open within ${budgetMs / 1000}s`)
 }
 
+/** CC-1062: why a spawn cannot run here, checked before the shared executor writes anything. */
+function spawnReason(spec: RemoteLaunch, identity: LauncherIdentity, homeDir: string): string | undefined {
+  if (spec.cwd === undefined) return 'the launch names no cwd'
+  const blocked = surfaceReason(spec.surface, identity)
+  if (blocked !== undefined) return blocked
+  const paths = resolvePaths({ cwd: spec.cwd, configDir: spec.configDir }, homeDir)
+  return typeof paths === 'string' ? paths : undefined
+}
+
+/**
+ * CC-1062: a spawn routed here by the broker, run by the same executor a caller-site spawn uses,
+ * so its env and MCP servers come from this machine's profile. It opens without waiting for an
+ * ack: the broker holds its identity while this request is outstanding.
+ */
+export async function answerSpawn(
+  spec: RemoteLaunch,
+  identity: LauncherIdentity,
+  deps: LauncherDeps,
+  budgetMs = LAUNCH_BUDGET_MS,
+): Promise<HostAnswer> {
+  const reason = spawnReason(spec, identity, deps.homeDir)
+  if (reason !== undefined) return refused(reason)
+  const prepared = prepareRemoteSpawn(spec, deps.spawnHost)
+  if (!prepared.ok) return refused(prepared.reason)
+  const failed = await within(placeRemoteSpawn(spec, prepared.plan, deps.spawnHost), budgetMs)
+  if (failed === timedOut) {
+    deps.markSuperseded(spec.agentId)
+    return refused(`the ${spec.surface} surface did not open within ${budgetMs / 1000}s`)
+  }
+  if (failed === undefined) return { ok: true }
+  deps.spawnHost.discard(spec.agentId)
+  return refused(failed)
+}
+
 /** The launcher's end of its broker connection. */
 export interface LauncherLink {
   send(frame: ClientMessage): void
@@ -209,8 +251,11 @@ export async function handleHostFrame(
     const answer = answerProbe(frame.probe, identity, deps)
     return link.send({ t: 'host_probe_result', id: frame.id, ...answer })
   }
-  if (frame.t !== 'host_launch') return
-  const answer = await answerLaunch(frame.launch, identity, deps)
+  if (frame.t !== 'host_launch' && frame.t !== 'host_spawn') return
+  const answer =
+    frame.t === 'host_spawn'
+      ? await answerSpawn(frame.launch, identity, deps)
+      : await answerLaunch(frame.launch, identity, deps)
   if (answer.ok && !link.isOpen()) return deps.markSuperseded(frame.launch.agentId)
   link.send({ t: 'host_launch_result', id: frame.id, ...answer })
 }
@@ -223,6 +268,7 @@ export const defaultLauncherDeps = (homeDir: string): LauncherDeps => ({
   launch: async (surface, plan) => void (await surfaceFor(surface).launch(plan)),
   markSuperseded,
   readKey: ownKey,
+  spawnHost: { ...defaultSpawnHost(), homeDir },
 })
 
 type Log = (line: string) => void

@@ -104,6 +104,19 @@ describe('burndown brief approve', () => {
     ])
   })
 
+  it('lifts a seat hold when the brief is approved by hand', () => {
+    fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    fs.writeFileSync(
+      path.join(root, 'init', 'tasks', 'CC-1.yml'),
+      'id: CC-1\ntags:\n  - brief:proposed=2026-10-09\n  - brief:held=owner-call\n',
+    )
+
+    const report = approveBrief('CC-1', ports(), '2026-10-10')
+
+    expect(report.ok).toBe(true)
+    expect(edits).toContainEqual(['--remove-tag', 'brief:held=owner-call'])
+  })
+
   it('refuses an unknown task', () => {
     const report = approveBrief('CC-9', ports(), '2026-10-10')
     expect(report.errors?.[0]).toContain('no task CC-9')
@@ -422,19 +435,42 @@ describe('the tick auto-approves a proposed brief (CC-1234)', () => {
     expect(routes[0]?.section).toContain('ruleset-write')
   })
 
-  it.each([['needs-human'], ['human-only'], ['brief:needs-human']])(
-    'never approves or routes a task tagged %s',
-    flag => {
-      writeTask([PROPOSED, flag])
-      writePlan(LINTED)
+  it.each([
+    ['needs-human', 'tagged needs-human'],
+    ['human-only', 'tagged human-only'],
+    ['brief:needs-human', 'tagged brief:needs-human'],
+    ['blocked', 'tagged blocked'],
+    ['needs-decision', 'tagged needs-decision'],
+    ['brief:held', 'tagged brief:held'],
+    ['brief:held=waits-on-CC-1328', 'held by the seat: waits-on-CC-1328'],
+  ])('never approves or routes a task tagged %s', (flag, reason) => {
+    writeTask([PROPOSED, flag])
+    writePlan(LINTED)
 
-      const settled = settle()
+    const settled = settle()
 
-      expect(edits).toEqual([])
-      expect(settled.routes).toEqual([])
-      expect(settled.lines.join('\n')).toContain(`tagged ${flag}`)
-    },
-  )
+    expect(edits).toEqual([])
+    expect(settled.routes).toEqual([])
+    expect(settled.lines.join('\n')).toContain(reason)
+  })
+
+  it('a seat-held brief stays proposed through a tick and is approved once the hold is lifted', () => {
+    writeTask([PROPOSED, 'brief:held=owner-call'])
+    writePlan(LINTED)
+
+    const held = settle()
+
+    expect(edits).toEqual([])
+    expect(held.approved).toEqual([])
+    expect(held.routes).toEqual([])
+    expect(fs.readFileSync(path.join(root, 'demo', 'tasks', 'T-1.yml'), 'utf8')).toContain(PROPOSED)
+
+    writeTask([PROPOSED])
+    const released = settle()
+
+    expect(edits).toContainEqual(['--add-tag', `brief:ready=${TODAY}`])
+    expect(released.approved).toEqual([{ slug: 'demo', taskId: 'T-1' }])
+  })
 
   it('never approves a plan flagged needs-human', () => {
     writeTask([PROPOSED])
