@@ -1019,6 +1019,7 @@ describe('a successor that does not start (CC-402)', () => {
       launcherRunning: async () => launcherUp,
       surface: {
         platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
         runAppleScript: async script => {
           if (script.includes('is running')) {
             if (itermDownFor === 0) return 'true'
@@ -1069,21 +1070,109 @@ describe('a successor that does not start (CC-402)', () => {
     expect(failedLines()).toEqual([])
   })
 
-  it('tells the human and the seat log once when the retry fails too', async () => {
+  /** The surface each launch asked for; `failHeadless` makes a headless launch throw as well. */
+  function recordSurfaces(failHeadless = false): string[] {
+    const launchOn = (supervisor as unknown as { launchOn: (...a: unknown[]) => Promise<object> }).launchOn
+    const surfaces: string[] = []
+    vi.spyOn(supervisor as unknown as { launchOn: typeof launchOn }, 'launchOn').mockImplementation(
+      async (...args: unknown[]) => {
+        surfaces.push(args[0] as string)
+        if (failHeadless && args[0] === 'headless') throw new Error('spawn claude ENOENT')
+        return launchOn.apply(supervisor, args)
+      },
+    )
+    return surfaces
+  }
+
+  const headlessNotices = () => successorNotices().filter(item => item.text.includes('started headless'))
+
+  it('starts the successor headless under its recorded session when iTerm refuses the launch and the retry (CC-1372)', async () => {
     const agentId = await spawnAgent(visible)
     stopAutoAttach()
     itermDownFor = 2
+    const surfaces = recordSurfaces()
 
     const result = await supervisor.teleport(anchored(agentId))
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
 
+    const successorId = result.agentId as string
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane', 'headless'])
+    expect(
+      successorNotices().filter(item => item.text.includes('still not running after one retry')),
+    ).toEqual([])
+    const notices = headlessNotices()
+    expect(notices).toHaveLength(1)
+    expect(notices[0]?.text).toContain('iterm-pane (iTerm2 is not running')
+    expect(notices[0]?.text).toContain('agent-chat agent surface scout')
+    expect(failedLines()).toEqual([])
+    expect(readBrokerLog()).toContain('"event":"teleport_relaunch_headless"')
+    expect(readBrokerLog()).toContain('"event":"teleport_completed"')
+    expect(readBrokerLog()).not.toContain('"event":"teleport_failed"')
+    expect(planFor(successorId).surface).toBe('headless')
+    const { args } = planFor(successorId)
+    expect(args[args.indexOf('--session-id') + 1]).toBe(spawnRowFor(successorId)?.meta?.session_id)
+    expect(supervisor.liveIds()).toContain(successorId)
+  })
+
+  it('records the fallback successor as headless, so the command its notice names can surface it', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    itermDownFor = 2
+    const surfaces = recordSurfaces()
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    const switched = await supervisor.switchSurface({
+      name: 'scout',
+      to: 'interactive',
+      requestedBy: 'human',
+    })
+
+    expect(switched.ok).toBe(true)
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane', 'headless', 'iterm-tab'])
+  })
+
+  it('tells the human and the seat log once when the headless fallback fails too', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    itermDownFor = 2
+    const surfaces = recordSurfaces(true)
+
+    const result = await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane', 'headless'])
     expect(typed).toEqual([])
     const notices = successorNotices()
     expect(notices).toHaveLength(1)
-    expect(notices[0]?.text).toContain('still not running after one retry: iTerm2 is not running')
+    expect(notices[0]?.text).toContain('still not running after one retry: spawn claude ENOENT')
     expect(notices[0]?.text).toContain(`${result.agentId as string}/relaunch`)
+    expect(planFor(result.agentId as string).surface).toBe('iterm-pane')
+    expect(headlessNotices()).toEqual([])
     expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
     expect(readBrokerLog().match(/"event":"teleport_failed"/g)).toHaveLength(1)
+  })
+
+  it('does not fall back to headless when run-agent appeared during the retry', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    itermDownFor = 2
+    const launchOn = (supervisor as unknown as { launchOn: (...a: unknown[]) => Promise<object> }).launchOn
+    const surfaces: string[] = []
+    vi.spyOn(supervisor as unknown as { launchOn: typeof launchOn }, 'launchOn').mockImplementation(
+      async (...args: unknown[]) => {
+        surfaces.push(args[0] as string)
+        if (surfaces.length === 2) launcherUp = true
+        return launchOn.apply(supervisor, args)
+      },
+    )
+
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(surfaces).toEqual(['iterm-pane', 'iterm-pane'])
+    expect(readBrokerLog()).toContain('"event":"teleport_relaunch_skipped"')
+    expect(headlessNotices()).toEqual([])
   })
 
   it('retries once when the launch check finds the successor not running, and that retry starts it', async () => {
@@ -2414,6 +2503,22 @@ describe('successor-first ordering (CC-951)', () => {
       .filter(r => r.ref === agentId || r.msgId === result.agentId)
       .map(r => r.kind)
     expect(kindsInOrder.indexOf('agent_stood_down')).toBeLessThan(kindsInOrder.lastIndexOf('agent_spawned'))
+  })
+
+  it('never falls back to headless, since its predecessor still runs (CC-1372)', async () => {
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    const launchOn = vi
+      .spyOn(supervisor as unknown as { launchOn: () => Promise<object> }, 'launchOn')
+      .mockRejectedValue(new Error('iTerm2 is not running'))
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h', surface: 'iterm-tab' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    const surfaces = launchOn.mock.calls.map(call => (call as unknown[])[0])
+    expect(surfaces).toEqual(['iterm-tab', 'iterm-tab'])
+    expect(signalled()).toEqual([])
   })
 })
 

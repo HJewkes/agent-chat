@@ -324,6 +324,7 @@ const succeedsInto = (handle: LaunchHandle, predecessor: LaunchHandle | undefine
 interface SuccessorLaunch {
   input: RelaunchInput
   plan: LaunchPlan
+  sessionId: string
   predecessor: Live | undefined
   allocation: Allocation
   isolation: IsolationName
@@ -4106,7 +4107,7 @@ export class Supervisor implements TeleportHost {
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
     const executionId = this.openSuccessor(input, predecessor)
-    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
+    const launch: SuccessorLaunch = { input, plan, sessionId, predecessor, allocation, isolation }
     const { handle, retried } = await this.launchSuccessor(launch, executionId)
     this.trackSuccessor(launch, handle)
     this.bindExecution(input.agentId, executionId)
@@ -4222,8 +4223,9 @@ export class Supervisor implements TeleportHost {
   private successorPlan(
     input: RelaunchInput,
     allocation: Allocation,
+    over: { sessionId?: string; surface?: SurfaceName } = {},
   ): { plan: LaunchPlan; sessionId: string } {
-    const sessionId = Teleport.newSessionId()
+    const sessionId = over.sessionId ?? Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
       sessionId,
@@ -4232,7 +4234,7 @@ export class Supervisor implements TeleportHost {
       brief: input.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
-      surface: input.surface,
+      surface: over.surface ?? input.surface,
       preamble: input.preamble,
       mcpConfigPath: mcpConfigPath(input.agentId),
       hookSettingsPath: hookSettingsPath(input.agentId),
@@ -4419,11 +4421,90 @@ export class Supervisor implements TeleportHost {
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
-      const reason = (err as Error).message
-      this.finishFailedLaunch(executionId, reason)
-      this.reportDeadSuccessor(input, reason)
-      throw new SuccessorNotStarted(reason)
+      return this.headlessFallback(launch, executionId, (err as Error).message)
     }
+  }
+
+  /**
+   * CC-1372: a successor-last teleport has already ended its predecessor, so a surface that
+   * failed its launch and retry runs the successor headless rather than losing it. A
+   * successor-first predecessor still runs and is kept instead (CC-951).
+   */
+  private async headlessFallback(
+    launch: SuccessorLaunch,
+    executionId: string | undefined,
+    failure: string,
+  ): Promise<{ handle: LaunchHandle; retried: boolean }> {
+    const { input } = launch
+    if (input.successorFirst === true || input.surface === 'headless')
+      return this.lostSuccessor(input, executionId, failure)
+    const refusal = await this.retryRefusal(input)
+    if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
+    let handle: LaunchHandle
+    try {
+      handle = await this.launchOn('headless', this.headlessPlan(launch))
+    } catch (err) {
+      // The relaunch script the lost-teleport notice names must start the surface the human asked for.
+      this.writeSuccessorFiles(launch, launch.plan)
+      return this.lostSuccessor(input, executionId, (err as Error).message)
+    }
+    this.recordHeadlessSuccessor(launch)
+    this.noticeHeadlessSuccessor(input, failure)
+    logEvent('teleport_relaunch_headless', { name: input.name, agentId: input.agentId, reason: failure })
+    return { handle, retried: true }
+  }
+
+  /** The successor's plan and launch files rewritten for headless, under the session id already recorded. */
+  private headlessPlan(launch: SuccessorLaunch): LaunchPlan {
+    const { input, sessionId, allocation } = launch
+    const { plan } = this.successorPlan(input, allocation, { sessionId, surface: 'headless' })
+    this.writeSuccessorFiles(launch, plan)
+    return plan
+  }
+
+  private writeSuccessorFiles(launch: SuccessorLaunch, plan: LaunchPlan): void {
+    const { input, allocation, isolation } = launch
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      this.createdWorktree(input.agentId, allocation, isolation),
+    )
+  }
+
+  /** As a mode switch records it, so the identity, `agent surface` and the roster see the process that runs. */
+  private recordHeadlessSuccessor(launch: SuccessorLaunch): void {
+    const { input, sessionId } = launch
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: 'agent-chat',
+      target: input.name,
+      ref: input.agentId,
+      body: 'teleport successor started headless',
+      meta: {
+        session_id: sessionId,
+        surface: 'headless',
+        from_surface: input.surface,
+        perm_mode: permModeFor('headless'),
+        cause: 'teleport-headless-fallback',
+      },
+    })
+  }
+
+  private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {
+    this.finishFailedLaunch(executionId, reason)
+    this.reportDeadSuccessor(input, reason)
+    throw new SuccessorNotStarted(reason)
+  }
+
+  private noticeHeadlessSuccessor(input: RelaunchInput, reason: string): void {
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${input.name}'s teleport successor could not open in ${input.surface} (${reason}), so it was ` +
+        `started headless. Run \`agent-chat agent surface ${input.name}\` to bring it into a terminal.`,
+    })
   }
 
   /**
