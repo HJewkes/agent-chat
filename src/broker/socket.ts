@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -8,6 +9,7 @@ import {
   isTeleportReason,
   SURFACE_NAMES,
   type ClientMessage,
+  type Correlated,
   type DeliveredMessage,
   type ItemShape,
   type PermissionBehavior,
@@ -39,6 +41,7 @@ import {
   type SupervisorOptions,
 } from '../agents/supervisor.js'
 import { asPlatform } from '../agents/teleport-config.js'
+import { refused, type RefusalStage } from '../agents/teleport.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -48,13 +51,14 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId, resolveMachines } from '../config.js'
+import { resolveDeciderAgentId, resolveHostProofMode, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
+import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 
 /**
@@ -90,8 +94,16 @@ const spawnedAsOf = (msg: {
   return spawnedAs === undefined ? {} : { spawnedAs }
 }
 
+/**
+ * The request being handled, carried across its awaits (CC-1343), so every one of
+ * the reply sites echoes its id without threading it through each handler. Only a
+ * reply to the requesting connection carries it; a frame to another one does not.
+ */
+const requestScope = new AsyncLocalStorage<{ conn: Conn; rid: number }>()
+
 const reply = (conn: Conn, message: ServerMessage): void => {
-  conn.write(encode(message))
+  const scope = requestScope.getStore()
+  conn.write(encode(scope?.conn === conn ? { ...message, rid: scope.rid } : message))
 }
 
 /** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
@@ -229,6 +241,28 @@ function launcherHello(
   return { host: msg.host.trim(), platform, surfaces }
 }
 
+/**
+ * CC-1063: why a hello's proof does not let it hold `host`, or undefined when it does. A configured
+ * machine always needs a proof over this connection's nonce, connected holder or not, and with no
+ * broker key it fails closed. An unconfigured host needs one only once a key has been minted for it.
+ */
+export function proofRefusal(
+  host: string,
+  proof: unknown,
+  nonce: string | undefined,
+  machines: readonly string[],
+  keyFor: (host: string) => string | null,
+): string | undefined {
+  const configured = machines.some(machine => machine.toLowerCase() === host.toLowerCase())
+  const key = keyFor(host)
+  if (key === null)
+    return configured
+      ? `no launcher key for ${host} on the broker; provision the launcher key (CC-1063 slice d)`
+      : undefined
+  if (nonce === undefined) return `no valid launcher proof for ${host}: send host_challenge first`
+  return proofMatches(key, host, nonce, proof) ? undefined : `no valid launcher proof for ${host}`
+}
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
@@ -297,7 +331,7 @@ export class SocketServer {
       core.registry,
       (conn, events) => reply(conn, { t: 'system_events', events }),
       undefined,
-      (agentId, exit) => core.reportedSpawner(agentId, exit),
+      (agentId, exit, later) => core.reportedSpawner(agentId, exit, later),
     )
     // Fed from the single write path, so a subscriber sees exactly what the log
     // recorded rather than a second notion of what happened.
@@ -578,31 +612,29 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
-    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown teleport reason "${String(msg.reason)}"`,
-      })
-    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
-      })
-    if (msg.to !== undefined && typeof msg.to !== 'string')
-      return reply(conn, { t: 'teleport_result', ok: false, reason: 'teleport "to" must be a machine name' })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
-    if (entry?.agentId === undefined) {
-      return reply(conn, {
+    const turnedAway = (stage: RefusalStage, reason: string): void =>
+      reply(conn, {
         t: 'teleport_result',
-        ok: false,
-        reason:
-          'teleport needs a durable identity, and this connection has none. Call chat_register ' +
-          'first; if you already have, the broker could not read this session id from the ' +
-          'environment, which an older MCP server does not send.',
+        ...refused({ name: entry?.name ?? 'unregistered' }, stage, reason),
       })
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return turnedAway('preflight', `unknown teleport reason "${String(msg.reason)}"`)
+    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
+      return turnedAway(
+        'preflight',
+        `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
+      )
+    if (msg.to !== undefined && typeof msg.to !== 'string')
+      return turnedAway('preflight', 'teleport "to" must be a machine name')
+    if (entry?.agentId === undefined) {
+      return turnedAway(
+        'identity',
+        'teleport needs a durable identity, and this connection has none. Either you have not ' +
+          'called chat_register yet (call it first), or your MCP server is older than the broker ' +
+          'and did not send a session id (restart this session).',
+      )
     }
     const outcome = await this.supervisor.teleport({
       subject: {
@@ -643,6 +675,7 @@ export class SocketServer {
       ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
       ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
+      ...(outcome.placement === undefined ? {} : { placement: outcome.placement }),
     })
   }
 
@@ -736,23 +769,59 @@ export class SocketServer {
    * CC-951: a host launcher is a connection of its own. The guard is per connection: one that
    * holds a registration may not announce a machine, and a launcher's may not register (see
    * `refuseLauncherRegister`). A session can still open a second connection; what stops it
-   * taking over a machine is that the first live launcher holds it, and that a configured
-   * `machines` list bounds which machines may be announced at all.
+   * taking over a machine is that the first live launcher holds it, that a configured
+   * `machines` list bounds which machines may be announced at all, and (CC-1063) that a
+   * configured machine is held only with a proof of its launcher key over this connection's
+   * single-use nonce, so the gap after the real launcher drops is closed too.
    */
   private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
-    if (this.core.registry.nameOf(conn) !== undefined) {
-      this.refuseToSession(conn, 'announce itself as a host launcher')
-      return reply(conn, {
-        t: 'host_hello_result',
-        ok: false,
-        reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
-      })
-    }
-    const hello = launcherHello(msg, Object.values(resolveMachines()))
+    const nonce = this.hosts.takeNonce(conn)
+    if (this.refuseSessionLauncher(conn)) return
+    const machines = Object.values(resolveMachines())
+    const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    const result = this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce, machines)
+    const result =
+      refusal === undefined
+        ? this.hosts.hello(conn, hello, frame => reply(conn, frame))
+        : { ok: false, reason: refusal }
     if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
     reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /**
+   * CC-1063: with `hostProof` off (the default until launchers answer the challenge), a hello without a
+   * proof is accepted as before, and a bad proof is logged and accepted, so the check can be watched live.
+   */
+  private enforcedProofRefusal(
+    host: string,
+    proof: unknown,
+    nonce: string | undefined,
+    machines: readonly string[],
+  ): string | undefined {
+    const enforced = resolveHostProofMode() === 'enforce'
+    if (!enforced && proof === undefined) return undefined
+    const refusal = proofRefusal(host, proof, nonce, machines, brokerKeyFor)
+    if (enforced || refusal === undefined) return refusal
+    logEvent('host_launcher_refused', { host, reason: 'proof-invalid (not enforced)' })
+    return undefined
+  }
+
+  /** CC-1063: the challenge is the hello's first step, so a session is refused it with the hello's answer. */
+  private handleHostChallenge(conn: Conn): void {
+    if (this.refuseSessionLauncher(conn)) return
+    reply(conn, { t: 'host_challenge_result', nonce: this.hosts.challenge(conn) })
+  }
+
+  private refuseSessionLauncher(conn: Conn): boolean {
+    if (this.core.registry.nameOf(conn) === undefined) return false
+    this.refuseToSession(conn, 'announce itself as a host launcher')
+    reply(conn, {
+      t: 'host_hello_result',
+      ok: false,
+      reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
+    })
+    return true
   }
 
   /** CC-951: a launcher's connection never holds a session's name; it takes launches, not messages. */
@@ -1882,6 +1951,8 @@ export class SocketServer {
         return
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
+      case 'host_challenge':
+        return this.handleHostChallenge(conn)
       case 'host_hello':
         return this.handleHostHello(conn, msg)
       case 'host_probe_result':
@@ -1965,8 +2036,11 @@ export class SocketServer {
 
   onConnection(conn: Conn): void {
     const { core } = this
-    const read = lineReader<ClientMessage>(
-      msg => this.handleMessage(conn, msg),
+    const read = lineReader<ClientMessage & Correlated>(
+      ({ rid, ...msg }) =>
+        typeof rid === 'number'
+          ? requestScope.run({ conn, rid }, () => this.handleMessage(conn, msg as ClientMessage))
+          : this.handleMessage(conn, msg as ClientMessage),
       err => logEvent('bad_message', { error: err.message }),
     )
     conn.on('data', read)

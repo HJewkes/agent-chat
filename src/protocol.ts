@@ -1218,7 +1218,9 @@ export type ClientMessage =
    * CC-951: a host launcher announces the machine it launches on. Refused from a registered
    * session connection: a launcher is its own connection, never a session's.
    */
-  | { t: 'host_hello'; host: string; platform: string; surfaces: string[] }
+  | { t: 'host_hello'; host: string; platform: string; surfaces: string[]; proof?: string }
+  /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
+  | { t: 'host_challenge' }
   /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
   | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
@@ -1387,12 +1389,16 @@ export type ServerMessage =
       warnings?: string[]
       /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
       remote?: boolean
+      /** Where the successor opens: typed into this pane, a fresh surface here, or on another machine. */
+      placement?: 'same-pane' | 'new-surface' | 'other-machine'
     }
   /** CC-951: `endSelf` means the successor attached, so the caller ends its own Claude Code. */
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
   | { t: 'host_hello_result'; ok: boolean; reason?: string }
+  /** CC-1063: the nonce for the next `host_hello` on this connection; HMAC it with the host's key. */
+  | { t: 'host_challenge_result'; nonce: string }
   /** CC-951: broker -> launcher; does `cwd`, `configDir` and `surface` work on its machine. */
   | { t: 'host_probe'; id: string; probe: HostProbe }
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
@@ -1569,6 +1575,16 @@ export function lineReader<T>(onValue: (value: T) => void, onError: (err: Error)
   }
 }
 
-export function encode(message: ClientMessage | ServerMessage): string {
+/**
+ * CC-1343: a request's correlation id, echoed on the reply it gets. Replies are
+ * otherwise matched to requests by type and order, which cannot tell a late reply
+ * from a lost one. Optional both ways: a client that sends none gets none back,
+ * and a broker that predates it echoes nothing, so either side may be older.
+ */
+export interface Correlated {
+  rid?: number
+}
+
+export function encode(message: (ClientMessage | ServerMessage) & Correlated): string {
   return JSON.stringify(message) + '\n'
 }

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { Command } from 'commander'
+import { POLL_SESSION_ID } from '@titan-design/anthropic-account'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildProgram } from '../cli/index.js'
 import { accountDirs, accountsBudget, readAccountUsage } from '../agents/account-budget.js'
@@ -33,10 +34,10 @@ beforeEach(() => {
   pollerLog = path.join(home, 'poller.log')
   fs.mkdirSync(path.join(home, '.claude'))
   for (const name of ['alpha', 'beta', 'gamma']) fs.mkdirSync(profile(name), { recursive: true })
-  writeReading(profile('alpha'), 'usage-poller', NOW_S - 30, 55, 36)
+  writeReading(profile('alpha'), POLL_SESSION_ID, NOW_S - 30, 55, 36)
   writeReading(profile('alpha'), 'session-1', NOW_S - 5, 99, 99)
   writeReading(profile('beta'), 'session-2', NOW_S - 10, 12, 40)
-  writeReading(profile('gamma'), 'usage-poller', NOW_S - 7200, 3, 94)
+  writeReading(profile('gamma'), POLL_SESSION_ID, NOW_S - 7200, 3, 94)
   fs.writeFileSync(
     pollerLog,
     [
@@ -87,6 +88,36 @@ describe('readAccountUsage', () => {
   it('marks an old poller reading stale and an account whose last poll failed auth', () => {
     const usage = readAccountUsage(profile('gamma'), options())
     expect(usage).toMatchObject({ stale: true, auth_fail: true, age_seconds: 7200 })
+  })
+
+  it('reads the poll the live poller writes over a leftover usage-poller file', () => {
+    writeReading(profile('delta'), 'usage-poller', NOW_S - 4 * 86_400, 3, 94)
+    writeReading(profile('delta'), POLL_SESSION_ID, NOW_S - 30, 20, 40)
+
+    const usage = readAccountUsage(profile('delta'), options())
+
+    expect(usage).toMatchObject({
+      source: 'usage-poller',
+      seven_day: { used_pct: 40 },
+      age_seconds: 30,
+      stale: false,
+    })
+  })
+
+  it('a leftover usage-poller file alone is never the poller reading', () => {
+    writeReading(profile('epsilon'), 'usage-poller', NOW_S - 4 * 86_400, 3, 94)
+
+    const usage = readAccountUsage(profile('epsilon'), options())
+
+    expect(usage).toMatchObject({ source: 'status-line', stale: true })
+  })
+
+  it('a poll one missed tick old is not stale, two missed ticks is', () => {
+    writeReading(profile('zeta'), POLL_SESSION_ID, NOW_S - 330, 20, 40)
+    writeReading(profile('eta'), POLL_SESSION_ID, NOW_S - 400, 20, 40)
+
+    expect(readAccountUsage(profile('zeta'), options())).toMatchObject({ age_seconds: 330, stale: false })
+    expect(readAccountUsage(profile('eta'), options())).toMatchObject({ age_seconds: 400, stale: true })
   })
 
   it('reports no reading for an account with an empty cache', () => {

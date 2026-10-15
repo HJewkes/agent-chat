@@ -12,14 +12,21 @@ import {
 } from '../../broker/host-channels.js'
 import { observedModel } from '../../agents/transcript.js'
 
-function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
+const PLACEMENT_WORDS = {
+  'same-pane': 'in the same window',
+  'new-surface': 'in a new surface, not this window',
+  'other-machine': 'on another machine',
+  unreported: 'shortly',
+} as const
+
+export function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
   const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
   const when =
     res.countdownMs === undefined
       ? 'Your successor is starting now and this session is being shut down.'
       : `Your human has ${Math.round(res.countdownMs / 1000)}s to stop this, then you will be shut ` +
-        'down and your successor will open in the same window.'
+        `down and your successor will open ${PLACEMENT_WORDS[res.placement ?? 'unreported']}.`
   return (
     `Teleport accepted. Handoff recorded; your successor is ${res.agentId} and keeps the name ` +
     `"${res.name}". ${when} Do not start anything new — finish or write down whatever is in ` +
@@ -52,15 +59,16 @@ export function launchSeenWithModel(
 export const agentTeleport = defineTool({
   name: 'agent_teleport',
   description:
-    'End this session and start a successor that boots from the CURRENT build, keeping your name, ' +
-    'your peers, your tags and your working directory. Use it when your own instructions or the code ' +
-    'you run on have moved since you started — the alternative is exiting (losing what you know) or ' +
-    'staying useful and stale. BUILD FIRST: the successor execs whatever `npm run build` last ' +
-    'produced, so a teleport that skips the build achieves nothing at real cost. This is not a resume ' +
-    'and not a subagent: your transcript does not come with you, the handoff below is all your ' +
-    'successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 ' +
-    'seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. ' +
-    'Answer each open question to the human or name its id in the handoff; teleport refuses otherwise.',
+    'End this session and start a successor on the CURRENT build, keeping your name, peers, tags, ' +
+    'working directory and Claude account (CLAUDE_CONFIG_DIR); teleport cannot change the account, ' +
+    'so ask your human to move you. Use it when your context is filling (a `[budget]` line), when ' +
+    'you are parked waiting on the human (`reason: "park"`), or when your instructions or code have ' +
+    "moved since you started. If you changed agent-chat's own code, run `npm run build` first; " +
+    'otherwise skip it. This is not a resume and not a subagent: your transcript does not come ' +
+    'with you, the handoff below is all your successor gets, and you will be shut down. If you are ' +
+    'visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens ' +
+    'immediately. You cannot cancel it yourself. Answer each open question to the human or name ' +
+    'its id in the handoff; teleport refuses otherwise.',
   args: z.object({
     handoff: requiredString('handoff').describe(
       'Everything your successor needs, written by you, stored verbatim, 8 KB max (refused, not ' +

@@ -27,11 +27,13 @@ export const probes = [
     length: 420,
   },
   {
+    // 2.1.299 replaced the bare existsSync test with a leading diskless guard and a statSync
+    // test of the legacy `.config.json` (the second alternative).
     label: 'global config file',
     pattern: new RegExp(
-      String.raw`function ${id}\(\)\{if\(${id}\(\)\.existsSync\(${id}\(${id}\(\),"\.config\.json"\)\)\)`,
+      String.raw`function ${id}\(\)\{(?:if\(${id}\(\)\.existsSync\(${id}\(${id}\(\),"\.config\.json"\)\)\)|if\(${id}\(\)\)return ${id}\(\);let ${id}=${id}\(${id}\(\),"\.config\.json"\),${id}=${id}\(\);try\{)`,
     ),
-    length: 330,
+    length: 380,
   },
 ]
 

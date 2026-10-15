@@ -79,7 +79,9 @@ describe('deliverSeatEvents', () => {
     await restall(await restall(refused.ledger))
 
     expect(refused.ledger.claims[0]?.noticeFacts).toBeUndefined()
-    expect(accepting.seen.sent).toEqual(['alpha: stalled T-1: phase-timeout: implementing past its timeout'])
+    expect(accepting.seen.sent).toEqual([
+      'alpha: stalled T-1: phase-timeout: implementing past its timeout; holds: lane + task; class unclassed',
+    ])
   })
 
   it('fails every seat with the reason when the sender cannot open', async () => {

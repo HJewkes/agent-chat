@@ -19,6 +19,7 @@ import type { PlannedSlice, Report } from './report.js'
 import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
+import { taskClosed } from './reconcile.js'
 import { classifyStale } from './stale-claim.js'
 import type { ActivityRead } from './stall.js'
 import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
@@ -68,6 +69,8 @@ export interface Observation {
   exitedWork?: ExitedWork | 'unreadable'
   /** CC-1054: what GitHub says about an implementing or stalled claim's PR, by its record or its agents' branches; only a merge acts. */
   prState?: ClaimPr | 'unreadable'
+  /** CC-982: the claim's active-work task status read this tick; absent when unread. */
+  taskStatus?: string
 }
 
 export type SpawnContext =
@@ -178,7 +181,12 @@ const ladderFirst = (claim: Claim, after: Claim): boolean =>
 type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
 const STEPS: Partial<Record<Claim['phase'], Step>> = {
-  spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
+  spawning: (claim, obs, now) =>
+    obs.agent === undefined
+      ? []
+      : finished(obs)
+        ? landAndRead(claim, obs.agent.id, obs, now)
+        : [landed(claim, obs.agent.id)],
   planning: (claim, obs, now) =>
     !finished(obs) ? [] : claim.briefer === true ? afterBriefer(claim, obs) : afterPlanner(claim, obs, now),
   implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : linkPr(claim, obs)),
@@ -194,6 +202,7 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (merged !== undefined) return mergedPr(claim, prRef(merged), merged.headSha)
   const settled = settledOnGitHub(claim, obs)
   if (settled !== undefined) return settled
+  if (taskClosed(claim, obs)) return finishedClaim(claim, {})
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
   const shepherds = exitedToShepherd(claim, obs)
   if (shepherds !== undefined) return shepherds
@@ -226,13 +235,25 @@ const UNSTALLED: ClaimPatch = { stalledReason: undefined, stalledClass: undefine
 function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.owned === undefined || obs.owned === 'unreadable') return []
   const cleared: ClaimPatch = obs.planOwns === undefined ? UNSTALLED : { ...UNSTALLED, owns: obs.planOwns }
-  const moveOn: Resume = (c, o) => [update(c, cleared), ...advanceClaim({ ...c, ...cleared }, o, now)]
+  const moveOn: Resume = (c, o) => {
+    const next = { ...c, ...cleared }
+    return [update(c, cleared), ...(prunedHandOff(next, o) ?? advanceClaim(next, o, now))]
+  }
   const held = fenced(claim, obs, moveOn)
   if (held === undefined) return moveOn(claim, obs) ?? []
   const [restall] = held
   const same =
     held.length === 1 && restall?.kind === 'update' && restall.patch.stalledReason === claim.stalledReason
   return same ? [] : held
+}
+
+/**
+ * CC-832 b: a fence cleared after the agent's row was pruned hands its PR to Shepherd. No agent is left to report,
+ * so otherwise the claim would wait into a phase-timeout and the ladder would respawn work the PR already holds.
+ */
+function prunedHandOff(claim: Claim, obs: Observation): Action[] | undefined {
+  if (obs.agent !== undefined || claim.agentName === undefined || claim.pr === undefined) return undefined
+  return handOff(claim, claim.pr, claim.agentName, {}, obs.shepherd?.row)
 }
 
 /** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
@@ -255,8 +276,19 @@ const stall = (claim: Claim, reason: string, cls: ExceptionClass, code?: StallCo
 
 const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
 
-const landed = (claim: Claim, agentId: string): Action =>
-  update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
+const landedPatch = (claim: Claim, agentId: string): ClaimPatch => ({
+  phase: claim.nextPhase ?? 'implementing',
+  agentId,
+  nextPhase: undefined,
+})
+
+const landed = (claim: Claim, agentId: string): Action => update(claim, landedPatch(claim, agentId))
+
+/** CC-980 b: an agent that exited before its claim landed is read in the same tick, not one tick later. */
+function landAndRead(claim: Claim, agentId: string, obs: Observation, now: Date): Action[] {
+  const patch = landedPatch(claim, agentId)
+  return [update(claim, patch), ...advanceClaim({ ...claim, ...patch }, obs, now)]
+}
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.slices === undefined)
@@ -361,7 +393,7 @@ function exitedToShepherd(claim: Claim, obs: Observation): Action[] | undefined 
 }
 
 /** An agent with no roster row was retired and pruned; `observe` reports a missing row on a partial roster as unread. */
-const agentGone = (claim: Claim, obs: Observation): boolean =>
+export const agentGone = (claim: Claim, obs: Observation): boolean =>
   finished(obs) || (obs.agent === undefined && claim.agentName !== undefined)
 
 /** The step a fence hands back to once an amend leaves nothing outside owns. */
@@ -448,7 +480,7 @@ function afterReviewer(claim: Claim, obs: Observation): Action[] {
   return successor(claim, { kind: 'review', review: obs.report?.text ?? why }, { reviewRound: round + 1 })
 }
 
-const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'cancelled'])
+export const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'cancelled'])
 
 /** CC-978: phases a merged PR finishes, whatever the claim's agent or a stall says; a queued one is a slice linked to a hand-dispatched PR. */
 const MERGES: ReadonlySet<Claim['phase']> = new Set([
@@ -459,7 +491,7 @@ const MERGES: ReadonlySet<Claim['phase']> = new Set([
   'shepherding',
 ])
 
-function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
+export function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
   const row = run?.row
   if (row === undefined) return undefined
   const merged =
@@ -483,17 +515,17 @@ function settledOnGitHub(claim: Claim, obs: Observation): Action[] | undefined {
     : undefined
 }
 
-/** A queued claim ran no agent, so it has none to retire. */
 function mergedPr(claim: Claim, found: string | undefined, head: string | null): Action[] {
   const pr = claim.pr ?? found
-  const finish = update(claim, {
-    phase: 'done',
+  return finishedClaim(claim, {
     ...(pr === undefined ? {} : { pr }),
     ...(head === null ? {} : { prHead: head }),
-    stalledReason: undefined,
-    stalledClass: undefined,
-    stallCode: undefined,
   })
+}
+
+/** A queued claim ran no agent, so it has none to retire. */
+function finishedClaim(claim: Claim, patch: ClaimPatch): Action[] {
+  const finish = update(claim, { phase: 'done', ...patch, ...UNSTALLED })
   return claim.phase === 'queued' ? [finish] : [finish, retireAll(claim)]
 }
 

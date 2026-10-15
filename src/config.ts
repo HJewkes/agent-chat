@@ -70,6 +70,7 @@ export interface AgentChatConfig {
   machineHoldOperators?: unknown
   dispatchOverlapExempt?: unknown
   profileDrift?: unknown
+  hostProof?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -224,7 +225,9 @@ export function resolvePoolPickMode(): PoolPickMode {
 
 /**
  * CC-1094: what an agent spawn of a profile whose file changed since broker start gets: a warning (`flag`,
- * the default, since the owner edits profiles at runtime) or a refusal (`refuse`). Read per spawn.
+ * the default, since the owner edits profiles at runtime) or a refusal (`refuse`). Read once when the broker
+ * starts (CC-1202): an edit takes effect at restart, so a worker that reaches config.json cannot loosen refuse
+ * to flag.
  */
 export function resolveProfileDriftMode(): ProfileDriftMode {
   const value = readConfig().profileDrift
@@ -233,6 +236,23 @@ export function resolveProfileDriftMode(): ProfileDriftMode {
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'profileDrift', value, fallback: 'flag' })
   return 'flag'
+}
+
+export const HOST_PROOF_MODES = ['off', 'enforce'] as const
+export type HostProofMode = (typeof HOST_PROOF_MODES)[number]
+
+/**
+ * CC-1063: whether a configured machine's `host_hello` must carry a valid launcher-key proof (`enforce`)
+ * or a bad proof is only logged (`off`, the default until launchers answer the challenge and hold keys).
+ * From `config.json`'s `hostProof`, read per hello.
+ */
+export function resolveHostProofMode(): HostProofMode {
+  const value = readConfig().hostProof
+  if (value === undefined) return 'off'
+  const mode = HOST_PROOF_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'hostProof', value, fallback: 'off' })
+  return 'off'
 }
 
 /**

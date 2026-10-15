@@ -475,7 +475,7 @@ describe('the batcher on its own (CC-337)', () => {
     batcher.resend('coord', [message('stranded')])
 
     expect(written).toEqual(['held', 'stranded'])
-    expect(batcher.forget('coord')).toEqual([])
+    expect(batcher.forget('coord').messages).toEqual([])
   })
 
   // Mutation caught: only the first report of a written batch remembered as pushed.
@@ -503,7 +503,7 @@ describe('the batcher on its own (CC-337)', () => {
     expect(() => vi.advanceTimersByTime(WINDOW_MS)).not.toThrow()
 
     expect(batcher.wasPushed('id-a')).toBe(false)
-    expect(batcher.forget('coord').map(m => m.msgId)).toEqual(['id-a', 'id-b'])
+    expect(batcher.forget('coord').messages.map(m => m.msgId)).toEqual(['id-a', 'id-b'])
   })
 })
 
@@ -530,19 +530,19 @@ describe('a report that is held and not yet written', () => {
     expect(batcher.wasPushed('id-one')).toBe(true)
   })
 
-  // Mutation caught: the exit judged without first flushing, so the notice is muted for a report nobody was pushed.
+  // Mutation caught (CC-337): the exit judged at once, so the notice is muted for a report nobody was pushed.
   it.each(['coord', 'seat'])(
-    'is pushed to %s at the exit, which is then not announced, and is not pushed again after a reconnect',
+    'stays held through a clean exit, then reaches %s once and the exit is not announced',
     name => {
       const coord = session(name)
       const a = worker('w-a', coord)
       say(a, name, 'Status: DONE')
-      expect(pushes(coord)).toEqual([])
 
       exit(a, 'w-a')
+      expect(pushes(coord)).toEqual([])
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
       core.drop(coord.conn)
       const back = session(name)
-      vi.advanceTimersByTime(WINDOW_MS)
 
       expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
       expect(exitsPushedTo(coord)).toEqual([])
@@ -552,7 +552,7 @@ describe('a report that is held and not yet written', () => {
 
   // Mutation caught: a takeover leaving the displaced connection's timer armed, so it is written to after the fact.
   it.each(['coord', 'seat'])(
-    'is pushed to %s at the exit, and is not pushed again after a takeover by the same agent',
+    'goes only to the connection that takes %s over after a clean exit inside the window',
     name => {
       const coord = coordinator(name)
       const a = worker('w-a', coord)
@@ -560,11 +560,11 @@ describe('a report that is held and not yet written', () => {
 
       exit(a, 'w-a')
       const back = session(name, idOf(coord))
-      vi.advanceTimersByTime(WINDOW_MS)
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
 
-      expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(pushes(coord)).toEqual([])
       expect(exitsPushedTo(coord)).toEqual([])
-      expect(pushes(back)).toEqual([])
+      expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
     },
   )
 
@@ -617,6 +617,7 @@ describe('a report that is held and not yet written', () => {
       Object.assign(coord.conn, { [flag]: true })
 
       exit(a, 'w-a')
+      vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
       core.drop(coord.conn)
       const back = session('coord')
 
@@ -682,6 +683,7 @@ describe('a report that is held and not yet written', () => {
     send(coord, { t: 'send', to: 'w-a', text: 'also fix the flake before you stop' })
 
     exit(a, 'w-a')
+    vi.advanceTimersByTime(WINDOW_MS + LIFECYCLE_MS)
 
     const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
     expect(order.slice(-2)).toEqual(['deliver', 'system_events'])
@@ -1007,21 +1009,42 @@ describe('over real sockets, with the window far from its end', () => {
     await new Promise(resolve => listener.close(resolve))
   })
 
-  /** A client on its own socket, registered once its `register_result` has come back. */
-  async function client(frame: Omit<Extract<ClientMessage, { t: 'register' }>, 't' | 'workingOn' | 'pid'>) {
-    const socket = net.createConnection(socketPath)
-    sockets.push(socket)
+  /**
+   * Parses the socket's newline-framed messages into `frames`. `frame(match)` resolves with the first
+   * frame that matches, already buffered or yet to come, so a wait is bounded only by the test timeout.
+   */
+  function frameReader(socket: net.Socket) {
     const frames: ServerMessage[] = []
+    const waiters: { match: (f: ServerMessage) => boolean; resolve: (f: ServerMessage) => void }[] = []
     let buffered = ''
     socket.on('data', chunk => {
       const lines = (buffered + String(chunk)).split('\n')
       buffered = lines.pop() ?? ''
-      for (const line of lines.filter(Boolean)) frames.push(JSON.parse(line) as ServerMessage)
+      for (const line of lines.filter(Boolean)) {
+        const parsed = JSON.parse(line) as ServerMessage
+        frames.push(parsed)
+        for (const waiter of waiters.filter(w => w.match(parsed))) {
+          waiters.splice(waiters.indexOf(waiter), 1)
+          waiter.resolve(parsed)
+        }
+      }
     })
+    const frame = (match: (f: ServerMessage) => boolean): Promise<ServerMessage> => {
+      const found = frames.find(match)
+      return found ? Promise.resolve(found) : new Promise(resolve => waiters.push({ match, resolve }))
+    }
+    return { frames, frame }
+  }
+
+  /** A client on its own socket, registered once its `register_result` has come back. */
+  async function client(frame: Omit<Extract<ClientMessage, { t: 'register' }>, 't' | 'workingOn' | 'pid'>) {
+    const socket = net.createConnection(socketPath)
+    sockets.push(socket)
+    const reader = frameReader(socket)
     const write = (message: ClientMessage): void => void socket.write(JSON.stringify(message) + '\n')
     write({ t: 'register', workingOn: '', pid: 1, ...frame })
-    await vi.waitFor(() => expect(frames.some(f => f.t === 'register_result' && f.ok)).toBe(true))
-    return { socket, frames, write }
+    await reader.frame(f => f.t === 'register_result' && f.ok)
+    return { socket, write, ...reader }
   }
 
   const coordinator = () => client({ name: 'coord', cwd: '/tmp/coord', subscriptions: EXIT_SUBSCRIPTION })
@@ -1031,14 +1054,19 @@ describe('over real sockets, with the window far from its end', () => {
     const { msgId } = core.append({ kind: 'agent_spawned', actor: 'coord', target: 'w-a', body: 'work' })
     const a = await client({ name: 'w-a', cwd: '/tmp/w-a', agentId: msgId })
     a.write({ t: 'send', to: 'coord', text: 'Status: DONE' })
-    await vi.waitFor(() => expect(a.frames.some(f => f.t === 'send_result' && f.ok)).toBe(true))
+    await a.frame(f => f.t === 'send_result' && f.ok)
     return msgId
   }
 
+  /** Used only before asserting that something did not arrive, after the positive frames are in. */
   const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, LIFECYCLE_MS + 100))
 
   const textsPushed = (frames: ServerMessage[]): string[] =>
     frames.flatMap(f => (f.t === 'deliver' ? [f.message.text] : []))
+
+  const isDeliver = (f: ServerMessage): boolean => f.t === 'deliver'
+  const isExitOfWorker = (f: ServerMessage): boolean =>
+    f.t === 'system_events' && f.events.some(e => e.kind === 'agent_exited' && e.subject === 'w-a')
 
   const exitsIn = (frames: ServerMessage[]): string[] =>
     frames
@@ -1046,12 +1074,14 @@ describe('over real sockets, with the window far from its end', () => {
       .map(e => e.subject)
 
   // Mutation caught: the exit muted on the strength of a report that is still held.
-  it('writes the held report when its sender exits, and sends no exit notice after it', async () => {
+  it('keeps the held report through a clean exit of its sender, then writes it with no exit notice after it', async () => {
+    windowMs = 500
     const coord = await coordinator()
     const agentId = await reportFromWorker()
     expect(textsPushed(coord.frames)).toEqual([])
 
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await coord.frame(isDeliver)
     await settle()
 
     expect(textsPushed(coord.frames)).toEqual(['Status: DONE'])
@@ -1062,11 +1092,14 @@ describe('over real sockets, with the window far from its end', () => {
   it('writes the held report to the socket a coordinator reconnects on, once, and never to the closed one', async () => {
     const first = await coordinator()
     const agentId = await reportFromWorker()
+    const closed = new Promise(resolve => first.socket.once('close', resolve))
     first.socket.destroy()
-    await vi.waitFor(() => expect(core.registry.connFor('coord')).toBeUndefined())
+    await closed
+    await vi.waitFor(() => expect(core.registry.connFor('coord')).toBeUndefined(), { timeout: 15_000 })
 
     const second = await coordinator()
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await second.frame(isDeliver)
     await settle()
 
     expect(textsPushed(first.frames)).toEqual([])
@@ -1080,7 +1113,8 @@ describe('over real sockets, with the window far from its end', () => {
     const agentId = await reportFromWorker()
 
     core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '1' } })
-    await settle()
+    await coord.frame(isExitOfWorker)
+    await coord.frame(isDeliver)
 
     const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
     expect(order).toEqual(['deliver', 'system_events'])

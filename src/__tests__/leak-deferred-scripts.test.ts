@@ -1,0 +1,235 @@
+import { describe, expect, it } from 'vitest'
+import { aliasDefinitions, streamScript, trapActions } from '../leak-guard/deferred-scripts.js'
+import { LIVE, parseShell, type SimpleCommand } from '../leak-guard/shell-words.js'
+
+// Text a trap, an alias or a streamed script runs later than its own line (CC-1334).
+const commandOf = (line: string, head: string): SimpleCommand => {
+  const found = parseShell(line).find(cmd => cmd.words[0] === head)
+  if (found === undefined) throw new Error(`no ${head} in ${line}`)
+  return found
+}
+
+const wordsOf = (line: string): string[] => commandOf(line, line.split(' ')[0] ?? '').words
+const markedOf = (line: string): string[] => commandOf(line, line.split(' ')[0] ?? '').marked
+
+describe('trapActions', () => {
+  it.each([
+    ["trap 'git push --no-verify' EXIT", ['git push --no-verify']],
+    ["trap -- 'a' EXIT", ['a']],
+    ["trap 'a' 0 1", ['a']],
+    ["trap 'a' DEBUG", ['a']],
+    ["trap 'a' ERR RETURN", ['a']],
+    ["trap 'g''it push' EXIT", ['git push']],
+    ["trap 'a' 0", ['a']],
+  ])('%s sets %j', (line, actions) => {
+    expect(trapActions(wordsOf(line))).toEqual(actions)
+  })
+
+  it.each([
+    'trap -p',
+    'trap -p EXIT',
+    'trap -l',
+    'trap -P INT',
+    'trap',
+    'trap - EXIT',
+    'trap -- - EXIT INT',
+    "trap '' INT",
+    'trap EXIT',
+    'trap SIGINT',
+  ])('%s sets no action', line => {
+    expect(trapActions(wordsOf(line))).toEqual([])
+  })
+
+  it('returns every operand when the first is one the shell expands', () => {
+    expect(trapActions(markedOf('trap "$X" EXIT'))).toEqual([`${LIVE}$X`, 'EXIT'])
+  })
+
+  it.each([
+    ['trap ~ EXIT', [`${LIVE}~`, 'EXIT']],
+    ['trap ~nd EXIT', [`${LIVE}~nd`, 'EXIT']],
+    ['trap ~/x EXIT', [`${LIVE}~/x`, 'EXIT']],
+  ])('%s returns every operand, since HOME or a named directory sets the action', (line, actions) => {
+    expect(trapActions(markedOf(line))).toEqual(actions)
+  })
+
+  it('reads only a trap command', () => {
+    expect(trapActions(wordsOf("echo 'a' EXIT"))).toEqual([])
+  })
+})
+
+describe('aliasDefinitions', () => {
+  const plain = { global: false, suffix: false, blank: false }
+
+  it.each([
+    ["alias x='g''it push --no-verify'", [{ ...plain, name: 'x', value: 'git push --no-verify' }]],
+    ['alias -g X=push', [{ ...plain, name: 'X', value: 'push', global: true }]],
+    ["alias -s txt='git push'", [{ ...plain, name: 'txt', value: 'git push', suffix: true }]],
+    ["alias x='gizmo '", [{ ...plain, name: 'x', value: 'gizmo ', blank: true }]],
+    ['alias -- -x=y', [{ ...plain, name: '-x', value: 'y' }]],
+    ['alias +g x=y', [{ ...plain, name: 'x', value: 'y' }]],
+    ['alias -p ll=ls', [{ ...plain, name: 'll', value: 'ls' }]],
+    ["alias ll='ls -la' lt", [{ ...plain, name: 'll', value: 'ls -la' }]],
+    [
+      'alias a=b c=d',
+      [
+        { ...plain, name: 'a', value: 'b' },
+        { ...plain, name: 'c', value: 'd' },
+      ],
+    ],
+  ])('%s defines %j', (line, definitions) => {
+    expect(aliasDefinitions(wordsOf(line))).toEqual(definitions)
+  })
+
+  it.each(['alias', 'alias ll', 'alias -g', 'unalias x', 'alias -L'])('%s defines nothing', line => {
+    expect(aliasDefinitions(wordsOf(line))).toEqual([])
+  })
+
+  it.each([
+    ['alias $G X=push', 'X'],
+    ['alias {-g,a=b} P=push', 'P'],
+    ['alias ${=X}=y Q=push', 'Q'],
+    ['alias $E $G X=push', 'X'],
+  ])('%s marks %s global and suffix, since an operand before it may expand to -g', (line, name) => {
+    const definition = aliasDefinitions(markedOf(line)).find(found => found.name === name)
+    expect(definition).toMatchObject({ value: 'push', global: true, suffix: true })
+  })
+
+  it('leaves a definition plain when a settled operand ends the options before a live one', () => {
+    const definition = aliasDefinitions(markedOf('alias a=b $G X=push')).find(found => found.name === 'X')
+    expect(definition).toMatchObject({ global: false, suffix: false })
+  })
+
+  const hidden = (word: string) => ({ name: word, value: word, global: true, suffix: true, blank: true })
+
+  it.each([
+    ['alias "$D"', [hidden(`${LIVE}$D`)]],
+    [
+      'alias $G X=push',
+      [hidden(`${LIVE}$G`), { ...plain, name: 'X', value: 'push', global: true, suffix: true }],
+    ],
+    ['alias ll=ls "$D"', [{ ...plain, name: 'll', value: 'ls' }, hidden(`${LIVE}$D`)]],
+    ['alias $N=ls', [hidden(`${LIVE}$N=ls`)]],
+  ])('%s returns an operand that may expand to a definition whole', (line, definitions) => {
+    expect(aliasDefinitions(markedOf(line))).toEqual(definitions)
+  })
+
+  it('returns nothing for a plain bare name given marked words', () => {
+    expect(aliasDefinitions(markedOf('alias ll'))).toEqual([])
+  })
+
+  it('keeps the mark on a value the shell expands and reads it as blank-ended', () => {
+    expect(aliasDefinitions(markedOf('alias x="$P"'))).toEqual([
+      { ...plain, name: 'x', value: `${LIVE}$P`, blank: true },
+    ])
+  })
+
+  it.each([
+    ['alias x=~', 'x', `${LIVE}~`],
+    ['alias x=~/y', 'x', `${LIVE}~/y`],
+    ['alias x=a:~/b', 'x', `a:${LIVE}~/b`],
+    ['alias x=a:~', 'x', `a:${LIVE}~`],
+    ['alias d=x:~/y', 'd', `x:${LIVE}~/y`],
+    ['alias x=~:~', 'x', `${LIVE}~:${LIVE}~`],
+  ])('%s marks the ~ the shell expands to HOME, and reads it as blank-ended', (line, name, value) => {
+    expect(aliasDefinitions(markedOf(line))).toEqual([
+      { name, value, global: false, suffix: false, blank: true },
+    ])
+  })
+
+  it('keeps a value with no ~ at its start or after a colon settled', () => {
+    expect(aliasDefinitions(markedOf('alias x=a~b'))).toMatchObject([
+      { name: 'x', value: 'a~b', blank: false },
+    ])
+  })
+
+  it.each([
+    ['alias ~ X=echo', 'X'],
+    ['alias ~nd X=echo', 'X'],
+  ])('%s marks %s global and suffix, since ~ may expand to -g', (line, name) => {
+    const definition = aliasDefinitions(markedOf(line)).find(found => found.name === name)
+    expect(definition).toMatchObject({ value: 'echo', global: true, suffix: true })
+  })
+})
+
+describe('streamScript', () => {
+  it.each([
+    ['. <(echo P)', '.'],
+    ['source <(echo P)', 'source'],
+    ['source =(echo P)', 'source'],
+    ['bash <(echo P)', 'bash'],
+    ['bash -x <(echo P) arg', 'bash'],
+    ['zsh <(echo P)', 'zsh'],
+    ['. /dev/stdin', '.'],
+    ['source /dev/fd/0', 'source'],
+    ['. /dev/fd/3', '.'],
+    ['. /dev//fd/3', '.'],
+    ['. /proc/self/fd/0', '.'],
+    ['. /dev/fd/$n', '.'],
+    ['source /dev/stderr 2< <(echo "echo RAN")', 'source'],
+    [". /dev/stderr 2<<'EOF'\necho RAN\nEOF", '.'],
+    ['. /dev/stdout', '.'],
+    ['source /dev/./stdout', 'source'],
+    ['. "$F"', '.'],
+    ['. /dev/$X', '.'],
+    ['source /tmp/*.sh', 'source'],
+    ['source a=(x)', 'source'],
+    ['. /dev/tty', '.'],
+    ['. /proc/1/task/1/fd/0', '.'],
+    ['. ~/../../../../../../dev/stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. ~root/../dev/stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. ~/stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. ./stdin', '.'],
+    ['. fd/0', '.'],
+    ['. ../dev/stderr', '.'],
+    ['. ~/../x.sh', '.'],
+    ['. ~ <<EOF\necho RAN\nEOF', '.'],
+    ['. ~root', '.'],
+    ['. ~+', '.'],
+    ['. ~-', '.'],
+    ['. /proc/self/root/dev/stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. /proc/1/root/dev/stdin', '.'],
+    ['. /proc/self/root/proc/self/fd/0', '.'],
+    ['. /proc/self/cwd/stdin <<EOF\necho RAN\nEOF', '.'],
+    ['. /proc/self/environ', '.'],
+    ['. /dev/pts/0', '.'],
+    ['. /dev/console', '.'],
+    ['. /dev/anything', '.'],
+    ['. //dev/stdin', '.'],
+    ['. /tmp/../dev/stdin', '.'],
+    ['. dev/stdin', '.'],
+    ['. proc/self/cwd/x.sh', '.'],
+    ['. console', '.'],
+    ['. tty1', '.'],
+    ['. ~/environ', '.'],
+    ['. self/cmdline', '.'],
+    ['. comm', '.'],
+    ['. 3', '.'],
+    ['bash -', 'bash'],
+    ['diff <(a) <(b)', 'diff'],
+  ])('%s may read a stream', (line, head) => {
+    expect(streamScript(commandOf(line, head))).toBe(true)
+  })
+
+  it('reads the descriptor itself, not the heredoc feeding it', () => {
+    expect(streamScript(commandOf("source /dev/stderr 2<<'EOF'\nx\nEOF", 'source'))).toBe(true)
+    expect(streamScript(commandOf("source /dev/null 2<<'EOF'\nx\nEOF", 'source'))).toBe(false)
+  })
+
+  it.each([
+    ['. ~/.venv/bin/activate', '.'],
+    ['. "<(x)"', '.'],
+    ['source ~user/.profile', 'source'],
+    ['source ~/.venv/bin/activate', 'source'],
+    ['. ./setup.sh', '.'],
+    ['. /etc/profile', '.'],
+    ['. /dev/../etc/profile', '.'],
+    ['. lib/devtools.sh', '.'],
+    ['bash script.sh', 'bash'],
+    ['bash', 'bash'],
+    ['. /dev/null', '.'],
+    ["echo ''", 'echo'],
+  ])('%s reads a file', (line, head) => {
+    expect(streamScript(commandOf(line, head))).toBe(false)
+  })
+})

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { POLL_SESSION_ID } from '@titan-design/anthropic-account'
 import {
   readAccountBudget,
   readStatusLineBudget,
@@ -8,21 +9,21 @@ import {
   type BudgetRead,
   type BudgetWindow,
 } from './budget.js'
+import { accountIdentity } from './account-identity.js'
 import { accountName, defaultConfigDir, profileRoot } from './config-dir.js'
 
 /**
  * One row per Claude account on this machine (CC-891): both rate-limit windows,
- * where they came from and how old they are. The usage poller (item 94) writes
- * `usage-poller.json` into each account's status cache from the OAuth usage
- * endpoint every two minutes, so it is the reading of record; the freshest
+ * where they came from and how old they are. The usage poller
+ * (`anthropic-account poll --write`, on `anthropic-account-poll.timer`) writes
+ * `usage-poll.json` into each account's status cache from the OAuth usage
+ * endpoint every 150s, so it is the reading of record; the freshest
  * status-line reading stands in where the poller has not written. Nothing here
  * calls the API.
  */
 
-export const POLLER_SESSION = 'usage-poller'
-
-/** Two missed polls plus slack: the poller runs every 120s, so an older reading means it stopped. */
-export const POLLER_STALE_AFTER_SECONDS = 300
+/** Two missed polls: a 150s interval plus up to 30s jitter, so an older reading means it stopped. */
+export const POLLER_STALE_AFTER_SECONDS = 360
 
 /** The poller's log names each account by its config dir's basename; these kinds mean it holds no login. */
 const AUTH_FAILURES = new Set(['AUTH-FAIL', 'AUTH-EXPIRED', 'TOKEN-EXPIRED'])
@@ -45,6 +46,13 @@ export interface AccountsOptions {
   env?: NodeJS.ProcessEnv
   now?: number
   pollerLog?: string
+  /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `home`. */
+  identify?: (configDir: string) => string | undefined
+}
+
+/** CC-1289: one account's row, naming every config dir that logs in to it. */
+export interface AccountRow extends AccountUsage {
+  config_dirs: string[]
 }
 
 export const defaultPollerLog = (home: string): string =>
@@ -86,7 +94,7 @@ function pickReading(
   dir: string,
   now: number,
 ): { read: BudgetRead; source: UsageSource; staleAfter: number } {
-  const poller = readStatusLineBudget(POLLER_SESSION, now, dir)
+  const poller = readStatusLineBudget(POLL_SESSION_ID, now, dir)
   if (poller.found) return { read: poller, source: 'usage-poller', staleAfter: POLLER_STALE_AFTER_SECONDS }
   return { read: readAccountBudget(dir, now), source: 'status-line', staleAfter: STALE_AFTER_SECONDS }
 }
@@ -132,14 +140,51 @@ export function formatAccountUsage(usage: AccountUsage, width: number): string {
   return `${name}  ${windows}  ${usage.age_seconds}s old via ${usage.source}${marks}`
 }
 
+const fresher = (a: AccountUsage, b: AccountUsage): AccountUsage =>
+  b.age_seconds !== null && (a.age_seconds === null || b.age_seconds < a.age_seconds) ? b : a
+
+/**
+ * One row per Anthropic login, named by its first config dir and showing the freshest reading
+ * among them, since every dir on one login reads the same limits. A dir with no readable login is
+ * its own row.
+ */
+export function groupByAccount(
+  rows: readonly AccountUsage[],
+  identify: (configDir: string) => string | undefined,
+): AccountRow[] {
+  const groups = new Map<string, AccountUsage[]>()
+  for (const row of rows) {
+    const key = identify(row.config_dir) ?? `dir:${row.config_dir}`
+    groups.set(key, [...(groups.get(key) ?? []), row])
+  }
+  return [...groups.values()].map(members => {
+    const head = members[0] as AccountUsage
+    return {
+      ...members.reduce(fresher),
+      account: head.account,
+      config_dir: head.config_dir,
+      auth_fail: members.some(r => r.auth_fail),
+      config_dirs: members.map(r => r.config_dir),
+    }
+  })
+}
+
+/** `default (+personal)`: the account's first config dir, naming the others that log in to it. */
+function accountLabel(row: AccountRow, home: string): string {
+  const others = row.config_dirs.slice(1).map(dir => `+${accountName(dir, home)}`)
+  return others.length === 0 ? row.account : `${row.account} (${others.join(', ')})`
+}
+
 /** The `agent budget --accounts` report: one line per account, or one JSON array of the same rows. */
 export function accountsBudget(json: boolean, options: AccountsOptions = {}) {
   const home = options.home ?? os.homedir()
   const failures = authFailures(options.pollerLog ?? defaultPollerLog(home))
-  const rows = accountDirs(home, options.env ?? process.env).map(dir =>
+  const usages = accountDirs(home, options.env ?? process.env).map(dir =>
     readAccountUsage(dir, { ...options, home }, failures),
   )
+  const rows = groupByAccount(usages, options.identify ?? (dir => accountIdentity(dir, home)))
   if (json) return { ok: true, lines: [JSON.stringify(rows)] }
-  const width = Math.max(...rows.map(r => r.account.length))
-  return { ok: true, lines: rows.map(row => formatAccountUsage(row, width)) }
+  const named = rows.map(row => ({ ...row, account: accountLabel(row, home) }))
+  const width = Math.max(...named.map(r => r.account.length))
+  return { ok: true, lines: named.map(row => formatAccountUsage(row, width)) }
 }

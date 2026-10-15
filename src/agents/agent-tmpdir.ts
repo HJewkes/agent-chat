@@ -17,7 +17,9 @@ import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orpha
  * live process has its cwd or an open fd inside.
  *
  * CC-1184: a launch may put its dir under an on-disk root, `<home>/.cache/agent-chat/tmp`, instead
- * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes.
+ * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes. CC-1264 made it the
+ * default for every Linux launch; /tmp stays an accepted root for launches made before that and
+ * for the sweep.
  *
  * CC-1266: Claude Code writes each Bash call's output under `CLAUDE_CODE_TMPDIR`, falling back to
  * TMPDIR. A launch's harness dir lives under its own root, `<home>/.cache/agent-chat/harness`, so
@@ -120,6 +122,23 @@ export function agentTmpPath(name: string, pid: number, root = TMP_ROOT): string
 
 const isOwnDir = (stat: TmpStat | undefined, uid: number): boolean =>
   stat !== undefined && !stat.isSymbolicLink() && stat.isDirectory() && stat.uid === uid
+
+/** Why an existing path is not an own, real directory, or undefined when it is one. */
+function unsafeDirReason(stat: TmpStat, uid: number): string | undefined {
+  if (stat.isSymbolicLink()) return 'symlink'
+  if (!stat.isDirectory()) return 'not a directory'
+  if (stat.uid !== uid) return `owned by uid ${stat.uid}`
+  return undefined
+}
+
+/** Why removal must not resolve through `root`; /tmp is root-owned and sticky, so it is exempt as in `ensureRoot`. */
+function rootRefusal(tmpFs: TmpFs, root: string, uid: number): string | undefined {
+  if (root === TMP_ROOT) return undefined
+  const stat = tmpFs.lstat(root)
+  if (stat === undefined) return 'missing'
+  const unsafe = unsafeDirReason(stat, uid)
+  return unsafe === undefined ? undefined : `root ${unsafe}`
+}
 
 export interface AgentTmpRequest {
   name: string
@@ -229,15 +248,20 @@ function countInodes(tmpFs: TmpFs, path: string): number {
   return tmpFs.readdir(path).reduce((sum, entry) => sum + countInodes(tmpFs, `${path}/${entry}`), 1)
 }
 
-/** Removes exactly `<root>/ac-<name>-<pid>` once nothing alive is tied to it. A missing dir is not an error. */
+/**
+ * Removes exactly `<root>/ac-<name>-<pid>` once nothing alive is tied to it. A missing dir or root is
+ * not an error. A disk root that is a symlink, not a directory or another user's is refused, so the
+ * recursive rm never resolves through it to an `ac-*` dir elsewhere.
+ */
 export function removeAgentTmpDir(target: RemovalTarget, deps: RemovalDeps): TmpRemoval {
   const dir = agentTmpPath(target.name, target.pid, target.root)
   if (dir === undefined) return { removed: false, path: '', reason: 'invalid name or pid' }
+  const rootReason = rootRefusal(deps.fs, target.root ?? TMP_ROOT, deps.uid)
+  if (rootReason !== undefined) return { removed: false, path: dir, reason: rootReason }
   const stat = deps.fs.lstat(dir)
   if (stat === undefined) return { removed: false, path: dir, reason: 'missing' }
-  if (stat.isSymbolicLink()) return { removed: false, path: dir, reason: 'symlink' }
-  if (!stat.isDirectory()) return { removed: false, path: dir, reason: 'not a directory' }
-  if (stat.uid !== deps.uid) return { removed: false, path: dir, reason: `owned by uid ${stat.uid}` }
+  const unsafe = unsafeDirReason(stat, deps.uid)
+  if (unsafe !== undefined) return { removed: false, path: dir, reason: unsafe }
   const busy = holder(target, dir, deps)
   if (busy !== undefined) return { removed: false, path: dir, reason: busy }
   const inodes = countInodes(deps.fs, dir)

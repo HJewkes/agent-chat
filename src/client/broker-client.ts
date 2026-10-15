@@ -5,6 +5,7 @@ import {
   encode,
   lineReader,
   type ClientMessage,
+  type Correlated,
   type DeliveredMessage,
   type PermissionBehavior,
   type SystemEvent,
@@ -15,6 +16,8 @@ import { withoutLaunchIdentity } from '../launch-identity.js'
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
+
+const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
  * Replies the 5s default is simply wrong for, and why raising it is the right
@@ -50,6 +53,36 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   teleport_result: 20_000,
   // CC-1059: held until a remote spawn attaches or the broker's attach window (30s) passes.
   spawn_placed_result: 60_000,
+  // CC-1343: answered synchronously, so it waits behind a roster build that can itself take 30s.
+  inbox_since_result: 15_000,
+}
+
+/** Timed-out request ids remembered so their late replies are dropped; bounded against a broker that never answers. */
+const MAX_TIMED_OUT_RIDS = 256
+
+/** A broker request that got no reply in time. The message is unchanged so `startsWith` checks keep matching. */
+export class BrokerTimeoutError extends Error {
+  override readonly name = 'BrokerTimeoutError'
+  constructor(readonly replyType: ReplyType) {
+    super(`broker did not answer ${replyType}`)
+  }
+}
+
+/** Retries `call` after each delay while it fails on a broker timeout; any other error is thrown at once. */
+export async function retryOnBrokerTimeout<T>(
+  call: () => Promise<T>,
+  delaysMs: readonly number[] = [1000, 3000],
+  sleep: (ms: number) => Promise<void> = wait,
+): Promise<T> {
+  for (const delay of delaysMs) {
+    try {
+      return await call()
+    } catch (err) {
+      if (!(err instanceof BrokerTimeoutError)) throw err
+    }
+    await sleep(delay)
+  }
+  return call()
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
@@ -95,6 +128,7 @@ const deliveryUnknownError = (): Error =>
 interface Waiter {
   resolve: (msg: ServerMessage) => void
   reject: (err: Error) => void
+  readonly rid: number
 }
 
 interface HeldFrame {
@@ -111,8 +145,6 @@ interface HeldFrame {
  * exactly the moment the roster is meant to be the trustworthy view.
  */
 type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
-
-const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 export interface BrokerClientOptions {
   /**
@@ -142,8 +174,11 @@ export class BrokerClient {
   /** True between a drop and the reconnect's outcome: the gap frames are held or refused in. */
   private reconnecting = false
   private held: HeldFrame[] = []
-  /** FIFO per reply type; the socket answers in order, so this stays aligned. */
+  /** Per reply type, in send order; the order is only the fallback for a broker that echoes no request id. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
+  private nextRid = 1
+  /** Ids of requests that timed out, whose replies may still arrive and must answer nothing. */
+  private readonly timedOut = new Set<number>()
 
   /**
    * `onFatal` fires when the broker says stop rather than retry. The only sender
@@ -181,15 +216,33 @@ export class BrokerClient {
       this.onFatal?.(msg.reason)
       return
     }
-    const queue = this.waiters.get(msg.t)
-    queue?.shift()?.resolve(msg)
+    this.settle(msg)
+  }
+
+  /**
+   * By request id when the reply echoes one (CC-1343), so a late reply to a
+   * timed-out request is dropped instead of answering the next one. A broker that
+   * predates the echo sends none, and those replies keep the old FIFO match.
+   */
+  private settle({ rid, ...msg }: ServerMessage & Correlated): void {
+    if (rid !== undefined && this.timedOut.delete(rid)) return
+    const queue = this.waiters.get(msg.t as ReplyType) ?? []
+    const byId = rid === undefined ? -1 : queue.findIndex(waiter => waiter.rid === rid)
+    const [waiter] = queue.splice(Math.max(byId, 0), 1)
+    waiter?.resolve(msg as ServerMessage)
+  }
+
+  private forgetTimedOut(rid: number): void {
+    this.timedOut.add(rid)
+    const oldest = this.timedOut.values().next().value
+    if (this.timedOut.size > MAX_TIMED_OUT_RIDS && oldest !== undefined) this.timedOut.delete(oldest)
   }
 
   private attach(socket: net.Socket): void {
     this.socket = socket
     socket.on(
       'data',
-      lineReader<ServerMessage>(
+      lineReader<ServerMessage & Correlated>(
         msg => this.handle(msg),
         () => undefined,
       ),
@@ -370,17 +423,19 @@ export class BrokerClient {
       if (!socket) return reject(new Error('not connected to the broker'))
 
       const queue = this.waiters.get(replyType) ?? []
+      const rid = this.nextRid++
       // Cleared on reply, otherwise a resolved request would hold the event
       // loop open for the full timeout and delay short-lived CLI commands.
       const timer = setTimeout(() => {
         const index = queue.indexOf(waiter)
-        if (index !== -1) {
-          queue.splice(index, 1)
-          reject(new Error(`broker did not answer ${replyType}`))
-        }
+        if (index === -1) return
+        queue.splice(index, 1)
+        this.forgetTimedOut(rid)
+        reject(new BrokerTimeoutError(replyType))
       }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
 
       const waiter: Waiter = {
+        rid,
         resolve: msg => {
           clearTimeout(timer)
           resolve(msg)
@@ -392,7 +447,7 @@ export class BrokerClient {
       }
       queue.push(waiter)
       this.waiters.set(replyType, queue)
-      socket.write(encode(message))
+      socket.write(encode({ ...message, rid }))
     })
   }
 

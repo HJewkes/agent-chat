@@ -1,4 +1,4 @@
-import { selfGrant } from '../../agents/skill-self-grant.js'
+import { selfGrant, type SelfGrantPin } from '../../agents/skill-self-grant.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import type { ClientMessage, PermissionBehavior, ServerMessage } from '../../protocol.js'
 
@@ -146,14 +146,26 @@ export async function recordSelfGrant(
   }
 }
 
-export async function permissionHook(options: { deadline: string; selfGrantSkills?: string }): Promise<void> {
+interface PermissionHookOptions {
+  deadline: string
+  selfGrantSkills?: string
+  selfGrantCommonDir?: string
+}
+
+/** Both halves of the launch pin, or none: a hook armed before CC-1200 asks the owner. */
+function selfGrantPin(options: PermissionHookOptions): SelfGrantPin | undefined {
+  const { selfGrantSkills: root, selfGrantCommonDir: commonDir } = options
+  return root === undefined || commonDir === undefined ? undefined : { root, commonDir }
+}
+
+export async function permissionHook(options: PermissionHookOptions): Promise<void> {
   const deadlineMs = Number.parseInt(options.deadline, 10) * 1000
   if (!Number.isInteger(deadlineMs) || deadlineMs <= 0) throw new Error(`bad --deadline: ${options.deadline}`)
   const input = parseHookInput(await readStdin())
-  const root = options.selfGrantSkills
-  if (root !== undefined && selfGrant(root, input.toolName, input.toolInput)) {
+  const pin = selfGrantPin(options)
+  if (pin !== undefined && selfGrant(pin, input.toolName, input.toolInput)) {
     console.error(
-      `agent-chat permission-hook: self-granted ${input.toolName} in ${root}/.claude/skills (CC-694)`,
+      `agent-chat permission-hook: self-granted ${input.toolName} in ${pin.root}/.claude/skills (CC-694)`,
     )
     await recordSelfGrant(input, process.env)
     process.stdout.write(hookOutput('allow'), () => process.exit(0))

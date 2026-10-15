@@ -7,14 +7,17 @@ import {
   type DecisionCitation,
   type DeliveredMessage,
   type AnswerChannel,
+  type SurfaceName,
   type WakeSource,
+  isInteractiveSurface,
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport } from './event-log.js'
-import { ReportBatcher } from './report-batch.js'
+import { ReportBatcher, type Unpushed } from './report-batch.js'
+import type { ExitJudgement } from './subscriptions.js'
 import { StrandedReports } from './stranded-reports.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
@@ -391,8 +394,8 @@ export class BrokerCore<C = Conn> {
     gap.unref()
   }
 
-  private strand(name: string, unpushed: DeliveredMessage[]): void {
-    this.stranded.add(name, unpushed, Date.now())
+  private strand(name: string, unpushed: Unpushed): void {
+    this.stranded.add(name, unpushed.messages, Date.now(), unpushed.settled)
   }
 
   /**
@@ -412,10 +415,13 @@ export class BrokerCore<C = Conn> {
     this.deliverMissedAnswers(name)
     const conn = this.registry.connFor(name)
     if (conn === undefined) return
-    const unpushed = this.stranded.take(name, Date.now())
-    if (unpushed.length === 0) return
-    this.reports.resend(conn, unpushed)
-    logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+    const { messages, settled } = this.stranded.take(name, Date.now())
+    if (messages.length > 0) {
+      this.reports.resend(conn, messages)
+      logEvent('stranded_reports_delivered', { name, count: messages.length })
+    }
+    // CC-337: after the resend, so an exit that waited on a stranded report is judged against it.
+    for (const then of settled) then()
   }
 
   private deliverMissedAnswers(name: string): void {
@@ -460,26 +466,41 @@ export class BrokerCore<C = Conn> {
 
   /**
    * The spawner whose `agent_exited` notice would repeat what it already has (CC-321).
-   * Any held report from the agent is pushed first, so the notice never overtakes it.
+   * CC-337: when that exit could be muted and the agent's report is still held, the window
+   * is kept and `later` is called with the verdict once the batch is written, so a burst of
+   * finished agents is one wake. Any other exit pushes the held report first, so the notice
+   * never overtakes it.
    */
-  reportedSpawner(agentId: string | undefined, exit: Record<string, string> = {}): string | undefined {
+  reportedSpawner(
+    agentId: string | undefined,
+    exit: Record<string, string> = {},
+    later: (spawner: string, muted: boolean) => void = () => undefined,
+  ): ExitJudgement | undefined {
     const identity = agentId === undefined ? undefined : this.agents.get(agentId)
     if (identity === undefined) return undefined
+    const exitAt = Date.now()
+    const mutable = closedLikeCleanExit(identity, exit)
+    const muted = (): boolean => mutable && this.closedWithReport(identity, exitAt)
     const spawner = this.registry.connFor(identity.spawnedBy)
+    if (
+      spawner !== undefined &&
+      mutable &&
+      this.reports.afterFlushFrom(spawner, identity.name, () => later(identity.spawnedBy, muted()))
+    )
+      return { spawner: identity.spawnedBy, deferred: true }
     if (spawner !== undefined) this.reports.flushFrom(spawner, identity.name)
-    if (!exitedCleanly(exit)) return undefined
-    return this.closedWithReport(identity) ? identity.spawnedBy : undefined
+    return muted() ? { spawner: identity.spawnedBy, deferred: false } : undefined
   }
 
   /**
    * The agent's newest message to its spawner in this run is a terminal report, written
-   * to the spawner's open connection, shortly before now, with nothing sent back since.
+   * to the spawner's open connection, shortly before it exited, with nothing sent back since.
    */
-  private closedWithReport(identity: AgentIdentity): boolean {
+  private closedWithReport(identity: AgentIdentity, exitAt: number): boolean {
     const { name, spawnedBy } = identity
     const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
     if (last === undefined || !isTerminalReport(last.text)) return false
-    if (Date.now() - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
+    if (exitAt - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
     return this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at }) === undefined
   }
 
@@ -827,6 +848,24 @@ function staleness(request: OpenEndorsement): string | undefined {
 
 /** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */
 const exitedCleanly = (exit: Record<string, string>): boolean => exit.code === '0'
+
+/**
+ * CC-337: a visible pane is not the broker's child, so its agent's exit is only ever inferred
+ * from presence and never carries a code. Such an exit counts as clean; a headless agent's
+ * inferred exit is a reaped process that may have crashed, so it does not. An empty surface
+ * is a row written before surfaces were recorded.
+ */
+function closedLikeCleanExit(identity: AgentIdentity, exit: Record<string, string>): boolean {
+  if (exitedCleanly(exit)) return true
+  if (
+    exit.inferred !== 'true' ||
+    exit.failed === 'true' ||
+    exit.code !== undefined ||
+    exit.signal !== undefined
+  )
+    return false
+  return identity.surface !== '' && isInteractiveSurface(identity.surface as SurfaceName)
+}
 
 export interface VerdictResult {
   ok: boolean

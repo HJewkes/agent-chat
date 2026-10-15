@@ -22,7 +22,7 @@ frame: {"t":"teleport","handoff":"mid-way through S6","endsSelf":true} (process 
 [
   {
     "type": "text",
-    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your human has 30s to stop this, then you will be shut down and your successor will open in the same window. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn.\n  warning: dist is older than src"
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your human has 30s to stop this, then you will be shut down and your successor will open shortly. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn.\n  warning: dist is older than src"
   }
 ]
 
