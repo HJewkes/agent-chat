@@ -58,7 +58,8 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-const options = () => ({ home, env: {}, now: NOW })
+/** The login store is per platform; the fixtures are file-backed, so they name Linux rather than read the host. */
+const options = () => ({ home, env: {}, now: NOW, platform: 'linux' as const })
 
 describe('accountDirs', () => {
   it('lists the default config dir then every profile dir', () => {

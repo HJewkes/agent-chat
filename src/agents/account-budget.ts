@@ -75,13 +75,13 @@ export function accountDirs(home: string, env: NodeJS.ProcessEnv): string[] {
  * A login Claude Code cannot use and the poller cannot renew; an expired one that can refresh renews
  * within a tick. On macOS Claude Code keeps the login in the Keychain, so a missing file is not a failure.
  */
-export function loginFailed(state: LoginState, platform: NodeJS.Platform = process.platform): boolean {
+export function loginFailed(state: LoginState, platform: NodeJS.Platform): boolean {
   if (state.status === 'missing') return platform !== 'darwin'
   return state.status === 'refused' || (state.status === 'expired' && !state.canRefresh)
 }
 
 /** A login we cannot read is not one we can use; the thrown error is already redacted and is dropped. */
-export function readLoginFailed(dir: string, now: number, platform?: NodeJS.Platform): boolean {
+export function readLoginFailed(dir: string, now: number, platform: NodeJS.Platform): boolean {
   try {
     return loginFailed(readLoginState(dir, { now }), platform)
   } catch {
@@ -105,7 +105,7 @@ export function readAccountUsage(dir: string, options: AccountsOptions = {}): Ac
   const base = {
     account: accountName(dir, home),
     config_dir: dir,
-    auth_fail: readLoginFailed(dir, now, options.platform),
+    auth_fail: readLoginFailed(dir, now, options.platform ?? process.platform),
   }
   if (!read.found) {
     return { ...base, source: null, five_hour: null, seven_day: null, age_seconds: null, stale: false }

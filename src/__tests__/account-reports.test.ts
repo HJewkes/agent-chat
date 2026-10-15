@@ -188,7 +188,7 @@ describe('agent budget --accounts', () => {
     }
   })
 
-  const options = () => ({ home, env: {}, now: NOW.getTime() })
+  const options = () => ({ home, env: {}, now: NOW.getTime(), platform: 'linux' as const })
 
   it('prints one row per login naming its config dirs, with the freshest reading', () => {
     const report = accountsBudget(false, options())
