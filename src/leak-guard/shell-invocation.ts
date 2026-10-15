@@ -107,16 +107,17 @@ const DASH_ENDS = new Set(['-', '--'])
 
 const BASH_LONG = { '--rcfile': 'rcfile', '--init-file': 'rcfile' } as const
 
-// Observed grammars: zsh 5.9, bash 5.3 and dash. zsh's `-O` is a plain flag and dash rejects it. `sh`
-// may be bash or dash: it takes bash's grammar, which dash rejects where it is wider (`-O`, `--rcfile`),
-// and hides the call where the two read the script source differently (`+s`, `-s` with `-c`). busybox's
-// `ash` takes `sh`'s record: observed in busybox 1.37, it reads `+s` and `-s -c` as bash does and has no
-// `!` history, so the record fails closed where they differ.
+// Observed grammars: zsh 5.9, bash 5.3, dash and busybox 1.37's ash. zsh's `-O` is a plain flag and dash
+// rejects it. `sh` may be bash, dash or busybox's ash, and `ash` is busybox's: both take bash's letters,
+// which dash rejects where it is wider (`-O`), and hide the call where the shells read the script source
+// differently: `+s`, `-s` with `-c`, and `--rcfile` or `--init-file`, whose operand bash takes as the
+// startup file while busybox ignores the option and reads the next word (`ash --rcfile -c x` runs `x`).
 const SH: Grammar = {
   letters: { ...BASH_LETTERS, s: { name: 'shinstdin', plusHides: true } },
   named: { o: 'next', O: 'next' },
   ends: DASH_ENDS,
-  longOperands: BASH_LONG,
+  hides: new Set(Object.keys(BASH_LONG)),
+  longOperands: {},
   stdinWithCommand: 'hidden',
 }
 

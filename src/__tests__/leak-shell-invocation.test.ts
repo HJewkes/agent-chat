@@ -67,6 +67,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['bash -i s.sh', 1, true],
     ['bash -eo pipefail s.sh', 2, false],
     ['bash --rcfile x s.sh', 2, false],
+    ['bash --rcfile -c x', 2, false],
+    ['bash --init-file -c x', 2, false],
     ['SHELLOPTS=history bash s.sh', 0, true],
     ['zsh -b -i', 1, false],
     ['zsh -ib s.sh', 1, true],
@@ -134,6 +136,10 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'csh +- -c x',
     'ash -s -c x',
     'ash +s f.sh',
+    'ash --rcfile -c x',
+    'ash --init-file -c x',
+    'sh --rcfile -c x',
+    'sh --init-file /dev/null s.sh',
   ])('%s hides its options', line => {
     expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
   })
