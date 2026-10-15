@@ -14,6 +14,7 @@ import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity, hostMarker, isLaunchedProcess } from './host.js'
+import { endSelfHandler } from './end-self.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
@@ -113,8 +114,9 @@ export const INSTRUCTIONS = [
   // that govern it — you end, and your successor gets only what you write — are
   // exactly the ones a model will otherwise assume its way past.
   'agent_teleport ends this session and starts a successor on the CURRENT build, keeping your name',
-  'so peers can keep reaching you. Use it when your instructions or the code you run on have moved',
-  'since you started. Build first, or the successor picks up the same stale build. Your transcript',
+  'so peers can keep reaching you. Use it when your context is filling, when you are parked waiting',
+  'on the human, or when your instructions or code have moved since you started. If you changed',
+  "agent-chat's own code, build first, or the successor picks up the same stale build. Your transcript",
   'does not travel: the handoff you write is all it gets, and you are shut down once it is recorded.',
 ].join(' ')
 
@@ -504,11 +506,20 @@ export async function startMcpServer(): Promise<void> {
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
   // CC-951: a tick later, so an `endSelf` read just ahead of the fatal frame ends Claude Code first.
+  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
+  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
+  const onEndSelf = endSelfHandler({
+    ownAgentId: spawned?.agentId,
+    hostPid: hostIdentity().hostPid,
+    log: logEvent,
+  })
   const broker = new BrokerClient(
     deliver,
     () => void setImmediate(() => process.exit(0)),
     deliverSystemEvents,
     deliverPermissionVerdict,
+    undefined,
+    { onEndSelf },
   )
   const online = await reachBroker(broker)
 
@@ -517,8 +528,6 @@ export async function startMcpServer(): Promise<void> {
   // to call chat_register would make peer reachability depend on it complying
   // with an instruction — a race that will sometimes lose, and which fails by
   // leaving the agent invisible to everyone told to talk to it.
-  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
-  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
   const spawnedRegistered = spawned !== undefined && online && (await registerSpawned(broker, spawned))
   if (spawned && !spawnedRegistered) retryRegistration(broker, spawned)
 

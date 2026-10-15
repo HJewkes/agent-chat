@@ -56,6 +56,7 @@ const originOf = (work: string): string => path.join(path.dirname(work), 'origin
 /**
  * A synthetic origin repo and a clone of it on a feature branch. Upstream commits go straight
  * into the origin, so the fixture never pushes and only pr-ready's own fetch updates the clone.
+ * The clone has a node_modules directory, as an installed tree does.
  */
 function fixtureRepo(base: Record<string, string>, feature: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-ready-'))
@@ -68,6 +69,7 @@ function fixtureRepo(base: Record<string, string>, feature: Record<string, strin
   configure(work)
   git(work, 'checkout', '-q', '-b', 'feature')
   commit(work, feature, 'feature')
+  fs.mkdirSync(path.join(work, 'node_modules'))
   return work
 }
 
@@ -289,6 +291,60 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.toolCalls).toEqual([])
     expect(rebaseInProgress(work)).toBe(false)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
+  })
+})
+
+describe('pr-ready in a fresh worktree with no node_modules', () => {
+  const PNPM_INSTALL = 'pnpm install --frozen-lockfile --ignore-scripts'
+  const NPM_INSTALL = 'npm ci --ignore-scripts'
+  const [npmKind, pnpmKind] = KINDS as [Kind, Kind]
+  const freshRepo = (kind: Kind, extra: Record<string, string> = {}): string => {
+    const work = fixtureRepo({ ...kind.base, ...extra }, kind.feature)
+    fs.rmSync(path.join(work, 'node_modules'), { recursive: true })
+    return work
+  }
+
+  it('installs with pnpm after the rebase and before any check', async () => {
+    const result = await runPrReady(freshRepo(pnpmKind))
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok deps: installed with ${PNPM_INSTALL}`)
+    expect(result.out.indexOf(`ok deps: installed with ${PNPM_INSTALL}`)).toBe(
+      result.out.indexOf('ok rebase') + 1,
+    )
+    expect(result.toolCalls).toEqual([PNPM_INSTALL, ...pnpmKind.checks])
+  })
+
+  it('installs with npm ci in an npm repo', async () => {
+    const result = await runPrReady(freshRepo(npmKind))
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok deps: installed with ${NPM_INSTALL}`)
+    expect(result.toolCalls).toEqual([NPM_INSTALL, ...npmKind.checks])
+  })
+
+  it('names the install command and stops before the checks when the install fails', async () => {
+    const work = freshRepo(pnpmKind, { '.changeset/config.json': '{}\n' })
+    const notFound: Override = line =>
+      line === pnpmKind.changeset ? { code: 1, output: 'Command changeset not found' } : undefined
+
+    const result = await runPrReady(work, [PNPM_INSTALL], {}, { override: notFound })
+
+    expect(result.code).toBe(1)
+    expect(result.out.slice(-2)).toEqual([
+      `FAIL deps: ${PNPM_INSTALL} failed (synthetic failure: ${PNPM_INSTALL}); ` +
+        'run it in this worktree, then re-run pr-ready',
+      'PR-READY FAIL exit=1',
+    ])
+    expect(result.out.join('\n')).not.toContain('Command changeset not found')
+    expect(result.toolCalls).toEqual([PNPM_INSTALL])
+  })
+
+  it('installs nothing and prints no deps line when node_modules is present', async () => {
+    const result = await runPrReady(fixtureRepo(pnpmKind.base, pnpmKind.feature))
+
+    expect(result.out.some(line => line.includes('deps'))).toBe(false)
+    expect(result.toolCalls).not.toContain(PNPM_INSTALL)
   })
 })
 
@@ -521,6 +577,78 @@ describe('pr-ready on a branch that is already pushed', () => {
   })
 })
 
+describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () => {
+  const PARENT = 'refs/remotes/origin/agent-chat/parent'
+  const answering =
+    (head: string, output: string): Override =>
+    line =>
+      line.startsWith(`gh pr list --head ${head} `) ? { code: 0, output } : undefined
+
+  /** feature is cut from origin/agent-chat/parent, then main moves on with m.txt. */
+  const stackedRepo = (): string => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'discarded.txt': 'd\n' })
+    const origin = originOf(work)
+    git(origin, 'checkout', '-q', '-b', 'agent-chat/parent')
+    commit(origin, { 'p.txt': 'p\n' }, 'parent')
+    git(origin, 'checkout', '-q', 'main')
+    git(work, 'fetch', '-q', 'origin')
+    git(work, 'checkout', '-q', '--no-track', '-B', 'feature', 'origin/agent-chat/parent')
+    commit(work, { 'f.txt': 'f\n' }, 'feature')
+    advanceOrigin(work, { 'm.txt': 'm\n' })
+    return work
+  }
+  const tree = (work: string): string[] => git(work, 'ls-tree', '--name-only', 'HEAD').split('\n')
+
+  const noMainCommit = (work: string): void => {
+    expect(tree(work)).toEqual(expect.arrayContaining(['f.txt', 'p.txt']))
+    expect(tree(work)).not.toContain('m.txt')
+  }
+
+  it('infers the parent from its open PR and rebases onto it with no main commit', async () => {
+    const work = stackedRepo()
+
+    const result = await runPrReady(
+      work,
+      [],
+      {},
+      { override: answering('agent-chat/parent', '[{"number":5}]') },
+    )
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok base: ${PARENT} (stacked on origin/agent-chat/parent (PR #5))`)
+    expect(result.calls).toContain(`git rebase ${PARENT}`)
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    noMainCommit(work)
+  })
+
+  it("judges a branch with its own open PR against that PR's base, not main", async () => {
+    const work = stackedRepo()
+    const openPr = answering('feature', '[{"number":9,"baseRefName":"agent-chat/parent"}]')
+
+    const result = await runPrReady(work, [], {}, { override: openPr })
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(`ok base: ${PARENT} (PR #9 base)`)
+    expect(result.out).toContain('ok rebase: not behind origin/agent-chat/parent')
+    noMainCommit(work)
+  })
+
+  it('fails the base step without rebasing when the parent has no open PR', async () => {
+    const work = stackedRepo()
+    const head = git(work, 'rev-parse', 'HEAD')
+
+    const result = await runPrReady(work, [], {}, { override: answering('agent-chat/parent', '[]') })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(
+      'FAIL base: HEAD contains commits of origin/agent-chat/parent not on origin/main; cannot tell the base: ' +
+        'record it with git config branch.feature.agent-chat-base <name> (use main if the parent merged)',
+    )
+    expect(result.calls.filter(call => call.startsWith('git rebase'))).toEqual([])
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+})
+
 describe('pr-ready options and discovery', () => {
   it('runs only a root pr-ready script when one exists', async () => {
     const work = fixtureRepo(
@@ -600,6 +728,39 @@ describe('pr-ready options and discovery', () => {
       'FAIL base: no origin/HEAD; run git remote set-head origin --auto',
       'PR-READY FAIL exit=1',
     ])
+  })
+})
+
+describe('pr-ready privacy guard', () => {
+  const PRIVACY = 'npx --no-install vitest run src/__tests__/fixtures-privacy.test.ts'
+  // Synthetic names only: fixtures-privacy scans this file too.
+  const leakOutput =
+    'AssertionError: privacy leak: planted.test.ts: seat-zz-leak: expected [] to deeply equal []'
+  const agentChatRepo = () =>
+    fixtureRepo(
+      {
+        'package.json': pkg({ scripts: { lint: 'x' } }),
+        'src/__tests__/fixtures-privacy.test.ts': 'synthetic\n',
+      },
+      { 'a.txt': '1\n' },
+    )
+
+  it('fails naming the leaked file and name when the privacy test fails', async () => {
+    const leak: Override = line => (line === PRIVACY ? { code: 1, output: leakOutput } : undefined)
+
+    const result = await runPrReady(agentChatRepo(), [], {}, { override: leak })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL privacy: privacy leak: planted.test.ts: seat-zz-leak')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
+    expect(result.toolCalls).toEqual(['npm run lint', PRIVACY])
+  })
+
+  it('prints ok privacy after the checks and exits 0 when the privacy test passes', async () => {
+    const result = await runPrReady(agentChatRepo())
+
+    expect(result.code).toBe(0)
+    expect(result.out.slice(3, 5)).toEqual(['ok checks', 'ok privacy'])
   })
 })
 
@@ -704,6 +865,7 @@ describe('pr-ready scan', () => {
 
   it('passes the clean-tree check with an untracked node_modules symlink into another checkout', async () => {
     const dir = work()
+    fs.rmSync(path.join(dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
 
     const result = await runPrReady(dir)
@@ -726,6 +888,7 @@ describe('pr-ready scan', () => {
 
   it('still fails the clean-tree check on another untracked file beside a node_modules symlink', async () => {
     const dir = work()
+    fs.rmSync(path.join(dir, 'node_modules'), { recursive: true })
     fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
     fs.writeFileSync(path.join(dir, 'other.txt'), 'x\n')
 

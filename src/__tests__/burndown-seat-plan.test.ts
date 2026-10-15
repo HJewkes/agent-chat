@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { briefGateOf } from '../agents/burndown/seat-tick.js'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
+import { collision, type CollisionFacts } from '../agents/burndown/collision.js'
 import type { Initiative, Task } from '../agents/burndown/eligibility.js'
+import { binaryGate } from '../agents/burndown/gate-reading.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
@@ -88,9 +90,9 @@ const claim = (taskId: string, patch: Partial<Claim> = {}): Claim => ({
 
 function inputs(rows: ScoreRow[], tasks: Task[], patch: Partial<SeatPlanInputs> = {}): SeatPlanInputs {
   const byInitiative = new Map<string, Task[]>()
-  for (const r of rows) {
-    const t = tasks.find(x => x.id === r.id)
-    if (t !== undefined) byInitiative.set(r.initiative, [...(byInitiative.get(r.initiative) ?? []), t])
+  for (const t of tasks) {
+    const initiative = rows.find(r => r.id === t.id)?.initiative ?? 'alpha'
+    byInitiative.set(initiative, [...(byInitiative.get(initiative) ?? []), t])
   }
   return {
     seat: SEAT,
@@ -421,6 +423,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 5,
       agentsReason: 'free',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 5, ours: 0, totalCeiling: 7, oursCeiling: 5 }),
     }
 
@@ -435,6 +438,7 @@ describe('planSeat refusals', () => {
     const capacity: Capacity = {
       agents: 0,
       agentsReason: '3 of maxAgents 3',
+      agentsGate: () => binaryGate('agentSlots', 'test'),
       worktrees: () => ({ total: 0, ours: 0, totalCeiling: 10, oursCeiling: 5 }),
     }
 
@@ -648,7 +652,9 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       expect.objectContaining({
         task: 'A-2',
         kind: 'budget',
-        reason: expect.stringContaining('seven_day 80% at or above line 80%'),
+        reason: expect.stringContaining(
+          '(reading 40% + 40 charged: 1 dispatch(es) this tick at 40 each, charter) at or above line 80%',
+        ),
       }),
     ])
   })
@@ -739,6 +745,42 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         kind: 'file-overlap',
         reason: "src/a/x.ts is under sa-a-1-b's owns",
       }),
+    ])
+  })
+
+  it('dispatches a ready slice whose plan accepts its overlap with an open PR, and refuses it without (CC-1259)', () => {
+    const INDEX = 'packages/authority/src/index.ts'
+    const accept = [{ pr: 1083, path: INDEX, why: 'line 3 only; #1083 appends at :10' }]
+    const facts: CollisionFacts = {
+      repo: REPO,
+      subjects: [],
+      prs: [{ number: 1083, title: 'Owner approval', branch: 'feat/1083', body: '' }],
+      prFiles: () => [INDEX],
+      names: [],
+      claims: [],
+      ours: new Set(),
+      held: [],
+      heldOwns: [],
+    }
+    const planned = (overlapsAccepted?: typeof accept) => {
+      const ledger: Ledger = {
+        ...EMPTY_LEDGER,
+        claims: [
+          queued('A-1', { owns: [INDEX], ...(overlapsAccepted === undefined ? {} : { overlapsAccepted }) }),
+        ],
+      }
+      return planSeat(
+        inputs([], [task('A-1')], { ledger, collision: (_repo, work) => collision(work, facts) }),
+      )
+    }
+
+    const accepted = planned(accept)
+    const undeclared = planned()
+
+    expect(accepted.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(undeclared.dispatch).toEqual([])
+    expect(undeclared.refusals).toEqual([
+      expect.objectContaining({ task: 'A-1', kind: 'file-overlap', reason: `#1083 touches ${INDEX}` }),
     ])
   })
 
@@ -1292,6 +1334,54 @@ describe('planSeat ready-slice placement (CC-946)', () => {
 
     expect(planned.dispatch).toEqual([])
     expect(kinds(planned)).toEqual([['A-1', 'blocked']])
+  })
+
+  describe('parent gate (CC-1121)', () => {
+    const seat = { ...SEAT, excludedTags: ['needs-decision', 'owner-review-round'] }
+    const afterMerge = [
+      claim('A-1', { phase: 'done', slice: 'a', pr: 'https://github.com/o/r/pull/1' }),
+      queued('A-1', { slice: 'b', dependsOn: ['a'] }),
+    ]
+    const withParent = (parent: Task[], over: Partial<SeatPlanInputs> = {}) =>
+      plan(afterMerge, [], { seat, tasks: new Map([['alpha', parent]]), ...over })
+
+    it('dispatches nothing for a needs-decision parent with brief:ready after slice a merged', () => {
+      const planned = withParent([task('A-1', { tags: ['needs-decision', 'brief:ready=2026-10-12'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+      expect(planned.refusals[0]?.reason).toMatch(/tagged needs-decision; its queued slices wait/)
+    })
+
+    it("holds a slice on a tag only the seat's excluded_tags name", () => {
+      const planned = withParent([task('A-1', { tags: ['owner-review-round'] })])
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice on a reserved tag the seat does not exclude', () => {
+      const bare = { ...SEAT, excludedTags: [] }
+
+      const planned = withParent([task('A-1', { tags: ['human-only'] })], { seat: bare })
+
+      expect(planned.dispatch).toEqual([])
+      expect(kinds(planned)).toEqual([['A-1', 'reserved-tag']])
+    })
+
+    it('holds a slice whose parent is closed or missing', () => {
+      const closed = withParent([task('A-1', { status: 'done' })])
+      const missing = withParent([])
+
+      expect([closed.dispatch, missing.dispatch]).toEqual([[], []])
+      expect([kinds(closed), kinds(missing)]).toEqual([[['A-1', 'not-open']], [['A-1', 'not-open']]])
+    })
+
+    it('dispatches the next slice of an ungated parent', () => {
+      const planned = withParent([task('A-1')])
+
+      expect(planned.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
+    })
   })
 
   it("dispatches into the plan's repo over the initiative's first checkout", () => {

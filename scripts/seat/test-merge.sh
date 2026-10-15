@@ -55,11 +55,30 @@ ok_case; add_verdict seat-9-review msg0002 FIX_FIRST "$SHA"; run
 check "FAIL FIX_FIRST" 1 "^FAIL "; no_put "FIX_FIRST"
 new_case "$CONF"; add_verdict seat-9-review msg0003 MERGE "$SHA"; run
 check "FAIL merge-tree conflict" 1 "^FAIL "; no_put "merge-tree conflict"
+ok_case; echo '{"row":{"held":{"reason":"owner-asked: discuss; TP-1"}},"entries":[]}' > "$W/case/timeline.json"; run
+check "FAIL owner-asked Shepherd hold" 1 "^FAIL premerge: .*owner-hold owner-asked: discuss"; no_put "owner-asked hold"
 
 ok_case; out=$(env -u SEAT "$BIN/merge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
 check "FAIL without SEAT" 1 "^FAIL SEAT"; no_put "no SEAT"
 ok_case; SQUASH_MESSAGE_BIN=no-such-formatter run;  check "FAIL when the formatter is missing" 1 "^FAIL squash message: no-such-formatter not found"; no_put "formatter missing"
 ok_case; STUB_FMT_FAIL=1 run;                       check "FAIL when the formatter exits 2" 1 "^FAIL squash message: titan-squash-message exited 2"; no_put "formatter exit 2"
+# own_install: copies the scripts into $W/pkg/scripts/seat with the stub formatter at $W/pkg/node_modules/.bin, and
+# sets NOFMT_PATH to a PATH holding the other stubs and no titan-squash-message anywhere.
+own_install() {
+  local d p
+  rm -rf "$W/pkg" "$W/nofmt"; mkdir -p "$W/pkg/scripts" "$W/pkg/node_modules/.bin" "$W/nofmt"
+  cp -R "$BIN" "$W/pkg/scripts/seat"; cp "$BIN/testdata/premerge/stubs/titan-squash-message" "$W/pkg/node_modules/.bin/"
+  for p in "$BIN"/testdata/premerge/stubs/*; do [ "${p##*/}" = titan-squash-message ] || ln -s "$p" "$W/nofmt/"; done
+  NOFMT_PATH=$W/nofmt; while IFS= read -r -d: d; do [ -x "$d/titan-squash-message" ] || NOFMT_PATH+=":$d"; done <<<"$PATH:"
+}
+own_run() { out=$(PATH=$NOFMT_PATH "$W/pkg/scripts/seat/merge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; }
+ok_case; own_install; own_run;                      check "OK merges with the formatter from its own node_modules" 0 "^OK merged $R#$N squash mergesha"
+[ "$(cat "$STUB_LOG")" = "$(expected_put)" ] \
+  && { echo "PASS own-install PUT sends the formatter's subject"; pass=$((pass+1)); } || { echo "FAIL own-install PUT: $(cat "$STUB_LOG")"; failn=$((failn+1)); }
+ok_case; own_install; SQUASH_MESSAGE_BIN=no-such-formatter own_run
+check "FAIL when SQUASH_MESSAGE_BIN is missing, even with the own-install formatter" 1 "^FAIL squash message: no-such-formatter not found"; no_put "override missing"
+ok_case; own_install; rm "$W/pkg/node_modules/.bin/titan-squash-message"; own_run
+check "FAIL when no formatter is found anywhere" 1 "^FAIL squash message: titan-squash-message not found (PATH or "; no_put "no formatter"
 ok_case; rm "$W/case/pulls_7_commits_per_page_100.json"; run
 check "FAIL when the PR commits cannot be read" 1 "^FAIL squash message: cannot read pulls/7/commits"; no_put "commits unreadable"
 ok_case; STUB_PUT_FAIL=1 run;                       check "FAIL when the PUT is rejected" 1 "^FAIL merge PUT"

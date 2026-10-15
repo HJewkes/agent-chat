@@ -1,5 +1,4 @@
 import type { DeliveredMessage } from '../protocol.js'
-import { newMsgId } from './event-log.js'
 import { logEvent } from './log.js'
 
 /**
@@ -21,9 +20,17 @@ export const MAX_REMEMBERED = 1024
 /** `false` says the frame was not written; any other return, from a transport that cannot tell, says it was. */
 type Push<C> = (conn: C, message: DeliveredMessage) => unknown
 
+/** CC-337: what a closed connection held, and the exit verdicts waiting on it, for its successor. */
+export interface Unpushed {
+  messages: DeliveredMessage[]
+  settled: (() => void)[]
+}
+
 interface Held {
   messages: DeliveredMessage[]
   timer?: NodeJS.Timeout
+  /** CC-337: run once these messages are written or refused; dropped with the connection. */
+  settled?: (() => void)[]
 }
 
 export class ReportBatcher<C> {
@@ -34,6 +41,8 @@ export class ReportBatcher<C> {
   constructor(
     private readonly push: Push<C>,
     private readonly windowMs: () => number,
+    /** CC-1188: the log's collision-checked mint, so a batch id never repeats a logged one. */
+    private readonly mint: () => string,
   ) {}
 
   /** A report: held until its window ends. The first one starts the clock and later ones do not extend it. */
@@ -58,14 +67,17 @@ export class ReportBatcher<C> {
     return this.pushed.has(msgId)
   }
 
-  /** The connection is gone: what it was pushed no longer counts, and what it was only held is returned. */
-  forget(conn: C): DeliveredMessage[] {
+  /**
+   * The connection is gone: what it was pushed no longer counts, and what it was only held is
+   * returned with the exit verdicts waiting on it, which run once the successor has it.
+   */
+  forget(conn: C): Unpushed {
     for (const [msgId, to] of this.pushed) if (to === conn) this.pushed.delete(msgId)
     const waiting = this.held.get(conn)
-    if (!waiting) return []
+    if (!waiting) return { messages: [], settled: [] }
     clearTimeout(waiting.timer)
     this.held.delete(conn)
-    return waiting.messages
+    return { messages: waiting.messages, settled: waiting.settled ?? [] }
   }
 
   flush(conn: C): void {
@@ -74,11 +86,23 @@ export class ReportBatcher<C> {
     clearTimeout(waiting.timer)
     this.held.delete(conn)
     this.write(conn, waiting.messages)
+    for (const then of waiting.settled ?? []) then()
   }
 
   /** Ends the window early when it holds a report from `sender`, so that sender's exit notice cannot overtake it. */
   flushFrom(conn: C, sender: string): void {
     if (this.held.get(conn)?.messages.some(m => m.from === sender)) this.flush(conn)
+  }
+
+  /**
+   * CC-337: keeps the window when it holds a report from `sender`, and calls `then` once that batch is
+   * written, so an exit is judged after its report rather than ending the window for every other worker.
+   */
+  afterFlushFrom(conn: C, sender: string, then: () => void): boolean {
+    const waiting = this.held.get(conn)
+    if (!waiting?.messages.some(m => m.from === sender)) return false
+    waiting.settled = [...(waiting.settled ?? []), then]
+    return true
   }
 
   /** Reports a closed connection was never pushed, for the connection that now holds its name. */
@@ -96,7 +120,7 @@ export class ReportBatcher<C> {
     const [first] = messages
     if (first === undefined) return
     // Unwritten reports stay held with no timer, so closing the connection hands them to its successor.
-    if (!this.written(conn, messages.length === 1 ? first : batchOf(messages)))
+    if (!this.written(conn, messages.length === 1 ? first : batchOf(messages, this.mint)))
       return void this.held.set(conn, { messages })
     if (messages.length > 1) logBatch(messages)
     for (const message of messages) this.remember(message.msgId, conn)
@@ -128,12 +152,12 @@ function logBatch(messages: readonly DeliveredMessage[]): void {
  * id. The headers are inside peer-written text and so can be imitated by it;
  * `batch` is the broker's own list and is what the recipient's attributes show.
  */
-export function batchOf(messages: readonly DeliveredMessage[]): DeliveredMessage {
+export function batchOf(messages: readonly DeliveredMessage[], mint: () => string): DeliveredMessage {
   const total = messages.length
   const senders = [...new Set(messages.map(m => m.from))].join(', ')
   const parts = messages.map((m, i) => `[${i + 1}/${total}] ${headerOf(m)}\n${m.text}`)
   return {
-    msgId: newMsgId(),
+    msgId: mint(),
     from: 'agent-chat',
     text:
       `${total} reports from peers (${senders}), delivered together. Each is that peer's own message: ` +

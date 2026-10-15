@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { retireThresholdK } from '../../config.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { BudgetRead } from '../budget.js'
 import {
@@ -17,6 +18,7 @@ import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
+import { accountLabel, charterAccounts, stopDisagreements } from '../burndown/tick.js'
 import { seatSpend, type SeatSpend } from '../burndown/spend-meter.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
@@ -35,7 +37,14 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
-import { agentRows, selfContext, type AgentRole, type SeatAgentRow, type SelfContext } from './agent-rows.js'
+import {
+  agentRows,
+  roleOfProfile,
+  selfContext,
+  type AgentRole,
+  type SeatAgentRow,
+  type SelfContext,
+} from './agent-rows.js'
 
 export type { SeatAgentRow, SelfContext } from './agent-rows.js'
 
@@ -142,8 +151,8 @@ export interface SeatStatus {
   other: AgentLoad
   parked: ParkedLoad
   budget: BudgetStatus
-  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. */
-  pace: PoolPace[]
+  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. CC-1289: one row per account. */
+  pace: AccountPace[]
   inbox: InboxReading
   /** CC-606: the broker's last pool picks for the seat's spawns; in shadow mode, what it would have billed. */
   poolPicks: PoolPickStatus
@@ -156,7 +165,7 @@ export interface SeatStatus {
   machineStop: MachineStop | null
   /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
   waitingPermission: WaitingPermission[]
-  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against `retire_k`. */
+  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against its role's `retireThresholdK` (CC-290). */
   agents: SeatAgentRow[]
   /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
   self: SelfContext | null
@@ -173,6 +182,8 @@ export interface StatusDeps {
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
+  /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `homeDir`. */
+  identify?: (configDir: string) => string | undefined
   /** Throws when seat-watchdog.json exists and cannot be read or parsed. */
   loadDoc: () => WatchdogDoc
   /** Throws when events.db cannot be read. */
@@ -235,11 +246,9 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
-const ROLES = ['implementer', 'reviewer', 'planner'] as const
 type Role = AgentRole
 
-/** The first role word in the profile, so a profile holding two counts once. */
-const roleOf = (agent: AgentIdentity): Role => ROLES.find(role => agent.profile.includes(role)) ?? 'other'
+const roleOf = (agent: AgentIdentity): Role => roleOfProfile(agent.profile)
 
 function agentLoad(agents: AgentIdentity[], role: Role): AgentLoad {
   const active = agents.filter(a => roleOf(a) === role && running(a))
@@ -350,7 +359,8 @@ function seatHistory(
   reading: AccountReading | undefined,
   now: Date,
 ): SeatSpend {
-  return seatSpend({ seatState: seatState(deps, seat), configDir, saved, sevenDay: reading?.sevenDay, now })
+  const sevenDay = reading?.sevenDay
+  return seatSpend({ seatState: seatState(deps, seat), configDir, saved, sevenDay, now, home: deps.homeDir })
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
@@ -458,13 +468,25 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   }
 }
 
-/** A pool with no reserve has no day 7 line to pace against, so it has no row. */
-function poolPaces(deps: StatusDeps, policy: Policy, now: Date): PoolPace[] {
+/** CC-1289: a pace row for one account, naming its other pools and the stops they disagree on. */
+export type AccountPace = PoolPace & { members?: string[]; warnings?: string[] }
+
+/** A pool with no reserve has no day 7 line to pace against, so it has no row; an account's key pool sets its reserve. */
+export function poolPaces(
+  deps: Pick<StatusDeps, 'homeDir' | 'readBudget' | 'identify'>,
+  pools: Policy['charter']['pools'],
+  now: Date,
+): AccountPace[] {
   const nowMs = now.getTime()
-  return Object.entries(policy.charter.pools).flatMap(([name, pool]) => {
-    if (pool.reserve_seven_day === undefined) return []
+  const accounts = charterAccounts(pools, deps.homeDir, deps.identify)
+  return Object.entries(pools).flatMap(([name, pool]) => {
+    if (pool.reserve_seven_day === undefined || accounts.keyOf(name) !== name) return []
     const read = deps.readBudget(expandHome(pool.config_dir, deps.homeDir), nowMs)
-    return [poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)]
+    const row: AccountPace = poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)
+    const members = accounts.members(name)
+    if (members.length < 2) return [row]
+    const warnings = stopDisagreements(members, pools)
+    return [{ ...row, members, ...(warnings.length === 0 ? {} : { warnings }) }]
   })
 }
 
@@ -542,7 +564,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
-    pace: poolPaces(deps, policy, now),
+    pace: poolPaces(deps, policy.charter.pools, now),
     inbox: inboxReading(deps, seat, plain),
     poolPicks: poolPickStatus(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
@@ -550,7 +572,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     stop: machineStop === null ? null : 'machine',
     machineStop,
     waitingPermission: waitingPermission(deps, mine, now.getTime()),
-    agents: agentRows(mine, roleOf, deps.contextOf, policy.charter.defaults.retire_k),
+    agents: agentRows(mine, roleOf, deps.contextOf, a => retireThresholdK(a.profile)),
     self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
   }
 }
@@ -635,9 +657,13 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
-function paceLines(status: SeatStatus): string[] {
+export function paceLines(status: Pick<SeatStatus, 'at' | 'pace'>): string[] {
   const nowMs = Date.parse(status.at)
-  return status.pace.map((row, i) => line(i === 0 ? 'pace' : '', paceLine(row, nowMs)))
+  const texts = status.pace.flatMap(row => [
+    paceLine({ ...row, pool: accountLabel(row.members ?? [row.pool]) }, nowMs),
+    ...(row.warnings ?? []).map(warning => `WARNING ${warning}`),
+  ])
+  return texts.map((text, i) => line(i === 0 ? 'pace' : '', text))
 }
 
 /** No line until the broker has picked for the seat, so a seat it never routes reads as before. */
@@ -657,7 +683,7 @@ function waitingPermissionLines(status: SeatStatus): string[] {
   return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
 }
 
-/** No line while no agent is past `retire_k`, so the page reads as before. */
+/** No line while no agent is past its retire threshold, so the page reads as before. */
 function retireDueLines(agents: SeatAgentRow[]): string[] {
   const due = agents.filter(a => a.retireDue).map(a => `${a.name} (${a.contextK}k)`)
   return due.length === 0 ? [] : [line('retire-due', due.join(', '))]

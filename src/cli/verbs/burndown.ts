@@ -1,19 +1,35 @@
+import { existsSync, readFileSync } from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
-import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import {
+  gateOrdered,
+  renderScored,
+  scoredPlanFromDisk,
+  scoredSeatFromDisk,
+  type ScoredPlanDiskOptions,
+} from '../../agents/burndown/score-render.js'
 import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
-import { localDate, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { localDate, readSeatScope, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { loadResolvedConfig } from '../../agents/burndown/settings-store.js'
+import type { TickConfig } from '../../agents/burndown/source.js'
 import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
-import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
-import { tickFromDisk } from '../../agents/burndown/run-tick.js'
+import {
+  heldClaims,
+  LEDGER_WAIT_MS,
+  readLedger,
+  withLedgerLock,
+  writeLedger,
+} from '../../agents/burndown/ledger.js'
+import { prFilesReader, tickFromDisk } from '../../agents/burndown/run-tick.js'
+import { run } from '../../agents/burndown/exec.js'
 import {
   DEFAULT_WINDOW,
   briefSourceQuality,
@@ -31,13 +47,30 @@ import {
   renderStatus,
   seatPlanFromDisk,
   type SeatPlanOptions,
+  type ShareWhatIfRequest,
 } from '../../agents/burndown/tick.js'
+import type { ProjectShares } from '../../agents/burndown/project-shares.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
-import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
+import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
+import { reloadSliceOwns, unstallSlice } from './burndown-unstall.js'
+import { finishSlice } from './burndown-done.js'
+import { changedFiles } from '../../agents/burndown/observe.js'
+import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
+import {
+  applyApproved,
+  falseEdges,
+  parseApproved,
+  renderEdgeKey,
+  renderFalseEdge,
+  type ApplyResult,
+  type ApprovedEdge,
+  type PlanOf,
+} from '../../agents/burndown/relint-queued.js'
+import type { Ledger } from '../../agents/burndown/ledger.js'
 import {
   burndownConfigShowVerb,
   burndownOverrideClearVerb,
@@ -53,6 +86,8 @@ import {
 } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 import { burndownLandedVerb } from './burndown-landed.js'
+import { burndownClassifyVerb } from './burndown-classify.js'
+import { kicksInBroker, sendJobKick } from './job-kick.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -69,14 +104,21 @@ const PlanArgs = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
     .optional(),
+  shares: z.string().optional(),
+  picks: z.coerce.number().int().positive().optional(),
 })
 type PlanArgs = z.infer<typeof PlanArgs>
 
 /** score.py's default `--top`. */
 const DEFAULT_TOP = 20
+/** CC-1107: picks the `--shares` what-if forecasts by default. */
+const DEFAULT_PICKS = 20
 
 /** Refuses scored-only flags without `--scored`, so a plain `burndown plan` never changes meaning. */
-export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanArgs): string | undefined {
+export function planFlagError(args: PlanArgs): string | undefined {
+  const { seat, scored, top, autonomyRoot, today } = args
+  const whatIf = whatIfFlagError(args)
+  if (whatIf !== undefined) return whatIf
   if (scored === true) return seat === undefined ? 'burndown plan --scored needs --seat <name>' : undefined
   if (seat !== undefined)
     return top === undefined && today === undefined
@@ -85,6 +127,29 @@ export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanAr
   if (top !== undefined || autonomyRoot !== undefined || today !== undefined)
     return 'burndown plan --top, --autonomy-root and --today apply only with --seat <name> --scored'
   return undefined
+}
+
+/** CC-1107: the share what-if forecasts a seat's dispatch order, so it needs `--seat` and not `--scored`. */
+function whatIfFlagError({ seat, scored, shares, picks }: PlanArgs): string | undefined {
+  if (shares === undefined)
+    return picks === undefined ? undefined : 'burndown plan --picks applies only with --shares'
+  if (seat === undefined) return 'burndown plan --shares needs --seat <name>'
+  return scored === true ? 'burndown plan --shares does not apply with --scored' : undefined
+}
+
+/** `<slug>=<share>,...` as project shares; throws on a malformed pair, a repeated slug or a negative share. */
+export function parseShares(text: string): ProjectShares {
+  const initiatives: Record<string, number> = {}
+  for (const pair of text.split(',')) {
+    const [slug, value, extra] = pair.trim().split('=')
+    const share = Number(value)
+    if (!slug || value === undefined || value.trim() === '' || extra !== undefined || !Number.isFinite(share))
+      throw new Error(`--shares wants <slug>=<share>,...; got '${pair}'`)
+    if (share < 0) throw new Error(`--shares ${slug}=${value} is negative`)
+    if (slug in initiatives) throw new Error(`--shares names ${slug} twice`)
+    initiatives[slug] = share
+  }
+  return { initiatives }
 }
 
 export const burndownPlanVerb = defineVerb({
@@ -99,6 +164,15 @@ export const burndownPlanVerb = defineVerb({
       top: { long: '--top', description: `picks to print with --scored (default ${DEFAULT_TOP})` },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding charter.md and seats/' },
       today: { long: '--today', description: 'pin the staleness clock (YYYY-MM-DD) with --scored' },
+      shares: {
+        long: '--shares',
+        description:
+          'with --seat: what-if project shares, <slug>=<share>,...; prints the next picks by project before -> after',
+      },
+      picks: {
+        long: '--picks',
+        description: `picks the --shares what-if forecasts (default ${DEFAULT_PICKS})`,
+      },
     },
   },
   async run(args) {
@@ -107,7 +181,7 @@ export const burndownPlanVerb = defineVerb({
     try {
       if (args.seat === undefined) return await plainPlan()
       if (args.scored === true) return { ok: true, lines: scoredSeatPlan(args.seat, args) }
-      return await seatDispatchPlan(args.seat, args.autonomyRoot)
+      return await seatDispatchPlan(args.seat, args.autonomyRoot, whatIfOf(args))
     } catch (err) {
       return refused(err)
     }
@@ -121,10 +195,18 @@ async function plainPlan(): Promise<Report> {
   return { ok: true, lines: renderPlan(planned, now) }
 }
 
-async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
+const whatIfOf = ({ shares, picks }: PlanArgs): ShareWhatIfRequest | undefined =>
+  shares === undefined ? undefined : { shares: parseShares(shares), picks: picks ?? DEFAULT_PICKS }
+
+async function seatDispatchPlan(
+  seat: string,
+  autonomyRoot: string | undefined,
+  whatIf: ShareWhatIfRequest | undefined,
+): Promise<Report> {
   const unusable = watchdogUnusable()
   if (unusable !== undefined) {
     logEvent('burndown_seat_paths_skipped', { reason: unusable })
+    if (whatIf !== undefined) throw new Error(`seat paths skipped, no --shares what-if: ${unusable}`)
     const plain = await plainPlan()
     return {
       ...plain,
@@ -132,7 +214,9 @@ async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined):
     }
   }
   const opts = await seatPlanOptions(seat, autonomyRoot)
-  return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
+  const planned = seatPlanFromDisk({ ...opts, ...(whatIf !== undefined && { whatIf }) })
+  const mix = planned.shareMix === undefined ? [] : [planned.shareMix]
+  return { ok: true, lines: [...renderPlan(planned, opts.now), ...mix] }
 }
 
 export const burndownSeatsCompareVerb = defineVerb({
@@ -180,15 +264,32 @@ export async function seatPlanOptions(
   }
 }
 
-function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
-  const plan = scoredPlanFromDisk({
+export type ScoredGateConfig = Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'scopeTagAliases'>
+
+/** CC-988: under the seat's `on` brief gate, the order its tick walks; otherwise `planOrder`'s decayed order. */
+export function scoredSeatPlan(
+  seat: string,
+  { top, autonomyRoot, today }: PlanArgs,
+  tick: ScoredGateConfig = loadResolvedConfig().tick,
+): string[] {
+  const disk = {
     seat,
     top: top ?? DEFAULT_TOP,
     today: today ?? localDate(new Date()),
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
     activeWorkRoot: activeWorkRoot(),
-  })
-  return renderScored(plan)
+  }
+  if (tick.briefGate[seat] === 'on') return renderScored(gatedPlan(disk, tick, today))
+  return renderScored(scoredPlanFromDisk(disk))
+}
+
+/** Reads every row, as the tick does, so the gate re-ranks the whole scope before `--top` cuts it. */
+function gatedPlan(disk: ScoredPlanDiskOptions, tick: ScoredGateConfig, today: string | undefined) {
+  const { plan, tasks, policy } = scoredSeatFromDisk({ ...disk, top: Infinity, readySet: true })
+  const { scope } = readSeatScope(policy.seats, disk.seat, disk.autonomyRoot, tick.scopeTagAliases)
+  const now = today === undefined ? new Date() : new Date(`${today}T00:00:00`)
+  const gated = gateOrdered(plan, tasks, { maxAgeDays: tick.briefMaxAgeDays, now, scope })
+  return { ...gated, order: gated.order.slice(0, disk.top) }
 }
 
 const readCollisionView = (): Promise<BrokerView | undefined> => readBroker(collisionView)
@@ -331,6 +432,101 @@ export const burndownStatusVerb = defineVerb({
   },
 })
 
+/** CC-1156: the relint-deps dry run's body, taking the ledger and plan reader so a test can point it at fixtures. */
+export function relintDepsLines(
+  ledger: Ledger,
+  planOf: PlanOf,
+  seat: string | undefined,
+  json: boolean,
+): Report {
+  const edges = falseEdges(ledger, planOf, seat)
+  if (json) return { ok: true, lines: [JSON.stringify(edges, null, 2)] }
+  const total = `${edges.length} queued dependsOn edge(s) over disjoint owns with no dependsWhy`
+  return { ok: true, lines: [...edges.map(renderFalseEdge), total] }
+}
+
+/** Writes one event-log line per cleared edge; tests inject a recorder. */
+export type EdgeJournal = (edge: ApprovedEdge) => void
+
+const logClearedEdge: EdgeJournal = edge => logEvent('burndown_relint_dep_cleared', { ...edge })
+
+/**
+ * CC-1156 b: clears the seat-approved edges in `approvedFile` that the live ledger still lists, under the ledger
+ * lock (waiting out a running tick), with one journal line per cleared edge.
+ */
+export async function relintDepsApply(
+  ledgerFile: string,
+  approvedFile: string,
+  planOf: PlanOf,
+  journal: EdgeJournal = logClearedEdge,
+): Promise<Report> {
+  const approved = parseApproved(readFileSync(approvedFile, 'utf8'))
+  const locked = await withLedgerLock(
+    ledgerFile,
+    (): ApplyResult => {
+      const result = applyApproved(readLedger(ledgerFile), approved, planOf)
+      if (result.cleared.length > 0) writeLedger(ledgerFile, result.ledger)
+      return result
+    },
+    { wait: { waitMs: LEDGER_WAIT_MS }, announce: true },
+  )
+  if (!locked.ran) return refused(new Error(`a tick holds the ledger lock (pid ${locked.holder}); try again`))
+  const { cleared, skipped } = locked.value
+  cleared.forEach(journal)
+  const lines = [
+    ...cleared.map(e => `cleared ${renderEdgeKey(e)}`),
+    ...skipped.map(s => `skipped ${renderEdgeKey(s.edge)}: ${s.reason}`),
+    `${cleared.length} edge(s) cleared, ${skipped.length} skipped`,
+  ]
+  return { ok: true, lines }
+}
+
+export const burndownRelintDepsVerb = defineVerb({
+  name: 'burndown.relint-deps',
+  description:
+    "queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint); --apply clears approved ones",
+  args: z.object({
+    seat: z.string().optional(),
+    json: z.boolean().optional(),
+    apply: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: "only this seat's claims" },
+      json: { long: '--json', description: 'one JSON array of edges' },
+      apply: {
+        long: '--apply <approved.json>',
+        description:
+          'clear only the edges in this seat-approved file (dry-run --json rows), under the ledger lock',
+      },
+    },
+  },
+  async run({ seat, json, apply }) {
+    try {
+      const readPlan = diskPlanReader(activeWorkRoot())
+      const planOf: PlanOf = claim => readPlan(claim.initiative, claim.taskId)
+      if (apply !== undefined) return await relintDepsApply(burndownLedgerPath(), apply, planOf)
+      return relintDepsLines(readLedger(burndownLedgerPath()), planOf, seat, json === true)
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
+/** CC-1151: a dry tick still reads gh and titan-factory through the caller's PATH, so an agent plans instead. */
+async function kickTick(dryRun: boolean): Promise<Report> {
+  if (dryRun)
+    return refused(
+      new Error('burndown tick --dry-run refused from an agent shell; use `agent-chat burndown plan`'),
+    )
+  try {
+    return await sendJobKick({ t: 'job_kick', job: 'burndown_tick' })
+  } catch (err) {
+    return refused(err)
+  }
+}
+
 export const burndownTickVerb = defineVerb({
   name: 'burndown.tick',
   description: 'one pass: advance every claim a phase, then spawn new work inside the ceilings',
@@ -344,6 +540,7 @@ export const burndownTickVerb = defineVerb({
   },
   async run({ once, dryRun }) {
     if (once !== true) return refused(new Error('burndown tick runs one pass only; pass --once'))
+    if (kicksInBroker()) return kickTick(dryRun === true)
     // Never autostart: a tick that brought up a broker would own it, and the broker serves every session.
     const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
       autoStart: false,
@@ -393,51 +590,130 @@ export const burndownReleaseVerb = defineVerb({
       },
     },
   },
-  async run({ task, slice }) {
-    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
-    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-      autoStart: false,
-    })
-    let connected = false
-    const retire: RetireCall = async name => {
-      if (!connected) {
-        await client.connect()
-        connected = true
-      }
-      return tickBroker(client).retire(name)
-    }
-    try {
-      return await releaseTask(task, retire, new Date(), slice)
-    } finally {
-      client.close()
-    }
-  },
+  run: ({ task, slice }) =>
+    withBrokerRetire(retire =>
+      releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot())),
+    ),
 })
+
+/** Runs `use` with a retire that connects on first use; never autostarts, since a verb that brought up a broker would own it. */
+async function withBrokerRetire(use: (retire: RetireCall) => Promise<Report>): Promise<Report> {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let connected = false
+  const retire: RetireCall = async name => {
+    if (!connected) {
+      await client.connect()
+      connected = true
+    }
+    return tickBroker(client).retire(name)
+  }
+  try {
+    return await use(retire)
+  } finally {
+    client.close()
+  }
+}
 
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
   description:
-    'record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on merge',
-  args: z.object({ task: requiredString('task'), slice: requiredString('slice'), pr: requiredString('pr') }),
+    'record a hand-dispatched PR on a queued or released slice, so the tick never dispatches it and finishes it on merge',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    pr: requiredString('pr'),
+  }),
   result: Report,
   cli: {
     positional: ['task'],
     options: {
-      slice: { long: '--slice', description: 'the queued slice the PR implements' },
+      slice: { long: '--slice', description: 'the queued or released slice the PR implements' },
       pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
     },
   },
-  run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
+  run: ({ task, slice, pr }) =>
+    linkSlicePr(task, slice, pr, undefined, {
+      plan: diskPlanReader(activeWorkRoot()),
+      pull: pullReader(run),
+    }),
+})
+
+export const burndownUnstallVerb = defineVerb({
+  name: 'burndown.unstall',
+  description:
+    "reload an outside-owns slice's owns from its plan and clear the stall in place, keeping its PR and agents",
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: { slice: { long: '--slice', description: 'the stalled slice whose plan owns were fixed' } },
+  },
+  run: ({ task, slice }) =>
+    unstallSlice(task, slice, {
+      plan: diskPlanReader(activeWorkRoot()),
+      changedFiles: cwd => changedFiles(cwd),
+      prFiles: prFilesReader(run),
+    }),
+})
+
+export const burndownReloadOwnsVerb = defineVerb({
+  name: 'burndown.reload-owns',
+  description:
+    "reload a live slice's owns from its plan when its branch fits them, keeping its phase, PR and agents",
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: { slice: { long: '--slice', description: 'the live slice whose plan owns changed' } },
+  },
+  run: ({ task, slice }) =>
+    reloadSliceOwns(task, slice, {
+      plan: diskPlanReader(activeWorkRoot()),
+      changedFiles: cwd => changedFiles(cwd),
+      prFiles: prFilesReader(run),
+    }),
+})
+
+export const burndownDoneVerb = defineVerb({
+  name: 'burndown.done',
+  description:
+    'finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its agents',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    evidence: requiredString('evidence'),
+  }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the slice whose work was done and verified outside git' },
+      evidence: { long: '--evidence', description: 'an existing file that shows the work is done' },
+    },
+  },
+  run: ({ task, slice, evidence }) =>
+    withBrokerRetire(retire => finishSlice(task, slice, evidence, { retire, exists: existsSync })),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
   name: 'burndown.brief.approve',
-  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
-  args: z.object({ task: requiredString('task') }),
+  description:
+    "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file or when off plan",
+  args: z.object({ task: requiredString('task'), offPlanOk: z.string().optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
-    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  cli: {
+    positional: ['task'],
+    options: {
+      offPlanOk: {
+        long: '--off-plan-ok <reason>',
+        description: 'approve an off-plan task for owner-ordered work; the reason is logged as a task note',
+      },
+    },
+  },
+  async run({ task, offPlanOk }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()), offPlanOk)
   },
 })
 
@@ -494,13 +770,18 @@ export function addBurndownCommands(program: Commander): void {
   const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
+  addVerb(burndown, burndownRelintDepsVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
+  addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownReloadOwnsVerb)
+  addVerb(burndown, burndownDoneVerb)
   addVerb(burndown, burndownLandedVerb)
+  addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),

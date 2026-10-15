@@ -16,9 +16,12 @@ import path from 'node:path'
  * so every check here refuses on doubt: an unreadable root, a dangling symlink, a path that
  * resolves anywhere but the subtree, a file with a second hard link.
  *
- * The check runs before Claude Code writes, so a process in the worktree could swap a
- * checked directory for a symlink in between (TOCTOU). Only the spawn itself works in
- * its worktree, so this guards against mistakes and planted links, not a racing writer.
+ * Every call rechecks the launch pin: the root is still its own real path and git still
+ * resolves the common dir recorded at launch, so a root swapped after launch for a symlink
+ * to another worktree refuses (CC-1200). The check still runs before Claude Code writes,
+ * so a process in the worktree could swap a checked directory for a symlink in between
+ * (TOCTOU). Only the spawn itself works in its worktree, so this guards against mistakes
+ * and planted links, not a racing writer.
  */
 
 export const REPO_SKILLS_RULE = 'Edit(./.claude/skills/**)'
@@ -28,14 +31,32 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit'])
 /** Claude Code's own skill-name rule, so a name it would not load is not granted either. */
 const SKILL_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/
 
-export function selfGrant(root: string, toolName: string, toolInput: unknown): boolean {
+/** The worktree root and git common dir pinned when the hook was armed at launch. */
+export interface SelfGrantPin {
+  root: string
+  commonDir: string
+}
+
+export function selfGrant(pin: SelfGrantPin, toolName: string, toolInput: unknown): boolean {
   if (!WRITE_TOOLS.has(toolName)) return false
   const filePath = fileArg(toolInput)
-  if (filePath === undefined) return false
-  const realRoot = linkedWorktreeRoot(root)
-  if (realRoot === undefined) return false
+  if (filePath === undefined || !pinHolds(pin)) return false
   const resolved = resolveThroughLinks(filePath)
-  return resolved !== undefined && isUnderSkillDir(realRoot, resolved) && !isHardLinked(resolved)
+  return resolved !== undefined && isUnderSkillDir(pin.root, resolved) && !isHardLinked(resolved)
+}
+
+function pinHolds(pin: SelfGrantPin): boolean {
+  if (realpathOrUndefined(pin.root) !== pin.root) return false
+  if (linkedWorktreeRoot(pin.root) !== pin.root) return false
+  return gitCommonDir(pin.root) === pin.commonDir
+}
+
+function realpathOrUndefined(p: string): string | undefined {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return undefined
+  }
 }
 
 /** A write through a second hard link edits a file that also lives outside the subtree. */
@@ -71,6 +92,20 @@ export function linkedWorktreeRoot(root: string): string | undefined {
     const backPointer = fs.readFileSync(path.join(adminDir, 'gitdir'), 'utf8').trim()
     if (fs.realpathSync(path.resolve(adminDir, backPointer)) !== dotGit) return undefined
     return isRegisteredByGit(realRoot) ? realRoot : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The real common dir git resolves for `root`, the repository's `.git` for a linked worktree. */
+export function gitCommonDir(root: string): string | undefined {
+  try {
+    const commonDir = execFileSync(
+      'git',
+      ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    return fs.realpathSync(commonDir)
   } catch {
     return undefined
   }

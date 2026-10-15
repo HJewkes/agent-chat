@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { canonicalPath, checkSpawnCwd } from '../agents/spawn-cwd.js'
+import { canonicalPath, checkSpawnCwd, lexicalCwdRefusal } from '../agents/spawn-cwd.js'
 
 /**
  * CC-62. The old rule refused any `cwd` no registered session was already
@@ -114,5 +114,25 @@ describe('canonicalPath', () => {
     fs.symlinkSync(real, link)
 
     expect(canonicalPath(path.join(link, 'gone', 'deeper'))).toBe(path.join(real, 'gone', 'deeper'))
+  })
+})
+
+// CC-1059: the broker's check on a cwd that lives on another host's disk.
+describe('the lexical cwd policy for a cwd on another host', () => {
+  const home = '/Users/x'
+
+  it('accepts a project under that host’s home', () => {
+    expect(lexicalCwdRefusal('/Users/x/projects/ff', home)).toBeUndefined()
+  })
+
+  it.each([
+    ['home itself', '/Users/x'],
+    ['home with a trailing ..', '/Users/x/projects/..'],
+    ['a relative path', 'projects/ff'],
+    ['a path outside home', '/etc'],
+    ['a credential segment', '/Users/x/backup/.gnupg/keys'],
+    ['a credential segment in another case', '/Users/x/.SSH'],
+  ])('refuses %s', (_case, cwd) => {
+    expect(lexicalCwdRefusal(cwd, home)).toBeDefined()
   })
 })

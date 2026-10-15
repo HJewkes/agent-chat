@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentIdentity, IsolationName } from '../protocol.js'
+import type { Allocation } from './isolation/index.js'
 import type { WorktreeRecord } from './isolation/worktree.js'
 import { findTranscript, transcriptPath } from './transcript.js'
 
@@ -62,6 +63,34 @@ export function allocationRecord(
   )?.meta
   if (!meta?.gitRoot || !meta.branch || !fs.existsSync(meta.gitRoot)) return undefined
   return { gitRoot: meta.gitRoot, worktree: at, branch: meta.branch, adopted: true }
+}
+
+/** CC-1110: a tree agent-chat allocated for one agent, and the repository it was cut from. */
+export interface CreatedWorktree {
+  worktree: string
+  gitRoot: string
+}
+
+/**
+ * CC-1110: the tree agent-chat itself created for `agentId` that this allocation launches
+ * in, by that agent's own newest `isolation_allocated` record, so the repo-skill self-grant
+ * is anchored on what agent-chat made for this agent rather than on whatever the cwd's
+ * `.git` claims. An assigned tree is adopted, not created, and an older record for the
+ * same path says nothing about what sits there now, so neither counts.
+ */
+export function createdWorktreeFor(
+  rows: readonly AgentEventRow[],
+  agentId: string,
+  allocation: Allocation,
+  isolation: IsolationName,
+): CreatedWorktree | undefined {
+  const worktree = allocation.ref?.worktree
+  if (isolation !== 'worktree' || !worktree || allocation.ref?.assigned === 'true') return undefined
+  const at = path.resolve(worktree)
+  if (path.resolve(allocation.cwd) !== at) return undefined
+  const meta = rows.findLast(row => row.kind === 'isolation_allocated' && row.ref === agentId)?.meta
+  if (meta?.strategy !== 'worktree' || meta.assigned === 'true' || meta.worktree !== at) return undefined
+  return meta.gitRoot ? { worktree: at, gitRoot: meta.gitRoot } : undefined
 }
 
 /**

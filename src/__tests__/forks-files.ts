@@ -1,12 +1,20 @@
 /**
- * Files that exec a script they just wrote. On Linux a sibling worker's fork can inherit the
+ * Files that exec a script they just wrote, directly or through a `helpers/` module. On Linux a sibling worker's fork can inherit the
  * write fd, and the exec fails with ETXTBSY until that child execs (CC-462, CC-477).
  */
 export const EXEC_SCRIPT_FILES = [
   'src/__tests__/gh-shim.test.ts',
+  'src/__tests__/gh-shim-call-log.test.ts',
+  'src/__tests__/gh-shim-rate-limit.test.ts',
+  'src/__tests__/gh-shim-gateway.test.ts',
   'src/__tests__/leak-git-shim.test.ts',
   'src/__tests__/leak-git-shim-stash.test.ts',
   'src/__tests__/leak-git-shim-locale.test.ts',
+  'src/__tests__/leak-git-shim-alias-source.test.ts',
+  'src/__tests__/leak-git-shim-allowlist.test.ts',
+  'src/__tests__/leak-shell-args.test.ts',
+  'src/__tests__/leak-git-shim-protocol.test.ts',
+  'src/__tests__/leak-git-config-differential.test.ts',
   'src/__tests__/gh-write.test.ts',
   'src/__tests__/gh-write-scan.test.ts',
   'src/__tests__/human-wait.test.ts',
@@ -15,13 +23,16 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/launch-plan.test.ts',
   'src/__tests__/leak-pre-push.test.ts',
   'src/__tests__/leak-pretool-shells.test.ts',
+  'src/__tests__/leak-pretool-heredoc.test.ts',
   'src/__tests__/posix-shell-shebang.test.ts',
   'src/__tests__/spawn-attach-live.test.ts',
   'src/__tests__/burndown-watchdog-unusable.test.ts',
+  'src/__tests__/burndown-daily-retire.test.ts',
   'src/__tests__/worktree-setup.test.ts',
   'src/__tests__/restart-window.test.ts',
   'src/__tests__/restart-window-guard.test.ts',
   'src/__tests__/live-skill-write.test.ts',
+  'src/__tests__/opt-out-kick.test.ts',
 ]
 
 /**
@@ -43,5 +54,7 @@ export const FORKS_FILES = [
   'src/__tests__/report-batch.test.ts',
   // git execs the pre-push hook writeGitHooks just wrote; the write sits in production code, so the detector misses it.
   'src/__tests__/leak-scan-path.test.ts',
+  // Runs ss over the whole process table; its 2 s cap is outrun under the threads group's load (CC-1164).
+  'src/__tests__/peer-locality-socket.test.ts',
   ...EXEC_SCRIPT_FILES,
 ]

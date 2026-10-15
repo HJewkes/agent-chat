@@ -1,5 +1,14 @@
+import { STALL_AGED_MS } from '../agents/burndown/claim-hold.js'
 import { renderMilestoneLine } from '../agents/burndown/milestone-report.js'
-import type { AccountSpend, Digest, NamedItem, QueueEntry, Reading } from './types.js'
+import type {
+  AccountSpend,
+  DecidedEntry,
+  Digest,
+  NamedItem,
+  QueueEntry,
+  Reading,
+  StalledClaim,
+} from './types.js'
 
 /** Renders a collected digest as terminal text or markdown; the sections of design section 8 plus CC-266's unreported exits, empty ones named once at the end. */
 
@@ -22,12 +31,13 @@ const LABEL: Record<string, string> = {
   notice: 'NOTICE',
 }
 
-export const agoFrom = (now: number, at: number): string => {
-  const ms = Math.max(0, now - at)
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 172_800_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
+const span = (ms: number): string => {
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  if (ms < 172_800_000) return `${Math.round(ms / 3_600_000)}h`
+  return `${Math.round(ms / 86_400_000)}d`
 }
+
+export const agoFrom = (now: number, at: number): string => `${span(Math.max(0, now - at))} ago`
 
 const oneLine = (text: string, max = 100): string => {
   const first = text.trim().split('\n')[0] ?? ''
@@ -64,6 +74,14 @@ function needsYou(d: Digest, s: Style): Section {
   return { title: `Needs you (${n})`, lines }
 }
 
+const decisionWeight = (e: DecidedEntry): string =>
+  [
+    e.confidence === undefined ? '' : `conf ${e.confidence.toFixed(2)}`,
+    e.principleIds === undefined ? '' : `principles ${e.principleIds.join(',')}`,
+  ]
+    .filter(part => part !== '')
+    .join(' · ')
+
 function decided(d: Digest, s: Style): Section {
   const lines: string[] = []
   for (const e of d.ledger.decided) {
@@ -71,6 +89,9 @@ function decided(d: Digest, s: Style): Section {
       `- ${e.questionId} for ${e.asker}, ${agoFrom(d.generatedAt, e.at)} by ${e.by} [${e.class}, ${e.basis}] ${e.state}`,
     )
     lines.push(`  Q: ${oneLine(e.question)}`, `  A: ${oneLine(e.answer)}`, `  cites: ${oneLine(e.precedent)}`)
+    const weight = decisionWeight(e)
+    if (weight !== '') lines.push(`  ${weight}`)
+    if (e.reversible !== undefined) lines.push(`  to undo: ${oneLine(e.reversible)}`)
     if (e.state === 'awaiting audit')
       lines.push(`  overrule: ${s.cmd(`agent-chat answer ${e.questionId} "..."`)}`)
   }
@@ -92,11 +113,21 @@ function done(d: Digest): Section {
   return { title: `Done (${d.done.length} tasks, ${d.mergedPrs.length} merged PRs)`, lines }
 }
 
-function stalled(d: Digest): Section {
-  const lines = d.stalled.map(
-    c =>
-      `- ${c.taskId} (${c.initiative}) ${c.agentId} in ${c.phase} since ${c.phaseAt}, past its phase timeout`,
+/** CC-985: names what the claim holds and how to free it, so an aged stall is not read as already handled. */
+function stalledLine(c: StalledClaim, style: Style): string {
+  const slice = c.slice === undefined ? '' : ` --slice ${c.slice}`
+  const why = c.reason === undefined ? `since ${c.phaseAt}, past its phase timeout` : oneLine(c.reason, 80)
+  const aged = c.ageMs > STALL_AGED_MS ? ' aged,' : ''
+  const proposed = c.proposed === undefined ? '' : `; ${oneLine(c.proposed, 80)}`
+  return (
+    `- ${c.taskId} (${c.initiative}) ${c.agentId} in ${c.phase}, stalled ${span(Math.max(0, c.ageMs))},` +
+    `${aged} holds: ${c.hold}, class ${c.cls}: ${why}${proposed}; ` +
+    `release: ${style.cmd(`agent-chat burndown release ${c.taskId}${slice}`)}`
   )
+}
+
+function stalled(d: Digest, style: Style): Section {
+  const lines = d.stalled.map(c => stalledLine(c, style))
   for (const r of d.ledger.reports)
     lines.push(`- ${r.status} ${r.from} to ${r.to}, ${agoFrom(d.generatedAt, r.at)}: ${r.line}`)
   return { title: `Stalled or failed (${lines.length})`, lines }
@@ -163,7 +194,7 @@ export function renderDigest(d: Digest, format: Format): string[] {
     decided(d, s),
     ...milestones(d),
     done(d),
-    stalled(d),
+    stalled(d, s),
     unreported(d),
     spend(d),
     next(d, s),

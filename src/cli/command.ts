@@ -48,6 +48,8 @@ export const Report = z.object({
   lines: z.array(z.string()),
   /** A run-level refusal (legacy `fail()`'s stderr line), printed before the exit it causes. */
   errors: z.array(z.string()).optional(),
+  /** The exit status when `ok` is false, for a verb whose caller keys on more than 1 (the port verbs' 69). */
+  exit: z.number().int().optional(),
 })
 export type Report = z.infer<typeof Report>
 
@@ -57,9 +59,13 @@ export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(
 
 /** The registry appends `<value>` to every non-boolean flag; a flag that already names its argument keeps its own. */
 const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof optionFlagSpec>[2]): string =>
-  option.long.includes('<')
+  option.long.includes('<') || isTrueSwitch(verb, key)
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
+
+/** A required `z.literal(true)` flag is a bare switch: commander yields `true` when it is present. */
+const isTrueSwitch = (verb: Verb<unknown>, key: string): boolean =>
+  schemaKind(fieldSchema(verb.args, key)) === 'literal'
 
 /** An array-typed positional takes every remaining word: `[name...]`. */
 function variadicAware<Args>(verb: Verb<Args>, name: string): string {
@@ -128,5 +134,5 @@ async function runVerb<Args>(
   const report = verb.result.parse(envelope.data)
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
-  process.exit(report.ok ? 0 : 1)
+  process.exit(report.ok ? 0 : (report.exit ?? 1))
 }

@@ -25,10 +25,14 @@ const probeBroker = (): Promise<void> =>
     socket.once('error', () => reject(new BrokerUnavailableError()))
   })
 
-/** Short-lived client for the one-shot CLI verbs. */
-export async function withBroker<T>(fn: (broker: BrokerClient) => Promise<T>): Promise<T> {
-  if (process.env.AGENT_CHAT_NO_AUTOSTART === '1') await probeBroker()
-  const broker = new BrokerClient(() => undefined)
+/** Short-lived client for the one-shot CLI verbs; `autoStart: false` forbids starting a broker whatever the env says. */
+export async function withBroker<T>(
+  fn: (broker: BrokerClient) => Promise<T>,
+  options: { autoStart?: boolean } = {},
+): Promise<T> {
+  const autoStart = options.autoStart !== false && process.env.AGENT_CHAT_NO_AUTOSTART !== '1'
+  if (!autoStart) await probeBroker()
+  const broker = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, { autoStart })
   await broker.connect()
   try {
     return await fn(broker)

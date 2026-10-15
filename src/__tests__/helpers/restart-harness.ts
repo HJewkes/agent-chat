@@ -70,6 +70,8 @@ export interface HarnessOptions {
   poolPick?: SupervisorOptions['poolPick']
   /** CC-450: defaults to one that proves nothing dead, so no test reads the host's process table. */
   processProbe?: ProcessProbe
+  /** CC-344: defaults to no run-agent running, so no test reads the host's `ps`. */
+  launcherRunning?: SupervisorOptions['launcherRunning']
 }
 
 const unprovenProbe: ProcessProbe = {
@@ -154,6 +156,7 @@ function boot(home: string, options: HarnessOptions): Generation {
     ...(options.seatOverlap === undefined ? {} : { seatOverlap: options.seatOverlap }),
     ...(options.poolPick === undefined ? {} : { poolPick: options.poolPick }),
     processProbe: options.processProbe ?? unprovenProbe,
+    launcherRunning: options.launcherRunning ?? (async () => false),
     surface: {
       platform: options.appleScript === undefined ? 'linux' : 'darwin',
       spawn: options.spawn ?? liveChild,

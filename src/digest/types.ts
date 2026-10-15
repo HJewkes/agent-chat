@@ -1,3 +1,4 @@
+import type { ClaimHold } from '../agents/burndown/claim-hold.js'
 import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
 
 /** The morning digest's model: every section as plain data, rendered by `render.ts`. */
@@ -25,6 +26,12 @@ export interface DecidedEntry {
   basis: string
   precedent: string
   state: DecisionState
+  /** How to undo it, from the decided row's meta; absent on rows written without one. */
+  reversible?: string
+  /** The decider's confidence, 0..1, when the decided row carries one (TP-709). */
+  confidence?: number
+  /** Ids of the decider principles the answer rests on, when the decided row carries them (TP-709). */
+  principleIds?: string[]
 }
 
 export interface ClassReversal {
@@ -91,10 +98,19 @@ export interface AccountSpend {
 
 export interface StalledClaim {
   taskId: string
+  slice?: string
   initiative: string
   agentId: string
   phase: string
   phaseAt: string
+  /** Absent when the claim stalled by outliving its phase timeout rather than by a recorded reason. */
+  reason?: string
+  /** The stall's exception class, `unclassed` on a row from before classes. */
+  cls: string
+  hold: ClaimHold
+  ageMs: number
+  /** CC-1150 b: the stale class and the action proposed for it, when the claim's agent is gone. */
+  proposed?: string
 }
 
 export interface NamedItem {

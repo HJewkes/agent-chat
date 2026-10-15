@@ -1,5 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { LaunchPlan } from '@titan-design/agent-surface'
+import { AGENT_NAME_PATTERN } from '../launch-identity.js'
+import { realTmpFs, type TmpFs } from './agent-tmpdir.js'
 import { canonicalPath } from './spawn-cwd.js'
 
 /**
@@ -16,6 +19,15 @@ const tokensOf = (name: string): string[] => name.toLowerCase().split(/[^a-z0-9]
 
 export function isReviewerSpawn(profileName: string, agentName: string): boolean {
   return tokensOf(profileName).some(t => REVIEWER_TOKENS.has(t)) || tokensOf(agentName)[0] === 'rv'
+}
+
+/**
+ * CC-1040: a tree on disk carries only its directory name, so the reviewer worktree pool is
+ * decided from the agent name alone, the same way when allocating and when counting.
+ */
+export function isReviewerTreeName(name: string): boolean {
+  const tokens = tokensOf(name)
+  return tokens[0] === 'rv' || tokens.includes('reviewer')
 }
 
 /**
@@ -36,4 +48,41 @@ export function primaryCheckoutOf(cwd: string): string | undefined {
     if (parent === dir) return undefined
     dir = parent
   }
+}
+
+/**
+ * CC-311: a reviewer kills mutants in its own tree under `$TMPDIR/<name>`. Outside its working
+ * directories Claude Code resets a `cd` and asks about absolute writes, and a headless reviewer
+ * has nobody to answer, so the launcher adds the tree as a working directory.
+ */
+export type ScratchFs = Pick<TmpFs, 'lstat' | 'mkdir' | 'chmod'> & { realpath(path: string): string }
+
+export const realScratchFs: ScratchFs = { ...realTmpFs, realpath: p => fs.realpathSync(p) }
+
+const SCRATCH_MODE = 0o700
+const VALID_NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`, 'i')
+
+/** `<realpath TMPDIR>/<name>`, created 0700; undefined for a non-reviewer, a symlink or a non-directory. */
+export function reviewerScratchDir(
+  env: Record<string, string | undefined>,
+  scratchFs: ScratchFs = realScratchFs,
+): string | undefined {
+  const { TMPDIR: tmp, AGENT_CHAT_PROFILE: profile = '', AGENT_CHAT_NAME: name } = env
+  if (tmp === undefined || tmp === '' || name === undefined || !VALID_NAME.test(name)) return undefined
+  if (!isReviewerSpawn(profile, name)) return undefined
+  try {
+    const dir = path.join(scratchFs.realpath(tmp), name)
+    const stat = scratchFs.lstat(dir)
+    if (stat === undefined) scratchFs.mkdir(dir, SCRATCH_MODE)
+    else if (stat.isSymbolicLink() || !stat.isDirectory()) return undefined
+    else scratchFs.chmod(dir, SCRATCH_MODE)
+    return dir
+  } catch {
+    return undefined
+  }
+}
+
+/** First in argv, so neither a variadic flag nor the `--` before the brief can swallow it. */
+export function withScratchAddDir(plan: LaunchPlan, dir: string | undefined): LaunchPlan {
+  return dir === undefined ? plan : { ...plan, args: ['--add-dir', dir, ...plan.args] }
 }

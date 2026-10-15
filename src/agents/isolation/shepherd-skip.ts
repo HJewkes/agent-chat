@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
-import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS } from '../burndown/shepherd.js'
-import { childEnv } from '../burndown/exec.js'
+import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS } from '../../shepherd-client.js'
+import { childEnv, describeExecFailure } from '../../exec.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { ParkTarget } from './park.js'
 
@@ -114,14 +115,38 @@ export function parseActiveRuns(stdout: string): ShepherdRun[] {
     }))
 }
 
-async function readActiveRuns(): Promise<ShepherdRun[]> {
-  const { stdout } = await execFileAsync(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
-    env: childEnv(),
-    encoding: 'utf8',
-    timeout: READ_TIMEOUT_MS,
-    maxBuffer: STATUS_MAX_BYTES,
-  })
-  return parseActiveRuns(stdout)
+export interface ReadActiveRunsOptions {
+  bin?: string
+  timeoutMs?: number
+}
+
+/**
+ * CC-1096: runs in HOME, since the broker's own cwd can be a removed agent tree, and a failure
+ * names exit or signal, timeout, elapsed ms, cwd and stderr instead of "Command failed: <argv>".
+ */
+export async function readActiveRuns({
+  bin = SHEPHERD_BIN,
+  timeoutMs = READ_TIMEOUT_MS,
+}: ReadActiveRunsOptions = {}): Promise<ShepherdRun[]> {
+  const cwd = homedir()
+  const started = performance.now()
+  let stdout: string
+  try {
+    ;({ stdout } = await execFileAsync(bin, SHEPHERD_STATUS_ARGS, {
+      cwd,
+      env: childEnv(),
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: STATUS_MAX_BYTES,
+    }))
+  } catch (err) {
+    throw new Error(describeExecFailure(err, { cwd, elapsedMs: performance.now() - started }))
+  }
+  try {
+    return parseActiveRuns(stdout)
+  } catch (err) {
+    throw new Error(`parsed ${stdout.length} bytes: ${(err as Error).message}`.split('\n')[0])
+  }
 }
 
 /** A repo with no origin has nowhere to hold a PR; otherwise `gh` answers, and its failure rejects. */
@@ -138,6 +163,6 @@ async function readOpenPr(gitRoot: string, branch: string): Promise<boolean> {
 
 /** The broker's production reads; tests pass a fake. */
 export const cliShepherdSkipPort: ShepherdSkipPort = {
-  activeRuns: readActiveRuns,
+  activeRuns: () => readActiveRuns(),
   hasOpenPr: readOpenPr,
 }

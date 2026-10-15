@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SeatState } from '../agents/burndown/ledger.js'
-import { seatSpend, type SeatSpendInput } from '../agents/burndown/spend-meter.js'
+import { poolSamples, seatSpend, type SeatSpendInput } from '../agents/burndown/spend-meter.js'
 
 /** CC-1099: one rule picks a seat's spend source, ledger samples first and the watchdog meters as fallback. */
 
@@ -42,8 +42,18 @@ describe('seatSpend', () => {
       { at: RUN_SINCE, sevenDay: 25 },
       { at: at(14), sevenDay: 40 },
     ])
-    expect(result).toMatchObject({ source: 'ledger', run: 17 })
-    expect(result.day).toBeUndefined()
+    expect(result).toMatchObject({ source: 'ledger', run: 17, day: 17 })
+  })
+
+  it("counts the day from the day's first ledger sample when none is at or before 07:00 (CC-1190)", () => {
+    const result = spend(
+      [
+        { at: at(8), sevenDay: 20 },
+        { at: RUN_SINCE, sevenDay: 22 },
+      ],
+      { sevenDay: 25 },
+    )
+    expect(result).toMatchObject({ source: 'ledger', run: 3, day: 5 })
   })
 
   it('falls back to the meters when the ledger samples start after the run start', () => {
@@ -81,5 +91,41 @@ describe('seatSpend', () => {
     const result = spend([{ at: at(12), sevenDay: 30 }], { sevenDay: undefined })
     expect(result).toMatchObject({ source: 'meters', run: undefined, day: undefined })
     expect(result.history.length).toBeGreaterThan(0)
+  })
+})
+
+describe('poolSamples across config dir key forms (CC-1118)', () => {
+  const HOME = '/h'
+  const samples = [{ at: at(10), sevenDay: 20 }]
+  const keep = (key: string | undefined, configDir: string) =>
+    poolSamples({ samples, configDir: key }, configDir, NOW.getTime(), HOME)
+
+  it('keeps samples keyed ~/ when the pool dir is absolute', () => {
+    expect(keep('~/agents', '/h/agents')).toEqual(samples)
+  })
+
+  it('keeps samples keyed absolute when the pool dir is written ~/', () => {
+    expect(keep('/h/agents', '~/agents')).toEqual(samples)
+  })
+
+  it('keeps samples whose key differs only by a trailing slash', () => {
+    expect(keep('/h/agents/', '/h/agents')).toEqual(samples)
+  })
+
+  it("drops another pool's samples", () => {
+    expect(keep('~/other', '/h/agents')).toEqual([])
+  })
+
+  it('drops an unkeyed ledger', () => {
+    expect(keep(undefined, '/h/agents')).toEqual([])
+  })
+
+  it('seatSpend counts a ~/-keyed ledger against an absolute pool dir with the given home', () => {
+    const result = spend([{ at: at(6, 30), sevenDay: 10 }], {
+      seatState: { samples: [{ at: at(6, 30), sevenDay: 10 }], configDir: '~/agents' },
+      configDir: '/h/agents',
+      home: HOME,
+    })
+    expect(result).toMatchObject({ source: 'ledger', run: 32 })
   })
 })

@@ -21,6 +21,8 @@ export interface SeatOutcome {
   skipped?: string
   /** What the seat holds of each role after planning, as its role caps count it (CC-929); absent when skipped. */
   roles?: Record<'implementers' | 'reviewers' | 'planners', number>
+  /** The seat's plan section-2 task IDs (CC-1128), for the tick summary; absent without a readable `plan_file`. */
+  plan?: ReadonlySet<string>
 }
 
 export interface NoDispatchReason {
@@ -32,6 +34,7 @@ export interface NoDispatchReason {
 
 const STOPS: { name: string; kinds: readonly RefusalKind[] }[] = [
   { name: 'machine stop', kinds: ['stop-line'] },
+  { name: 'review backpressure', kinds: ['review-backpressure'] },
   { name: 'budget stop', kinds: ['budget'] },
   { name: 'full cap', kinds: ['slots', 'role-cap', 'worktrees'] },
 ]
@@ -40,9 +43,25 @@ const READING_MAX = 200
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim().slice(0, READING_MAX)
 
-function counts(refusals: readonly Refusal[]): [string, number][] {
+/**
+ * CC-1186: each refused task's first refusal, and every refusal that names no task. A task's ready
+ * slices are refused under its id before its row is, so counting rows counted it once per slice too.
+ */
+export function firstRefusalPerTask(refusals: readonly Refusal[]): Refusal[] {
+  const seen = new Set<string>()
+  return refusals.filter(r => {
+    if (r.task === undefined) return true
+    const key = JSON.stringify([r.initiative, r.task])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/** Refused tasks by the kind of their first refusal, most first. */
+export function refusalTally(refusals: readonly Refusal[]): [string, number][] {
   const byKind = new Map<string, number>()
-  for (const r of refusals) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1)
+  for (const r of firstRefusalPerTask(refusals)) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1)
   return [...byKind].sort(([a, m], [b, n]) => n - m || a.localeCompare(b))
 }
 
@@ -75,7 +94,7 @@ export function noDispatchReason(outcome: SeatOutcome): NoDispatchReason | undef
   if (outcome.dispatched > 0) return undefined
   if (refusals.length === 0)
     return { seat, key: 'exhausted', text: `${NO_DISPATCH_PREFIX}; scope exhausted: no open task in scope` }
-  const tally = counts(refusals)
+  const tally = refusalTally(refusals)
   const stop = stopOf(refusals)
   const listed = `refusals ${tally.map(([kind, n]) => `${kind} ${n}`).join(', ')}`
   const head = stop === undefined ? '' : `; ${stop.name}: ${stop.reading}`

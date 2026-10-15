@@ -1,14 +1,17 @@
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LaunchPlan } from '../agents/types.js'
-import type { ClientMessage, RemoteLaunch } from '../protocol.js'
+import { helloProof } from '../broker/launcher-key.js'
+import { encode, lineReader, type ClientMessage, type RemoteLaunch, type ServerMessage } from '../protocol.js'
 import {
   answerLaunch,
   answerProbe,
   handleHostFrame,
   hostSurfaces,
+  serveConnection,
   type LauncherDeps,
   type LauncherIdentity,
 } from '../server/host-launcher.js'
@@ -32,9 +35,14 @@ beforeEach(() => {
   configDir = path.join(home, '.claude-profiles', 'personal')
   fs.mkdirSync(cwd, { recursive: true })
   fs.mkdirSync(configDir, { recursive: true })
+  // A spec with no config dir reads `~/.claude.json`; keep the real one out of these tests.
+  vi.spyOn(os, 'homedir').mockReturnValue(home)
 })
 
-afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
+afterEach(() => {
+  vi.restoreAllMocks()
+  fs.rmSync(home, { recursive: true, force: true })
+})
 
 const spec = (over: Partial<RemoteLaunch> = {}): RemoteLaunch => ({
   agentId: 'abcd1234',
@@ -59,7 +67,10 @@ const spec = (over: Partial<RemoteLaunch> = {}): RemoteLaunch => ({
   ...over,
 })
 
-function fakeDeps(launch: (plan: LaunchPlan) => Promise<void> = async () => undefined) {
+function fakeDeps(
+  launch: (plan: LaunchPlan) => Promise<void> = async () => undefined,
+  readKey: () => string | null = () => null,
+) {
   const launched: { surface: string; plan: LaunchPlan }[] = []
   const written: LaunchPlan[] = []
   const superseded: string[] = []
@@ -73,6 +84,7 @@ function fakeDeps(launch: (plan: LaunchPlan) => Promise<void> = async () => unde
       await launch(plan)
     },
     markSuperseded: agentId => void superseded.push(agentId),
+    readKey,
   }
   return { deps, launched, written, superseded }
 }
@@ -143,8 +155,9 @@ describe('a host_launch spec', () => {
     const { deps, launched } = fakeDeps()
     const { configDir: _account, ...noAccount } = spec()
 
-    await answerLaunch(noAccount, LINUX, deps)
+    const answer = await answerLaunch(noAccount, LINUX, deps)
 
+    expect(answer).toEqual({ ok: true })
     expect(launched[0]?.plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
   })
 
@@ -197,6 +210,78 @@ describe('a host_probe', () => {
   })
 })
 
+describe('a launch into a cwd the destination account has not trusted (CC-1081)', () => {
+  const trusting = (projects: Record<string, { hasTrustDialogAccepted: boolean }>): string => {
+    const file = path.join(configDir, '.claude.json')
+    fs.writeFileSync(file, JSON.stringify({ projects }))
+    return file
+  }
+
+  it('is refused at the probe, naming the trust prompt, the cwd and the config file', () => {
+    const file = trusting({ '/elsewhere': { hasTrustDialogAccepted: true } })
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'tmux-window' }, LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer.reason).toContain('workspace trust prompt')
+    expect(answer.reason).toContain(cwd)
+    expect(answer.reason).toContain(file)
+  })
+
+  it('is refused at launch with nothing written, opened or superseded', async () => {
+    trusting({ '/elsewhere': { hasTrustDialogAccepted: true } })
+    const { deps, launched, written, superseded } = fakeDeps()
+
+    const answer = await answerLaunch(spec(), LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer.reason).toContain('workspace trust prompt')
+    expect(written).toEqual([])
+    expect(launched).toEqual([])
+    expect(superseded).toEqual([])
+  })
+
+  it('with no config dir is refused from the home ~/.claude.json', () => {
+    const file = path.join(home, '.claude.json')
+    fs.writeFileSync(file, JSON.stringify({ projects: {} }))
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, surface: 'headless' }, LINUX, deps)
+
+    expect(answer.reason).toContain(file)
+    expect(answer.reason).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  it('is refused when its entry was seen but not accepted', () => {
+    trusting({ [cwd]: { hasTrustDialogAccepted: false } })
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'headless' }, LINUX, deps)
+
+    expect(answer.reason).toContain('workspace trust prompt')
+  })
+
+  it('launches a subdirectory whose git root is trusted, even with a space in its path', async () => {
+    fs.mkdirSync(path.join(cwd, '.git'))
+    const sub = path.join(cwd, 'Application Support', 'seat')
+    fs.mkdirSync(sub, { recursive: true })
+    trusting({ [cwd]: { hasTrustDialogAccepted: true } })
+    const { deps, launched } = fakeDeps()
+
+    expect(answerProbe({ cwd: sub, configDir, surface: 'tmux-window' }, LINUX, deps)).toEqual({ ok: true })
+    expect(await answerLaunch(spec({ cwd: sub }), LINUX, deps)).toEqual({ ok: true })
+    expect(launched).toHaveLength(1)
+  })
+
+  it('launches as before when the config file cannot be read', () => {
+    fs.writeFileSync(path.join(configDir, '.claude.json'), '{not json')
+    const { deps } = fakeDeps()
+
+    expect(answerProbe({ cwd, configDir, surface: 'tmux-window' }, LINUX, deps)).toEqual({ ok: true })
+  })
+})
+
 describe('handleHostFrame', () => {
   it('answers a probe on the link with the same id', async () => {
     const { deps } = fakeDeps()
@@ -223,6 +308,98 @@ describe('handleHostFrame', () => {
     expect(launched).toHaveLength(1)
     expect(superseded).toEqual(['abcd1234'])
     expect(sent).toEqual([])
+  })
+})
+
+/** A broker stub on a unix socket: records the launcher's frames and answers through `answer`. */
+async function brokerStub(answer: (frame: ClientMessage, reply: (f: ServerMessage) => void) => void) {
+  const received: ClientMessage[] = []
+  const sockPath = path.join(home, 'stub.sock')
+  const server = net.createServer(conn => {
+    const reply = (f: ServerMessage): void => void conn.write(encode(f))
+    conn.on(
+      'data',
+      lineReader<ClientMessage>(
+        frame => {
+          received.push(frame)
+          answer(frame, reply)
+        },
+        () => undefined,
+      ),
+    )
+  })
+  await new Promise<void>(resolve => server.listen(sockPath, resolve))
+  const connect = (): Promise<net.Socket> =>
+    new Promise(resolve => {
+      const socket = net.connect(sockPath, () => resolve(socket))
+    })
+  return { received, connect, close: () => server.close() }
+}
+
+const KEY = 'a'.repeat(64)
+const refuseHello = (frame: ClientMessage, reply: (f: ServerMessage) => void, nonce = 'n1'): void => {
+  if (frame.t === 'host_challenge') reply({ t: 'host_challenge_result', nonce })
+  if (frame.t === 'host_hello') reply({ t: 'host_hello_result', ok: false, reason: 'stub refusal' })
+}
+
+describe('serveConnection answering the broker challenge (CC-1063)', () => {
+  it('sends host_challenge before any hello, then a hello proved over the nonce', async () => {
+    const stub = await brokerStub((frame, reply) => refuseHello(frame, reply, 'nonce-1'))
+    const { deps } = fakeDeps(undefined, () => KEY)
+
+    await serveConnection(await stub.connect(), LINUX, deps, () => undefined)
+
+    stub.close()
+    expect(stub.received.map(f => f.t)).toEqual(['host_challenge', 'host_hello'])
+    expect(stub.received[1]).toMatchObject({ proof: helloProof(KEY, 'basement', 'nonce-1') })
+  })
+
+  it('with no key file sends a hello without a proof and resolves with the broker refusal', async () => {
+    const stub = await brokerStub(refuseHello)
+    const { deps } = fakeDeps()
+
+    const why = await serveConnection(await stub.connect(), LINUX, deps, () => undefined)
+
+    stub.close()
+    expect(stub.received[1]?.t).toBe('host_hello')
+    expect(stub.received[1]).not.toHaveProperty('proof')
+    expect(why).toBe('the broker refused this launcher: stub refusal')
+  })
+
+  it('reads the key on every connect, so a rotated key is used without a restart', async () => {
+    const keys = ['b'.repeat(64), 'c'.repeat(64)]
+    const stub = await brokerStub(refuseHello)
+    const { deps } = fakeDeps(undefined, () => keys.shift() ?? null)
+
+    await serveConnection(await stub.connect(), LINUX, deps, () => undefined)
+    await serveConnection(await stub.connect(), LINUX, deps, () => undefined)
+
+    stub.close()
+    const proofs = stub.received.filter(f => f.t === 'host_hello').map(f => (f as { proof?: string }).proof)
+    expect(proofs).toEqual([
+      helloProof('b'.repeat(64), 'basement', 'n1'),
+      helloProof('c'.repeat(64), 'basement', 'n1'),
+    ])
+  })
+
+  it('gives up on a broker that never answers the challenge, without sending a hello', async () => {
+    const stub = await brokerStub(() => undefined)
+    const { deps } = fakeDeps(undefined, () => KEY)
+
+    const why = await serveConnection(await stub.connect(), LINUX, deps, () => undefined, 30)
+
+    stub.close()
+    expect(why).toMatch(/did not answer host_challenge/)
+    expect(stub.received.map(f => f.t)).toEqual(['host_challenge'])
+  })
+
+  it('never puts the key in the env a successor is launched with', async () => {
+    const { deps, launched } = fakeDeps(undefined, () => KEY)
+
+    await answerLaunch(spec(), LINUX, deps)
+
+    expect(Object.values(launched[0]?.plan.env ?? {})).not.toContain(KEY)
+    expect(JSON.stringify(launched[0]?.plan)).not.toContain(KEY)
   })
 })
 

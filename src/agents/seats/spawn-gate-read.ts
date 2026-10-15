@@ -4,13 +4,12 @@ import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
 import { readLedger, heldClaims, type Claim, type SeatState } from '../burndown/ledger.js'
-import { expandHome } from '../burndown/seat-dispatch.js'
 import { burndownLedgerPath, burndownOverridePath, burndownSettingsPath } from '../../paths.js'
 import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-store.js'
 import { readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
-import { ownsSpawns, seatOf } from './seat-of.js'
+import { ownsSpawns, seatFileNamed, seatOf } from './seat-of.js'
 import type { OverlapClaim, SeatSpawnInput } from './spawn-gate.js'
 import { savedMeters } from './stops.js'
 import { accountReading } from './watchdog.js'
@@ -56,20 +55,15 @@ function savedDoc(load: () => WatchdogDoc): WatchdogDoc | undefined {
 }
 
 /**
- * The seat's ledger state when its samples were read from `pool`. The tick keys them by the charter's
- * unexpanded `config_dir`, so the key is resolved here to the pool's. An unreadable ledger, or samples
- * of another pool, leave the meters to stand alone rather than refusing the spawn.
+ * The seat's ledger state as the tick keyed it; `seatSpend` matches its config dir against the pool's (CC-1118).
+ * An unreadable ledger leaves the meters to stand alone rather than refusing the spawn.
  */
-function poolSeatState(deps: SeatSpawnReadDeps, seat: string, pool: Pool): SeatState | undefined {
-  let state: SeatState | undefined
+function ledgerState(deps: SeatSpawnReadDeps, seat: string): SeatState | undefined {
   try {
-    state = deps.seatState?.(seat)
+    return deps.seatState?.(seat)
   } catch {
     return undefined
   }
-  if (state?.configDir === undefined) return undefined
-  const keyed = path.resolve(expandHome(state.configDir, deps.home))
-  return keyed === path.resolve(pool.configDir) ? { ...state, configDir: pool.configDir } : undefined
 }
 
 /** Throws when the seats directory cannot be read; the broker logs that and lets the spawn through. */
@@ -101,7 +95,8 @@ export function readSeatSpawn(
     resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
     runMeter: meters.run,
     dayMeter: meters.day,
-    seatState: poolSeatState(deps, seat.name, pool),
+    seatState: ledgerState(deps, seat.name),
+    home: deps.home,
     now: spawn.now,
   }
   return { kind: 'gate', input }
@@ -187,4 +182,21 @@ export function readHandReserve(
     loadResolvedConfig({ paths: settingsBeside(paths.tickConfigFile) }).tick.handReserve[seat.name] ?? 0
   if (reserve <= 0 || seat.prefix === undefined) return undefined
   return { reserve, prefix: seat.prefix, held: heldClaims(readLedger(paths.ledgerFile)) }
+}
+
+export interface SpawnerSeatFacts {
+  /** The spawning seat's agent-name prefix. */
+  prefix: string
+}
+
+/**
+ * CC-965: the prefix of the seat that `req.spawner` names, whatever the spawn is called. Undefined when the
+ * spawner is no seat. Throws when the seat file cannot be read; the broker logs that and lets the spawn through.
+ */
+export function readSpawnerSeat(
+  paths: Pick<OverlapPaths, 'root'>,
+  req: OverlapRequest,
+): SpawnerSeatFacts | undefined {
+  const found = seatFileNamed(paths.root, req.spawner)
+  return found === undefined ? undefined : { prefix: found.seat.prefix }
 }

@@ -373,10 +373,15 @@ describe('burndown phase machine', () => {
     ])
   })
 
-  it('leaves a stalled claim alone even when its agent has exited', () => {
+  it('leaves a stalled claim alone but for its stale class even when its agent has exited', () => {
     const stalled = claim({ stalledReason: 'implementing past its timeout' })
 
-    expect(step(stalled, { agent: exited, report: parseReport('Status: DONE') }).actions).toEqual([])
+    expect(step(stalled, { agent: exited, report: parseReport('Status: DONE') }).actions).toEqual([
+      expect.objectContaining({
+        kind: 'update',
+        patch: { stale: expect.objectContaining({ class: 'other' }) },
+      }),
+    ])
   })
 })
 
@@ -515,6 +520,135 @@ describe('burndown hands a PR to Shepherd', () => {
   })
 })
 
+describe('a shepherd-ended claim on a transient failure (CC-1229)', () => {
+  const GAP = 31 * 60_000
+  const open = { kind: 'open' as const, pr: 'o/r#9' }
+  const ciTimeout = 'ci-timeout: required checks did not finish'
+  const ended = (reason: string | null = ciTimeout) => ({ row: row('failed', reason) })
+  const shepherding = (patch: Partial<Claim> = {}): Claim => claim({ phase: 'shepherding', pr: PR, ...patch })
+  const stalledEnded = (patch: Partial<Claim> = {}): Claim =>
+    shepherding({
+      stalledReason: `Shepherd run run-9 ended failed without merging: ${ciTimeout}`,
+      stalledClass: 'failed',
+      stallCode: 'shepherd-ended',
+      ...patch,
+    })
+
+  it.each(['ci-timeout', 'gh-api-5xx', 'rate-limit', 'connection reset by peer'])(
+    'hands a claim whose run failed on %s back to Shepherd and clears the stall',
+    kind => {
+      const { actions, after } = step(stalledEnded(), { shepherd: ended(`${kind}: x`), prState: open })
+
+      expect(registers(actions)).toEqual([
+        expect.objectContaining({
+          registration: expect.objectContaining({ task: 'demo/CC-1', implementer: 'bd-cc-1' }),
+        }),
+      ])
+      expect(after).toEqual([
+        expect.objectContaining({
+          phase: 'shepherding',
+          stalledReason: undefined,
+          stallCode: undefined,
+          reregistered: { n: 1, at: NOW.toISOString(), head: 'h9' },
+        }),
+      ])
+    },
+  )
+
+  it('re-registers on the tick the run ends, before any stall is written', () => {
+    const { actions, after } = step(shepherding(), { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toHaveLength(1)
+    expect(after[0]?.stalledReason).toBeUndefined()
+  })
+
+  it.each([
+    ['an unknown failure reason', ended('merge denied'), open],
+    ['an unreadable PR state', ended(), 'unreadable' as const],
+    ['a closed PR', ended(), { kind: 'closed' as const, pr: 'o/r#9' }],
+  ])('parks as today on %s', (_, shepherd, prState) => {
+    const { actions, after } = step(stalledEnded(), { shepherd, prState })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]).toEqual(expect.objectContaining({ stallCode: 'shepherd-ended' }))
+  })
+
+  it('leaves a stall of another code alone', () => {
+    const budget = stalledEnded({ stalledReason: 'budget: spent $9 of $5', stallCode: 'budget' })
+
+    const { actions, after } = step(budget, { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]).toEqual(expect.objectContaining({ stallCode: 'budget' }))
+  })
+
+  it('parks as today when no PR state was read', () => {
+    const { actions } = step(stalledEnded(), { shepherd: ended() })
+
+    expect(registers(actions)).toEqual([])
+  })
+
+  it('never re-registers a merged PR; it finishes the claim', () => {
+    const { actions, after } = step(stalledEnded(), {
+      shepherd: ended(),
+      prState: { kind: 'merged', pr: 'o/r#9', head: 'h9' },
+    })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]?.phase).toBe('done')
+  })
+
+  it('stops at two re-registers per claim', () => {
+    const spent = stalledEnded({
+      reregistered: { n: 2, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'old' },
+    })
+
+    const { actions, after } = step(spent, { shepherd: ended(), prState: open })
+
+    expect(registers(actions)).toEqual([])
+    expect(after[0]?.stallCode).toBe('shepherd-ended')
+  })
+
+  it('waits 30 minutes after the last re-register', () => {
+    const recent = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - 29 * 60_000).toISOString(), head: 'old' },
+    })
+    const later = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'old' },
+    })
+
+    expect(registers(step(recent, { shepherd: ended(), prState: open }).actions)).toEqual([])
+    expect(registers(step(later, { shepherd: ended(), prState: open }).actions)).toHaveLength(1)
+  })
+
+  it('registers one new run per head', () => {
+    const sameHead = stalledEnded({
+      reregistered: { n: 1, at: new Date(NOW.getTime() - GAP).toISOString(), head: 'h9' },
+    })
+
+    expect(registers(step(sameHead, { shepherd: ended(), prState: open }).actions)).toEqual([])
+  })
+
+  it('leaves the claim holds and the run alone', () => {
+    const { actions } = step(stalledEnded(), { shepherd: ended(), prState: open })
+
+    expect(actions.map(a => a.kind)).toEqual(['update', 'register'])
+  })
+
+  it('parses a stored claim without the field unchanged', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc1229-'))
+    const file = path.join(dir, 'ledger.json')
+    const stored = { ...EMPTY_LEDGER, claims: [shepherding()] }
+    fs.writeFileSync(file, JSON.stringify(stored))
+
+    try {
+      expect(readLedger(file).claims).toEqual([shepherding()])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('the code on each stall', () => {
   const sites: [string, Claim, Observation, StallCode | undefined][] = [
     [
@@ -647,5 +781,54 @@ describe('a slice PR against its owns at PR open (CC-669)', () => {
     expect(registers(step(unowned, free).actions)).toHaveLength(1)
     expect(fenced.owned).toEqual({ outside: ['src/other/x.ts'] })
     expect(calls).toEqual([WORKTREE])
+  })
+})
+
+describe('a protected path outside the owns (CC-1235)', () => {
+  const OWNED = 'src/agents/burndown/collision.ts'
+  const PROTECTED = 'src/__tests__/burndown-worktree-pools.test.ts'
+  const sliced = (patch: Partial<Claim> = {}): Claim => claim({ slice: 'a', owns: [OWNED], ...patch })
+  const refused = (file: string, extra: string[] = []): Observation => ({
+    agent: exited,
+    report: parseReport(`Status: DONE\nPR: ${PR}`),
+    owned: {
+      outside: [file, ...extra],
+      adjudicated: { kind: 'escalate', reason: `${file} is a protected path`, protectedPath: file },
+    },
+  })
+
+  it('parks once with outside-owns and names the plan owns line to widen', () => {
+    const { after } = step(sliced(), refused(PROTECTED))
+
+    expect(after).toEqual([
+      expect.objectContaining({
+        stallCode: 'outside-owns',
+        stalledReason: expect.stringContaining(
+          `widen the owns line of slice a in the plan to cover ${PROTECTED}`,
+        ),
+      }),
+    ])
+  })
+
+  it('writes nothing new on the next tick, whatever else the PR now touches', () => {
+    const { after } = step(sliced(), refused(PROTECTED))
+    const parked = after[0] as Claim
+
+    const next = advance([parked], new Map([[claimKey(parked), refused(PROTECTED, ['README.md'])]]), NOW)
+
+    expect(next).toEqual([])
+  })
+
+  it('keeps the amend for a non-protected outside path', () => {
+    const file = 'src/agents/burndown/ledger.ts'
+    const obs: Observation = {
+      ...refused(file),
+      owned: { outside: [file], adjudicated: { kind: 'amend', files: [file] } },
+    }
+
+    const { after } = step(sliced(), obs)
+
+    expect(after[0]?.ownsAmended).toEqual([file])
+    expect(after[0]?.stallCode).toBeUndefined()
   })
 })

@@ -315,6 +315,15 @@ describe('the seat spawn gate counting spend through seatSpend (CC-1099)', () =>
     expect(verdict.reason).toContain("run spend 30 points at or above the seat's per_run_points 20")
   })
 
+  it("refuses on a ledger keyed by the charter's ~/ config_dir, expanded against the gate's home (CC-1118)", () => {
+    const verdict = seatSpawnGate(
+      input({ seat, reading, ...meters, seatState: ledger('~/agents'), home: '/synthetic' }),
+    )
+
+    expect(verdict.allow).toBe(false)
+    expect(verdict.reason).toContain('run spend 30 points')
+  })
+
   it('keeps the meter figure when the seat has no ledger samples', () => {
     const verdict = seatSpawnGate(input({ seat, reading, ...meters }))
 
@@ -443,20 +452,50 @@ describe('reading a seat spawn from the autonomy root', () => {
     expect(read).toMatchObject({ kind: 'gate', input: { pool: { name: 'agents' }, dayMeter: { last: 40 } } })
   })
 
-  it("carries the seat's ledger state keyed by the charter's unexpanded config_dir (CC-1099)", () => {
-    const { root: dir, home } = root()
-    const samples = [{ at: DAY_START, sevenDay: 30 }]
-    const ledger = (seat: string): SeatState | undefined =>
-      seat === 'alpha-coord' ? { configDir: '~/agents', samples } : undefined
+  describe("gating on the seat's ledger whichever form keys it (CC-1118)", () => {
+    const HOUR = 60 * MIN
+    const seat = 'alpha-coord'
+    const runSpend = {
+      reading: { sevenDay: 40, fiveHour: 20, ageSeconds: 30 },
+      runMeter: { since: NOON.getTime() - 2 * HOUR, last: 37, spent: 3 },
+      model: 'opus',
+    }
+    const ledgerKeyed =
+      (configDir: string) =>
+      (name: string): SeatState | undefined =>
+        name === seat
+          ? {
+              configDir,
+              samples: [
+                { at: DAY_START - 30 * MIN, sevenDay: 10 },
+                { at: NOON.getTime() - 3 * HOUR, sevenDay: 10 },
+              ],
+            }
+          : undefined
+    const verdictFor = (ledgerKey: string) => {
+      const { root: dir, home } = root()
+      fs.writeFileSync(
+        path.join(dir, 'seats', 'alpha-coord.md'),
+        '---\nprefix: ac\npool: agents\nspend: {per_run_points: 20}\n---\n',
+      )
+      const read = readSeatSpawn(dir, spawn('ac-task'), deps(home, [], ledgerKeyed(ledgerKey)))
+      if (read.kind !== 'gate') throw new Error(`expected a gate read, got ${read.kind}`)
+      return seatSpawnGate({ ...read.input, ...runSpend })
+    }
 
-    const own = readSeatSpawn(dir, spawn('ac-task'), deps(home, [], ledger))
-    const other = readSeatSpawn(dir, spawn('ac-task', '/synthetic/shared'), deps(home, [], ledger))
+    it.each(['~/agents', '/synthetic/agents'])(
+      'refuses an own-pool spawn on the spend of a %s ledger, where the meters read 3',
+      key => {
+        const verdict = verdictFor(key)
 
-    expect(own).toMatchObject({
-      kind: 'gate',
-      input: { seatState: { configDir: '/synthetic/agents', samples } },
+        expect(verdict.allow).toBe(false)
+        expect(verdict.reason).toContain('spend 30 points since 07:00')
+      },
+    )
+
+    it("allows the spawn on the meters when the ledger was read from another pool's account", () => {
+      expect(verdictFor('/synthetic/shared').allow).toBe(true)
     })
-    expect(other).toMatchObject({ kind: 'gate', input: { seatState: undefined } })
   })
 
   it('reads an unreadable ledger as no samples rather than refusing the spawn', () => {

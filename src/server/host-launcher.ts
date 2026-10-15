@@ -4,10 +4,12 @@ import path from 'node:path'
 import { markSuperseded, writeLaunchFiles } from '../agents/launch-files.js'
 import { surfaceFor } from '../agents/launcher.js'
 import { SENSITIVE_DIRS } from '../agents/spawn-cwd.js'
+import { launcherTrustRefusal } from '../agents/trust.js'
 import { surfaceBlockerFor } from '../agents/surface-resolution.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { HostAnswer } from '../broker/host-directory.js'
 import { LAUNCH_TIMEOUT_MS } from '../broker/host-directory.js'
+import { helloProof, ownKey } from '../broker/launcher-key.js'
 import { cliEntry } from '../paths.js'
 import {
   encode,
@@ -19,7 +21,8 @@ import {
   type ServerMessage,
   type SurfaceName,
 } from '../protocol.js'
-import { buildCallerLaunch, checkLaunch, type LocalHost } from './caller-teleport.js'
+import { buildCallerLaunch, type LocalHost } from './caller-teleport.js'
+import { checkLaunch } from './remote-launch.js'
 
 /**
  * CC-951 g2: the machine side of a host launcher. It holds a connection of its own to the broker,
@@ -47,6 +50,8 @@ export interface LauncherDeps {
   writeFiles(plan: LaunchPlan, mcpConfig: Record<string, unknown>): void
   launch(surface: SurfaceName, plan: LaunchPlan): Promise<void>
   markSuperseded(agentId: string): void
+  /** CC-1063: this machine's launcher key, read from its 0600 file on every connect, never from env. */
+  readKey(): string | null
 }
 
 /** Answered before the broker's own launch window closes, so an answer is not lost to its timeout. */
@@ -98,7 +103,7 @@ interface LocalPaths {
   configDir?: string
 }
 
-function resolvePaths(
+function resolveDirs(
   paths: { cwd: string; configDir?: string | undefined },
   homeDir: string,
 ): LocalPaths | string {
@@ -108,6 +113,16 @@ function resolvePaths(
   const configDir = localPath('config dir', paths.configDir, homeDir)
   if ('reason' in configDir) return configDir.reason
   return { cwd: cwd.real, configDir: configDir.real }
+}
+
+/** CC-1081: a successor in an untrusted cwd sits on the trust prompt with nobody to answer it. */
+function resolvePaths(
+  paths: { cwd: string; configDir?: string | undefined },
+  homeDir: string,
+): LocalPaths | string {
+  const local = resolveDirs(paths, homeDir)
+  if (typeof local === 'string') return local
+  return launcherTrustRefusal(local.cwd, local.configDir) ?? local
 }
 
 const refused = (reason: string): HostAnswer => ({ ok: false, reason })
@@ -207,27 +222,54 @@ export const defaultLauncherDeps = (homeDir: string): LauncherDeps => ({
   writeFiles: writeLaunchFiles,
   launch: async (surface, plan) => void (await surfaceFor(surface).launch(plan)),
   markSuperseded,
+  readKey: ownKey,
 })
 
 type Log = (line: string) => void
 
-/** One connection's life: hello, then answers, until it closes. Resolves with why it ended. */
+/** A broker older than CC-1063 ignores `host_challenge`; give up rather than wait forever. */
+export const CHALLENGE_TIMEOUT_MS = 10_000
+
+/** The hello for this nonce, proved with the key on disk now, so a rotated key needs no restart. */
+function provedHello(identity: LauncherIdentity, deps: LauncherDeps, nonce: string): ClientMessage {
+  const key = deps.readKey()
+  if (key === null) return { t: 'host_hello', ...identity }
+  return { t: 'host_hello', ...identity, proof: helloProof(key, identity.host, nonce) }
+}
+
+/**
+ * One connection's life: challenge, hello, then answers, until it closes. Resolves with why it
+ * ended. With no key file the hello goes without a proof and the broker's refusal says why.
+ */
 export function serveConnection(
   socket: net.Socket,
   identity: LauncherIdentity,
   deps: LauncherDeps,
   log: Log,
+  challengeMs = CHALLENGE_TIMEOUT_MS,
 ): Promise<string> {
   const link: LauncherLink = {
     send: frame => void socket.write(encode(frame)),
     isOpen: () => !socket.destroyed,
   }
   return new Promise(resolve => {
+    const end = (reason: string): void => {
+      clearTimeout(challenge)
+      socket.destroy()
+      resolve(reason)
+    }
+    const challenge = setTimeout(
+      () => end(`the broker did not answer host_challenge within ${challengeMs / 1000}s`),
+      challengeMs,
+    )
     const onFrame = (frame: ServerMessage): void => {
+      if (frame.t === 'host_challenge_result') {
+        clearTimeout(challenge)
+        return link.send(provedHello(identity, deps, frame.nonce))
+      }
       if (frame.t === 'host_hello_result') {
         if (frame.ok) return log(`launching for ${identity.host} (${identity.surfaces.join(', ')})`)
-        socket.destroy()
-        return resolve(`the broker refused this launcher: ${frame.reason ?? 'no reason given'}`)
+        return end(`the broker refused this launcher: ${frame.reason ?? 'no reason given'}`)
       }
       void handleHostFrame(frame, identity, deps, link).catch(err =>
         log(`request failed: ${(err as Error).message}`),
@@ -237,9 +279,9 @@ export function serveConnection(
       'data',
       lineReader<ServerMessage>(onFrame, err => log(`bad frame: ${err.message}`)),
     )
-    socket.once('close', () => resolve('the broker connection closed'))
-    socket.once('error', err => resolve(`the broker connection failed: ${err.message}`))
-    link.send({ t: 'host_hello', ...identity })
+    socket.once('close', () => end('the broker connection closed'))
+    socket.once('error', err => end(`the broker connection failed: ${err.message}`))
+    link.send({ t: 'host_challenge' })
   })
 }
 

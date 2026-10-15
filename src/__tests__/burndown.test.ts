@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,6 +14,7 @@ import {
   addClaim,
   EMPTY_LEDGER,
   isStalled,
+  ledgerLockWaiter,
   readLedger,
   withLedgerLock,
   writeLedger,
@@ -36,6 +38,9 @@ import { writePoolCharter } from './helpers/pool-charter.js'
 let world: string
 const saved = { ...process.env }
 const NOON = new Date(2026, 8, 26, 12, 0)
+
+/** The pid of a process that has already exited. */
+const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid
 
 const write = (file: string, text: string): void => {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -318,7 +323,10 @@ describe('burndown plan collision check (CC-202)', () => {
     (seen: Seen): Runner =>
     (bin, args) => {
       if (bin === 'gh' && args.some(a => a.includes('/files')))
-        return { status: 0, stdout: (seen.files ?? []).join('\n') }
+        return {
+          status: 0,
+          stdout: (seen.files ?? []).map(filename => JSON.stringify({ filename })).join('\n'),
+        }
       if (bin === 'gh') return { status: 0, stdout: (seen.prs ?? []).map(p => JSON.stringify(p)).join('\n') }
       if (args[0] === 'fetch') return { status: 0, stdout: '' }
       if (args[0] === 'log')
@@ -680,9 +688,98 @@ describe('claim ledger', () => {
 
   it('takes over a lock left by a dead process', async () => {
     const file = path.join(world, 'home', 'burndown.json')
-    write(`${file}.lock`, '999999\n')
+    write(`${file}.lock`, `${deadPid()}\n`)
 
     expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: true, value: 'ran' })
+  })
+
+  it('waits for a held lock and runs once the holder lets go (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    const sleeps: number[] = []
+    const sleep = async (ms: number): Promise<void> => {
+      sleeps.push(ms)
+      if (sleeps.length === 2) fs.rmSync(`${file}.lock`)
+    }
+
+    const result = await withLedgerLock(file, () => 'ran', { wait: { waitMs: 60_000, sleep } })
+
+    expect(result).toEqual({ ran: true, value: 'ran' })
+    expect(sleeps).toHaveLength(2)
+  })
+
+  it('gives up after the wait and names the holder (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    let clock = 0
+    const wait = { waitMs: 1000, now: () => clock, sleep: async (ms: number) => void (clock += ms) }
+
+    const result = await withLedgerLock(file, () => 'ran', { wait })
+
+    expect(result).toEqual({ ran: false, holder: process.ppid, waited: 1000 })
+    expect(fs.readFileSync(`${file}.lock`, 'utf8')).toBe(`${process.ppid}\n`)
+  })
+
+  it('still refuses a held lock at once without a wait (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+
+    expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: false, holder: process.ppid })
+  })
+
+  it('marks an announced waiter while it polls and clears the mark whether it got the lock or not (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    const seen: (number | undefined)[] = []
+    let clock = 0
+    const sleep = async (ms: number): Promise<void> => {
+      seen.push(ledgerLockWaiter(file))
+      clock += ms
+    }
+    const wait = { waitMs: 1000, now: () => clock, sleep }
+
+    const refused = await withLedgerLock(file, () => 'ran', { wait, announce: true })
+    fs.rmSync(`${file}.lock`)
+    const ran = await withLedgerLock(file, () => 'ran', { wait, announce: true })
+
+    expect(refused.ran).toBe(false)
+    expect(ran).toEqual({ ran: true, value: 'ran' })
+    expect(seen[0]).toBe(process.pid)
+    expect(fs.existsSync(`${file}.lock.wait`)).toBe(false)
+  })
+
+  it('never marks a wait that is not announced (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, `${process.ppid}\n`)
+    const seen: (number | undefined)[] = []
+    const sleep = async (): Promise<void> => {
+      seen.push(ledgerLockWaiter(file))
+      fs.rmSync(`${file}.lock`)
+    }
+
+    await withLedgerLock(file, () => 'ran', { wait: { waitMs: 60_000, sleep } })
+
+    expect(seen).toEqual([undefined])
+  })
+
+  it('yields to a live waiter without taking the lock (CC-1181)', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock.wait`, `${process.ppid}\n`)
+
+    const result = await withLedgerLock(file, () => 'ran', { yieldToWaiter: true })
+
+    expect(result).toEqual({ ran: false, holder: process.ppid, waiter: true })
+    expect(fs.existsSync(`${file}.lock`)).toBe(false)
+  })
+
+  it("ignores a dead waiter's mark (CC-1181)", async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock.wait`, `${deadPid()}\n`)
+
+    expect(await withLedgerLock(file, () => 'ran', { yieldToWaiter: true })).toEqual({
+      ran: true,
+      value: 'ran',
+    })
   })
 
   it('marks an implementing claim stalled after four hours', () => {

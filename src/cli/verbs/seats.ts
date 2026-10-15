@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -108,6 +109,7 @@ import {
   withRunningBroker,
   type Reply,
 } from './seat-broker.js'
+import { kicksInBroker, refusedKickFlags, sendJobKick, type JobKickFrame } from './job-kick.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
 import { respawnSeat } from './seat-respawn.js'
@@ -382,6 +384,16 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
   return { ok: true, lines }
 }
 
+async function kickJob(frame: JobKickFrame, flags: Record<string, unknown>): Promise<Report> {
+  const flagRefusal = refusedKickFlags(frame.job, flags)
+  if (flagRefusal !== undefined) return flagRefusal
+  try {
+    return await sendJobKick(frame)
+  } catch (err) {
+    return refused(err)
+  }
+}
+
 export const seatsWatchdogVerb = defineVerb({
   name: 'seats.watchdog',
   description:
@@ -419,6 +431,11 @@ export const seatsWatchdogVerb = defineVerb({
     },
   },
   async run({ dryRun, replay: day, seat, reading, root, fireCap }) {
+    if (kicksInBroker() && dryRun !== true && day === undefined)
+      return kickJob(
+        { t: 'job_kick', job: 'seats_watchdog' },
+        { '--root': root, '--seat': seat, '--fire-cap': fireCap },
+      )
     const offLease = hostLeaseRefusal()
     if (offLease !== undefined) return refused(new Error(offLease))
     const dir = root ?? defaultAutonomyRoot()
@@ -456,9 +473,11 @@ export const seatsHeartbeatCheckVerb = defineVerb({
     },
   },
   async run({ seat, root, dryRun }) {
+    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
+    if (kicksInBroker() && dryRun !== true)
+      return kickJob({ t: 'job_kick', job: 'seats_heartbeat_check', seat }, { '--root': root })
     const offLease = hostLeaseRefusal()
     if (offLease !== undefined) return refused(new Error(offLease))
-    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
     const dir = root ?? defaultAutonomyRoot()
     try {
       const result = await withRunningBroker(client =>
@@ -715,6 +734,57 @@ export const seatsTickVerb = defineVerb({
   },
 })
 
+/** `05:17 tick` or `05:1x SWARM`: a hand-typed clock the verb would double up (CC-1058). */
+const LEADING_CLOCK = /^\s*\d{1,2}:[0-5x\d]{1,2}\b/i
+
+const isSeatDir = (root: string, seat: string): boolean =>
+  fs.existsSync(path.join(root, 'seats', `${seat}.md`)) || fs.existsSync(path.join(root, 'logs', seat))
+
+function seatLogRefusal(root: string, seat: string, text: string): string | undefined {
+  if (!isSeatName(seat)) return `not a seat name: ${seat}`
+  if (!isSeatDir(root, seat)) return `no seat '${seat}' under ${root}`
+  if (text.trim() === '') return 'the entry is empty: usage: agent-chat seats log <seat> <text...>'
+  if (/[\r\n]/.test(text)) return 'one line per entry: the text holds a line break'
+  if (LEADING_CLOCK.test(text)) return 'drop the hand-typed time; the verb stamps it'
+  return undefined
+}
+
+/** CC-1058: the log verb's body; the stamp comes from `now`, never from the text. */
+export function seatLogReport(root: string, seat: string, words: string[], now: Date): Report {
+  const text = words.join(' ')
+  const refusal = seatLogRefusal(root, seat, text)
+  if (refusal !== undefined) return refused(new Error(refusal))
+  try {
+    return { ok: true, lines: [appendSeatLog(root, seat, now, text)] }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const seatsLogVerb = defineVerb({
+  name: 'seats.log',
+  description:
+    "append one line to a seat's journal (CC-1058): '<HH:MM> <text>' in " +
+    '<root>/logs/<seat>/<YYYY-MM-DD>.md, stamped from the machine clock in local time, and print the ' +
+    'file. Refuses and writes nothing on an unknown seat, a line break in the text, or text that opens ' +
+    "with a time ('10:00 standup moved' becomes 'standup moved to 10:00')",
+  args: z.object({
+    seat: requiredString('seat'),
+    text: z.array(z.string()),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat', 'text'],
+    options: {
+      root: { long: '--root', description: 'autonomy directory holding seats/ and logs/' },
+    },
+  },
+  async run({ seat, text, root }) {
+    return seatLogReport(root ?? defaultAutonomyRoot(), seat, text, new Date())
+  },
+})
+
 /** The dispatches verb's body; an unknown seat, a bad `--since` or a missing log is a plain error. */
 export function dispatchesReport(
   root: string,
@@ -895,6 +965,7 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsTickVerb)
   addVerb(seats, seatsDispatchesVerb)
+  addVerb(seats, seatsLogVerb)
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)

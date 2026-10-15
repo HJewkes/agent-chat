@@ -9,8 +9,11 @@ import type { ReturnContract } from './types.js'
  * contract for every later spawn. A change here needs a build and a restart.
  */
 
-/** A block is paid for on every contracted spawn, so it stays a paragraph. */
-export const MAX_BLOCK_CHARS = 2450
+/**
+ * A block is paid for on every contracted spawn, so it stays a paragraph. CC-1184 raised it from 2450
+ * for `REVIEW_TREE_RULE`: concurrent reviewers each installing base, old and head trees filled /tmp.
+ */
+export const MAX_BLOCK_CHARS = 2600
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
@@ -43,7 +46,28 @@ export const PR_READY_RULE =
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
 
-/** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
+/**
+ * CC-311: Claude Code cannot resolve a write target that holds a variable, so it asks, and a headless
+ * reviewer parks on that prompt until the hook's deadline. The same edit on a literal path ran unprompted.
+ */
+export const MUTANT_RULE =
+  "Mutants: in your own tree under `$TMPDIR/<your name>`, `sed -i.bak '<edit>' <literal path>`, then " +
+  '`git checkout -- <literal path>`. Never put `$VAR`, a glob on a variable or `$(...)` in a write ' +
+  'target: it raises a permission prompt nobody answers.'
+
+/**
+ * CC-713: a reviewer piped a bypass probe to bash from a shared main checkout, and it ran a real
+ * `git push origin HEAD:main`. The burndown reviewer brief and the bd-reviewer prelude carry it too.
+ */
+export const PROBE_SANDBOX_RULE =
+  'Run a probe that may use git, network or destructive commands only in a scratch repo under ' +
+  '$TMPDIR/<your name> whose origin is a local bare repo (git init --bare); never in a real ' +
+  'checkout, never against a real remote, never piped to a shell from a real checkout.'
+
+/**
+ * CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path.
+ * CC-1278: it also gives the reviewer the variant that reads CI itself and may say WAIT.
+ */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
@@ -103,30 +127,60 @@ export const IMPLEMENTER_WITHOUT_SHEPHERD = implementerBlock(
   'as it stands at the final head after the wait',
 )
 
-const REVIEWER = [
-  `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
-  'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
-  'exactly these three lines:',
-  'Verdict: MERGE            (or FIX_FIRST or WAIT)',
-  'PR: <owner>/<repo>#<n>',
-  'Head: <full 40-hex head sha>',
+/** TP-2498: non-blocking work goes here and Shepherd files it as tasks, so nits stop costing a round. */
+export const FOLLOW_UPS_RULE =
+  'Optional, after blocking items: `Follow-ups:` then `- <title> | <done_when> | low|medium|high` per ' +
+  'task; never blocks MERGE.'
+
+/** CC-1184: three installed trees per review exhausted /tmp inodes on Linux; one install is enough. */
+export const REVIEW_TREE_RULE =
+  'One installed checkout per review, under `$TMPDIR/<your name>`: read base/old code via ' +
+  '`git show <rev>:<path>`, `git diff` or `git worktree add --detach <dir> <rev>` without installing; ' +
+  'never `git stash` (refs/stash is shared). Remove trees at verdict.'
+
+/** CC-1278: Shepherd owns CI on a registered PR, so a WAIT on pending checks only cost a resume round. */
+const SHEPHERD_CI_RULE = [
+  "CI is Shepherd's: judge the code; pending or unread checks are no verdict input, never WAIT.",
+  'FIX_FIRST (Class: ci-red) only if a required check-run already failed at the head.',
+]
+
+const OWN_CI_CHECK = [
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
   'with `gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure. WAIT only for a clean review whose',
-  'required checks have not finished. On FIX_FIRST add a fourth line naming the first blocker:',
-  'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
-  'then one line `Defect class: <what the blocking items share; the one boundary where a single fix',
-  'covers them all>`. On a re-review (brief, PR comments or commits show an earlier FIX_FIRST) add',
-  '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
-  '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
-  '`Earlier findings: none found`.',
-  'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
-  'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
-  SHIM_RULE,
-  REVIEWER_BODY_FILE_RULE,
-  QUOTE_RULE,
-  "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
-].join('\n')
+  'required checks have not finished.',
+]
+
+const reviewerBlock = (verdicts: string, ciRule: string[]): string =>
+  [
+    `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
+    'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
+    'exactly these three lines:',
+    `Verdict: MERGE            ${verdicts}`,
+    'PR: <owner>/<repo>#<n>',
+    'Head: <full 40-hex head sha>',
+    ...ciRule,
+    'On FIX_FIRST add a fourth line naming the first blocker:',
+    'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
+    'then one line `Defect class: <what the blocking items share; the one boundary where a single fix',
+    'covers them all>`. On a re-review (brief, PR comments or commits show an earlier FIX_FIRST) add',
+    '`Earlier findings:` then one short line per earlier blocking item, `- fixed: <item>` or',
+    '`- not fixed: <item>`; fixing one instance literally is not fixed. If you find none, write',
+    '`Earlier findings: none found`.',
+    PROBE_SANDBOX_RULE,
+    REVIEW_TREE_RULE,
+    MUTANT_RULE,
+    SHIM_RULE,
+    REVIEWER_BODY_FILE_RULE,
+    QUOTE_RULE,
+    "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
+    FOLLOW_UPS_RULE,
+  ].join('\n')
+
+const REVIEWER = reviewerBlock('(or FIX_FIRST)', SHEPHERD_CI_RULE)
+
+/** The reviewer block for a brief carrying `SHEPHERD_NONE_MARKER`: a seat merging on its own reads CI itself. */
+export const REVIEWER_WITHOUT_SHEPHERD = reviewerBlock('(or FIX_FIRST or WAIT)', OWN_CI_CHECK)
 
 export const RETURN_CONTRACT_BLOCKS: Readonly<Record<ReturnContract, string>> = {
   implementer: IMPLEMENTER,

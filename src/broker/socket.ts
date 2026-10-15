@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -8,16 +9,18 @@ import {
   isTeleportReason,
   SURFACE_NAMES,
   type ClientMessage,
+  type Correlated,
   type DeliveredMessage,
   type ItemShape,
   type PermissionBehavior,
   type ServerMessage,
+  type SpawnResultFields,
   type WakeSource,
   wakeSource,
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
-import { newMsgId } from './event-log.js'
+import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
@@ -31,8 +34,14 @@ import {
 } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
-import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import {
+  Supervisor,
+  type SpawnOutcome,
+  type SpawnRequest,
+  type SupervisorOptions,
+} from '../agents/supervisor.js'
 import { asPlatform } from '../agents/teleport-config.js'
+import { refused, type RefusalStage } from '../agents/teleport.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -42,13 +51,15 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId, resolveMachines } from '../config.js'
+import { resolveDeciderAgentId, resolveHostProofMode, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
+import { brokerKeyFor, proofMatches } from './launcher-key.js'
+import { jobKickRequest, type JobKick } from './job-kick.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -83,8 +94,16 @@ const spawnedAsOf = (msg: {
   return spawnedAs === undefined ? {} : { spawnedAs }
 }
 
+/**
+ * The request being handled, carried across its awaits (CC-1343), so every one of
+ * the reply sites echoes its id without threading it through each handler. Only a
+ * reply to the requesting connection carries it; a frame to another one does not.
+ */
+const requestScope = new AsyncLocalStorage<{ conn: Conn; rid: number }>()
+
 const reply = (conn: Conn, message: ServerMessage): void => {
-  conn.write(encode(message))
+  const scope = requestScope.getStore()
+  conn.write(encode(scope?.conn === conn ? { ...message, rid: scope.rid } : message))
 }
 
 /** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
@@ -196,6 +215,13 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
 }
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
+  callerHost === undefined ? {} : { callerHost }
+/** CC-1059: a launch report's verdict, with only a string reason kept. */
+const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
+  ok: msg.ok === true,
+  ...(typeof msg.reason === 'string' ? { reason: msg.reason } : {}),
+})
 const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
   launchSeen === undefined ? {} : { launchSeen }
 
@@ -215,8 +241,63 @@ function launcherHello(
   return { host: msg.host.trim(), platform, surfaces }
 }
 
+/**
+ * CC-1063: why a hello's proof does not let it hold `host`, or undefined when it does. A configured
+ * machine always needs a proof over this connection's nonce, connected holder or not, and with no
+ * broker key it fails closed. An unconfigured host needs one only once a key has been minted for it.
+ */
+export function proofRefusal(
+  host: string,
+  proof: unknown,
+  nonce: string | undefined,
+  machines: readonly string[],
+  keyFor: (host: string) => string | null,
+): string | undefined {
+  const configured = machines.some(machine => machine.toLowerCase() === host.toLowerCase())
+  const key = keyFor(host)
+  if (key === null)
+    return configured
+      ? `no launcher key for ${host} on the broker; provision the launcher key (CC-1063 slice d)`
+      : undefined
+  if (nonce === undefined) return `no valid launcher proof for ${host}: send host_challenge first`
+  return proofMatches(key, host, nonce, proof) ? undefined : `no valid launcher proof for ${host}`
+}
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
+
+const nonBlank = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+
+/** CC-1059: the spawn frame's launch-site fields, each dropped unless well formed. */
+const spawnSiteFields = (
+  msg: Extract<ClientMessage, { t: 'spawn' }>,
+): Pick<SpawnRequest, 'hostPlatform' | 'launchesHere' | 'host' | 'callerHome'> => {
+  const host = nonBlank(msg.host)
+  const callerHome = nonBlank(msg.callerHome)
+  return {
+    ...optionalPlatform(asPlatform(msg.hostPlatform)),
+    ...(msg.launchesHere === true ? { launchesHere: true } : {}),
+    ...(host === undefined ? {} : { host }),
+    ...(callerHome === undefined ? {} : { callerHome }),
+  }
+}
+
+/** A spawn outcome on the wire, for `spawn_result` and a remote spawn's `spawn_placed_result` alike. */
+const spawnResultFields = (outcome: SpawnOutcome, warnings: readonly string[] = []): SpawnResultFields => ({
+  ok: outcome.ok,
+  ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+  ...(outcome.name === undefined ? {} : { name: outcome.name }),
+  ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+  ...(outcome.code === undefined ? {} : { code: outcome.code }),
+  ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
+  ...(warnings.length === 0 ? {} : { warnings: [...warnings] }),
+  ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
+  ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
+  ...(outcome.base === undefined ? {} : { base: outcome.base }),
+  ...(outcome.launch === undefined ? {} : { launch: outcome.launch }),
+  ...(outcome.host === undefined ? {} : { host: outcome.host }),
+})
 
 /**
  * The socket transport. Everything here is about turning bytes into `core`
@@ -234,6 +315,10 @@ export class SocketServer {
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
   /** CC-951: connected host launchers, each dropped with its connection. */
   private readonly hosts = new HostDirectory<Conn>()
+  /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
+  private readonly remoteSpawners = new Map<string, Conn>()
+  /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
+  private jobKick: JobKick | undefined
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -246,7 +331,7 @@ export class SocketServer {
       core.registry,
       (conn, events) => reply(conn, { t: 'system_events', events }),
       undefined,
-      (agentId, exit) => core.reportedSpawner(agentId, exit),
+      (agentId, exit, later) => core.reportedSpawner(agentId, exit, later),
     )
     // Fed from the single write path, so a subscriber sees exactly what the log
     // recorded rather than a second notion of what happened.
@@ -258,6 +343,22 @@ export class SocketServer {
     this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
+  }
+
+  attachJobKick(port: JobKick): void {
+    this.jobKick = port
+  }
+
+  /**
+   * CC-1151, Class 4: accepted from any connection, since it grants nothing the timers do not already do. The
+   * request is rebuilt from `job` and `seat` alone, so nothing else the caller put on the frame reaches the job.
+   */
+  private handleJobKick(conn: Conn, msg: Extract<ClientMessage, { t: 'job_kick' }>): void {
+    const request = jobKickRequest(msg)
+    if (typeof request === 'string') return reply(conn, { t: 'job_kick_result', ok: false, detail: request })
+    if (this.jobKick === undefined)
+      return reply(conn, { t: 'job_kick_result', ok: false, detail: 'this broker runs no kicked jobs' })
+    reply(conn, { t: 'job_kick_result', ...this.jobKick(request) })
   }
 
   /** Hook rows open at boot belong to connections the previous broker held; nothing can answer them now. */
@@ -337,6 +438,7 @@ export class SocketServer {
       ...(msg.worktree === undefined ? {} : { worktree: msg.worktree }),
       ...(msg.owns === undefined ? {} : { owns: msg.owns }),
       ...(msg.claimPaths === undefined ? {} : { claimPaths: msg.claimPaths }),
+      ...(typeof msg.baseRef === 'string' ? { baseRef: msg.baseRef } : {}),
       // Passed through rather than resolved here: WHOSE conversation a fork
       // copies is decided in the supervisor, from this requester's own registry
       // entry, so the refusals land in the log with every other spawn refusal.
@@ -365,6 +467,8 @@ export class SocketServer {
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
+      ...optionalCallerHost(this.callerHostOf(conn, msg)),
+      ...spawnSiteFields(msg),
     })
     // Auto-subscribe the requester to its own spawn's lifecycle, so it learns
     // when the agent actually attaches without having to name it or poll
@@ -383,19 +487,44 @@ export class SocketServer {
     const stale = stalenessWarning(readMeta()?.buildMtime, newestBuildMtime())
     const warnings = [...(outcome.warnings ?? []), ...(stale === null ? [] : [stale])]
 
-    reply(conn, {
-      t: 'spawn_result',
-      ok: outcome.ok,
-      ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
-      ...(outcome.name === undefined ? {} : { name: outcome.name }),
-      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      ...(outcome.code === undefined ? {} : { code: outcome.code }),
-      ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
-      ...(warnings.length === 0 ? {} : { warnings }),
-      ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
-      ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
-      ...(outcome.base === undefined ? {} : { base: outcome.base }),
-    })
+    // CC-1059: only the connection handed the launch may report on it.
+    if (outcome.launch !== undefined && outcome.agentId !== undefined)
+      this.remoteSpawners.set(outcome.agentId, conn)
+    reply(conn, { t: 'spawn_result', ...spawnResultFields(outcome, warnings) })
+  }
+
+  /**
+   * CC-1059: the host a spawn's requester runs on. A session's comes from its registration, never
+   * its frame; only the CLI, which holds no registration, names its own.
+   */
+  private callerHostOf(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn' }>): string | undefined {
+    const entry = this.core.registry.entryFor(conn)
+    return entry === undefined ? nonBlank(msg.callerHost) : this.hostOf(conn, entry)
+  }
+
+  /** CC-1059: why `conn` may not report on `agentId`'s launch, or nothing when it is the requester. */
+  private remoteReportRefusal(conn: Conn, agentId: unknown): string | undefined {
+    if (typeof agentId === 'string' && this.remoteSpawners.get(agentId) === conn) return undefined
+    return `this connection was not handed the launch of ${String(agentId)}, so it cannot report on it`
+  }
+
+  private handleSpawnLaunched(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn_launched' }>): void {
+    const refusal = this.remoteReportRefusal(conn, msg.agentId)
+    if (refusal !== undefined) return reply(conn, { t: 'spawn_launched_result', ok: false, reason: refusal })
+    const result = this.supervisor.remoteSpawnReady(msg.agentId, reportOf(msg))
+    if (!result.ok) this.remoteSpawners.delete(msg.agentId)
+    reply(conn, { t: 'spawn_launched_result', ...result })
+  }
+
+  private async handleSpawnPlaced(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'spawn_placed' }>,
+  ): Promise<void> {
+    const refusal = this.remoteReportRefusal(conn, msg.agentId)
+    if (refusal !== undefined) return reply(conn, { t: 'spawn_placed_result', ok: false, reason: refusal })
+    this.remoteSpawners.delete(msg.agentId)
+    const outcome = await this.supervisor.remoteSpawnPlaced(msg.agentId, reportOf(msg))
+    reply(conn, { t: 'spawn_placed_result', ...spawnResultFields(outcome, outcome.warnings) })
   }
 
   /**
@@ -483,31 +612,29 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
-    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown teleport reason "${String(msg.reason)}"`,
-      })
-    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
-      })
-    if (msg.to !== undefined && typeof msg.to !== 'string')
-      return reply(conn, { t: 'teleport_result', ok: false, reason: 'teleport "to" must be a machine name' })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
-    if (entry?.agentId === undefined) {
-      return reply(conn, {
+    const turnedAway = (stage: RefusalStage, reason: string): void =>
+      reply(conn, {
         t: 'teleport_result',
-        ok: false,
-        reason:
-          'teleport needs a durable identity, and this connection has none. Call chat_register ' +
-          'first; if you already have, the broker could not read this session id from the ' +
-          'environment, which an older MCP server does not send.',
+        ...refused({ name: entry?.name ?? 'unregistered' }, stage, reason),
       })
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return turnedAway('preflight', `unknown teleport reason "${String(msg.reason)}"`)
+    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
+      return turnedAway(
+        'preflight',
+        `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
+      )
+    if (msg.to !== undefined && typeof msg.to !== 'string')
+      return turnedAway('preflight', 'teleport "to" must be a machine name')
+    if (entry?.agentId === undefined) {
+      return turnedAway(
+        'identity',
+        'teleport needs a durable identity, and this connection has none. Either you have not ' +
+          'called chat_register yet (call it first), or your MCP server is older than the broker ' +
+          'and did not send a session id (restart this session).',
+      )
     }
     const outcome = await this.supervisor.teleport({
       subject: {
@@ -548,6 +675,7 @@ export class SocketServer {
       ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
       ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
+      ...(outcome.placement === undefined ? {} : { placement: outcome.placement }),
     })
   }
 
@@ -641,23 +769,59 @@ export class SocketServer {
    * CC-951: a host launcher is a connection of its own. The guard is per connection: one that
    * holds a registration may not announce a machine, and a launcher's may not register (see
    * `refuseLauncherRegister`). A session can still open a second connection; what stops it
-   * taking over a machine is that the first live launcher holds it, and that a configured
-   * `machines` list bounds which machines may be announced at all.
+   * taking over a machine is that the first live launcher holds it, that a configured
+   * `machines` list bounds which machines may be announced at all, and (CC-1063) that a
+   * configured machine is held only with a proof of its launcher key over this connection's
+   * single-use nonce, so the gap after the real launcher drops is closed too.
    */
   private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
-    if (this.core.registry.nameOf(conn) !== undefined) {
-      this.refuseToSession(conn, 'announce itself as a host launcher')
-      return reply(conn, {
-        t: 'host_hello_result',
-        ok: false,
-        reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
-      })
-    }
-    const hello = launcherHello(msg, Object.values(resolveMachines()))
+    const nonce = this.hosts.takeNonce(conn)
+    if (this.refuseSessionLauncher(conn)) return
+    const machines = Object.values(resolveMachines())
+    const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    const result = this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce, machines)
+    const result =
+      refusal === undefined
+        ? this.hosts.hello(conn, hello, frame => reply(conn, frame))
+        : { ok: false, reason: refusal }
     if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
     reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /**
+   * CC-1063: with `hostProof` off (the default until launchers answer the challenge), a hello without a
+   * proof is accepted as before, and a bad proof is logged and accepted, so the check can be watched live.
+   */
+  private enforcedProofRefusal(
+    host: string,
+    proof: unknown,
+    nonce: string | undefined,
+    machines: readonly string[],
+  ): string | undefined {
+    const enforced = resolveHostProofMode() === 'enforce'
+    if (!enforced && proof === undefined) return undefined
+    const refusal = proofRefusal(host, proof, nonce, machines, brokerKeyFor)
+    if (enforced || refusal === undefined) return refusal
+    logEvent('host_launcher_refused', { host, reason: 'proof-invalid (not enforced)' })
+    return undefined
+  }
+
+  /** CC-1063: the challenge is the hello's first step, so a session is refused it with the hello's answer. */
+  private handleHostChallenge(conn: Conn): void {
+    if (this.refuseSessionLauncher(conn)) return
+    reply(conn, { t: 'host_challenge_result', nonce: this.hosts.challenge(conn) })
+  }
+
+  private refuseSessionLauncher(conn: Conn): boolean {
+    if (this.core.registry.nameOf(conn) === undefined) return false
+    this.refuseToSession(conn, 'announce itself as a host launcher')
+    reply(conn, {
+      t: 'host_hello_result',
+      ok: false,
+      reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
+    })
+    return true
   }
 
   /** CC-951: a launcher's connection never holds a session's name; it takes launches, not messages. */
@@ -736,10 +900,12 @@ export class SocketServer {
     if (this.core.registry.connFor(known.name) !== undefined)
       return reply(conn, { t: 'register_result', ok: false, reason: `${known.name} is already connected` })
 
+    const dark = this.core.darkSeat(known.name)
     const result = this.core.register(conn, readoptRegistration(known, msg))
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
     reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
     if (result.ok) this.core.deliverStranded(known.name)
+    if (result.ok && dark !== undefined) this.core.deliverHeld(known.name, dark)
   }
 
   /**
@@ -1280,6 +1446,53 @@ export class SocketServer {
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
   }
 
+  /**
+   * The audit row for a call the hook allowed itself (CC-694). Nobody waits on it,
+   * so the request is closed by an `allow` resolution in the same breath; the
+   * resolution's actor is the agent, never HUMAN, because no human decided. It has
+   * no target: the mirror, the queue view and the digest all key on target human,
+   * and an open-then-close pair there would post an ask the owner never had.
+   */
+  private handlePermissionSelfGranted(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'permission_self_granted' }>,
+  ): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'record a self-granted permission')
+      return reply(conn, {
+        t: 'permission_hook_result',
+        ok: false,
+        reason: 'permission_self_granted comes from a PermissionRequest hook; a session cannot send it',
+      })
+    }
+    const refusal = selfGrantFrameRefusal(msg as unknown as Record<string, unknown>)
+    if (refusal !== undefined) {
+      logEvent('bad_message', { t: 'permission_self_granted', error: refusal })
+      return reply(conn, { t: 'permission_hook_result', ok: false, reason: refusal })
+    }
+    const { core } = this
+    const { msgId } = core.append({
+      kind: 'approval_request',
+      actor: msg.session,
+      body: `${msg.toolName}: self-granted (${msg.grant})`,
+      meta: {
+        source: 'self-grant',
+        grant: msg.grant,
+        tool_name: msg.toolName,
+        input_preview: JSON.stringify(msg.toolInput),
+      },
+    })
+    core.append({
+      kind: 'resolution',
+      actor: msg.session,
+      ref: msgId,
+      body: 'allow',
+      meta: { reason: `self-grant: ${msg.grant}` },
+    })
+    logEvent('permission_self_granted', { msgId, from: msg.session, tool: msg.toolName, grant: msg.grant })
+    reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
   /** CC-610: the spawner of a parked agent hears about it; a human spawner already has the queue. */
   private noticePermissionWaiting(
     msg: Extract<ClientMessage, { t: 'permission_hook' }>,
@@ -1395,14 +1608,18 @@ export class SocketServer {
     }
     const { core } = this
     const target = core.registry.connFor(to)
-    const msgId = newMsgId()
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
       const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
       if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
-      core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
+      const { msgId } = core.append({
+        kind: 'route_failed',
+        actor: HUMAN,
+        target: to,
+        body: 'no active session',
+      })
       logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
       return reply(conn, {
         t: 'send_result',
@@ -1411,11 +1628,10 @@ export class SocketServer {
         reason: `no active session named "${to}"`,
       })
     }
-    core.append({
+    const { msgId } = core.append({
       kind: 'message',
       actor: HUMAN,
       target: to,
-      msgId,
       body: text,
       ...(source === undefined ? {} : { meta: { source } }),
     })
@@ -1703,6 +1919,8 @@ export class SocketServer {
         return this.handlePermissionHook(conn, msg)
       case 'permission_hook_withdrawn':
         return this.handlePermissionHookWithdrawn(conn, msg.msgId)
+      case 'permission_self_granted':
+        return this.handlePermissionSelfGranted(conn, msg)
       case 'service_ask':
         return this.handleServiceAsk(conn, msg)
       case 'answers_since':
@@ -1726,8 +1944,15 @@ export class SocketServer {
         return
       case 'teleport_launched':
         return this.handleTeleportLaunched(conn, msg)
+      case 'spawn_launched':
+        return this.handleSpawnLaunched(conn, msg)
+      case 'spawn_placed':
+        void this.handleSpawnPlaced(conn, msg)
+        return
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
+      case 'host_challenge':
+        return this.handleHostChallenge(conn)
       case 'host_hello':
         return this.handleHostHello(conn, msg)
       case 'host_probe_result':
@@ -1739,6 +1964,8 @@ export class SocketServer {
         return
       case 'hosts':
         return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
+      case 'job_kick':
+        return this.handleJobKick(conn, msg)
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return
@@ -1801,10 +2028,19 @@ export class SocketServer {
     }
   }
 
+  /** CC-1059: a closed requester reports nothing more; its pending spawns expire on their own timers. */
+  private dropRemoteSpawners(conn: Conn): void {
+    for (const [agentId, owner] of this.remoteSpawners)
+      if (owner === conn) this.remoteSpawners.delete(agentId)
+  }
+
   onConnection(conn: Conn): void {
     const { core } = this
-    const read = lineReader<ClientMessage>(
-      msg => this.handleMessage(conn, msg),
+    const read = lineReader<ClientMessage & Correlated>(
+      ({ rid, ...msg }) =>
+        typeof rid === 'number'
+          ? requestScope.run({ conn, rid }, () => this.handleMessage(conn, msg as ClientMessage))
+          : this.handleMessage(conn, msg as ClientMessage),
       err => logEvent('bad_message', { error: err.message }),
     )
     conn.on('data', read)
@@ -1812,6 +2048,7 @@ export class SocketServer {
     const drop = (): void => {
       this.dropHooks(conn)
       this.hosts.drop(conn)
+      this.dropRemoteSpawners(conn)
       core.drop(conn)
     }
     conn.on('close', drop)

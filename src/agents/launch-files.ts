@@ -11,7 +11,8 @@ import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
 import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
 import { strictMcpFor } from './launch-policy.js'
-import { linkedWorktreeRoot, REPO_SKILLS_RULE } from './skill-self-grant.js'
+import type { CreatedWorktree } from './resume-session.js'
+import { gitCommonDir, linkedWorktreeRoot, REPO_SKILLS_RULE, type SelfGrantPin } from './skill-self-grant.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -166,14 +167,15 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
  * can contain spaces. `carried` is set for a launch that loads no user settings.
- * `selfGrantRoot` lets the hook allow repo skill writes in that worktree (CC-694).
+ * `selfGrant` lets the hook allow repo skill writes in that worktree (CC-694) while the
+ * root and common dir still match the pin (CC-1200).
  */
 export function buildHookSettings(
   entry: string,
   permissionTimeoutSeconds?: number,
   carried?: CarriedUserSettings,
   agentId?: string,
-  selfGrantRoot?: string,
+  selfGrant?: SelfGrantPin,
 ): Record<string, unknown> {
   const staleGuard: { UserPromptSubmit?: HookEntry[] } =
     agentId === undefined
@@ -205,8 +207,11 @@ export function buildHookSettings(
   if (permissionTimeoutSeconds === undefined)
     return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard) } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
-  const selfGrant = selfGrantRoot === undefined ? '' : ` --self-grant-skills ${shellQuote(selfGrantRoot)}`
-  const command = hookCommand(entry, `permission-hook --deadline ${deadline}${selfGrant}`)
+  const pinArgs =
+    selfGrant === undefined
+      ? ''
+      : ` --self-grant-skills ${shellQuote(selfGrant.root)} --self-grant-common-dir ${shellQuote(selfGrant.commonDir)}`
+  const command = hookCommand(entry, `permission-hook --deadline ${deadline}${pinArgs}`)
   return {
     ...account,
     hooks: {
@@ -287,25 +292,48 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 /**
  * The worktree whose repo skills the hook may allow writes to: the plan's cwd, only when
- * the profile opted in with the owner-approved rule and git has the cwd registered as a
- * linked worktree, so a shared or main checkout stays behind the owner prompt (CC-694).
+ * the profile opted in with the owner-approved rule, the cwd is the worktree the broker
+ * recorded agent-chat creating for this agent, and git still has that registered as a
+ * linked worktree of the recorded repository. A shared or main checkout stays behind the
+ * owner prompt (CC-694), and so does a hand-written common dir at the cwd, or one swapped
+ * in behind a symlink at the recorded path: git checks its layout, not who made it (CC-1110).
+ * The pin carries the root and the repository's common dir, which the hook rechecks on
+ * every call (CC-1200).
  */
-export function selfGrantRootOf(plan: LaunchPlan): string | undefined {
+export function selfGrantPinOf(plan: LaunchPlan, created?: CreatedWorktree): SelfGrantPin | undefined {
   const end = plan.args.indexOf('--')
   const options = end === -1 ? plan.args : plan.args.slice(0, end)
   const at = options.indexOf('--allowed-tools')
   if (at === -1 || !(options[at + 1] ?? '').split(',').includes(REPO_SKILLS_RULE)) return undefined
-  return linkedWorktreeRoot(plan.cwd)
+  if (created === undefined) return undefined
+  const cwd = path.resolve(plan.cwd)
+  if (cwd !== path.resolve(created.worktree) || realpathOrUndefined(cwd) !== cwd) return undefined
+  const root = linkedWorktreeRoot(cwd)
+  const repoGitDir = realpathOrUndefined(path.join(created.gitRoot, '.git'))
+  if (root === undefined || repoGitDir === undefined) return undefined
+  return gitCommonDir(root) === repoGitDir ? { root, commonDir: repoGitDir } : undefined
 }
 
-export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
+function realpathOrUndefined(dir: string): string | undefined {
+  try {
+    return fs.realpathSync(dir)
+  } catch {
+    return undefined
+  }
+}
+
+export function writeLaunchFiles(
+  plan: LaunchPlan,
+  config: Record<string, unknown>,
+  createdWorktree?: CreatedWorktree,
+): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
   const settings = buildHookSettings(
     cliEntry(),
     permissionTimeout,
     carriedUserSettings(plan),
     plan.agentId,
-    selfGrantRootOf(plan),
+    selfGrantPinOf(plan, createdWorktree),
   )
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))

@@ -2,21 +2,27 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentIdentity } from '../../protocol.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findTranscript } from '../transcript.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from '../transcript-spend.js'
+import { githubRepoOf } from '../spawn-provenance.js'
 import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
+import { readPrFiles, type HeldOwns } from './collision.js'
 import { run, type Runner } from './exec.js'
-import { readExitedWork, type ExitedWork } from './exited-adopt.js'
-import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
+import { readExitedWork, readParkedWork, type ExitedWork } from './exited-adopt.js'
+import { AGENT_PHASES, sameClaim, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import type { ClaimPr } from './pr-state.js'
 import { readProgress, type Progress } from './progress.js'
 import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { adjudicateOutside, type Adjudication, type OtherPr } from './owns-adjudicate.js'
 import { outsideOwns } from './owns-fence.js'
-import { parseReport, readSlices } from './report.js'
+import { prFactsReader, type PrFacts } from './pr-facts.js'
+import { readSlices, type Report } from './report.js'
 import { sumSpend } from './spend-cap.js'
+import { pickReport } from './status-report.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
@@ -51,6 +57,8 @@ export interface ObserveDeps {
   /** The active-work root, where a planner's plan file lives. */
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
+  /** CC-980: the worker's newest terminal report to reportTo this session; absent reads only the transcript. */
+  statusReport?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
   /** The files a worktree's branch changed against its base (CC-669); undefined when git could not tell. */
   changedFiles?: (cwd: string) => string[] | undefined
@@ -68,9 +76,24 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-981: the same read for a parked tree, from its branch in the checkout; defaults to `readParkedWork`. */
+  parkedWork?: (checkout: string, branch: string) => ExitedWork | undefined
+  /** CC-1023: the files of a silent exit's adopted PR, undefined when GitHub could not tell; absent reads nothing. */
+  prFiles?: (pr: string) => string[] | undefined
   /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
   prState?: (claim: Claim) => ClaimPr | undefined
+  /**
+   * CC-1150 f: a checkout's open PRs, each with a lazy file list, for adjudicating an outside-owns PR; undefined
+   * when unreadable. Absent, the tick's readers serve a caller that passes `shepherdRows`, and others adjudicate nothing.
+   */
+  openPrs?: (checkout: string) => readonly CheckoutPr[] | undefined
 }
+
+export interface CheckoutPr extends OtherPr {
+  branch: string
+}
+
+type Adjudicator = (claim: Claim, outside: string[], report: Report | undefined) => Adjudication
 
 export interface Observed {
   observations: Map<string, Observation>
@@ -141,15 +164,43 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   }
   // Only a caller that passes its own reader, as the tick does, has implementing claims looked up in Shepherd.
   const prRuns = deps.shepherdRows === undefined ? undefined : once
-  for (const claim of claims) {
-    const result = await observeClaim(claim, roster, once)
-    if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else {
+  const openPrs = deps.openPrs ?? (deps.shepherdRows === undefined ? undefined : tickOpenPrs())
+  const adjudicate = openPrs === undefined ? undefined : adjudicator(claims, openPrs)
+  for (const listed of claims) {
+    const claim = landedView(listed, roster)
+    const result = await observeClaim(claim, roster, once, adjudicate)
+    if (typeof result === 'string') {
+      const settled = mergedOnGitHub(claim, deps.prState)
+      if (settled === undefined) unread.push(`${claimKey(claim)}: ${result}`)
+      else observations.set(claimKey(claim), settled)
+    } else {
       const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
-      observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
+      const fenced = withGoneOwns(observed, claim, once, adjudicate)
+      observations.set(claimKey(claim), withPrState(fenced, claim, deps.prState))
     }
   }
   return { observations, unread }
+}
+
+/**
+ * CC-980 b: a spawning claim whose agent already exited is observed as the claim it lands as, so advance lands it
+ * and reads its report in one tick. The phase and agent are all that change; the observation key is the same.
+ */
+function landedView(claim: Claim, roster: Roster): Claim {
+  if (claim.phase !== 'spawning') return claim
+  const row = rowNamed(roster, claim.agentName)
+  if (row === undefined || !FINISHED.has(row.state)) return claim
+  return { ...claim, phase: claim.nextPhase ?? 'implementing', agentId: row.agentId, nextPhase: undefined }
+}
+
+/**
+ * CC-1150: a merge GitHub reports settles a claim whose Shepherd read failed, so an outage cannot pin it. Any
+ * other answer, or none, leaves the claim unread: an open or unknown PR is not an observation to act on.
+ */
+function mergedOnGitHub(claim: Claim, read: ObserveDeps['prState']): Observation | undefined {
+  if (read === undefined || !PR_STATE_PHASES.has(claim.phase)) return undefined
+  const prState = read(claim)
+  return prState?.kind === 'merged' ? { prState } : undefined
 }
 
 /**
@@ -171,11 +222,14 @@ const PR_STATE_PHASES: ReadonlySet<Phase> = new Set(['implementing', 'reviewing'
 /**
  * CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. CC-1074:
  * and for a shepherding claim, so its merge finishes it when Shepherd's row is gone, ended or behind. CC-1098:
- * and for a reviewing claim, so a PR merged under review closes it in the same tick.
+ * and for a reviewing claim, so a PR merged under review closes it in the same tick. CC-1141 b: and for a
+ * queued claim linked to a PR, which may have no Shepherd run to finish it.
  */
 function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
   const reads =
-    PR_STATE_PHASES.has(claim.phase) || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+    PR_STATE_PHASES.has(claim.phase) ||
+    (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase)) ||
+    (claim.phase === 'queued' && claim.pr !== undefined)
   if (read === undefined || !reads) return obs
   return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
@@ -201,7 +255,12 @@ export function claimRun(claim: Claim, rows: readonly ShepherdRow[]): ShepherdRo
   return rows.find(r => r.pr !== null && open(r) && ours(r))
 }
 
-async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
+async function observeClaim(
+  claim: Claim,
+  roster: Roster,
+  deps: ObserveDeps,
+  adjudicate?: Adjudicator,
+): Promise<Observation | string> {
   const row = rowNamed(roster, claim.agentName)
   if (row === undefined && claim.agentName !== undefined && roster.partial !== undefined)
     return `no live row for ${claim.agentName} and ${roster.partial}`
@@ -222,42 +281,250 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     claim.worktree !== undefined
   )
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
-  if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
-  const text = (deps.finalText ?? defaultFinalText)(row)
-  if (text !== undefined) obs.report = parseReport(text)
+  if (row === undefined) return goneWork(obs, claim, deps, adjudicate)
+  if (!FINISHED.has(row.state)) return obs
+  const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
+  if (report !== undefined) obs.report = report
   if (claim.phase === 'planning' && claim.briefer === true) {
     obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
     return obs
   }
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0) obs.owned = ownedRead(claim, deps)
+  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0)
+    Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-    return withExitedWork(obs, claim.worktree, deps)
+    return withPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
   }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
 }
 
-function ownedRead(claim: Claim, deps: ObserveDeps): NonNullable<Observation['owned']> {
-  const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  return files === undefined ? 'unreadable' : { outside: outsideOwns(files, claim.owns ?? []) }
+/**
+ * CC-1232: a stalled outside-owns claim is read against the plan's owns as they are now, so a widened plan clears the
+ * stall; the changed files come from the worktree, else from the PR when the worktree is parked. A list neither can
+ * give is unreadable, never nothing outside. CC-832 b: the PR is the finished report's, else the claim's, as the hand-off
+ * reads it, so a DONE report whose PR the claim has not recorded yet is still read.
+ */
+function ownedRead(
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+  report: Report | undefined,
+): Pick<Observation, 'owned' | 'planOwns'> {
+  const planOwns = claim.stallCode === 'outside-owns' ? currentPlanOwns(claim, deps) : undefined
+  const owned = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
+  const pr = report?.pr ?? claim.pr
+  const files = owned ?? (pr === undefined ? undefined : deps.prFiles?.(pr))
+  if (files === undefined) return { owned: 'unreadable' }
+  const judgedOwned = judged(claim, outsideOwns(files, planOwns ?? claim.owns ?? []), adjudicate, report)
+  return planOwns === undefined ? { owned: judgedOwned } : { owned: judgedOwned, planOwns }
 }
 
-/** Committed changes only: the PR carries what was pushed, not what the worktree still holds. */
+/** The slice's owns in its plan now; undefined when the plan or the slice cannot be read, so the claim's own stand. */
+function currentPlanOwns(claim: Claim, deps: ObserveDeps): string[] | undefined {
+  const planPath = planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
+  const text = (deps.readFile ?? readFileOrUndefined)(planPath)
+  const slices = text === undefined ? undefined : readSlices(text).slices
+  const owns = slices?.find(s => s.n === claim.slice)?.owns
+  return owns === undefined || owns.length === 0 ? undefined : owns
+}
+
+function judged(
+  claim: Claim,
+  outside: string[],
+  adjudicate: Adjudicator | undefined,
+  report: Report | undefined,
+): NonNullable<Observation['owned']> {
+  if (outside.length === 0 || adjudicate === undefined) return { outside }
+  return { outside, adjudicated: adjudicate(claim, outside, report) }
+}
+
+/**
+ * CC-1023: a PR carries what was pushed, which a worktree reset to its base no longer shows, so the owns read adds
+ * the PR's own files. CC-1066: for the PR the claim hands off, not only a silent exit's. Only for a claim with owns,
+ * so a claim that owns nothing reads no PR.
+ */
+function withPrOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const { owned } = obs
+  const pr = handOffPr(obs, claim)
+  if (typeof owned !== 'object' || pr === undefined || deps.prFiles === undefined) return obs
+  const files = deps.prFiles(pr)
+  if (files === undefined) return { ...obs, owned: 'unreadable' }
+  const owns = obs.planOwns ?? claim.owns ?? []
+  const added = outsideOwns(files, owns).filter(file => !owned.outside.includes(file))
+  if (added.length === 0) return obs
+  return { ...obs, owned: judged(claim, [...owned.outside, ...added], adjudicate, obs.report) }
+}
+
+/**
+ * The PR `afterWorker` hands to Shepherd: a silent exit's open PR, a finished report's, or a fenced claim's own.
+ * One Shepherd can't take is never read, so `handOff` stalls it on the same tick instead of the read failing forever.
+ */
+function handOffPr(obs: Observation, claim: Claim): string | undefined {
+  const pr = handOffCandidate(obs, claim)
+  return pr !== undefined && shepherdTarget(pr) !== undefined ? pr : undefined
+}
+
+function handOffCandidate(obs: Observation, claim: Claim): string | undefined {
+  const { exitedWork, report } = obs
+  if (typeof exitedWork === 'object') return exitedWork.openPr ?? undefined
+  if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS') return report.pr ?? claim.pr
+  return claim.stallCode === 'outside-owns' ? claim.pr : undefined
+}
+
+/**
+ * CC-1254: an implementer whose row left a complete roster while Shepherd holds an open run for its PR is handed
+ * off by `exitedToShepherd` with no report, so its owns are read here from the branch's committed files plus the
+ * PR's: otherwise nothing fences the hand-off. Either read failing is unreadable, so the claim waits.
+ */
+function withGoneOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const gone = obs.agent === undefined && claim.agentName !== undefined
+  if (claim.phase !== 'implementing' || !gone || obs.owned !== undefined) return obs
+  const pr = goneHandOffPr(obs, claim)
+  if ((claim.owns ?? []).length === 0 || pr === undefined || deps.prFiles === undefined) return obs
+  const tree = claim.worktree
+  const branch = tree === undefined || !fs.existsSync(tree) ? [] : (deps.changedFiles ?? changedFiles)(tree)
+  const prFiles = branch === undefined ? undefined : deps.prFiles(pr)
+  if (branch === undefined || prFiles === undefined) return { ...obs, owned: 'unreadable' }
+  const outside = outsideOwns([...new Set([...branch, ...prFiles])], claim.owns ?? [])
+  return { ...obs, owned: judged(claim, outside, adjudicate, undefined) }
+}
+
+/** The PR `exitedToShepherd` hands off for a gone row: the claim's, else its open run's, when Shepherd can take it. */
+function goneHandOffPr(obs: Observation, claim: Claim): string | undefined {
+  const row = obs.shepherd?.row
+  if (row === undefined || row.pr === null || FINISHED_PHASES.includes(row.phase)) return undefined
+  const pr = claim.pr ?? `${row.repo}#${row.pr}`
+  return shepherdTarget(pr) === undefined ? undefined : pr
+}
+
+/** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */
+const checkoutOf = (claim: Claim): string | undefined =>
+  claim.worktree === undefined ? claim.repo : path.dirname(path.dirname(claim.worktree))
+
+/** The changesets Version Packages PR, which collision skips too: it only deletes changesets. */
+const RELEASE_BRANCH = 'changeset-release/'
+
+/** CC-1150 f: the context each outside-owns PR is judged in: the other held claims and the other open PRs. */
+function adjudicator(claims: Claim[], openPrs: NonNullable<ObserveDeps['openPrs']>): Adjudicator {
+  return (claim, outside, report) => {
+    const checkout = checkoutOf(claim)
+    const others = (): readonly OtherPr[] | undefined =>
+      checkout === undefined ? undefined : openPrs(checkout)?.filter(notOwn(claim, report))
+    return adjudicateOutside(outside, { held: heldOwns(claims, claim, checkout), openPrs: others })
+  }
+}
+
+/** As collision's `heldOwns`: dispatched claims other than this one, in its repo; a queued claim holds nothing yet. */
+function heldOwns(claims: Claim[], claim: Claim, checkout: string | undefined): HeldOwns[] {
+  return claims.flatMap(c => {
+    const repo = checkoutOf(c)
+    const owns = c.owns ?? []
+    if (c.phase === 'queued' || sameClaim(c, claim) || owns.length === 0 || repo === undefined) return []
+    if (repo !== checkout) return []
+    return [{ holder: `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`, repo, owns }]
+  })
+}
+
+/** The claim's own PR, by number or by one of its agents' branches, and the Version Packages PR are no collision. */
+function notOwn(claim: Claim, report: Report | undefined): (pr: CheckoutPr) => boolean {
+  const ownPr = shepherdTarget(report?.pr ?? claim.pr)?.pr
+  const names = [...(claim.spawned ?? []), ...(claim.agentName === undefined ? [] : [claim.agentName])]
+  const ownBranches = new Set(names.map(name => `${BRANCH_PREFIX}${name}`))
+  return pr => pr.number !== ownPr && !ownBranches.has(pr.branch) && !pr.branch.startsWith(RELEASE_BRANCH)
+}
+
+/**
+ * The tick's open-PR reader: CC-1157's one ETag read per repo, then each PR's files only when asked. A stale or
+ * truncated list reads as unreadable, since a PR missing from it may be the one that collides.
+ */
+function tickOpenPrs(exec: Runner = run): (checkout: string) => readonly CheckoutPr[] | undefined {
+  const facts = prFactsReader({ exec })
+  const lists = new Map<string, readonly CheckoutPr[] | undefined>()
+  return checkout => {
+    if (!lists.has(checkout)) lists.set(checkout, checkoutPrs(checkout, facts, exec))
+    return lists.get(checkout)
+  }
+}
+
+export function checkoutPrs(
+  checkout: string,
+  facts: (repo: string) => PrFacts | undefined,
+  exec: Runner,
+): CheckoutPr[] | undefined {
+  const origin = exec(GIT_BIN, ['-C', checkout, 'remote', 'get-url', 'origin'])
+  const repo = origin.status === 0 ? githubRepoOf(origin.stdout) : undefined
+  const read = repo === undefined ? undefined : facts(repo)
+  if (read === undefined || read.stale || !read.complete) return undefined
+  return read.prs.map(pr => ({
+    number: pr.number,
+    branch: pr.branch,
+    files: memo(() => readPrFiles(checkout, pr.number, exec)),
+  }))
+}
+
+/**
+ * Committed changes only: the PR carries what was pushed, not what the worktree still holds. `--no-renames` lists a
+ * moved file's old path too, so moving a protected file out of its tree still reads as touching it (CC-1150 f).
+ */
 export function changedFiles(cwd: string, exec: Runner = run): string[] | undefined {
   const base = resolveBaseRef(cwd, exec)
   if (base === undefined) return undefined
-  const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
+  const result = exec(GIT_BIN, ['diff', '--no-renames', '--name-only', `${base}...HEAD`], cwd)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
+}
+
+/**
+ * CC-1230 a: a stalled implementing claim whose row was pruned left no report, so what its worktree holds is all
+ * there is to read. Only a stalled one, since only a stall is classified. CC-832 b: an outside-owns stall is re-read
+ * as a finished worker's is, so a dropped file or a widened plan still clears it.
+ */
+function goneWork(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  if (claim.phase !== 'implementing' || claim.stalledReason === undefined || claim.agentName === undefined)
+    return obs
+  const fenced = claim.stallCode === 'outside-owns' && (claim.owns ?? []).length > 0
+  const read = fenced ? { ...obs, ...ownedRead(claim, deps, adjudicate, undefined) } : obs
+  const worked = claim.worktree === undefined ? read : withExitedWork(read, claim.worktree, deps)
+  return fenced ? withPrOwns(worked, claim, deps, adjudicate) : worked
 }
 
 /** Read only for an exit with no status line: a report already says what the agent left. */
 function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
   const silent =
     obs.report === undefined || (obs.report.status === 'unknown' && obs.report.parked === undefined)
-  if (!silent || !fs.existsSync(worktree)) return obs
-  return { ...obs, exitedWork: (deps.exitedWork ?? readExitedWork)(worktree) ?? 'unreadable' }
+  if (!silent) return obs
+  const work = fs.existsSync(worktree)
+    ? (deps.exitedWork ?? readExitedWork)(worktree)
+    : parkedRead(worktree, deps)
+  return work === null ? obs : { ...obs, exitedWork: work ?? 'unreadable' }
+}
+
+/**
+ * CC-981: a tree parked before the tick read its exit is read from `agent-chat/<tree name>` in the checkout. The
+ * tree's name, not the claim's agent, names the branch: a successor works in its predecessor's tree. Null when the
+ * absent tree is not a `.worktrees` tree, so there is no branch to read.
+ */
+function parkedRead(worktree: string, deps: ObserveDeps): ExitedWork | undefined | null {
+  const trees = path.dirname(worktree)
+  if (path.basename(trees) !== '.worktrees') return null
+  const branch = `${BRANCH_PREFIX}${path.basename(worktree)}`
+  return (deps.parkedWork ?? readParkedWork)(path.dirname(trees), branch)
 }
 
 const SPEND_PHASES: ReadonlySet<Phase> = new Set([
@@ -353,6 +620,7 @@ export function worktreesUnder(repo: string, exec: Runner = run): string[] | und
 /**
  * Counts against the tick's ceilings; an unreadable repo counts as full, so the tick cuts nothing there.
  * `prefixes` is every agent-name prefix the tick spawns under: `bd` plus each enabled seat's (CC-205).
+ * Reviewer trees sit in the broker's separate reviewer pool (CC-1040), so `total` counts implementer trees only.
  */
 export function worktreeUse(
   names: string[] | undefined,
@@ -362,9 +630,17 @@ export function worktreeUse(
 ): WorktreeUse {
   const totalCeiling = Math.max(0, budget - config.reserveWorktrees)
   if (names === undefined)
-    return { total: totalCeiling, ours: 0, totalCeiling, oursCeiling: config.maxWorktreesPerRepo }
+    return {
+      total: totalCeiling,
+      ours: 0,
+      reviewers: 0,
+      totalCeiling,
+      oursCeiling: config.maxWorktreesPerRepo,
+    }
+  const reviewers = names.filter(isReviewerTreeName).length
   return {
-    total: names.length,
+    total: names.length - reviewers,
+    reviewers,
     ours: names.filter(n => prefixes.some(p => n.startsWith(`${p}-`))).length,
     totalCeiling,
     oursCeiling: config.maxWorktreesPerRepo,

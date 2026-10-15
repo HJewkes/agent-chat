@@ -1,6 +1,8 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
-import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag } from './ops.js'
+import type { GateReading } from './gate-reading.js'
+import { declaredOps, HUMAN_OPS, isHumanStep, opsLint, opsNoneTag, publishOnlyProblem } from './ops.js'
+import type { Blocker } from './refusal-snapshot.js'
 import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
@@ -62,6 +64,7 @@ export type RefusalKind =
   | 'backoff'
   | 'plan-blocked'
   | 'stop-line'
+  | 'review-backpressure'
   | 'out-of-scope'
   | 'no-brief'
   | 'off-plan'
@@ -76,9 +79,35 @@ export interface Refusal {
   reason: string
   /** CC-945: the task's own tags, set on an `out-of-scope` refusal so the log can name the tag that failed. */
   tags?: readonly string[]
+  /** CC-1097: the lever behind a refusal `blocker()` made, with its figures when it is a capacity cap. */
+  gate?: GateReading
+  /** CC-1241: the slice letter of a refused ready slice. */
+  slice?: string
+  /** CC-1241: the task or PR the refusal waits on, for the refusal snapshot. */
+  blocker?: Blocker
 }
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']
+
+/**
+ * CC-1121: a queued slice waits on whatever holds its parent task's row: a missing or closed parent, the
+ * `blocked` tag, or any reserved or seat-excluded tag. Ready slices skip the scorer, so this is their only gate.
+ */
+export function sliceRefusal(
+  task: Task | undefined,
+  excludedTags: readonly string[],
+): Pick<Refusal, 'kind' | 'reason'> | undefined {
+  if (task === undefined) return { kind: 'not-open', reason: 'its task is missing; its queued slices wait' }
+  if (task.status !== 'open')
+    return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}; its queued slices wait` }
+  if (task.tags.includes('blocked'))
+    return { kind: 'blocked', reason: `${task.id} carries the blocked tag; its queued slices wait` }
+  const holding = new Set([...RESERVED_TAGS, ...excludedTags])
+  const held = task.tags.filter(tag => holding.has(tag))
+  if (held.length > 0)
+    return { kind: 'reserved-tag', reason: `tagged ${held.join(', ')}; its queued slices wait` }
+  return undefined
+}
 
 const MERGE_GRANT = { grant: 'merge-on-green-approve', pattern: /\bmerg(e|ed|es|ing)\b/i }
 const RELEASE_GRANT = 'release-through-ci'
@@ -91,6 +120,12 @@ function declaredGap(tags: readonly string[], doneWhen: string, grants: string[]
   const human = declared.filter(op => HUMAN_OPS.includes(op))
   if (human.length > 0)
     return { kind: 'needs-human', reason: `declares ${human.map(op => `ops:${op}`).join(', ')}` }
+  const mixed = declared.includes('publish') ? publishOnlyProblem(doneWhen) : undefined
+  if (mixed !== undefined)
+    return {
+      kind: 'ops-unresolved',
+      reason: `ops:publish task is not publish-only (${mixed}); split the build and consumer work into tasks with dep: on a task whose done_when is 'publish <package> at <version>'`,
+    }
   const missing = [
     ...(declared.includes('publish') ? [RELEASE_GRANT] : []),
     ...(MERGE_GRANT.pattern.test(doneWhen) ? [MERGE_GRANT.grant] : []),

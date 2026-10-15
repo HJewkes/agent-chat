@@ -4,7 +4,7 @@ import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Runner } from './exec.js'
 import type { Claim } from './ledger.js'
 import { jsonLines, originRepo } from './pr-adopt-ports.js'
-import { shepherdTarget, targetRef } from './shepherd.js'
+import { shepherdTarget, targetRef, type ShepherdTarget } from './shepherd.js'
 
 /**
  * CC-1054: what GitHub says about a held claim's PR, so the tick lets go of a claim whose PR merged or whose
@@ -16,6 +16,8 @@ export interface RepoPull {
   number: number
   state: string
   mergedAt: string | null
+  /** CC-1230: when GitHub closed it; null while open or when GitHub gave none. */
+  closedAt: string | null
   branch: string
   headSha: string
 }
@@ -27,11 +29,17 @@ export interface RepoPulls {
 }
 
 export type ClaimPr =
-  { kind: 'merged'; pr: string; head: string } | { kind: 'open'; pr: string } | { kind: 'none' }
+  | { kind: 'merged'; pr: string; head: string }
+  | { kind: 'open'; pr: string }
+  /** CC-1150: the claim's recorded PR was closed unmerged, which is not the same as the agent leaving no PR. */
+  /** CC-1230: `at` is GitHub's close time, omitted when it gave none, so a requeue can wait from the close. */
+  | { kind: 'closed'; pr: string; at?: string }
+  | { kind: 'none' }
 
 const PAGE = 100
 
-const PULL_JQ = '.[] | {number, state, mergedAt: .merged_at, branch: .head.ref, headSha: .head.sha}'
+const PULL_JQ =
+  '.[] | {number, state, mergedAt: .merged_at, closedAt: .closed_at, branch: .head.ref, headSha: .head.sha}'
 
 /** The claim's recorded PR, else the PRs on its agents' branches (CC-1044: claims often carry no link). */
 export function claimPrState(claim: Claim, repo: string, read: RepoPulls | undefined): ClaimPr | undefined {
@@ -46,7 +54,14 @@ export function claimPrState(claim: Claim, repo: string, read: RepoPulls | undef
     .sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''))[0]
   if (merged !== undefined)
     return { kind: 'merged', pr: targetRef({ repo, pr: merged.number }), head: merged.headSha }
+  const closed = recorded === undefined ? undefined : ours[0]
+  if (closed !== undefined) return closedPr(repo, closed)
   return ours.length > 0 || read.complete ? { kind: 'none' } : undefined
+}
+
+function closedPr(repo: string, pull: RepoPull): ClaimPr {
+  const pr = targetRef({ repo, pr: pull.number })
+  return pull.closedAt === null ? { kind: 'closed', pr } : { kind: 'closed', pr, at: pull.closedAt }
 }
 
 /**
@@ -81,11 +96,47 @@ export function readRepoPulls(repo: string, exec: Runner): RepoPulls | undefined
       number: p.number,
       state: p.state,
       mergedAt: p.mergedAt ?? null,
+      closedAt: p.closedAt ?? null,
       branch: p.branch,
       headSha: p.headSha ?? '',
     })
   }
   return { pulls, complete: pulls.length < PAGE }
+}
+
+/** One PR's merge time and head; `mergedAt` is null while it is unmerged. */
+export interface PullMerge {
+  mergedAt: string | null
+  headSha: string
+}
+
+/**
+ * CC-1044: one PR read by number, so a merge the page-limited `readRepoPulls` cannot see still counts.
+ * Undefined when `gh` fails or answers in a shape it should not.
+ */
+export function readPullMerge(target: ShepherdTarget, exec: Runner): PullMerge | undefined {
+  const result = exec('gh', [
+    'api',
+    `repos/${target.repo}/pulls/${target.pr}`,
+    '--jq',
+    '{mergedAt: .merged_at, headSha: .head.sha}',
+  ])
+  if (result.status !== 0) return undefined
+  const [line] = jsonLines(result.stdout)
+  const p = line as Partial<PullMerge> | undefined
+  if (typeof p?.headSha !== 'string' || p.headSha === '') return undefined
+  if (p.mergedAt !== null && typeof p.mergedAt !== 'string') return undefined
+  return { mergedAt: p.mergedAt, headSha: p.headSha }
+}
+
+/** The tick's single-PR reader: each `repo#n` read at most once, however many claims ask. */
+export function pullMergeReader(exec: Runner): (target: ShepherdTarget) => PullMerge | undefined {
+  const read = new Map<string, PullMerge | undefined>()
+  return target => {
+    const ref = targetRef(target)
+    if (!read.has(ref)) read.set(ref, readPullMerge(target, exec))
+    return read.get(ref)
+  }
 }
 
 /** The tick's reader: each repo's pulls and each checkout's origin read at most once, however many claims share them. */

@@ -7,6 +7,7 @@ import {
   briefSourceQuality,
   type BriefSourceQuality,
   type DispatchStatsPorts,
+  type GateRow,
   type SeatDispatchStats,
 } from '../agents/burndown/dispatch-stats.js'
 import type { Claim, Ledger } from '../agents/burndown/ledger.js'
@@ -99,6 +100,7 @@ const ports = (over: Partial<DispatchStatsPorts> = {}): DispatchStatsPorts => ({
   lastOkAt: () => ago(3),
   maxAgents: () => 20,
   verdicts: () => [],
+  gateRows: () => ({ rows: [], partial: false }),
   ...over,
 })
 
@@ -111,8 +113,10 @@ describe('burndown dispatch-stats', () => {
 
     expect(report.ok).toBe(true)
     const sa = report.lines.slice(report.lines.findIndex(l => l.startsWith('sa ')))
-    expect(sa.slice(1, 9)).toEqual([
+    expect(sa.slice(1, 11)).toEqual([
       '  spawns/h       tick 0.08 (2), hand 0.13 (3)',
+      '  hand share     - (hand 0, tick 0, fix rounds 0)',
+      '  spawn gate     reserve warn 0 refused 0, overlap warn 0 refused 0, unprefixed warn 0 refused 0',
       '  queue          3 queued, age p50 30m, max 50m',
       '  ready depth    ready 2, unbriefed 5, stale 1',
       '  ready floor    2 of 2 ticks below 40, min 2, p50 2, longest 10m',
@@ -134,6 +138,36 @@ describe('burndown dispatch-stats', () => {
       registrations: { ok: 1, refused: 1, failed: 0 },
       tick: { dispatched: null, source: 'tick-summary' },
     })
+  })
+
+  it("names the last row's trust refusals after the refusals line, text and JSON", () => {
+    const named = [
+      { initiative: 'claude-channels', task: 'CC-1026', reason: 'no accepted trust entry for dotfiles' },
+    ]
+    const p = ports({
+      tickRows: () =>
+        [
+          row(20, { sa: summary({ trust: [{ initiative: 'x', task: 'X-1', reason: 'old' }] }) }),
+          row(10, { sa: summary({ trust: named }) }),
+        ].join('\n'),
+    })
+
+    const lines = dispatchStatsLines(p, '24h', false).lines
+    const refusalsAt = lines.findIndex(l => l.startsWith('  refusals'))
+
+    expect(lines[refusalsAt + 1]).toBe(
+      '  trust          claude-channels CC-1026: no accepted trust entry for dotfiles',
+    )
+    expect(lines.filter(l => l.startsWith('  trust '))).toHaveLength(1)
+    expect(statsOf(p, 'sa')?.trust).toEqual(named)
+  })
+
+  it('prints no trust line for a row without trust refusals and reads them as empty', () => {
+    const lines = dispatchStatsLines(ports(), '24h', false).lines
+
+    expect(lines.some(l => l.startsWith('  trust '))).toBe(false)
+    expect(statsOf(ports(), 'sa')?.trust).toEqual([])
+    expect(statsOf(ports({ tickRows: () => undefined }), 'sa')?.trust).toBeNull()
   })
 
   it('reports a dispatching tick and a skipped seat from the latest row that names them', () => {
@@ -209,6 +243,110 @@ describe('burndown dispatch-stats', () => {
 
   it('reads no refusal mix from a journal without a dispatched-nothing line', () => {
     expect(journalRefusals('09:00 spawn AB-1 sa-ab-1 -\n', NOW)).toBeUndefined()
+  })
+})
+
+describe('burndown dispatch-stats implementer hand share (CC-965)', () => {
+  const spawned = (agent: string, profile: string, spawner: string, minutesAgo = 10): string =>
+    JSON.stringify({ ts: ago(minutesAgo), agent, agent_id: agent, outcome: 'dispatched', profile, spawner })
+
+  const MIXED = [
+    spawned('sa-ab-1', 'bd-implementer', 'burndown'),
+    spawned('sa-ab-2', 'bd-implementer', 'burndown'),
+    spawned('sa-ab-3', 'bd-implementer', 'sa'),
+    spawned('sa-ab-4', 'bd-implementer', 'sa'),
+    spawned('sa-ab-5', 'bd-implementer', 'human'),
+    spawned('sa-ab-8-s1', 'bd-implementer', 'shepherd'),
+    spawned('sa-ab-6', 'bd-planner', 'sa'),
+    spawned('sa-ab-7', 'bd-implementer', 'sa', 2 * 24 * 60),
+  ]
+  const withLog = (lines: readonly string[]): DispatchStatsPorts =>
+    ports({ dispatchLog: seat => (seat === 'sa' ? lines.join('\n') : undefined) })
+
+  it('splits implementer spawns into tick and hand, sets fix rounds apart and leaves planners out', () => {
+    const sa = statsOf(withLog(MIXED), 'sa')
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 2, hand: 3, fixRound: 1, handShare: 0.6 })
+  })
+
+  it('keeps fix rounds out of the hand share however many there are', () => {
+    const rounds = Array.from({ length: 10 }, (_, i) => spawned(`sa-ab-${i + 10}-s1`, 'bd-implementer', 'sa'))
+
+    const sa = statsOf(withLog([...MIXED, ...rounds]), 'sa')
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 2, hand: 3, fixRound: 11, handShare: 0.6 })
+  })
+
+  it('reads the hand share as null, not NaN, when the seat spawned no implementer', () => {
+    const sa = statsOf(withLog([spawned('sa-ab-6', 'bd-planner', 'sa')]), 'sa')
+    const json = JSON.parse(
+      dispatchStatsLines(withLog([]), '24h', true).lines[0] ?? '{}',
+    ) as SeatDispatchStats
+
+    expect(sa?.spawns.implementers).toEqual({ tick: 0, hand: 0, fixRound: 0, handShare: null })
+    expect(json.spawns.implementers.handShare).toBeNull()
+  })
+
+  it('prints a hand share line under the spawn rates', () => {
+    const lines = dispatchStatsLines(withLog(MIXED), '24h', false).lines
+    const spawnsAt = lines.findIndex(l => l.startsWith('  spawns/h'))
+
+    expect(lines[spawnsAt + 1]).toBe('  hand share     0.6 (hand 3, tick 2, fix rounds 1)')
+  })
+})
+
+describe('burndown dispatch-stats spawn gate counts (CC-965)', () => {
+  const gate = (code: GateRow['code'], refused: boolean, seat?: string): GateRow => ({
+    code,
+    refused,
+    ts: NOW.getTime() - 60_000,
+    ...(seat === undefined ? {} : { seat }),
+  })
+  const ROWS: GateRow[] = [
+    gate('seat_hand_reserve', false, 'sa'),
+    gate('seat_hand_reserve', false, 'sa'),
+    gate('seat_hand_reserve', true, 'sa'),
+    gate('seat_spawn_overlap', false, 'sa'),
+    gate('seat_spawn_unprefixed', true, 'sa'),
+    gate('seat_spawn_unprefixed', false, 'sb'),
+    gate('seat_spawn_unprefixed', false),
+  ]
+  const withGate = (rows: GateRow[], partial = false): DispatchStatsPorts =>
+    ports({ gateRows: () => ({ rows, partial }) })
+
+  it("counts each seat's own gate rows, warns apart from refusals", () => {
+    const stats = dispatchStats(withGate(ROWS), DAY_MS)
+
+    expect(stats.find(s => s.seat === 'sa')?.gate).toEqual({
+      reserveWarn: 2,
+      reserveRefused: 1,
+      overlapWarn: 1,
+      overlapRefused: 0,
+      unprefixedWarn: 0,
+      unprefixedRefused: 1,
+      partial: false,
+    })
+    expect(stats.find(s => s.seat === 'sb')?.gate).toMatchObject({ unprefixedWarn: 1, unprefixedRefused: 0 })
+  })
+
+  it('asks for gate rows from the start of the window', () => {
+    const asked: number[] = []
+
+    dispatchStats(ports({ gateRows: since => (asked.push(since), { rows: [], partial: false }) }), DAY_MS)
+
+    expect(asked).toEqual([NOW.getTime() - DAY_MS])
+  })
+
+  it('prints a spawn gate line, marking a partial window, and carries partial in JSON', () => {
+    const lines = dispatchStatsLines(withGate(ROWS, true), '24h', false).lines
+    const json = JSON.parse(
+      dispatchStatsLines(withGate(ROWS, true), '24h', true).lines[0] ?? '{}',
+    ) as SeatDispatchStats
+
+    expect(lines).toContain(
+      '  spawn gate     reserve warn 2 refused 1, overlap warn 1 refused 0, unprefixed warn 0 refused 1 (partial window)',
+    )
+    expect(json.gate.partial).toBe(true)
   })
 })
 

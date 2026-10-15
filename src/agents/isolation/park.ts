@@ -1,10 +1,14 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { promisify } from 'node:util'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import { gitChildEnv } from '../../git.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
+import type { MergedPrReader } from './merged-pr.js'
 import { occupantOf } from './sweep.js'
 import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
 
@@ -16,6 +20,10 @@ import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
  */
 
 const execFileAsync = promisify(execFile)
+
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncType
+}
 
 /** A process whose working directory is inside a tree. */
 export interface CwdProcess {
@@ -165,6 +173,24 @@ async function containingRemoteHead(worktree: string): Promise<string | undefine
   return undefined
 }
 
+/**
+ * CC-1064: the merged PR on `branch` whose head commit contains HEAD, for a squash merge whose head branch
+ * origin deleted. A reader rejection, an ancestry miss or a PR head object not local all fail closed.
+ */
+async function mergedPrHolding(
+  target: ParkTarget,
+  branch: string,
+  read: MergedPrReader | undefined,
+): Promise<number | undefined> {
+  if (read === undefined) return undefined
+  const prs = await read(target.gitRoot, branch).catch(() => [])
+  for (const pr of prs) {
+    if ((await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', pr.headSha], target.worktree)) !== null)
+      return pr.number
+  }
+  return undefined
+}
+
 /** Why `origin/<branch>` does not hold HEAD, or undefined when it does. */
 async function behindTracked(worktree: string, branch: string): Promise<string | undefined> {
   if ((await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${branch}`], worktree)) === null)
@@ -175,18 +201,30 @@ async function behindTracked(worktree: string, branch: string): Promise<string |
   return count === 0 ? undefined : `${count} commit(s) in ${worktree} are not on origin/${branch}; push first`
 }
 
-type Pushed = { refusal: string } | { containedIn?: string }
+type Pushed = { refusal: string } | { containedIn?: string; mergedPr?: number }
 
-/** With an origin, HEAD must be on it, under its own name or any other; without one, the kept local branch is the copy. */
-async function unpushed(worktree: string, branch: string): Promise<Pushed> {
+/**
+ * With an origin, HEAD must be on it, under its own name or any other, or in a merged PR's head; without
+ * one, the kept local branch is the copy.
+ */
+async function unpushed(
+  target: ParkTarget,
+  branch: string,
+  read: MergedPrReader | undefined,
+): Promise<Pushed> {
+  const { worktree } = target
   if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return {}
   const refusal = await behindTracked(worktree, branch)
   if (refusal === undefined) return {}
   const containedIn = await containingRemoteHead(worktree)
-  return containedIn === undefined ? { refusal } : { containedIn }
+  if (containedIn !== undefined) return { containedIn }
+  const mergedPr = await mergedPrHolding(target, branch, read)
+  return mergedPr === undefined ? { refusal } : { mergedPr }
 }
 
-type HeadBranch = { branch: string; containedIn?: string } | { refusal: string }
+type Kept = { branch: string; containedIn?: string; mergedPr?: number }
+
+type HeadBranch = Kept | { refusal: string }
 
 /**
  * The branch the tree's commits live on, or the reason it has none to keep. A commit on a detached HEAD
@@ -194,7 +232,7 @@ type HeadBranch = { branch: string; containedIn?: string } | { refusal: string }
  * the allocated one; that local branch is kept too, so it parks when origin has it or has HEAD under another
  * name, and `unpushed` then holds it to nothing ahead.
  */
-async function headBranch(target: ParkTarget): Promise<HeadBranch> {
+async function headBranch(target: ParkTarget, read: MergedPrReader | undefined): Promise<HeadBranch> {
   const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], target.worktree)
   if (head === target.branch) return { branch: head }
   const onOrigin =
@@ -203,6 +241,8 @@ async function headBranch(target: ParkTarget): Promise<HeadBranch> {
   if (head !== null && onOrigin) return { branch: head }
   const containedIn = head === null ? undefined : await containingRemoteHead(target.worktree)
   if (head !== null && containedIn !== undefined) return { branch: head, containedIn }
+  const mergedPr = head === null ? undefined : await mergedPrHolding(target, head, read)
+  if (head !== null && mergedPr !== undefined) return { branch: head, mergedPr }
   const where = head === null ? 'detached' : `on ${head}`
   return {
     refusal: `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`,
@@ -210,7 +250,7 @@ async function headBranch(target: ParkTarget): Promise<HeadBranch> {
 }
 
 /** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
-const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
+const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo', '.api-extractor-temp']
 
 /** Tool caches that sit at any depth as single files. */
 const REGENERABLE_FILES = ['.eslintcache']
@@ -221,6 +261,60 @@ const isRegenerable = (entry: string): boolean => {
   if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
   if (!entry.endsWith('/') && REGENERABLE_FILES.includes(segments.at(-1) ?? '')) return true
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
+}
+
+/** Codewatch writes its graph index at the git toplevel only, so a nested copy is not matched. */
+const CODEWATCH_INDEX = '.codewatch/graph.db'
+const CODEWATCH_INDEX_FILES = ['', '-wal', '-shm', '-journal'].map(suffix => CODEWATCH_INDEX + suffix)
+
+/** Tables re-indexing rebuilds: the code-graph index and store-sqlite's migration ledger. */
+const REBUILT_GRAPH_TABLES = [
+  '_migration',
+  'snapshot',
+  'node',
+  'edge',
+  'metric',
+  'id_alias',
+  'file_fingerprint',
+  'finding',
+]
+
+const tableNames = (db: DatabaseSyncType): string[] =>
+  (
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+      )
+      .all() as { name: string }[]
+  ).map(row => row.name)
+
+const hasRows = (db: DatabaseSyncType, table: string): boolean =>
+  db.prepare(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`).get() !== undefined
+
+/**
+ * CC-1163: re-indexing rebuilds the code-graph tables, but not paid output such as triage `verdict` rows or
+ * LLM summaries in `blob_cache`. So only a code-graph db (it has a `snapshot` table) whose every other table is
+ * empty counts; an unknown table with rows is kept. Any failure to read refuses.
+ */
+function indexOnlyGraphDb(worktree: string): boolean {
+  let db: DatabaseSyncType | undefined
+  try {
+    db = new DatabaseSync(join(worktree, CODEWATCH_INDEX), { readOnly: true })
+    const open = db
+    const tables = tableNames(open)
+    if (!tables.includes('snapshot')) return false
+    return tables.every(table => REBUILT_GRAPH_TABLES.includes(table) || !hasRows(open, table))
+  } catch {
+    return false
+  } finally {
+    db?.close()
+  }
+}
+
+function withoutIndexOnlyGraphDb(worktree: string, entries: string[]): string[] {
+  if (!entries.some(entry => CODEWATCH_INDEX_FILES.includes(entry))) return entries
+  if (!indexOnlyGraphDb(worktree)) return entries
+  return entries.filter(entry => !CODEWATCH_INDEX_FILES.includes(entry))
 }
 
 /** `--directory` collapses a wholly ignored directory into one entry; list its files so a nested build output is judged alone. */
@@ -244,12 +338,18 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   )
   if (ignored === null) return `could not list ignored files in ${worktree}`
   const entries = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
-  const kept = (await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()
-  const unregenerable = kept.filter(entry => !isRegenerable(entry))
+  // `--directory` also lists every ignored ancestor of a nested ignored dir, so expansions overlap.
+  const kept = [
+    ...new Set((await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()),
+  ]
+  const unregenerable = withoutIndexOnlyGraphDb(
+    worktree,
+    kept.filter(entry => !isRegenerable(entry)),
+  )
   if (unregenerable.length === 0) return undefined
   return (
     `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo and a top-level .claude`
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`
   )
 }
 
@@ -257,32 +357,35 @@ async function unsaved(worktree: string): Promise<string | undefined> {
 async function keepable(
   target: ParkTarget,
   listCwds: CwdLister | undefined,
-): Promise<{ branch: string; containedIn?: string } | { reason: string }> {
+  read: MergedPrReader | undefined,
+): Promise<Kept | { reason: string }> {
   const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
   if (occupied) return { reason: occupied }
-  const head = await headBranch(target)
+  const head = await headBranch(target, read)
   if ('refusal' in head) return { reason: head.refusal }
   const dirty = await unsaved(target.worktree)
   if (dirty) return { reason: dirty }
-  if (head.containedIn !== undefined) return head
-  const pushed = await unpushed(target.worktree, head.branch)
+  if (head.containedIn !== undefined || head.mergedPr !== undefined) return head
+  const pushed = await unpushed(target, head.branch, read)
   if ('refusal' in pushed) return { reason: pushed.refusal }
-  return pushed.containedIn === undefined ? head : { branch: head.branch, containedIn: pushed.containedIn }
+  return { branch: head.branch, ...pushed }
 }
 
 /**
  * Refuse a tree that would lose anything; otherwise remove it without --force and keep the branch.
  * `recheck` runs after the git checks and right before the removal, so a spawn or resume that
- * started meanwhile is caught. Returns the parked head, and `containedIn` when origin holds it only
- * under another branch name.
+ * started meanwhile is caught. Returns the parked head, `containedIn` when origin holds it only
+ * under another branch name, and `mergedPr` when only a merged PR's head holds it.
  */
 export async function parkWorktree(
   target: ParkTarget,
   recheck: () => string | undefined,
   /** Set for an untracked detached agent: the lister that finds a process still in the tree. */
   listCwds?: CwdLister,
-): Promise<{ ok: true; head: string; branch: string; containedIn?: string } | { ok: false; reason: string }> {
-  const kept = await keepable(target, listCwds)
+  /** Set by the broker: GitHub's merged PRs, for a squash-merged branch origin deleted. */
+  mergedPr?: MergedPrReader,
+): Promise<({ ok: true; head: string } & Kept) | { ok: false; reason: string }> {
+  const kept = await keepable(target, listCwds, mergedPr)
   if ('reason' in kept) return { ok: false, reason: kept.reason }
   const parkedHead = await git(['rev-parse', 'HEAD'], target.worktree)
   const late = recheck()

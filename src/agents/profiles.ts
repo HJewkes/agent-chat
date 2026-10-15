@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { profilesDir } from '../paths.js'
 import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
+import { PROBE_SANDBOX_RULE } from './return-contract-blocks.js'
 import {
   AGENT_ROLES,
   EFFORT_LEVELS,
@@ -81,8 +82,9 @@ const HUMAN_ONLY_CLI_DENY = [
  * which the broker counts as the human, so a worker with Bash could spawn or
  * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
  * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
+ * CC-1194: the `port` verbs spawn, resume and retire over the same connection.
  */
-const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)']
+const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)']
 
 /**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without
@@ -134,7 +136,9 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' },
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
-      'Do not fix what you find unless asked.',
+      'Do not fix what you find unless asked. ' +
+      // In the prelude, not only the contract block: CLI, resumed and return_contract none launches get no block.
+      PROBE_SANDBOX_RULE,
   },
   {
     name: 'implementer',
@@ -392,6 +396,20 @@ export function parseProfile(
   }
 }
 
+const PROFILE_NAME_MAX = 128
+const CONTROL = /[\u0000-\u001f\u007f]/
+
+/** CC-1059: a name becomes a path under the profiles dir, so one that could leave it is refused. */
+export function profileNameRefusal(name: string): string | undefined {
+  const plain =
+    name !== '' &&
+    name.length <= PROFILE_NAME_MAX &&
+    !/[/\\]/.test(name) &&
+    !name.includes('..') &&
+    !CONTROL.test(name)
+  return plain ? undefined : `the profile name ${JSON.stringify(name)} is not a plain name`
+}
+
 /**
  * Resolve a profile BY NAME ONLY. A spawn request names a profile; it never
  * carries a profile body. That single rule is what keeps a spawn request from
@@ -399,30 +417,100 @@ export function parseProfile(
  * variant of this function that takes a profile object.
  */
 export function loadProfile(name: string, dir: string = profilesDir()): AgentProfile | { error: string } {
+  return loadProfileSource(name, dir).profile
+}
+
+/** `loadProfile`, plus the exact file text it parsed (absent for a builtin), so a check hashes what loaded. */
+export function loadProfileSource(
+  name: string,
+  dir: string = profilesDir(),
+): { profile: AgentProfile | { error: string }; source?: string } {
+  const refused = profileNameRefusal(name)
+  if (refused !== undefined) return { profile: { error: refused } }
   const file = path.join(dir, `${name}.json`)
   if (fs.existsSync(file)) {
+    let source: string
+    try {
+      source = fs.readFileSync(file, 'utf8')
+    } catch (err) {
+      return { profile: { error: `${name}: cannot read ${file} (${(err as Error).message})` } }
+    }
     let parsed: unknown
     try {
-      parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+      parsed = JSON.parse(source)
     } catch (err) {
-      return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
+      return { profile: { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }, source }
     }
-    return parseProfile(name, parsed, file)
+    const profile = parseProfile(name, parsed, file)
+    return {
+      profile: 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir)),
+      source,
+    }
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
-  if (builtin) return builtin
-  return { error: `no profile named "${name}"; known: ${listProfileNames(dir).join(', ')}` }
+  if (builtin) return { profile: withWorkerConfigDenies(builtin, path.dirname(dir)) }
+  return { profile: { error: unknownProfileError(name, dir) } }
+}
+
+const CONFIG_EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit']
+
+/**
+ * CC-1094: the edit-tool rules that keep a worker out of `<agentHome>/profiles`
+ * and the top-level config json. A worker that rewrote either could drop every
+ * other deny it carries. Empty for a home holding a comma, because deny lists
+ * travel comma-joined and a split rule would deny the wrong thing.
+ */
+export function workerConfigDenies(agentHome: string): string[] {
+  if (agentHome.includes(',')) return []
+  const root = `/${path.resolve(agentHome)}`
+  return [`${root}/profiles/**`, `${root}/*.json`].flatMap(target =>
+    CONFIG_EDIT_TOOLS.map(tool => `${tool}(${target})`),
+  )
+}
+
+/**
+ * Every non-coordinator gets the rules, builtins included, and `allowedTools`
+ * cannot opt out. Silent, unlike `DERIVED_DENIES`: no file can avoid them, so a
+ * warning on every worker spawn would only be noise.
+ */
+function withWorkerConfigDenies(profile: AgentProfile, agentHome: string): AgentProfile {
+  if (roleOf(profile) === 'coordinator') return profile
+  const denied = profile.disallowedTools ?? []
+  const rules = workerConfigDenies(agentHome)
+  if (rules.length === 0) {
+    const warning = `${profile.name}: agent-chat home ${agentHome} contains a comma, so no edit deny guards its profiles or config`
+    return { ...profile, warnings: [...(profile.warnings ?? []), warning] }
+  }
+  const added = rules.filter(rule => !denied.includes(rule))
+  return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
+}
+
+function unknownProfileError(name: string, dir: string): string {
+  const listing = profileListing(dir)
+  const known = 'names' in listing ? `known: ${listing.names.join(', ')}` : listing.error
+  return `no profile named "${name}"; ${known}`
+}
+
+/** CC-1208: a missing dir is builtins only; any other listing failure is an error naming the dir, never a throw. */
+function profileListing(dir: string): { names: string[] } | { error: string } {
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(dir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { error: `cannot list profiles in ${dir} (${(err as Error).message})` }
+    }
+    entries = []
+  }
+  const user = entries.filter(f => f.endsWith('.json')).map(f => path.basename(f, '.json'))
+  return { names: [...new Set([...BUILTIN_PROFILES.map(p => p.name), ...user])].sort() }
 }
 
 export function listProfileNames(dir: string = profilesDir()): string[] {
-  const user = fs.existsSync(dir)
-    ? fs
-        .readdirSync(dir)
-        .filter(f => f.endsWith('.json'))
-        .map(f => path.basename(f, '.json'))
-    : []
-  return [...new Set([...BUILTIN_PROFILES.map(p => p.name), ...user])].sort()
+  const listing = profileListing(dir)
+  if ('error' in listing) throw new Error(listing.error)
+  return listing.names
 }
 
 /** CC-163: fail closed, so a profile written before roles existed cannot spawn or take Remote Control. */

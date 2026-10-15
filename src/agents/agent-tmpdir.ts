@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import type { AgentIdentity } from '../protocol.js'
 import { AGENT_ID_ENV, AGENT_NAME_PATTERN, LAUNCHER_PID_ENV } from '../launch-identity.js'
 import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orphan-reap.js'
@@ -14,9 +15,22 @@ import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orpha
  * from a validated name and pid, never a pattern; it refuses a symlink, a non-directory and a
  * dir another user owns; and it keeps the dir while any process of that launch is alive or any
  * live process has its cwd or an open fd inside.
+ *
+ * CC-1184: a launch may put its dir under an on-disk root, `<home>/.cache/agent-chat/tmp`, instead
+ * of /tmp, so a review's installed checkouts stop filling the tmpfs's inodes. CC-1264 made it the
+ * default for every Linux launch; /tmp stays an accepted root for launches made before that and
+ * for the sweep.
+ *
+ * CC-1266: Claude Code writes each Bash call's output under `CLAUDE_CODE_TMPDIR`, falling back to
+ * TMPDIR. A launch's harness dir lives under its own root, `<home>/.cache/agent-chat/harness`, so
+ * a full scratch dir cannot take the agent's Bash tool, and the `rm` to recover, down with it.
+ *
+ * Those three are the only roots accepted; every check above applies under each.
  */
 
 export const TMP_ROOT = '/tmp'
+export const DISK_TMP_ROOT_SUFFIX = '/.cache/agent-chat/tmp'
+export const HARNESS_ROOT_SUFFIX = '/.cache/agent-chat/harness'
 const DIR_MODE = 0o700
 const VALID_NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`, 'i')
 const PREFIX = 'ac-'
@@ -31,7 +45,8 @@ export interface TmpFs {
   /** undefined when the path does not exist. Never follows a symlink. */
   lstat(path: string): TmpStat | undefined
   readdir(path: string): string[]
-  mkdir(path: string, mode: number): void
+  /** `recursive` creates missing parents, as for the on-disk root; it does not fail when the path exists. */
+  mkdir(path: string, mode: number, recursive?: boolean): void
   chmod(path: string, mode: number): void
   rm(path: string): void
 }
@@ -56,7 +71,7 @@ export const realTmpFs: TmpFs = {
     }
   },
   readdir: path => fs.readdirSync(path),
-  mkdir: (path, mode) => fs.mkdirSync(path, { mode }),
+  mkdir: (path, mode, recursive) => void fs.mkdirSync(path, { mode, recursive }),
   chmod: (path, mode) => fs.chmodSync(path, mode),
   // Recursive rm unlinks a symlink it meets inside the tree; it never follows one.
   rm: path => fs.rmSync(path, { recursive: true }),
@@ -86,29 +101,72 @@ export const realTmpProcessTable = (): TmpProcessTable => ({
 
 const currentUid = (): number => process.getuid?.() ?? -1
 
-/** The one path this module will ever create or remove for an agent, or undefined when either part is invalid. */
-export function agentTmpPath(name: string, pid: number): string | undefined {
-  if (!VALID_NAME.test(name) || !Number.isSafeInteger(pid) || pid <= 0) return undefined
-  return `${TMP_ROOT}/${PREFIX}${name}-${pid}`
+/** The on-disk root under `home`. */
+export const diskTmpRoot = (home: string): string => `${home}${DISK_TMP_ROOT_SUFFIX}`
+
+/** The on-disk root of the launches' Claude Code harness dirs under `home`. */
+export const diskHarnessRoot = (home: string): string => `${home}${HARNESS_ROOT_SUFFIX}`
+
+/** /tmp, or an absolute, normalised `<home>/.cache/agent-chat/tmp` or `<home>/.cache/agent-chat/harness`. */
+export const isTmpRoot = (root: string): boolean =>
+  root === TMP_ROOT ||
+  (path.posix.isAbsolute(root) &&
+    path.posix.normalize(root) === root &&
+    (root.endsWith(DISK_TMP_ROOT_SUFFIX) || root.endsWith(HARNESS_ROOT_SUFFIX)))
+
+/** The one path this module will ever create or remove for an agent, or undefined when any part is invalid. */
+export function agentTmpPath(name: string, pid: number, root = TMP_ROOT): string | undefined {
+  if (!VALID_NAME.test(name) || !Number.isSafeInteger(pid) || pid <= 0 || !isTmpRoot(root)) return undefined
+  return `${root}/${PREFIX}${name}-${pid}`
 }
 
 const isOwnDir = (stat: TmpStat | undefined, uid: number): boolean =>
   stat !== undefined && !stat.isSymbolicLink() && stat.isDirectory() && stat.uid === uid
 
+/** Why an existing path is not an own, real directory, or undefined when it is one. */
+function unsafeDirReason(stat: TmpStat, uid: number): string | undefined {
+  if (stat.isSymbolicLink()) return 'symlink'
+  if (!stat.isDirectory()) return 'not a directory'
+  if (stat.uid !== uid) return `owned by uid ${stat.uid}`
+  return undefined
+}
+
+/** Why removal must not resolve through `root`; /tmp is root-owned and sticky, so it is exempt as in `ensureRoot`. */
+function rootRefusal(tmpFs: TmpFs, root: string, uid: number): string | undefined {
+  if (root === TMP_ROOT) return undefined
+  const stat = tmpFs.lstat(root)
+  if (stat === undefined) return 'missing'
+  const unsafe = unsafeDirReason(stat, uid)
+  return unsafe === undefined ? undefined : `root ${unsafe}`
+}
+
 export interface AgentTmpRequest {
   name: string
   /** The launcher's pid: `run-agent`'s own, which a relaunch never reuses while the old one runs. */
   pid: number
+  /** Where the dir goes; defaults to /tmp. */
+  root?: string
   platform?: NodeJS.Platform
   fs?: TmpFs
   uid?: number
 }
 
+/** The disk root is made on first use; like the leaf, it is used only if it is ours and not a symlink. */
+function ensureRoot(tmpFs: TmpFs, root: string, uid: number): boolean {
+  if (root === TMP_ROOT) return true
+  try {
+    tmpFs.mkdir(root, DIR_MODE, true)
+    return isOwnDir(tmpFs.lstat(root), uid)
+  } catch {
+    return false
+  }
+}
+
 /** Creates the agent's dir 0700 and returns it; undefined off Linux or when it cannot be made safely. */
 export function ensureAgentTmpDir(request: AgentTmpRequest): string | undefined {
-  const { platform = process.platform, fs: tmpFs = realTmpFs, uid = currentUid() } = request
-  const dir = agentTmpPath(request.name, request.pid)
-  if (platform !== 'linux' || dir === undefined) return undefined
+  const { platform = process.platform, fs: tmpFs = realTmpFs, uid = currentUid(), root = TMP_ROOT } = request
+  const dir = agentTmpPath(request.name, request.pid, root)
+  if (platform !== 'linux' || dir === undefined || !ensureRoot(tmpFs, root, uid)) return undefined
   try {
     tmpFs.mkdir(dir, DIR_MODE)
     return dir
@@ -116,7 +174,7 @@ export function ensureAgentTmpDir(request: AgentTmpRequest): string | undefined 
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return undefined
   }
   // A leftover from a recycled pid is reused only if it is ours; anything else in a shared
-  // /tmp could be planted to read or redirect the agent's temp files.
+  // root could be planted to read or redirect the agent's temp files.
   try {
     if (!isOwnDir(tmpFs.lstat(dir), uid)) return undefined
     tmpFs.chmod(dir, DIR_MODE)
@@ -135,6 +193,8 @@ export interface RemovalTarget {
   pid: number
   /** The agent ids that may have launched under this name; a process of any of them keeps the dir. */
   agentIds: ReadonlySet<string>
+  /** Defaults to /tmp. */
+  root?: string
 }
 
 export interface RemovalDeps {
@@ -188,15 +248,20 @@ function countInodes(tmpFs: TmpFs, path: string): number {
   return tmpFs.readdir(path).reduce((sum, entry) => sum + countInodes(tmpFs, `${path}/${entry}`), 1)
 }
 
-/** Removes exactly `/tmp/ac-<name>-<pid>` once nothing alive is tied to it. A missing dir is not an error. */
+/**
+ * Removes exactly `<root>/ac-<name>-<pid>` once nothing alive is tied to it. A missing dir or root is
+ * not an error. A disk root that is a symlink, not a directory or another user's is refused, so the
+ * recursive rm never resolves through it to an `ac-*` dir elsewhere.
+ */
 export function removeAgentTmpDir(target: RemovalTarget, deps: RemovalDeps): TmpRemoval {
-  const dir = agentTmpPath(target.name, target.pid)
+  const dir = agentTmpPath(target.name, target.pid, target.root)
   if (dir === undefined) return { removed: false, path: '', reason: 'invalid name or pid' }
+  const rootReason = rootRefusal(deps.fs, target.root ?? TMP_ROOT, deps.uid)
+  if (rootReason !== undefined) return { removed: false, path: dir, reason: rootReason }
   const stat = deps.fs.lstat(dir)
   if (stat === undefined) return { removed: false, path: dir, reason: 'missing' }
-  if (stat.isSymbolicLink()) return { removed: false, path: dir, reason: 'symlink' }
-  if (!stat.isDirectory()) return { removed: false, path: dir, reason: 'not a directory' }
-  if (stat.uid !== deps.uid) return { removed: false, path: dir, reason: `owned by uid ${stat.uid}` }
+  const unsafe = unsafeDirReason(stat, deps.uid)
+  if (unsafe !== undefined) return { removed: false, path: dir, reason: unsafe }
   const busy = holder(target, dir, deps)
   if (busy !== undefined) return { removed: false, path: dir, reason: busy }
   const inodes = countInodes(deps.fs, dir)
@@ -218,7 +283,7 @@ function tryRemove(target: RemovalTarget, deps: RemovalDeps): TmpRemoval {
     const { code, message } = err as NodeJS.ErrnoException
     return {
       removed: false,
-      path: agentTmpPath(target.name, target.pid) ?? '',
+      path: agentTmpPath(target.name, target.pid, target.root) ?? '',
       reason: message,
       code: code ?? 'unknown',
     }
@@ -255,10 +320,16 @@ export const realExitTmpDeps = (log: Log): ExitTmpDeps => ({
   log,
 })
 
-/** Run by `run-agent` as it exits, after the orphan reap: removes its own launch's dir. */
-export function removeOwnTmpDir(name: string, agentId: string, launcherPid: number, deps: ExitTmpDeps): void {
+/** Run by `run-agent` as it exits, after the orphan reap: removes its own launch's dir under `root`. */
+export function removeOwnTmpDir(
+  name: string,
+  agentId: string,
+  launcherPid: number,
+  deps: ExitTmpDeps,
+  root = TMP_ROOT,
+): void {
   if (deps.platform !== 'linux') return
-  const result = tryRemove({ name, pid: launcherPid, agentIds: new Set([agentId]) }, deps)
+  const result = tryRemove({ name, pid: launcherPid, agentIds: new Set([agentId]), root }, deps)
   logRemoval(deps.log, 'exit', agentId, result)
 }
 
@@ -268,6 +339,8 @@ export interface TmpSweepDeps extends RemovalDeps {
   log: Log
   /** Paths already reported as kept, so a standing refusal is logged once rather than every sweep. */
   announced?: Set<string>
+  /** The roots to scan; defaults to /tmp alone. A root that does not exist is skipped. */
+  roots?: readonly string[]
 }
 
 /** Finished names mapped to their agent ids; a name that also has a live row is left out entirely. */
@@ -283,13 +356,13 @@ function finishedNames(roster: readonly AgentIdentity[], now: number): Map<strin
 }
 
 /** The launcher pid of `entry` when it is exactly `ac-<name>-<pid>` for this name. */
-function pidOf(entry: string, name: string): number | undefined {
+function pidOf(entry: string, name: string, root: string): number | undefined {
   const prefix = `${PREFIX}${name}-`
   if (!entry.startsWith(prefix)) return undefined
   const digits = entry.slice(prefix.length)
   if (!/^[1-9]\d{0,9}$/.test(digits)) return undefined
   const pid = Number(digits)
-  return agentTmpPath(name, pid) === `${TMP_ROOT}/${entry}` ? pid : undefined
+  return agentTmpPath(name, pid, root) === `${root}/${entry}` ? pid : undefined
 }
 
 function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
@@ -306,11 +379,17 @@ function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
 export function sweepAgentTmpDirs(deps: TmpSweepDeps): void {
   const names = finishedNames(deps.roster(), deps.now())
   if (names.size === 0) return
-  for (const entry of deps.fs.readdir(TMP_ROOT)) {
+  for (const root of deps.roots ?? [TMP_ROOT]) {
+    if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) sweepRoot(root, names, deps)
+  }
+}
+
+function sweepRoot(root: string, names: Map<string, Set<string>>, deps: TmpSweepDeps): void {
+  for (const entry of deps.fs.readdir(root)) {
     if (!entry.startsWith(PREFIX)) continue
     for (const [name, agentIds] of names) {
-      const pid = pidOf(entry, name)
-      if (pid !== undefined) sweepOne({ name, pid, agentIds }, deps)
+      const pid = pidOf(entry, name, root)
+      if (pid !== undefined) sweepOne({ name, pid, agentIds, root }, deps)
     }
   }
 }

@@ -1,3 +1,4 @@
+import { accountGroups, accountIdentity, type AccountGroups } from '../account-identity.js'
 import type { BudgetRead } from '../budget.js'
 import { MAX_READING_AGE_SECONDS, dayStart, type AccountReading } from '../burndown/budget-gate.js'
 import type { SeatState } from '../burndown/ledger.js'
@@ -16,6 +17,7 @@ import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
   RESUME_TRY_CAP,
+  seatIsLiveRefusal,
   judgeLiveness,
   type LivenessVerdict,
   type Presence,
@@ -34,7 +36,7 @@ import {
   type RelaunchTarget,
   type SeatRelaunchPlan,
 } from './seat-target.js'
-import { poolPace } from './pace.js'
+import { poolPace, type PoolPace } from './pace.js'
 import { dayOpening, publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
@@ -116,6 +118,8 @@ export interface WatchdogDeps {
   pace?: PaceStore
   /** CC-529: takes a reading for a pool whose status cache has none under 15 minutes old; false when it took none. */
   probe?: (configDir: string) => boolean
+  /** CC-1289: the Anthropic login a config dir bills; absent, its `.claude.json` is read. */
+  identify?: (configDir: string) => string | undefined
   /** The seat files under the root, charter-listed or not; throws when they cannot be listed. */
   seatNames?: () => string[]
   /** CC-598: runs `titan-factory service check --json`; absent, the pass does not check. */
@@ -151,6 +155,8 @@ interface Pass {
   deps: WatchdogDeps
   now: Date
   pools: Map<string, Pool>
+  /** CC-1289: pools on one login read, probe, meter and pace once, under the first member's name. */
+  accounts: AccountGroups
   roster: Roster
   doc: WatchdogDoc
   restart: string | undefined
@@ -201,36 +207,48 @@ function freshRead(pass: Pass, pool: Pool, nowMs: number): BudgetRead {
 }
 
 /** CC-346: a pool with no saved day meter starts from the reading history, so a deleted doc keeps the day's spend. */
-function dayMeter(pass: Pass, pool: string, sevenDay: number | undefined): SpendMeter | undefined {
-  const saved = pass.doc.pools[pool]
+function dayMeter(pass: Pass, key: string, sevenDay: number | undefined): SpendMeter | undefined {
+  const saved = pass.doc.pools[key]
   if (saved !== undefined || sevenDay === undefined) return saved
   const dayStartMs = dayStart(pass.now)
-  const resetsAt = pass.resets.get(pool)
-  const opening = dayOpening(pass.deps.pace?.rows?.() ?? [], { pool, dayStartMs, sevenDay, resetsAt })
+  const resetsAt = pass.resets.get(key)
+  const pools = pass.accounts.members(key)
+  const opening = dayOpening(pass.deps.pace?.rows?.() ?? [], {
+    pool: key,
+    pools,
+    dayStartMs,
+    sevenDay,
+    resetsAt,
+  })
   if (opening === undefined) return undefined
   const at = opening.ts * 1000
-  if (at > dayStartMs) pass.gaps.push(pool)
+  if (at > dayStartMs) pass.gaps.push(key)
   // A first sample after 07:00 dates the meter, as one the pass started then would be, so status names the gap.
   return { since: Math.max(at, dayStartMs), last: opening.seven_day, spent: 0 }
 }
 
-function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
-  if (!pass.readings.has(pool.name)) {
-    const nowMs = pass.now.getTime()
-    const read = freshRead(pass, pool, nowMs)
-    const reading = accountReading(read, nowMs)
-    const resetsAt = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
-    pass.readings.set(pool.name, reading)
-    pass.resets.set(pool.name, resetsAt === undefined ? undefined : resetsAt * 1000)
-    const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
-    if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
-    const seeded = dayMeter(pass, pool.name, reading?.sevenDay)
-    const meter = advanceMeter(seeded, reading?.sevenDay, nowMs, sameSpendDay)
-    if (meter !== undefined) {
-      if (seeded === undefined && meter.since === nowMs) pass.gaps.push(pool.name)
-      pass.doc.pools[pool.name] = meter
-    }
+/** CC-1289: the key pool's reading and meter are copied to every member, so readers keyed by pool name agree. */
+function readAccount(pass: Pass, key: Pool): void {
+  const nowMs = pass.now.getTime()
+  const read = freshRead(pass, key, nowMs)
+  const reading = accountReading(read, nowMs)
+  const resetsS = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
+  const resetsAt = resetsS === undefined ? undefined : resetsS * 1000
+  pass.resets.set(key.name, resetsAt)
+  const kept = keepReading(pass.doc.lastReadings?.[key.name], reading, nowMs)
+  const seeded = dayMeter(pass, key.name, reading?.sevenDay)
+  const meter = advanceMeter(seeded, reading?.sevenDay, nowMs, sameSpendDay)
+  if (meter !== undefined && seeded === undefined && meter.since === nowMs) pass.gaps.push(key.name)
+  for (const member of pass.accounts.members(key.name)) {
+    pass.readings.set(member, reading)
+    pass.resets.set(member, resetsAt)
+    if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [member]: { ...kept } }
+    if (meter !== undefined) pass.doc.pools[member] = { ...meter }
   }
+}
+
+function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
+  if (!pass.readings.has(pool.name)) readAccount(pass, pass.pools.get(pass.accounts.keyOf(pool.name)) ?? pool)
   return pass.readings.get(pool.name)
 }
 
@@ -510,7 +528,13 @@ const relaunchHold = (relaunch: SeatRelaunch | undefined): string | undefined =>
 
 type CarriedMarks = Pick<
   SeatRecord,
-  'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'staleRefused' | 'paneHeld' | 'heartbeat'
+  | 'relaunchedAt'
+  | 'relaunchTries'
+  | 'teleportFailed'
+  | 'staleRefused'
+  | 'paneHeld'
+  | 'liveRefused'
+  | 'heartbeat'
 >
 
 /** The marks a pass keeps from the seat's last record unless an action this pass replaces them. */
@@ -520,6 +544,7 @@ const carriedMarks = (previous: SeatRecord | undefined): CarriedMarks => ({
   ...(previous?.teleportFailed === undefined ? {} : { teleportFailed: previous.teleportFailed }),
   ...(previous?.staleRefused === undefined ? {} : { staleRefused: previous.staleRefused }),
   ...(previous?.paneHeld === undefined ? {} : { paneHeld: previous.paneHeld }),
+  ...(previous?.liveRefused === undefined ? {} : { liveRefused: previous.liveRefused }),
   ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
 })
 
@@ -695,12 +720,13 @@ async function resumeDark(
   seat: string,
   liveness: LivenessVerdict,
   launch: Launch,
-): Promise<string> {
+): Promise<string[]> {
   save(pass)
   const woke = await launch(seat, RESUME_MESSAGE).catch((err: unknown) => ({
     ok: false,
     detail: err instanceof Error ? err.message : String(err),
   }))
+  if (!woke.ok && seatIsLiveRefusal(woke.detail)) return refusedLive(pass, seat, liveness, woke.detail)
   if (woke.ok) delete pass.doc.seats[seat]?.resumeRetry
   const next = (liveness.tries ?? 1) < RESUME_TRY_CAP ? 'will retry next run' : 'giving up on this episode'
   const outcome = woke.ok
@@ -709,7 +735,27 @@ async function resumeDark(
   const line = `Watchdog: ${liveness.reason}; ${outcome}`
   pass.deps.appendLog(seat, pass.deps.now(), line)
   const refreshed = woke.ok ? refreshUnits(pass.deps, seat) : undefined
-  return `${seat}: ${line}${refreshed === undefined ? '' : `; ${refreshed}`}`
+  return [`${seat}: ${line}${refreshed === undefined ? '' : `; ${refreshed}`}`]
+}
+
+/**
+ * CC-344: the broker says the seat is or may be live, which no retry fixes, so the try is handed
+ * back (kept at 0, not deleted, so the episode stays open) and the human is told once per episode.
+ */
+async function refusedLive(
+  pass: Pass,
+  seat: string,
+  liveness: LivenessVerdict,
+  detail: string,
+): Promise<string[]> {
+  const record = pass.doc.seats[seat]
+  if (record !== undefined) record.resumeRetry = (liveness.tries ?? 1) - 1
+  const line =
+    `Watchdog: ${liveness.reason}; resume REFUSED ${seat} (${detail}); ` +
+    'seat may be live, not counted as a try'
+  const flagged = await flagOnce(pass, seat, 'liveRefused', String(liveness.episode), line)
+  if (flagged.length === 0) pass.deps.appendLog(seat, pass.deps.now(), line)
+  return (flagged.length === 0 ? [line] : flagged).map(out => `${seat}: ${out}`)
 }
 
 /** A unit write that fails must not fail the resume that already happened. */
@@ -821,7 +867,7 @@ const failedTeleportLine = (seat: string, successor: string): string =>
 async function flagOnce(
   pass: Pass,
   seat: string,
-  mark: 'teleportFailed' | 'staleRefused' | 'paneHeld',
+  mark: 'teleportFailed' | 'staleRefused' | 'paneHeld' | 'liveRefused',
   key: string,
   line: string,
 ): Promise<string[]> {
@@ -881,15 +927,16 @@ function relaunchLaunch(
  */
 function launchGate(pass: Pass, name: string, judged: Judgement) {
   const { stale } = judged
-  return async (verb: string, run: (launch: Launch) => Promise<string>): Promise<string[]> => {
-    if (stale === undefined) return [await run((seat, message) => pass.deps.wake(seat, message, false))]
+  return async (verb: string, run: (launch: Launch) => Promise<string | string[]>): Promise<string[]> => {
+    if (stale === undefined)
+      return [await run((seat, message) => pass.deps.wake(seat, message, false))].flat()
     let refusal: string | undefined
     const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (refusal = why))
     if (launch === undefined) return refuseStale(pass, name, verb, stale)
-    const line = await run(launch)
-    if (refusal === undefined) return [line]
+    const lines = [await run(launch)].flat()
+    if (refusal === undefined) return lines
     const refused = { ...stale, reason: `${stale.reason}; ${refusal}` }
-    return [line, ...(await refuseStale(pass, name, verb, refused))]
+    return [...lines, ...(await refuseStale(pass, name, verb, refused))]
   }
 }
 
@@ -940,12 +987,19 @@ function seatOrSkip(deps: WatchdogDeps, name: string): Seat | string {
   return seat ?? `${name}: skipped, seats/${name}.md has no prefix or pool`
 }
 
+/** CC-1289: one row per account, on its key pool's reserve, naming its members when it has several. */
+function accountPace(pass: Pass, key: Pool, nowMs: number): PoolPace {
+  const row = poolPace(key.name, poolReading(pass, key), key.rule.reserve_seven_day, nowMs)
+  const members = pass.accounts.members(key.name)
+  return members.length > 1 ? { ...row, members } : row
+}
+
 /** Every charter pool is read, seat or no seat, so a pool no seat calls home still has a pace. */
 function publishPoolPace(pass: Pass): string | undefined {
   const nowMs = pass.now.getTime()
-  const rows = [...pass.pools.values()].map(pool =>
-    poolPace(pool.name, poolReading(pass, pool), pool.rule.reserve_seven_day, nowMs),
-  )
+  const rows = [...pass.pools.values()]
+    .filter(pool => pass.accounts.keyOf(pool.name) === pool.name)
+    .map(pool => accountPace(pass, pool, nowMs))
   try {
     if (pass.deps.pace !== undefined) publishPace(pass.deps.pace, rows, nowMs)
     return undefined
@@ -1009,10 +1063,12 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
   const now = deps.now()
+  const pools = parsePools(charter)
   const pass: Pass = {
     deps,
     now,
-    pools: parsePools(charter),
+    pools,
+    accounts: accountGroups(pools.values(), deps.identify ?? (dir => accountIdentity(dir))),
     roster: await deps.roster(),
     doc: deps.loadDoc(),
     restart: openRestartWindow(deps, charter, now),

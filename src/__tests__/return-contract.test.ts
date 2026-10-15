@@ -12,16 +12,20 @@ import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
 import {
   BODY_FILE_RULE,
+  FOLLOW_UPS_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
+  MUTANT_RULE,
+  PROBE_SANDBOX_RULE,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
+  REVIEWER_WITHOUT_SHEPHERD,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
-import type { ServerMessage } from '../protocol.js'
+import { HUMAN, type ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -114,6 +118,12 @@ const flat = (text: string): string => text.replace(/\s+/g, ' ')
 
 /** Counted with whitespace collapsed, because a pasted block is rewrapped. */
 const occurrences = (text: string, part: string): number => flat(text).split(flat(part)).length - 1
+
+/** The system prompt the launched process is handed, where a profile's prelude lands. */
+function appendedPrompt(agentId: string): string {
+  const args = readLaunchPlan(agentId).args
+  return args[args.indexOf('--append-system-prompt') + 1] ?? ''
+}
 
 /** One phrase per contract that only that contract's block contains. */
 const MARKER: Record<ReturnContract, string> = {
@@ -213,13 +223,66 @@ describe('the check-run rule (CC-357)', () => {
   })
 
   // Mutation caught: dropping the reviewer's check-run line.
-  it('has the reviewer confirm every required check-run at the head before a MERGE', () => {
-    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+  it('has a reviewer without Shepherd confirm every required check-run at the head before a MERGE', () => {
+    const text = flat(REVIEWER_WITHOUT_SHEPHERD)
 
     expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
     expect(text).toContain('commits/<head>/check-runs" --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
+  })
+})
+
+describe('the reviewer CI rule (CC-1278)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: leaving `or WAIT` in the default verdict line, or dropping the Shepherd CI sentence.
+  it('hands CI to Shepherd and offers no WAIT by default', () => {
+    expect(text).toContain('Verdict: MERGE (or FIX_FIRST)')
+    expect(text).toContain("CI is Shepherd's")
+    expect(text).toContain('pending or unread checks are no verdict input, never WAIT')
+    expect(text.replace('never WAIT', '')).not.toMatch(/\bWAIT\b/)
+    expect(text).not.toContain('Before MERGE, confirm every required check-run')
+  })
+
+  // Mutation caught: a rewrite that drops red CI as a blocker.
+  it('still blocks on a required check that already failed', () => {
+    expect(text).toContain('FIX_FIRST (Class: ci-red) only if a required check-run already failed')
+  })
+
+  // Mutation caught: deleting the old lines instead of moving them into the variant.
+  it('keeps WAIT and the check-run confirmation in the Shepherd: none variant', () => {
+    const variant = flat(REVIEWER_WITHOUT_SHEPHERD)
+
+    expect(variant).toContain('(or FIX_FIRST or WAIT)')
+    expect(variant).toContain('WAIT only for a clean review whose required checks have not finished')
+    expect(variant).not.toContain("CI is Shepherd's")
+  })
+
+  it('keeps the variant whole, generic and under the size cap', () => {
+    expect(REVIEWER_WITHOUT_SHEPHERD).toContain('<spawner>')
+    expect(carriesContract(REVIEWER_WITHOUT_SHEPHERD, 'reviewer')).toBe(true)
+    expect(REVIEWER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+    expect(REVIEWER_WITHOUT_SHEPHERD).not.toMatch(/\/Users\/\w|@\w+\.\w+|[0-9a-f]{40}|npm ci|agent-chat,/)
+  })
+
+  // Mutation caught: leaving blockFor implementer-only.
+  it.each([SHEPHERD_NONE_MARKER, '- Shepherd: none'])(
+    'hands a reviewer brief with the line %j the Shepherd: none variant',
+    async marker => {
+      const brief = `${marker}\nreview PR 7`
+
+      const { text } = await delivered({ profile: 'reviewer', brief })
+
+      expect(text).toBe(`${brief}\n\n${REVIEWER_WITHOUT_SHEPHERD.split('<spawner>').join('coord')}`)
+    },
+  )
+
+  it('hands a reviewer brief without the marker the Shepherd block', async () => {
+    const { text } = await delivered({ profile: 'reviewer', brief: 'review PR 7' })
+
+    expect(text).toBe(`review PR 7\n\n${block('reviewer')}`)
+    expect(text).not.toContain('or WAIT')
   })
 })
 
@@ -239,6 +302,32 @@ describe('the reviewer findings shape (CC-1079)', () => {
     expect(text).toContain('`- fixed: <item>`')
     expect(text).toContain('`- not fixed: <item>`')
     expect(text).toContain('`Earlier findings: none found`')
+  })
+})
+
+describe('the reviewer Follow-ups block (TP-2498)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: dropping "never blocks MERGE" or the one-line-per-task form.
+  it('names an optional Follow-ups block, one title | done_when | severity line per task, that never blocks MERGE', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(FOLLOW_UPS_RULE)
+    expect(text).toContain('`Follow-ups:` then `- <title> | <done_when> | low|medium|high` per task')
+    expect(text).toContain('never blocks MERGE')
+  })
+
+  // Mutation caught: placing the block ahead of the blocking items.
+  it('places the block after the blocking items', () => {
+    expect(text.indexOf('Follow-ups:')).toBeGreaterThan(text.indexOf('Then blocking items before nits.'))
+  })
+
+  // Mutation caught: adding the rule to a shared line (NEVER_PARK, SHIM_RULE) instead of the reviewer block.
+  it('leaves both implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain('Follow-ups:')
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain('Follow-ups:')
+  })
+
+  it('keeps the reviewer block within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })
 
@@ -465,11 +554,13 @@ describe('a conversation that continues', () => {
     fs.writeFileSync(file, '{}\n')
   }
 
-  /** An implementer that got the block at spawn and has since exited, with a transcript to resume. */
-  async function finishedWorker(): Promise<string> {
-    const spawned = await supervisor.spawn(spawnReq({ spawnerConfigDir: tmp('agent-chat-account-') }))
+  /** An agent that got the block at spawn and has since exited, with a transcript to resume. */
+  async function finishedWorker(profile: ReturnContract = 'implementer'): Promise<string> {
+    const spawned = await supervisor.spawn(
+      spawnReq({ profile, spawnerConfigDir: tmp('agent-chat-account-') }),
+    )
     const agentId = spawned.agentId as string
-    expect(readLaunchPlan(agentId).stdin).toContain(MARKER.implementer)
+    expect(readLaunchPlan(agentId).stdin).toContain(MARKER[profile])
     const exit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
       .recordExit
     await exit.call(supervisor, agentId, { code: 0, signal: null })
@@ -501,6 +592,17 @@ describe('a conversation that continues', () => {
     expect(readLaunchPlan(agentId).stdin).toBe('fix the review items')
   })
 
+  // CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
+  it('still tells a resumed builtin reviewer the probe-sandbox rule', async () => {
+    const agentId = await finishedWorker('reviewer')
+
+    const resumed = await supervisor.resume('worker', { message: 'recheck', requestedBy: 'coord' })
+
+    expect(resumed.ok).toBe(true)
+    expect(readLaunchPlan(agentId).stdin).toBe('recheck')
+    expect(appendedPrompt(agentId)).toContain(PROBE_SANDBOX_RULE)
+  })
+
   it('is not handed the block again by a seat watchdog resume', async () => {
     const agentId = await finishedWorker()
 
@@ -525,6 +627,20 @@ describe('a conversation that continues', () => {
     })
 
     expect(readLaunchPlan('successor-1').stdin).toBe('carry on from the handoff')
+  })
+})
+
+// CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
+describe('a builtin reviewer launched without the contract block', () => {
+  it.each([
+    ['from the CLI', { requestedBy: HUMAN }],
+    ['with return_contract none', { returnContract: 'none' }],
+  ])('is told the probe-sandbox rule when started %s', async (_route, over) => {
+    const result = await supervisor.spawn(spawnReq({ profile: 'reviewer', ...over }))
+    const agentId = result.agentId as string
+
+    expect(readLaunchPlan(agentId).stdin).not.toContain(MARKER.reviewer)
+    expect(appendedPrompt(agentId)).toContain(PROBE_SANDBOX_RULE)
   })
 })
 
@@ -613,9 +729,12 @@ describe('the Shepherd handoff (TP-468)', () => {
   })
 
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
-  it('pins the reviewer verdict block', () => {
-    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
-      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST or WAIT)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+  it.each([
+    [RETURN_CONTRACT_BLOCKS.reviewer, '(or FIX_FIRST)'],
+    [REVIEWER_WITHOUT_SHEPHERD, '(or FIX_FIRST or WAIT)'],
+  ])('pins the reviewer verdict block', (reviewer, verdicts) => {
+    expect(reviewer).toContain(
+      `exactly these three lines:\nVerdict: MERGE            ${verdicts}\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n`,
     )
   })
 })
@@ -676,10 +795,11 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
     expect(flat(text)).toContain(REGISTER)
   })
 
-  it('leaves a reviewer brief carrying the marker on the reviewer block', async () => {
+  it('hands a reviewer brief carrying the marker the reviewer variant once', async () => {
     const { text } = await delivered({ profile: 'reviewer', brief: `review it\n${SHEPHERD_NONE_MARKER}` })
 
-    expect(occurrences(text, block('reviewer'))).toBe(1)
+    expect(occurrences(text, REVIEWER_WITHOUT_SHEPHERD.split('<spawner>').join('coord'))).toBe(1)
+    expect(occurrences(text, MARKER.reviewer)).toBe(1)
   })
 
   it('does not double a brief that already pastes the contract and carries the marker', async () => {
@@ -745,6 +865,27 @@ describe('PR body path (CC-444, CC-725)', () => {
   })
 })
 
+describe('CC-311: reviewers run mutants on literal paths', () => {
+  it('gives the reviewer the mutant rule within the size cap', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(MUTANT_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // Mutation caught: trimming the rule to "use sed -i", which is the form that stalled with $S/<file>.
+  it('names the literal-path edit, its restore, the tree and the forbidden write targets', () => {
+    expect(MUTANT_RULE).toContain("sed -i.bak '<edit>' <literal path>")
+    expect(MUTANT_RULE).toContain('git checkout -- <literal path>')
+    expect(MUTANT_RULE).toContain('$TMPDIR/<your name>')
+    expect(MUTANT_RULE).toContain('`$VAR`')
+    expect(MUTANT_RULE).toContain('`$(...)`')
+  })
+
+  it('leaves the implementer blocks without it', () => {
+    expect(RETURN_CONTRACT_BLOCKS.implementer).not.toContain(MUTANT_RULE)
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).not.toContain(MUTANT_RULE)
+  })
+})
+
 describe('CC-897: bodies and comments go to gh-write on stdin in one call', () => {
   // Mutation caught: restoring "write the file in one Bash call, post it in the next", the habit
   // that walked agents into the guard's writtenBody denial.
@@ -763,6 +904,7 @@ describe('CC-897: bodies and comments go to gh-write on stdin in one call', () =
     ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
     ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
     ['reviewer', RETURN_CONTRACT_BLOCKS.reviewer],
+    ['reviewer without Shepherd', REVIEWER_WITHOUT_SHEPHERD],
   ])('no longer teaches the %s block a write-then-post body file', (_name, block) => {
     expect(block).not.toContain('posted in the next')
     expect(block).not.toContain("made by Write or `<<'EOF'`")
@@ -780,8 +922,8 @@ describe('CC-690: pr-ready, WAIT and the Class line', () => {
     }
   })
 
-  it('lets the reviewer say WAIT only for a clean review whose required checks have not finished', () => {
-    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+  it('lets a reviewer without Shepherd say WAIT only for a clean review whose required checks have not finished', () => {
+    const text = flat(REVIEWER_WITHOUT_SHEPHERD)
     expect(text).toContain('Verdict: MERGE (or FIX_FIRST or WAIT)')
     expect(text).toContain('WAIT only for a clean review whose required checks have not finished')
   })
@@ -792,8 +934,10 @@ describe('CC-690: pr-ready, WAIT and the Class line', () => {
     expect(text).toMatch(/FIX_FIRST[^.]*Class:/)
   })
 
+  // CC-713. Mutation caught: dropping PROBE_SANDBOX_RULE from the REVIEWER array.
   it('runs risky probes only in a scratch repo whose origin is a local bare repo', () => {
-    expect(flat(RETURN_CONTRACT_BLOCKS.reviewer)).toContain('scratch repo whose origin is a local bare repo')
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(PROBE_SANDBOX_RULE)
+    expect(PROBE_SANDBOX_RULE).toContain('local bare repo (git init --bare)')
   })
 
   it('stays under the cap with the reviewer under its own 1,200-character report limit named', () => {

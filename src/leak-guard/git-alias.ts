@@ -108,15 +108,21 @@ export interface GitCall {
   at: number
 }
 
-const VALUE_OPTS = new Set([
+/**
+ * git's own options before the subcommand that take the next word as their value, other than `-c`
+ * and `--config-env`, from git.c on git 2.53 (`--super-prefix` for older git). A missing one makes
+ * its value read as the subcommand (TP-2371).
+ */
+export const GIT_VALUE_OPTS: ReadonlySet<string> = new Set([
   '-C',
-  '-c',
   '--git-dir',
   '--work-tree',
   '--namespace',
   '--super-prefix',
-  '--config-env',
+  '--attr-source',
+  '--shallow-file',
 ])
+const VALUE_OPTS = new Set([...GIT_VALUE_OPTS, '-c', '--config-env'])
 /** git's rule for a config variable name, so any other word cannot be an alias. */
 export const ALIAS_NAME = /^[A-Za-z][A-Za-z0-9-]*$/
 const DIR_ENV: Record<string, string> = { '--git-dir': 'GIT_DIR', '--work-tree': 'GIT_WORK_TREE' }
@@ -234,10 +240,82 @@ const POSITIONAL = /\$(?:\{([1-9@*])\}|([1-9@*]))/g
 
 /** The command line a `!` alias runs: git passes the words after it as `$@` and appends `"$@"`. */
 export function shellAlias(body: string, rest: readonly string[]): string {
+  const filled = fillPositionals(body, rest)
+  return rest.length === 0 ? filled : `${filled} ${rest.map(quoted).join(' ')}`
+}
+
+// `${N}` fills exactly; any other brace form (`${1:-x}`, `${@:1}`, `${1#x}`, `${#1}`, `${!1}`, `${10}`) does not.
+const BRACED = /^\$\{[#!]?([0-9@*])[^}]*\}/
+const EXACT = /^\$\{[1-9@*]\}/
+const BARE = /^\$([1-9@*])/
+
+/** One read of a positional in a shell body: which, inside double quotes, and with a modifier. */
+export interface PositionalUse {
+  name: string
+  quoted: boolean
+  modified: boolean
+}
+
+function positionalAt(text: string, quoted: boolean): PositionalUse | undefined {
+  const braced = BRACED.exec(text)
+  if (braced !== null) return { name: braced[1] ?? '', quoted, modified: !EXACT.test(text) }
+  const bare = BARE.exec(text)
+  return bare === null ? undefined : { name: bare[1] ?? '', quoted, modified: false }
+}
+
+/** The index of the `'` that closes a `$'...'` string opened before `from`. */
+function ansiEnd(body: string, from: number): number {
+  for (let j = from; j < body.length; j++) {
+    if (body[j] === '\\') j++
+    else if (body[j] === "'") return j
+  }
+  return body.length
+}
+
+/** Every positional a shell body reads, outside single quotes and `$'...'` strings. */
+export function positionalUses(body: string): PositionalUse[] {
+  const uses: PositionalUse[] = []
+  let quote: string | undefined
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (quote === "'") quote = c === "'" ? undefined : quote
+    else if (c === '\\') i++
+    else if (quote === undefined && body.startsWith("$'", i)) i = ansiEnd(body, i + 2)
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === "'" && quote === undefined) quote = "'"
+    else if (c === '$') {
+      const use = positionalAt(body.slice(i), quote === '"')
+      if (use !== undefined) uses.push(use)
+    }
+  }
+  return uses
+}
+
+/** A body whose arguments the guard cannot fill before they are known: a quoted or modified positional. */
+export const unfillableAtSet = (body: string): boolean =>
+  positionalUses(body).some(use => use.quoted || use.modified)
+
+const FILL_PLAIN = /^[A-Za-z0-9_./:=@%+-]+$/
+
+/**
+ * Whether `fillPositionals` may misread the body. It fills each argument as one single-quoted
+ * word, which matches `sh -c` only for a plain word: unquoted, the shell splits and globs an
+ * argument; inside double quotes it keeps the quotes literally, and `"$@"` makes one word per
+ * argument. A modified positional (`${1:-x}`) is not filled at all. So it is safe only with no
+ * modifier, every argument a plain word, and a quoted `"$@"` given exactly one.
+ */
+export function fillsUnsafely(body: string, rest: readonly string[]): boolean {
+  const uses = positionalUses(body)
+  if (uses.length === 0) return false
+  if (uses.some(use => use.modified) || rest.some(arg => !FILL_PLAIN.test(arg))) return true
+  return uses.some(use => use.quoted && use.name === '@') && rest.length !== 1
+}
+
+/** A shell body with `$1`, `$@` and their kin replaced by the quoted words they stand for. */
+export function fillPositionals(body: string, rest: readonly string[]): string {
   const all = rest.map(quoted).join(' ')
-  const filled = body.replace(POSITIONAL, (_, braced?: string, bare?: string) => {
+  return body.replace(POSITIONAL, (_, braced?: string, bare?: string) => {
     const n = braced ?? bare ?? ''
     return n === '@' || n === '*' ? all : quoted(rest[Number(n) - 1] ?? '')
   })
-  return rest.length === 0 ? filled : `${filled} ${all}`
 }

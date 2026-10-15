@@ -1,4 +1,4 @@
-import type { ShepherdRow } from '../burndown/shepherd.js'
+import type { ShepherdRow } from '../../shepherd-client.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { RetireOutcome } from './retire-outcome.js'
 

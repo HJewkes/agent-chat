@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
-import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type {
   DecidedItem,
@@ -18,6 +17,8 @@ import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
+import { newMsgId } from './msg-id.js'
+import { SEAT_HOLD_MARK } from './seat-hold.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -149,9 +150,12 @@ export const reportKindOf = (text: string): ReportKind | undefined =>
 /** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
 export const isReport = (text: string): boolean => reportKindOf(text) !== undefined
 
-/** A report that says the sender is finished: a closing return-contract status, or any `Verdict:` (CC-321). */
+/**
+ * A report that says the sender is finished: a closing return-contract status or a
+ * verdict (CC-321). The word must end the token, so `DONE-ish` and `MERGE_LATER` are not (CC-337).
+ */
 const TERMINAL_OPENING =
-  /^[\s*_`#>]*(verdict[*_`]*\s*:|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context)\b)/i
+  /^[\s*_`#>]*(verdict[*_`]*\s*:[\s*_`]*(merge|fix_first|wait|approve|changes|request_changes|revise|reject|blocked)|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context))(?![\w-])/i
 
 /** Whether a message is its sender's last word; `Status: IN PROGRESS` is a report and is not this. */
 export const isTerminalReport = (text: string): boolean => TERMINAL_OPENING.test(text)
@@ -164,7 +168,8 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 
 export const BUSY_TIMEOUT_MS = 5_000
 
-export const newMsgId = (): string => randomUUID().slice(0, 8)
+/** CC-1188: temporary, for registry, supervisor and teleport until slice b mints them through the log. */
+export { newMsgId } from './msg-id.js'
 
 const citationOf = (meta: Record<string, string>): DecisionCitation => ({
   precedent: meta.precedent ?? '',
@@ -293,6 +298,8 @@ export class EventLog implements EventStore {
     // Another process's write lock (a CLI, or a broker losing the boot race) is waited out, not thrown.
     this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS })
     this.db.exec('PRAGMA journal_mode = WAL')
+    // TP-801: file-backed temp sorts of the roster read wrote 34 GB in a day.
+    this.db.exec('PRAGMA temp_store = MEMORY')
     this.db.exec(SCHEMA)
     restrictToOwner(file)
     const last = this.db.prepare('SELECT MAX(id) AS id FROM events').get() as { id: number | null }
@@ -304,8 +311,23 @@ export class EventLog implements EventStore {
     return this.db
   }
 
+  /**
+   * CC-1187: an 8-hex id repeats about 7% of the time across 25,000 rows, and a repeat of a
+   * resolved id makes the new item born closed. The `ref` check covers resolutions whose
+   * item was never logged under that id. A caller that needs the id before it appends uses
+   * this; the id is checked, not reserved, so two mints before either is written can match
+   * (about 2^-32 a pair).
+   */
+  mintMsgId(): string {
+    const taken = this.db.prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? OR ref = ? LIMIT 1`)
+    for (;;) {
+      const msgId = newMsgId()
+      if (!taken.get(msgId, msgId)) return msgId
+    }
+  }
+
   append(input: AppendInput): { id: number; msgId: string } {
-    const msgId = input.msgId ?? newMsgId()
+    const msgId = input.msgId ?? this.mintMsgId()
     const stmt = this.db.prepare(
       `INSERT INTO events (ts, kind, actor, target, msg_id, ref, body, meta)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -498,7 +520,31 @@ export class EventLog implements EventStore {
       .get(name) as { id: number; ts: number; kind: string } | undefined
     if (row?.kind === 'deregistered') return { id: row.id, at: row.ts }
     // CC-326: a register from before this log was opened was never closed, so the name is dark since then.
-    return row !== undefined && row.id <= this.opened.id ? this.opened : undefined
+    if (row === undefined || row.id > this.opened.id) return undefined
+    return this.heldEpisode(name, row.id) ?? this.opened
+  }
+
+  /** CC-345: the episode the first held row after `afterId` recorded, so a later boot does not move it. */
+  private heldEpisode(name: string, afterId: number): { id: number; at: number } | undefined {
+    const held = this.db
+      .prepare(
+        `SELECT json_extract(meta, '$.dark_id') AS darkId, json_extract(meta, '$.dark_at') AS darkAt
+         FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? ORDER BY id ASC LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK) as { darkId: string | null; darkAt: string | null } | undefined
+    if (held === undefined || held.darkId === null || held.darkAt === null) return undefined
+    return { id: Number(held.darkId), at: Number(held.darkAt) }
+  }
+
+  hasHeldSince(name: string, afterId: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events WHERE target = ? AND kind = 'message' AND id > ?
+           AND json_extract(meta, '$.held') = ? LIMIT 1`,
+      )
+      .get(name, afterId, SEAT_HOLD_MARK)
+    return row !== undefined
   }
 
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
@@ -679,6 +725,27 @@ export class EventLog implements EventStore {
   }
 
   /**
+   * CC-1140: answers and decisions to `name`'s own questions written after row `afterId`, oldest first.
+   *
+   * `agentId` scopes it to the identity that asked: a question filed while another
+   * agent held the name is skipped. A question with no attached identity before it
+   * matches on the name alone.
+   */
+  answersToAskerSince(name: string, afterId: number, agentId?: string): DeliveredMessage[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM events a JOIN events q ON q.msg_id = a.ref AND q.kind = 'question' AND q.actor = ?
+         WHERE a.kind IN ('answer','decided') AND a.target = ? AND a.id > ?
+           AND (? IS NULL OR COALESCE((
+             SELECT x.ref FROM events x WHERE x.kind = 'agent_attached' AND x.actor = q.actor AND x.id < q.id
+             ORDER BY x.id DESC LIMIT 1), ?) = ?)
+         ORDER BY a.id ASC`,
+      )
+      .all(name, name, afterId, agentId ?? null, agentId ?? null, agentId ?? null) as unknown as Row[]
+    return rows.map(toMessage)
+  }
+
+  /**
    * Peer traffic that landed in `name`'s inbox since `since`.
    *
    * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so
@@ -788,10 +855,13 @@ export class EventLog implements EventStore {
    * The db handle stays private and this returns plain rows rather than the read
    * model reaching in: the fold is then a pure function over a row list, unit
    * testable with no database at all, which is the point of the A1 ordering.
+   *
+   * TP-801: `NOT INDEXED` reads the rowid scan, which is already in id order; the
+   * `events_kind` IN-walk is not, and needs a temp B-tree sort of every agent row.
    */
   agentEvents(): AgentEventRow[] {
     const rows = this.db
-      .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
+      .prepare(`SELECT * FROM events NOT INDEXED WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
       .all() as unknown as Row[]
     return rows.map(toAgentEventRow)
   }

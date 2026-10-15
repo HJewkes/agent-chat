@@ -10,7 +10,15 @@ import { readSlices } from '../agents/burndown/report.js'
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
-import { diskPlanReader, seedSteps, type PlanReader } from '../agents/burndown/seed-slices.js'
+import {
+  diskPlanReader,
+  resyncQueuedSlices,
+  seedSlices,
+  seedSteps,
+  sliceRunsIn,
+  type PlanReader,
+} from '../agents/burndown/seed-slices.js'
+import type { DispatchRecord } from '../agents/seats/dispatch-record.js'
 
 /** CC-927: a seat-written plan's slices are queued in place of a planner under an `on` brief gate. */
 
@@ -50,6 +58,8 @@ const SLICES = [
     doneWhen: 'Tick test passes.',
   },
 ]
+
+const EDGE = 'slice b: depends on a but their owns are disjoint; set dependsOn [] or say why in dependsWhy'
 
 const planText = (slices: unknown): string =>
   `# Plan\n\nProse the seat wrote.\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
@@ -131,6 +141,18 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
       ['a', 'queued', [], ['src/ledger.ts'], [{ scope: 'api:/v1/ledger', op: 'add' }]],
       ['b', 'queued', ['a'], ['src/tick.ts'], undefined],
     ])
+    expect(result.notes).toEqual([
+      `seeded alpha A-1 slices a, b from ${PLAN_PATH} (seat seat-a)`,
+      `slice-lint alpha A-1: ${EDGE}`,
+    ])
+  })
+
+  it('seeds a plan whose slices share files with no slice-lint note (CC-1155)', () => {
+    const shared = [SLICES[0], { ...SLICES[1], owns: ['src/ledger.ts', 'src/tick.ts'] }]
+
+    const result = plan({ ...ON, readPlan: reader(planText(shared)) })
+
+    expect(result.seeds.map(c => c.slice)).toEqual(['a', 'b'])
     expect(result.notes).toEqual([`seeded alpha A-1 slices a, b from ${PLAN_PATH} (seat seat-a)`])
   })
 
@@ -180,7 +202,8 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
     const result = plan({ ...ON, ledger, readPlan: reader(planText(SLICES)) })
 
     expect(result.seeds).toEqual([])
-    expect(result.refusals.map(r => r.kind)).toEqual(['plan-blocked'])
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([])
   })
 
   it('reads no plan and dispatches the planner when the gate is off or shadow', () => {
@@ -217,6 +240,77 @@ describe('seeding slices from a seat-written plan (CC-927)', () => {
   })
 })
 
+describe('seeding a task whose slice agents ran outside the ledger (CC-1121 b, CC-1233)', () => {
+  const PARENT = { taskId: 'A-1', initiative: 'alpha', seat: 'seat-a', namePrefix: 'sa' }
+  const PLAN = { path: PLAN_PATH, text: planText(SLICES) }
+  const MERGED = { agent: 'sa-a-1-a', slice: 'a', pr: { kind: 'merged' as const, pr: 'o/r#3', head: 'h3' } }
+
+  it('seeds as before when no slice agent ran', () => {
+    const result = seedSlices(PARENT, PLAN, EMPTY_LEDGER, NOW, () => [])
+
+    expect(result).toEqual({ claims: expect.any(Array), plan: PLAN_PATH, warnings: [EDGE], notes: [] })
+  })
+
+  it('seeds through planSeat when the seat log shows a slice run, adopting its merged PR', () => {
+    const sliceRuns = vi.fn((taskId: string) => (taskId === 'A-1' ? [MERGED] : []))
+
+    const result = plan({ ...ON, readPlan: reader(planText(SLICES)), sliceRuns })
+
+    expect(result.refusals).toEqual([])
+    expect(result.seeds.map(c => [c.slice, c.phase, c.pr])).toEqual([
+      ['a', 'done', 'o/r#3'],
+      ['b', 'queued', undefined],
+    ])
+    expect(result.notes).toContain('adopted alpha A-1 slice a from sa-a-1-a as done with o/r#3')
+  })
+})
+
+describe('refusing a task whose slices were seeded before (CC-1256)', () => {
+  const PARENT = { taskId: 'A-1', initiative: 'alpha' }
+  const PLAN = { path: PLAN_PATH, text: planText(SLICES) }
+  const queuedB = plannerSlices().filter(c => c.slice === 'b')
+
+  it('refuses a parent whose slices were all released, and none is held, as released', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, slicesReleased: { 'A-1': ['a', 'b'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices a, b of A-1 were released and none is held; close the task, or run agent-chat burndown release A-1 to reseed`,
+    })
+  })
+
+  it('still refuses a parent with a held slice and a released one as already queued', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: queuedB, slicesReleased: { 'A-1': ['a'] } }
+
+    const result = seedSlices(PARENT, PLAN, ledger, NOW)
+
+    expect(queuedB.map(c => c.phase)).toEqual(['queued'])
+    expect(result).toEqual({
+      blocked: `${PLAN_PATH}: slices of A-1 were already queued; close the task or replan it`,
+    })
+  })
+})
+
+describe('sliceRunsIn', () => {
+  const run = (agent: string, task: string | null = 'AB-408'): DispatchRecord =>
+    ({ agent, task, outcome: 'abandoned' }) as DispatchRecord
+
+  it("names only the task's own slice agents under the seat prefix, once each", () => {
+    const records = [
+      run('zz-ab-408-a'),
+      run('zz-ab-408-a'),
+      run('zz-ab-408'),
+      run('zz-ab-408-a-s1'),
+      run('xx-ab-408-b'),
+      run('zz-ab-4080-a'),
+      run('zz-ab-408-c', 'AB-409'),
+    ]
+
+    expect(sliceRunsIn(records, 'AB-408', 'zz')).toEqual(['zz-ab-408-a'])
+  })
+})
+
 describe('seedSteps', () => {
   it('adds no step when nothing was seeded', () => {
     expect(seedSteps([])).toEqual([])
@@ -245,5 +339,69 @@ describe('diskPlanReader', () => {
     expect(read('alpha', 'A-1')).toEqual({ path: `${root}/alpha/sources/A-1-plan.md`, text: 'plan text' })
     expect(read('alpha', 'A-2').text).toBeUndefined()
     fs.rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('carrying overlapsAccepted from the plan to the claim (CC-1259)', () => {
+  const INDEX = 'packages/authority/src/index.ts'
+  const ACCEPT = { pr: 1083, path: INDEX, why: 'line 3 only; #1083 appends at :10' }
+  const TP_2440_A = {
+    n: 'a',
+    title: 'authority conditions',
+    dependsOn: [],
+    owns: [INDEX, 'packages/authority/src/conditions.ts'],
+    points: 2,
+    doneWhen: 'Conditions test passes.',
+  }
+  const queuedA: Claim = {
+    taskId: 'A-1',
+    initiative: 'alpha',
+    spawnedAt: NOW.toISOString(),
+    phase: 'queued',
+    phaseAt: NOW.toISOString(),
+    slice: 'a',
+    dependsOn: [],
+    owns: TP_2440_A.owns,
+  }
+
+  // Mutation caught: sliceClaims dropping the field.
+  it('queues the slice with the overlaps its plan accepts', () => {
+    const result = plan({ ...ON, readPlan: reader(planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])) })
+
+    expect(result.seeds.map(c => c.overlapsAccepted)).toEqual([[ACCEPT]])
+  })
+
+  // Mutation caught: overlapsAccepted missing from the resync FIELDS.
+  it('resyncs an already-queued claim when its plan adds an accepted overlap', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queuedA] }
+    const text = planText([{ ...TP_2440_A, overlapsAccepted: [ACCEPT] }])
+
+    const out = resyncQueuedSlices(ledger, () => ({ path: PLAN_PATH, text }), NOW)
+
+    expect(out.notes).toEqual([
+      `resynced alpha A-1 slice a from ${PLAN_PATH}: overlapsAccepted [] -> ["#1083 ${INDEX}"]`,
+    ])
+    expect(applyActions(ledger, out.actions, NOW).claims[0]?.overlapsAccepted).toEqual([ACCEPT])
+  })
+
+  // Mutation caught: a requeue that loses the acceptance and re-blocks the slice.
+  it('keeps the accepted overlaps on a released slice that is requeued', () => {
+    const live: Claim = {
+      ...queuedA,
+      phase: 'implementing',
+      agentName: 'sa-a-1-a',
+      overlapsAccepted: [ACCEPT],
+    }
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [live] }
+    const release: Action = {
+      kind: 'release',
+      key: { taskId: 'A-1', slice: 'a' },
+      requeue: true,
+      names: ['sa-a-1-a'],
+    }
+
+    const [requeued] = applyActions(ledger, [release], NOW).claims
+
+    expect(requeued).toMatchObject({ phase: 'queued', overlapsAccepted: [ACCEPT] })
   })
 })

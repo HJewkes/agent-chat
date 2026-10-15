@@ -106,6 +106,7 @@ describe('the tick summary row', () => {
       refusals: { untriaged: 1, 'role-cap': 2, 'plan-blocked': 1 },
       roles: { used: { implementers: 1, reviewers: 1, planners: 0 }, cap: CAPS },
       registrations: { ok: 1, refused: 1, failed: 0 },
+      binding: null,
     })
   })
 
@@ -123,6 +124,61 @@ describe('the tick summary row', () => {
       registrations: { ok: 0, refused: 0, failed: 0 },
       skipped: 'no seat file',
     })
+  })
+
+  it('names each trust refusal by initiative, task and reason, and no other kind', () => {
+    const refusals = [
+      { initiative: 'cc', task: 'CC-1026', kind: 'trust', reason: 'no entry for dotfiles' },
+      { initiative: 'cc', task: 'CC-1028', kind: 'trust', reason: 'no entry for the slice tree' },
+      { initiative: 'cc', task: 'CC-9', kind: 'out-of-scope', reason: 'tag' },
+    ] as const
+    const row = tickSummary(
+      inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [...refusals] }] }),
+    )
+
+    expect(row.seats['seat-t']?.refusals.trust).toBe(2)
+    expect(row.seats['seat-t']?.trust).toEqual([
+      { initiative: 'cc', task: 'CC-1026', reason: 'no entry for dotfiles' },
+      { initiative: 'cc', task: 'CC-1028', reason: 'no entry for the slice tree' },
+    ])
+  })
+
+  it('leaves the trust key off a seat with no trust refusal', () => {
+    expect(tickSummary(inputs()).seats['seat-t']).not.toHaveProperty('trust')
+  })
+
+  it('lists a task refused twice for the same reason once', () => {
+    const twice = { initiative: 'cc', task: 'CC-1026', kind: 'trust', reason: 'r' } as const
+    const row = tickSummary(
+      inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [twice, twice] }] }),
+    )
+
+    expect(row.seats['seat-t']?.trust).toEqual([{ initiative: 'cc', task: 'CC-1026', reason: 'r' }])
+  })
+
+  it('stores a long multi-line reason as one line of 200 chars', () => {
+    const reason = `first line\n${'x'.repeat(300)}`
+    const refusal = { initiative: 'cc', task: 'CC-1', kind: 'trust', reason } as const
+    const row = tickSummary(inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals: [refusal] }] }))
+
+    const stored = row.seats['seat-t']?.trust?.[0]?.reason ?? ''
+    expect(stored).toHaveLength(200)
+    expect(stored.startsWith('first line x')).toBe(true)
+  })
+
+  it('names at most ten trust refusals while the count stays exact', () => {
+    const refusals = Array.from({ length: 12 }, (_, i) => ({
+      initiative: 'cc',
+      task: `CC-${i}`,
+      kind: 'trust' as const,
+      reason: 'r',
+    }))
+    const seat = tickSummary(inputs({ outcomes: [{ seat: 'seat-t', dispatched: 0, refusals }] })).seats[
+      'seat-t'
+    ]
+
+    expect(seat?.trust).toHaveLength(10)
+    expect(seat?.refusals.trust).toBe(12)
   })
 
   it('has no seats outside seats mode', () => {
@@ -168,6 +224,35 @@ describe('registration recording', () => {
     expect(seatOf({ ...registration, implementer: 'st-u-t-4' })).toBe('seat-u')
     expect(seatOf({ ...registration, implementer: 'st-t-4' })).toBe('seat-t')
     expect(seatOf({ ...registration, implementer: 'xy-t-4' })).toBeUndefined()
+  })
+})
+
+describe('the service-check read on the row (CC-1127)', () => {
+  it('records a stopped tick with its cause and stopped true', () => {
+    const serviceCheck = { cause: 'serve down', stopped: true, message: 'GET /health refused' }
+
+    const row = tickSummary(inputs({ serviceCheck }))
+
+    expect(row.serviceCheck).toEqual(serviceCheck)
+  })
+
+  it('records an ok tick with a null cause', () => {
+    const row = tickSummary(inputs({ serviceCheck: { cause: null, stopped: false, message: 'ok' } }))
+
+    expect(row.serviceCheck).toEqual({ cause: null, stopped: false, message: 'ok' })
+  })
+
+  it('keeps the message to one line of at most 200 chars', () => {
+    const message = `first\nsecond ${'x'.repeat(300)}`
+
+    const row = tickSummary(inputs({ serviceCheck: { cause: 'unreadable', stopped: false, message } }))
+
+    expect(row.serviceCheck?.message).toHaveLength(200)
+    expect(row.serviceCheck?.message.startsWith('first second x')).toBe(true)
+  })
+
+  it('omits the field when the tick made no read', () => {
+    expect(tickSummary(inputs())).not.toHaveProperty('serviceCheck')
   })
 })
 

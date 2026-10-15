@@ -13,9 +13,11 @@ import {
 } from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import { liveAgentOf } from '../agents/burndown/seat-tick.js'
-import { seedSlices } from '../agents/burndown/seed-slices.js'
+import { seedSlices, type PlanReader } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
-import { linkSlicePr, releaseTask } from '../cli/verbs/burndown-release.js'
+import { slicesReleasedComplete } from '../agents/burndown/slices-complete.js'
+import { linkSlicePr, releaseTask, type LinkedPull } from '../cli/verbs/burndown-release.js'
+import type { ClaimPr } from '../agents/burndown/pr-state.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-978: a claim whose PR merged finishes, a slice is released alone, and a hand-dispatched PR holds its slice. */
@@ -230,9 +232,9 @@ describe('burndown release --slice and link (CC-978)', () => {
     const ledger = readLedger(file())
     const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
     expect(ledger.claims).toEqual([])
-    expect(seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)).toEqual({
-      blocked: expect.stringContaining('already queued'),
-    })
+    const result = seedSlices({ taskId: 'CC-1', initiative: 'demo' }, plan, ledger, NOW)
+    expect(result).toEqual({ blocked: expect.stringContaining('released') })
+    expect(result).toEqual({ blocked: expect.not.stringContaining('already queued') })
   })
 
   it('lets a whole-task release re-seed again', async () => {
@@ -242,10 +244,90 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(readLedger(file()).slicesReleased).toBeUndefined()
   })
 
+  it('lets a whole-task release re-seed a task whose slices were all released, as the refusal advises', async () => {
+    for (const n of ['a', 'b', 'c']) await releaseTask('CC-1', retire, NOW, n)
+    const plan = { path: '/plan.md', text: '```burndown-slices\n```' }
+    const parent = { taskId: 'CC-1', initiative: 'demo' }
+    expect(seedSlices(parent, plan, readLedger(file()), NOW)).toEqual({
+      blocked: expect.stringContaining('agent-chat burndown release CC-1 to reseed'),
+    })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(ledger.slicesReleased).toBeUndefined()
+    expect(ledger.releases).toBeUndefined()
+    expect(seedSlices(parent, plan, ledger, NOW)).toEqual({
+      blocked: expect.not.stringContaining('released'),
+    })
+  })
+
+  it('leaves a task with a done slice and a released one released-complete on a whole-task release', async () => {
+    const ledger = {
+      ...EMPTY_LEDGER,
+      claims: [slice('a', { phase: 'done' })],
+      slicesReleased: { 'CC-1': ['b'] },
+    }
+    writeLedger(file(), ledger)
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1'] })
+    expect(readLedger(file())).toEqual(ledger)
+    expect(slicesReleasedComplete(readLedger(file()), 'CC-1')).toBe(true)
+  })
+
+  it('drops a held whole-task claim with released slices, retiring it and counting a backoff', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [claim()], slicesReleased: { 'CC-1': ['a'] } })
+
+    const report = await releaseTask('CC-1', retire, NOW)
+
+    const ledger = readLedger(file())
+    expect(report.ok).toBe(true)
+    expect(retire).toHaveBeenCalledWith('bd-cc-1')
+    expect(ledger.claims).toEqual([])
+    expect(ledger.releases?.['CC-1']?.n).toBe(1)
+    expect(ledger.slicesReleased).toBeUndefined()
+  })
+
   it('refuses a slice with no held claim', async () => {
     const report = await releaseTask('CC-1', retire, NOW, 'z')
 
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+  })
+
+  describe('an unclaimed slice of a task whose claims are all done (CC-1240)', () => {
+    const planned =
+      (slices: string[], ran: string[]): PlanReader =>
+      () => ({
+        path: '/plan.md',
+        text: `\`\`\`burndown-slices\n${JSON.stringify(slices.map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+        ranOffLedger: ran.map(n => `bd-cc-1-${n}`),
+      })
+
+    beforeEach(() => {
+      writeLedger(file(), { ...EMPTY_LEDGER, claims: [slice('a', { phase: 'done' })] })
+    })
+
+    it('is released when an off-ledger run holds it, so the task stops waiting on that run', async () => {
+      const retireNone = vi.fn(async (_name: string) => ({ ok: true }))
+
+      const report = await releaseTask('CC-1', retireNone, NOW, 'b', planned(['a', 'b'], ['b']))
+
+      expect(report.ok).toBe(true)
+      expect(readLedger(file()).slicesReleased).toEqual({ 'CC-1': ['b'] })
+      expect(retireNone).not.toHaveBeenCalled()
+    })
+
+    it('is refused when the plan does not list it or no run holds it', async () => {
+      const notPlanned = await releaseTask('CC-1', retire, NOW, 'z', planned(['a', 'b'], ['b']))
+      const noRun = await releaseTask('CC-1', retire, NOW, 'b', planned(['a', 'b'], []))
+
+      expect(notPlanned).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice z'] })
+      expect(noRun).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice b'] })
+      expect(readLedger(file()).slicesReleased).toBeUndefined()
+    })
   })
 
   it('links a PR to a queued slice and refuses one that is not queued', async () => {
@@ -255,6 +337,145 @@ describe('burndown release --slice and link (CC-978)', () => {
     expect(linked.ok).toBe(true)
     expect(refused.ok).toBe(false)
     expect(readLedger(file()).claims.map(c => c.pr)).toEqual([undefined, 'o/r#41', undefined])
+  })
+
+  describe('a released or unseeded slice re-linked to its open PR (CC-1141 b)', () => {
+    const plan: PlanReader = () => ({
+      path: '/plan.md',
+      text: `\`\`\`burndown-slices\n${JSON.stringify(['a', 'b', 'c'].map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+    })
+    const pulled = (patch: Partial<LinkedPull> = {}) => ({
+      plan,
+      pull: vi.fn(() => ({ title: 'CC-1 a: do the thing', state: 'open', branch: 'agent-chat/x', ...patch })),
+      now: NOW,
+    })
+
+    /** Observe then advance with GitHub's PR state stubbed and no Shepherd run, as an outside-owns PR has. */
+    async function mergedTick(ledger: Ledger, prState: (c: Claim) => ClaimPr | undefined): Promise<Ledger> {
+      const held = ledger.claims.filter(c => c.phase !== 'done')
+      const { observations } = await observe(
+        held,
+        { agents: [] },
+        {
+          finalText: () => undefined,
+          inboxSince: async () => [],
+          root: '/nowhere',
+          shepherdRows: () => [],
+          openPrs: () => [],
+          spendCap: () => undefined,
+          progress: () => 'unreadable',
+          activity: () => ({ ok: false, reason: 'stub' }) as never,
+          prState,
+        },
+      )
+      return applyActions(ledger, advance(held, observations, NOW), NOW)
+    }
+
+    it('re-creates a queued claim carrying the PR, and the merge finishes it without a Shepherd run', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled())
+
+      const linked = readLedger(file())
+      const relinked = linked.claims.find(c => c.slice === 'a')
+      expect(report.ok).toBe(true)
+      expect(relinked).toMatchObject({ phase: 'queued', pr: 'o/r#41', owns: ['a.ts'], initiative: 'demo' })
+      expect(linked.slicesReleased).toBeUndefined()
+      const merged = await mergedTick(linked, () => ({ kind: 'merged', pr: 'o/r#41', head: 'h41' }))
+      expect(merged.claims.find(c => c.slice === 'a')?.phase).toBe('done')
+    })
+
+    it("re-creates a released slice under its seat's name prefix, so that seat's dispatch picks it", async () => {
+      const seated = { seat: 'seat-a', namePrefix: 'bd' }
+      writeLedger(file(), {
+        ...EMPTY_LEDGER,
+        claims: ['a', 'b', 'c'].map(n => slice(n, { ...seated, phase: n === 'a' ? 'done' : 'queued' })),
+      })
+      await releaseTask('CC-1', retire, NOW, 'c')
+
+      await linkSlicePr('CC-1', 'c', 'o/r#41', undefined, pulled({ title: 'CC-1 c: thing' }))
+
+      const linked = readLedger(file())
+      expect(linked.claims.find(c => c.slice === 'c')).toMatchObject({
+        ...seated,
+        phase: 'queued',
+        pr: 'o/r#41',
+      })
+      expect(
+        readySlices(linked)
+          .filter(c => c.seat === 'seat-a')
+          .map(c => c.slice),
+      ).toEqual(['b'])
+    })
+
+    it('refuses a task never seeded, writing nothing, so only the seeder writes its plan', async () => {
+      writeLedger(file(), EMPTY_LEDGER)
+      const ports = pulled({ title: 'unrelated', branch: 'agent-chat/bd-cc-1-b' })
+
+      const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, ports)
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('holds no slice claim')] })
+      expect(readLedger(file())).toEqual(EMPTY_LEDGER)
+    })
+
+    it('refuses after a whole-task release left a done slice, naming the other slice it would strand', async () => {
+      writeLedger(file(), {
+        ...EMPTY_LEDGER,
+        claims: [slice('a', { phase: 'done' }), slice('b'), slice('c')],
+      })
+      await releaseTask('CC-1', retire, NOW)
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, pulled({ title: 'CC-1 b: thing' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('slices c have no claim')] })
+      expect(readLedger(file())).toEqual(before)
+    })
+
+    it('adds only the named slice after a slice release, keeping the rest of the plan as seeded', async () => {
+      await releaseTask('CC-1', retire, NOW, 'b')
+
+      await linkSlicePr('CC-1', 'b', 'o/r#41', undefined, pulled({ title: 'CC-1 b: thing' }))
+
+      expect(readLedger(file()).claims.map(c => c.slice)).toEqual(['a', 'c', 'b'])
+    })
+
+    it('refuses a PR whose title and branch name another task', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled({ title: 'CC-12 a: other' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('names CC-1')] })
+      expect(readLedger(file())).toEqual(before)
+    })
+
+    it('refuses a closed or merged PR', async () => {
+      await releaseTask('CC-1', retire, NOW, 'a')
+      const before = readLedger(file())
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, pulled({ state: 'closed' }))
+
+      expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('is closed')] })
+      expect(readLedger(file())).toEqual(before)
+    })
+
+    it('still refuses a slice held in a phase other than queued, without reading the PR', async () => {
+      const ports = pulled()
+
+      const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, ports)
+
+      expect(report.ok).toBe(false)
+      expect(ports.pull).not.toHaveBeenCalled()
+    })
+
+    it('reads no PR state for a queued claim without a PR', async () => {
+      const prState = vi.fn(() => undefined)
+
+      await mergedTick({ ...EMPTY_LEDGER, claims: [slice('b')] }, prState)
+
+      expect(prState).not.toHaveBeenCalled()
+    })
   })
 })
 
