@@ -262,6 +262,19 @@ function rollBack(target: string, previous: Snapshot | undefined, cause: Error):
   }
 }
 
+/** Why the transcript cannot move, so the broker can refuse before it ends anything; undefined when it can. */
+export function transcriptMoveBlocker(move: TranscriptMove): string | undefined {
+  if (!SESSION_ID_SHAPE.test(move.sessionId)) return `unusable session id: ${JSON.stringify(move.sessionId)}`
+  const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
+  const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
+  const sourceTime = mtimeOf(source)
+  if (sourceTime === undefined) return `no transcript at ${source}`
+  const targetTime = mtimeOf(target)
+  if (targetTime !== undefined && targetTime > sourceTime)
+    return `${target} is newer than ${source}; the session already ran on the target`
+  return undefined
+}
+
 /**
  * Copy the session's transcript to the target account and rename the source to `.moved-<time>`,
  * keeping its bytes, so nothing resumes the old copy and splits the session (CC-959). A target copy
@@ -269,15 +282,10 @@ function rollBack(target: string, previous: Snapshot | undefined, cause: Error):
  * a path segment, so it must have the shape a session id has.
  */
 export function moveTranscript(move: TranscriptMove): TranscriptMoveResult {
-  if (!SESSION_ID_SHAPE.test(move.sessionId))
-    return { ok: false, error: `unusable session id: ${JSON.stringify(move.sessionId)}` }
+  const error = transcriptMoveBlocker(move)
+  if (error !== undefined) return { ok: false, error }
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
-  const sourceTime = mtimeOf(source)
-  if (sourceTime === undefined) return { ok: false, error: `no transcript at ${source}` }
-  const targetTime = mtimeOf(target)
-  if (targetTime !== undefined && targetTime > sourceTime)
-    return { ok: false, error: `${target} is newer than ${source}; the session already ran on the target` }
   const stamp = new Date(move.now ?? Date.now()).toISOString().replace(/[:.]/g, '-')
   const movedSource = `${source}.moved-${stamp}`
   try {

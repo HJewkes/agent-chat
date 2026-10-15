@@ -6,7 +6,7 @@ import {
   lineReader,
   HUMAN,
   isAnswerChannel,
-  isTeleportReason,
+  isAgentTeleportReason,
   SURFACE_NAMES,
   type ClientMessage,
   type Correlated,
@@ -41,7 +41,7 @@ import {
   type SupervisorOptions,
 } from '../agents/supervisor.js'
 import { asPlatform } from '../agents/teleport-config.js'
-import { refused, type RefusalStage } from '../agents/teleport.js'
+import { refused, type RefusalStage, type TeleportOutcome, type TeleportSubject } from '../agents/teleport.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -213,6 +213,18 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
     ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
   })
 }
+
+const replyTeleport = (conn: Conn, outcome: TeleportOutcome): void =>
+  reply(conn, {
+    t: 'teleport_result',
+    ok: outcome.ok,
+    ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+    ...(outcome.name === undefined ? {} : { name: outcome.name }),
+    ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+    ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
+    ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+    ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
+  })
 
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
 const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
@@ -619,7 +631,7 @@ export class SocketServer {
         t: 'teleport_result',
         ...refused({ name: entry?.name ?? 'unregistered' }, stage, reason),
       })
-    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+    if (msg.reason !== undefined && !isAgentTeleportReason(msg.reason))
       return turnedAway('preflight', `unknown teleport reason "${String(msg.reason)}"`)
     if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
       return turnedAway(
@@ -637,24 +649,7 @@ export class SocketServer {
       )
     }
     const outcome = await this.supervisor.teleport({
-      subject: {
-        agentId: entry.agentId,
-        name: entry.name,
-        cwd: registry.cwdFor(conn) ?? process.cwd(),
-        // SELF-declared tags only. A peer's label must not ride across a teleport
-        // and reappear on a fresh identity as that identity's own declaration.
-        tags: registry.selfTagsOf(conn),
-        subscriptions: registry.subscriptionsOf(conn),
-        ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
-        ...optionalHost(this.hostOf(conn, entry)),
-        ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
-        // CC-100: read from the registration, not from the message, exactly like
-        // every other field here. A successor continues its predecessor's work and
-        // therefore keeps spending the same account.
-        ...(registry.observedFor(conn)?.configDir === undefined
-          ? {}
-          : { configDir: registry.observedFor(conn)?.configDir as string }),
-      },
+      subject: this.teleportSubject(conn, { ...entry, agentId: entry.agentId }),
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
@@ -666,16 +661,66 @@ export class SocketServer {
       ...(msg.to === undefined ? {} : { to: msg.to }),
       ...(msg.endsSelf === true ? { endsSelf: true } : {}),
     })
-    reply(conn, {
-      t: 'teleport_result',
-      ok: outcome.ok,
-      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      ...(outcome.name === undefined ? {} : { name: outcome.name }),
-      ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
-      ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
-      ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
-      ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
+    replyTeleport(conn, outcome)
+  }
+
+  /** Every field read from `conn`'s own registration, never from a frame. */
+  private teleportSubject(
+    conn: Conn,
+    entry: { agentId: string; name: string; hostPid?: number; host?: string },
+  ): TeleportSubject {
+    const { registry } = this.core
+    return {
+      agentId: entry.agentId,
+      name: entry.name,
+      cwd: registry.cwdFor(conn) ?? process.cwd(),
+      // SELF-declared tags only. A peer's label must not ride across a teleport
+      // and reappear on a fresh identity as that identity's own declaration.
+      tags: registry.selfTagsOf(conn),
+      subscriptions: registry.subscriptionsOf(conn),
+      ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+      ...optionalHost(this.hostOf(conn, entry)),
+      ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
+      // CC-100: read from the registration, not from the message, exactly like
+      // every other field here. A successor continues its predecessor's work and
+      // therefore keeps spending the same account.
+      ...(registry.observedFor(conn)?.configDir === undefined
+        ? {}
+        : { configDir: registry.observedFor(conn)?.configDir as string }),
+    }
+  }
+
+  /**
+   * CC-892: the human moving a live session to another account. Human-only on the same
+   * `isHuman` gate as `teleport_abort`, and the subject is the named session's own registration,
+   * read exactly as `teleport` reads its requester's. Decision 381: the target check in
+   * `Teleport.begin` is the guard, not a deny rule.
+   */
+  private async handleAccountMove(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'account_move' }>,
+  ): Promise<void> {
+    const name = typeof msg.name === 'string' ? msg.name : 'unnamed'
+    const turnedAway = (stage: RefusalStage, reason: string): void =>
+      reply(conn, { t: 'teleport_result', ...refused({ name }, stage, reason) })
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'move a session to another account')
+      return turnedAway('account', 'moving a session to another account is the human’s call')
+    }
+    if (typeof msg.to !== 'string' || (msg.force !== undefined && typeof msg.force !== 'boolean'))
+      return turnedAway('preflight', 'account_move needs a "to" account and a boolean "force"')
+    const { registry } = this.core
+    const target = registry.connFor(name)
+    const entry = target === undefined ? undefined : registry.entryFor(target)
+    if (target === undefined || entry?.agentId === undefined)
+      return turnedAway('identity', `no live session with a durable identity is named "${name}"`)
+    const outcome = await this.supervisor.teleport({
+      subject: this.teleportSubject(target, { ...entry, agentId: entry.agentId }),
+      handoff: '',
+      reason: 'account',
+      account: { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) },
     })
+    replyTeleport(conn, outcome)
   }
 
   /**
@@ -1938,6 +1983,9 @@ export class SocketServer {
         return
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
+      case 'account_move':
+        void this.handleAccountMove(conn, msg)
+        return
       case 'teleport_plan_wait':
         void this.handleTeleportPlanWait(conn)
         return
