@@ -32,7 +32,6 @@ import {
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import {
   findClauses,
-  holdsReplacement,
   parallelCall,
   type FindClause,
   type ParallelCall,
@@ -2047,6 +2046,12 @@ function checkEval(
 }
 
 const DEFAULT_REPLACEMENT = /\{[^{}\s]*\}/
+/**
+ * GNU parallel's own replacement strings without --plus, which the allowlist refuses: `{}`, `{.}`,
+ * `{/}`, `{//}`, `{/.}`, `{#}`, `{%}` and their positional forms such as `{2/.}` or `{-1}`. Only
+ * these stop parallel appending its input; another brace word such as `{x}` is plain text.
+ */
+const GNU_REPLACEMENT = /\{(?:-?\d+)?(?:|\.|\/|\/\/|\/\.)\}|\{[#%]\}/
 
 /** `text` cut at each replacement string parallel fills, the `{}` family and any `-I`-style one. */
 function cutAtReplacements(text: string, custom: readonly string[]): string[] {
@@ -2059,8 +2064,9 @@ const singleQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}
 
 /**
  * The text GNU parallel hands its shell, with `$@` for the inputs it fills in: in place of each
- * replacement string, or appended when no word holds one parallel reads as such (with `-I` set,
- * `{}` is a plain word). Under `-q` each word is quoted and each input stays one word.
+ * brace word, or appended when no word holds a string parallel reads as a replacement (with `-I`
+ * set, `{}` is a plain word). The cut is broader than the append test, since an extra `$@` only errs
+ * toward a deny. Under `-q` each word is quoted and each input stays one word.
  */
 function parallelScript(
   words: readonly string[],
@@ -2069,7 +2075,7 @@ function parallelScript(
 ): string {
   const custom = call.replaceStrings
   const fills = (word: string): boolean =>
-    custom.length > 0 ? custom.some(s => word.includes(s)) : holdsReplacement(word)
+    custom.length > 0 ? custom.some(s => word.includes(s)) : GNU_REPLACEMENT.test(word)
   const script = words
     .map(word => {
       const parts = cutAtReplacements(word, custom)

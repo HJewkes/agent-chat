@@ -94,6 +94,25 @@ describe('GNU parallel runs its command as a shell script with the inputs filled
     expect(checkCommand(`parallel 'git log "{}"' ::: a`, ctx)).toBe(REASONS.parallelQuoted)
   })
 
+  describe('a brace word that is not a GNU replacement string leaves the input appended', () => {
+    it.each([
+      "parallel 'git log {x}; git push' ::: --no-verify",
+      'parallel git log {x} \\; git push ::: --no-verify',
+      "parallel -q sh -c 'git log {x}; git push' ::: --no-verify",
+    ])('denies a push that takes the appended input: %s', command => {
+      expect(checkCommand(command, ctx)).toBeDefined()
+    })
+
+    it.each([
+      "parallel 'git log {}; git push' ::: --no-verify",
+      "parallel 'git log {.}; git push' ::: --no-verify",
+      "parallel 'git log {2/.}; git push' ::: a ::: --no-verify",
+      "parallel 'git log {#}; git push' ::: --no-verify",
+    ])('allows a push the input does not reach once a GNU string takes it: %s', command => {
+      expect(checkCommand(command, ctx)).toBeUndefined()
+    })
+  })
+
   it.each([
     'parallel {} ::: git ::: push ::: --no-verify',
     'parallel -I X X ::: git ::: push ::: --no-verify',
