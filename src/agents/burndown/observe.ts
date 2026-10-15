@@ -280,7 +280,7 @@ async function observeClaim(
     claim.worktree !== undefined
   )
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
-  if (row === undefined) return goneWork(obs, claim, deps)
+  if (row === undefined) return goneWork(obs, claim, deps, adjudicate)
   if (!FINISHED.has(row.state)) return obs
   const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
   if (report !== undefined) obs.report = report
@@ -302,7 +302,8 @@ async function observeClaim(
 /**
  * CC-1232: a stalled outside-owns claim is read against the plan's owns as they are now, so a widened plan clears the
  * stall; the changed files come from the worktree, else from the PR when the worktree is parked. A list neither can
- * give is unreadable, never nothing outside.
+ * give is unreadable, never nothing outside. CC-832 b: the PR is the finished report's, else the claim's, as the hand-off
+ * reads it, so a DONE report whose PR the claim has not recorded yet is still read.
  */
 function ownedRead(
   claim: Claim,
@@ -312,7 +313,8 @@ function ownedRead(
 ): Pick<Observation, 'owned' | 'planOwns'> {
   const planOwns = claim.stallCode === 'outside-owns' ? currentPlanOwns(claim, deps) : undefined
   const owned = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  const files = owned ?? (claim.pr === undefined ? undefined : deps.prFiles?.(claim.pr))
+  const pr = report?.pr ?? claim.pr
+  const files = owned ?? (pr === undefined ? undefined : deps.prFiles?.(pr))
   if (files === undefined) return { owned: 'unreadable' }
   const judgedOwned = judged(claim, outsideOwns(files, planOwns ?? claim.owns ?? []), adjudicate, report)
   return planOwns === undefined ? { owned: judgedOwned } : { owned: judgedOwned, planOwns }
@@ -453,15 +455,22 @@ export function changedFiles(cwd: string, exec: Runner = run): string[] | undefi
 
 /**
  * CC-1230 a: a stalled implementing claim whose row was pruned left no report, so what its worktree holds is all
- * there is to read. Only a stalled one, since only a stall is classified.
+ * there is to read. Only a stalled one, since only a stall is classified. CC-832 b: an outside-owns stall is re-read
+ * as a finished worker's is, so a dropped file or a widened plan still clears it.
  */
-const goneWork = (obs: Observation, claim: Claim, deps: ObserveDeps): Observation =>
-  claim.phase === 'implementing' &&
-  claim.stalledReason !== undefined &&
-  claim.agentName !== undefined &&
-  claim.worktree !== undefined
-    ? withExitedWork(obs, claim.worktree, deps)
-    : obs
+function goneWork(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  if (claim.phase !== 'implementing' || claim.stalledReason === undefined || claim.agentName === undefined)
+    return obs
+  const fenced = claim.stallCode === 'outside-owns' && (claim.owns ?? []).length > 0
+  const read = fenced ? { ...obs, ...ownedRead(claim, deps, adjudicate, undefined) } : obs
+  const worked = claim.worktree === undefined ? read : withExitedWork(read, claim.worktree, deps)
+  return fenced ? withPrOwns(worked, claim, deps, adjudicate) : worked
+}
 
 /** Read only for an exit with no status line: a report already says what the agent left. */
 function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
