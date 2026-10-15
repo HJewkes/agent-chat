@@ -85,8 +85,9 @@ export function keepsContent(cmd: SimpleCommand): boolean {
 
 /**
  * The words a command runs as script files. `head` is its resolved command word, and `marked` and
- * `assigns` the marked words after it and the `NAME=value` words it runs with. A shell's script and
- * startup file come from `readShellCall`; `source` and `.` run their first operand after an optional
+ * `assigns` the marked words after it and the `NAME=value` words it runs with. A shell's script comes
+ * from `readShellCall`, and is hidden when the call may turn on `!` history (`bash -i F`,
+ * `BASH_ENV=x bash F`), which rewrites the text after the guard reads it; `source` and `.` run their first operand after an optional
  * `--`; and a command word holding `/` runs itself, even when its base name is a shell, since
  * `./bash` may be a file the line wrote. `shells` names the shells, which the guard owns.
  */
@@ -108,12 +109,11 @@ export function scriptRuns(
 
 function shellRuns(name: string, marked: readonly string[], assigns: readonly string[]): ScriptRuns {
   const call = readShellCall(name, marked, assigns)
-  if (call.script.from === 'hidden') return { hidden: true }
-  const runs: ScriptRun[] = []
-  if (call.rcfile !== undefined) runs.push({ word: marked[call.rcfile] ?? '', args: [], head: false })
-  const at = call.script.from === 'file' ? call.script.at : undefined
-  if (at !== undefined) runs.push({ word: marked[at] ?? '', args: marked.slice(at + 1), head: false })
-  return { runs, stdin: call.script.from === 'stdin' }
+  // A startup file (`--rcfile`) is only read when history may be on, so this also hides it.
+  if (call.script.from === 'hidden' || call.history) return { hidden: true }
+  if (call.script.from !== 'file') return { runs: [], stdin: call.script.from === 'stdin' }
+  const { at } = call.script
+  return { runs: [{ word: marked[at] ?? '', args: marked.slice(at + 1), head: false }], stdin: false }
 }
 
 /** bash's `source -p PATH F` searches a path, and any other option word may hide the file. */
@@ -144,10 +144,22 @@ function systemProgram(file: string): string | undefined {
 export function foreignShebang(body: string, shells: ReadonlySet<string>): boolean {
   const first = body.split('\n', 1)[0] ?? ''
   if (!first.startsWith('#!')) return false
-  const [interpreter = '', next = ''] = first.slice(2).trim().split(/\s+/)
+  const [interpreter = '', ...rest] = first.slice(2).trim().split(/\s+/)
   const name = systemProgram(interpreter)
-  if (name !== 'env') return name === undefined || !shells.has(name)
+  if (name !== 'env') return name === undefined || !readsShebangFile(name, rest, shells)
+  const [next = '', ...options] = rest
   if (next.startsWith('-')) return true
   const program = next.includes('/') ? systemProgram(next) : next
-  return program === undefined || !shells.has(program)
+  return program === undefined || !readsShebangFile(program, options, shells)
+}
+
+/**
+ * The shell `name`, given the `#!` line's options and then the file, runs that file with no `!`
+ * history (`#!/bin/bash -i` turns it on). Linux passes the options as one word and macOS splits them,
+ * so more than one is read neither way.
+ */
+function readsShebangFile(name: string, options: readonly string[], shells: ReadonlySet<string>): boolean {
+  if (!shells.has(name) || options.length > 1) return false
+  const call = readShellCall(name, [...options, 'F'], [])
+  return call.script.from === 'file' && call.script.at === options.length && !call.history
 }

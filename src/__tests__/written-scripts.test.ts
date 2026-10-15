@@ -20,8 +20,16 @@ const lastCommand = (line: string): SimpleCommand => {
 
 /** The runs of the line's last command, the one a pipe feeds. */
 const runsOf = (line: string) => {
-  const [head = '', ...marked] = lastCommand(line).marked
-  return scriptRuns(unmark(head), marked, [], SHELLS)
+  const words = lastCommand(line).marked
+  const assigns = words.slice(
+    0,
+    Math.max(
+      0,
+      words.findIndex(word => !/^\w+=/.test(word)),
+    ),
+  )
+  const [head = '', ...marked] = words.slice(assigns.length)
+  return scriptRuns(unmark(head), marked, assigns.map(unmark), SHELLS)
 }
 
 const runWords = (line: string): string[] => {
@@ -131,14 +139,17 @@ describe('scriptRuns', () => {
     expect(runsOf(line)).toEqual(runs)
   })
 
-  it('runs a startup file before the script on its stdin', () => {
-    expect(runsOf('bash --rcfile r -i')).toEqual({
-      runs: [{ word: 'r', args: [], head: false }],
-      stdin: true,
-    })
-  })
-
-  it.each(['bash $X', 'source -p d s', 'source $F', '. -x s'])('%j hides its script', line => {
+  it.each([
+    'bash $X',
+    'source -p d s',
+    'source $F',
+    '. -x s',
+    'bash --rcfile r -i',
+    'bash -i s.sh',
+    'zsh -i s.sh',
+    'BASH_ENV=x bash s.sh',
+    './bash -i s.sh',
+  ])('%j hides its script', line => {
     expect(runsOf(line)).toEqual({ hidden: true })
   })
 
@@ -166,6 +177,7 @@ describe('foreignShebang', () => {
     '#!/usr/bin/env zsh\nx',
     '#! /bin/dash',
     '#!/usr/bin/env /bin/sh\nx',
+    '#!/bin/sh -\nx',
     '#!/usr/bin/env bash\nx',
     '#!/usr/local/bin/zsh\nx',
     '#!/opt/homebrew/bin/bash\nx',
@@ -189,6 +201,12 @@ describe('foreignShebang', () => {
     '#!/bin/./sh\nx',
     '#!//bin/sh\nx',
     '#!/tmp/env bash\nx',
+    '#!/bin/bash -i\nx',
+    '#!/bin/zsh -i\nx',
+    '#!/usr/bin/env bash -i\nx',
+    '#!/bin/bash -c\nx',
+    '#!/bin/bash -s\nx',
+    '#!/bin/bash -e -x\nx',
   ])('%j hands the file to another reader', body => {
     expect(foreignShebang(body, SHELLS)).toBe(true)
   })
