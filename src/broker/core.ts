@@ -230,10 +230,24 @@ export class BrokerCore<C = Conn> {
         actor: msg.name,
         ref: agentId,
         body: msg.workingOn,
-        ...(msg.agentId === undefined ? { meta: provisionalMeta(msg) } : {}),
+        ...this.attachMeta(msg, agentId),
       })
     }
     return { ok: true }
+  }
+
+  private attachMeta(msg: RegisterMessage, agentId: string): { meta?: Record<string, string> } {
+    if (msg.agentId === undefined) return { meta: provisionalMeta(msg) }
+    const movedFrom = this.movedFrom(agentId)
+    return movedFrom === undefined ? {} : { meta: { account_from: movedFrom } }
+  }
+
+  /** CC-892: an account-moved successor's first attach says where it moved from, which a seat's file follows. */
+  private movedFrom(agentId: string): string | undefined {
+    const rows = this.events.agentEventsFor(agentId)
+    const from = rows.find(r => r.kind === 'agent_spawned')?.meta.account_from
+    if (from === undefined || rows.some(r => r.kind === 'agent_attached')) return undefined
+    return from
   }
 
   /**

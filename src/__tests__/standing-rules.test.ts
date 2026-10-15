@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildLaunchPlan, HOOK_DENIAL_NOTE, PEER_PREAMBLE } from '../agents/launch-plan.js'
 import {
+  deniesChatSend,
   SESSION_RULES,
   SPAWNED_RULES,
   STANDING_RULES_MAX_CHARS,
@@ -51,7 +52,7 @@ describe('standing rules in every spawned agent’s system prompt (CC-281 a)', (
       const prompt = systemPromptOf(over)
 
       expect(prompt.startsWith(over.preamble ?? PEER_PREAMBLE)).toBe(true)
-      expect(prompt).toContain(standingRulesFor(false))
+      expect(prompt).toContain(standingRulesFor(false, true))
     })
   }
 
@@ -71,9 +72,37 @@ describe('standing rules in every spawned agent’s system prompt (CC-281 a)', (
   })
 
   it('stay within their per-spawn budget and name the report channel and the own-call rule', () => {
-    expect(standingRulesFor(false).length).toBeLessThanOrEqual(STANDING_RULES_MAX_CHARS)
+    expect(standingRulesFor(false, true).length).toBeLessThanOrEqual(STANDING_RULES_MAX_CHARS)
     expect(SPAWNED_RULES).toContain('chat_send')
     expect(SESSION_RULES).toContain('autoMode.allow')
     expect(SESSION_RULES).toMatch(/merge, a remote branch delete, a deploy or a tag push as its own/)
+  })
+
+  it('a launch whose profile denies chat_send is not told to report with it', () => {
+    const prompt = systemPromptOf({
+      profile: profile({ disallowedTools: ['mcp__plugin_agent-chat_agent-chat__chat_send'] }),
+    })
+
+    expect(prompt).toContain(SESSION_RULES)
+    expect(prompt).not.toContain(SPAWNED_RULES)
+    expect(prompt).not.toMatch(/spawner/)
+  })
+
+  it('a wildcard agent-chat MCP deny counts as denying chat_send', () => {
+    expect(deniesChatSend({ disallowedTools: ['mcp__plugin_agent-chat_agent-chat__*'] })).toBe(true)
+    expect(deniesChatSend({ disallowedTools: ['mcp__*agent-chat*'] })).toBe(true)
+    expect(
+      systemPromptOf({ profile: profile({ disallowedTools: ['mcp__plugin_agent-chat_agent-chat__*'] }) }),
+    ).not.toContain(SPAWNED_RULES)
+  })
+
+  it('a deny of another agent-chat tool or a Bash send leaves the report rule in place', () => {
+    expect(deniesChatSend({ disallowedTools: ['mcp__plugin_agent-chat_agent-chat__chat_ask'] })).toBe(false)
+    expect(deniesChatSend({ disallowedTools: ['Bash(agent-chat send:*)'] })).toBe(false)
+    expect(deniesChatSend({})).toBe(false)
+  })
+
+  it('the spawner rule leaves room for a channel the instructions name', () => {
+    expect(SPAWNED_RULES).toMatch(/unless your instructions name another channel/)
   })
 })

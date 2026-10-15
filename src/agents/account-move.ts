@@ -247,10 +247,35 @@ function copyThenRetire(
   try {
     ;(rename ?? fs.renameSync)(source, movedSource)
   } catch (err) {
-    restore(target, previous)
+    rollBack(target, previous, err as Error)
     throw err
   }
   return bytes.length
+}
+
+/** A failed rollback is reported beside the rename's error, never in place of it. */
+function rollBack(target: string, previous: Snapshot | undefined, cause: Error): void {
+  try {
+    restore(target, previous)
+  } catch (err) {
+    throw new Error(`${cause.message}; rolling back ${target} also failed: ${(err as Error).message}`)
+  }
+}
+
+/** Why the transcript cannot move, so the broker can refuse before it ends anything; undefined when it can. */
+export function transcriptMoveBlocker(move: TranscriptMove): string | undefined {
+  if (!SESSION_ID_SHAPE.test(move.sessionId)) return `unusable session id: ${JSON.stringify(move.sessionId)}`
+  const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
+  const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
+  // Unset and an explicit ~/.claude are two logins over one dir: a copy onto itself, then a rename, loses it.
+  if (path.resolve(source) === path.resolve(target))
+    return `${move.from.dir} and ${move.to.dir} hold the same transcript file, so it cannot move between them`
+  const sourceTime = mtimeOf(source)
+  if (sourceTime === undefined) return `no transcript at ${source}`
+  const targetTime = mtimeOf(target)
+  if (targetTime !== undefined && targetTime > sourceTime)
+    return `${target} is newer than ${source}; the session already ran on the target`
+  return undefined
 }
 
 /**
@@ -260,15 +285,10 @@ function copyThenRetire(
  * a path segment, so it must have the shape a session id has.
  */
 export function moveTranscript(move: TranscriptMove): TranscriptMoveResult {
-  if (!SESSION_ID_SHAPE.test(move.sessionId))
-    return { ok: false, error: `unusable session id: ${JSON.stringify(move.sessionId)}` }
+  const error = transcriptMoveBlocker(move)
+  if (error !== undefined) return { ok: false, error }
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
-  const sourceTime = mtimeOf(source)
-  if (sourceTime === undefined) return { ok: false, error: `no transcript at ${source}` }
-  const targetTime = mtimeOf(target)
-  if (targetTime !== undefined && targetTime > sourceTime)
-    return { ok: false, error: `${target} is newer than ${source}; the session already ran on the target` }
   const stamp = new Date(move.now ?? Date.now()).toISOString().replace(/[:.]/g, '-')
   const movedSource = `${source}.moved-${stamp}`
   try {
