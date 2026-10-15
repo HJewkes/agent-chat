@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
@@ -50,6 +51,7 @@ import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
 import { unstallSlice } from './burndown-unstall.js'
+import { finishSlice } from './burndown-done.js'
 import { changedFiles } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
 import {
@@ -489,26 +491,31 @@ export const burndownReleaseVerb = defineVerb({
       },
     },
   },
-  async run({ task, slice }) {
-    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
-    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-      autoStart: false,
-    })
-    let connected = false
-    const retire: RetireCall = async name => {
-      if (!connected) {
-        await client.connect()
-        connected = true
-      }
-      return tickBroker(client).retire(name)
-    }
-    try {
-      return await releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot()))
-    } finally {
-      client.close()
-    }
-  },
+  run: ({ task, slice }) =>
+    withBrokerRetire(retire =>
+      releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot())),
+    ),
 })
+
+/** Runs `use` with a retire that connects on first use; never autostarts, since a verb that brought up a broker would own it. */
+async function withBrokerRetire(use: (retire: RetireCall) => Promise<Report>): Promise<Report> {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let connected = false
+  const retire: RetireCall = async name => {
+    if (!connected) {
+      await client.connect()
+      connected = true
+    }
+    return tickBroker(client).retire(name)
+  }
+  try {
+    return await use(retire)
+  } finally {
+    client.close()
+  }
+}
 
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
@@ -550,6 +557,27 @@ export const burndownUnstallVerb = defineVerb({
       changedFiles: cwd => changedFiles(cwd),
       prFiles: prFilesReader(run),
     }),
+})
+
+export const burndownDoneVerb = defineVerb({
+  name: 'burndown.done',
+  description:
+    'finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its agents',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    evidence: requiredString('evidence'),
+  }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the slice whose work was done and verified outside git' },
+      evidence: { long: '--evidence', description: 'an existing file that shows the work is done' },
+    },
+  },
+  run: ({ task, slice, evidence }) =>
+    withBrokerRetire(retire => finishSlice(task, slice, evidence, { retire, exists: existsSync })),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
@@ -632,6 +660,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownDoneVerb)
   addVerb(burndown, burndownLandedVerb)
   addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)
