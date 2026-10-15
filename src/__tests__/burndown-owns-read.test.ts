@@ -81,10 +81,19 @@ const baseDeps = (deps: Partial<ObserveDeps>): ObserveDeps => ({
   ...deps,
 })
 
-/** Observe then advance, as the tick does. */
-async function tick(ledger: Ledger, roster: Roster, deps: Partial<ObserveDeps>): Promise<Ledger> {
+type Defaulted = 'changedFiles' | 'openPrs'
+
+/** Observe then advance, as the tick does; `defaulted` stubs are dropped, so observe uses its own reads. */
+async function tick(
+  ledger: Ledger,
+  roster: Roster,
+  deps: Partial<ObserveDeps>,
+  defaulted: readonly Defaulted[] = [],
+): Promise<Ledger> {
   const held = ledger.claims.filter(c => c.phase !== 'done')
-  const { observations } = await observe(held, roster, baseDeps(deps))
+  const full = baseDeps(deps)
+  for (const key of defaulted) delete full[key]
+  const { observations } = await observe(held, roster, full)
   return applyActions(ledger, advance(held, observations, NOW), NOW)
 }
 
@@ -110,11 +119,12 @@ describe('a file moved into owns', () => {
       git(repo, 'mv', 'src/x.ts', 'src/a.ts')
       git(repo, 'commit', '-q', '-m', 'move')
 
-      const after = await tick(ledgerOf(implementing({ worktree: repo })), exitedIn(repo), {
-        finalText: () => 'Status: DONE',
-        changedFiles: undefined,
-        openPrs: undefined,
-      })
+      const after = await tick(
+        ledgerOf(implementing({ worktree: repo })),
+        exitedIn(repo),
+        { finalText: () => 'Status: DONE' },
+        ['changedFiles', 'openPrs'],
+      )
 
       expect(after.claims[0]).toMatchObject({ stallCode: 'outside-owns' })
       expect(after.claims[0]?.stalledReason).toContain('src/x.ts')
