@@ -124,7 +124,7 @@ export const budgetDir = (dir?: string): string =>
 export const budgetPath = (sessionId: string, dir?: string): string =>
   path.join(budgetDir(dir), `${safeSessionId(sessionId)}.json`)
 
-const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/
+export const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/
 
 function safeSessionId(sessionId: string): string {
   if (!SESSION_ID_SHAPE.test(sessionId)) throw new Error(`unusable session id: ${sessionId}`)
@@ -235,6 +235,24 @@ function parsePromptCache(raw: unknown): PromptCache | undefined {
     ...defined('ttl', str(raw.ttl)),
     ...defined('expires_at', num(raw.expires_at)),
   }
+}
+
+const TTL_UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600 }
+
+function ttlSeconds(ttl: string | undefined): number {
+  const match = /^(\d+)([smh])$/.exec(ttl ?? '')
+  return match === null ? 0 : Number(match[1]) * (TTL_UNIT_SECONDS[match[2] as string] as number)
+}
+
+/**
+ * CC-1366: unix seconds when `rate_limits` were last observed. A status line restamps `written_at`
+ * on every redraw, but rate_limits only change on an API response, and that response also set
+ * `prompt_cache.expires_at` to its own time plus the ttl.
+ */
+export function rateLimitsObservedAt(budget: SessionBudget): number {
+  const expiresAt = budget.prompt_cache?.expires_at
+  if (expiresAt === undefined) return budget.written_at
+  return Math.min(budget.written_at, expiresAt - ttlSeconds(budget.prompt_cache?.ttl))
 }
 
 /**
@@ -493,9 +511,21 @@ export function accountUsageLines(accounts: AccountReading[], slots?: SlotUsage)
 
 type FoundRead = Extract<BudgetRead, { found: true }>
 
+/** Each read aged by when its rate_limits were observed; the current ones, else the youngest alone. */
+function rateLimitReads(reads: readonly FoundRead[], now: number): FoundRead[] {
+  const aged = reads.map(read => {
+    const age = Math.max(0, Math.round(now / 1000 - rateLimitsObservedAt(read.budget)))
+    return { ...read, age_seconds: age, stale: age > STALE_AFTER_SECONDS }
+  })
+  const current = aged.filter(read => read.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS)
+  if (current.length > 0) return current
+  return [aged.reduce((a, b) => (b.age_seconds < a.age_seconds ? b : a))]
+}
+
 /**
  * The account-level figure for one config dir: the freshest reading of any
- * session under it, since rate-limit windows are the same for all of them.
+ * session under it, since rate-limit windows are the same for all of them,
+ * each aged by when its rate_limits were observed (CC-1366).
  * A stale reading is still returned; usage only falls at resets, so it errs high.
  */
 export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
@@ -510,27 +540,67 @@ export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
     .map(name => readStatusLineBudget(name.slice(0, -'.json'.length), now, dir))
     .filter((read): read is FoundRead => read.found)
   if (reads.length === 0) return { found: false, path: cache, reason: 'no_file' }
-  return mergeWindows(reads, now)
+  return mergeWindows(rateLimitReads(reads, now), now)
+}
+
+/** Two resets_at this close name the same window; a status line's figure can lag the poller's by minutes. */
+const SAME_WINDOW_TOLERANCE_S = 3600
+
+interface WindowCandidate {
+  window: BudgetWindow
+  age_seconds: number
+}
+
+/**
+ * CC-1364: usage only rises inside one window, so among candidates newest file first the latest
+ * resets_at group (+-1 h) wins with its highest used_pct, newest on ties. A passed reset counts only
+ * when nothing else is left. A newest window with no resets_at keeps the newest-file-first rule.
+ */
+function pickWindow(candidates: readonly WindowCandidate[], now: number): WindowCandidate {
+  const live = candidates.filter(c => c.window.resets_at === undefined || c.window.resets_at * 1000 > now)
+  const pool = live.length > 0 ? live : candidates
+  const first = pool[0] as WindowCandidate
+  if (first.window.resets_at === undefined) return first
+  const timed = pool.filter(c => c.window.resets_at !== undefined)
+  const latest = Math.max(...timed.map(c => c.window.resets_at as number))
+  return timed
+    .filter(c => latest - (c.window.resets_at as number) <= SAME_WINDOW_TOLERANCE_S)
+    .reduce((best, c) => (c.window.used_pct > best.window.used_pct ? c : best))
+}
+
+function windowCandidates(newest: FoundRead, lenders: readonly FoundRead[], now: number) {
+  const byName = new Map<string, WindowCandidate[]>()
+  for (const [name, window] of Object.entries(newest.budget.rate_limits))
+    byName.set(name, [{ window, age_seconds: newest.age_seconds }])
+  for (const read of lenders)
+    for (const [name, window] of Object.entries(read.budget.rate_limits)) {
+      if (!byName.has(name) && window.resets_at !== undefined && window.resets_at * 1000 <= now) continue
+      byName.set(name, [...(byName.get(name) ?? []), { window, age_seconds: read.age_seconds }])
+    }
+  return byName
 }
 
 /**
  * CC-895: the newest file, with each window it lacks taken whole from the freshest other file that has it.
  * A status line drops five_hour after its reset while the usage poller's file still carries it. Only a
  * fresh file lends a window, and never one whose reset has passed; the result is as old as its oldest lender.
+ * CC-1364: a window both have goes to the higher figure in the latest window (see pickWindow). A status
+ * line's written_at is its redraw time, not when its rate_limits were observed: an idle session restamps
+ * a figure from its last API response, hours old, and must not lower the poller's.
  */
 export function mergeWindows(reads: readonly FoundRead[], now: number): FoundRead {
   const [newest, ...rest] = [...reads].sort((a, b) => b.budget.written_at - a.budget.written_at) as [
     FoundRead,
     ...FoundRead[],
   ]
-  const rate_limits = { ...newest.budget.rate_limits }
+  const lenders = rest.filter(r => r.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS)
+  const rate_limits: Record<string, BudgetWindow> = {}
   let age = newest.age_seconds
-  for (const read of rest.filter(r => r.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS))
-    for (const [name, window] of Object.entries(read.budget.rate_limits)) {
-      if (name in rate_limits || (window.resets_at !== undefined && window.resets_at * 1000 <= now)) continue
-      rate_limits[name] = window
-      age = Math.max(age, read.age_seconds)
-    }
+  for (const [name, candidates] of windowCandidates(newest, lenders, now)) {
+    const picked = pickWindow(candidates, now)
+    rate_limits[name] = picked.window
+    age = Math.max(age, picked.age_seconds)
+  }
   return {
     ...newest,
     budget: { ...newest.budget, rate_limits },

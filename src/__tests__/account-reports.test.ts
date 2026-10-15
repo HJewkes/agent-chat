@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { POLL_SESSION_ID } from '@titan-design/anthropic-account'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { accountsBudget } from '../agents/account-budget.js'
 import type { BudgetRead } from '../agents/budget.js'
@@ -158,14 +159,14 @@ describe('agent budget --accounts', () => {
     const cache = path.join(dir, 'status-cache', 'sessions')
     fs.mkdirSync(cache, { recursive: true })
     const doc = {
-      session_id: 'usage-poller',
+      session_id: POLL_SESSION_ID,
       written_at: NOW_S - ageSeconds,
       rate_limits: {
         five_hour: { used_percentage: 21, resets_at: NOW_S + 3600 },
         seven_day: { used_percentage: sevenDay, resets_at: NOW_S + 86_400 },
       },
     }
-    fs.writeFileSync(path.join(cache, 'usage-poller.json'), JSON.stringify(doc))
+    fs.writeFileSync(path.join(cache, `${POLL_SESSION_ID}.json`), JSON.stringify(doc))
   }
 
   beforeEach(() => {
@@ -183,7 +184,9 @@ describe('agent budget --accounts', () => {
     const report = accountsBudget(false, options())
 
     expect(report.lines.map(l => l.split(' ')[0])).toEqual(['default', 'nologin', 'work'])
-    expect(report.lines[0]).toMatch(/^default \(\+personal\) +five_hour 21% .* seven_day 16% .* 30s old/)
+    expect(report.lines[0]).toMatch(
+      /^default \(\+personal\) +five_hour 21% .* seven_day 16% .* 30s old via usage-poller/,
+    )
   })
 
   it('gives each JSON row the config dirs that log in to it', () => {

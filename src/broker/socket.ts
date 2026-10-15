@@ -631,9 +631,9 @@ export class SocketServer {
     if (entry?.agentId === undefined) {
       return turnedAway(
         'identity',
-        'teleport needs a durable identity, and this connection has none. Call chat_register ' +
-          'first; if you already have, the broker could not read this session id from the ' +
-          'environment, which an older MCP server does not send.',
+        'teleport needs a durable identity, and this connection has none. Either you have not ' +
+          'called chat_register yet (call it first), or your MCP server is older than the broker ' +
+          'and did not send a session id (restart this session).',
       )
     }
     const outcome = await this.supervisor.teleport({
@@ -675,6 +675,7 @@ export class SocketServer {
       ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
       ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
+      ...(outcome.placement === undefined ? {} : { placement: outcome.placement }),
     })
   }
 
