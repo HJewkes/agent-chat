@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest'
-import type { Claim, Ledger, Phase } from '../agents/burndown/ledger.js'
-import { falseEdges, type PlanOf } from '../agents/burndown/relint-queued.js'
-import { relintDepsLines } from '../cli/verbs/burndown.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  readLedger,
+  readySlices,
+  writeLedger,
+  type Claim,
+  type Ledger,
+  type Phase,
+} from '../agents/burndown/ledger.js'
+import {
+  applyApproved,
+  falseEdges,
+  type ApprovedEdge,
+  type PlanOf,
+} from '../agents/burndown/relint-queued.js'
+import { relintDepsApply, relintDepsLines } from '../cli/verbs/burndown.js'
 
 /** CC-1156: CC-1155's disjoint-owns edge lint over slices already queued in the ledger. */
 
@@ -118,5 +133,86 @@ describe('burndown relint-deps dry run', () => {
       `A-1 b -> a  owns src/tick.ts  dep owns src/ledger.ts  plan ${PLAN}`,
       '1 queued dependsOn edge(s) over disjoint owns with no dependsWhy',
     ])
+  })
+})
+
+describe('burndown relint-deps --apply', () => {
+  const C: SliceSpec = { n: 'c', owns: ['src/report.ts'], dependsOn: ['a'] }
+  const D: SliceSpec = { n: 'd', owns: ['src/seat.ts'], dependsOn: ['a'] }
+  const E: SliceSpec = { n: 'e', owns: ['src/cli.ts'], dependsOn: ['a'] }
+  const edge = (slice: string): ApprovedEdge => ({ taskId: 'A-1', slice, dep: 'a' })
+
+  let dir: string
+  let ledgerFile: string
+  let approvedFile: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relint-apply-'))
+    ledgerFile = path.join(dir, 'burndown.json')
+    approvedFile = path.join(dir, 'approved.json')
+  })
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  const dependsOf = (ledger: Ledger, slice: string): string[] | undefined =>
+    ledger.claims.find(c => c.slice === slice)?.dependsOn
+
+  it('clears only the approved edges of three listed, and those slices become ready', async () => {
+    const [ledger, planOf] = fixture([A, B, C, D])
+    writeLedger(ledgerFile, ledger)
+    fs.writeFileSync(approvedFile, JSON.stringify(falseEdges(ledger, planOf).filter(e => e.slice !== 'd')))
+    const journaled: ApprovedEdge[] = []
+
+    const report = await relintDepsApply(ledgerFile, approvedFile, planOf, e => journaled.push(e))
+
+    const after = readLedger(ledgerFile)
+    expect([dependsOf(after, 'b'), dependsOf(after, 'c'), dependsOf(after, 'd')]).toEqual([[], [], ['a']])
+    expect(readySlices(after).map(c => c.slice)).toEqual(['b', 'c'])
+    expect(journaled).toEqual([edge('b'), edge('c')])
+    expect(report.lines.at(-1)).toBe('2 edge(s) cleared, 0 skipped')
+  })
+
+  it('skips and reports an approved edge whose slice was claimed after the dry run', async () => {
+    const [ledger, planOf] = fixture([A, B, E], { e: { phase: 'implementing' } })
+    writeLedger(ledgerFile, ledger)
+    fs.writeFileSync(approvedFile, JSON.stringify([edge('b'), edge('e')]))
+    const journaled: ApprovedEdge[] = []
+
+    const report = await relintDepsApply(ledgerFile, approvedFile, planOf, e => journaled.push(e))
+
+    expect(dependsOf(readLedger(ledgerFile), 'e')).toEqual(['a'])
+    expect(journaled).toEqual([edge('b')])
+    expect(report.lines).toContain('skipped A-1 e -> a: slice is implementing')
+  })
+
+  it('skips an approved edge whose slice gained a dependsWhy since the dry run', () => {
+    const [ledger, planOf] = fixture([A, { ...B, dependsWhy: 'b reads the column a adds' }])
+
+    const result = applyApproved(ledger, [edge('b')], planOf)
+
+    expect(result.cleared).toEqual([])
+    expect(result.skipped[0]?.reason).toMatch(/dependsWhy/)
+    expect(dependsOf(result.ledger, 'b')).toEqual(['a'])
+  })
+
+  it('skips an approved edge whose slice was stacked since the dry run', () => {
+    const stackedOn = { taskId: 'A-1', slice: 'a', pr: '12', branch: 'feat/a' }
+    const [ledger, planOf] = fixture([A, B], { b: { stackedOn } })
+
+    const result = applyApproved(ledger, [edge('b')], planOf)
+
+    expect(result.skipped).toEqual([{ edge: edge('b'), reason: 'slice is stacked' }])
+    expect(dependsOf(result.ledger, 'b')).toEqual(['a'])
+  })
+
+  it('leaves the ledger file untouched when nothing is approved', async () => {
+    const [ledger, planOf] = fixture([A, B])
+    writeLedger(ledgerFile, ledger)
+    const before = fs.readFileSync(ledgerFile, 'utf8')
+    fs.writeFileSync(approvedFile, '[]')
+
+    const report = await relintDepsApply(ledgerFile, approvedFile, planOf, () => undefined)
+
+    expect(fs.readFileSync(ledgerFile, 'utf8')).toBe(before)
+    expect(report.lines).toEqual(['0 edge(s) cleared, 0 skipped'])
   })
 })

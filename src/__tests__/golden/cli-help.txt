@@ -256,8 +256,8 @@ Commands:
   seats                     seats mode checks (CC-205)
   brief                     task brief lifecycle (item 179)
   status                    claim ledger, stalled claims and each account budget gate
-  relint-deps [options]     dry run: queued slices' dependsOn edges over disjoint owns with no
-                            dependsWhy (CC-1155 lint)
+  relint-deps [options]     queued slices' dependsOn edges over disjoint owns with no dependsWhy
+                            (CC-1155 lint); --apply clears approved ones
   dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
                             refusal mix, registrations, tick health
   tick [options]            one pass: advance every claim a phase, then spawn new work inside the
@@ -373,12 +373,15 @@ Options:
 === agent-chat burndown relint-deps
 Usage: agent-chat burndown relint-deps [options]
 
-dry run: queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint)
+queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint); --apply clears
+approved ones
 
 Options:
-  --seat <value>  only this seat's claims
-  --json          one JSON array of edges
-  -h, --help      display help for command
+  --seat <value>           only this seat's claims
+  --json                   one JSON array of edges
+  --apply <approved.json>  clear only the edges in this seat-approved file (dry-run --json rows),
+                           under the ledger lock
+  -h, --help               display help for command
 
 === agent-chat burndown dispatch-stats
 Usage: agent-chat burndown dispatch-stats [options]

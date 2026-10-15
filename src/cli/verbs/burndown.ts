@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
@@ -21,7 +21,13 @@ import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
-import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
+import {
+  heldClaims,
+  LEDGER_WAIT_MS,
+  readLedger,
+  withLedgerLock,
+  writeLedger,
+} from '../../agents/burndown/ledger.js'
 import { prFilesReader, tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { run } from '../../agents/burndown/exec.js'
 import {
@@ -54,7 +60,16 @@ import { unstallSlice } from './burndown-unstall.js'
 import { finishSlice } from './burndown-done.js'
 import { changedFiles } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
-import { falseEdges, renderFalseEdge, type PlanOf } from '../../agents/burndown/relint-queued.js'
+import {
+  applyApproved,
+  falseEdges,
+  parseApproved,
+  renderEdgeKey,
+  renderFalseEdge,
+  type ApplyResult,
+  type ApprovedEdge,
+  type PlanOf,
+} from '../../agents/burndown/relint-queued.js'
 import type { Ledger } from '../../agents/burndown/ledger.js'
 import {
   burndownConfigShowVerb,
@@ -430,21 +445,68 @@ export function relintDepsLines(
   return { ok: true, lines: [...edges.map(renderFalseEdge), total] }
 }
 
+/** Writes one event-log line per cleared edge; tests inject a recorder. */
+export type EdgeJournal = (edge: ApprovedEdge) => void
+
+const logClearedEdge: EdgeJournal = edge => logEvent('burndown_relint_dep_cleared', { ...edge })
+
+/**
+ * CC-1156 b: clears the seat-approved edges in `approvedFile` that the live ledger still lists, under the ledger
+ * lock (waiting out a running tick), with one journal line per cleared edge.
+ */
+export async function relintDepsApply(
+  ledgerFile: string,
+  approvedFile: string,
+  planOf: PlanOf,
+  journal: EdgeJournal = logClearedEdge,
+): Promise<Report> {
+  const approved = parseApproved(readFileSync(approvedFile, 'utf8'))
+  const locked = await withLedgerLock(
+    ledgerFile,
+    (): ApplyResult => {
+      const result = applyApproved(readLedger(ledgerFile), approved, planOf)
+      if (result.cleared.length > 0) writeLedger(ledgerFile, result.ledger)
+      return result
+    },
+    { wait: { waitMs: LEDGER_WAIT_MS }, announce: true },
+  )
+  if (!locked.ran) return refused(new Error(`a tick holds the ledger lock (pid ${locked.holder}); try again`))
+  const { cleared, skipped } = locked.value
+  cleared.forEach(journal)
+  const lines = [
+    ...cleared.map(e => `cleared ${renderEdgeKey(e)}`),
+    ...skipped.map(s => `skipped ${renderEdgeKey(s.edge)}: ${s.reason}`),
+    `${cleared.length} edge(s) cleared, ${skipped.length} skipped`,
+  ]
+  return { ok: true, lines }
+}
+
 export const burndownRelintDepsVerb = defineVerb({
   name: 'burndown.relint-deps',
-  description: "dry run: queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint)",
-  args: z.object({ seat: z.string().optional(), json: z.boolean().optional() }),
+  description:
+    "queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint); --apply clears approved ones",
+  args: z.object({
+    seat: z.string().optional(),
+    json: z.boolean().optional(),
+    apply: z.string().optional(),
+  }),
   result: Report,
   cli: {
     options: {
       seat: { long: '--seat', description: "only this seat's claims" },
       json: { long: '--json', description: 'one JSON array of edges' },
+      apply: {
+        long: '--apply <approved.json>',
+        description:
+          'clear only the edges in this seat-approved file (dry-run --json rows), under the ledger lock',
+      },
     },
   },
-  async run({ seat, json }) {
+  async run({ seat, json, apply }) {
     try {
       const readPlan = diskPlanReader(activeWorkRoot())
       const planOf: PlanOf = claim => readPlan(claim.initiative, claim.taskId)
+      if (apply !== undefined) return await relintDepsApply(burndownLedgerPath(), apply, planOf)
       return relintDepsLines(readLedger(burndownLedgerPath()), planOf, seat, json === true)
     } catch (err) {
       return refused(err)
