@@ -29,4 +29,14 @@ describe('leak-guard call-argument spreads over attacker-sized input', () => {
     const out = decide(`env ${'A=1 '.repeat(BIG)}true${HIDDEN_PUSH}`)
     expect(out).toContain(REASONS.noVerify)
   })
+
+  it('denies a hidden push after 1M carried redirects', () => {
+    const out = decide(`${'>a '.repeat(BIG)}; true${HIDDEN_PUSH}`)
+    expect(out).toContain(REASONS.noVerify)
+  }, 120_000)
+
+  it('denies a hidden push after a substitution with 1M commands', () => {
+    const out = decide(`echo $(${'true;'.repeat(BIG)})${HIDDEN_PUSH}`)
+    expect(out).toContain(REASONS.noVerify)
+  })
 })
