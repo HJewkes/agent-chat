@@ -35,7 +35,7 @@ function status(id: string, ageSeconds: number, rate_limits: Record<string, unkn
 }
 
 const fiveHour = (pct: number, resets_at = FIVE_HOUR_RESET) => ({ used_percentage: pct, resets_at })
-const sevenDay = (pct: number) => ({ used_percentage: pct, resets_at: SEVEN_DAY_RESET })
+const sevenDay = (pct: number, resets_at = SEVEN_DAY_RESET) => ({ used_percentage: pct, resets_at })
 
 const reading = () => readReadings(['server'], NOW_MS, () => dir).get('server')
 
@@ -101,5 +101,43 @@ describe('account budget window merge', () => {
 
     expect(read.found && path.basename(read.path)).toBe('design-coord.json')
     expect(read.found && read.budget.session_id).toBe('design-coord')
+  })
+
+  it("a newer status line repeating a lower seven_day does not lower the poller's", () => {
+    status('usage-poll', 90, { five_hour: fiveHour(4), seven_day: sevenDay(93) })
+    status('basement', 10, { seven_day: sevenDay(74) })
+
+    const read = readAccountBudget(dir, NOW_MS)
+
+    expect(reading()).toMatchObject({ sevenDay: 93, fiveHour: 4, ageSeconds: 90 })
+    expect(read.found && path.basename(read.path)).toBe('basement.json')
+  })
+
+  it('a reset reads as the new window', () => {
+    status('usage-poller', 120, { seven_day: sevenDay(90, NOW_S - 60) })
+    status('a', 10, { seven_day: sevenDay(2, NOW_S + 7 * 86_400) })
+
+    expect(reading()?.sevenDay).toBe(2)
+  })
+
+  it('a later window outranks a higher figure in an earlier one', () => {
+    status('usage-poller', 120, { seven_day: sevenDay(90, NOW_S + 600) })
+    status('a', 10, { seven_day: sevenDay(2, NOW_S + 7 * 86_400) })
+
+    expect(reading()).toMatchObject({ sevenDay: 2, ageSeconds: 10 })
+  })
+
+  it('a resets_at that moved under an hour is the same window', () => {
+    status('usage-poll', 90, { seven_day: sevenDay(93) })
+    status('a', 10, { seven_day: sevenDay(74, SEVEN_DAY_RESET + 1_800) })
+
+    expect(reading()?.sevenDay).toBe(93)
+  })
+
+  it('a stale lender cannot raise a window', () => {
+    status('usage-poll', 1_800, { seven_day: sevenDay(99) })
+    status('a', 10, { seven_day: sevenDay(41) })
+
+    expect(reading()).toMatchObject({ sevenDay: 41, ageSeconds: 10 })
   })
 })

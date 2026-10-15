@@ -513,24 +513,64 @@ export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
   return mergeWindows(reads, now)
 }
 
+/** Two resets_at this close name the same window; a status line's figure can lag the poller's by minutes. */
+const SAME_WINDOW_TOLERANCE_S = 3600
+
+interface WindowCandidate {
+  window: BudgetWindow
+  age_seconds: number
+}
+
+/**
+ * CC-1364: usage only rises inside one window, so among candidates newest file first the latest
+ * resets_at group (+-1 h) wins with its highest used_pct, newest on ties. A passed reset counts only
+ * when nothing else is left. A newest window with no resets_at keeps the newest-file-first rule.
+ */
+function pickWindow(candidates: readonly WindowCandidate[], now: number): WindowCandidate {
+  const live = candidates.filter(c => c.window.resets_at === undefined || c.window.resets_at * 1000 > now)
+  const pool = live.length > 0 ? live : candidates
+  const first = pool[0] as WindowCandidate
+  if (first.window.resets_at === undefined) return first
+  const timed = pool.filter(c => c.window.resets_at !== undefined)
+  const latest = Math.max(...timed.map(c => c.window.resets_at as number))
+  return timed
+    .filter(c => latest - (c.window.resets_at as number) <= SAME_WINDOW_TOLERANCE_S)
+    .reduce((best, c) => (c.window.used_pct > best.window.used_pct ? c : best))
+}
+
+function windowCandidates(newest: FoundRead, lenders: readonly FoundRead[], now: number) {
+  const byName = new Map<string, WindowCandidate[]>()
+  for (const [name, window] of Object.entries(newest.budget.rate_limits))
+    byName.set(name, [{ window, age_seconds: newest.age_seconds }])
+  for (const read of lenders)
+    for (const [name, window] of Object.entries(read.budget.rate_limits)) {
+      if (!byName.has(name) && window.resets_at !== undefined && window.resets_at * 1000 <= now) continue
+      byName.set(name, [...(byName.get(name) ?? []), { window, age_seconds: read.age_seconds }])
+    }
+  return byName
+}
+
 /**
  * CC-895: the newest file, with each window it lacks taken whole from the freshest other file that has it.
  * A status line drops five_hour after its reset while the usage poller's file still carries it. Only a
  * fresh file lends a window, and never one whose reset has passed; the result is as old as its oldest lender.
+ * CC-1364: a window both have goes to the higher figure in the latest window (see pickWindow). A status
+ * line's written_at is its redraw time, not when its rate_limits were observed: an idle session restamps
+ * a figure from its last API response, hours old, and must not lower the poller's.
  */
 export function mergeWindows(reads: readonly FoundRead[], now: number): FoundRead {
   const [newest, ...rest] = [...reads].sort((a, b) => b.budget.written_at - a.budget.written_at) as [
     FoundRead,
     ...FoundRead[],
   ]
-  const rate_limits = { ...newest.budget.rate_limits }
+  const lenders = rest.filter(r => r.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS)
+  const rate_limits: Record<string, BudgetWindow> = {}
   let age = newest.age_seconds
-  for (const read of rest.filter(r => r.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS))
-    for (const [name, window] of Object.entries(read.budget.rate_limits)) {
-      if (name in rate_limits || (window.resets_at !== undefined && window.resets_at * 1000 <= now)) continue
-      rate_limits[name] = window
-      age = Math.max(age, read.age_seconds)
-    }
+  for (const [name, candidates] of windowCandidates(newest, lenders, now)) {
+    const picked = pickWindow(candidates, now)
+    rate_limits[name] = picked.window
+    age = Math.max(age, picked.age_seconds)
+  }
   return {
     ...newest,
     budget: { ...newest.budget, rate_limits },

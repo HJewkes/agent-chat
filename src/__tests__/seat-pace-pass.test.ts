@@ -267,6 +267,50 @@ describe('the watchdog pass publishes pool pace', () => {
     expect(h.history[1]).not.toHaveProperty('rolled')
   })
 
+  it("reads each pool from its own cache's highest figure, not the status line that redrew last", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-1364-'))
+    const cacheDir = {
+      '/synthetic/alpha': path.join(root, 'workout'),
+      '/synthetic/beta': path.join(root, 'agents'),
+    }
+    const writeStatus = (dir: string, id: string, ageS: number, rate_limits: object) => {
+      const file = path.join(dir, 'status-cache', 'sessions', `${id}.json`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ session_id: id, written_at: h.nowMs / 1000 - ageS, rate_limits }),
+      )
+    }
+    const h = harness()
+    h.deps.readBudget = dir => readAccountBudget(cacheDir[dir as keyof typeof cacheDir], h.nowMs)
+    const agentsReset = RESET_S + 6 * 3600
+    try {
+      for (const minutes of [0, 5, 5]) {
+        h.nowMs += minutes * 60_000
+        writeStatus(cacheDir['/synthetic/alpha'], 'usage-poll', 90, {
+          five_hour: { used_percentage: 4, resets_at: RESET_S - DAY / 1000 },
+          seven_day: { used_percentage: 93, resets_at: RESET_S },
+        })
+        writeStatus(cacheDir['/synthetic/alpha'], 'basement', 5, {
+          seven_day: { used_percentage: 74, resets_at: RESET_S },
+        })
+        writeStatus(cacheDir['/synthetic/beta'], 'usage-poll', 30, {
+          five_hour: { used_percentage: 10, resets_at: RESET_S - DAY / 1000 },
+          seven_day: { used_percentage: 74, resets_at: agentsReset },
+        })
+        await runWatchdog(h.deps, LIVE)
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+
+    const rows = (pool: string) => h.history.filter(r => r.pool === pool)
+    expect(rows('alpha').length).toBeGreaterThan(0)
+    expect(rows('alpha').every(r => r.seven_day === 93 && r.resets_at === RESET_S)).toBe(true)
+    expect(rows('beta').length).toBeGreaterThan(0)
+    expect(rows('beta').every(r => r.seven_day === 74 && r.resets_at === agentsReset)).toBe(true)
+  })
+
   it('warns once a pass while an attended seat it has seen has no seat file', async () => {
     const h = harness()
     const files: Record<string, string | undefined> = {
