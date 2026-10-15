@@ -8,6 +8,7 @@ import {
   type ExecutionRecord,
   type ExecutionTransition,
 } from '@titan-design/agent-protocol'
+import { RELAUNCH_RETRY_MS } from '../agents/supervisor.js'
 import { gather } from '../agents/ledger/verifier.js'
 import { classify } from '../agents/ledger/verify.js'
 import { openShadowLedger, type ShadowLedger } from '../agents/ledger/shadow-ledger.js'
@@ -37,6 +38,7 @@ afterEach(() => {
   for (const h of harnesses.splice(0)) h.close()
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 const shadowOver = (events: EventLog): ShadowLedger =>
@@ -261,6 +263,30 @@ describe('teleport', () => {
     expect(after).toMatchObject({ agent: { agentId: 'descendant-1' }, requestKey: 'spawn:descendant-1' })
     expect(active(h).map(record => record.agent?.agentId)).toEqual(['descendant-1'])
     expect(active(h)[0]?.phase).toBe('running')
+  })
+
+  it('a teleport whose first launch threw and whose retry was skipped leaves one active row, running after the attach', async () => {
+    const h = start({ attach: false, launcherRunning: async () => true })
+    const spawned = h.spawnAgent('scout')
+    await drain()
+    const predecessor = String(h.core.agents.byName('scout')?.agentId)
+    h.core.append({ kind: 'agent_attached', actor: 'scout', ref: predecessor })
+    await spawned
+    vi.useFakeTimers()
+    vi.spyOn(
+      h.supervisor as unknown as { launchOn: () => Promise<object> },
+      'launchOn',
+    ).mockRejectedValueOnce(new Error('Command failed: osascript timed out'))
+
+    const relaunched = teleport(h, predecessor, 'descendant-1')
+    await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS)
+    await relaunched
+    h.core.append({ kind: 'agent_attached', actor: 'scout', ref: 'descendant-1' })
+    await drain()
+
+    expect(active(h).map(record => record.agent?.agentId)).toEqual(['descendant-1'])
+    expect(active(h)[0]?.phase).toBe('running')
+    expect(shadowErrors(h)).toEqual([])
   })
 
   it('a restart between predecessor finish and successor prepare is a classified divergence, not an error', async () => {
