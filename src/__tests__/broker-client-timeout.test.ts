@@ -33,7 +33,7 @@ const reply = (index: number, { echo = true } = {}): void => {
   const request = received[index]
   if (request?.t !== 'inbox_since') throw new Error(`no inbox_since request at ${index}`)
   const frame: ServerMessage = { t: 'inbox_since_result', messages: [], nextCursor: request.afterId }
-  brokerSide?.write(encode(echo ? { ...frame, rid: request.rid } : frame))
+  brokerSide?.write(encode(echo && request.rid !== undefined ? { ...frame, rid: request.rid } : frame))
 }
 
 /** Times out one request whose reply the broker never sends, as when its handler throws. */
