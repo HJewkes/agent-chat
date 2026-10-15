@@ -47,7 +47,7 @@ describe('writtenText', () => {
     ['echo > s', '\n'],
     ["echo 'git  push' &> s", 'git  push\n'],
     ["printf 'git push --no-verify' > s", 'git push --no-verify'],
-    ["printf 'git push' >> s", 'git push'],
+    ["printf 'git push' >| s", 'git push'],
   ])('%j writes %j', (line, text) => {
     expect(writtenText(firstCommand(line))).toBe(text)
   })
@@ -72,9 +72,25 @@ describe('writtenText', () => {
     "tee -a s <<'EOF'\nx\nEOF",
     "tee $F <<'EOF'\nx\nEOF",
     'sed s/a/b/ f > s',
+    "printf 'git push' >> s",
+    "printf 'git push' &>> s",
+    "printf 'git push' <> s",
+    "printf '#' 1<> s",
+    "printf 'git push' > s 2>> log",
+    "tee s >> log <<'EOF'\nx\nEOF",
+    "cat <<'EOF' >> s\nx\nEOF",
+    'echo git push >> s',
     'cp a s',
   ])('%j writes nothing readable', line => {
     expect(writtenText(firstCommand(line))).toBeUndefined()
+  })
+
+  it('reads no text a bare append passes to the next command', () => {
+    expect(writtenText(lastCommand(">> s\nprintf 'git push'"))).toBeUndefined()
+  })
+
+  it('reads no text for a target the line appends to elsewhere', () => {
+    expect(writtenText(firstCommand("printf 'echo ech' > s; printf 'o RAN' >> s"))).toBeUndefined()
   })
 
   it('reads no text a pipe feeds tee', () => {

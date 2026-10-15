@@ -31,6 +31,11 @@ export interface SimpleCommand {
   stdinLive: boolean
   /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
   writes: string[]
+  /**
+   * The `writes` targets opened without truncating (`>>`, `&>>`, `<>`), so the file keeps text it held
+   * before. A target spelled as one appended to anywhere else on the line counts as well.
+   */
+  appends: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
@@ -54,7 +59,7 @@ interface Arith {
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
-type Pending = 'discard' | 'write' | 'herestring' | { strip: boolean; aside: boolean }
+type Pending = 'discard' | 'write' | 'append' | 'herestring' | { strip: boolean; aside: boolean }
 
 interface Heredoc {
   delim: string
@@ -66,6 +71,7 @@ interface Heredoc {
 
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>', '&>', '&>>'])
+const APPEND_OPERATORS = new Set(['>>', '<>', '&>>'])
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -270,6 +276,8 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
+  /** Every target this lexer saw opened without truncating. */
+  private readonly appended = new Set<string>()
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -339,6 +347,7 @@ class ShellLexer {
       splits: [],
       substitutions: [],
       writes: [],
+      appends: [],
       ...unsure,
       before: '',
       after: '',
@@ -351,7 +360,15 @@ class ShellLexer {
   run(): SimpleCommand[] {
     while (this.pos < this.src.length && !this.closed) this.step()
     this.endCommand()
+    this.markAppends()
     return this.out
+  }
+
+  /** Runs after the commands are split, since a bare redirect's target passes to the next command. */
+  private markAppends(): void {
+    for (const cmd of this.out)
+      for (const target of cmd.writes)
+        if (this.appended.has(target) && !cmd.appends.includes(target)) cmd.appends.push(target)
   }
 
   private step(): void {
@@ -762,7 +779,8 @@ class ShellLexer {
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
-    this.pending = WRITE_OPERATORS.has(this.redirectOperator()) ? 'write' : 'discard'
+    const op = this.redirectOperator()
+    this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : APPEND_OPERATORS.has(op) ? 'append' : 'write'
   }
 
   /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
@@ -977,8 +995,10 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       this.afterWord(word, quoteStart)
-    } else if (pending === 'write') this.cur.writes.push(this.marked)
-    else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
+    } else if (pending === 'write' || pending === 'append') {
+      this.cur.writes.push(this.marked)
+      if (pending === 'append') this.appended.add(this.marked)
+    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
