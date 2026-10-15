@@ -9,19 +9,19 @@ const charterWith = (seatsLine: string): string => `---\nname: charter\n${seatsL
 
 describe('coordinatorSeats', () => {
   it('appends tp-operator to a flow-list seats line carrying a trailing comment', () => {
-    const charter = charterWith('seats: [titan-coord, voltras-coord, design-coord]  # one per initiative')
+    const charter = charterWith('seats: [seat-a, seat-b, seat-c]  # one per initiative')
 
-    expect(coordinatorSeats(charter)).toEqual(['titan-coord', 'voltras-coord', 'design-coord', 'tp-operator'])
+    expect(coordinatorSeats(charter)).toEqual(['seat-a', 'seat-b', 'seat-c', 'tp-operator'])
   })
 
   it('lists tp-operator once when the charter already names it', () => {
-    const charter = charterWith('seats: [tp-operator, titan-coord]')
+    const charter = charterWith('seats: [tp-operator, seat-a]')
 
-    expect(coordinatorSeats(charter)).toEqual(['tp-operator', 'titan-coord'])
+    expect(coordinatorSeats(charter)).toEqual(['tp-operator', 'seat-a'])
   })
 
   it('yields nothing when the charter has no seats, so the operator alone never counts as a list', () => {
-    expect(coordinatorSeats(charterWith('owner_seat: titan-coord'))).toEqual([])
+    expect(coordinatorSeats(charterWith('owner_seat: seat-a'))).toEqual([])
   })
 })
 
@@ -37,11 +37,11 @@ describe('agent-chat seats coordinators', () => {
   })
 
   it('prints the coordinator seats on one space-separated line', async () => {
-    fs.writeFileSync(path.join(root, 'charter.md'), charterWith('seats: [titan-coord, audio-coord]'))
+    fs.writeFileSync(path.join(root, 'charter.md'), charterWith('seats: [seat-a, seat-d]'))
 
     const report = await seatsCoordinatorsVerb.run({ root }, {} as never)
 
-    expect(report).toEqual({ ok: true, lines: ['titan-coord audio-coord tp-operator'] })
+    expect(report).toEqual({ ok: true, lines: ['seat-a seat-d tp-operator'] })
   })
 
   it('fails with no line when the root has no charter', async () => {
@@ -53,7 +53,7 @@ describe('agent-chat seats coordinators', () => {
   })
 
   it('fails with no line when the charter lists no seats', async () => {
-    fs.writeFileSync(path.join(root, 'charter.md'), charterWith('owner_seat: titan-coord'))
+    fs.writeFileSync(path.join(root, 'charter.md'), charterWith('owner_seat: seat-a'))
 
     const report = await seatsCoordinatorsVerb.run({ root }, {} as never)
 
