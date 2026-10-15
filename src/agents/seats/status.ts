@@ -18,6 +18,7 @@ import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
+import { accountLabel, charterAccounts, stopDisagreements } from '../burndown/tick.js'
 import { seatSpend, type SeatSpend } from '../burndown/spend-meter.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
@@ -150,8 +151,8 @@ export interface SeatStatus {
   other: AgentLoad
   parked: ParkedLoad
   budget: BudgetStatus
-  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. */
-  pace: PoolPace[]
+  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. CC-1289: one row per account. */
+  pace: AccountPace[]
   inbox: InboxReading
   /** CC-606: the broker's last pool picks for the seat's spawns; in shadow mode, what it would have billed. */
   poolPicks: PoolPickStatus
@@ -181,6 +182,8 @@ export interface StatusDeps {
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
+  /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `homeDir`. */
+  identify?: (configDir: string) => string | undefined
   /** Throws when seat-watchdog.json exists and cannot be read or parsed. */
   loadDoc: () => WatchdogDoc
   /** Throws when events.db cannot be read. */
@@ -465,13 +468,25 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   }
 }
 
-/** A pool with no reserve has no day 7 line to pace against, so it has no row. */
-function poolPaces(deps: StatusDeps, policy: Policy, now: Date): PoolPace[] {
+/** CC-1289: a pace row for one account, naming its other pools and the stops they disagree on. */
+export type AccountPace = PoolPace & { members?: string[]; warnings?: string[] }
+
+/** A pool with no reserve has no day 7 line to pace against, so it has no row; an account's key pool sets its reserve. */
+export function poolPaces(
+  deps: Pick<StatusDeps, 'homeDir' | 'readBudget' | 'identify'>,
+  pools: Policy['charter']['pools'],
+  now: Date,
+): AccountPace[] {
   const nowMs = now.getTime()
-  return Object.entries(policy.charter.pools).flatMap(([name, pool]) => {
-    if (pool.reserve_seven_day === undefined) return []
+  const accounts = charterAccounts(pools, deps.homeDir, deps.identify)
+  return Object.entries(pools).flatMap(([name, pool]) => {
+    if (pool.reserve_seven_day === undefined || accounts.keyOf(name) !== name) return []
     const read = deps.readBudget(expandHome(pool.config_dir, deps.homeDir), nowMs)
-    return [poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)]
+    const row: AccountPace = poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)
+    const members = accounts.members(name)
+    if (members.length < 2) return [row]
+    const warnings = stopDisagreements(members, pools)
+    return [{ ...row, members, ...(warnings.length === 0 ? {} : { warnings }) }]
   })
 }
 
@@ -549,7 +564,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
-    pace: poolPaces(deps, policy, now),
+    pace: poolPaces(deps, policy.charter.pools, now),
     inbox: inboxReading(deps, seat, plain),
     poolPicks: poolPickStatus(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
@@ -642,9 +657,13 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
-function paceLines(status: SeatStatus): string[] {
+export function paceLines(status: Pick<SeatStatus, 'at' | 'pace'>): string[] {
   const nowMs = Date.parse(status.at)
-  return status.pace.map((row, i) => line(i === 0 ? 'pace' : '', paceLine(row, nowMs)))
+  const texts = status.pace.flatMap(row => [
+    paceLine({ ...row, pool: accountLabel(row.members ?? [row.pool]) }, nowMs),
+    ...(row.warnings ?? []).map(warning => `WARNING ${warning}`),
+  ])
+  return texts.map((text, i) => line(i === 0 ? 'pace' : '', text))
 }
 
 /** No line until the broker has picked for the seat, so a seat it never routes reads as before. */

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadProfile } from '../agents/profiles.js'
+import { SPAWNED_RULES } from '../agents/standing-rules.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import type { RemoteLaunch, SurfaceName } from '../protocol.js'
 import { placeRemoteSpawn, prepareRemoteSpawn, type SpawnHost } from '../server/remote-launch.js'
@@ -161,6 +162,17 @@ describe('the profile name the broker sends', () => {
 })
 
 describe('building a spawn on the host that launches it', () => {
+  it('tells the successor of an adopted session nothing about a spawner (CC-281 a)', () => {
+    const { host, written } = fakeHost()
+
+    prepareRemoteSpawn(spec({ adopted: true }), host)
+    prepareRemoteSpawn(spec({ agentId: 'abcd1235' }), host)
+
+    const prompts = written.map(({ plan }) => plan.args[plan.args.indexOf('--append-system-prompt') + 1])
+    expect(prompts[0]).not.toContain(SPAWNED_RULES)
+    expect(prompts[1]).toContain(SPAWNED_RULES)
+  })
+
   it('keys the account by its resolved path', () => {
     const { host, written } = fakeHost()
     const spelled = path.join(homeDir, 'projects', '..', '.claude-profiles', 'ff')

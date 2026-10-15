@@ -388,6 +388,19 @@ describe('spawning', () => {
     expect((await sup.spawn(spawnReq({ profile: 'nope' }))).reason).toMatch(/no profile named "nope"/)
   })
 
+  it('refuses, not rejects, an unknown profile when the profiles dir cannot be listed', async () => {
+    const sup = withStubbedSurface()
+    const dir = path.join(process.env.AGENT_CHAT_HOME!, 'profiles')
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.writeFileSync(dir, '')
+
+    const result = await sup.spawn(spawnReq({ profile: 'nope' }))
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/no profile named "nope"; cannot list profiles in .*\(ENOTDIR/)
+    expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+  })
+
   /**
    * Regression: the isolation context was built without the profile's tool lists,
    * so `toolset-limited` reported that every explorer and reviewer "runs at full

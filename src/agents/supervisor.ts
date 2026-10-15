@@ -93,6 +93,13 @@ import {
 } from './remote-spawn.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import {
+  REVIEWER_TREE_CHANGED,
+  reviewerDirtyText,
+  treeChange,
+  treeFingerprint,
+  type TreeFingerprint,
+} from './reviewer-tree-guard.js'
+import {
   REVIEWER_ACCOUNT_LIMIT,
   reviewerAccountGate,
   type ReviewerAccountRead,
@@ -147,6 +154,7 @@ import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftM
 import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
+import { watchSeatFollow } from './seat-follow.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
 import {
@@ -204,6 +212,7 @@ import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
+  isAdoptedSuccessor,
   SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
@@ -316,6 +325,7 @@ const succeedsInto = (handle: LaunchHandle, predecessor: LaunchHandle | undefine
 interface SuccessorLaunch {
   input: RelaunchInput
   plan: LaunchPlan
+  sessionId: string
   predecessor: Live | undefined
   allocation: Allocation
   isolation: IsolationName
@@ -760,6 +770,8 @@ interface Live {
   runningObserved?: boolean
   /** CC-951: kept while its successor-first successor starts, so its own exit is not a finish. */
   teleporting?: boolean
+  /** CC-233: a reviewer's cwd as it was before launch, compared again at exit. */
+  reviewerTree?: TreeFingerprint
 }
 
 export interface SupervisorOptions {
@@ -831,8 +843,8 @@ export interface SupervisorOptions {
   repoVisibility?: (cwd: string) => Promise<RepoVisibility>
   /** CC-1094: profile file hashes at start. Defaults to a snapshot of `profilesDir()`. */
   profileBaseline?: ProfileBaseline
-  /** CC-1094: `profileDrift` from config, read per spawn. Injected in tests. */
-  profileDriftMode?: () => ProfileDriftMode
+  /** CC-1094: `profileDrift` from config, pinned at construction (CC-1202). Injected in tests. */
+  profileDriftMode?: ProfileDriftMode
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -1023,6 +1035,7 @@ export class Supervisor implements TeleportHost {
   private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
+  private readonly unwatchSeatFollow: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
@@ -1039,7 +1052,7 @@ export class Supervisor implements TeleportHost {
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
-  private readonly profileDriftMode: () => ProfileDriftMode
+  private readonly profileDriftMode: ProfileDriftMode
 
   constructor(
     private readonly core: BrokerCore,
@@ -1070,7 +1083,7 @@ export class Supervisor implements TeleportHost {
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
-    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode
+    this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
       reportMs: options.remoteReportMs ?? REPORT_WINDOW_MS,
       attachMs: this.attachMs,
@@ -1081,6 +1094,13 @@ export class Supervisor implements TeleportHost {
       this.reapIfDead(agentId, probe),
     )
     this.unwatch = core.onAppend(row => this.onRow(row))
+    this.unwatchSeatFollow = watchSeatFollow(core, {
+      onError: err =>
+        logEvent('seat_follow_failed', {
+          level: 'warn',
+          reason: err instanceof Error ? err.message : String(err),
+        }),
+    })
     this.teleporter = new Teleport(
       core,
       this,
@@ -1353,6 +1373,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    if (entry.cancelReason !== MODE_SWITCH) await this.reportReviewerTree(entry)
     const resumeOn =
       failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
         ? this.reportIfUnreported(agentId, entry.name)
@@ -1432,6 +1453,48 @@ export class Supervisor implements TeleportHost {
     if (decision === 'resume') return tail
     this.notifyUnreported(agentId, name, identity.spawnedBy, tail)
     return undefined
+  }
+
+  /** CC-233: undefined for a non-reviewer, so only a reviewer's exit is checked. */
+  private async reviewerTreeBefore(profile: string, name: string, cwd: string) {
+    return isReviewerSpawn(profile, name) ? treeFingerprint(cwd) : undefined
+  }
+
+  /** CC-233: tells the spawner which paths a reviewer left changed in the tree it reviewed. */
+  private async reportReviewerTree(entry: Live): Promise<void> {
+    if (entry.reviewerTree === undefined) return
+    const cwd = entry.allocation.cwd
+    const after = await treeFingerprint(cwd)
+    const paths = after === undefined ? [] : treeChange(entry.reviewerTree, after)
+    if (paths.length === 0) return
+    const spawner = this.core.agents.get(entry.agentId)?.spawnedBy ?? HUMAN
+    const body = reviewerDirtyText(entry.name, cwd, paths)
+    const { msgId } = this.core.append({
+      kind: spawner === HUMAN ? 'notice' : 'message',
+      actor: 'agent-chat',
+      target: spawner,
+      body,
+      meta: {
+        event: REVIEWER_TREE_CHANGED,
+        agent: entry.name,
+        agent_id: entry.agentId,
+        cwd,
+        paths: paths.join('\n'),
+      },
+    })
+    this.core.deliverTo(spawner, {
+      msgId,
+      from: 'agent-chat',
+      text: body,
+      at: Date.now(),
+      event: REVIEWER_TREE_CHANGED,
+    })
+    logEvent(REVIEWER_TREE_CHANGED, {
+      agentId: entry.agentId,
+      name: entry.name,
+      spawner,
+      paths: paths.length,
+    })
   }
 
   /** CC-336: a refused resume (budget, machine stop, no transcript) falls back to the notice. */
@@ -1840,7 +1903,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return profile
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
-    const refused = !human && this.profileDriftMode() === 'refuse'
+    const refused = !human && this.profileDriftMode === 'refuse'
     logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
       return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
@@ -2476,6 +2539,7 @@ export class Supervisor implements TeleportHost {
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
+      adopted: false,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
@@ -2564,9 +2628,10 @@ export class Supervisor implements TeleportHost {
       },
     })
 
+    const reviewerTree = await this.reviewerTreeBefore(profile.name, req.name, allocation.cwd)
     const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
-    this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
+    this.track(agentId, req.name, handle, allocation, isolationName, req.anchor, reviewerTree)
     this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
@@ -2986,6 +3051,7 @@ export class Supervisor implements TeleportHost {
     allocation: Allocation,
     isolation: IsolationName,
     anchor?: string,
+    reviewerTree?: TreeFingerprint,
   ): void {
     // A settle timer from a previous life closes over the OLD Live object, but
     // `recordExit` resolves the entry by id against the current map — so a timer
@@ -2996,7 +3062,15 @@ export class Supervisor implements TeleportHost {
     if (previous?.settle) clearTimeout(previous.settle)
     this.forgetReattach(agentId)
 
-    const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
+    const entry: Live = {
+      agentId,
+      name,
+      handle,
+      allocation,
+      isolation,
+      ...(anchor ? { anchor } : {}),
+      ...(reviewerTree ? { reviewerTree } : {}),
+    }
     this.live.set(agentId, entry)
     // CC-78: the same facts on disk, so a retire that outlives this broker can
     // still release the worktree and close the pane. `exited` is dropped because
@@ -3722,6 +3796,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: agent.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -3758,11 +3833,12 @@ export class Supervisor implements TeleportHost {
         ...provenance,
       },
     })
+    const reviewerTree = await this.reviewerTreeBefore(profile.name, agent.name, allocation.cwd)
     const handle = await this.launchOn(surface, plan, req.anchor).catch((err: unknown) => {
       this.resumeNeverStarted(agent, err)
       throw err
     })
-    this.track(agent.agentId, agent.name, handle, allocation, isolation, req.anchor)
+    this.track(agent.agentId, agent.name, handle, allocation, isolation, req.anchor, reviewerTree)
     this.bindExecution(agent.agentId, executionId)
   }
 
@@ -3842,6 +3918,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: req.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -3877,7 +3954,7 @@ export class Supervisor implements TeleportHost {
 
     const executionId = this.continueExecution(agent, entry)
     const handle = await this.launchOn(surface, plan, req.anchor)
-    this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor)
+    this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor, entry?.reviewerTree)
     this.bindExecution(agent.agentId, executionId)
     logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })
     // Delivered after the relaunch so it lands in the session that came back,
@@ -4034,7 +4111,7 @@ export class Supervisor implements TeleportHost {
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
     const executionId = this.openSuccessor(input, predecessor)
-    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
+    const launch: SuccessorLaunch = { input, plan, sessionId, predecessor, allocation, isolation }
     const { handle, retried } = await this.launchSuccessor(launch, executionId)
     this.trackSuccessor(launch, handle)
     this.bindExecution(input.agentId, executionId)
@@ -4120,6 +4197,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: input.brief,
       preamble: input.preamble,
+      ...(isAdoptedSuccessor(input) ? { adopted: true as const } : {}),
       surface: input.surface,
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
@@ -4150,8 +4228,9 @@ export class Supervisor implements TeleportHost {
   private successorPlan(
     input: RelaunchInput,
     allocation: Allocation,
+    over: { sessionId?: string; surface?: SurfaceName } = {},
   ): { plan: LaunchPlan; sessionId: string } {
-    const sessionId = Teleport.newSessionId()
+    const sessionId = over.sessionId ?? Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
       sessionId,
@@ -4160,8 +4239,9 @@ export class Supervisor implements TeleportHost {
       brief: input.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
-      surface: input.surface,
+      surface: over.surface ?? input.surface,
       preamble: input.preamble,
+      adopted: isAdoptedSuccessor(input),
       mcpConfigPath: mcpConfigPath(input.agentId),
       hookSettingsPath: hookSettingsPath(input.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
@@ -4343,18 +4423,135 @@ export class Supervisor implements TeleportHost {
     }
     await pause(RELAUNCH_RETRY_MS)
     const refusal = await this.retryRefusal(input)
-    if (refusal !== undefined) {
-      if (refusal.tell) this.finishFailedLaunch(executionId, failure)
-      this.refuseRetry(input, failure, refusal)
-      throw new SuccessorNotStarted(refusal.reason)
-    }
+    if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
-      const reason = (err as Error).message
-      this.finishFailedLaunch(executionId, reason)
-      this.reportDeadSuccessor(input, reason)
-      throw new SuccessorNotStarted(reason)
+      return this.headlessFallback(launch, executionId, (err as Error).message)
+    }
+  }
+
+  /**
+   * CC-1372: a successor-last teleport has already ended its predecessor, so a surface that
+   * failed its launch and retry runs the successor headless rather than losing it. A
+   * successor-first predecessor still runs and is kept instead (CC-951), and the successor is lost
+   * when the CC-406 machine guard refuses a headless agent.
+   */
+  private async headlessFallback(
+    launch: SuccessorLaunch,
+    executionId: string | undefined,
+    failure: string,
+  ): Promise<{ handle: LaunchHandle; retried: boolean }> {
+    const { input } = launch
+    if (input.successorFirst === true || input.surface === 'headless')
+      return this.lostSuccessor(input, executionId, failure)
+    const refusal = await this.retryRefusal(input)
+    if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
+    const machine = this.machineRefusal('headless')
+    if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
+    let handle: LaunchHandle
+    try {
+      handle = await this.launchOn('headless', this.headlessPlan(launch))
+    } catch (err) {
+      // The relaunch script the lost-teleport notice names must start the surface the human asked for.
+      this.writeSuccessorFiles(launch, launch.plan)
+      return this.lostSuccessor(input, executionId, (err as Error).message)
+    }
+    this.recordHeadlessSuccessor(launch)
+    this.noticeHeadlessSuccessor(input, failure)
+    logEvent('teleport_relaunch_headless', { name: input.name, agentId: input.agentId, reason: failure })
+    return { handle, retried: true }
+  }
+
+  /** The successor's plan and launch files rewritten for headless, under the session id already recorded. */
+  private headlessPlan(launch: SuccessorLaunch): LaunchPlan {
+    const { input, sessionId, allocation } = launch
+    const { plan } = this.successorPlan(input, allocation, { sessionId, surface: 'headless' })
+    this.writeSuccessorFiles(launch, plan)
+    return plan
+  }
+
+  private writeSuccessorFiles(launch: SuccessorLaunch, plan: LaunchPlan): void {
+    const { input, allocation, isolation } = launch
+    writeLaunchFiles(
+      plan,
+      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      this.createdWorktree(input.agentId, allocation, isolation),
+    )
+  }
+
+  /** As a mode switch records it, so the identity, `agent surface` and the roster see the process that runs. */
+  private recordHeadlessSuccessor(launch: SuccessorLaunch): void {
+    const { input, sessionId } = launch
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: 'agent-chat',
+      target: input.name,
+      ref: input.agentId,
+      body: 'teleport successor started headless',
+      meta: {
+        session_id: sessionId,
+        surface: 'headless',
+        from_surface: input.surface,
+        perm_mode: permModeFor('headless'),
+        cause: 'teleport-headless-fallback',
+      },
+    })
+  }
+
+  /** Refused before `headlessPlan` rewrites the launch files, so the relaunch script still starts the requested surface. */
+  private refusedHeadless(
+    input: RelaunchInput,
+    executionId: string | undefined,
+    failure: string,
+    machine: Extract<MachineDecision, { ok: false }>,
+  ): never {
+    logEvent('teleport_headless_refused', {
+      name: input.name,
+      agentId: input.agentId,
+      code: machine.code,
+      reason: machine.reason,
+    })
+    return this.lostSuccessor(input, executionId, `${failure}; headless fallback refused: ${machine.reason}`)
+  }
+
+  private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {
+    this.finishFailedLaunch(executionId, reason)
+    this.reportDeadSuccessor(input, reason)
+    throw new SuccessorNotStarted(reason)
+  }
+
+  private noticeHeadlessSuccessor(input: RelaunchInput, reason: string): void {
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${input.name}'s teleport successor could not open in ${input.surface} (${reason}), so it was ` +
+        `started headless. Run \`agent-chat agent surface ${input.name}\` to bring it into a terminal.`,
+    })
+  }
+
+  /**
+   * CC-602: a retry skipped because the successor is running or attached adopts it with a
+   * handle, so `relaunch` tracks, binds and announces it as if its launch returned. The handle
+   * names a pane only when the launch aimed at the predecessor's own, so a pane the broker owns
+   * still closes on retire. Only a refusal the human is told about fails the launch.
+   */
+  private skippedRetry(
+    launch: SuccessorLaunch,
+    executionId: string | undefined,
+    failure: string,
+    refusal: RetryRefusal,
+  ): { handle: LaunchHandle; retried: boolean } {
+    const { input } = launch
+    if (refusal.tell) this.finishFailedLaunch(executionId, failure)
+    this.refuseRetry(input, failure, refusal)
+    if (refusal.tell) throw new SuccessorNotStarted(refusal.reason)
+    const paneRef = input.reuseAnchor === true ? launch.predecessor?.handle.paneRef : undefined
+    return {
+      handle: { surface: input.surface, ...(paneRef === undefined ? {} : { paneRef }) },
+      retried: true,
     }
   }
 
@@ -4413,6 +4610,7 @@ export class Supervisor implements TeleportHost {
 
   close(): void {
     this.unwatch()
+    this.unwatchSeatFollow()
     this.teleporter.close()
     this.attachWaiters.clear()
     this.reaper.close()
