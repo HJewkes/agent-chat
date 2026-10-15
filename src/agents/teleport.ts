@@ -471,15 +471,18 @@ interface Pending {
 const reusesPane = (entry: Pending): boolean =>
   entry.subject.anchor !== undefined && !entry.surfaceRequested && entry.launchSite !== 'launcher'
 
-/** What a teleporting session is told about where its successor opens. */
-const placementOf = (entry: Pending): NonNullable<TeleportOutcome['placement']> => {
-  if (entry.launchSite === 'launcher') return 'other-machine'
-  return reusesPane(entry) && entry.remote === undefined ? 'same-pane' : 'new-surface'
-}
-
 /** CC-951: the predecessor's pane is on its own host, so only a successor landing there may use it. */
 const landsBesidePredecessor = (entry: Pending): boolean =>
   entry.launchSite === 'caller' || (entry.launchSite === 'broker' && entry.remote === undefined)
+
+/** What a teleporting session is told about where its successor opens; read off the same predicates routing uses. */
+const placementOf = (entry: Pending): NonNullable<TeleportOutcome['placement']> => {
+  if (entry.launchSite === 'launcher' || (entry.launchSite === 'broker' && entry.remote !== undefined))
+    return 'other-machine'
+  return landsBesidePredecessor(entry) && entry.subject.anchor !== undefined && !entry.surfaceRequested
+    ? 'same-pane'
+    : 'new-surface'
+}
 
 /** CC-913: an armed successor not yet registered; only the holder of `token` may report it unplaced. */
 interface Landing {
