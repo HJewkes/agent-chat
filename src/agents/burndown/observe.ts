@@ -166,7 +166,8 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   const prRuns = deps.shepherdRows === undefined ? undefined : once
   const openPrs = deps.openPrs ?? (deps.shepherdRows === undefined ? undefined : tickOpenPrs())
   const adjudicate = openPrs === undefined ? undefined : adjudicator(claims, openPrs)
-  for (const claim of claims) {
+  for (const listed of claims) {
+    const claim = landedView(listed, roster)
     const result = await observeClaim(claim, roster, once, adjudicate)
     if (typeof result === 'string') {
       const settled = mergedOnGitHub(claim, deps.prState)
@@ -174,10 +175,22 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
       else observations.set(claimKey(claim), settled)
     } else {
       const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
-      observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
+      const fenced = withGoneOwns(observed, claim, once, adjudicate)
+      observations.set(claimKey(claim), withPrState(fenced, claim, deps.prState))
     }
   }
   return { observations, unread }
+}
+
+/**
+ * CC-980 b: a spawning claim whose agent already exited is observed as the claim it lands as, so advance lands it
+ * and reads its report in one tick. The phase and agent are all that change; the observation key is the same.
+ */
+function landedView(claim: Claim, roster: Roster): Claim {
+  if (claim.phase !== 'spawning') return claim
+  const row = rowNamed(roster, claim.agentName)
+  if (row === undefined || !FINISHED.has(row.state)) return claim
+  return { ...claim, phase: claim.nextPhase ?? 'implementing', agentId: row.agentId, nextPhase: undefined }
 }
 
 /**
@@ -209,11 +222,14 @@ const PR_STATE_PHASES: ReadonlySet<Phase> = new Set(['implementing', 'reviewing'
 /**
  * CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. CC-1074:
  * and for a shepherding claim, so its merge finishes it when Shepherd's row is gone, ended or behind. CC-1098:
- * and for a reviewing claim, so a PR merged under review closes it in the same tick.
+ * and for a reviewing claim, so a PR merged under review closes it in the same tick. CC-1141 b: and for a
+ * queued claim linked to a PR, which may have no Shepherd run to finish it.
  */
 function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
   const reads =
-    PR_STATE_PHASES.has(claim.phase) || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+    PR_STATE_PHASES.has(claim.phase) ||
+    (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase)) ||
+    (claim.phase === 'queued' && claim.pr !== undefined)
   if (read === undefined || !reads) return obs
   return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
@@ -265,8 +281,8 @@ async function observeClaim(
     claim.worktree !== undefined
   )
     obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
-  if (row === undefined) return goneWork(obs, claim, deps)
-  if (!FINISHED.has(row.state) || claim.phase === 'spawning') return obs
+  if (row === undefined) return goneWork(obs, claim, deps, adjudicate)
+  if (!FINISHED.has(row.state)) return obs
   const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
   if (report !== undefined) obs.report = report
   if (claim.phase === 'planning' && claim.briefer === true) {
@@ -287,7 +303,8 @@ async function observeClaim(
 /**
  * CC-1232: a stalled outside-owns claim is read against the plan's owns as they are now, so a widened plan clears the
  * stall; the changed files come from the worktree, else from the PR when the worktree is parked. A list neither can
- * give is unreadable, never nothing outside.
+ * give is unreadable, never nothing outside. CC-832 b: the PR is the finished report's, else the claim's, as the hand-off
+ * reads it, so a DONE report whose PR the claim has not recorded yet is still read.
  */
 function ownedRead(
   claim: Claim,
@@ -297,7 +314,8 @@ function ownedRead(
 ): Pick<Observation, 'owned' | 'planOwns'> {
   const planOwns = claim.stallCode === 'outside-owns' ? currentPlanOwns(claim, deps) : undefined
   const owned = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
-  const files = owned ?? (claim.pr === undefined ? undefined : deps.prFiles?.(claim.pr))
+  const pr = report?.pr ?? claim.pr
+  const files = owned ?? (pr === undefined ? undefined : deps.prFiles?.(pr))
   if (files === undefined) return { owned: 'unreadable' }
   const judgedOwned = judged(claim, outsideOwns(files, planOwns ?? claim.owns ?? []), adjudicate, report)
   return planOwns === undefined ? { owned: judgedOwned } : { owned: judgedOwned, planOwns }
@@ -358,6 +376,37 @@ function handOffCandidate(obs: Observation, claim: Claim): string | undefined {
   if (typeof exitedWork === 'object') return exitedWork.openPr ?? undefined
   if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS') return report.pr ?? claim.pr
   return claim.stallCode === 'outside-owns' ? claim.pr : undefined
+}
+
+/**
+ * CC-1254: an implementer whose row left a complete roster while Shepherd holds an open run for its PR is handed
+ * off by `exitedToShepherd` with no report, so its owns are read here from the branch's committed files plus the
+ * PR's: otherwise nothing fences the hand-off. Either read failing is unreadable, so the claim waits.
+ */
+function withGoneOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const gone = obs.agent === undefined && claim.agentName !== undefined
+  if (claim.phase !== 'implementing' || !gone || obs.owned !== undefined) return obs
+  const pr = goneHandOffPr(obs, claim)
+  if ((claim.owns ?? []).length === 0 || pr === undefined || deps.prFiles === undefined) return obs
+  const tree = claim.worktree
+  const branch = tree === undefined || !fs.existsSync(tree) ? [] : (deps.changedFiles ?? changedFiles)(tree)
+  const prFiles = branch === undefined ? undefined : deps.prFiles(pr)
+  if (branch === undefined || prFiles === undefined) return { ...obs, owned: 'unreadable' }
+  const outside = outsideOwns([...new Set([...branch, ...prFiles])], claim.owns ?? [])
+  return { ...obs, owned: judged(claim, outside, adjudicate, undefined) }
+}
+
+/** The PR `exitedToShepherd` hands off for a gone row: the claim's, else its open run's, when Shepherd can take it. */
+function goneHandOffPr(obs: Observation, claim: Claim): string | undefined {
+  const row = obs.shepherd?.row
+  if (row === undefined || row.pr === null || FINISHED_PHASES.includes(row.phase)) return undefined
+  const pr = claim.pr ?? `${row.repo}#${row.pr}`
+  return shepherdTarget(pr) === undefined ? undefined : pr
 }
 
 /** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */
@@ -438,15 +487,22 @@ export function changedFiles(cwd: string, exec: Runner = run): string[] | undefi
 
 /**
  * CC-1230 a: a stalled implementing claim whose row was pruned left no report, so what its worktree holds is all
- * there is to read. Only a stalled one, since only a stall is classified.
+ * there is to read. Only a stalled one, since only a stall is classified. CC-832 b: an outside-owns stall is re-read
+ * as a finished worker's is, so a dropped file or a widened plan still clears it.
  */
-const goneWork = (obs: Observation, claim: Claim, deps: ObserveDeps): Observation =>
-  claim.phase === 'implementing' &&
-  claim.stalledReason !== undefined &&
-  claim.agentName !== undefined &&
-  claim.worktree !== undefined
-    ? withExitedWork(obs, claim.worktree, deps)
-    : obs
+function goneWork(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  if (claim.phase !== 'implementing' || claim.stalledReason === undefined || claim.agentName === undefined)
+    return obs
+  const fenced = claim.stallCode === 'outside-owns' && (claim.owns ?? []).length > 0
+  const read = fenced ? { ...obs, ...ownedRead(claim, deps, adjudicate, undefined) } : obs
+  const worked = claim.worktree === undefined ? read : withExitedWork(read, claim.worktree, deps)
+  return fenced ? withPrOwns(worked, claim, deps, adjudicate) : worked
+}
 
 /** Read only for an exit with no status line: a report already says what the agent left. */
 function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {

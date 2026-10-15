@@ -76,7 +76,9 @@ spend limit. Pass `config_dir` only to bill an account deliberately; it must exi
 under your home directory, and a bad value is refused rather than quietly replaced. The
 resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
 that is also how a peer's transcript and budget stay findable when it is not on your
-account.
+account. A teleport keeps the account: the successor spends the same `CLAUDE_CONFIG_DIR`,
+and `agent_teleport` cannot change it. To move to another account, ask your human to move
+you.
 
 ### Splitting a large assignment: explore, then implement
 
@@ -275,6 +277,22 @@ keeping your name so peers can still reach you. Your transcript does not travel,
 handoff you write is all the successor gets. That is why 95% says stop now: past it there
 is not enough room left to write a good one.
 
+### Teleporting
+
+- Teleport when your context is filling (a `[budget]` line), when you are parked waiting on
+  the human, or when your instructions or code have moved since you started.
+- Write the handoff in this order: what you were mid-way through; state on disk; what you
+  would do next and why; what you tried that did not work; who you are owed a reply to or
+  owe one; files to read first as `@`-prefixed absolute paths. It is stored verbatim and
+  capped at 8 KB; a longer one is refused, not truncated.
+- Name every open `chat_ask` id in the handoff, or answer it first. A refusal lists the ids
+  the handoff leaves out. Answers to the name are held and pushed to your successor.
+- `reason: "park"` marks an idle hand-off: restate your open question in the handoff, and the
+  successor asks it first.
+- `surface` and `to` choose where the successor opens (a surface or machine you cannot run
+  is refused and never ends you). A named surface opens fresh, not in your pane.
+- The account stays the same. Teleport cannot change it.
+
 **The account rate limit is per account and shared.** It is not billed to you, and nothing
 pushes it. `agent_list` prints one header line per account, each from the freshest reading
 on that account; `chat_list` prints one, from whichever row's reading is freshest — never
@@ -314,10 +332,11 @@ its context as the scarce resource, not the agents' time.
   `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
   tree, and removes it at verdict. It keeps one installed checkout per review: base or old
   code comes from `git show`, `git diff` or `git worktree add --detach` without install,
-  because every extra installed tree costs ~100k inodes on Linux's /tmp. A reviewer never runs `git stash`, because refs/stash is
-  shared by every worktree: read a file at a revision with `git show <rev>:<path>`, or copy
-  files into the session scratchpad. Read a diff yourself only where the judgement is the point
-  (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
+  because every extra installed tree costs ~100k inodes and its disk space under
+  `~/.cache/agent-chat/tmp` on Linux's root filesystem (CC-1184). A reviewer never runs
+  `git stash`, because refs/stash is shared by every worktree: read a file at a revision with
+  `git show <rev>:<path>`, or copy files into the session scratchpad. Read a diff yourself only
+  where the judgement is the point (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context

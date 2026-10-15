@@ -3,11 +3,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { advance, applyActions, type Action } from '../agents/burndown/advance.js'
-import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import {
+  EMPTY_LEDGER,
+  readLedger,
+  readySlices,
+  writeLedger,
+  type Claim,
+  type Ledger,
+} from '../agents/burndown/ledger.js'
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import type { PlanFile } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
-import { unstallSlice, type UnstallPorts } from '../cli/verbs/burndown-unstall.js'
+import { reloadSliceOwns, unstallSlice, type UnstallPorts } from '../cli/verbs/burndown-unstall.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-1141: unstall reloads a slice's owns from its fixed plan and clears an outside-owns stall in place. */
@@ -42,6 +49,29 @@ const planOwning = (owns: string[]): PlanFile => ({
     '```',
   ].join('\n'),
 })
+
+const twoSlicePlan = (ownsA: string[]): PlanFile => ({
+  path: '/plans/CC-1-plan.md',
+  text: [
+    '```burndown-slices',
+    JSON.stringify([
+      { n: 'a', title: 'slice a', points: 1, doneWhen: 'a is done', dependsOn: [], owns: ownsA },
+      { n: 'b', title: 'slice b', points: 1, doneWhen: 'b is done', dependsOn: ['a'], owns: ['src/c.ts'] },
+    ]),
+    '```',
+  ].join('\n'),
+})
+
+const queuedB: Claim = {
+  taskId: 'CC-1',
+  initiative: 'demo',
+  slice: 'b',
+  dependsOn: ['a'],
+  owns: ['src/c.ts'],
+  spawnedAt: EARLIER,
+  phase: 'queued',
+  phaseAt: EARLIER,
+}
 
 const ports = (plan: PlanFile, files: string[] | undefined): UnstallPorts => ({
   plan: () => plan,
@@ -131,6 +161,27 @@ describe('burndown unstall (CC-1141)', () => {
     expect(merged.ledger.claims[0]).toMatchObject({ phase: 'done', agentName: 'bd-cc-1-a' })
   })
 
+  it('keeps the slice linked and its dependent gated, recording no release (CC-1159)', async () => {
+    const parked = (await tick({ ...EMPTY_LEDGER, claims: [implementing(), queuedB] })).ledger
+    writeLedger(file(), parked)
+
+    const report = await unstallSlice('CC-1', 'a', ports(twoSlicePlan(BRANCH_FILES), BRANCH_FILES))
+    const unstalled = readLedger(file())
+    const next = await tick(unstalled)
+
+    expect(parked.claims[0]).toMatchObject({ stallCode: 'outside-owns' })
+    expect(report.ok).toBe(true)
+    expect(unstalled.claims.find(c => c.slice === 'a')).toMatchObject({
+      pr: 'o/r#41',
+      agentName: 'bd-cc-1-a',
+      spawned: ['bd-cc-1-a'],
+    })
+    expect(unstalled.slicesReleased?.['CC-1']).toBeUndefined()
+    expect(readySlices(unstalled).map(c => c.slice)).not.toContain('b')
+    expect(unstalled.claims.find(c => c.slice === 'b')).toMatchObject({ phase: 'queued' })
+    expect(next.actions.filter(a => a.kind === 'retire')).toEqual([])
+  })
+
   it('refuses while a file is still outside the new owns, and writes nothing', async () => {
     const parked = (await tick({ ...EMPTY_LEDGER, claims: [implementing()] })).ledger
     writeLedger(file(), parked)
@@ -171,5 +222,93 @@ describe('burndown unstall (CC-1141)', () => {
     const report = await unstallSlice('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
 
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice a'] })
+  })
+})
+
+describe('reload-owns (CC-1276)', () => {
+  let home: string
+  const saved = process.env.AGENT_CHAT_HOME
+  const file = () => path.join(home, 'burndown.json')
+  const NARROWED = ['src/a.ts', '.changeset/cc-1-a*.md']
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-1276-'))
+    process.env.AGENT_CHAT_HOME = home
+  })
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AGENT_CHAT_HOME
+    else process.env.AGENT_CHAT_HOME = saved
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  it("replaces a live slice's owns with its plan's and keeps its phase, PR, agents and stall", async () => {
+    const live = implementing({
+      owns: ['src/a.ts', '.changeset/*'],
+      stalledReason: 'late',
+      stallCode: 'phase-timeout',
+    })
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [live] })
+
+    const report = await reloadSliceOwns(
+      'CC-1',
+      'a',
+      ports(planOwning(NARROWED), ['src/a.ts', '.changeset/cc-1-a.md']),
+    )
+
+    expect(report.ok).toBe(true)
+    expect(readLedger(file()).claims).toEqual([{ ...live, owns: NARROWED }])
+  })
+
+  it('refuses when the branch touches a file outside the new owns, and writes nothing', async () => {
+    const ledger = { ...EMPTY_LEDGER, claims: [implementing()] }
+    writeLedger(file(), ledger)
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(NARROWED), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('src/b.ts')] })
+    expect(readLedger(file())).toEqual(ledger)
+  })
+
+  it('refuses an outside-owns stall and points at unstall', async () => {
+    const parked = implementing({
+      stalledReason: 'outside',
+      stalledClass: 'stalled',
+      stallCode: 'outside-owns',
+    })
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [parked] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('use unstall')] })
+    expect(readLedger(file()).claims).toEqual([parked])
+  })
+
+  it('refuses a done slice as having no held claim', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [implementing({ phase: 'done' })] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice a'] })
+  })
+
+  it('refuses a queued slice, whose owns the tick already reloads', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [queuedB] })
+
+    const report = await reloadSliceOwns('CC-1', 'b', ports(twoSlicePlan(BRANCH_FILES), undefined))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('queued')] })
+    expect(readLedger(file()).claims).toEqual([queuedB])
+  })
+
+  it('refuses when neither the worktree nor the PR can be read', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [implementing()] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), undefined))
+
+    expect(report).toMatchObject({
+      ok: false,
+      errors: [expect.stringContaining('reload-owns needs one of them')],
+    })
   })
 })

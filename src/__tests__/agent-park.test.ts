@@ -799,6 +799,40 @@ describe('refusing to park what the removal would lose', () => {
       })
       expect(fs.existsSync(db)).toBe(true)
     })
+
+    function writeApiExtractorTemp(worktree: string): void {
+      const tempDir = path.join(worktree, 'packages', 'ui', '.api-extractor-temp')
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    }
+
+    it('parks a titan-design tree holding api-extractor temp reports and an index-only graph index (CC-1344)', async () => {
+      const agent = await withCodewatchIgnored('.api-extractor-temp/\n')
+      writeGraphDb(agent.cwd, 0)
+      writeApiExtractorTemp(agent.cwd)
+      await exit(agent)
+
+      expect((await sup.park('worker-a')).ok).toBe(true)
+      expect(fs.existsSync(agent.cwd)).toBe(false)
+    })
+
+    it('refuses a test-results file beside api-extractor temp and a graph index, naming only it (CC-1344)', async () => {
+      const agent = await withCodewatchIgnored('.api-extractor-temp/\ntest-results/\n')
+      writeGraphDb(agent.cwd, 0)
+      writeApiExtractorTemp(agent.cwd)
+      const results = path.join(agent.cwd, 'packages', 'ui', 'test-results', 'x.json')
+      fs.mkdirSync(path.dirname(results), { recursive: true })
+      fs.writeFileSync(results, '{}\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/\(packages\/ui\/test-results\/x\.json\); /),
+      })
+      expect(fs.existsSync(results)).toBe(true)
+    })
   })
 })
 
