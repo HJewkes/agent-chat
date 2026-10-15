@@ -4406,11 +4406,7 @@ export class Supervisor implements TeleportHost {
     }
     await pause(RELAUNCH_RETRY_MS)
     const refusal = await this.retryRefusal(input)
-    if (refusal !== undefined) {
-      if (refusal.tell) this.finishFailedLaunch(executionId, failure)
-      this.refuseRetry(input, failure, refusal)
-      throw new SuccessorNotStarted(refusal.reason)
-    }
+    if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
@@ -4418,6 +4414,29 @@ export class Supervisor implements TeleportHost {
       this.finishFailedLaunch(executionId, reason)
       this.reportDeadSuccessor(input, reason)
       throw new SuccessorNotStarted(reason)
+    }
+  }
+
+  /**
+   * CC-602: a retry skipped because the successor is running or attached adopts it with a
+   * handle, so `relaunch` tracks, binds and announces it as if its launch returned. The handle
+   * names a pane only when the launch aimed at the predecessor's own, so a pane the broker owns
+   * still closes on retire. Only a refusal the human is told about fails the launch.
+   */
+  private skippedRetry(
+    launch: SuccessorLaunch,
+    executionId: string | undefined,
+    failure: string,
+    refusal: RetryRefusal,
+  ): { handle: LaunchHandle; retried: boolean } {
+    const { input } = launch
+    if (refusal.tell) this.finishFailedLaunch(executionId, failure)
+    this.refuseRetry(input, failure, refusal)
+    if (refusal.tell) throw new SuccessorNotStarted(refusal.reason)
+    const paneRef = input.reuseAnchor === true ? launch.predecessor?.handle.paneRef : undefined
+    return {
+      handle: { surface: input.surface, ...(paneRef === undefined ? {} : { paneRef }) },
+      retried: true,
     }
   }
 

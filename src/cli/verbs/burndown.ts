@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
@@ -50,8 +51,11 @@ import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
 import { unstallSlice } from './burndown-unstall.js'
+import { finishSlice } from './burndown-done.js'
 import { changedFiles } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
+import { falseEdges, renderFalseEdge, type PlanOf } from '../../agents/burndown/relint-queued.js'
+import type { Ledger } from '../../agents/burndown/ledger.js'
 import {
   burndownConfigShowVerb,
   burndownOverrideClearVerb,
@@ -413,6 +417,41 @@ export const burndownStatusVerb = defineVerb({
   },
 })
 
+/** CC-1156: the relint-deps dry run's body, taking the ledger and plan reader so a test can point it at fixtures. */
+export function relintDepsLines(
+  ledger: Ledger,
+  planOf: PlanOf,
+  seat: string | undefined,
+  json: boolean,
+): Report {
+  const edges = falseEdges(ledger, planOf, seat)
+  if (json) return { ok: true, lines: [JSON.stringify(edges, null, 2)] }
+  const total = `${edges.length} queued dependsOn edge(s) over disjoint owns with no dependsWhy`
+  return { ok: true, lines: [...edges.map(renderFalseEdge), total] }
+}
+
+export const burndownRelintDepsVerb = defineVerb({
+  name: 'burndown.relint-deps',
+  description: "dry run: queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint)",
+  args: z.object({ seat: z.string().optional(), json: z.boolean().optional() }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: "only this seat's claims" },
+      json: { long: '--json', description: 'one JSON array of edges' },
+    },
+  },
+  async run({ seat, json }) {
+    try {
+      const readPlan = diskPlanReader(activeWorkRoot())
+      const planOf: PlanOf = claim => readPlan(claim.initiative, claim.taskId)
+      return relintDepsLines(readLedger(burndownLedgerPath()), planOf, seat, json === true)
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
 /** CC-1151: a dry tick still reads gh and titan-factory through the caller's PATH, so an agent plans instead. */
 async function kickTick(dryRun: boolean): Promise<Report> {
   if (dryRun)
@@ -489,26 +528,31 @@ export const burndownReleaseVerb = defineVerb({
       },
     },
   },
-  async run({ task, slice }) {
-    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
-    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-      autoStart: false,
-    })
-    let connected = false
-    const retire: RetireCall = async name => {
-      if (!connected) {
-        await client.connect()
-        connected = true
-      }
-      return tickBroker(client).retire(name)
-    }
-    try {
-      return await releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot()))
-    } finally {
-      client.close()
-    }
-  },
+  run: ({ task, slice }) =>
+    withBrokerRetire(retire =>
+      releaseTask(task, retire, new Date(), slice, diskPlanReader(activeWorkRoot())),
+    ),
 })
+
+/** Runs `use` with a retire that connects on first use; never autostarts, since a verb that brought up a broker would own it. */
+async function withBrokerRetire(use: (retire: RetireCall) => Promise<Report>): Promise<Report> {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  let connected = false
+  const retire: RetireCall = async name => {
+    if (!connected) {
+      await client.connect()
+      connected = true
+    }
+    return tickBroker(client).retire(name)
+  }
+  try {
+    return await use(retire)
+  } finally {
+    client.close()
+  }
+}
 
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
@@ -550,6 +594,27 @@ export const burndownUnstallVerb = defineVerb({
       changedFiles: cwd => changedFiles(cwd),
       prFiles: prFilesReader(run),
     }),
+})
+
+export const burndownDoneVerb = defineVerb({
+  name: 'burndown.done',
+  description:
+    'finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its agents',
+  args: z.object({
+    task: requiredString('task'),
+    slice: requiredString('slice'),
+    evidence: requiredString('evidence'),
+  }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the slice whose work was done and verified outside git' },
+      evidence: { long: '--evidence', description: 'an existing file that shows the work is done' },
+    },
+  },
+  run: ({ task, slice, evidence }) =>
+    withBrokerRetire(retire => finishSlice(task, slice, evidence, { retire, exists: existsSync })),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
@@ -625,6 +690,7 @@ export function addBurndownCommands(program: Commander): void {
   const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
+  addVerb(burndown, burndownRelintDepsVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)
@@ -632,6 +698,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownDoneVerb)
   addVerb(burndown, burndownLandedVerb)
   addVerb(burndown, burndownClassifyVerb)
   addVerb(brief, burndownBriefApproveVerb)

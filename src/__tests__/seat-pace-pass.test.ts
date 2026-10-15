@@ -168,13 +168,14 @@ describe('the watchdog pass publishes pool pace', () => {
 
   it('appends one row for the pool whose reading changed, and restarts the count on a new level', async () => {
     const h = harness()
+    h.cache['/synthetic/alpha'] = { sevenDay: 30, ageSeconds: 60 }
     await pass(h)
-    h.cache['/synthetic/alpha'] = { sevenDay: 30, ageSeconds: 10 }
+    h.cache['/synthetic/alpha'] = { sevenDay: 41, ageSeconds: 10 }
 
     await pass(h, 15)
 
-    expect(h.history.map(row => `${row.pool} ${row.seven_day}`)).toEqual(['alpha 41', 'beta 60', 'alpha 30'])
-    expect(h.pace?.pools.alpha).toMatchObject({ level: 'burn', passesAtLevel: 1 })
+    expect(h.history.map(row => `${row.pool} ${row.seven_day}`)).toEqual(['alpha 30', 'beta 60', 'alpha 41'])
+    expect(h.pace?.pools.alpha).toMatchObject({ level: 'behind', passesAtLevel: 1 })
     expect(h.pace?.pools.beta?.passesAtLevel).toBe(2)
   })
 

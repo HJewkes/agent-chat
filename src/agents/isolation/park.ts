@@ -338,7 +338,10 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   )
   if (ignored === null) return `could not list ignored files in ${worktree}`
   const entries = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
-  const kept = (await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()
+  // `--directory` also lists every ignored ancestor of a nested ignored dir, so expansions overlap.
+  const kept = [
+    ...new Set((await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()),
+  ]
   const unregenerable = withoutIndexOnlyGraphDb(
     worktree,
     kept.filter(entry => !isRegenerable(entry)),

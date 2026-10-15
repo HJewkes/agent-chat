@@ -38,7 +38,7 @@ const newestFirst = (claim: Claim): string[] => [...new Set([...(claim.spawned ?
 const describeClaim = (c: Claim): string =>
   `released ${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`} (${c.phase}${c.stalledReason === undefined ? '' : `, stalled: ${c.stalledReason}`})`
 
-async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> {
+export async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> {
   const lines: string[] = []
   for (const name of newestFirst(claim)) {
     const reply = await retire(name).catch((err: Error) => ({ ok: false, reason: err.message }))
