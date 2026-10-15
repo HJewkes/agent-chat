@@ -94,7 +94,7 @@ describe('writtenText', () => {
   })
 
   const pushWriter = (line: string): SimpleCommand => {
-    const found = parseShell(line).find(cmd => cmd.words.join(' ') === 'printf git push')
+    const found = parseShell(line).find(cmd => cmd.words[0] === 'printf' && cmd.words[1] === 'git push')
     if (found === undefined) throw new Error(`no writer in ${line}`)
     return found
   }
@@ -289,6 +289,17 @@ describe('scriptRuns', () => {
     './bash -i s.sh',
   ])('%j hides its script', line => {
     expect(runsOf(line)).toEqual({ hidden: true })
+  })
+
+  // bash reads `>! s` as a write to the file `!`, leaving s an operand; zsh reads it as a write to s.
+  it.each([
+    ["printf 'git push --no-verify' > s; bash >! s", []],
+    ["printf 'git push --no-verify' > s; source >! s", []],
+    ["printf 'git push --no-verify' > s; bash >>! s", []],
+    ["printf 'git push --no-verify' > s; bash >&! s", []],
+    ["printf 'git push --no-verify' > s; bash >! s -x", ['-x']],
+  ])('%j runs s as bash reads it', (line, args) => {
+    expect(runsOf(line)).toEqual({ runs: [{ word: 's', args, head: false }], stdin: false })
   })
 
   it('gives each run the operands after it, and marks a head run', () => {

@@ -1026,15 +1026,21 @@ class ShellLexer {
     this.quoteStart = Infinity
     const pending = this.pending
     this.pending = null
-    if (pending === null) {
-      this.cur.words.push(word)
-      this.cur.marked.push(this.marked)
-      if (splitting) this.cur.splits.push(this.marked)
-      this.afterWord(word, quoteStart)
-    } else if (pending === 'write' || pending === 'append' || pending === 'dup')
+    if (pending === null) this.pushWord(word, splitting, quoteStart)
+    else if (pending === 'write' || pending === 'append' || pending === 'dup') {
+      // bash reads `>! s` as a write to `!` and s as an operand, so `bash >! s` runs s.
+      const operand = this.bang === 'spaced'
       this.recordWrite(word, pending)
-    else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
+      if (operand) this.pushWord(word, splitting, quoteStart)
+    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
+  }
+
+  private pushWord(word: string, splitting: boolean, quoteStart: number): void {
+    this.cur.words.push(word)
+    this.cur.marked.push(this.marked)
+    if (splitting) this.cur.splits.push(this.marked)
+    this.afterWord(word, quoteStart)
   }
 
   /**
