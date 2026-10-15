@@ -56,7 +56,7 @@ import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
-import { unstallSlice } from './burndown-unstall.js'
+import { reloadSliceOwns, unstallSlice } from './burndown-unstall.js'
 import { finishSlice } from './burndown-done.js'
 import { changedFiles } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
@@ -658,6 +658,24 @@ export const burndownUnstallVerb = defineVerb({
     }),
 })
 
+export const burndownReloadOwnsVerb = defineVerb({
+  name: 'burndown.reload-owns',
+  description:
+    "reload a live slice's owns from its plan when its branch fits them, keeping its phase, PR and agents",
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: { slice: { long: '--slice', description: 'the live slice whose plan owns changed' } },
+  },
+  run: ({ task, slice }) =>
+    reloadSliceOwns(task, slice, {
+      plan: diskPlanReader(activeWorkRoot()),
+      changedFiles: cwd => changedFiles(cwd),
+      prFiles: prFilesReader(run),
+    }),
+})
+
 export const burndownDoneVerb = defineVerb({
   name: 'burndown.done',
   description:
@@ -760,6 +778,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownReleaseVerb)
   addVerb(burndown, burndownLinkVerb)
   addVerb(burndown, burndownUnstallVerb)
+  addVerb(burndown, burndownReloadOwnsVerb)
   addVerb(burndown, burndownDoneVerb)
   addVerb(burndown, burndownLandedVerb)
   addVerb(burndown, burndownClassifyVerb)
