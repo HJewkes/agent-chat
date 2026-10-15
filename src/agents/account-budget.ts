@@ -20,8 +20,9 @@ import { accountName, defaultConfigDir, profileRoot } from './config-dir.js'
  * `usage-poll.json` into each account's status cache from the OAuth usage
  * endpoint every 150s, so it is the reading of record; the freshest
  * status-line reading stands in where the poller has not written. `auth_fail` is
- * the dir's own login state, read token-free from its `.credentials.json` (so on a
- * Keychain-only macOS login every dir reads as failed). Nothing here calls the API.
+ * the dir's own login state, read token-free from its `.credentials.json`; on macOS
+ * an absent file means the login is in the Keychain, so only a present file can fail
+ * there. Nothing here calls the API.
  */
 
 /** Two missed polls: a 150s interval plus up to 30s jitter, so an older reading means it stopped. */
@@ -44,6 +45,7 @@ export interface AccountsOptions {
   home?: string
   env?: NodeJS.ProcessEnv
   now?: number
+  platform?: NodeJS.Platform
   /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `home`. */
   identify?: (configDir: string) => string | undefined
 }
@@ -69,19 +71,19 @@ export function accountDirs(home: string, env: NodeJS.ProcessEnv): string[] {
   return [defaultConfigDir(home), ...profiles]
 }
 
-/** A login Claude Code cannot use and the poller cannot renew; an expired one that can refresh renews within a tick. */
-export function loginFailed(state: LoginState): boolean {
-  return (
-    state.status === 'missing' ||
-    state.status === 'refused' ||
-    (state.status === 'expired' && !state.canRefresh)
-  )
+/**
+ * A login Claude Code cannot use and the poller cannot renew; an expired one that can refresh renews
+ * within a tick. On macOS Claude Code keeps the login in the Keychain, so a missing file is not a failure.
+ */
+export function loginFailed(state: LoginState, platform: NodeJS.Platform = process.platform): boolean {
+  if (state.status === 'missing') return platform !== 'darwin'
+  return state.status === 'refused' || (state.status === 'expired' && !state.canRefresh)
 }
 
 /** A login we cannot read is not one we can use; the thrown error is already redacted and is dropped. */
-export function readLoginFailed(dir: string, now: number): boolean {
+export function readLoginFailed(dir: string, now: number, platform?: NodeJS.Platform): boolean {
   try {
-    return loginFailed(readLoginState(dir, { now }))
+    return loginFailed(readLoginState(dir, { now }), platform)
   } catch {
     return true
   }
@@ -103,7 +105,7 @@ export function readAccountUsage(dir: string, options: AccountsOptions = {}): Ac
   const base = {
     account: accountName(dir, home),
     config_dir: dir,
-    auth_fail: readLoginFailed(dir, now),
+    auth_fail: readLoginFailed(dir, now, options.platform),
   }
   if (!read.found) {
     return { ...base, source: null, five_hour: null, seven_day: null, age_seconds: null, stale: false }

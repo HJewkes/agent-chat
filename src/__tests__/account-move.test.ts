@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { AccountUsage } from '../agents/account-budget.js'
+import { readAccountUsage, type AccountUsage } from '../agents/account-budget.js'
 import {
   accountTargetCheck,
   hasLogin,
@@ -152,6 +152,31 @@ describe('accountTargetCheck', () => {
 
   it('refuses a target with no login', () => {
     expect(check({ readers: readers({ hasLogin: () => false }) }).ok).toBe(false)
+  })
+
+  it('passes a darwin target whose login lives only in the Keychain', () => {
+    fs.mkdirSync(profile('server'), { recursive: true })
+    const darwinUsage = (target: AccountTarget) => ({
+      ...usage(),
+      auth_fail: readAccountUsage(target.dir, { home, now: NOW, platform: 'darwin' }).auth_fail,
+    })
+
+    expect(check({ readers: readers({ usage: darwinUsage }) })).toEqual({ ok: true, refusals: [] })
+  })
+
+  it('refuses a target whose login cannot be used, naming the login state', () => {
+    const result = check({ readers: readers({ usage: () => usage({ auth_fail: true }) }) })
+    expect(result.refusals).toEqual([
+      `${profile('server')}'s login is refused, or expired with no refresh token`,
+    ])
+  })
+
+  it('reports a missing login once, not also as a login failure', () => {
+    const result = check({
+      readers: readers({ hasLogin: () => false, usage: () => usage({ auth_fail: true }) }),
+    })
+    expect(result.refusals).toHaveLength(1)
+    expect(result.refusals[0]).toMatch(/holds no login/)
   })
 
   it('refuses a cwd the target config definitely does not trust', () => {

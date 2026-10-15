@@ -197,6 +197,12 @@ describe('auth_fail from the login state', () => {
     expect(readAccountUsage(path.join(profile('beta'), 'locked', 'x'), options()).auth_fail).toBe(true)
   })
 
+  it('on macOS a dir with no credentials file is not flagged, since its login is in the Keychain', () => {
+    expect(readAccountUsage(profile('gamma'), { ...options(), platform: 'darwin' }).auth_fail).toBe(false)
+    writeCredentials(profile('beta'), NOW - 60_000, false)
+    expect(readAccountUsage(profile('beta'), { ...options(), platform: 'darwin' }).auth_fail).toBe(true)
+  })
+
   it.each<[LoginState, boolean]>([
     [{ status: 'present', expiresAt: NOW, canRefresh: false }, false],
     [{ status: 'expired', expiresAt: NOW, canRefresh: true }, false],
@@ -204,7 +210,7 @@ describe('auth_fail from the login state', () => {
     [{ status: 'missing' }, true],
     [{ status: 'refused', reason: 'malformed' }, true],
   ])('loginFailed(%o) is %s', (state, failed) => {
-    expect(loginFailed(state)).toBe(failed)
+    expect(loginFailed(state, 'linux')).toBe(failed)
   })
 })
 
