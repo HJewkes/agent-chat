@@ -5,11 +5,11 @@ import type { Command } from 'commander'
 import { POLL_SESSION_ID } from '@titan-design/anthropic-account'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildProgram } from '../cli/index.js'
-import { accountDirs, accountsBudget, readAccountUsage } from '../agents/account-budget.js'
+import type { LoginState } from '@titan-design/anthropic-account'
+import { accountDirs, accountsBudget, loginFailed, readAccountUsage } from '../agents/account-budget.js'
 
 /** A fake home with a default account and three profiles, so nothing reads a real config dir. */
 let home: string
-let pollerLog: string
 const NOW_S = 1_800_000_000
 const NOW = NOW_S * 1000
 
@@ -29,31 +29,36 @@ function writeReading(dir: string, sessionId: string, writtenAt: number, five: n
   fs.writeFileSync(path.join(cache(dir), `${sessionId}.json`), JSON.stringify(doc))
 }
 
+/** Fake OAuth values only: `readLoginState` gates on mode 0600 and the owner, never on the token. */
+function writeCredentials(dir: string, expiresAt: number, refresh = true, mode = 0o600): void {
+  const file = path.join(dir, '.credentials.json')
+  const oauth = {
+    accessToken: 'fake-access',
+    expiresAt,
+    ...(refresh ? { refreshToken: 'fake-refresh' } : {}),
+  }
+  fs.writeFileSync(file, JSON.stringify({ claudeAiOauth: oauth }), { mode })
+  fs.chmodSync(file, mode)
+}
+
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'account-budget-'))
-  pollerLog = path.join(home, 'poller.log')
   fs.mkdirSync(path.join(home, '.claude'))
   for (const name of ['alpha', 'beta', 'gamma']) fs.mkdirSync(profile(name), { recursive: true })
   writeReading(profile('alpha'), POLL_SESSION_ID, NOW_S - 30, 55, 36)
   writeReading(profile('alpha'), 'session-1', NOW_S - 5, 99, 99)
   writeReading(profile('beta'), 'session-2', NOW_S - 10, 12, 40)
   writeReading(profile('gamma'), POLL_SESSION_ID, NOW_S - 7200, 3, 94)
-  fs.writeFileSync(
-    pollerLog,
-    [
-      '2027-01-15T07:00:00Z AUTH-FAIL alpha: no OAuth token',
-      '2027-01-15T07:02:00Z ok alpha [55,36]',
-      '2027-01-15T07:02:00Z AUTH-FAIL gamma: no OAuth token in credentials',
-      '',
-    ].join('\n'),
-  )
+  writeCredentials(path.join(home, '.claude'), NOW + 3_600_000)
+  writeCredentials(profile('alpha'), NOW + 3_600_000)
+  writeCredentials(profile('beta'), NOW + 3_600_000)
 })
 
 afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-const options = () => ({ home, env: {}, now: NOW, pollerLog })
+const options = () => ({ home, env: {}, now: NOW })
 
 describe('accountDirs', () => {
   it('lists the default config dir then every profile dir', () => {
@@ -85,7 +90,7 @@ describe('readAccountUsage', () => {
     expect(usage).toMatchObject({ source: 'status-line', five_hour: { used_pct: 12 }, age_seconds: 10 })
   })
 
-  it('marks an old poller reading stale and an account whose last poll failed auth', () => {
+  it('marks an old poller reading stale and a dir with no login as an auth failure', () => {
     const usage = readAccountUsage(profile('gamma'), options())
     expect(usage).toMatchObject({ stale: true, auth_fail: true, age_seconds: 7200 })
   })
@@ -152,10 +157,54 @@ describe('accountsBudget', () => {
     expect(rows[1]).toMatchObject({ five_hour: { used_pct: 55, resets_at: NOW_S + 3600 } })
   })
 
-  it('treats a missing poller log as no auth failures', () => {
-    const report = accountsBudget(true, { ...options(), pollerLog: path.join(home, 'absent.log') })
-    const rows = JSON.parse(report.lines[0] ?? '') as Array<Record<string, unknown>>
-    expect(rows.every(r => r.auth_fail === false)).toBe(true)
+  it('flags only the dir with no login', () => {
+    const rows = JSON.parse(accountsBudget(true, options()).lines[0] ?? '') as Array<Record<string, unknown>>
+    expect(rows.map(r => r.auth_fail)).toEqual([false, false, false, true])
+  })
+})
+
+describe('auth_fail from the login state', () => {
+  it('a stale poller log naming an account AUTH-FAIL no longer flags a dir whose login is present', () => {
+    const log = path.join(home, '.local', 'state', 'usage-poller', 'poller.log')
+    fs.mkdirSync(path.dirname(log), { recursive: true })
+    fs.writeFileSync(log, '2027-01-15T07:00:00Z AUTH-FAIL alpha: no OAuth token\n')
+
+    expect(readAccountUsage(profile('alpha'), options()).auth_fail).toBe(false)
+  })
+
+  it('a dir with no credentials file is flagged although no log names it', () => {
+    expect(readAccountUsage(profile('gamma'), options()).auth_fail).toBe(true)
+    const gamma = accountsBudget(false, options()).lines.find(l => l.startsWith('gamma')) ?? ''
+    expect(gamma).toContain('AUTH-FAIL')
+  })
+
+  it('an expired token that can refresh is not a failure; one that cannot is', () => {
+    writeCredentials(profile('beta'), NOW - 60_000)
+    expect(readAccountUsage(profile('beta'), options()).auth_fail).toBe(false)
+
+    writeCredentials(profile('beta'), NOW - 60_000, false)
+    expect(readAccountUsage(profile('beta'), options()).auth_fail).toBe(true)
+  })
+
+  it.skipIf(typeof process.getuid !== 'function')('a credentials file wider than 0600 is flagged', () => {
+    writeCredentials(profile('alpha'), NOW + 3_600_000, true, 0o644)
+    expect(readAccountUsage(profile('alpha'), options()).auth_fail).toBe(true)
+  })
+
+  it('a login read that throws is flagged', () => {
+    fs.mkdirSync(path.join(profile('beta'), 'locked'))
+    fs.writeFileSync(path.join(profile('beta'), 'locked', 'x'), '')
+    expect(readAccountUsage(path.join(profile('beta'), 'locked', 'x'), options()).auth_fail).toBe(true)
+  })
+
+  it.each<[LoginState, boolean]>([
+    [{ status: 'present', expiresAt: NOW, canRefresh: false }, false],
+    [{ status: 'expired', expiresAt: NOW, canRefresh: true }, false],
+    [{ status: 'expired', expiresAt: NOW, canRefresh: false }, true],
+    [{ status: 'missing' }, true],
+    [{ status: 'refused', reason: 'malformed' }, true],
+  ])('loginFailed(%o) is %s', (state, failed) => {
+    expect(loginFailed(state)).toBe(failed)
   })
 })
 

@@ -176,9 +176,19 @@ describe('agent budget --accounts', () => {
     writeLogin(path.join(profile('work'), '.claude.json'), 'acct-2')
     writeReading(path.join(home, '.claude'), 90, 15)
     writeReading(profile('personal'), 30, 16)
+    for (const dir of [path.join(home, '.claude'), profile('personal'), profile('work')]) {
+      const oauth = {
+        accessToken: 'fake-access',
+        refreshToken: 'fake-refresh',
+        expiresAt: NOW.getTime() + 3_600_000,
+      }
+      fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: oauth }), {
+        mode: 0o600,
+      })
+    }
   })
 
-  const options = () => ({ home, env: {}, now: NOW.getTime(), pollerLog: path.join(home, 'absent.log') })
+  const options = () => ({ home, env: {}, now: NOW.getTime() })
 
   it('prints one row per login naming its config dirs, with the freshest reading', () => {
     const report = accountsBudget(false, options())
@@ -202,5 +212,6 @@ describe('agent budget --accounts', () => {
       config_dir: path.join(home, '.claude'),
       age_seconds: 30,
     })
+    expect(rows.map(r => r.auth_fail)).toEqual([false, true, false])
   })
 })
