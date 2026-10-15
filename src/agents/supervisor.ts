@@ -225,6 +225,7 @@ import {
   type TeleportRequest,
   type LauncherSite,
 } from './teleport.js'
+import type { AccountMoves } from './teleport-account.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
@@ -802,6 +803,8 @@ export interface SupervisorOptions {
   seatTeleport?: SeatTeleportDeps
   /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
   hosts?: LauncherSite
+  /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
+  accountMoves?: AccountMoves
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -1108,6 +1111,7 @@ export class Supervisor implements TeleportHost {
       options.argvReader,
       options.seatTeleport,
       options.hosts,
+      options.accountMoves,
     )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
@@ -4230,10 +4234,12 @@ export class Supervisor implements TeleportHost {
     allocation: Allocation,
     over: { sessionId?: string; surface?: SurfaceName } = {},
   ): { plan: LaunchPlan; sessionId: string } {
-    const sessionId = over.sessionId ?? Teleport.newSessionId()
+    // CC-892: an account move continues the same conversation, so it resumes the id rather than minting one.
+    const sessionId = over.sessionId ?? input.resumeSession ?? Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
       sessionId,
+      ...(input.resumeSession === undefined ? {} : { resume: true }),
       name: input.name,
       profile: input.profile,
       brief: input.brief,

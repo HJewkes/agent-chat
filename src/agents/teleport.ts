@@ -22,6 +22,7 @@ import { newMsgId } from '../broker/event-log.js'
 import { logEvent } from '../broker/log.js'
 import {
   HUMAN,
+  isInteractiveSurface,
   type AgentIdentity,
   type HostProbe,
   type IsolationName,
@@ -49,6 +50,17 @@ import {
   type WrapGap,
 } from './teleport-appendix.js'
 import { successorProvenance } from './spawn-provenance.js'
+import type { AccountTarget } from './account-move.js'
+import { childConfigDir } from './config-dir.js'
+import {
+  ACCOUNT_MOVE_PREAMBLE,
+  accountLabel,
+  moveNote,
+  realAccountMoves,
+  sessionAccount,
+  type AccountMoveRequest,
+  type AccountMoves,
+} from './teleport-account.js'
 import type { AgentProfile } from './types.js'
 
 /**
@@ -192,6 +204,8 @@ export interface TeleportRequest {
   to?: string
   /** CC-951: the caller's MCP process acts on an `endSelf` plan; an older one would be orphaned by it. */
   endsSelf?: boolean
+  /** CC-892: resume this same conversation on another account. Only the human's `account_move` sets it. */
+  account?: AccountMoveRequest
 }
 
 export interface TeleportOutcome {
@@ -259,6 +273,8 @@ export interface RelaunchInput {
   permissionMode?: CarriedFlags['permissionMode']
   /** CC-951: the predecessor is still running and is ended only once this successor attaches. */
   successorFirst?: boolean
+  /** CC-892: resume this session id rather than mint one; set only by an account move. */
+  resumeSession?: string
 }
 
 /** CC-281: the successor of a human's own session has no spawner, whatever its preamble says. */
@@ -303,7 +319,7 @@ interface Destination {
 }
 
 /** CC-1358: where a teleport request was turned away, so a refusal that never reaches the human still leaves a log line. */
-export type RefusalStage = 'preflight' | 'questions' | 'route' | 'config' | 'blocker' | 'identity'
+export type RefusalStage = 'preflight' | 'questions' | 'route' | 'config' | 'blocker' | 'identity' | 'account'
 
 export function refused(
   subject: Pick<TeleportSubject, 'name'>,
@@ -468,6 +484,24 @@ interface Pending {
   successorFirst: boolean
   /** TP-1600 e: when a seat's successor prompt was rendered; its generation closes only once the teleport completes. */
   seatRenderedAt?: Date
+  /** CC-892: the checked account move, which `finish` carries out end-first. */
+  account?: PendingMove
+}
+
+/** CC-892: an account move that passed every check in `begin`. */
+interface PendingMove {
+  from: AccountTarget
+  to: AccountTarget
+  by: string
+  /** Where the transcript lives and the successor runs, so both read the same project dir. */
+  cwd: string
+}
+
+/** CC-892: the account a successor resumes on, and the one it left when the move went through. */
+interface ResumeOn {
+  target: AccountTarget
+  sessionId: string
+  movedFrom?: AccountTarget
 }
 
 /** CC-402: typed into the predecessor's own pane, so it can only launch once the predecessor has ended. */
@@ -529,6 +563,8 @@ export class Teleport {
   private readonly arrivals = new Map<string, (failure: string | undefined) => void>()
   /** CC-951: requests past preflight and not yet pending or refused. */
   private readonly starting = new Set<string>()
+  /** CC-892: what a moved session in a pane is told once it attaches, since a resumed pane gets no prompt. */
+  private readonly moveNotes = new Map<string, { name: string; note: string }>()
   private readonly unwatch: () => void
 
   constructor(
@@ -538,12 +574,22 @@ export class Teleport {
     private readonly readArgv: ArgvReader = psArgvReader,
     private readonly seatTeleport: SeatHandoffDeps = defaultSeatTeleportDeps(),
     private readonly hosts: LauncherSite = NO_LAUNCHERS,
+    private readonly accounts: AccountMoves = realAccountMoves(seatTeleport.autonomyRoot),
   ) {
     this.unwatch = core.onAppend(row => {
       if (row.kind !== 'agent_attached' || row.ref === undefined) return
       this.closeLanding(row.ref)
       this.arrivals.get(row.ref)?.(undefined)
+      this.tellMoved(row.ref)
     })
+  }
+
+  /** Told after the append that announced the attach, not inside it. */
+  private tellMoved(agentId: string): void {
+    const pending = this.moveNotes.get(agentId)
+    if (pending === undefined) return
+    this.moveNotes.delete(agentId)
+    setImmediate(() => this.tell(pending.name, pending.note))
   }
 
   /**
@@ -554,7 +600,8 @@ export class Teleport {
   async start(req: TeleportRequest): Promise<TeleportOutcome> {
     const blocked = this.preflight(req)
     if (blocked) return refused(req.subject, 'preflight', blocked)
-    const asks = this.restatedQuestions(req)
+    // CC-892: a moved session keeps its whole transcript, the question included, and its name.
+    const asks = req.account === undefined ? this.restatedQuestions(req) : { restated: [] }
     if ('reason' in asks) return refused(req.subject, 'questions', asks.reason)
     // CC-951: held from preflight until the entry is pending or refused, across the launcher
     // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
@@ -574,6 +621,8 @@ export class Teleport {
     const { configDir } = this.configDirOf(subject)
     const route = routeFor(req, identity.isolation, configDir, this.hosts.launchers())
     if (!route.ok) return refused(subject, 'route', `${route.reason}. ${subject.name} was not ended.`)
+    const move = req.account === undefined ? undefined : this.accountMove(req, route, req.account)
+    if (move !== undefined && 'reason' in move) return refused(subject, 'account', move.reason)
 
     const remote = onAnotherHost(subject)
     const config = teleportConfig({
@@ -610,6 +659,7 @@ export class Teleport {
         successor: descendantId,
         ...(req.reason === undefined ? {} : { reason: req.reason }),
         ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
+        ...(move === undefined ? {} : { account_to: move.to.dir }),
       },
     })
 
@@ -640,6 +690,7 @@ export class Teleport {
       sessionId: identity.sessionId,
       inboxThrough: this.inboxCursor(subject.name),
       ...(req.reason === undefined ? {} : { reason: req.reason }),
+      ...(move === undefined ? {} : { account: move }),
     }
     this.pending.set(subject.agentId, entry)
     logEvent('teleport_started', {
@@ -660,8 +711,9 @@ export class Teleport {
     }
     // A headless predecessor has no pane and no human watching it in the moment,
     // so a countdown would be latency bought in exchange for a veto nobody is
-    // positioned to exercise. The asymmetry is deliberate; see §4.2.
-    if (!config.visible) {
+    // positioned to exercise. The asymmetry is deliberate; see §4.2. An account move
+    // comes from the human, who is the veto, so it gets none either (CC-892).
+    if (!config.visible || move !== undefined) {
       void this.finish(subject.agentId)
       return result
     }
@@ -915,6 +967,8 @@ export class Teleport {
     delete entry.timer
     if (entry.remote !== undefined && entry.launchSite === 'caller')
       return this.finishRemote(entry, entry.remote)
+    // CC-892: end-first even with a surface asked for, since the successor resumes the same session id.
+    if (entry.account !== undefined) return this.finishInPane(entry)
     if (reusesPane(entry) && entry.remote === undefined) return this.finishInPane(entry)
     return this.finishSuccessorFirst(entry)
   }
@@ -1092,7 +1146,12 @@ export class Teleport {
 
     try {
       const paneFree = await this.waitForPaneFree(subject)
-      await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
+      if (entry.account !== undefined && !paneFree) return this.moveHeld(entry, entry.account)
+      const input =
+        entry.account === undefined
+          ? this.relaunchFor(entry, paneFree, await this.briefFor(entry))
+          : this.movedRelaunch(entry, entry.account, paneFree && reusesPane(entry))
+      await this.host.relaunch(input)
       this.completed(entry)
     } catch (err) {
       if (err instanceof SuccessorNotStarted) return
@@ -1287,12 +1346,96 @@ export class Teleport {
     logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason, remote: true })
   }
 
+  /**
+   * CC-892: the transcript moves once the predecessor has ended, so it holds the last turn, and
+   * before the relaunch, so the target has it. A failed move resumes on the old account, where the
+   * transcript still is, rather than leaving nobody in the session.
+   */
+  private movedRelaunch(entry: Pending, move: PendingMove, paneFree: boolean): RelaunchInput {
+    const { subject, sessionId } = entry
+    const moved = this.accounts.move({ from: move.from, to: move.to, cwd: move.cwd, sessionId })
+    const failure = moved.ok ? undefined : moved.error
+    if (failure !== undefined) this.noticeMoveFailed(subject.name, failure)
+    const note = moveNote(move.from, move.to, move.by, failure)
+    const input = this.relaunchFor(entry, paneFree, note, {
+      target: moved.ok ? move.to : move.from,
+      sessionId,
+      ...(moved.ok ? { movedFrom: move.from } : {}),
+    })
+    // Headless reads the note as its first turn; a resumed pane opens with no prompt at all.
+    if (isInteractiveSurface(input.surface))
+      this.moveNotes.set(entry.descendantId, { name: subject.name, note })
+    return input
+  }
+
+  /** CC-892: a predecessor still running would leave one session on two accounts, so nothing moves or relaunches. */
+  private moveHeld(entry: Pending, move: PendingMove): void {
+    const { name, hostPid } = entry.subject
+    const waited = PANE_EXIT_TIMEOUT_MS / 1000
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${name} was ended for an account move, but its Claude Code (pid ${hostPid}) was still running ` +
+        `${waited}s later, so its transcript was not moved and no successor was launched. It stays on ` +
+        `${accountLabel(move.from)}; resume it there once that process is gone.`,
+    })
+    logEvent('account_move_held', { name, pid: hostPid })
+  }
+
+  private noticeMoveFailed(name: string, failure: string): void {
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${name} ended for an account move, but its transcript did not move (${failure}); it resumes on its old account`,
+    })
+    logEvent('account_move_failed', { name, reason: failure })
+  }
+
+  /**
+   * CC-892: every refusal of an account move, read before the handoff row so a refused move ends
+   * nothing. The transcript sits on the session's own disk, so it moves only on the broker's host.
+   */
+  private accountMove(
+    req: TeleportRequest,
+    route: Destination,
+    account: AccountMoveRequest,
+  ): PendingMove | { reason: string } {
+    const { subject } = req
+    const kept = `${subject.name} was not ended.`
+    if (onAnotherHost(subject) || route.site !== 'broker' || route.host !== subject.host)
+      return { reason: `an account move runs only on the broker's host, and stays there. ${kept}` }
+    const to = this.accounts.resolve(account.to)
+    if ('error' in to) return { reason: `${to.error}. ${kept}` }
+    const from = sessionAccount(this.configDirOf(subject).configDir)
+    const cwd = this.host.inheritedIsolation(subject.agentId)?.allocation.cwd ?? subject.cwd
+    const sessionId = this.core.agents.get(subject.agentId)?.sessionId ?? ''
+    try {
+      const check = this.accounts.check({
+        from,
+        to,
+        cwd,
+        sessionId,
+        ...(account.force === true ? { force: true } : {}),
+      })
+      if (!check.ok) return { reason: `${check.refusals.join('; ')}. ${kept}` }
+    } catch (err) {
+      return { reason: `the move to ${account.to} could not be checked: ${(err as Error).message}. ${kept}` }
+    }
+    return { from, to, by: account.by, cwd }
+  }
+
   /** `paneFree` false keeps the anchor but opens beside it: typing into a pane the predecessor still holds reaches its prompt. */
-  private relaunchFor(entry: Pending, paneFree: boolean, brief: string): RelaunchInput {
+  private relaunchFor(entry: Pending, paneFree: boolean, brief: string, resume?: ResumeOn): RelaunchInput {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
-    const { configDir, unset } = this.configDirOf(subject)
+    const { configDir, unset } =
+      resume === undefined
+        ? this.configDirOf(subject)
+        : { configDir: childConfigDir(resume.target), unset: resume.target.unset === true }
     // CC-951: a remote predecessor's pane is on its own host, so a successor launched here opens fresh.
     const anchor = landsBesidePredecessor(entry) ? subject.anchor : undefined
     return {
@@ -1302,7 +1445,7 @@ export class Teleport {
       brief,
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
-      preamble: TELEPORT_PREAMBLE,
+      preamble: resume === undefined ? TELEPORT_PREAMBLE : ACCOUNT_MOVE_PREAMBLE,
       meta: {
         // Succession is not branching: DEPTH IS INHERITED, NOT INCREMENTED. The
         // obvious implementation reuses the ordinary parent path, and then a
@@ -1317,7 +1460,9 @@ export class Teleport {
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
         // CC-915: the session-origin reader sees only this row, and the successor keeps the tree and task.
         ...successorProvenance(this.core.agents.get(subject.agentId)),
+        ...(resume?.movedFrom === undefined ? {} : { account_from: resume.movedFrom.dir }),
       },
+      ...(resume === undefined ? {} : { resumeSession: resume.sessionId }),
       ...(configDir ? { configDir } : {}),
       ...(unset ? { configDirUnset: true } : {}),
       ...(entry.remoteControl ? { remoteControl: true } : {}),
@@ -1468,6 +1613,7 @@ export class Teleport {
     this.pending.clear()
     for (const agentId of [...this.landings.keys()]) this.closeLanding(agentId)
     this.arrivals.clear()
+    this.moveNotes.clear()
     this.unwatch()
   }
 }
