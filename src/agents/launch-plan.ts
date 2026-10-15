@@ -4,7 +4,7 @@ import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
 import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
-import { standingRulesFor } from './standing-rules.js'
+import { deniesChatSend, standingRulesFor } from './standing-rules.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -60,7 +60,7 @@ export const HOOK_DENIAL_NOTE =
 const systemPrompt = (input: LaunchPlanInput, hooked: boolean): string =>
   [
     input.preamble ?? PEER_PREAMBLE,
-    standingRulesFor(input.adopted),
+    standingRulesFor(input.adopted, !deniesChatSend(input.profile)),
     hooked ? HOOK_DENIAL_NOTE : '',
     input.profile.promptPrelude,
   ]
