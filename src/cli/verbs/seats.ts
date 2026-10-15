@@ -832,7 +832,7 @@ export const seatsDispatchesVerb = defineVerb({
   },
 })
 
-function runStartDeps(root: string): RunStartDeps {
+export function runStartDeps(root: string): RunStartDeps {
   return {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),

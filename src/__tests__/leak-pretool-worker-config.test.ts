@@ -26,6 +26,7 @@ const input = (profile: AgentProfile): LaunchPlanInput => ({
   brief: 'implement a slice',
   cwd: '/repo',
   cwdHoldsUserSettings: false,
+  adopted: false,
   mcpConfigPath: '/state/agents/ag000001/mcp.json',
 })
 

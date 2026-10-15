@@ -171,6 +171,7 @@ describe('the tmux-window surface', () => {
       brief: 'go',
       cwd: '/tmp',
       cwdHoldsUserSettings: false,
+      adopted: false,
       surface: 'tmux-window',
       remoteControl: true,
       mcpConfigPath: '/tmp/mcp.json',
