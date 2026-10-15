@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { readAccountUsage, type AccountUsage } from './account-budget.js'
-import { accountIdentity } from './account-identity.js'
+import { accountIdentity, explicitDirIdentity } from './account-identity.js'
+import { SESSION_ID_SHAPE } from './budget.js'
 import { checkConfigDir, childConfigDir, defaultConfigDir, profileDir } from './config-dir.js'
 import { transcriptPath } from './transcript.js'
 import { isTrusted } from './trust.js'
@@ -68,14 +69,27 @@ export function keychainService(target: AccountTarget): string {
   return `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`
 }
 
+/** A locked or prompting Keychain must not hang the check; a lookup this slow reads as no login. */
+export const LOGIN_LOOKUP_TIMEOUT_MS = 5_000
+
+export interface LoginProbe {
+  platform?: NodeJS.Platform
+  exec?: (file: string, args: string[], options: { stdio: 'ignore'; timeout: number }) => unknown
+}
+
 /**
  * Whether the target holds a login, by Keychain item presence on macOS or credentials file presence
  * elsewhere. `find-generic-password` without `-g` or `-w` prints attributes only, not the secret.
  */
-export function hasLogin(target: AccountTarget): boolean {
-  if (process.platform !== 'darwin') return fs.existsSync(path.join(target.dir, '.credentials.json'))
+export function hasLogin(target: AccountTarget, probe: LoginProbe = {}): boolean {
+  if ((probe.platform ?? process.platform) !== 'darwin')
+    return fs.existsSync(path.join(target.dir, '.credentials.json'))
+  const exec = probe.exec ?? execFileSync
   try {
-    execFileSync('security', ['find-generic-password', '-s', keychainService(target)], { stdio: 'ignore' })
+    exec('security', ['find-generic-password', '-s', keychainService(target)], {
+      stdio: 'ignore',
+      timeout: LOGIN_LOOKUP_TIMEOUT_MS,
+    })
     return true
   } catch {
     return false
@@ -91,9 +105,10 @@ export interface AccountReaders {
 }
 
 export const realAccountReaders = (home: string = os.homedir()): AccountReaders => ({
-  identity: target => accountIdentity(target.dir, home),
+  identity: target =>
+    target.unset === true ? accountIdentity(target.dir, home) : explicitDirIdentity(target.dir),
   usage: target => readAccountUsage(target.dir, { home }),
-  hasLogin,
+  hasLogin: target => hasLogin(target),
   trusted: isTrusted,
 })
 
@@ -132,27 +147,38 @@ function loginRefusals(input: AccountCheckInput, usage: AccountUsage): string[] 
 function usageRefusals(input: AccountCheckInput, usage: AccountUsage): string[] {
   if (usage.source === null) return [`${usage.config_dir} has no usage reading`]
   if (usage.stale) return [`${usage.config_dir}'s usage reading is stale (${usage.age_seconds}s old)`]
+  const absent = (['five_hour', 'seven_day'] as const).filter(name => usage[name] === null)
+  if (absent.length > 0) return absent.map(name => `${usage.config_dir} has no ${name} reading`)
   if (input.force === true) return []
   const fiveCeiling = input.limits?.fiveHour ?? ACCOUNT_HARD_LIMIT
   const sevenLine = input.limits?.sevenDay ?? ACCOUNT_HARD_LIMIT
-  const refusals: string[] = []
   const five = usage.five_hour?.used_pct
-  if (five === undefined) refusals.push(`${usage.config_dir} has no five_hour reading`)
-  else if (five >= fiveCeiling)
-    refusals.push(`five_hour ${five}% is at or over the ceiling of ${fiveCeiling}%`)
   const seven = usage.seven_day?.used_pct
+  const refusals: string[] = []
+  if (five !== undefined && five >= fiveCeiling)
+    refusals.push(`five_hour ${five}% is at or over the ceiling of ${fiveCeiling}%`)
   if (seven !== undefined && seven >= sevenLine)
     refusals.push(`seven_day ${seven}% is at or over its line of ${sevenLine}%`)
   return refusals
+}
+
+/** A move runs headless, where a trust prompt has nobody to answer, so only a definite yes passes. */
+function trustRefusal(input: AccountCheckInput): string | undefined {
+  const configDir = childConfigDir(input.to)
+  const trusted = input.readers.trusted(input.cwd, configDir)
+  if (trusted === true) return undefined
+  const config = configDir ?? 'the default config'
+  return trusted === false
+    ? `${config} has no accepted trust entry for ${input.cwd}`
+    : `${config}'s trust entries cannot be read, so ${input.cwd} is not known to be trusted`
 }
 
 /** Every reason the session may not move to `to`; empty means it may. */
 export function accountTargetCheck(input: AccountCheckInput): AccountCheck {
   const usage = input.readers.usage(input.to)
   const refusals = [...loginRefusals(input, usage), ...usageRefusals(input, usage)]
-  const configDir = childConfigDir(input.to)
-  if (input.readers.trusted(input.cwd, configDir) === false)
-    refusals.push(`${configDir ?? 'the default config'} has no accepted trust entry for ${input.cwd}`)
+  const trust = trustRefusal(input)
+  if (trust !== undefined) refusals.push(trust)
   return { ok: refusals.length === 0, refusals }
 }
 
@@ -162,6 +188,8 @@ export interface TranscriptMove {
   cwd: string
   sessionId: string
   now?: number
+  /** Renames the source aside. Injected so a test can fail it after the target is written. */
+  rename?: (from: string, to: string) => void
 }
 
 export type TranscriptMoveResult =
@@ -179,17 +207,61 @@ const mtimeOf = (file: string): number | undefined => {
 function writeAtomic(file: string, bytes: Buffer): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.tmp-${process.pid}`
-  fs.writeFileSync(tmp, bytes, { mode: 0o600 })
-  fs.chmodSync(tmp, 0o600)
-  fs.renameSync(tmp, file)
+  try {
+    fs.writeFileSync(tmp, bytes, { mode: 0o600 })
+    fs.chmodSync(tmp, 0o600)
+    fs.renameSync(tmp, file)
+  } finally {
+    fs.rmSync(tmp, { force: true })
+  }
+}
+
+interface Snapshot {
+  bytes: Buffer
+  mtime: Date
+}
+
+const snapshot = (file: string): Snapshot | undefined =>
+  fs.existsSync(file) ? { bytes: fs.readFileSync(file), mtime: fs.statSync(file).mtime } : undefined
+
+/** Put back a file's bytes and its mtime, which the "newer at the target" refusal compares. */
+function restore(file: string, previous: Snapshot | undefined): void {
+  if (previous === undefined) return fs.rmSync(file, { force: true })
+  writeAtomic(file, previous.bytes)
+  fs.utimesSync(file, previous.mtime, previous.mtime)
+}
+
+/**
+ * Copy `source` over `target`, then rename `source` aside. When the rename fails, the target goes back
+ * to what it held before, so only one resumable copy exists and a retry is not refused as "newer".
+ */
+function copyThenRetire(
+  source: string,
+  target: string,
+  movedSource: string,
+  rename: TranscriptMove['rename'],
+) {
+  const bytes = fs.readFileSync(source)
+  const previous = snapshot(target)
+  writeAtomic(target, bytes)
+  try {
+    ;(rename ?? fs.renameSync)(source, movedSource)
+  } catch (err) {
+    restore(target, previous)
+    throw err
+  }
+  return bytes.length
 }
 
 /**
  * Copy the session's transcript to the target account and rename the source to `.moved-<time>`,
  * keeping its bytes, so nothing resumes the old copy and splits the session (CC-959). A target copy
- * newer than the source is refused: it means the session already ran there.
+ * newer than the source is refused: it means the session already ran there. The session id becomes
+ * a path segment, so it must have the shape a session id has.
  */
 export function moveTranscript(move: TranscriptMove): TranscriptMoveResult {
+  if (!SESSION_ID_SHAPE.test(move.sessionId))
+    return { ok: false, error: `unusable session id: ${JSON.stringify(move.sessionId)}` }
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
   const sourceTime = mtimeOf(source)
@@ -200,10 +272,8 @@ export function moveTranscript(move: TranscriptMove): TranscriptMoveResult {
   const stamp = new Date(move.now ?? Date.now()).toISOString().replace(/[:.]/g, '-')
   const movedSource = `${source}.moved-${stamp}`
   try {
-    const bytes = fs.readFileSync(source)
-    writeAtomic(target, bytes)
-    fs.renameSync(source, movedSource)
-    return { ok: true, transcript: target, movedSource, bytes: bytes.length }
+    const bytes = copyThenRetire(source, target, movedSource, move.rename)
+    return { ok: true, transcript: target, movedSource, bytes }
   } catch (err) {
     return { ok: false, error: `transcript move failed: ${(err as Error).message}` }
   }

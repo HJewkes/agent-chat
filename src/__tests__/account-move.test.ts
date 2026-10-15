@@ -5,11 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AccountUsage } from '../agents/account-budget.js'
 import {
   accountTargetCheck,
+  hasLogin,
   keychainService,
+  LOGIN_LOOKUP_TIMEOUT_MS,
   moveTranscript,
   resolveAccountTarget,
   type AccountReaders,
   type AccountTarget,
+  realAccountReaders,
 } from '../agents/account-move.js'
 import { transcriptPath } from '../agents/transcript.js'
 
@@ -88,6 +91,27 @@ describe('keychainService', () => {
   })
 })
 
+describe('hasLogin', () => {
+  const dir = (): string => path.join(home, '.claude')
+
+  it('bounds the Keychain lookup with a timeout', () => {
+    const seen: { timeout: number }[] = []
+    const found = hasLogin(
+      { dir: dir() },
+      { platform: 'darwin', exec: (_f, _a, options) => seen.push(options) },
+    )
+    expect(found).toBe(true)
+    expect(seen).toEqual([{ stdio: 'ignore', timeout: LOGIN_LOOKUP_TIMEOUT_MS }])
+  })
+
+  it('reads a timed-out Keychain lookup as no login', () => {
+    const timedOut = (): never => {
+      throw Object.assign(new Error('spawnSync security ETIMEDOUT'), { code: 'ETIMEDOUT' })
+    }
+    expect(hasLogin({ dir: dir() }, { platform: 'darwin', exec: timedOut })).toBe(false)
+  })
+})
+
 describe('accountTargetCheck', () => {
   const check = (over: Partial<Parameters<typeof accountTargetCheck>[0]> = {}) =>
     accountTargetCheck({ from: personal(), to: server(), cwd: cwd(), readers: readers(), ...over })
@@ -136,8 +160,36 @@ describe('accountTargetCheck', () => {
     expect(result.refusals.join('\n')).toMatch(/no accepted trust entry/)
   })
 
-  it('passes when the target config cannot be read for trust', () => {
-    expect(check({ readers: readers({ trusted: () => undefined }) }).ok).toBe(true)
+  it('refuses when the target config cannot be read for trust', () => {
+    const result = check({ readers: readers({ trusted: () => undefined }) })
+    expect(result.ok).toBe(false)
+    expect(result.refusals.join('\n')).toMatch(/trust entries cannot be read/)
+  })
+
+  it('refuses a reading with no seven_day window, even under force', () => {
+    const result = check({ force: true, readers: readers({ usage: () => usage({ seven_day: null }) }) })
+    expect(result.ok).toBe(false)
+    expect(result.refusals.join('\n')).toMatch(/no seven_day reading/)
+  })
+
+  it('refuses an explicit ~/.claude target on the same login, reading only its own .claude.json', () => {
+    const write = (file: string, login: string): void => {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const [accountUuid, organizationUuid] = login.split('/')
+      fs.writeFileSync(file, JSON.stringify({ oauthAccount: { accountUuid, organizationUuid } }))
+    }
+    write(path.join(home, '.claude.json'), 'acct-L1/org-L1')
+    write(path.join(home, '.claude', '.claude.json'), 'acct-L2/org-L2')
+    write(path.join(profile('personal'), '.claude.json'), 'acct-L2/org-L2')
+    const real = realAccountReaders(home)
+
+    const result = check({
+      to: { dir: path.join(home, '.claude') },
+      readers: readers({ identity: real.identity }),
+    })
+
+    expect(result.refusals.join('\n')).toMatch(/same Anthropic login/)
+    expect(real.identity({ dir: path.join(home, '.claude'), unset: true })).toBe('acct-L1/org-L1')
   })
 
   it('reads trust for claude with CLAUDE_CONFIG_DIR unset', () => {
@@ -154,6 +206,8 @@ describe('accountTargetCheck', () => {
 describe('moveTranscript', () => {
   const sourceFile = (): string => transcriptPath(cwd(), SESSION, profile('personal'))
   const targetFile = (): string => transcriptPath(cwd(), SESSION, profile('server'))
+
+  const move = () => ({ from: personal(), to: server(), cwd: cwd(), sessionId: SESSION, now: NOW })
 
   function writeTranscript(file: string, text: string, mtimeMs: number): void {
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -197,6 +251,49 @@ describe('moveTranscript', () => {
     expect(result.ok).toBe(false)
     expect(fs.readFileSync(targetFile(), 'utf8')).toBe('newer\n')
     expect(fs.readFileSync(sourceFile(), 'utf8')).toBe('old\n')
+  })
+
+  it.each(['../../../victim/secret', 'a/b', '..', ''])(
+    'refuses the session id %j without touching disk',
+    id => {
+      const victim = path.join(home, 'victim', 'secret.jsonl')
+      writeTranscript(victim, 'victim\n', NOW)
+
+      const result = moveTranscript({ from: personal(), to: server(), cwd: cwd(), sessionId: id, now: NOW })
+
+      expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/unusable session id/) })
+      expect(fs.readdirSync(path.dirname(victim))).toEqual(['secret.jsonl'])
+    },
+  )
+
+  it('rolls the target back when the source cannot be renamed, so a retry succeeds', () => {
+    writeTranscript(sourceFile(), 'bytes\n', NOW)
+    const failing = (): never => {
+      throw new Error('EBUSY: injected')
+    }
+
+    const failed = moveTranscript({ ...move(), rename: failing })
+
+    expect(failed).toMatchObject({ ok: false, error: expect.stringMatching(/EBUSY: injected/) })
+    expect(fs.existsSync(targetFile())).toBe(false)
+    expect(fs.readFileSync(sourceFile(), 'utf8')).toBe('bytes\n')
+    expect(moveTranscript(move()).ok).toBe(true)
+  })
+
+  it('restores an older target copy and its mtime when the rename fails', () => {
+    writeTranscript(sourceFile(), 'new\n', NOW)
+    writeTranscript(targetFile(), 'older\n', NOW - 60_000)
+
+    moveTranscript({
+      ...move(),
+      rename: () => {
+        throw new Error('EBUSY: injected')
+      },
+    })
+
+    expect(fs.readFileSync(targetFile(), 'utf8')).toBe('older\n')
+    expect(fs.statSync(targetFile()).mtimeMs).toBe(NOW - 60_000)
+    expect(moveTranscript(move()).ok).toBe(true)
   })
 
   it('refuses when the source transcript is missing', () => {
