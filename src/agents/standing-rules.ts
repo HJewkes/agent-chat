@@ -16,8 +16,24 @@ export const SESSION_RULES = [
   'agent-chat profiles as they are.',
 ].join(' ')
 
-/** Only a spawned agent has a spawner; an adopted session is a human's own, teleported or not. */
-export const SPAWNED_RULES = 'Report progress, blockers and results to your spawner with chat_send.'
+/**
+ * Only a spawned agent has a spawner; an adopted session is a human's own, teleported or not.
+ * It yields to a channel the brief or profile names: a Shepherd reviewer's brief says its verdict
+ * needs no chat_send (CC-1354).
+ */
+export const SPAWNED_RULES =
+  'Report progress, blockers and results to your spawner with chat_send unless your instructions name another channel.'
 
-export const standingRulesFor = (adopted: boolean): string =>
-  adopted ? SESSION_RULES : `${SPAWNED_RULES} ${SESSION_RULES}`
+const CHAT_SEND_TOOL = 'mcp__plugin_agent-chat_agent-chat__chat_send'
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const globMatches = (pattern: string, name: string): boolean =>
+  new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`).test(name)
+
+/** A profile that denies chat_send, exactly or by an MCP wildcard, cannot follow the spawner rule. */
+export const deniesChatSend = (profile: { disallowedTools?: string[] }): boolean =>
+  (profile.disallowedTools ?? []).some(rule => globMatches(rule, CHAT_SEND_TOOL))
+
+export const standingRulesFor = (adopted: boolean, canChatSend: boolean): string =>
+  adopted || !canChatSend ? SESSION_RULES : `${SPAWNED_RULES} ${SESSION_RULES}`
