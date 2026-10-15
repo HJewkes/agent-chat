@@ -61,10 +61,12 @@ describe('parseShell on very wide input', () => {
     expect(() => parseShell(src)).not.toThrow()
   })
 
-  it('keeps every write of a long redirect run on one command', () => {
-    const src = 'x ' + '>f '.repeat(150000)
+  it.each([
+    ['a run of writes with no command, then a command', '>f '.repeat(600000) + '\nx'],
+    ['a run of write-only lines, then a command', '>f\n'.repeat(600000) + 'x'],
+  ])('keeps every write of %s', (_name, src) => {
     let commands: Array<{ writes: unknown[] }> = []
     expect(() => (commands = parseShell(src))).not.toThrow()
-    expect(commands[0]?.writes.length).toBe(150000)
+    expect(commands.at(-1)?.writes.length).toBe(600000)
   })
 })
