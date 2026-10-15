@@ -30,10 +30,34 @@ export async function tickRoster(client: BrokerClient): Promise<Roster> {
   }
 }
 
-/** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
-export async function collisionView(client: BrokerClient, now: number = Date.now()): Promise<BrokerView> {
+/** The seat plan's broker inputs: one live `agents` read serves both the collision view and the roster (CC-1318). */
+export interface PlanBrokerReads {
+  view: BrokerView
+  roster: Roster
+}
+
+/**
+ * Live rows only: the plan's roster readers (`activeTreeOf`, `liveAgentOf`, `occupantOf`) skip
+ * retired rows, and the retired read is the 23 MB reply that timed out (CC-777).
+ */
+export async function planBrokerReads(
+  client: BrokerClient,
+  now: number = Date.now(),
+): Promise<PlanBrokerReads> {
   const roster = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
   const list = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+  return {
+    view: viewOf(roster, list, now),
+    roster: { agents: roster.agents, ...(roster.slots === undefined ? {} : { slots: roster.slots }) },
+  }
+}
+
+/** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
+export async function collisionView(client: BrokerClient, now: number = Date.now()): Promise<BrokerView> {
+  return (await planBrokerReads(client, now)).view
+}
+
+function viewOf(roster: Reply<'agents_result'>, list: Reply<'list_result'>, now: number): BrokerView {
   const agents = roster.agents.filter(a => LIVE.has(a.state)).map(a => a.name)
   const since = now - TICK_INTERVAL_SECONDS * 1000
   const recentlyExited = roster.agents

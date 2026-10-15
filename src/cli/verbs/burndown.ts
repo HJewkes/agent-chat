@@ -54,11 +54,12 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { planBrokerReads } from '../port-reads.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { linkSlicePr, pullReader, releaseTask, type RetireCall } from './burndown-release.js'
 import { reloadSliceOwns, unstallSlice } from './burndown-unstall.js'
 import { finishSlice } from './burndown-done.js'
-import { changedFiles } from '../../agents/burndown/observe.js'
+import { changedFiles, type Roster } from '../../agents/burndown/observe.js'
 import { diskPlanReader } from '../../agents/burndown/seed-slices.js'
 import {
   applyApproved,
@@ -243,16 +244,12 @@ export const burndownSeatsCompareVerb = defineVerb({
   },
 })
 
-/**
- * The seat plan's live inputs. The collision view and the roster are read apart, so a roster read
- * that fails only counts every held tree instead of losing the view and refusing every task as `claimed`.
- */
+/** The seat plan's live inputs, from one broker read (CC-1318). */
 export async function seatPlanOptions(
   seat: string,
   autonomyRoot: string | undefined,
 ): Promise<SeatPlanOptions> {
-  const view = await readCollisionView()
-  const roster = await readBroker(client => tickBroker(client).roster())
+  const { view, roster } = await seatBrokerReads()
   const root = activeWorkRoot()
   return {
     seat,
@@ -294,11 +291,25 @@ function gatedPlan(disk: ScoredPlanDiskOptions, tick: ScoredGateConfig, today: s
 
 const readCollisionView = (): Promise<BrokerView | undefined> => readBroker(collisionView)
 
+/**
+ * Both undefined when the broker does not answer: the collision check then refuses as `claimed`,
+ * and the plan counts every held tree, as when the broker is down.
+ */
+export async function seatBrokerReads(
+  client: BrokerClient = plainClient(),
+): Promise<{ view: BrokerView | undefined; roster: Roster | undefined }> {
+  const reads = await readBroker(planBrokerReads, client)
+  return { view: reads?.view, roster: reads?.roster }
+}
+
+const plainClient = (): BrokerClient =>
+  new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, { autoStart: false })
+
 /** Undefined when no broker answers, which the collision check reports as a `claimed` refusal it could not rule out. */
-async function readBroker<T>(read: (client: BrokerClient) => Promise<T>): Promise<T | undefined> {
-  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-    autoStart: false,
-  })
+async function readBroker<T>(
+  read: (client: BrokerClient) => Promise<T>,
+  client: BrokerClient = plainClient(),
+): Promise<T | undefined> {
   try {
     await client.connect()
     return await read(client)
