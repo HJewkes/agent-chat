@@ -202,6 +202,7 @@ export interface TeleportOutcome {
   countdownMs?: number
   warnings?: string[]
   remote?: boolean
+  placement?: 'same-pane' | 'new-surface' | 'other-machine'
 }
 
 /** CC-881: what a remote caller is handed: the successor to launch, or why there is none. */
@@ -457,6 +458,12 @@ interface Pending {
 const reusesPane = (entry: Pending): boolean =>
   entry.subject.anchor !== undefined && !entry.surfaceRequested && entry.launchSite !== 'launcher'
 
+/** What a teleporting session is told about where its successor opens. */
+const placementOf = (entry: Pending): NonNullable<TeleportOutcome['placement']> => {
+  if (entry.launchSite === 'launcher') return 'other-machine'
+  return reusesPane(entry) && entry.remote === undefined ? 'same-pane' : 'new-surface'
+}
+
 /** CC-951: the predecessor's pane is on its own host, so only a successor landing there may use it. */
 const landsBesidePredecessor = (entry: Pending): boolean =>
   entry.launchSite === 'caller' || (entry.launchSite === 'broker' && entry.remote === undefined)
@@ -629,6 +636,7 @@ export class Teleport {
       agentId: descendantId,
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(remote ? { remote: true } : {}),
+      placement: placementOf(entry),
     }
     // A headless predecessor has no pane and no human watching it in the moment,
     // so a countdown would be latency bought in exchange for a veto nobody is
