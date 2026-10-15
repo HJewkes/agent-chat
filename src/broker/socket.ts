@@ -255,23 +255,19 @@ function launcherHello(
 }
 
 /**
- * CC-1063: why a hello's proof does not let it hold `host`, or undefined when it does. A configured
- * machine always needs a proof over this connection's nonce, connected holder or not, and with no
- * broker key it fails closed. An unconfigured host needs one only once a key has been minted for it.
+ * CC-1063: why a hello's proof does not let it hold `host`, or undefined when it does. Every host
+ * needs its broker key and a proof over this connection's nonce, connected holder or not, and with no
+ * broker key it fails closed (CC-1317); `machines` only bounds which names may be announced.
  */
 export function proofRefusal(
   host: string,
   proof: unknown,
   nonce: string | undefined,
-  machines: readonly string[],
   keyFor: (host: string) => string | null,
 ): string | undefined {
-  const configured = machines.some(machine => machine.toLowerCase() === host.toLowerCase())
   const key = keyFor(host)
   if (key === null)
-    return configured
-      ? `no launcher key for ${host} on the broker; provision the launcher key (CC-1063 slice d)`
-      : undefined
+    return `no launcher key for ${host} on the broker; provision the launcher key (CC-1063 slice d)`
   if (nonce === undefined) return `no valid launcher proof for ${host}: send host_challenge first`
   return proofMatches(key, host, nonce, proof) ? undefined : `no valid launcher proof for ${host}`
 }
@@ -815,9 +811,9 @@ export class SocketServer {
    * holds a registration may not announce a machine, and a launcher's may not register (see
    * `refuseLauncherRegister`). A session can still open a second connection; what stops it
    * taking over a machine is that the first live launcher holds it, that a configured
-   * `machines` list bounds which machines may be announced at all, and (CC-1063) that a
-   * configured machine is held only with a proof of its launcher key over this connection's
-   * single-use nonce, so the gap after the real launcher drops is closed too.
+   * `machines` list bounds which machines may be announced at all, and (CC-1063) that under
+   * `hostProof: enforce` every machine is held only with a proof of its launcher key over this
+   * connection's single-use nonce, so the gap after the real launcher drops is closed too.
    */
   private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
     const nonce = this.hosts.takeNonce(conn)
@@ -825,7 +821,7 @@ export class SocketServer {
     const machines = Object.values(resolveMachines())
     const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce, machines)
+    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce)
     const result =
       refusal === undefined
         ? this.hosts.hello(conn, hello, frame => reply(conn, frame))
@@ -838,15 +834,10 @@ export class SocketServer {
    * CC-1063: with `hostProof` off (the default until launchers answer the challenge), a hello without a
    * proof is accepted as before, and a bad proof is logged and accepted, so the check can be watched live.
    */
-  private enforcedProofRefusal(
-    host: string,
-    proof: unknown,
-    nonce: string | undefined,
-    machines: readonly string[],
-  ): string | undefined {
+  private enforcedProofRefusal(host: string, proof: unknown, nonce: string | undefined): string | undefined {
     const enforced = resolveHostProofMode() === 'enforce'
     if (!enforced && proof === undefined) return undefined
-    const refusal = proofRefusal(host, proof, nonce, machines, brokerKeyFor)
+    const refusal = proofRefusal(host, proof, nonce, brokerKeyFor)
     if (enforced || refusal === undefined) return refusal
     logEvent('host_launcher_refused', { host, reason: 'proof-invalid (not enforced)' })
     return undefined
