@@ -138,7 +138,50 @@ export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
 
 // --- api ------------------------------------------------------------------------------------------
 
-const MERGE_PATH = /(?:^|\/)repos\/([^/]+)\/([^/]+)\/pulls\/([^/?#]+)\/merge(?:[/?#]|$)/i
+/**
+ * Every operation that can land a PR's commits on its base, one row each, so the REST and GraphQL
+ * readers cannot drift apart. `rest` matches a canonical, decoded path and `mentions` a
+ * non-canonical one; `writesOnly` skips GET reads. Only the PR merge path names a target; every
+ * other row is unresolved. A ref write is here because it can fast-forward a PR's base.
+ */
+interface MergeOperation {
+  name: string
+  graphql: readonly string[]
+  rest?: { path: RegExp; mentions: RegExp; writesOnly: boolean }
+}
+
+const REPO_PATH = String.raw`(?:^|\/)repos\/([^/]+)\/([^/]+)\/`
+const PATH_END = String.raw`(?:[/?#]|$)`
+
+const MERGE_OPERATIONS: readonly MergeOperation[] = [
+  {
+    name: 'a PR merge',
+    graphql: ['mergePullRequest'],
+    rest: {
+      path: new RegExp(String.raw`${REPO_PATH}pulls\/([^/?#]+)\/merge${PATH_END}`, 'i'),
+      mentions: /pulls[\s\S]*merge/i,
+      writesOnly: false,
+    },
+  },
+  {
+    name: 'a branch merge',
+    graphql: ['mergeBranch'],
+    rest: { path: new RegExp(`${REPO_PATH}merges${PATH_END}`, 'i'), mentions: /merges/i, writesOnly: false },
+  },
+  { name: 'an auto-merge', graphql: ['enablePullRequestAutoMerge'] },
+  { name: 'a merge queue entry', graphql: ['enqueuePullRequest'] },
+  {
+    name: 'a branch ref write',
+    graphql: ['updateRef', 'updateRefs'],
+    rest: {
+      path: new RegExp(String.raw`${REPO_PATH}git\/refs(?:\/heads(?:\/[^?#]*)?)?(?:[?#]|$)`, 'i'),
+      mentions: /git[\s\S]*refs/i,
+      writesOnly: true,
+    },
+  },
+]
+
+const PR_MERGE = MERGE_OPERATIONS[0] as MergeOperation
 const API_PREFIX = /^https?:\/\/api\.github\.com\//i
 const OTHER_HOST = /^[a-z][a-z0-9+.-]*:\/\//i
 
@@ -161,14 +204,17 @@ function decoded(word: string): string | undefined {
   return undefined
 }
 
-/** The method is ignored on purpose: a method-override header could turn a GET into the merge. */
+/** A merge path ignores the method on purpose: a method-override header could turn a GET into the merge. */
 function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const parsed = parseWords(rest, API_FLAGS)
   const graphql = parsed.positionals.map(graphqlEndpoint)
   if (graphql.includes('odd')) return unresolved('a non-canonical GraphQL path')
   if (graphql.includes('exact') && !graphqlIsReadableNonMerge(parsed))
     return unresolved('a GraphQL call that may merge')
-  const merges = parsed.positionals.map(endpointTarget).filter(target => target.kind !== 'none')
+  const writes = isWrite(parsed)
+  const merges = parsed.positionals
+    .map(word => endpointTarget(word, writes))
+    .filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
   const host = parsed.flags.findLast(flag => flag.name === '--hostname')?.value ?? env.GH_HOST
   if (host !== undefined && host.toLowerCase() !== 'github.com') return unresolved('a merge on another host')
@@ -187,7 +233,7 @@ function graphqlEndpoint(word: string): 'exact' | 'odd' | 'no' {
 }
 
 const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
-const GRAPHQL_MERGE = /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeBranch/i
+const GRAPHQL_MERGE = new RegExp(MERGE_OPERATIONS.flatMap(operation => operation.graphql).join('|'), 'i')
 
 /**
  * True only when every flag is known, every field is inline and none names a merge mutation;
@@ -209,15 +255,30 @@ function isCanonical(path: string): boolean {
   return segments.every(segment => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-const MENTIONS_MERGE = /pulls[\s\S]*merge/i
+/** gh's own method: `-X` if given, else POST when it sends a body; any override header counts as a write. */
+function isWrite(parsed: Parsed): boolean {
+  if (parsed.flags.some(flag => /^(?:-H|--header)$/.test(flag.name) && /override/i.test(flag.value ?? '')))
+    return true
+  const method = parsed.flags.findLast(flag => flag.name === '-X' || flag.name === '--method')
+  if (method !== undefined) return !/^(?:GET|HEAD)$/i.test(method.value ?? '')
+  return parsed.flags.some(flag => FIELD_FLAGS.has(flag.name) || flag.name === '--input')
+}
 
-function endpointTarget(word: string): MergeTarget {
+function endpointTarget(word: string, writes: boolean): MergeTarget {
   const plain = decoded(word)
   if (plain === undefined) return unresolved('a path encoded too deeply to read')
   const path = plain.replace(API_PREFIX, '')
-  if (!isCanonical(path) && MENTIONS_MERGE.test(path)) return unresolved('a non-canonical pulls merge path')
-  const match = MERGE_PATH.exec(path)
-  if (match === null) return NONE
+  for (const { name, rest } of MERGE_OPERATIONS) {
+    if (rest === undefined || (rest.writesOnly && !writes)) continue
+    if (!isCanonical(path) && rest.mentions.test(path)) return unresolved(`a non-canonical path for ${name}`)
+    if (rest.path.test(path) && name !== PR_MERGE.name) return unresolved(`${name}, which names no PR`)
+  }
+  return prMergeTarget(path)
+}
+
+function prMergeTarget(path: string): MergeTarget {
+  const match = PR_MERGE.rest?.path.exec(path)
+  if (match == null) return NONE
   if (OTHER_HOST.test(path)) return unresolved('a merge endpoint on another host')
   const [, owner = '', repo = '', pr = ''] = match
   if (!NAME.test(owner) || !NAME.test(repo)) return unresolved('a merge endpoint whose repo is not literal')

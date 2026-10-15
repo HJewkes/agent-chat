@@ -161,9 +161,73 @@ describe('mergeTarget for gh api', () => {
     ['a jq filter', ['api', 'repos/o/r/pulls/12', '--jq', 'repos/o/r/pulls/12/merge']],
     ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
     ['a PR read', ['api', 'repos/o/r/pulls/12']],
-    ['a merges endpoint', ['api', '-X', 'POST', 'repos/o/r/merges']],
+    ['a branch ref read', ['api', 'repos/o/r/git/refs/heads/main']],
+    ['a tag ref write', ['api', '-X', 'PATCH', 'repos/o/r/git/refs/tags/v1', '-f', 'sha=abc']],
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
+  })
+})
+
+describe('mergeTarget for every merge-capable operation', () => {
+  const mutation = (name: string): string[] => [
+    'api',
+    'graphql',
+    '-f',
+    `query=mutation{${name}(input:{}){x}}`,
+  ]
+
+  it.each([
+    ['a PR merge', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/merge'], 'merge', 'mergePullRequest'],
+    [
+      'a branch merge',
+      ['api', '-X', 'POST', 'repos/o/r/merges', '-f', 'base=main', '-f', 'head=pr'],
+      'unresolved',
+      'mergeBranch',
+    ],
+    ['a branch merge in odd case', ['api', 'REPOS/O/R/MERGES', '-f', 'head=pr'], 'unresolved', 'MERGEBRANCH'],
+    [
+      'a branch merge, encoded',
+      ['api', 'repos%2Fo%2Fr%2Fmerges', '-f', 'head=pr'],
+      'unresolved',
+      'mergeBranch',
+    ],
+    [
+      'a branch merge, non-canonical',
+      ['api', 'repos/o/r//merges', '-f', 'head=pr'],
+      'unresolved',
+      'mergeBranch',
+    ],
+    [
+      'a branch ref PATCH',
+      ['api', '-X', 'PATCH', 'repos/o/r/git/refs/heads/main', '-f', 'sha=abc'],
+      'unresolved',
+      'updateRef',
+    ],
+    [
+      'a ref POST',
+      ['api', 'repos/o/r/git/refs', '-f', 'ref=refs/heads/x', '-f', 'sha=abc'],
+      'unresolved',
+      'updateRefs',
+    ],
+    [
+      'a ref write by override',
+      ['api', '-H', 'X-HTTP-Method-Override: PATCH', 'repos/o/r/git/refs/heads/main'],
+      'unresolved',
+      'updateRef',
+    ],
+    [
+      'a non-canonical ref write',
+      ['api', '-X', 'PATCH', 'repos/o/r/git//refs/heads/main'],
+      'unresolved',
+      'updateRef',
+    ],
+  ])('reads %s over REST and GraphQL', (_, rest, restKind, graphql) => {
+    expect(kindOf(rest)).toBe(restKind)
+    expect(kindOf(mutation(graphql))).toBe('unresolved')
+  })
+
+  it.each(['enablePullRequestAutoMerge', 'enqueuePullRequest'])('refuses the GraphQL-only %s', name => {
+    expect(kindOf(mutation(name))).toBe('unresolved')
   })
 })
 
