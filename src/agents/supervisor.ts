@@ -212,6 +212,7 @@ import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
+  isAdoptedSuccessor,
   SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
@@ -2538,6 +2539,7 @@ export class Supervisor implements TeleportHost {
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
+      adopted: false,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
@@ -3794,6 +3796,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: agent.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -3915,6 +3918,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: req.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -4193,6 +4197,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: input.brief,
       preamble: input.preamble,
+      ...(isAdoptedSuccessor(input) ? { adopted: true as const } : {}),
       surface: input.surface,
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
@@ -4236,6 +4241,7 @@ export class Supervisor implements TeleportHost {
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
       surface: over.surface ?? input.surface,
       preamble: input.preamble,
+      adopted: isAdoptedSuccessor(input),
       mcpConfigPath: mcpConfigPath(input.agentId),
       hookSettingsPath: hookSettingsPath(input.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
