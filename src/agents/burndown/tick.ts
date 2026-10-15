@@ -1,5 +1,6 @@
 import os from 'node:os'
 import { burndownLedgerPath } from '../../paths.js'
+import { accountGroups, accountIdentity, type AccountGroups } from '../account-identity.js'
 import { activeWorkRoot } from '../active-work.js'
 import { claimKey } from './advance.js'
 import { gateAccount, RUN_CAP_MS, type AccountReading } from './budget-gate.js'
@@ -285,16 +286,50 @@ function stallSuffix(c: Claim, route: RouteConfig): string {
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
 }
 
-/** One line per charter pool, judged by `gateAccount` on the same line and ceiling `seats status` prints. */
+/** CC-1289: the charter's pools grouped by the Anthropic account their config dirs log in to. */
+export function charterAccounts(
+  rules: CharterRules['rules'],
+  home = os.homedir(),
+  identify: (configDir: string) => string | undefined = dir => accountIdentity(dir, home),
+): AccountGroups {
+  const dirOf = poolDir(rules, home)
+  return accountGroups(
+    Object.keys(rules).map(name => ({ name, configDir: dirOf(name) })),
+    identify,
+  )
+}
+
+const MEMBER_STOPS = ['reserve_seven_day', 'ceiling_five_hour', 'per_day_points'] as const
+
+/** One warning per stop the pools of one account set differently, since each pool still gates on its own. */
+export function stopDisagreements(members: readonly string[], rules: CharterRules['rules']): string[] {
+  return MEMBER_STOPS.flatMap(stop => {
+    const values = members.map(name => rules[name]?.[stop])
+    if (new Set(values).size < 2) return []
+    const shown = values.map(v => (v === undefined ? 'unset' : String(v))).join(' vs ')
+    return [`pools ${members.join(', ')} share one account but set ${stop} ${shown}`]
+  })
+}
+
+/** `claude (+personal)`: the account's key pool, naming any other pool that logs in to it. */
+export const accountLabel = (members: readonly string[]): string =>
+  members.length < 2 ? (members[0] ?? '') : `${members[0]} (+${members.slice(1).join(', +')})`
+
+/** One line per account, judged by `gateAccount` on its key pool's line and ceiling, as `seats status` prints. */
 export function poolStatusLines(
   { rules, error }: CharterRules,
   readings: ReadonlyMap<string, AccountReading>,
   now: Date,
+  accounts: AccountGroups = charterAccounts(rules),
 ): string[] {
   const lines = error === undefined ? [] : [`pools: closed, no charter pools: ${error}`]
   for (const [account, rule] of Object.entries(rules)) {
-    const gate = gateAccount(account, rule, readings.get(account), { now })
-    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+    if (accounts.keyOf(account) !== account) continue
+    const members = accounts.members(account)
+    const reading = members.map(name => readings.get(name)).find(r => r !== undefined)
+    const gate = gateAccount(account, rule, reading, { now })
+    lines.push(`account ${accountLabel(members)}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+    lines.push(...stopDisagreements(members, rules))
   }
   return lines
 }

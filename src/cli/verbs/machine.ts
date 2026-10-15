@@ -18,6 +18,7 @@ import {
   type ChatLine,
   type StopInputs,
 } from '../../agents/seats/operator-stops.js'
+import type { MachineStopReadings } from '../../agents/seats/stops.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { readMachineStop, readMachineStopReadings } from './seats.js'
 
@@ -39,8 +40,11 @@ function holdMessages(nowMs: number): ChatLine[] | undefined {
   }
 }
 
-export function liveStopInputs(now: Date): StopInputs {
-  const readings = readMachineStopReadings()
+/** A test passes its own readings, so the host's load, memory, swap and pressure never decide `stopped`. */
+export function liveStopInputs(
+  now: Date,
+  readings: MachineStopReadings = readMachineStopReadings(),
+): StopInputs {
   return {
     now,
     chat: holdMessages(now.getTime()),

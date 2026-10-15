@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -37,6 +38,9 @@ import { writePoolCharter } from './helpers/pool-charter.js'
 let world: string
 const saved = { ...process.env }
 const NOON = new Date(2026, 8, 26, 12, 0)
+
+/** The pid of a process that has already exited. */
+const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid
 
 const write = (file: string, text: string): void => {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -684,7 +688,7 @@ describe('claim ledger', () => {
 
   it('takes over a lock left by a dead process', async () => {
     const file = path.join(world, 'home', 'burndown.json')
-    write(`${file}.lock`, '999999\n')
+    write(`${file}.lock`, `${deadPid()}\n`)
 
     expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: true, value: 'ran' })
   })
@@ -770,7 +774,7 @@ describe('claim ledger', () => {
 
   it("ignores a dead waiter's mark (CC-1181)", async () => {
     const file = path.join(world, 'home', 'burndown.json')
-    write(`${file}.lock.wait`, '999999\n')
+    write(`${file}.lock.wait`, `${deadPid()}\n`)
 
     expect(await withLedgerLock(file, () => 'ran', { yieldToWaiter: true })).toEqual({
       ran: true,
