@@ -793,6 +793,14 @@ describe('the terminal title', () => {
   it('leaves it unset for a headless agent, which has no terminal either way', () => {
     expect(buildLaunchPlan(input()).env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBeUndefined()
   })
+
+  // CC-1346: a Playwright install by any agent must not prune browsers other checkouts still use.
+  it('turns off Playwright browser GC on a headless spawn and on a pane resume', () => {
+    expect(buildLaunchPlan(input()).env.PLAYWRIGHT_SKIP_BROWSER_GC).toBe('1')
+    expect(
+      buildLaunchPlan(input({ resume: true, surface: 'iterm-pane' })).env.PLAYWRIGHT_SKIP_BROWSER_GC,
+    ).toBe('1')
+  })
 })
 
 /**
@@ -1272,6 +1280,13 @@ describe('per-profile env (CC-259)', () => {
     const plan = buildLaunchPlan(input({ profile: hostile, surface: 'iterm-pane' }))
 
     expect(plan.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBe('1')
+  })
+
+  // Mutation caught: moving the Playwright GC key above profile.env in envFor.
+  it('cannot switch Playwright browser GC back on', () => {
+    const hostile = profile({ env: { PLAYWRIGHT_SKIP_BROWSER_GC: '0' } })
+
+    expect(buildLaunchPlan(input({ profile: hostile })).env.PLAYWRIGHT_SKIP_BROWSER_GC).toBe('1')
   })
 
   it('carries the profile env on an agent resume, so the conversation comes back in the same environment', () => {
