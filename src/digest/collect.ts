@@ -18,6 +18,7 @@ import { localDate } from '../agents/burndown/seat-tick.js'
 import { charterRules, planFromDisk, poolDir } from '../agents/burndown/tick.js'
 import { EMPTY_FACTS, readLedgerFacts } from './ledger.js'
 import { lookupPrs, type Search } from './prs.js'
+import { ownerRefusals } from './refusals.js'
 import { accountSpend } from './spend.js'
 import { doneTasks } from './tasks.js'
 import type { Digest, NamedItem, StalledClaim } from './types.js'
@@ -104,6 +105,7 @@ export function collectDigest(options: CollectOptions): Digest {
     needsGrant: (planned?.refusals ?? [])
       .filter(r => r.kind === 'needs-grant')
       .map(r => ({ label: `${r.initiative} ${r.task ?? ''}`.trim(), detail: r.reason })),
+    heldForOwner: ownerRefusals(planned?.refusals ?? []),
     done: attempt(gaps, 'active-work tasks', [], () => doneTasks(activeWorkRoot(), sinceMs)),
     mergedPrs: prs.merged,
     stalled: stalledClaims(claims, new Date(now)),
