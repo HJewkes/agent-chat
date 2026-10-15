@@ -247,10 +247,19 @@ function copyThenRetire(
   try {
     ;(rename ?? fs.renameSync)(source, movedSource)
   } catch (err) {
-    restore(target, previous)
+    rollBack(target, previous, err as Error)
     throw err
   }
   return bytes.length
+}
+
+/** A failed rollback is reported beside the rename's error, never in place of it. */
+function rollBack(target: string, previous: Snapshot | undefined, cause: Error): void {
+  try {
+    rollBack(target, previous, err as Error)
+  } catch (err) {
+    throw new Error(`${cause.message}; rolling back ${target} also failed: ${(err as Error).message}`)
+  }
 }
 
 /**

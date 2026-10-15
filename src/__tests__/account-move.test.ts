@@ -296,6 +296,22 @@ describe('moveTranscript', () => {
     expect(moveTranscript(move()).ok).toBe(true)
   })
 
+  it('reports both errors when the rollback fails after the rename did', () => {
+    writeTranscript(sourceFile(), 'bytes\n', NOW)
+    const renameThenBlockRollback = (): never => {
+      fs.rmSync(targetFile())
+      fs.mkdirSync(path.join(targetFile(), 'blocker'), { recursive: true })
+      throw new Error('EBUSY: injected')
+    }
+
+    const failed = moveTranscript({ ...move(), rename: renameThenBlockRollback })
+
+    expect(failed).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/EBUSY: injected; rolling back .* also failed: /),
+    })
+  })
+
   it('refuses when the source transcript is missing', () => {
     const result = moveTranscript({ from: personal(), to: server(), cwd: cwd(), sessionId: SESSION })
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/no transcript/) })
