@@ -256,7 +256,7 @@ function copyThenRetire(
 /** A failed rollback is reported beside the rename's error, never in place of it. */
 function rollBack(target: string, previous: Snapshot | undefined, cause: Error): void {
   try {
-    rollBack(target, previous, err as Error)
+    restore(target, previous)
   } catch (err) {
     throw new Error(`${cause.message}; rolling back ${target} also failed: ${(err as Error).message}`)
   }
