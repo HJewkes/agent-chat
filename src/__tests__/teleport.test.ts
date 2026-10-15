@@ -999,6 +999,7 @@ describe('a successor that does not start (CC-402)', () => {
   let journal: JournalEntry[]
   let typed: string[]
   let split: string[]
+  let closed: string[]
   /** What the run-agent probe answers before a retry. */
   let launcherUp: boolean | undefined
   /** iTerm answers "not running" to this many probes, as it did after launchservicesd restarted under memory pressure. */
@@ -1009,6 +1010,7 @@ describe('a successor that does not start (CC-402)', () => {
     journal = []
     typed = []
     split = []
+    closed = []
     launcherUp = false
     itermDownFor = 0
     supervisor = new Supervisor(core, {
@@ -1024,6 +1026,7 @@ describe('a successor that does not start (CC-402)', () => {
             return 'false'
           }
           if (script.includes('write text')) typed.push(script)
+          if (script.includes('to close')) closed.push(script)
           if (/split (horizontally|vertically) with default profile/.test(script)) split.push(script)
           return 'reused-pane-uuid'
         },
@@ -1196,6 +1199,36 @@ describe('a successor that does not start (CC-402)', () => {
     expect(notices[0]?.text).toContain('cannot be ruled out')
     expect(supervisor.liveIds()).not.toContain(result.agentId as string)
     expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
+  })
+
+  it('retire closes the reused pane of a successor whose first launch threw', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    throwFirstLaunch()
+    launcherUp = true
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+    closed = []
+
+    await supervisor.retire('scout', true)
+
+    expect(closed).toHaveLength(1)
+    expect(closed[0]).toContain('reused-pane-uuid')
+  })
+
+  it('never closes the anchor pane for a skipped-retry successor opened beside it', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    exitDelayMs = Number.POSITIVE_INFINITY
+    throwFirstLaunch()
+    launcherUp = true
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_EXIT_TIMEOUT_MS + RELAUNCH_RETRY_MS + 1_000)
+    closed = []
+
+    await supervisor.retire('scout', true)
+
+    expect(closed).toEqual([])
   })
 
   it('opens beside a pane the predecessor still holds, and its retry does not type into it either', async () => {
