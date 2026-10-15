@@ -134,6 +134,13 @@ describe('account budget window merge', () => {
     expect(reading()?.sevenDay).toBe(93)
   })
 
+  it('a passed reset in the same hour cannot raise a window', () => {
+    status('usage-poller', 120, { seven_day: sevenDay(90, NOW_S - 60) })
+    status('a', 10, { seven_day: sevenDay(50, NOW_S + 600) })
+
+    expect(reading()).toMatchObject({ sevenDay: 50, ageSeconds: 10 })
+  })
+
   it('a stale lender cannot raise a window', () => {
     status('usage-poll', 1_800, { seven_day: sevenDay(99) })
     status('a', 10, { seven_day: sevenDay(41) })
