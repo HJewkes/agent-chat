@@ -62,6 +62,14 @@ describe('parseShell on very wide input', () => {
   })
 
   it.each([
+    ['$(a)', 'substitutions'],
+    ['$((1))', 'arithmetic substitutions'],
+  ])('reads an unquoted heredoc body of 600000 %s without throwing', line => {
+    const src = 'cat <<EOF\n' + (line + '\n').repeat(600000) + 'EOF\n'
+    expect(() => parseShell(src)).not.toThrow()
+  })
+
+  it.each([
     ['a run of writes with no command, then a command', '>f '.repeat(600000) + '\nx'],
     ['a run of write-only lines, then a command', '>f\n'.repeat(600000) + 'x'],
   ])('keeps every write of %s', (_name, src) => {

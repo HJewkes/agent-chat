@@ -1057,8 +1057,8 @@ class ShellLexer {
     const reader = new ShellLexer(body, 0, true, this.budget)
     reader.readBody()
     if (reader.mark !== undefined) this.unsettled()
-    this.out.push(...reader.out)
-    target.arithBodies.push(...reader.cur.arithBodies)
+    appendAll(this.out, reader.out)
+    appendAll(target.arithBodies, reader.cur.arithBodies)
   }
 
   /** Walks a heredoc body as the shell expands it: quotes are text, and a backslash escapes only `` $ ` \ `` and newline. */
