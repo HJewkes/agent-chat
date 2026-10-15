@@ -115,6 +115,18 @@ describe('writtenText', () => {
     "printf 'git push' > s; printf x | tee s",
     "printf 'git push' > s; printf x | tee -a s",
     "printf 'git push' > s; { printf x; } > s",
+    "printf 'git push' > s & printf x > ./s",
+    "printf 'git push' > s | printf x > ./s",
+    "printf 'git push' > s; printf x > //s",
+    "printf 'git push' > s; printf x > s/",
+    "printf 'git push' > s; printf x > $PWD/s",
+    "printf 'git push' > s; printf x > ~/s",
+    'printf \'git push\' > s; printf x > "$F"',
+    "printf 'git push' > s; printf x > $(echo s)",
+    "printf 'git push' > s; printf x > `echo s`",
+    "printf 'git push' > s; cd d; printf x > d/s",
+    "printf 'git push' > ./s; printf x > s",
+    "printf 'git push' > s; printf x | tee ./s",
   ])('%j reads no text for a file another open on the line may change', line => {
     expect(writtenText(pushWriter(line))).toBeUndefined()
   })
@@ -123,6 +135,10 @@ describe('writtenText', () => {
     ["printf 'git push' > s; : $(printf x > t)", 'git push'],
     ["printf 'git push' > s; printf x | tee t", 'git push'],
     ["printf 'git push' > s; exec 3>t", 'git push'],
+    ["printf 'git push' > s; printf x > ./t", 'git push'],
+    ["printf 'git push' > d/s; printf x > d/t/", 'git push'],
+    ["printf 'git push' > ./s & printf x > /tmp/t", 'git push'],
+    ["printf 'git push' > s", 'git push'],
   ])('%j still reads the text when other opens name other files', (line, text) => {
     expect(writtenText(pushWriter(line))).toBe(text)
   })

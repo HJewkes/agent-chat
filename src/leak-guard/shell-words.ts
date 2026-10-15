@@ -1138,14 +1138,28 @@ function markShared(commands: SimpleCommand[]): SimpleCommand[] {
   const files = commands.map(opened)
   for (const { targets, keeps } of files)
     for (const target of targets) {
-      opens.set(target, (opens.get(target) ?? 0) + 1)
-      if (keeps.has(target)) shared.add(target)
+      opens.set(fileKey(target), (opens.get(fileKey(target)) ?? 0) + 1)
+      if (keeps.has(target)) shared.add(fileKey(target))
     }
+  // `> "$F"`, `> ~/s` and `> $PWD/s` may name any other target, so each then shares with all of them.
+  const anyLive = files.some(({ targets }) => targets.some(target => target.includes(LIVE)))
+  const many = [...opens.values()].reduce((sum, n) => sum + n, 0) > 1
   commands.forEach((cmd, at) => {
     const targets = files[at]?.targets ?? []
-    cmd.shared = [...new Set(targets.filter(t => shared.has(t) || (opens.get(t) ?? 0) > 1))]
+    const isShared = (t: string): boolean =>
+      (anyLive && many) || shared.has(fileKey(t)) || (opens.get(fileKey(t)) ?? 0) > 1
+    cmd.shared = [...new Set(targets.filter(isShared))]
   })
   return commands
+}
+
+/**
+ * Two targets may be one file when their last path segments match: `./s`, `//s`, `s/` and `d/s` all
+ * end in `s`, and a `cd` between them can join `s` and `d/s`. Matching less would miss an alias.
+ */
+function fileKey(target: string): string {
+  const trimmed = target.replace(/\/+$/, '')
+  return trimmed === '' ? '/' : trimmed.slice(trimmed.lastIndexOf('/') + 1)
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
