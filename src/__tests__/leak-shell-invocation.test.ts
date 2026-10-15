@@ -85,7 +85,6 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['zsh +- -i s.sh', 1, false],
     ['bash + -i s.sh', 2, true],
     ['ksh +i s.sh', 1, true],
-    ['ksh + -i s.sh', 2, true],
     ['zsh -O s.sh', 1, false],
     ['zsh +O x', 1, false],
   ])('%s reads the file at %i', (line, at, history) => {
@@ -108,6 +107,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ["dash -oc nolog 'x'", 2],
     ["SHELLOPTS=history:histexpand bash -c 'x'", 1],
     ['bash -c', undefined],
+    ['sh + -c x', 2],
+    ['ash -c x', 1],
   ])('%s runs the string at %s, without history', (line, at) => {
     expect(call(line)).toEqual({ script: { from: 'command', at }, history: false })
   })
@@ -125,6 +126,14 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     "ksh -oemacs <<'EOF'\necho hi\nEOF",
     'bash -e "$X" <<<x',
     'bash *.sh',
+    'ksh + -c x',
+    'ksh +- -c x',
+    'ksh + -i s.sh',
+    'ksh -e + -c x',
+    'mksh + -c x',
+    'csh +- -c x',
+    'ash -s -c x',
+    'ash +s f.sh',
   ])('%s hides its options', line => {
     expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
   })
@@ -302,6 +311,8 @@ describe('where dash and bash read the script source differently (CC-1288)', () 
     "dash -o stdin -c 'x'",
     "sh -s -c 'x'",
     "sh -sc 'x'",
+    'ksh -s -c x',
+    'ksh -sc x',
   ])('%s runs two scripts, so it hides the call', line => {
     expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
   })

@@ -1,5 +1,5 @@
 /**
- * Reads a shell invocation (`sh`, `bash`, `dash`, `ksh`, `zsh`) the way the shell does (CC-1288):
+ * Reads a shell invocation (`sh`, `ash`, `bash`, `dash`, `ksh`, `zsh`) the way the shell does (CC-1288):
  * options and their operands first, then the `-c` string, a script file or stdin. It also reports
  * whether the options may turn on `!` history, which rewrites a script read from stdin or a file
  * after the guard has read it. Observed in bash 5.3 and zsh 5.9: `-i`, or the history list together
@@ -63,6 +63,8 @@ interface Grammar {
   named: Readonly<Record<string, NameRule>>
   /** Words that end the options. zsh also ends them at a bare `+` or `+-`, which bash ignores or rejects. */
   ends: ReadonlySet<string>
+  /** Words that hide the call, because the shells a name may stand for read them differently. */
+  hides?: ReadonlySet<string>
   /** Long options that take the next word as their operand, and whether it names a startup file. */
   longOperands: Readonly<Record<string, 'rcfile' | 'operand'>>
   /**
@@ -107,7 +109,17 @@ const BASH_LONG = { '--rcfile': 'rcfile', '--init-file': 'rcfile' } as const
 
 // Observed grammars: zsh 5.9, bash 5.3 and dash. zsh's `-O` is a plain flag and dash rejects it. `sh`
 // may be bash or dash: it takes bash's grammar, which dash rejects where it is wider (`-O`, `--rcfile`),
-// and hides the call where the two read the script source differently (`+s`, `-s` with `-c`).
+// and hides the call where the two read the script source differently (`+s`, `-s` with `-c`). busybox's
+// `ash` takes `sh`'s record: observed in busybox 1.37, it reads `+s` and `-s -c` as bash does and has no
+// `!` history, so the record fails closed where they differ.
+const SH: Grammar = {
+  letters: { ...BASH_LETTERS, s: { name: 'shinstdin', plusHides: true } },
+  named: { o: 'next', O: 'next' },
+  ends: DASH_ENDS,
+  longOperands: BASH_LONG,
+  stdinWithCommand: 'hidden',
+}
+
 const GRAMMARS: Readonly<Record<string, Grammar>> = {
   zsh: {
     letters: {
@@ -127,13 +139,8 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
     longOperands: BASH_LONG,
     stdinWithCommand: 'command',
   },
-  sh: {
-    letters: { ...BASH_LETTERS, s: { name: 'shinstdin', plusHides: true } },
-    named: { o: 'next', O: 'next' },
-    ends: DASH_ENDS,
-    longOperands: BASH_LONG,
-    stdinWithCommand: 'hidden',
-  },
+  sh: SH,
+  ash: SH,
   dash: {
     letters: COMMON_LETTERS,
     named: { o: 'next' },
@@ -143,9 +150,9 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
   },
 }
 
-// Any other shell takes every letter's effect under either sign, hides a name glued to `o` or `O`, reads a bare
-// `+` as a letter cluster so the options after it still count, and reports history even under `-c`:
-// nothing shows its `-c` string is inert, and csh substitutes `!` in the text it reads.
+// Any other shell takes every letter's effect under either sign, hides a name glued to `o` or `O`, hides a
+// bare `+` or `+-`, which zsh reads as the end of the options and bash ignores, and reports history even
+// under `-c`: nothing shows its `-c` string is inert, and csh substitutes `!` in the text it reads.
 const UNOBSERVED: Grammar = {
   letters: {
     ...BASH_LETTERS,
@@ -154,6 +161,7 @@ const UNOBSERVED: Grammar = {
   },
   named: { o: 'unread', O: 'unread' },
   ends: DASH_ENDS,
+  hides: new Set(['+', '+-']),
   longOperands: { ...BASH_LONG, '--emulate': 'operand' },
   stdinWithCommand: 'hidden',
 }
@@ -256,7 +264,7 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
   let at = 0
   while (at < words.length && !opts.hidden && !opts.ended) {
     const word = words[at] ?? ''
-    if (word.includes(LIVE)) return { ...opts, end: at, hidden: true }
+    if (word.includes(LIVE) || grammar.hides?.has(word)) return { ...opts, end: at, hidden: true }
     if (grammar.ends.has(word)) return { ...opts, end: at + 1 }
     if (!word.startsWith('-') && !word.startsWith('+')) return { ...opts, end: at }
     at = LONG.test(word) ? readLong(grammar, words, at, opts) : readCluster(grammar, words, at, opts)
