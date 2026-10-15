@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -8,6 +9,7 @@ import {
   isTeleportReason,
   SURFACE_NAMES,
   type ClientMessage,
+  type Correlated,
   type DeliveredMessage,
   type ItemShape,
   type PermissionBehavior,
@@ -92,8 +94,16 @@ const spawnedAsOf = (msg: {
   return spawnedAs === undefined ? {} : { spawnedAs }
 }
 
+/**
+ * The request being handled, carried across its awaits (CC-1343), so every one of
+ * the reply sites echoes its id without threading it through each handler. Only a
+ * reply to the requesting connection carries it; a frame to another one does not.
+ */
+const requestScope = new AsyncLocalStorage<{ conn: Conn; rid: number }>()
+
 const reply = (conn: Conn, message: ServerMessage): void => {
-  conn.write(encode(message))
+  const scope = requestScope.getStore()
+  conn.write(encode(scope?.conn === conn ? { ...message, rid: scope.rid } : message))
 }
 
 /** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
@@ -2025,8 +2035,11 @@ export class SocketServer {
 
   onConnection(conn: Conn): void {
     const { core } = this
-    const read = lineReader<ClientMessage>(
-      msg => this.handleMessage(conn, msg),
+    const read = lineReader<ClientMessage & Correlated>(
+      ({ rid, ...msg }) =>
+        typeof rid === 'number'
+          ? requestScope.run({ conn, rid }, () => this.handleMessage(conn, msg as ClientMessage))
+          : this.handleMessage(conn, msg as ClientMessage),
       err => logEvent('bad_message', { error: err.message }),
     )
     conn.on('data', read)
