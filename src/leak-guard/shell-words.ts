@@ -1,8 +1,8 @@
 /**
  * A best-effort POSIX shell word splitter for the PreToolUse guard (CC-270). It is not a shell:
  * it splits simple commands, removes quotes, and reads heredocs, command substitutions and
- * bash 5.3's `${ cmd;}` / `${|cmd;}` (funsub), which is enough to see what an ordinary command
- * line runs. Anything it misreads is a gap in a speed bump, never a boundary; see docs/leak-guard.md.
+ * bash 5.3's `${ cmd;}` / `${|cmd;}` (funsub), including those in an unquoted heredoc's body,
+ * which is enough to see what an ordinary command line runs. Anything it misreads is a gap in a speed bump, never a boundary; see docs/leak-guard.md.
  */
 
 /** Precedes each `$`, leading `~`, glob character and substitution the shell would expand in a marked word. */
@@ -1004,6 +1004,8 @@ class ShellLexer {
   private readHeredocs(): void {
     for (const doc of this.heredocs) {
       const body = this.heredocBody(doc)
+      // The shell expands an unquoted body whatever the descriptor, so `3<<E` runs its substitutions too.
+      if (!doc.quoted) this.expandBody(body, doc.target)
       if (doc.aside) continue
       const backslash = doc.quoted ? this.nested && JOINED.test(body) : body.includes('\\')
       doc.target.backslash ||= backslash
@@ -1023,6 +1025,29 @@ class ShellLexer {
       lines.push(line)
     }
     return lines.join('\n')
+  }
+
+  /** Reads the substitutions in an unquoted heredoc body as nested commands (CC-1341). */
+  private expandBody(body: string, target: SimpleCommand): void {
+    const reader = new ShellLexer(body, 0, true, this.budget)
+    reader.readBody()
+    if (reader.mark !== undefined) this.unsettled()
+    this.out.push(...reader.out)
+    target.arithBodies.push(...reader.cur.arithBodies)
+  }
+
+  /** Walks a heredoc body as the shell expands it: quotes are text, and a backslash escapes only `` $ ` \ `` and newline. */
+  private readBody(): void {
+    while (this.pos < this.src.length) {
+      const c = this.src[this.pos]
+      const next = this.peek(this.pos + 1)
+      if (c === '\\') this.pos += 2
+      else if (c === '$' && next === '(') this.substitution(false)
+      else if (this.funsub(false) !== undefined) continue
+      else if (c === '$' && next === '{') this.braced()
+      else if (c === '`') this.backtick(false)
+      else this.pos++
+    }
   }
 }
 

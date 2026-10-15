@@ -1575,6 +1575,16 @@ export function lineReader<T>(onValue: (value: T) => void, onError: (err: Error)
   }
 }
 
-export function encode(message: ClientMessage | ServerMessage): string {
+/**
+ * CC-1343: a request's correlation id, echoed on the reply it gets. Replies are
+ * otherwise matched to requests by type and order, which cannot tell a late reply
+ * from a lost one. Optional both ways: a client that sends none gets none back,
+ * and a broker that predates it echoes nothing, so either side may be older.
+ */
+export interface Correlated {
+  rid?: number
+}
+
+export function encode(message: (ClientMessage | ServerMessage) & Correlated): string {
   return JSON.stringify(message) + '\n'
 }
