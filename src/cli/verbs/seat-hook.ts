@@ -1,6 +1,7 @@
 import { EventLog } from '../../broker/event-log.js'
 import { parseWindow } from '../../agents/burndown/dispatch-stats.js'
 import { currentAutonomyRoot } from '../../agents/autonomy-root.js'
+import { restartRunOnOwnerPrompt, submittedPrompt } from '../../agents/seats/owner-prompt.js'
 import { isSeatOrSeatWorker } from '../../agents/seats/seat-of.js'
 import { denyOutput } from '../../leak-guard/pretool.js'
 import { seatHookLogPath } from '../../paths.js'
@@ -13,6 +14,7 @@ import {
   seatBlockReport,
 } from '../../seat-blocks.js'
 import { readStdin } from './permission-hook.js'
+import { runStartDeps } from './seats.js'
 import fs from 'node:fs'
 
 function logFailure(phase: string, what: string, err: unknown): void {
@@ -36,21 +38,32 @@ function isSeatFailingOpen(name: string): boolean {
   }
 }
 
+/** CC-281 b: an owner's prompt to a seat starts its new run; a refusal is logged, never waited out. */
+async function ownerPromptRun(seat: string, raw: string): Promise<void> {
+  const prompt = submittedPrompt(raw)
+  if (prompt === undefined) return
+  await restartRunOnOwnerPrompt(runStartDeps(currentAutonomyRoot()), seat, prompt, err =>
+    logFailure('end', 'run-start refused', err),
+  )
+}
+
 /**
- * `agent-chat seat-hook <pre|post>`: records a seat's tool calls (CC-1056) and denies a seat's
- * pane question (CC-1092). Never fails the call.
+ * `agent-chat seat-hook <pre|post|end>`: records a seat's tool calls (CC-1056), denies a seat's
+ * pane question (CC-1092) and restarts its run meter on an owner prompt. Never fails the call.
  */
 export async function seatHook(phase: string): Promise<void> {
   let log: EventLog | undefined
   try {
     if (!isHookPhase(phase)) return
-    const input = parseToolHook(await readStdin())
+    const raw = await readStdin()
+    const input = parseToolHook(raw)
     const seat = process.env.AGENT_CHAT_NAME
     if (input === undefined || seat === undefined || seat === '') return
     const denied = phase === 'pre' && paneQuestionVerdict(seat, input.toolName, isSeatFailingOpen) === 'deny'
     if (denied) process.stdout.write(`${denyOutput(PANE_QUESTION_DENIAL)}\n`)
     log = new EventLog()
     recordToolCall(log, seat, phase, input, denied)
+    if (phase === 'end') await ownerPromptRun(seat, raw)
   } catch (err) {
     logFailure(phase, 'failed', err)
   } finally {
