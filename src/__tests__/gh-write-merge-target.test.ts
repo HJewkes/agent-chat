@@ -95,6 +95,27 @@ describe('mergeTarget for gh api', () => {
     expect(mergeTarget(args, { GH_HOST: 'ghe.example.com' })).toEqual({ kind: 'merge', repo: 'o/r', pr: 12 })
   })
 
+  it.each([
+    [
+      'an inline mergePullRequest',
+      ['-f', 'query=mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'],
+    ],
+    [
+      'an inline enablePullRequestAutoMerge',
+      ['-f', 'query=mutation{enablePullRequestAutoMerge(input:{}){x}}'],
+    ],
+    ['a mixed-case mutation name', ['--raw-field', 'query=mutation{MERGEpullrequest(input:{}){x}}']],
+    ['a query read from a file', ['-F', 'query=@q.graphql']],
+    ['a query read from stdin', ['--field=query=@-']],
+    ['a body read from --input', ['--input', 'body.json']],
+  ])('refuses a GraphQL call with %s', (_, flags) => {
+    expect(kindOf(['api', 'graphql', ...flags])).toBe('unresolved')
+  })
+
+  it('passes a harmless inline GraphQL query as no merge', () => {
+    expect(kindOf(['api', 'graphql', '-f', 'query=query{viewer{login}}', '-F', 'n=1'])).toBe('none')
+  })
+
   it('refuses two different merge endpoints in one call', () => {
     expect(kindOf(['api', 'repos/o/r/pulls/12/merge', 'repos/o/r/pulls/13/merge'])).toBe('unresolved')
   })

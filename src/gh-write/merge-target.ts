@@ -164,6 +164,8 @@ function decoded(word: string): string | undefined {
 /** The method is ignored on purpose: a method-override header could turn a GET into the merge. */
 function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const parsed = parseWords(rest, API_FLAGS)
+  if (parsed.positionals.some(isGraphql) && !graphqlIsReadableNonMerge(parsed))
+    return unresolved('a GraphQL call that may merge')
   const merges = parsed.positionals.map(endpointTarget).filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
   const host = parsed.flags.findLast(flag => flag.name === '--hostname')?.value ?? env.GH_HOST
@@ -172,6 +174,23 @@ function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const key = (target: MergeTarget): string => JSON.stringify(target).toLowerCase()
   const same = merges.every(target => key(target) === key(first))
   return same ? first : unresolved('more than one merge endpoint')
+}
+
+const isGraphql = (word: string): boolean =>
+  /^\/?graphql\/?(?:[?#]|$)/i.test((decoded(word) ?? '').replace(API_PREFIX, ''))
+
+const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
+const GRAPHQL_MERGE = /mergePullRequest|enablePullRequestAutoMerge/i
+
+/** True only when every field is inline and none names a merge mutation; `-F x=@file` and `--input` are unread. */
+function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
+  if (parsed.flags.some(flag => flag.name === '--input')) return false
+  return parsed.flags
+    .filter(flag => FIELD_FLAGS.has(flag.name))
+    .every(({ name, value }) => {
+      if (value === undefined || GRAPHQL_MERGE.test(value)) return false
+      return !(name === '-F' || name === '--field') || !value.slice(value.indexOf('=') + 1).startsWith('@')
+    })
 }
 
 /** False for a path with an empty, `.` or `..` segment, which a later hop may collapse into another path. */
