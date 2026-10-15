@@ -189,6 +189,7 @@ export const namesTask = (text: string, task: string): boolean =>
  * CC-978: records a hand-dispatched PR on a queued slice, so the tick never dispatches the slice and
  * finishes it when the PR merges. Refused for a claim that is not queued or a PR Shepherd cannot name.
  * CC-1141 b: with `ports`, a released slice is re-created as a queued claim carrying the PR.
+ * CC-1044 c: an implementing slice with no PR takes one too, so a PR the tick never linked still finishes it.
  */
 export async function linkSlicePr(
   task: string,
@@ -200,7 +201,7 @@ export async function linkSlicePr(
   if (shepherdTarget(pr) === undefined)
     return refusedReport(`${pr} is not a GitHub PR (owner/repo#n or its URL)`)
   const file = burndownLedgerPath()
-  const locked = await withLedgerLock(file, () => linkQueued(file, task, slice, pr), {
+  const locked = await withLedgerLock(file, () => linkHeld(file, task, slice, pr), {
     wait,
     announce: true,
   })
@@ -208,18 +209,31 @@ export async function linkSlicePr(
   if (locked.value === NO_CLAIM && ports !== undefined) return relinkSlice(task, slice, pr, ports, wait)
   if (locked.value !== undefined)
     return refusedReport(
-      `${task} slice ${slice} is not queued (${locked.value}); only a queued slice takes a link`,
+      `${task} slice ${slice} ${locked.value}; only a queued or unlinked implementing slice takes a link`,
     )
-  return { ok: true, lines: [`linked ${task} slice ${slice} to ${pr}; the tick will not dispatch it`] }
+  return {
+    ok: true,
+    lines: [`linked ${task} slice ${slice} to ${pr}; the tick finishes it when the PR merges`],
+  }
 }
 
-const NO_CLAIM = 'no held claim'
+const NO_CLAIM = 'has no held claim'
 
-/** Links the queued claim, or names the phase that refuses it. */
-function linkQueued(file: string, task: string, slice: string, pr: string): string | undefined {
+/** Why a held claim cannot take the PR: a phase past implementing, or an implementing claim holding another PR. */
+function linkRefusal(claim: Claim, pr: string): string | undefined {
+  if (claim.phase === 'queued') return undefined
+  if (claim.phase !== 'implementing') return `is not queued or implementing (${claim.phase})`
+  if (claim.pr === undefined || claim.pr === pr) return undefined
+  return `already holds ${claim.pr}`
+}
+
+/** Links the queued or unlinked implementing claim, or says why it refuses. */
+function linkHeld(file: string, task: string, slice: string, pr: string): string | undefined {
   const ledger = readLedger(file)
   const claim = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
-  if (claim?.phase !== 'queued') return claim?.phase ?? NO_CLAIM
+  if (claim === undefined) return NO_CLAIM
+  const refusal = linkRefusal(claim, pr)
+  if (refusal !== undefined) return refusal
   writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === claim ? { ...c, pr } : c)) })
   return undefined
 }
