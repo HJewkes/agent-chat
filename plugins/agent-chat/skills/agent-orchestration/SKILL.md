@@ -77,8 +77,8 @@ under your home directory, and a bad value is refused rather than quietly replac
 resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
 that is also how a peer's transcript and budget stay findable when it is not on your
 account. A teleport keeps the account: the successor spends the same `CLAUDE_CONFIG_DIR`,
-and `agent_teleport` cannot change it. To move to another account, ask your human to run
-`agent-chat account move`.
+and `agent_teleport` cannot change it. To move to another account, ask your human to move
+you.
 
 ### Splitting a large assignment: explore, then implement
 
