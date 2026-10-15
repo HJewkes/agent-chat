@@ -153,6 +153,7 @@ describe('the launch plan for a resume', () => {
     brief: 'the original task',
     cwd: '/tmp',
     cwdHoldsUserSettings: false,
+    adopted: false,
     mcpConfigPath: '/tmp/mcp.json',
   }
 

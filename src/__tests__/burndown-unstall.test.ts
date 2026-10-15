@@ -14,7 +14,7 @@ import {
 import { observe, type Roster } from '../agents/burndown/observe.js'
 import type { PlanFile } from '../agents/burndown/seed-slices.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
-import { unstallSlice, type UnstallPorts } from '../cli/verbs/burndown-unstall.js'
+import { reloadSliceOwns, unstallSlice, type UnstallPorts } from '../cli/verbs/burndown-unstall.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** CC-1141: unstall reloads a slice's owns from its fixed plan and clears an outside-owns stall in place. */
@@ -222,5 +222,93 @@ describe('burndown unstall (CC-1141)', () => {
     const report = await unstallSlice('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
 
     expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice a'] })
+  })
+})
+
+describe('reload-owns (CC-1276)', () => {
+  let home: string
+  const saved = process.env.AGENT_CHAT_HOME
+  const file = () => path.join(home, 'burndown.json')
+  const NARROWED = ['src/a.ts', '.changeset/cc-1-a*.md']
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-1276-'))
+    process.env.AGENT_CHAT_HOME = home
+  })
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AGENT_CHAT_HOME
+    else process.env.AGENT_CHAT_HOME = saved
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  it("replaces a live slice's owns with its plan's and keeps its phase, PR, agents and stall", async () => {
+    const live = implementing({
+      owns: ['src/a.ts', '.changeset/*'],
+      stalledReason: 'late',
+      stallCode: 'phase-timeout',
+    })
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [live] })
+
+    const report = await reloadSliceOwns(
+      'CC-1',
+      'a',
+      ports(planOwning(NARROWED), ['src/a.ts', '.changeset/cc-1-a.md']),
+    )
+
+    expect(report.ok).toBe(true)
+    expect(readLedger(file()).claims).toEqual([{ ...live, owns: NARROWED }])
+  })
+
+  it('refuses when the branch touches a file outside the new owns, and writes nothing', async () => {
+    const ledger = { ...EMPTY_LEDGER, claims: [implementing()] }
+    writeLedger(file(), ledger)
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(NARROWED), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('src/b.ts')] })
+    expect(readLedger(file())).toEqual(ledger)
+  })
+
+  it('refuses an outside-owns stall and points at unstall', async () => {
+    const parked = implementing({
+      stalledReason: 'outside',
+      stalledClass: 'stalled',
+      stallCode: 'outside-owns',
+    })
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [parked] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('use unstall')] })
+    expect(readLedger(file()).claims).toEqual([parked])
+  })
+
+  it('refuses a done slice as having no held claim', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [implementing({ phase: 'done' })] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), BRANCH_FILES))
+
+    expect(report).toMatchObject({ ok: false, errors: ['no held claim on CC-1 slice a'] })
+  })
+
+  it('refuses a queued slice, whose owns the tick already reloads', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [queuedB] })
+
+    const report = await reloadSliceOwns('CC-1', 'b', ports(twoSlicePlan(BRANCH_FILES), undefined))
+
+    expect(report).toMatchObject({ ok: false, errors: [expect.stringContaining('queued')] })
+    expect(readLedger(file()).claims).toEqual([queuedB])
+  })
+
+  it('refuses when neither the worktree nor the PR can be read', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [implementing()] })
+
+    const report = await reloadSliceOwns('CC-1', 'a', ports(planOwning(BRANCH_FILES), undefined))
+
+    expect(report).toMatchObject({
+      ok: false,
+      errors: [expect.stringContaining('reload-owns needs one of them')],
+    })
   })
 })

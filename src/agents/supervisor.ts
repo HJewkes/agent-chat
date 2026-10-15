@@ -212,6 +212,7 @@ import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
+  isAdoptedSuccessor,
   SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
@@ -2542,6 +2543,7 @@ export class Supervisor implements TeleportHost {
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
+      adopted: false,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
@@ -3798,6 +3800,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: agent.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -3919,6 +3922,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: req.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -4197,6 +4201,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: input.brief,
       preamble: input.preamble,
+      ...(isAdoptedSuccessor(input) ? { adopted: true as const } : {}),
       surface: input.surface,
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
@@ -4242,6 +4247,7 @@ export class Supervisor implements TeleportHost {
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
       surface: over.surface ?? input.surface,
       preamble: input.preamble,
+      adopted: isAdoptedSuccessor(input),
       mcpConfigPath: mcpConfigPath(input.agentId),
       hookSettingsPath: hookSettingsPath(input.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
@@ -4434,7 +4440,8 @@ export class Supervisor implements TeleportHost {
   /**
    * CC-1372: a successor-last teleport has already ended its predecessor, so a surface that
    * failed its launch and retry runs the successor headless rather than losing it. A
-   * successor-first predecessor still runs and is kept instead (CC-951).
+   * successor-first predecessor still runs and is kept instead (CC-951), and the successor is lost
+   * when the CC-406 machine guard refuses a headless agent.
    */
   private async headlessFallback(
     launch: SuccessorLaunch,
@@ -4446,6 +4453,8 @@ export class Supervisor implements TeleportHost {
       return this.lostSuccessor(input, executionId, failure)
     const refusal = await this.retryRefusal(input)
     if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
+    const machine = this.machineRefusal('headless')
+    if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
     let handle: LaunchHandle
     try {
       handle = await this.launchOn('headless', this.headlessPlan(launch))
@@ -4494,6 +4503,22 @@ export class Supervisor implements TeleportHost {
         cause: 'teleport-headless-fallback',
       },
     })
+  }
+
+  /** Refused before `headlessPlan` rewrites the launch files, so the relaunch script still starts the requested surface. */
+  private refusedHeadless(
+    input: RelaunchInput,
+    executionId: string | undefined,
+    failure: string,
+    machine: Extract<MachineDecision, { ok: false }>,
+  ): never {
+    logEvent('teleport_headless_refused', {
+      name: input.name,
+      agentId: input.agentId,
+      code: machine.code,
+      reason: machine.reason,
+    })
+    return this.lostSuccessor(input, executionId, `${failure}; headless fallback refused: ${machine.reason}`)
   }
 
   private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {

@@ -36,6 +36,8 @@ agent-chat burndown pause|resume [--by <who>]
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
 agent-chat burndown unstall <task> --slice <n>
                                         reload an outside-owns slice's owns from its plan; keep its PR and agents
+agent-chat burndown reload-owns <task> --slice <n>
+                                        reload a live, not outside-owns slice's owns from its plan; keep the rest
 agent-chat burndown done <task> --slice <n> --evidence <path>
                                         finish a PR-less implementing or queued slice by hand; retire its agents
 agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file;
@@ -487,7 +489,10 @@ A claim with a `stalledReason` keeps its task and worktree but never respawns; o
 `outside-owns` stall whose plan owns have since been fixed, `agent-chat burndown unstall <task>
 --slice <n>` reloads the slice's owns from the plan and clears the stall in place when the
 branch fits them. It keeps the claim's PR, phase and agents and retires nobody, so the next tick
-hands the PR to Shepherd with the implementer as fixer. A slice whose work was done and verified
+hands the PR to Shepherd with the implementer as fixer. For a live slice that is not stalled
+`outside-owns`, `agent-chat burndown reload-owns <task> --slice <n>` reloads its owns from the plan
+under the same branch check and changes nothing else (CC-1276); a queued slice is refused, since the
+tick already reloads its owns. A slice whose work was done and verified
 outside git has no PR to merge; `agent-chat burndown done <task> --slice <n> --evidence <path>`
 finishes an implementing or queued one by hand, clears its stall, records the evidence path and
 retires its agents, so its dependents dispatch. It refuses a claim with a PR, and nothing checks

@@ -175,7 +175,9 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
       else observations.set(claimKey(claim), settled)
     } else {
       const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
-      observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
+      const runFenced = withRunPrOwns(observed, result, claim, once, adjudicate)
+      const fenced = withGoneOwns(runFenced, claim, once, adjudicate)
+      observations.set(claimKey(claim), withPrState(fenced, claim, deps.prState))
     }
   }
   return { observations, unread }
@@ -372,9 +374,64 @@ function handOffPr(obs: Observation, claim: Claim): string | undefined {
 
 function handOffCandidate(obs: Observation, claim: Claim): string | undefined {
   const { exitedWork, report } = obs
-  if (typeof exitedWork === 'object') return exitedWork.openPr ?? undefined
-  if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS') return report.pr ?? claim.pr
-  return claim.stallCode === 'outside-owns' ? claim.pr : undefined
+  if (typeof exitedWork === 'object') return exitedWork.openPr ?? runPr(obs)
+  if (report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS')
+    return report.pr ?? claim.pr ?? runPr(obs)
+  if (claim.stallCode === 'outside-owns' && claim.pr !== undefined) return claim.pr
+  return runPr(obs)
+}
+
+/** The PR of the claim's open Shepherd run, which `relink` and `exitedToShepherd` hand off when nothing else names one. */
+function runPr(obs: Observation): string | undefined {
+  const row = obs.shepherd?.row
+  if (row === undefined || row.pr === null || FINISHED_PHASES.includes(row.phase)) return undefined
+  return `${row.repo}#${row.pr}`
+}
+
+/**
+ * CC-1329: the run is attached after `observeClaim` fenced the claim, so a PR known only from the run is read here,
+ * once, as the claim's own PR so the adjudicator does not count it as another PR holding the file.
+ */
+function withRunPrOwns(
+  observed: Observation,
+  claimRead: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const pr = handOffPr(observed, claim)
+  if (pr === undefined || handOffPr(claimRead, claim) !== undefined) return observed
+  return withPrOwns(observed, { ...claim, pr }, deps, adjudicate)
+}
+
+/**
+ * CC-1254: an implementer whose row left a complete roster while Shepherd holds an open run for its PR is handed
+ * off by `exitedToShepherd` with no report, so its owns are read here from the branch's committed files plus the
+ * PR's: otherwise nothing fences the hand-off. Either read failing is unreadable, so the claim waits.
+ */
+function withGoneOwns(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation {
+  const gone = obs.agent === undefined && claim.agentName !== undefined
+  if (claim.phase !== 'implementing' || !gone || obs.owned !== undefined) return obs
+  const pr = goneHandOffPr(obs, claim)
+  if ((claim.owns ?? []).length === 0 || pr === undefined || deps.prFiles === undefined) return obs
+  const tree = claim.worktree
+  const branch = tree === undefined || !fs.existsSync(tree) ? [] : (deps.changedFiles ?? changedFiles)(tree)
+  const prFiles = branch === undefined ? undefined : deps.prFiles(pr)
+  if (branch === undefined || prFiles === undefined) return { ...obs, owned: 'unreadable' }
+  const outside = outsideOwns([...new Set([...branch, ...prFiles])], claim.owns ?? [])
+  return { ...obs, owned: judged(claim, outside, adjudicate, undefined) }
+}
+
+/** The PR `exitedToShepherd` hands off for a gone row: the claim's, else its open run's, when Shepherd can take it. */
+function goneHandOffPr(obs: Observation, claim: Claim): string | undefined {
+  const run = runPr(obs)
+  const pr = run === undefined ? undefined : (claim.pr ?? run)
+  return pr === undefined || shepherdTarget(pr) === undefined ? undefined : pr
 }
 
 /** A claim's checkout: its worktree's repo (`<repo>/.worktrees/<name>`), else the plan's. */

@@ -24,18 +24,12 @@ type Verdict = { refused: string } | { claim: Claim; owns: string[] }
 const refusedReport = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
 
 export async function unstallSlice(task: string, slice: string, ports: UnstallPorts): Promise<Report> {
-  const file = burndownLedgerPath()
-  const locked = await withLedgerLock(file, (): Verdict => {
-    const ledger = readLedger(file)
-    const held = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
-    const verdict = unstallVerdict(held, `${task} slice ${slice}`, ports)
-    if ('refused' in verdict) return verdict
-    const cleared = unstalled(verdict.claim, verdict.owns)
-    writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === verdict.claim ? cleared : c)) })
-    return verdict
-  })
-  if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
-  const verdict = locked.value
+  const verdict = await rewriteHeld(
+    task,
+    slice,
+    held => unstallVerdict(held, `${task} slice ${slice}`, ports),
+    unstalled,
+  )
   if ('refused' in verdict) return refusedReport(verdict.refused)
   return {
     ok: true,
@@ -46,17 +40,72 @@ export async function unstallSlice(task: string, slice: string, ports: UnstallPo
   }
 }
 
+/**
+ * CC-1276: reload a live slice's owns from its plan, when its branch fits them, without touching its phase, PR,
+ * agents or stall. The agent's spawn-time broker file claim keeps the old patterns; the tick reads the ledger's.
+ */
+export async function reloadSliceOwns(task: string, slice: string, ports: UnstallPorts): Promise<Report> {
+  const verdict = await rewriteHeld(
+    task,
+    slice,
+    held => reloadVerdict(held, `${task} slice ${slice}`, ports),
+    (claim, owns) => ({ ...claim, owns }),
+  )
+  if ('refused' in verdict) return refusedReport(verdict.refused)
+  return {
+    ok: true,
+    lines: [
+      `reloaded ${task} slice ${slice} (${verdict.claim.phase}); owns now ${verdict.owns.join(', ')}`,
+      "the agent's broker file claim still shows its spawn-time owns; the tick reads the ledger's",
+    ],
+  }
+}
+
+/** Under the ledger lock, find the held claim, decide, and write the rewrite when the verdict allows it. */
+async function rewriteHeld(
+  task: string,
+  slice: string,
+  decide: (held: Claim | undefined) => Verdict,
+  rewrite: (claim: Claim, owns: string[]) => Claim,
+): Promise<Verdict> {
+  const file = burndownLedgerPath()
+  const locked = await withLedgerLock(file, (): Verdict => {
+    const ledger = readLedger(file)
+    const held = ledger.claims.find(c => c.taskId === task && c.slice === slice && c.phase !== 'done')
+    const verdict = decide(held)
+    if ('refused' in verdict) return verdict
+    const next = rewrite(verdict.claim, verdict.owns)
+    writeLedger(file, { ...ledger, claims: ledger.claims.map(c => (c === verdict.claim ? next : c)) })
+    return verdict
+  })
+  return locked.ran
+    ? locked.value
+    : { refused: `a tick holds the ledger lock (pid ${locked.holder}); try again` }
+}
+
 function unstallVerdict(claim: Claim | undefined, what: string, ports: UnstallPorts): Verdict {
   if (claim === undefined) return { refused: `no held claim on ${what}` }
   if (claim.stallCode !== 'outside-owns')
     return { refused: `${what} is not stalled outside-owns (${claim.stallCode ?? 'not stalled'})` }
+  return fitsPlan(claim, what, ports, 'unstall needs one of them, release instead')
+}
+
+function reloadVerdict(claim: Claim | undefined, what: string, ports: UnstallPorts): Verdict {
+  if (claim === undefined) return { refused: `no held claim on ${what}` }
+  if (claim.stallCode === 'outside-owns')
+    return { refused: `${what} is stalled outside-owns; use unstall, which also clears the stall` }
+  if (claim.phase === 'queued')
+    return { refused: `${what} is queued; the tick already reloads a queued slice's owns from its plan` }
+  return fitsPlan(claim, what, ports, 'reload-owns needs one of them')
+}
+
+/** The plan's owns for the claim, when every file its branch changed lies inside them. */
+function fitsPlan(claim: Claim, what: string, ports: UnstallPorts, unreadable: string): Verdict {
   const owns = planOwns(claim, ports.plan)
   if (typeof owns === 'string') return { refused: `${what}: ${owns}` }
   const files = changedFilesOf(claim, ports)
   if (files === undefined)
-    return {
-      refused: `${what}: cannot read its worktree's or its PR's changes; unstall needs one of them, release instead`,
-    }
+    return { refused: `${what}: cannot read its worktree's or its PR's changes; ${unreadable}` }
   const outside = outsideOwns(files, owns)
   if (outside.length > 0)
     return { refused: `${what} still touches ${outside.join(', ')} outside the plan's owns` }
