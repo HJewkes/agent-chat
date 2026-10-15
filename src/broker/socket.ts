@@ -39,6 +39,7 @@ import {
   type SupervisorOptions,
 } from '../agents/supervisor.js'
 import { asPlatform } from '../agents/teleport-config.js'
+import { refused, type RefusalStage } from '../agents/teleport.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
 import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
@@ -601,31 +602,29 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
-    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown teleport reason "${String(msg.reason)}"`,
-      })
-    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
-      return reply(conn, {
-        t: 'teleport_result',
-        ok: false,
-        reason: `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
-      })
-    if (msg.to !== undefined && typeof msg.to !== 'string')
-      return reply(conn, { t: 'teleport_result', ok: false, reason: 'teleport "to" must be a machine name' })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
-    if (entry?.agentId === undefined) {
-      return reply(conn, {
+    const turnedAway = (stage: RefusalStage, reason: string): void =>
+      reply(conn, {
         t: 'teleport_result',
-        ok: false,
-        reason:
-          'teleport needs a durable identity, and this connection has none. Call chat_register ' +
+        ...refused({ name: entry?.name ?? 'unregistered' }, stage, reason),
+      })
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return turnedAway('preflight', `unknown teleport reason "${String(msg.reason)}"`)
+    if (msg.surface !== undefined && !(SURFACE_NAMES as readonly string[]).includes(msg.surface))
+      return turnedAway(
+        'preflight',
+        `unknown surface "${String(msg.surface)}"; one of ${SURFACE_NAMES.join(', ')}`,
+      )
+    if (msg.to !== undefined && typeof msg.to !== 'string')
+      return turnedAway('preflight', 'teleport "to" must be a machine name')
+    if (entry?.agentId === undefined) {
+      return turnedAway(
+        'identity',
+        'teleport needs a durable identity, and this connection has none. Call chat_register ' +
           'first; if you already have, the broker could not read this session id from the ' +
           'environment, which an older MCP server does not send.',
-      })
+      )
     }
     const outcome = await this.supervisor.teleport({
       subject: {
