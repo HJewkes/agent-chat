@@ -72,8 +72,9 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
-const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>', '&>', '&>>'])
-const APPEND_OPERATORS = new Set(['>>', '<>', '&>>'])
+// The only output operators known to truncate. Any other holding `>` (`>>`, `<>`, zsh's `>>|`, `>!`)
+// is read as keeping the file's text, so a spelling this splitter does not know fails closed.
+const TRUNCATING_OPERATORS = new Set(['>', '>|', '&>'])
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -278,6 +279,11 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
+  /**
+   * zsh reads the `!` after `>!` as the operator's and bash as the start of the target, so a target
+   * of `>!` is recorded both ways: `glued` for `>!s`, where bash writes `!s`, and `spaced` for `>! s`.
+   */
+  private bang: 'glued' | 'spaced' | undefined
   /** Targets this lexer saw opened so as to keep their text, marked once a bare redirect has passed on. */
   private readonly kept = new Set<string>()
   private heredocs: Heredoc[] = []
@@ -775,10 +781,7 @@ class ShellLexer {
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
-    const op = this.redirectOperator()
-    const keeps = APPEND_OPERATORS.has(op) || fd > 2
-    if (op === '>&') this.pending = 'dup'
-    else this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : keeps ? 'append' : 'write'
+    this.pending = writeKind(this.redirectOperator(), fd)
   }
 
   /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
@@ -788,6 +791,12 @@ class ShellLexer {
     for (let c = this.peek(this.pos); c !== undefined && '>&|'.includes(c); c = this.peek(this.pos)) {
       op += c
       this.advance(1)
+    }
+    this.bang = undefined
+    if (op.includes('>') && this.peek(this.pos) === '!') {
+      op += '!'
+      this.advance(1)
+      this.bang = /^[^\s;&|()<>]/.test(this.src.slice(this.pos, this.pos + 1)) ? 'glued' : 'spaced'
     }
     return op
   }
@@ -1007,8 +1016,12 @@ class ShellLexer {
   private recordWrite(word: string, pending: 'write' | 'append' | 'dup'): void {
     // `>&2` and `>&-` copy or close a descriptor; any other word names a file.
     if (pending === 'dup' && !this.marked.includes(LIVE) && /^(?:\d+-?|-)$/.test(word)) return
-    this.cur.writes.push(this.marked)
-    if (pending !== 'write' || this.cur.words.length === 0) this.kept.add(this.marked)
+    const targets =
+      this.bang === undefined ? [this.marked] : [this.marked, this.bang === 'glued' ? `!${this.marked}` : '!']
+    this.bang = undefined
+    this.cur.writes.push(...targets)
+    if (pending !== 'write' || this.cur.words.length === 0)
+      for (const target of targets) this.kept.add(target)
   }
 
   /**
@@ -1136,6 +1149,13 @@ function skipIn(
 
 /** Stands in for a substitution while the rest of its word is expanded; a word that holds one already does not resolve. */
 export const HOLE = '\x01'
+
+/** How an operator opens its target; one holding no `>` reads, and `>&` may copy a descriptor. */
+function writeKind(op: string, fd: number): Pending {
+  if (!op.includes('>')) return 'discard'
+  if (op === '>&') return 'dup'
+  return TRUNCATING_OPERATORS.has(op) && fd <= 2 ? 'write' : 'append'
+}
 
 /** Every simple command in `src`, including those inside `$(...)` and backticks. */
 export function parseShell(src: string): SimpleCommand[] {

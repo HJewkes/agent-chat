@@ -161,6 +161,29 @@ describe('writtenText', () => {
     expect(writtenText(pushWriter(`printf 'git push' > s; ${other}`))).toBeUndefined()
   })
 
+  // Observed in zsh 5.9 (`zsh -f`): after `echo safe > s`, each leaves `safe evil` or `evil` in s.
+  it.each(['>>|', '>>&', '>&|', '&>>|', '&>|', '>!', '>>!', '>&!', '&>!', '>>&!', '&>>!'])(
+    'reads no text for a file a later zsh %j write opens',
+    op => {
+      expect(writtenText(pushWriter(`printf 'git push' > s; echo evil ${op} s`))).toBeUndefined()
+      expect(writtenText(pushWriter(`printf 'git push' > s; echo evil ${op}s`))).toBeUndefined()
+      expect(writtenText(pushWriter(`printf 'git push' ${op} s`))).toBeUndefined()
+    },
+  )
+
+  // bash reads `>!s` as a write to the file `!s`, and `>! s` as a write to `!`.
+  it.each(["printf 'git push' > '!s'; echo evil >!s", "printf 'git push' > '!'; echo evil >! s"])(
+    '%j counts the target bash reads after a `>!` as well',
+    line => {
+      expect(writtenText(pushWriter(line))).toBeUndefined()
+    },
+  )
+
+  it('reads an operator it does not know as one that keeps the file', () => {
+    expect(writtenText(pushWriter("printf 'git push' > s; x >&>> s"))).toBeUndefined()
+    expect(writtenText(pushWriter("printf 'git push' >&>> s"))).toBeUndefined()
+  })
+
   it('reads no text a later compound command overwrites', () => {
     const line = "printf ok > s; ( printf 'git push --no-verify' ) > s"
     expect(writtenText(firstCommand(line))).toBeUndefined()
@@ -180,6 +203,9 @@ describe('writtenText', () => {
     ["printf 'git push' > s", 'git push'],
     ["printf 'git push' > s; ( x ) 2>&1", 'git push'],
     ["printf 'git push' > s; x >&-", 'git push'],
+    ["printf 'git push' > s; cat < s", 'git push'],
+    ["printf 'git push' > s; cat <& 3", 'git push'],
+    ["printf 'git push' > s; echo x >! t", 'git push'],
     ["printf 'git push' > s; ( x ) > t", 'git push'],
   ])('%j still reads the text when other opens name other files', (line, text) => {
     expect(writtenText(pushWriter(line))).toBe(text)
