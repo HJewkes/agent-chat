@@ -268,6 +268,8 @@ Commands:
                             never dispatches it and finishes it on merge
   unstall [options] <task>  reload an outside-owns slice's owns from its plan and clear the stall in
                             place, keeping its PR and agents
+  done [options] <task>     finish a PR-less implementing or queued slice by hand, so its dependents
+                            dispatch; retires its agents
   landed [options]          every open, unreconciled task in a seat's scope that a recent
                             default-branch subject or Covers clause names (CC-611); writes nothing
   classify [options]        classify every open task on, off or ambiguous against section 2 of the
@@ -442,6 +444,17 @@ agents
 Options:
   --slice <value>  the stalled slice whose plan owns were fixed
   -h, --help       display help for command
+
+=== agent-chat burndown done
+Usage: agent-chat burndown done [options] <task>
+
+finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its
+agents
+
+Options:
+  --slice <value>     the slice whose work was done and verified outside git
+  --evidence <value>  an existing file that shows the work is done
+  -h, --help          display help for command
 
 === agent-chat burndown landed
 Usage: agent-chat burndown landed [options]
