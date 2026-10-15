@@ -745,6 +745,9 @@ Commands:
                                   heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
                                   stretches, and each slot that got two deliveries (CC-391). Exits
                                   non-zero when it finds either
+  coordinators [options]          print the coordinator seats a seat merge waits on (CC-1348): the
+                                  charter's seats plus tp-operator, on one space-separated line.
+                                  Exits non-zero when the charter is unreadable or lists no seats
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -929,6 +932,16 @@ Options:
   --hours <value>  how far back to look (default 24)
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
+
+=== agent-chat seats coordinators
+Usage: agent-chat seats coordinators [options]
+
+print the coordinator seats a seat merge waits on (CC-1348): the charter's seats plus tp-operator,
+on one space-separated line. Exits non-zero when the charter is unreadable or lists no seats
+
+Options:
+  --root <value>  autonomy directory holding charter.md
+  -h, --help      display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]
