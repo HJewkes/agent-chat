@@ -267,6 +267,9 @@ export function transcriptMoveBlocker(move: TranscriptMove): string | undefined 
   if (!SESSION_ID_SHAPE.test(move.sessionId)) return `unusable session id: ${JSON.stringify(move.sessionId)}`
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
+  // Unset and an explicit ~/.claude are two logins over one dir: a copy onto itself, then a rename, loses it.
+  if (path.resolve(source) === path.resolve(target))
+    return `${move.from.dir} and ${move.to.dir} hold the same transcript file, so it cannot move between them`
   const sourceTime = mtimeOf(source)
   if (sourceTime === undefined) return `no transcript at ${source}`
   const targetTime = mtimeOf(target)

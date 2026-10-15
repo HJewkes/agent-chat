@@ -54,6 +54,7 @@ import type { AccountTarget } from './account-move.js'
 import { childConfigDir } from './config-dir.js'
 import {
   ACCOUNT_MOVE_PREAMBLE,
+  accountLabel,
   moveNote,
   realAccountMoves,
   sessionAccount,
@@ -1131,6 +1132,7 @@ export class Teleport {
 
     try {
       const paneFree = await this.waitForPaneFree(subject)
+      if (entry.account !== undefined && !paneFree) return this.moveHeld(entry, entry.account)
       const input =
         entry.account === undefined
           ? this.relaunchFor(entry, paneFree, await this.briefFor(entry))
@@ -1350,6 +1352,22 @@ export class Teleport {
     if (isInteractiveSurface(input.surface))
       this.moveNotes.set(entry.descendantId, { name: subject.name, note })
     return input
+  }
+
+  /** CC-892: a predecessor still running would leave one session on two accounts, so nothing moves or relaunches. */
+  private moveHeld(entry: Pending, move: PendingMove): void {
+    const { name, hostPid } = entry.subject
+    const waited = PANE_EXIT_TIMEOUT_MS / 1000
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${name} was ended for an account move, but its Claude Code (pid ${hostPid}) was still running ` +
+        `${waited}s later, so its transcript was not moved and no successor was launched. It stays on ` +
+        `${accountLabel(move.from)}; resume it there once that process is gone.`,
+    })
+    logEvent('account_move_held', { name, pid: hostPid })
   }
 
   private noticeMoveFailed(name: string, failure: string): void {

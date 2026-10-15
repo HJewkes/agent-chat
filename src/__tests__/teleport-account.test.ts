@@ -9,6 +9,7 @@ import { SocketServer } from '../broker/socket.js'
 import type { Supervisor } from '../agents/supervisor.js'
 import { moveTranscript } from '../agents/account-move.js'
 import { planPath } from '../agents/launch-files.js'
+import { PANE_EXIT_TIMEOUT_MS } from '../agents/teleport.js'
 import { realAccountMoves, type AccountMoves } from '../agents/teleport-account.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -38,6 +39,8 @@ let fromDir: string
 let toDir: string
 let cwd: string
 let checked: number
+/** The predecessor's Claude Code ignores every signal. */
+let neverExits: boolean
 
 function tmp(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -156,10 +159,11 @@ beforeEach(() => {
   checked = 0
   signals = []
   let ended = false
+  neverExits = false
   vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: unknown) => {
     if (pid !== HOST_PID) return true
     if (signal === 0) {
-      if (ended) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+      if (ended && !neverExits) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
       return true
     }
     signals.push(String(signal))
@@ -178,6 +182,7 @@ afterEach(() => {
   stopAutoAttach()
   server.close()
   vi.restoreAllMocks()
+  vi.useRealTimers()
   if (realHome === undefined) delete process.env.HOME
   else process.env.HOME = realHome
   delete process.env.AGENT_CHAT_HOME
@@ -344,5 +349,56 @@ describe('an account move that goes through', () => {
     expect(spawnRowFor(result.agentId as string)?.meta.account_from).toBeUndefined()
     const notices = core.events.humanQueue().map(item => item.text)
     expect(notices.join('\n')).toContain('EBUSY: injected')
+  })
+})
+
+describe('what a moved successor carries into its attach', () => {
+  it('stamps account_from on its first agent_attached row only, for the seat file to follow', async () => {
+    stopAutoAttach()
+    stopAutoAttach = () => undefined
+    startServer(fakeAccounts())
+    registerSubject()
+    writeSourceTranscript()
+
+    const result = await humanMove()
+    await successorPlan(result.agentId as string)
+    const register = (): void =>
+      server.handleMessage(connection().conn, {
+        t: 'register',
+        name: 'scout',
+        workingOn: 'a long investigation',
+        cwd,
+        pid: 112,
+        agentId: result.agentId as string,
+      })
+    register()
+    register()
+
+    const attaches = core.events
+      .agentEventsFor(result.agentId as string)
+      .filter(r => r.kind === 'agent_attached')
+    expect(attaches.map(r => r.meta.account_from)).toEqual([fromDir, undefined])
+  })
+})
+
+describe('an account move held when the predecessor will not exit', () => {
+  it('moves nothing, launches nothing, and tells the human', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    const source = writeSourceTranscript()
+    neverExits = true
+    vi.useFakeTimers()
+
+    const result = await humanMove()
+    await vi.advanceTimersByTimeAsync(PANE_EXIT_TIMEOUT_MS + 2_000)
+
+    expect(result.ok).toBe(true)
+    expect(signals[0]).toBe('SIGTERM')
+    expect(spawnRowFor(result.agentId as string)).toBeUndefined()
+    expect(fs.existsSync(planPath(result.agentId as string))).toBe(false)
+    expect(fs.existsSync(source)).toBe(true)
+    expect(fs.existsSync(transcriptPath(cwd, SESSION, toDir))).toBe(false)
+    const notices = core.events.humanQueue().map(item => item.text)
+    expect(notices.join('\n')).toMatch(/still running .* no successor was launched/)
   })
 })

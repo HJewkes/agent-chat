@@ -14,6 +14,7 @@ import {
   type AccountTarget,
   realAccountReaders,
 } from '../agents/account-move.js'
+import { realAccountMoves } from '../agents/teleport-account.js'
 import { transcriptPath } from '../agents/transcript.js'
 
 let home: string
@@ -312,8 +313,34 @@ describe('moveTranscript', () => {
     })
   })
 
+  it('refuses a move between unset and explicit ~/.claude, which share one transcript file', () => {
+    const dir = path.join(home, '.claude')
+    const file = transcriptPath(cwd(), SESSION, dir)
+    writeTranscript(file, 'bytes\n', NOW)
+
+    const result = moveTranscript({ ...move(), from: { dir, unset: true }, to: { dir } })
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/same transcript file/) })
+    expect(fs.readFileSync(file, 'utf8')).toBe('bytes\n')
+    expect(fs.readdirSync(path.dirname(file))).toEqual([path.basename(file)])
+  })
+
   it('refuses when the source transcript is missing', () => {
     const result = moveTranscript({ from: personal(), to: server(), cwd: cwd(), sessionId: SESSION })
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/no transcript/) })
+  })
+})
+
+describe('realAccountMoves', () => {
+  it('refuses on the transcript as well as the target, before anything ends', () => {
+    const check = realAccountMoves(path.join(home, 'autonomy'), home).check({
+      from: personal(),
+      to: server(),
+      cwd: cwd(),
+      sessionId: SESSION,
+    })
+
+    expect(check.ok).toBe(false)
+    expect(check.refusals).toContainEqual(expect.stringMatching(/^no transcript at /))
   })
 })
