@@ -190,6 +190,8 @@ describe('mergeTarget for gh api', () => {
     ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
     ['a PR read', ['api', 'repos/o/r/pulls/12']],
     ['a branch ref read', ['api', 'repos/o/r/git/refs/heads/main']],
+    ['a write to a repo named refinery', ['api', '-X', 'PATCH', 'repos/o/refinery', '-f', 'description=x']],
+    ['a write to a repo named merges-lib', ['api', 'repos/o/merges-lib/issues', '-f', 'title=x']],
     ['a search read whose query names merges', ['api', 'search/issues?q=is:pull-request+is:merged']],
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
@@ -313,6 +315,33 @@ describe('mergeTarget for every merge-capable operation', () => {
     ).filter(args => kindOf(args) === 'none')
 
     expect(passed).toEqual([])
+  })
+})
+
+describe('mergeTarget with empty words, which cobra drops when it picks the command', () => {
+  it.each([
+    [['', 'pr', 'merge']],
+    [['pr', '', 'merge']],
+    [['pr', ' ', 'merge', '12']],
+    [['', 'api', '-X', 'PUT', 'repos/o/r/pulls/1/merge']],
+  ])('refuses %j', args => {
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
+  it.each([
+    // Every word boundary before the verb, but not inside an -R pair, whose value would take the blank.
+    ['pr merge', ['-R', 'o/r', 'pr', '-R', 'o/r', 'merge', '12', '--squash'], [0, 2, 3, 5]],
+    ['api', ['api', '-X', 'PUT', 'repos/o/r/pulls/1/merge'], [0, 1]],
+  ])('never passes %s with an empty word anywhere before the verb', (_, args, positions) => {
+    const spliced = positions.flatMap(at =>
+      ['', ' ', '\t'].map(blank => [...args.slice(0, at), blank, ...args.slice(at)]),
+    )
+
+    expect(spliced.filter(variant => kindOf(variant) === 'none')).toEqual([])
+  })
+
+  it('passes a non-merge with an empty word as no merge', () => {
+    expect(kindOf(['', 'issue', 'view', '12'])).toBe('none')
   })
 })
 

@@ -125,12 +125,16 @@ function groupIndex(args: readonly string[]): number | undefined {
   return i
 }
 
+/** cobra drops an empty or whitespace-only word when it picks the command, so `'' pr merge` is `pr merge`. */
+const isBlank = (word: string | undefined): boolean => word !== undefined && word.trim() === ''
+
 const mightMerge = (args: readonly string[]): boolean =>
   args.includes('api') || (args.includes('pr') && args.includes('merge'))
 
 export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
   const start = groupIndex(args)
   if (start === undefined) return mightMerge(args) ? unresolved('a flag before the gh group') : NONE
+  if (isBlank(args[start])) return mightMerge(args) ? unresolved('an empty word before the gh group') : NONE
   if (args[start] === 'api') return apiTarget(args.slice(start + 1), env)
   if (args[start] === 'pr') return prTarget(args, start, env)
   return NONE
@@ -253,11 +257,16 @@ function isWrite(parsed: Parsed): boolean {
   return parsed.flags.some(flag => FIELD_FLAGS.has(flag.name) || flag.name === '--input')
 }
 
+const REPO_PREFIX = /^\/?(?:repos\/[^/]+\/[^/?#]+|repositories\/[^/?#]+)(?=[/?#]|$)/i
+
+/** A canonical path past its repo, so a repo named `refinery` or `merges-lib` is not read as an operation. */
+const afterRepo = (path: string): string => (isCanonical(path) ? path.replace(REPO_PREFIX, '') : path)
+
 function endpointTarget(word: string, writes: boolean): MergeTarget {
   const path = apiPath(word)
   if (path === undefined) return unresolved('a path encoded too deeply to read')
   // A read's query string cannot merge, so a GET is scanned only up to `?`.
-  const scanned = writes ? path : (path.split('?')[0] ?? '')
+  const scanned = afterRepo(writes ? path : (path.split('?')[0] ?? ''))
   const named = MERGE_OPERATIONS.find(
     ({ rest }) => rest !== undefined && (writes || !rest.writesOnly) && rest.mentions.test(scanned),
   )
@@ -284,6 +293,8 @@ function prTarget(args: readonly string[], start: number, env: Env): MergeTarget
   const verbAt = groupIndex(args.slice(start + 1))
   if (verbAt === undefined) return args.includes('merge') ? unresolved('a flag before the pr verb') : NONE
   const verbIndex = start + 1 + verbAt
+  if (isBlank(args[verbIndex]))
+    return args.includes('merge') ? unresolved('an empty word before the pr verb') : NONE
   if (args[verbIndex] !== 'merge') return NONE
   const before = [...args.slice(0, start), ...args.slice(start + 1, verbIndex)]
   const parsed = parseWords([...before, ...args.slice(verbIndex + 1)], MERGE_FLAGS)
