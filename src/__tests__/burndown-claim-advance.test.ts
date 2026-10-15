@@ -330,13 +330,45 @@ describe('burndown release --slice and link (CC-978)', () => {
     })
   })
 
-  it('links a PR to a queued slice and refuses one that is not queued', async () => {
-    const linked = await linkSlicePr('CC-1', 'b', 'o/r#41')
+  it('links a PR to a queued or unlinked implementing slice', async () => {
+    const queued = await linkSlicePr('CC-1', 'b', 'o/r#41')
+    const implementing = await linkSlicePr('CC-1', 'a', 'o/r#42')
+
+    expect(queued.ok).toBe(true)
+    expect(implementing.ok).toBe(true)
+    expect(readLedger(file()).claims.map(c => c.pr)).toEqual(['o/r#42', 'o/r#41', undefined])
+  })
+
+  it('refuses an implementing slice that already holds a different PR, keeping its own (CC-1044)', async () => {
+    writeLedger(file(), { ...EMPTY_LEDGER, claims: [slice('a', { pr: 'o/r#7' }), slice('b'), slice('c')] })
+
+    const refused = await linkSlicePr('CC-1', 'a', 'o/r#42')
+    const same = await linkSlicePr('CC-1', 'a', 'o/r#7')
+
+    expect(refused).toMatchObject({ ok: false, errors: [expect.stringContaining('already holds o/r#7')] })
+    expect(same.ok).toBe(true)
+    expect(readLedger(file()).claims[0]?.pr).toBe('o/r#7')
+  })
+
+  it('refuses a slice past implementing (CC-1044)', async () => {
+    fs.rmSync(file())
+    writeLedger(file(), {
+      ...EMPTY_LEDGER,
+      claims: [slice('a', { phase: 'reviewing' }), slice('b'), slice('c')],
+    })
+
     const refused = await linkSlicePr('CC-1', 'a', 'o/r#42')
 
-    expect(linked.ok).toBe(true)
-    expect(refused.ok).toBe(false)
-    expect(readLedger(file()).claims.map(c => c.pr)).toEqual([undefined, 'o/r#41', undefined])
+    expect(refused).toMatchObject({ ok: false, errors: [expect.stringContaining('(reviewing)')] })
+    expect(readLedger(file()).claims[0]?.pr).toBeUndefined()
+  })
+
+  it('finishes a linked implementing slice on the next tick once its run merged (CC-1044)', async () => {
+    await linkSlicePr('CC-1', 'a', 'o/r#42')
+
+    const after = await tick(readLedger(file()), [run({ pr: 42, headSha: 'h42', implementer: 'someone' })])
+
+    expect(after.claims[0]).toMatchObject({ phase: 'done', pr: 'o/r#42', prHead: 'h42' })
   })
 
   describe('a released or unseeded slice re-linked to its open PR (CC-1141 b)', () => {
@@ -460,7 +492,12 @@ describe('burndown release --slice and link (CC-978)', () => {
       expect(readLedger(file())).toEqual(before)
     })
 
-    it('still refuses a slice held in a phase other than queued, without reading the PR', async () => {
+    it('still refuses a slice held past implementing, without reading the PR', async () => {
+      fs.rmSync(file())
+      writeLedger(file(), {
+        ...EMPTY_LEDGER,
+        claims: [slice('a', { phase: 'reviewing' }), slice('b'), slice('c')],
+      })
       const ports = pulled()
 
       const report = await linkSlicePr('CC-1', 'a', 'o/r#41', undefined, ports)

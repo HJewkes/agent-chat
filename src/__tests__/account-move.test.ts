@@ -350,6 +350,47 @@ describe('moveTranscript', () => {
     expect(fs.readdirSync(path.dirname(file))).toEqual([path.basename(file)])
   })
 
+  function expectRefusedAndUntouched(result: ReturnType<typeof moveTranscript>): void {
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/same transcript file/) })
+    expect(fs.readFileSync(sourceFile(), 'utf8')).toBe('bytes\n')
+    expect(fs.readdirSync(path.dirname(sourceFile()))).toEqual([path.basename(sourceFile())])
+  }
+
+  it('refuses a target config dir that is a symlink to the source dir', () => {
+    writeTranscript(sourceFile(), 'bytes\n', NOW)
+    fs.symlinkSync(profile('personal'), profile('server'))
+
+    expectRefusedAndUntouched(moveTranscript(move()))
+  })
+
+  it('refuses a target whose projects dir is a symlink into the source account', () => {
+    writeTranscript(sourceFile(), 'bytes\n', NOW)
+    fs.mkdirSync(profile('server'))
+    fs.symlinkSync(path.join(profile('personal'), 'projects'), path.join(profile('server'), 'projects'))
+
+    expectRefusedAndUntouched(moveTranscript(move()))
+  })
+
+  it('names a symlinked target dir as the same file even before the source transcript exists', () => {
+    fs.mkdirSync(profile('personal'), { recursive: true })
+    fs.symlinkSync(profile('personal'), profile('server'))
+
+    const result = moveTranscript(move())
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/same transcript file/) })
+  })
+
+  it('refuses a target that is a hard link to the source transcript', () => {
+    writeTranscript(sourceFile(), 'bytes\n', NOW)
+    fs.mkdirSync(path.dirname(targetFile()), { recursive: true })
+    fs.linkSync(sourceFile(), targetFile())
+
+    const result = moveTranscript(move())
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/same transcript file/) })
+    expect(fs.readFileSync(sourceFile(), 'utf8')).toBe('bytes\n')
+  })
+
   it('refuses when the source transcript is missing', () => {
     const result = moveTranscript({ from: personal(), to: server(), cwd: cwd(), sessionId: SESSION })
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/no transcript/) })
@@ -367,5 +408,21 @@ describe('realAccountMoves', () => {
 
     expect(check.ok).toBe(false)
     expect(check.refusals).toContainEqual(expect.stringMatching(/^no transcript at /))
+  })
+
+  it('refuses a symlinked target that resolves to the source before anything ends', () => {
+    const file = transcriptPath(cwd(), SESSION, profile('personal'))
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'bytes\n')
+    fs.symlinkSync(profile('personal'), profile('server'))
+
+    const check = realAccountMoves(path.join(home, 'autonomy'), home).check({
+      from: personal(),
+      to: server(),
+      cwd: cwd(),
+      sessionId: SESSION,
+    })
+
+    expect(check.refusals).toContainEqual(expect.stringMatching(/same transcript file/))
   })
 })

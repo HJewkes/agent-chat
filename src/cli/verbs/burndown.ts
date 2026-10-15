@@ -630,7 +630,7 @@ async function withBrokerRetire(use: (retire: RetireCall) => Promise<Report>): P
 export const burndownLinkVerb = defineVerb({
   name: 'burndown.link',
   description:
-    'record a hand-dispatched PR on a queued or released slice, so the tick never dispatches it and finishes it on merge',
+    'record a hand-dispatched PR on a queued, released or unlinked implementing slice, so the tick finishes it on merge',
   args: z.object({
     task: requiredString('task'),
     slice: requiredString('slice'),
@@ -640,7 +640,10 @@ export const burndownLinkVerb = defineVerb({
   cli: {
     positional: ['task'],
     options: {
-      slice: { long: '--slice', description: 'the queued or released slice the PR implements' },
+      slice: {
+        long: '--slice',
+        description: 'the queued, released or unlinked implementing slice the PR implements',
+      },
       pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
     },
   },

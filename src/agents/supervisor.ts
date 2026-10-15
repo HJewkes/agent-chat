@@ -520,8 +520,13 @@ function remoteSpawnMeta(
   }
 }
 
-/** The dispatched row's facts for a spawn, local or remote. */
-const spawnFactsOf = (req: SpawnRequest, profile: AgentProfile, agentId: string): SpawnFacts => ({
+/** The dispatched row's facts for a spawn, local or remote; only a local spawn knows its config dir. */
+const spawnFactsOf = (
+  req: SpawnRequest,
+  profile: AgentProfile,
+  agentId: string,
+  configDir?: string,
+): SpawnFacts => ({
   agent: req.name,
   agent_id: agentId,
   spawner: req.requestedBy,
@@ -530,6 +535,7 @@ const spawnFactsOf = (req: SpawnRequest, profile: AgentProfile, agentId: string)
   predecessor: req.predecessor ?? null,
   ...(req.tier === undefined ? {} : { tier: req.tier }),
   ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
+  ...(configDir === undefined ? {} : { configDir }),
 })
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -2658,7 +2664,7 @@ export class Supervisor implements TeleportHost {
     const site = { cwd: allocation.cwd, configDir: childConfigDir(account) }
     const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
-    const facts = spawnFactsOf(req, profile, agentId)
+    const facts = spawnFactsOf(req, profile, agentId, site.configDir)
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
       warnings.push(verdict.warning)
