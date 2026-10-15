@@ -81,6 +81,8 @@ const PINNED_NPM_CONFIG: Readonly<Record<string, string>> = {
 const PINNED_ENV: Readonly<Record<string, string>> = {
   COREPACK_ENV_FILE: '0',
   COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
+  // CC-1346
+  PLAYWRIGHT_SKIP_BROWSER_GC: '1',
 }
 
 /** CC-446: pnpm 10 ranks this file's ignorePnpmfile and ignoreScripts above every env pin. */

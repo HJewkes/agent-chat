@@ -667,6 +667,11 @@ describe('a branch-chosen package manager during worktree setup (CC-458)', () =>
     expect(env).toMatchObject({ COREPACK_ENV_FILE: '0', COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0' })
   })
 
+  it('pins Playwright browser GC off even when the broker env turns it on', () => {
+    const env = setupEnv({ PATH: '/bin', PLAYWRIGHT_SKIP_BROWSER_GC: '0' })
+    expect(env.PLAYWRIGHT_SKIP_BROWSER_GC).toBe('1')
+  })
+
   it.each([
     ['the underscore form', 'manage_package_manager_versions=true\n'],
     ['the UPPER_CASE form', 'MANAGE_PACKAGE_MANAGER_VERSIONS=true\n'],

@@ -80,11 +80,24 @@ update_and_wait() {
 run_premerge() { out=$("$here/premerge" "$R" "$N" "$S" "$L" "$RV" 2>&1); rc=$?; last=$(tail -1 <<<"$out"); }
 premerge_ok() { [ $rc -eq 0 ] && [ "${last%% *}" = OK ]; }
 
+# squash_bin: prints the formatter to run: SQUASH_MESSAGE_BIN if set (no fallback, so a wrong value fails), else
+# titan-squash-message on PATH, else the copy agent-chat installs from @titan-design/github (CC-1348).
+squash_bin() {
+  local own="$here/../../node_modules/.bin/titan-squash-message"
+  if [ -n "${SQUASH_MESSAGE_BIN:-}" ]; then
+    command -v "$SQUASH_MESSAGE_BIN" >/dev/null && echo "$SQUASH_MESSAGE_BIN" && return 0
+    echo "$SQUASH_MESSAGE_BIN not found"; return 1
+  fi
+  command -v titan-squash-message >/dev/null && { echo titan-squash-message; return 0; }
+  [ -x "$own" ] && { echo "$own"; return 0; }
+  echo "titan-squash-message not found (PATH or $own)"; return 1
+}
+
 # squash_message <citation>: prints the formatter's {subject, body} JSON for this PR, or the reason it could not.
 # Item 135: no fallback to GitHub's default message, which adds Co-authored-by trailers.
 squash_message() {
-  local pr commits input bin=${SQUASH_MESSAGE_BIN:-titan-squash-message}
-  command -v "$bin" >/dev/null || { echo "$bin not found"; return 1; }
+  local pr commits input bin
+  bin=$(squash_bin) || { echo "$bin"; return 1; }
   pr=$(gh api "repos/$R/pulls/$N" 2>/dev/null) || { echo "cannot read pulls/$N"; return 1; }
   commits=$(gh api "repos/$R/pulls/$N/commits?per_page=100" 2>/dev/null) || { echo "cannot read pulls/$N/commits"; return 1; }
   input=$(jq -n --argjson pr "$pr" --argjson commits "$commits" --arg cite "$1" --argjson n "$N" '{

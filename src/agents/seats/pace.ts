@@ -129,6 +129,8 @@ export interface PoolPace {
   level: PaceLevel | 'stale' | 'no_reading'
   /** The reading's window has passed, so `sevenDay` is an assumed 0 and no measurement. */
   rolled?: true
+  /** CC-1289: the charter pools on this row's Anthropic account, in charter order; absent when only `pool`. */
+  members?: string[]
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10

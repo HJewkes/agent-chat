@@ -90,6 +90,25 @@ describe('who may teleport', () => {
     expect(result.reason).toMatch(/durable identity/)
   })
 
+  it('logs the refusal of a connection with no identity, and of an unknown reason (CC-1358)', async () => {
+    const stagesLogged = (): string[] =>
+      fs
+        .readFileSync(path.join(TEST_HOME, 'broker.log'), 'utf8')
+        .split('\n')
+        .filter(line => line.includes('"teleport_refused"'))
+        .map(line => (JSON.parse(line) as { stage: string }).stage)
+    const before = stagesLogged().length
+    const socket = await connect()
+    await ask(socket, { t: 'teleport', handoff: 'x' }, 'teleport_result')
+    await ask(
+      socket,
+      { t: 'teleport', handoff: 'x', reason: 'refresh' } as unknown as ClientMessage,
+      'teleport_result',
+    )
+
+    expect(stagesLogged().slice(before)).toEqual(['identity', 'preflight'])
+  })
+
   it('refuses a reason it does not know, rather than passing it through', async () => {
     const socket = await connect()
     const frame = { t: 'teleport', handoff: 'x', reason: 'refresh' } as unknown as ClientMessage

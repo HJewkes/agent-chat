@@ -16,7 +16,7 @@ const fixture = (version: string): string =>
   fs.readFileSync(path.join(__dirname, 'fixtures/trust-rule', `${version}.js.txt`), 'latin1')
 
 describe('trust rule probes', () => {
-  it.each(['2.1.292', '2.1.295'])('find all four trust-rule snippets in the %s fixture', v => {
+  it.each(['2.1.292', '2.1.295', '2.1.300'])('find all four trust-rule snippets in the %s fixture', v => {
     const found = probesModule.extractProbes(fixture(v))
     expect(found).toHaveLength(4)
     expect(found.filter(f => f.at < 0).map(f => f.label)).toEqual([])
@@ -30,5 +30,11 @@ describe('trust rule probes', () => {
   it('reads the flag as hasTrustDialogAccepted in the 2.1.295 trust check', () => {
     const [trust] = probesModule.extractProbes(fixture('2.1.295'))
     expect(trust?.code).toContain('.projects?.[n]?.hasTrustDialogAccepted')
+  })
+
+  it('reads the 2.1.300 config-file picker with its statSync test of .config.json', () => {
+    const config = probesModule.extractProbes(fixture('2.1.300'))[3]
+    expect(config?.code).toMatch(/^function W_\(\)\{if\(me\(\)\)return \$5n\(\);/)
+    expect(config?.code).toContain('process.env.CLAUDE_CONFIG_DIR')
   })
 })
