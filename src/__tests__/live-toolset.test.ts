@@ -114,6 +114,7 @@ async function probe(confined: boolean): Promise<ProbeResult> {
     brief: BRIEF,
     cwd,
     cwdHoldsUserSettings: false,
+    adopted: false,
     surface: 'headless',
     mcpConfigPath,
   })

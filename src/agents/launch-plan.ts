@@ -4,6 +4,7 @@ import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
 import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
+import { standingRulesFor } from './standing-rules.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -57,7 +58,12 @@ export const HOOK_DENIAL_NOTE =
  * here as well would only duplicate it.
  */
 const systemPrompt = (input: LaunchPlanInput, hooked: boolean): string =>
-  [input.preamble ?? PEER_PREAMBLE, hooked ? HOOK_DENIAL_NOTE : '', input.profile.promptPrelude]
+  [
+    input.preamble ?? PEER_PREAMBLE,
+    standingRulesFor(input.adopted),
+    hooked ? HOOK_DENIAL_NOTE : '',
+    input.profile.promptPrelude,
+  ]
     .filter(part => part.trim() !== '')
     .join('\n\n')
 
