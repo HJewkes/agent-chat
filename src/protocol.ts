@@ -1233,7 +1233,7 @@ export type ClientMessage =
   | { t: 'host_hello'; host: string; platform: string; surfaces: string[]; proof?: string }
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
-  /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
+  /** CC-951: a launcher's answer to `host_probe`, `host_launch` or `host_spawn`, paired by `id`. */
   | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
@@ -1415,6 +1415,8 @@ export type ServerMessage =
   | { t: 'host_probe'; id: string; probe: HostProbe }
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
   | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  /** CC-1062: broker -> launcher; launch this spawn with the shared executor; answered by `host_launch_result`. */
+  | { t: 'host_spawn'; id: string; launch: RemoteLaunch }
   | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
   | { t: 'job_kick_result'; ok: boolean; detail: string }
   /**
