@@ -7,6 +7,7 @@ import { readAccountUsage, type AccountUsage } from './account-budget.js'
 import { accountIdentity, explicitDirIdentity } from './account-identity.js'
 import { SESSION_ID_SHAPE } from './budget.js'
 import { checkConfigDir, childConfigDir, defaultConfigDir, profileDir } from './config-dir.js'
+import { canonicalPath } from './spawn-cwd.js'
 import { transcriptPath } from './transcript.js'
 import { isTrusted } from './trust.js'
 
@@ -203,6 +204,16 @@ const mtimeOf = (file: string): number | undefined => {
   }
 }
 
+/** Whether both files exist and are one inode, which a hard link or a case-variant name gives two paths. */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    const [x, y] = [fs.statSync(a), fs.statSync(b)]
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
 /** Write `bytes` to `file` at mode 0600 through a tmp file and a rename, so a reader never sees half. */
 function writeAtomic(file: string, bytes: Buffer): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -267,8 +278,9 @@ export function transcriptMoveBlocker(move: TranscriptMove): string | undefined 
   if (!SESSION_ID_SHAPE.test(move.sessionId)) return `unusable session id: ${JSON.stringify(move.sessionId)}`
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
-  // Unset and an explicit ~/.claude are two logins over one dir: a copy onto itself, then a rename, loses it.
-  if (path.resolve(source) === path.resolve(target))
+  // Unset and an explicit ~/.claude, or a symlinked target dir, are two names for one file: a copy
+  // onto itself, then a rename, loses it.
+  if (canonicalPath(source) === canonicalPath(target) || sameFile(source, target))
     return `${move.from.dir} and ${move.to.dir} hold the same transcript file, so it cannot move between them`
   const sourceTime = mtimeOf(source)
   if (sourceTime === undefined) return `no transcript at ${source}`
