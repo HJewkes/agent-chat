@@ -31,7 +31,7 @@ const API_FLAGS: Flags = {
   ),
   valueShort: 'fFHqtXp',
   boolLong: new Set(),
-  boolShort: '',
+  boolShort: 'i',
 }
 
 const MERGE_FLAGS: Flags = {
@@ -164,7 +164,9 @@ function decoded(word: string): string | undefined {
 /** The method is ignored on purpose: a method-override header could turn a GET into the merge. */
 function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const parsed = parseWords(rest, API_FLAGS)
-  if (parsed.positionals.some(isGraphql) && !graphqlIsReadableNonMerge(parsed))
+  const graphql = parsed.positionals.map(graphqlEndpoint)
+  if (graphql.includes('odd')) return unresolved('a non-canonical GraphQL path')
+  if (graphql.includes('exact') && !graphqlIsReadableNonMerge(parsed))
     return unresolved('a GraphQL call that may merge')
   const merges = parsed.positionals.map(endpointTarget).filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
@@ -176,15 +178,23 @@ function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   return same ? first : unresolved('more than one merge endpoint')
 }
 
-const isGraphql = (word: string): boolean =>
-  /^\/?graphql\/?(?:[?#]|$)/i.test((decoded(word) ?? '').replace(API_PREFIX, ''))
+/** `odd` for a non-canonical path mentioning graphql, which a later hop may collapse into the endpoint. */
+function graphqlEndpoint(word: string): 'exact' | 'odd' | 'no' {
+  const path = (decoded(word) ?? '').replace(API_PREFIX, '')
+  if (!/graphql/i.test(path)) return 'no'
+  if (!isCanonical(path)) return 'odd'
+  return /^\/?graphql\/?(?:[?#]|$)/i.test(path) ? 'exact' : 'no'
+}
 
 const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
-const GRAPHQL_MERGE = /mergePullRequest|enablePullRequestAutoMerge/i
+const GRAPHQL_MERGE = /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeBranch/i
 
-/** True only when every field is inline and none names a merge mutation; `-F x=@file` and `--input` are unread. */
+/**
+ * True only when every flag is known, every field is inline and none names a merge mutation;
+ * `-F x=@file` and `--input` are unread.
+ */
 function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
-  if (parsed.flags.some(flag => flag.name === '--input')) return false
+  if (parsed.unknown.length > 0 || parsed.flags.some(flag => flag.name === '--input')) return false
   return parsed.flags
     .filter(flag => FIELD_FLAGS.has(flag.name))
     .every(({ name, value }) => {

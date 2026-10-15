@@ -112,6 +112,22 @@ describe('mergeTarget for gh api', () => {
     expect(kindOf(['api', 'graphql', ...flags])).toBe('unresolved')
   })
 
+  it.each([
+    [
+      '-i clustered with an inline merge',
+      ['graphql', '-if', 'query=mutation{mergePullRequest(input:{}){x}}'],
+    ],
+    ['-i clustered with a file query', ['graphql', '-iF', 'query=@q.graphql']],
+    ['an unknown short in a cluster', ['graphql', '-zf', 'query=query{viewer{login}}']],
+    ['enqueuePullRequest', ['graphql', '-f', 'query=mutation{enqueuePullRequest(input:{}){x}}']],
+    ['mergeBranch', ['graphql', '-f', 'query=mutation{mergeBranch(input:{}){x}}']],
+    ['//graphql', ['//graphql', '-f', 'query=query{viewer{login}}']],
+    ['./graphql', ['./graphql', '-f', 'query=query{viewer{login}}']],
+    ['x/../graphql', ['x/../graphql', '-f', 'query=query{viewer{login}}']],
+  ])('refuses a GraphQL call with %s', (_, rest) => {
+    expect(kindOf(['api', ...rest])).toBe('unresolved')
+  })
+
   it('passes a harmless inline GraphQL query as no merge', () => {
     expect(kindOf(['api', 'graphql', '-f', 'query=query{viewer{login}}', '-F', 'n=1'])).toBe('none')
   })
