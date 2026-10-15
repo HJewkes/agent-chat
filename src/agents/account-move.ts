@@ -7,6 +7,7 @@ import { readAccountUsage, type AccountUsage } from './account-budget.js'
 import { accountIdentity, explicitDirIdentity } from './account-identity.js'
 import { SESSION_ID_SHAPE } from './budget.js'
 import { checkConfigDir, childConfigDir, defaultConfigDir, profileDir } from './config-dir.js'
+import { canonicalPath } from './spawn-cwd.js'
 import { transcriptPath } from './transcript.js'
 import { isTrusted } from './trust.js'
 
@@ -139,8 +140,8 @@ function loginRefusals(input: AccountCheckInput, usage: AccountUsage): string[] 
   if (target !== undefined && target === readers.identity(from))
     refusals.push(`${to.dir} bills the same Anthropic login as ${from.dir}, so the move buys no headroom`)
   if (target === undefined) refusals.push(`${to.dir} has no oauthAccount in its .claude.json`)
-  if (usage.auth_fail) refusals.push(`the usage poller reports an auth failure for ${to.dir}`)
   if (!readers.hasLogin(to)) refusals.push(`${to.dir} holds no login (${keychainService(to)})`)
+  else if (usage.auth_fail) refusals.push(`${to.dir}'s login is refused, or expired with no refresh token`)
   return refusals
 }
 
@@ -203,6 +204,16 @@ const mtimeOf = (file: string): number | undefined => {
   }
 }
 
+/** Whether both files exist and are one inode, which a hard link or a case-variant name gives two paths. */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    const [x, y] = [fs.statSync(a), fs.statSync(b)]
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
 /** Write `bytes` to `file` at mode 0600 through a tmp file and a rename, so a reader never sees half. */
 function writeAtomic(file: string, bytes: Buffer): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -247,10 +258,36 @@ function copyThenRetire(
   try {
     ;(rename ?? fs.renameSync)(source, movedSource)
   } catch (err) {
-    restore(target, previous)
+    rollBack(target, previous, err as Error)
     throw err
   }
   return bytes.length
+}
+
+/** A failed rollback is reported beside the rename's error, never in place of it. */
+function rollBack(target: string, previous: Snapshot | undefined, cause: Error): void {
+  try {
+    restore(target, previous)
+  } catch (err) {
+    throw new Error(`${cause.message}; rolling back ${target} also failed: ${(err as Error).message}`)
+  }
+}
+
+/** Why the transcript cannot move, so the broker can refuse before it ends anything; undefined when it can. */
+export function transcriptMoveBlocker(move: TranscriptMove): string | undefined {
+  if (!SESSION_ID_SHAPE.test(move.sessionId)) return `unusable session id: ${JSON.stringify(move.sessionId)}`
+  const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
+  const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
+  // Unset and an explicit ~/.claude, or a symlinked target dir, are two names for one file: a copy
+  // onto itself, then a rename, loses it.
+  if (canonicalPath(source) === canonicalPath(target) || sameFile(source, target))
+    return `${move.from.dir} and ${move.to.dir} hold the same transcript file, so it cannot move between them`
+  const sourceTime = mtimeOf(source)
+  if (sourceTime === undefined) return `no transcript at ${source}`
+  const targetTime = mtimeOf(target)
+  if (targetTime !== undefined && targetTime > sourceTime)
+    return `${target} is newer than ${source}; the session already ran on the target`
+  return undefined
 }
 
 /**
@@ -260,15 +297,10 @@ function copyThenRetire(
  * a path segment, so it must have the shape a session id has.
  */
 export function moveTranscript(move: TranscriptMove): TranscriptMoveResult {
-  if (!SESSION_ID_SHAPE.test(move.sessionId))
-    return { ok: false, error: `unusable session id: ${JSON.stringify(move.sessionId)}` }
+  const error = transcriptMoveBlocker(move)
+  if (error !== undefined) return { ok: false, error }
   const source = transcriptPath(move.cwd, move.sessionId, move.from.dir)
   const target = transcriptPath(move.cwd, move.sessionId, move.to.dir)
-  const sourceTime = mtimeOf(source)
-  if (sourceTime === undefined) return { ok: false, error: `no transcript at ${source}` }
-  const targetTime = mtimeOf(target)
-  if (targetTime !== undefined && targetTime > sourceTime)
-    return { ok: false, error: `${target} is newer than ${source}; the session already ran on the target` }
   const stamp = new Date(move.now ?? Date.now()).toISOString().replace(/[:.]/g, '-')
   const movedSource = `${source}.moved-${stamp}`
   try {

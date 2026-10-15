@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
-import { SURFACE_NAMES, TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
+import { AGENT_TELEPORT_REASONS, SURFACE_NAMES, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
 import { hostIdentity } from '../host.js'
@@ -98,7 +98,7 @@ export const agentTeleport = defineTool({
       )
       .optional(),
     reason: z
-      .enum(TELEPORT_REASONS)
+      .enum(AGENT_TELEPORT_REASONS)
       .describe(
         'Optional. Omit for an ordinary teleport. Set "park" when you are idle waiting on the human ' +
           'and are handing off to a fresh session: your successor is told to ask your open question ' +

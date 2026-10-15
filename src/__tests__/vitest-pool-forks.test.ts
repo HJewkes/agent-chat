@@ -32,6 +32,8 @@ const SAFE_ON_THREADS: Record<string, string> = {
     'the stub claude binary is only resolved; its one spawn is the system git',
   'src/__tests__/burndown-refusal-snapshot.test.ts':
     'the stub claude binary is only resolved; its one spawn is the system git',
+  'src/__tests__/burndown-tick-broker-timeout.test.ts':
+    'the stub claude binary is only resolved; its one spawn is the system git',
   'src/__tests__/burndown.test.ts':
     'the stub claude binary is only resolved; its one spawn runs process.execPath for a dead pid',
   'src/__tests__/surface-consume.test.ts':

@@ -41,6 +41,8 @@ export interface DispatchRun {
   seat?: string
   /** CC-953: who wrote the task's brief, read from its `brief:src=` tag at spawn; absent when the task has no file. */
   briefSource?: BriefSource
+  /** CC-1038: the `CLAUDE_CONFIG_DIR` a local spawn ran under, so a reader bills the pool it really used. */
+  configDir?: string
 }
 
 export interface DispatchUsage {
@@ -84,7 +86,11 @@ interface BrokerRow<Outcome extends string> {
   seat?: string
 }
 
-export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number; briefSource?: BriefSource }
+export type DispatchedRow = BrokerRow<typeof DISPATCHED> & {
+  tier?: number
+  briefSource?: BriefSource
+  config_dir?: string
+}
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
@@ -131,6 +137,7 @@ export const dispatchedRow = (run: DispatchRun): DispatchedRow => ({
   ...brokerRow(run, DISPATCHED, null, null),
   ...(run.tier === undefined ? {} : { tier: run.tier }),
   ...(run.briefSource === undefined ? {} : { briefSource: run.briefSource }),
+  ...(run.configDir === undefined ? {} : { config_dir: run.configDir }),
 })
 
 /** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */

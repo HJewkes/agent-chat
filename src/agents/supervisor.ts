@@ -212,6 +212,7 @@ import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
+  isAdoptedSuccessor,
   SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
@@ -224,6 +225,7 @@ import {
   type TeleportRequest,
   type LauncherSite,
 } from './teleport.js'
+import type { AccountMoves } from './teleport-account.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
@@ -518,8 +520,13 @@ function remoteSpawnMeta(
   }
 }
 
-/** The dispatched row's facts for a spawn, local or remote. */
-const spawnFactsOf = (req: SpawnRequest, profile: AgentProfile, agentId: string): SpawnFacts => ({
+/** The dispatched row's facts for a spawn, local or remote; only a local spawn knows its config dir. */
+const spawnFactsOf = (
+  req: SpawnRequest,
+  profile: AgentProfile,
+  agentId: string,
+  configDir?: string,
+): SpawnFacts => ({
   agent: req.name,
   agent_id: agentId,
   spawner: req.requestedBy,
@@ -528,6 +535,7 @@ const spawnFactsOf = (req: SpawnRequest, profile: AgentProfile, agentId: string)
   predecessor: req.predecessor ?? null,
   ...(req.tier === undefined ? {} : { tier: req.tier }),
   ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
+  ...(configDir === undefined ? {} : { configDir }),
 })
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -801,6 +809,8 @@ export interface SupervisorOptions {
   seatTeleport?: SeatTeleportDeps
   /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
   hosts?: LauncherSite
+  /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
+  accountMoves?: AccountMoves
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -1107,6 +1117,7 @@ export class Supervisor implements TeleportHost {
       options.argvReader,
       options.seatTeleport,
       options.hosts,
+      options.accountMoves,
     )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
@@ -2538,6 +2549,7 @@ export class Supervisor implements TeleportHost {
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
+      adopted: false,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
@@ -2652,7 +2664,7 @@ export class Supervisor implements TeleportHost {
     const site = { cwd: allocation.cwd, configDir: childConfigDir(account) }
     const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
-    const facts = spawnFactsOf(req, profile, agentId)
+    const facts = spawnFactsOf(req, profile, agentId, site.configDir)
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
       warnings.push(verdict.warning)
@@ -3794,6 +3806,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: agent.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -3915,6 +3928,7 @@ export class Supervisor implements TeleportHost {
       resume: true,
       name: req.name,
       profile,
+      adopted: agent.origin === 'adopted',
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
@@ -4193,6 +4207,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: input.brief,
       preamble: input.preamble,
+      ...(isAdoptedSuccessor(input) ? { adopted: true as const } : {}),
       surface: input.surface,
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
@@ -4225,10 +4240,12 @@ export class Supervisor implements TeleportHost {
     allocation: Allocation,
     over: { sessionId?: string; surface?: SurfaceName } = {},
   ): { plan: LaunchPlan; sessionId: string } {
-    const sessionId = over.sessionId ?? Teleport.newSessionId()
+    // CC-892: an account move continues the same conversation, so it resumes the id rather than minting one.
+    const sessionId = over.sessionId ?? input.resumeSession ?? Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
       sessionId,
+      ...(input.resumeSession === undefined ? {} : { resume: true }),
       name: input.name,
       profile: input.profile,
       brief: input.brief,
@@ -4236,6 +4253,7 @@ export class Supervisor implements TeleportHost {
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
       surface: over.surface ?? input.surface,
       preamble: input.preamble,
+      adopted: isAdoptedSuccessor(input),
       mcpConfigPath: mcpConfigPath(input.agentId),
       hookSettingsPath: hookSettingsPath(input.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
@@ -4428,7 +4446,8 @@ export class Supervisor implements TeleportHost {
   /**
    * CC-1372: a successor-last teleport has already ended its predecessor, so a surface that
    * failed its launch and retry runs the successor headless rather than losing it. A
-   * successor-first predecessor still runs and is kept instead (CC-951).
+   * successor-first predecessor still runs and is kept instead (CC-951), and the successor is lost
+   * when the CC-406 machine guard refuses a headless agent.
    */
   private async headlessFallback(
     launch: SuccessorLaunch,
@@ -4440,6 +4459,8 @@ export class Supervisor implements TeleportHost {
       return this.lostSuccessor(input, executionId, failure)
     const refusal = await this.retryRefusal(input)
     if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
+    const machine = this.machineRefusal('headless')
+    if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
     let handle: LaunchHandle
     try {
       handle = await this.launchOn('headless', this.headlessPlan(launch))
@@ -4488,6 +4509,22 @@ export class Supervisor implements TeleportHost {
         cause: 'teleport-headless-fallback',
       },
     })
+  }
+
+  /** Refused before `headlessPlan` rewrites the launch files, so the relaunch script still starts the requested surface. */
+  private refusedHeadless(
+    input: RelaunchInput,
+    executionId: string | undefined,
+    failure: string,
+    machine: Extract<MachineDecision, { ok: false }>,
+  ): never {
+    logEvent('teleport_headless_refused', {
+      name: input.name,
+      agentId: input.agentId,
+      code: machine.code,
+      reason: machine.reason,
+    })
+    return this.lostSuccessor(input, executionId, `${failure}; headless fallback refused: ${machine.reason}`)
   }
 
   private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {
