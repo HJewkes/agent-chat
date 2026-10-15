@@ -237,6 +237,24 @@ function parsePromptCache(raw: unknown): PromptCache | undefined {
   }
 }
 
+const TTL_UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600 }
+
+function ttlSeconds(ttl: string | undefined): number {
+  const match = /^(\d+)([smh])$/.exec(ttl ?? '')
+  return match === null ? 0 : Number(match[1]) * (TTL_UNIT_SECONDS[match[2] as string] as number)
+}
+
+/**
+ * CC-1366: unix seconds when `rate_limits` were last observed. A status line restamps `written_at`
+ * on every redraw, but rate_limits only change on an API response, and that response also set
+ * `prompt_cache.expires_at` to its own time plus the ttl.
+ */
+export function rateLimitsObservedAt(budget: SessionBudget): number {
+  const expiresAt = budget.prompt_cache?.expires_at
+  if (expiresAt === undefined) return budget.written_at
+  return Math.min(budget.written_at, expiresAt - ttlSeconds(budget.prompt_cache?.ttl))
+}
+
 /**
  * Tokens in the context right now. `input_tokens` is Claude Code's
  * `total_input_tokens`, which 2.1.280 computes as input + cache_creation +
@@ -493,9 +511,21 @@ export function accountUsageLines(accounts: AccountReading[], slots?: SlotUsage)
 
 type FoundRead = Extract<BudgetRead, { found: true }>
 
+/** Each read aged by when its rate_limits were observed; the current ones, else the youngest alone. */
+function rateLimitReads(reads: readonly FoundRead[], now: number): FoundRead[] {
+  const aged = reads.map(read => {
+    const age = Math.max(0, Math.round(now / 1000 - rateLimitsObservedAt(read.budget)))
+    return { ...read, age_seconds: age, stale: age > STALE_AFTER_SECONDS }
+  })
+  const current = aged.filter(read => read.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS)
+  if (current.length > 0) return current
+  return [aged.reduce((a, b) => (b.age_seconds < a.age_seconds ? b : a))]
+}
+
 /**
  * The account-level figure for one config dir: the freshest reading of any
- * session under it, since rate-limit windows are the same for all of them.
+ * session under it, since rate-limit windows are the same for all of them,
+ * each aged by when its rate_limits were observed (CC-1366).
  * A stale reading is still returned; usage only falls at resets, so it errs high.
  */
 export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
@@ -510,7 +540,7 @@ export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
     .map(name => readStatusLineBudget(name.slice(0, -'.json'.length), now, dir))
     .filter((read): read is FoundRead => read.found)
   if (reads.length === 0) return { found: false, path: cache, reason: 'no_file' }
-  return mergeWindows(reads, now)
+  return mergeWindows(rateLimitReads(reads, now), now)
 }
 
 /** Two resets_at this close name the same window; a status line's figure can lag the poller's by minutes. */
