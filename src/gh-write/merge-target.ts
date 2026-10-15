@@ -30,7 +30,7 @@ const API_FLAGS: Flags = {
     '--raw-field --field --header --input --jq --template --method --hostname --cache --preview'.split(' '),
   ),
   valueShort: 'fFHqtXp',
-  boolLong: new Set(),
+  boolLong: new Set('--include --paginate --silent --slurp --verbose'.split(' ')),
   boolShort: 'i',
 }
 

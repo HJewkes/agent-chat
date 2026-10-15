@@ -128,6 +128,19 @@ describe('mergeTarget for gh api', () => {
     expect(kindOf(['api', ...rest])).toBe('unresolved')
   })
 
+  it.each(['--paginate', '--include', '--slurp', '--silent', '--verbose'])(
+    'passes a harmless GraphQL read with %s as no merge',
+    flag => {
+      expect(kindOf(['api', 'graphql', flag, '-f', 'query=query{viewer{login}}'])).toBe('none')
+    },
+  )
+
+  it('refuses a paginated GraphQL merge', () => {
+    const args = ['api', 'graphql', '--paginate', '-f', 'query=mutation{mergePullRequest(input:{}){x}}']
+
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
   it('passes a harmless inline GraphQL query as no merge', () => {
     expect(kindOf(['api', 'graphql', '-f', 'query=query{viewer{login}}', '-F', 'n=1'])).toBe('none')
   })
