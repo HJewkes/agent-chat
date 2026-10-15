@@ -185,7 +185,14 @@ out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check 
 out=$("$BIN/premerge" "$R" 7x "$SHA" "$W/clone" 2>&1); rc=$?;             check "8 bad PR number" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 abc123 "$W/clone" 2>&1); rc=$?;              check "8 short head sha" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 "$CLEAN" "$W/clone" "zz$CLEAN" 2>&1); rc=$?; check "8 bad reviewed head" 2 "^bad argument"
-ok_case; out=$(env -u COORDINATORS "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "8 unset COORDINATORS" 2 "^COORDINATORS unset"
+ok_case; out=$(env -u COORDINATORS -u STUB_COORDINATORS "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "8 unset COORDINATORS and no verb list" 2 "^COORDINATORS unset"
+ok_case; add_verdict coord-a msg0012 FIX_FIRST "$SHA"
+out=$(env -u COORDINATORS STUB_COORDINATORS="coord-a coord-b" "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "8 unset COORDINATORS takes the verb list" 1 "^FAIL .*not MERGE"
+ok_case; add_verdict coord-a msg0012 FIX_FIRST "$SHA"
+out=$(STUB_COORDINATORS="coord-z" "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?
+check "8 explicit COORDINATORS beats the verb list" 1 "^FAIL .*not MERGE"
 # 8b: with EVENTS_DB unset, the events db is read from AGENT_CHAT_HOME (CC-835 portability)
 ok_case; mkdir -p "$W/agent-chat-home"; cp "$EVENTS_DB" "$W/agent-chat-home/events.db"
 out=$(env -u EVENTS_DB AGENT_CHAT_HOME="$W/agent-chat-home" HOME="$W/no-home" "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?

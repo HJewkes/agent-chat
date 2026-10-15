@@ -10,8 +10,8 @@ R=$1 N=$2 S=$3 L=$4 RV=${5:-$3}
 [[ $R =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ $N =~ ^[0-9]+$ ]] && [[ $S =~ ^[0-9a-f]{40}$ ]] && [[ $RV =~ ^[0-9a-f]{40}$ ]] \
   || { echo "bad argument: $usage" >&2; exit 2; }
 DB=${EVENTS_DB:-${AGENT_CHAT_HOME:-$HOME/.agent-chat}/events.db}
-COORDS=${COORDINATORS:-}
-[ -n "$COORDS" ] || { echo "COORDINATORS unset: export the space-separated coordinator seat names" >&2; exit 2; }
+COORDS=${COORDINATORS:-$(agent-chat seats coordinators 2>/dev/null)}
+[ -n "$COORDS" ] || { echo "COORDINATORS unset and agent-chat seats coordinators gave no list" >&2; exit 2; }
 REVIEWER_PATTERN=${REVIEWER_PATTERN:-'(^rv-|-review(-r[0-9]+)?$)'}
 fail=()
 
