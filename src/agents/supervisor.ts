@@ -4428,7 +4428,8 @@ export class Supervisor implements TeleportHost {
   /**
    * CC-1372: a successor-last teleport has already ended its predecessor, so a surface that
    * failed its launch and retry runs the successor headless rather than losing it. A
-   * successor-first predecessor still runs and is kept instead (CC-951).
+   * successor-first predecessor still runs and is kept instead (CC-951), and the successor is lost
+   * when the CC-406 machine guard refuses a headless agent.
    */
   private async headlessFallback(
     launch: SuccessorLaunch,
@@ -4440,6 +4441,8 @@ export class Supervisor implements TeleportHost {
       return this.lostSuccessor(input, executionId, failure)
     const refusal = await this.retryRefusal(input)
     if (refusal !== undefined) return this.skippedRetry(launch, executionId, failure, refusal)
+    const machine = this.machineRefusal('headless')
+    if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
     let handle: LaunchHandle
     try {
       handle = await this.launchOn('headless', this.headlessPlan(launch))
@@ -4488,6 +4491,22 @@ export class Supervisor implements TeleportHost {
         cause: 'teleport-headless-fallback',
       },
     })
+  }
+
+  /** Refused before `headlessPlan` rewrites the launch files, so the relaunch script still starts the requested surface. */
+  private refusedHeadless(
+    input: RelaunchInput,
+    executionId: string | undefined,
+    failure: string,
+    machine: Extract<MachineDecision, { ok: false }>,
+  ): never {
+    logEvent('teleport_headless_refused', {
+      name: input.name,
+      agentId: input.agentId,
+      code: machine.code,
+      reason: machine.reason,
+    })
+    return this.lostSuccessor(input, executionId, `${failure}; headless fallback refused: ${machine.reason}`)
   }
 
   private lostSuccessor(input: RelaunchInput, executionId: string | undefined, reason: string): never {
