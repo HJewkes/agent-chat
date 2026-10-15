@@ -32,10 +32,12 @@ export interface SimpleCommand {
   /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
   writes: string[]
   /**
-   * The `writes` targets opened without truncating (`>>`, `&>>`, `<>`), so the file keeps text it held
-   * before. A target spelled as one appended to anywhere else on the line counts as well.
+   * The files it opens for writing (`writes`, and a `tee`'s operands) whose final text it may not
+   * settle alone: opened anywhere on the line, at any depth, without truncating (`>>`, `&>>`, `<>`,
+   * `tee -a`), on a descriptor above 2, by a bare `exec` that later commands write through, or more
+   * than once. Set by `parseShell`.
    */
-  appends: string[]
+  shared: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
@@ -276,8 +278,8 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
-  /** Every target this lexer saw opened without truncating. */
-  private readonly appended = new Set<string>()
+  /** Targets this lexer saw opened so as to keep their text, marked once a bare redirect has passed on. */
+  private readonly kept = new Set<string>()
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -347,7 +349,7 @@ class ShellLexer {
       splits: [],
       substitutions: [],
       writes: [],
-      appends: [],
+      shared: [],
       ...unsure,
       before: '',
       after: '',
@@ -360,15 +362,8 @@ class ShellLexer {
   run(): SimpleCommand[] {
     while (this.pos < this.src.length && !this.closed) this.step()
     this.endCommand()
-    this.markAppends()
+    for (const cmd of this.out) cmd.shared.push(...cmd.writes.filter(target => this.kept.has(target)))
     return this.out
-  }
-
-  /** Runs after the commands are split, since a bare redirect's target passes to the next command. */
-  private markAppends(): void {
-    for (const cmd of this.out)
-      for (const target of cmd.writes)
-        if (this.appended.has(target) && !cmd.appends.includes(target)) cmd.appends.push(target)
   }
 
   private step(): void {
@@ -780,7 +775,8 @@ class ShellLexer {
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
     const op = this.redirectOperator()
-    this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : APPEND_OPERATORS.has(op) ? 'append' : 'write'
+    const keeps = APPEND_OPERATORS.has(op) || fd > 2
+    this.pending = !WRITE_OPERATORS.has(op) ? 'discard' : keeps ? 'append' : 'write'
   }
 
   /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
@@ -997,7 +993,7 @@ class ShellLexer {
       this.afterWord(word, quoteStart)
     } else if (pending === 'write' || pending === 'append') {
       this.cur.writes.push(this.marked)
-      if (pending === 'append') this.appended.add(this.marked)
+      if (pending === 'append') this.kept.add(this.marked)
     } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
@@ -1116,7 +1112,40 @@ export const HOLE = '\x01'
 
 /** Every simple command in `src`, including those inside `$(...)` and backticks. */
 export function parseShell(src: string): SimpleCommand[] {
-  return new ShellLexer(unmark(src)).run()
+  return markShared(new ShellLexer(unmark(src)).run())
+}
+
+// `exec 3>f` and `exec {fd}>f` leave f open for every later command to write through, unnamed.
+const BARE_EXEC = /^exec(?: \{[A-Za-z_]\w*\})*$/
+
+/** The files a command opens for writing: its redirect targets, and the operands of a `tee`. */
+function opened(cmd: SimpleCommand): { targets: string[]; keeps: Set<string> } {
+  const tee = cmd.marked[0] === 'tee' ? cmd.marked.slice(1) : []
+  const keeps = new Set(cmd.shared)
+  // `tee -a` and `tee s -a` append; any option word may be one, so it keeps every file.
+  if (BARE_EXEC.test(cmd.marked.join(' ')) || tee.some(word => word.startsWith('-')))
+    for (const target of [...cmd.writes, ...tee]) keeps.add(target)
+  return { targets: [...cmd.writes, ...tee], keeps }
+}
+
+/**
+ * One pass over every command of the line, nested ones included, since a file a command writes with
+ * `>` alone may still be appended to, reopened or written through a descriptor by another.
+ */
+function markShared(commands: SimpleCommand[]): SimpleCommand[] {
+  const opens = new Map<string, number>()
+  const shared = new Set<string>()
+  const files = commands.map(opened)
+  for (const { targets, keeps } of files)
+    for (const target of targets) {
+      opens.set(target, (opens.get(target) ?? 0) + 1)
+      if (keeps.has(target)) shared.add(target)
+    }
+  commands.forEach((cmd, at) => {
+    const targets = files[at]?.targets ?? []
+    cmd.shared = [...new Set(targets.filter(t => shared.has(t) || (opens.get(t) ?? 0) > 1))]
+  })
+  return commands
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'

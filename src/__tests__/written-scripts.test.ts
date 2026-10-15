@@ -93,6 +93,44 @@ describe('writtenText', () => {
     expect(writtenText(firstCommand("printf 'echo ech' > s; printf 'o RAN' >> s"))).toBeUndefined()
   })
 
+  const pushWriter = (line: string): SimpleCommand => {
+    const found = parseShell(line).find(cmd => cmd.words.join(' ') === 'printf git push')
+    if (found === undefined) throw new Error(`no writer in ${line}`)
+    return found
+  }
+
+  it.each([
+    "printf 'git push' > s; : $(printf x >> s)",
+    "printf 'git push' > s; : `printf x >> s`",
+    "printf 'git push' > s; cat <(printf x >> s)",
+    "printf 'git push' > s; (printf x >> s)",
+    "printf 'git push' > s; { printf x >> s; }",
+    "printf 'git push' > s; f() { printf x >> s; }",
+    'printf \'git push\' > s; : "$(: $(printf x >> s))"',
+    "exec 3>s; printf 'git push' > s; printf x >&3",
+    "exec {fd}>s; printf 'git push' > s",
+    "printf 'git push' > s; exec >s",
+    "printf 'git push' > s; printf x 3> s",
+    "printf 'git push' > s; printf x > s",
+    "printf 'git push' > s; printf x | tee s",
+    "printf 'git push' > s; printf x | tee -a s",
+    "printf 'git push' > s; { printf x; } > s",
+  ])('%j reads no text for a file another open on the line may change', line => {
+    expect(writtenText(pushWriter(line))).toBeUndefined()
+  })
+
+  it.each([
+    ["printf 'git push' > s; : $(printf x > t)", 'git push'],
+    ["printf 'git push' > s; printf x | tee t", 'git push'],
+    ["printf 'git push' > s; exec 3>t", 'git push'],
+  ])('%j still reads the text when other opens name other files', (line, text) => {
+    expect(writtenText(pushWriter(line))).toBe(text)
+  })
+
+  it('reads no text for a tee whose file the line appends to elsewhere', () => {
+    expect(writtenText(firstCommand("tee s <<'EOF'\nls\nEOF\nprintf x >> s"))).toBeUndefined()
+  })
+
   it('reads no text a pipe feeds tee', () => {
     expect(writtenText(lastCommand("printf 'git push' | tee s"))).toBeUndefined()
   })

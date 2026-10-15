@@ -52,13 +52,12 @@ function plainOperands(cmd: SimpleCommand): string[] | undefined {
  * The exact text a command writes to its redirect targets, or `tee` to its operands: a `cat` or `tee`
  * of a literal heredoc, an `echo` of plain words, or a `printf` of one plain format. zsh's `echo` reads
  * escapes and options, and `printf` reads `%` and `\`, so a word holding either is unread. A target
- * opened without truncating (`>>`, `&>>`, `<>`) keeps text the line does not show, so any makes the
- * text unread. Undefined for any other command, which may write anything.
+ * whose text another open on the line may change (`SimpleCommand.shared`) makes the text unread. Undefined for any other command, which may write anything.
  */
 export function writtenText(cmd: SimpleCommand): string | undefined {
   const name = cmd.marked[0]
   const operands = plainOperands(cmd)
-  if (operands === undefined || cmd.appends.length > 0) return undefined
+  if (operands === undefined || cmd.shared.length > 0) return undefined
   if (name === 'tee') return teeText(cmd, operands)
   if (cmd.writes.length === 0) return undefined
   if (name === 'cat') return operands.length === 0 ? literalStdin(cmd) : undefined
