@@ -79,6 +79,9 @@ const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
 const MAX_FORKS = 64
+// The operators after which zsh reads a `!` as its own (`>!`, `>>!`, `>&!`, `&>!`, `&>>!`, `>>&!`), where
+// bash, and zsh after `>|` or `<>`, starts the target with it. Observed in zsh 5.9 and bash 5.2.
+const BANG_OPERATORS = new Set(['>', '>>', '>&', '&>', '&>>', '>>&'])
 // Each level of `$(`, backtick, funsub or arithmetic span is a nested `run()`; far more would exhaust the stack.
 const MAX_NESTING = 200
 
@@ -93,11 +96,21 @@ interface Limits {
   level: number
   /** Set when `run()` refused to nest deeper; the parse then reads as unreadable. */
   capped: boolean
+  /** Here too, so a probe for the end of a `$(` reads as its pass does. */
+  dialect: Dialect
 }
 
 function newBudget(): Budget {
-  return { forks: MAX_FORKS, expansion: undefined, limits: { level: 0, capped: false } }
+  return {
+    forks: MAX_FORKS,
+    expansion: undefined,
+    limits: { level: 0, capped: false, dialect: 'zsh' },
+    diverges: false,
+  }
 }
+
+/** The shell whose reading a pass takes where zsh and bash read a line differently. */
+type Dialect = 'zsh' | 'bash'
 
 /**
  * Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run,
@@ -109,6 +122,8 @@ interface Budget {
   limits: Limits
   /** Only finding where a substitution ends, so arithmetic is not looked for. */
   probe?: boolean
+  /** The pass met a spelling the other shell reads differently, so the line needs a pass per shell. */
+  diverges: boolean
 }
 
 /**
@@ -293,11 +308,6 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
-  /**
-   * zsh reads the `!` after `>!` as the operator's and bash as the start of the target, so a target
-   * of `>!` is recorded both ways: `glued` for `>!s`, where bash writes `!s`, and `spaced` for `>! s`.
-   */
-  private bang: 'glued' | 'spaced' | undefined
   /** Targets this lexer saw opened so as to keep their text, marked once a bare redirect has passed on. */
   private readonly kept = new Set<string>()
   private heredocs: Heredoc[] = []
@@ -821,11 +831,13 @@ class ShellLexer {
       op += c
       this.advance(1)
     }
-    this.bang = undefined
-    if (op.includes('>') && this.peek(this.pos) === '!') {
+    // bash leaves the `!` to start the target, so `git >! s push` runs `git s push` there and
+    // `git push` in zsh: each pass reads the whole line as one shell does.
+    if (BANG_OPERATORS.has(op) && this.peek(this.pos) === '!') {
+      this.budget.diverges = true
+      if (this.budget.limits.dialect === 'bash') return op
       op += '!'
       this.advance(1)
-      this.bang = /^[^\s;&|()<>]/.test(this.src.slice(this.pos, this.pos + 1)) ? 'glued' : 'spaced'
     }
     return op
   }
@@ -1027,12 +1039,8 @@ class ShellLexer {
     const pending = this.pending
     this.pending = null
     if (pending === null) this.pushWord(word, splitting, quoteStart)
-    else if (pending === 'write' || pending === 'append' || pending === 'dup') {
-      // bash reads `>! s` as a write to `!` and s as an operand, so `bash >! s` runs s.
-      const operand = this.bang === 'spaced'
-      this.recordWrite(word, pending)
-      if (operand) this.pushWord(word, splitting, quoteStart)
-    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
+    else if (pending === 'write' || pending === 'append' || pending === 'dup') this.recordWrite(word, pending)
+    else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
@@ -1051,12 +1059,8 @@ class ShellLexer {
   private recordWrite(word: string, pending: 'write' | 'append' | 'dup'): void {
     // `>&2` and `>&-` copy or close a descriptor; any other word names a file.
     if (pending === 'dup' && !this.marked.includes(LIVE) && /^(?:\d+-?|-)$/.test(word)) return
-    const targets =
-      this.bang === undefined ? [this.marked] : [this.marked, this.bang === 'glued' ? `!${this.marked}` : '!']
-    this.bang = undefined
-    appendAll(this.cur.writes, targets)
-    if (pending !== 'write' || this.cur.words.length === 0)
-      for (const target of targets) this.kept.add(target)
+    this.cur.writes.push(this.marked)
+    if (pending !== 'write' || this.cur.words.length === 0) this.kept.add(this.marked)
   }
 
   /**
@@ -1154,6 +1158,7 @@ function substitutionEnd(src: string, from: number, limits: Limits): number {
     expansion: undefined,
     limits,
     probe: true,
+    diverges: false,
   })
   probe.run()
   return src[probe.pos] === ')' ? probe.pos + 1 : -1
@@ -1233,9 +1238,45 @@ function writeKind(op: string, fd: number): Pending {
   return TRUNCATING_OPERATORS.has(op) && fd <= 2 ? 'write' : 'append'
 }
 
-/** Every simple command in `src`, including those inside `$(...)` and backticks. */
+/** One shell's reading of a line, and the lexer that read it. */
+interface Reading {
+  commands: SimpleCommand[]
+  lexer: ShellLexer
+}
+
+/**
+ * The line as zsh reads it and, where bash reads it differently, as bash does. The bash pass is a fork
+ * out of the same budget, so the two passes share `MAX_FORKS`; with none left the line is unreadable.
+ */
+function readLine(src: string): { readings: Reading[]; expansion: ExpansionRisk | undefined } {
+  const text = unmark(src)
+  const budget = newBudget()
+  const readings = [readAs(text, budget)]
+  if (budget.diverges && budget.forks-- <= 0) budget.expansion = 'unreadable'
+  else if (budget.diverges) {
+    budget.limits.dialect = 'bash'
+    readings.push(readAs(text, budget))
+  }
+  return { readings, expansion: readings[0]?.lexer.expansion }
+}
+
+function readAs(text: string, budget: Budget): Reading {
+  const lexer = new ShellLexer(text, 0, false, budget)
+  return { commands: lexer.run(), lexer }
+}
+
+/**
+ * Every simple command in `src`, including those inside `$(...)` and backticks, once per shell
+ * reading (see `parseReadings`). A caller that carries state from one command to the next reads
+ * each reading on its own instead.
+ */
 export function parseShell(src: string): SimpleCommand[] {
-  return markShared(new ShellLexer(unmark(src)).run())
+  return parseReadings(src).flat()
+}
+
+/** Every simple command in `src` as zsh runs the line and, where bash runs it differently, as bash does. */
+export function parseReadings(src: string): SimpleCommand[][] {
+  return readLine(src).readings.map(({ commands }) => markShared(commands))
 }
 
 // `exec 3>f` and `exec {fd}>f` leave f open for every later command to write through, unnamed.
@@ -1312,9 +1353,7 @@ export function expandWord(
  * after it, even one spelt `g''h`, and zsh's `${(e)...}` runs the text it expands (CC-718).
  */
 export function expansionRisk(src: string): ExpansionRisk | undefined {
-  const lexer = new ShellLexer(unmark(src))
-  lexer.run()
-  return lexer.expansion
+  return readLine(src).expansion
 }
 
 const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/
@@ -1330,8 +1369,8 @@ const namesGuarded = (cmd: SimpleCommand): boolean =>
  * words, after quotes, escapes and continuations are read, never on the raw text.
  */
 export function mixesParenAndGuarded(src: string): boolean {
-  const lexer = new ShellLexer(unmark(src))
-  const commands = lexer.run()
-  const { mark } = lexer
-  return mark !== undefined && commands.slice(mark.after).some(cmd => cmd !== mark.skip && namesGuarded(cmd))
+  return readLine(src).readings.some(
+    ({ commands, lexer: { mark } }) =>
+      mark !== undefined && commands.slice(mark.after).some(cmd => cmd !== mark.skip && namesGuarded(cmd)),
+  )
 }

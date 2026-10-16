@@ -79,6 +79,7 @@ import {
   LIVE,
   mixesParenAndGuarded,
   NAME,
+  parseReadings,
   parseShell,
   unmark,
   type SimpleCommand,
@@ -2526,20 +2527,35 @@ function deniesExpansion(command: string): boolean {
   return risk === 'unreadable' || (risk === 'operator' && NAMES_GH.test(command))
 }
 
+/** One shell's reading of a line, each command checked in the scope the ones before it leave. */
+function checkReading(
+  commands: readonly SimpleCommand[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  let at = scope
+  for (const cmd of commands) {
+    at = settle(cmd, at)
+    const reason = checkSimple(cmd, ctx, at, depth)
+    if (reason !== undefined) return reason
+    at = advance(cmd, ctx, at)
+  }
+  return undefined
+}
+
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
   const cdpath = scope.cdpath || command.includes('CDPATH')
   const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
   const said = `${scope.said}\n${unreferenced(command)}`
-  let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
+  const at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
-  for (const cmd of parseShell(command)) {
-    at = settle(cmd, at)
-    const reason = checkSimple(cmd, ctx, at, depth)
+  for (const commands of parseReadings(command)) {
+    const reason = checkReading(commands, ctx, at, depth)
     if (reason !== undefined) return reason
-    at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion

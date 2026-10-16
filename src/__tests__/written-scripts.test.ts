@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseShell, unmark, type SimpleCommand } from '../leak-guard/shell-words.js'
+import { parseReadings, parseShell, unmark, type SimpleCommand } from '../leak-guard/shell-words.js'
 import { foreignShebang, keepsContent, scriptRuns, writtenText } from '../leak-guard/written-scripts.js'
 
 // A script one command of a line writes and a later command runs (CC-1340).
@@ -171,11 +171,15 @@ describe('writtenText', () => {
     },
   )
 
-  // bash reads `>!s` as a write to the file `!s`, and `>! s` as a write to `!`.
+  // bash reads `>!s` as a write to the file `!s`, and `>! s` as a write to `!`; zsh writes s.
   it.each(["printf 'git push' > '!s'; echo evil >!s", "printf 'git push' > '!'; echo evil >! s"])(
-    '%j counts the target bash reads after a `>!` as well',
+    '%j reads the text in zsh and none in bash, which writes the file again',
     line => {
-      expect(writtenText(pushWriter(line))).toBeUndefined()
+      const texts = parseReadings(line).map(commands => {
+        const writer = commands.find(cmd => cmd.words[0] === 'printf' && cmd.words[1] === 'git push')
+        return writer && writtenText(writer)
+      })
+      expect(texts).toEqual(['git push', undefined])
     },
   )
 
@@ -293,13 +297,19 @@ describe('scriptRuns', () => {
 
   // bash reads `>! s` as a write to the file `!`, leaving s an operand; zsh reads it as a write to s.
   it.each([
-    ["printf 'git push --no-verify' > s; bash >! s", []],
-    ["printf 'git push --no-verify' > s; source >! s", []],
-    ["printf 'git push --no-verify' > s; bash >>! s", []],
-    ["printf 'git push --no-verify' > s; bash >&! s", []],
-    ["printf 'git push --no-verify' > s; bash >! s -x", ['-x']],
-  ])('%j runs s as bash reads it', (line, args) => {
-    expect(runsOf(line)).toEqual({ runs: [{ word: 's', args, head: false }], stdin: false })
+    ['bash >! s', []],
+    ['source >! s', []],
+    ['bash >>! s', []],
+    ['bash >&! s', []],
+    ['bash &>! s', []],
+    ['bash &>>! s', []],
+    ['bash >! s -x', ['-x']],
+  ])('%j runs s in its bash reading only', (line, args) => {
+    const [zsh, bash] = parseReadings(line).map(([cmd]) => cmd?.marked)
+    const runs = (marked: string[] | undefined) =>
+      scriptRuns(unmark(marked?.[0] ?? ''), marked?.slice(1) ?? [], [], SHELLS)
+    expect(runs(bash)).toEqual({ runs: [{ word: 's', args, head: false }], stdin: false })
+    expect(runs(zsh)).toEqual({ runs: [], stdin: line.startsWith('bash') })
   })
 
   it('gives each run the operands after it, and marks a head run', () => {
