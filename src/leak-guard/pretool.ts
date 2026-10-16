@@ -37,6 +37,7 @@ import {
   type ParallelCall,
   type ParallelInputs,
 } from './run-wrappers.js'
+import { JOB_WRAPPERS, jobRun } from './job-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -207,6 +208,7 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
+  jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
@@ -294,6 +296,7 @@ const IONICE_GETOPT: Getopt = {
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
   ...OPTION_WRAPPERS,
+  ...JOB_WRAPPERS,
   ...SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
@@ -488,6 +491,17 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         rest = sudoShell(script)
         at = 0
       } else at = after.at
+    } else if (JOB_WRAPPERS.has(name)) {
+      const run = jobRun(rest, at + 1, name)
+      if (run === undefined) return { reason: REASONS.jobOption }
+      chdir ||= run.chdir === true
+      if ('at' in run) at = run.at
+      // Words xargs adds may be another -c or the script itself.
+      else if (fed !== undefined) return { reason: REASONS.hiddenCommand }
+      else {
+        rest = run.script === undefined ? ['sh'] : ['sh', '-c', run.script]
+        at = 0
+      }
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
@@ -2297,7 +2311,10 @@ function checkSimple(
   lead?: Lead,
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
-  if ('reason' in unwrapped) return unwrapped.reason
+  if ('reason' in unwrapped)
+    return unwrapped.reason !== REASONS.jobOption || lineMayReachGit(scope, ctx)
+      ? unwrapped.reason
+      : undefined
   const sibling = firstReason(unwrapped.siblings ?? [], s =>
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )
