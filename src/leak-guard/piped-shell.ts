@@ -77,21 +77,17 @@ export function ownFeed(cmd: SimpleCommand, pipe: Feed | undefined, inherited: F
   return own ?? inherited
 }
 
-// Reserved words the splitter leaves at the head of a command's words, as in `do bash` or `{ bash`.
-const LEADS = new Set(['{', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!'])
 // The words a redirect on a group, subshell, loop, if or case attaches to; the splitter keeps a `)` for a subshell's.
 const CLOSERS = new Set(['}', ')', 'done', 'fi', 'esac'])
 
-// `command exec` and `builtin exec` still run the exec builtin, in bash and in zsh.
-const BUILTIN_RUNNERS = new Set(['command', 'builtin'])
-
-/** The marked words from the command name on, past reserved words and `command` or `builtin`. */
-function commandWords({ words, marked }: SimpleCommand): readonly string[] {
-  const start = words.findIndex(word => !LEADS.has(word))
-  if (start < 0) return []
-  const rest = marked.slice(start)
-  while (rest.length > 1 && BUILTIN_RUNNERS.has(rest[0] as string)) rest.shift()
-  return rest
+/**
+ * A command as the shell runs it: its marked words from the command name on, past reserved words,
+ * assignments and prefix words such as `time -p`, `noglob`, `command --` and `exec -a NAME`, and
+ * whether one of the words dropped was `exec`.
+ */
+export interface CommandHead {
+  words: readonly string[]
+  execs: boolean
 }
 
 /** The names the commands define as functions, by `name ()` or `function name`. */
@@ -112,29 +108,39 @@ const callPipe = (prev: SimpleCommand | undefined, cmd: SimpleCommand): Feed | u
 
 /**
  * What the line feeds commands the splitter cannot place under their reader (CC-1408): a redirect
- * on a group, subshell, loop, if or case, a bare `exec` redirect, and a call of a function the line
+ * on a group, subshell, loop, if or case, an `exec` redirect, and a call of a function the line
  * defines. The splitter keeps no group bounds and checks a function body where it is defined, so
  * every command on the line that reads the stdin it inherits is taken to read this too.
  */
-export function indirectFeed(cmds: readonly SimpleCommand[]): Feed {
+export function indirectFeed(
+  cmds: readonly SimpleCommand[],
+  headOf: (cmd: SimpleCommand) => CommandHead | undefined,
+): Feed {
   const functions = definedFunctions(cmds)
   return cmds.reduce<Feed>(
-    (feed, cmd, i) => joinFeeds(feed, indirectSource(cmd, cmds[i - 1], functions)),
+    (feed, cmd, i) => joinFeeds(feed, indirectSource(cmd, headOf(cmd), cmds[i - 1], functions)),
     NOTHING,
   )
 }
 
 /**
- * What one command feeds the line that way. An `exec` behind an expansion, or inside `eval` text,
- * may redirect the line's stdin too, so it is 'unknown'.
+ * What one command feeds the line that way. Whatever follows an `exec`, its redirect may stay on
+ * the line's stdin: with a program after it the rest of the line never runs, so counting it costs
+ * nothing. An expanded command word may be `exec`, and `eval` text may hold one, so that is 'unknown'.
  */
-function indirectSource(cmd: SimpleCommand, prev: SimpleCommand | undefined, functions: Set<string>): Feed {
-  const [head, ...rest] = commandWords(cmd)
-  if (head === undefined) return NOTHING
-  const name = unmark(head)
+function indirectSource(
+  cmd: SimpleCommand,
+  head: CommandHead | undefined,
+  prev: SimpleCommand | undefined,
+  functions: Set<string>,
+): Feed {
+  const [first, ...rest] = head?.words ?? []
+  if (head?.execs === true) return ownFeed(cmd, undefined, NOTHING)
+  if (first === undefined) return NOTHING
+  const name = unmark(first)
   if (name === 'eval' && rest.some(word => /\bexec\b/.test(unmark(word)))) return 'unknown'
-  const bare = rest.length === 0 && (CLOSERS.has(name) || name === 'exec' || head.includes(LIVE))
-  if (bare) return ownFeed(cmd, undefined, NOTHING)
+  if (first.includes(LIVE) || (CLOSERS.has(name) && rest.length === 0))
+    return ownFeed(cmd, undefined, NOTHING)
   return functions.has(name) ? ownFeed(cmd, callPipe(prev, cmd), NOTHING) : NOTHING
 }
 

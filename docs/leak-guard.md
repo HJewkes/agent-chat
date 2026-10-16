@@ -1371,8 +1371,9 @@ Not covered, by design or by cost:
   script denies on a line that may reach git or gh (as for command starts above) (CC-1393).
   A shell reads that text from every stdin source in scope (CC-1408): its own redirect
   (`bash < file`, `<file bash`), an `exec` redirect anywhere on the line (`exec < file`,
-  `exec 0<<<TEXT`, `exec <<E`, `exec 0<&3`, also behind `command`, `builtin`, an expanded
-  command word or `eval` text holding `exec`), a redirect on a group, subshell, loop, `if`,
+  `exec 0<<<TEXT`, `exec <<E`, `exec 0<&3`, with any options or words after `exec`, also behind
+  `time [-p]`, `noglob`, `nocorrect`, `command [--]`, `builtin`, an expanded command word or
+  `eval` text holding `exec`), a redirect on a group, subshell, loop, `if`,
   `case` or function definition (`{ bash; } <<E`, `( bash ) < file`, `while …; done <<E`), and
   a call of a function the line defines (`f < file`, `… | f`). The guard keeps no group bounds,
   so every command on the line that inherits its stdin is taken to read these. `source` and `.`

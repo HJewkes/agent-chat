@@ -79,6 +79,7 @@ import {
   ownFeed,
   pipeFeed,
   stageOutput,
+  type CommandHead,
   type Feed,
 } from './piped-shell.js'
 import { readShellCall } from './shell-invocation.js'
@@ -2124,6 +2125,15 @@ function checkEval(
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
+/** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
+function commandHead(cmd: SimpleCommand): CommandHead | undefined {
+  const body = functionBody(cmd.marked)
+  const unwrapped = unwrap(body, cmd.splits)
+  if ('reason' in unwrapped) return undefined
+  const dropped = body.slice(0, Math.max(0, body.length - unwrapped.words.length))
+  return { words: unwrapped.words, execs: dropped.some(word => unmark(word) === 'exec') }
+}
+
 /** Whether unwrapping only dropped leading words, rather than splitting new ones out as `env -S` does. */
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
@@ -2642,7 +2652,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
   const cmds = parseShell(command)
-  const indirect = indirectFeed(cmds)
+  const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
   for (const cmd of cmds) {

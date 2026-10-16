@@ -49,9 +49,23 @@ const BYPASSES: [string, string, string[]][] = [
   [`function f { bash; }; f < push.sh`, REASONS.pipedScript, BOTH],
   [`f() { bash; }; echo "${PUSH}" | f`, REASONS.noVerify, BOTH],
   [`f() { bash; }; exec <push.sh; f`, REASONS.pipedScript, BOTH],
-  // Drop `command` and `builtin` from commandWords, the expanded head, or the eval text: these allow.
+  // Read the head by position instead of through unwrap, or only a bare exec: exec's options and
+  // prefix words hide it, and these allow.
   [`command exec < push.sh; bash`, REASONS.pipedScript, ['bash']],
   [`builtin exec < push.sh; bash`, REASONS.pipedScript, ['zsh']],
+  [`exec -- < push.sh; bash`, REASONS.pipedScript, ['bash']],
+  [`exec -l < push.sh; bash`, REASONS.pipedScript, ['bash']],
+  [`exec -a x < push.sh; bash`, REASONS.pipedScript, ['bash']],
+  [`command -- exec < push.sh; bash`, REASONS.pipedScript, ['bash']],
+  [`time exec < push.sh; bash`, REASONS.pipedScript, BOTH],
+  [`time -p exec < push.sh; bash`, REASONS.pipedScript, ['bash']],
+  [`noglob exec < push.sh; bash`, REASONS.pipedScript, ['zsh']],
+  [`nocorrect exec < push.sh; bash`, REASONS.pipedScript, ['zsh']],
+  [`f() { bash; }; time f < push.sh`, REASONS.pipedScript, BOTH],
+  [`f() { bash; }; noglob f < push.sh`, REASONS.pipedScript, ['zsh']],
+  [`time source /dev/stdin < push.sh`, REASONS.pipedScript, BOTH],
+  [`noglob . /dev/stdin < push.sh`, REASONS.pipedScript, ['zsh']],
+  // Drop the expanded head or the eval text: these allow.
   [`E=exec; $E < push.sh; bash`, REASONS.pipedScript, BOTH],
   [`eval 'exec < push.sh'; bash`, REASONS.pipedScript, BOTH],
   // Drop checkSourcedStdin: source and . of a stdin path run the pipe or redirect.
