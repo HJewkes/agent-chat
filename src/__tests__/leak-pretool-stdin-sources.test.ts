@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
@@ -160,11 +161,19 @@ const shellsNamed = (names: readonly string[]) =>
 
 afterAll(real.cleanup)
 
+// `source -p PATH` is new in bash 5.3; an older bash reads `-p` as a bad option and runs nothing.
+const bashSourcesWithP =
+  spawnSync('bash', ['-c', 'source -p /dev /dev/null'], { stdio: 'ignore' }).status === 0
+const runsOnThisBash = (src: string) => bashSourcesWithP || !/\bsource -p /.test(src)
+
 describe.skipIf(real.shells.length === 0)('real shells run what the guard reads from stdin', () => {
-  it.each(BYPASSES)('each named shell pushes for %j', (src, _, names) => {
-    const run = shellsNamed(names)
-    for (const [shell, args] of run) expect(real.gitCalls(shell, args, src)).toBe('push --no-verify')
-  })
+  it.each(BYPASSES.filter(([src]) => runsOnThisBash(src)))(
+    'each named shell pushes for %j',
+    (src, _, names) => {
+      const run = shellsNamed(names)
+      for (const [shell, args] of run) expect(real.gitCalls(shell, args, src)).toBe('push --no-verify')
+    },
+  )
 
   it.each(BENIGN)('every shell runs only what the guard read for %j', (src, calls) => {
     for (const [shell, args] of real.shells) expect(real.gitCalls(shell, args, src)).toMatch(calls)
