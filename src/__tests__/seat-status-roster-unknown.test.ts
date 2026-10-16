@@ -4,8 +4,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readAccountBudget } from '../agents/budget.js'
-import { type StatusDeps } from '../agents/seats/status.js'
-import { statusReport } from '../cli/verbs/seats.js'
+import type { StatusDeps } from '../agents/seats/status.js'
+import { seatStatus } from '../agents/seats/status.js'
+import type { BootDeps } from '../agents/seats/boot.js'
+import { bootReport, statusReport } from '../cli/verbs/seats.js'
 
 /** CC-486 b: a timed-out agents read is unknown, never a seat with zero agents. */
 
@@ -78,7 +80,15 @@ describe('seats status when the agents read times out', () => {
     expect(doc.rosterUnknown).toBe(TIMEOUT)
     expect(doc.machine.headlessAgents).toEqual({ live: null, limit: 10 })
     expect(doc.machine.memoryFree.percent).toBe(50)
-    for (const key of ['implementers', 'reviewers', 'planners', 'other', 'parked', 'agents'])
+    for (const key of [
+      'implementers',
+      'reviewers',
+      'planners',
+      'other',
+      'parked',
+      'waitingPermission',
+      'agents',
+    ])
       expect(doc[key]).toBeNull()
   })
 
@@ -102,5 +112,44 @@ describe('seats status when the agents read times out', () => {
     const doc = JSON.parse(report.lines.join('\n'))
     expect(doc.rosterUnknown).toBeUndefined()
     expect(doc.implementers.active).toBe(0)
+  })
+
+  describe('seats boot', () => {
+    const unreadable = async (): Promise<never> => {
+      throw new Error('not read in this test')
+    }
+    const bootDeps = (agents: StatusDeps['agents']): BootDeps => ({
+      now: () => new Date(2026, 8, 29, 10, 0),
+      autonomyRoot: autonomy,
+      homeDir: tmp,
+      eventsDb: path.join(tmp, 'events.db'),
+      status: seat => seatStatus(deps(agents), seat),
+      inFlight: {} as BootDeps['inFlight'],
+      ready: unreadable,
+    })
+
+    it('prints agents unknown in text, with no caps', async () => {
+      const report = await bootReport(bootDeps(timesOut), SEAT, undefined, false)
+      const text = report.lines.join('\n')
+      expect(text).toContain(`agents unknown (${TIMEOUT})`)
+      expect(text).not.toMatch(/caps |parked /)
+    })
+
+    it('nulls every roster-derived field in --json', async () => {
+      const report = await bootReport(bootDeps(timesOut), SEAT, undefined, true)
+      const { status } = JSON.parse(report.lines.join('\n'))
+      expect(status.rosterUnknown).toBe(TIMEOUT)
+      for (const key of [
+        'implementers',
+        'reviewers',
+        'planners',
+        'other',
+        'parked',
+        'waitingPermission',
+        'agents',
+      ])
+        expect(status[key]).toBeNull()
+      expect(status.machine.headlessAgents.live).toBeNull()
+    })
   })
 })
