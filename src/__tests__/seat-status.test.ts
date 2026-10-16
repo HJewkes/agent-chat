@@ -309,11 +309,11 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers, reviewers } = await status()
 
-    expect(implementers.active).toBe(1)
-    expect(implementers.trees).toEqual([
+    expect(implementers?.active).toBe(1)
+    expect(implementers?.trees).toEqual([
       { path: treeDir('ss-al-1-review'), cause: 'agent', agent: 'ss-al-1-review' },
     ])
-    expect(reviewers.active).toBe(1)
+    expect(reviewers?.active).toBe(1)
   })
 
   it('an eval tree matching counted_trees counts, and one in another seat repo does not', async () => {
@@ -327,8 +327,8 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers } = await status({ repoTrees })
 
-    expect(implementers.active).toBe(1)
-    expect(implementers.trees).toEqual([{ path: own, cause: 'pattern', branch: 'eval/r1/c1/tok' }])
+    expect(implementers?.active).toBe(1)
+    expect(implementers?.trees).toEqual([{ path: own, cause: 'pattern', branch: 'eval/r1/c1/tok' }])
   })
 
   it('an implementer agent and its own tree count once', async () => {
@@ -339,9 +339,9 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers } = await status({ repoTrees })
 
-    expect(implementers.active).toBe(1)
-    expect(implementers.names).toEqual(['ss-al-1'])
-    expect(implementers.trees).toEqual([{ path: treeDir('ss-al-1'), cause: 'agent', agent: 'ss-al-1' }])
+    expect(implementers?.active).toBe(1)
+    expect(implementers?.names).toEqual(['ss-al-1'])
+    expect(implementers?.trees).toEqual([{ path: treeDir('ss-al-1'), cause: 'agent', agent: 'ss-al-1' }])
   })
 
   it('an exited implementer whose tree is still on disk counts, and a parked one does not', async () => {
@@ -356,9 +356,9 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers } = await status()
 
-    expect(implementers.active).toBe(1)
-    expect(implementers.names).toEqual([])
-    expect(implementers.trees?.map(t => t.agent)).toEqual(['ss-al-4'])
+    expect(implementers?.active).toBe(1)
+    expect(implementers?.names).toEqual([])
+    expect(implementers?.trees?.map(t => t.agent)).toEqual(['ss-al-4'])
   })
 
   it('a repo whose worktree list fails adds nothing and does not throw', async () => {
@@ -369,8 +369,8 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers } = await status({ repoTrees })
 
-    expect(implementers.active).toBe(0)
-    expect(implementers.trees).toEqual([])
+    expect(implementers?.active).toBe(0)
+    expect(implementers?.trees).toEqual([])
   })
 
   it('with implementers 2, one live implementer and one eval tree, atCap is true', async () => {
@@ -525,7 +525,7 @@ describe('a seat against its concurrency caps', () => {
     const report = await statusReport(deps(), SEAT, false)
 
     expect(result.other).toEqual({ active: 2, names: ['ss-scout', 'ss-scribe'], detached: ['ss-scribe'] })
-    expect(result.implementers?.active + result.reviewers?.active + result.planners?.active).toBe(0)
+    expect(result.implementers!.active + result.reviewers!.active + result.planners!.active).toBe(0)
     expect(report.lines[4]).toBe('other         2  ss-scout, ss-scribe  detached: ss-scribe')
   })
 

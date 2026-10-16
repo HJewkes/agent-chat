@@ -106,7 +106,7 @@ afterEach(() => {
 })
 
 const rowOf = async (roster: AgentIdentity[], fills: Record<string, BudgetRead>, name: string) =>
-  (await seatStatus(deps(roster, fills), SEAT)).agents.find(r => r.name === name)
+  (await seatStatus(deps(roster, fills), SEAT)).agents?.find(r => r.name === name)
 
 describe('seats status agent rows', () => {
   it('holds each role to its own threshold, so 210k is due for an implementer and not for a reviewer', async () => {
@@ -127,7 +127,7 @@ describe('seats status agent rows', () => {
 
     const status = await seatStatus(deps(roster, fills), SEAT)
 
-    expect(status.agents.map(a => [a.name, a.retireDue])).toEqual([
+    expect(status.agents?.map(a => [a.name, a.retireDue])).toEqual([
       ['ss-plan', true],
       ['ss-rev', true],
     ])
