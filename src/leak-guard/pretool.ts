@@ -208,6 +208,7 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
+  jobShell: `leak-guard: script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
@@ -389,6 +390,8 @@ type Unwrapped =
       fed?: Fed | undefined
       /** Commands that also run, each read as a command line of its own: find's later action clauses. */
       siblings?: Sibling[]
+      /** A wrapper runs the shell `$SHELL` names, read here as `sh`. */
+      viaShellVar?: boolean
     }
   | { reason: string }
 
@@ -430,11 +433,19 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
   let siblings: Sibling[] | undefined
+  let viaShellVar = false
   const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
-      : { words: rest.slice(at), chdir, assigns, fed, ...(siblings && { siblings }) }
+      : {
+          words: rest.slice(at),
+          chdir,
+          assigns,
+          fed,
+          ...(siblings && { siblings }),
+          ...(viaShellVar && { viaShellVar }),
+        }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
@@ -501,6 +512,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       else {
         rest = run.script === undefined ? ['sh'] : ['sh', '-c', run.script]
         at = 0
+        viaShellVar = true
       }
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
@@ -2302,6 +2314,12 @@ const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
 const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
 
+/** Whether `$SHELL` may name a program other than a shell the guard reads: the line sets it, or the hook's is another. */
+function shellUnknown(scope: Scope, ctx: GuardContext): boolean {
+  const own = ctx.env.SHELL
+  return /\bSHELL\b/.test(scope.line) || (own !== undefined && !SHELLS.has(path.basename(own)))
+}
+
 function checkSimple(
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -2315,6 +2333,8 @@ function checkSimple(
     return unwrapped.reason !== REASONS.jobOption || lineMayReachGit(scope, ctx)
       ? unwrapped.reason
       : undefined
+  if (unwrapped.viaShellVar === true && shellUnknown(scope, ctx) && lineMayReachGit(scope, ctx))
+    return REASONS.jobShell
   const sibling = firstReason(unwrapped.siblings ?? [], s =>
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )

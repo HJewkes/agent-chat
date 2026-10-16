@@ -41,6 +41,8 @@ const BYPASSES: [string, string][] = [
   [`chrt -o 0 ${P}`, 'chrt'],
   [`chrt --other 0 ${P}`, 'chrt'],
   [`chrt -b -v 0 ${P}`, 'chrt'],
+  [`chrt -o +0 ${P}`, 'chrt'],
+  [`chrt -o ' 0' ${P}`, 'chrt'],
   [`script -qc '${P}' /dev/null`, 'script'],
   [`script -q -c '${P}' /dev/null`, 'script'],
   [`script /dev/null -qc '${P}'`, 'script'],
@@ -59,6 +61,26 @@ const BYPASSES: [string, string][] = [
   [`echo '${P}' | script -qc bash /dev/null`, 'script'],
 ]
 
+const PY = `import os;os.system("${P}")`
+// Words the shell expands where the wrapper may read an option or value, and a $SHELL that is no shell.
+const UNREAD: [string, string, RegExp][] = [
+  [`X=-c; script -q "$X" '${P}' /dev/null`, 'script', /option this guard does not know/],
+  [`X=-c; script -q $X '${P}' /dev/null`, 'script', /option this guard does not know/],
+  [
+    `T='5 ${F} git'; flock -w $T push --no-verify origin HEAD:main`,
+    'flock',
+    /option this guard does not know/,
+  ],
+  [
+    `T='5 ${F} git'; flock --timeout $T push --no-verify origin HEAD:main`,
+    'flock',
+    /option this guard does not know/,
+  ],
+  [`SHELL=/usr/bin/python3 script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
+  [`echo '${PY}' | SHELL=/usr/bin/python3 script -q /dev/null`, 'script', /\$SHELL names/],
+  [`echo '${PY}' | SHELL=/usr/bin/python3 unshare`, 'unshare', /\$SHELL names/],
+]
+
 // Rows real bash cannot run on every host: a forked child, a controlling tty, and a user namespace.
 const UNCONFIRMED = [
   `setsid -c ${P}`,
@@ -74,6 +96,16 @@ const UNCONFIRMED = [
 describe('job and namespace wrappers run the command after their options (CC-1414)', () => {
   it.each([...BYPASSES.map(([line]) => line), ...UNCONFIRMED])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each(UNREAD)('denies %s, which it cannot read', (line, _, reason) => {
+    expect(checkCommand(line, ctx)).toMatch(reason)
+  })
+
+  it('denies script when the hook runs a $SHELL that is no shell it reads', () => {
+    expect(
+      checkCommand(`script -qc 'git status' /dev/null`, { ...ctx, env: { SHELL: '/usr/bin/fish' } }),
+    ).toBe(REASONS.jobShell)
   })
 
   it.each([
@@ -100,6 +132,7 @@ describe('job and namespace wrappers run the command after their options (CC-141
     'taskset -p 1 1234',
     `flock ${F} -c 'git status'`,
     'setsid -w git push origin HEAD:feature',
+    `script -qc 'git status' /dev/null`,
   ])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })
@@ -131,6 +164,14 @@ const userNamespaces = installed('unshare') && pushes('unshare -r git ns') === '
 
 describe.skipIf(BASH === undefined)('real bash runs the push behind each wrapper', () => {
   it.each(BYPASSES.filter(([, wrapper]) => installed(wrapper)))('%s pushes', line => {
+    expect(pushes(line)).toBe(PUSHED)
+  })
+
+  it.each(
+    UNREAD.filter(
+      ([line, wrapper]) => installed(wrapper) && (!line.includes('python3') || installed('python3')),
+    ),
+  )('%s pushes', line => {
     expect(pushes(line)).toBe(PUSHED)
   })
 

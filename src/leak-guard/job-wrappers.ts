@@ -106,11 +106,13 @@ export function jobRun(words: readonly string[], i: number, name: string): JobRu
  * flock, taskset and chrt take one operand before the command: a lock file, a CPU mask, a
  * priority. A word the shell expands may be none or several, so the command is read from it.
  */
+const CHRT_PRIORITY = /^\s*[+-]?\d+$/
+
 function afterOperand(words: readonly string[], end: number, name: string): JobRun {
   const operand = words[end]
   if (operand === undefined || operand.includes(LIVE)) return { at: end }
-  // A chrt version that drops the priority for SCHED_OTHER would run this word.
-  if (name === 'chrt' && !/^\d+$/.test(operand)) return { at: end }
+  // chrt reads the priority with strtoimax; a version that drops it for SCHED_OTHER would run any other word.
+  if (name === 'chrt' && !CHRT_PRIORITY.test(operand)) return { at: end }
   const flag = words[end + 1]
   if (name === 'flock' && (flag === '-c' || flag === '--command')) return { script: words[end + 2] ?? '' }
   return { at: end + 1 }
@@ -122,6 +124,8 @@ function readOptions(words: readonly string[], i: number, spec: StrictGetopt): P
     const word = words[i] as string
     if (word === '--') return { options, end: i + 1 }
     if (!word.startsWith('-') || word === '-') {
+      // A permuting getopt reads options anywhere, and an expanded operand may be one.
+      if (spec.permute === true && word.includes(LIVE)) return undefined
       if (spec.permute === true) continue
       return { options, end: i }
     }
@@ -129,7 +133,12 @@ function readOptions(words: readonly string[], i: number, spec: StrictGetopt): P
     const read = word.startsWith('--') ? longOption(word.slice(2), spec) : cluster(word.slice(1), spec)
     if (read === undefined) return undefined
     for (const option of read.options) options.push(option)
-    if (read.next) options.push({ name: read.next, value: words[++i] ?? '' })
+    if (read.next) {
+      const value = words[++i] ?? ''
+      // The shell may split an expanded value into words that move the operands.
+      if (value.includes(LIVE)) return undefined
+      options.push({ name: read.next, value })
+    }
   }
   return { options, end: words.length }
 }
