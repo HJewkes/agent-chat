@@ -1405,8 +1405,8 @@ Not covered, by design or by cost:
     `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
-  - process substitution (task to be filed): `echo P > >(bash)`. Probed at origin/main
-    (1a0376da): the guard allows it, and real bash and real zsh both run the push;
+  - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and
+    real zsh both run the push;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the
