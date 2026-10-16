@@ -55,6 +55,7 @@ export type RefusalKind =
   | 'worktrees'
   | 'landed'
   | 'open-pr'
+  | 'broker-view-unavailable'
   | 'file-overlap'
   | 'contract-overlap'
   | 'untriaged'

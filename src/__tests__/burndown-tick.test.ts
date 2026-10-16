@@ -2445,7 +2445,7 @@ describe('burndown tick collision check', () => {
     expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
   })
 
-  it('logs a failed broker-view reader by name and refuses as claimed', async () => {
+  it('logs a failed broker-view reader by name and refuses as broker-view-unavailable', async () => {
     initiative({ 'DM-1': task('DM-1') })
     const logged: { event: string; detail: Record<string, unknown> }[] = []
     const fake = fakeBroker({
@@ -2459,7 +2459,10 @@ describe('burndown tick collision check', () => {
     expect(logged.filter(l => l.event === 'burndown_collision_reader_failed')).toEqual([
       { event: 'burndown_collision_reader_failed', detail: { reader: 'broker-view', repo: repo() } },
     ])
-    expect(lines.join('\n')).toContain('refused demo DM-1 [claimed]: reader broker-view failed')
+    expect(lines.join('\n')).toContain(
+      'refused demo DM-1 [broker-view-unavailable]: reader broker-view failed',
+    )
+    expect(lines.join('\n')).not.toContain('[claimed]')
     expect(fake.frames).toEqual([])
   })
 
