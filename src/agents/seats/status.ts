@@ -545,7 +545,7 @@ function heartbeatStatus(deps: StatusDeps, seat: string): HeartbeatStatus {
   }
 }
 
-/** Throws for a name the charter does not list as a seat, an unreadable charter or seat file, and a broker that does not answer. */
+/** Throws for a name the charter does not list as a seat and an unreadable charter or seat file; a missed agents reply is `rosterUnknown`. */
 export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatStatus> {
   const policy = loadPolicy(deps.autonomyRoot, seat)
   const now = deps.now()
@@ -570,7 +570,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     inbox: inboxReading(deps, seat, plain),
     poolPicks: poolPickStatus(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
-    machine: deps.machine(roster),
+    machine: machineReading(deps.machine(roster), unknown !== undefined),
     stop: machineStop === null ? null : 'machine',
     machineStop,
     waitingPermission: waitingPermission(deps, mine, now.getTime()),
@@ -579,6 +579,9 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     ...(unknown === undefined ? {} : { rosterUnknown: unknown }),
   }
 }
+
+const machineReading = (machine: MachineStatus, rosterUnknown: boolean): MachineStatus =>
+  rosterUnknown ? { ...machine, headlessAgents: { ...machine.headlessAgents, live: null } } : machine
 
 /** Only a missed broker reply is unknown; any other failure is a real fault and ends the run. */
 async function readRoster(deps: StatusDeps): Promise<{ roster: AgentIdentity[]; unknown?: string }> {
@@ -600,7 +603,6 @@ export function withUnknownRoster(status: SeatStatus): Record<string, unknown> {
     planners: null,
     other: null,
     parked: null,
-    machine: null,
     waitingPermission: null,
     agents: null,
   }
@@ -664,14 +666,14 @@ const unread = (what: string, error: string | undefined): string =>
   `${what} unread${error === undefined ? '' : ` (${error})`}`
 
 function machineLine({ headlessAgents, memoryFree, swap, fullSuiteSlots }: MachineStatus): string {
-  const atCap = headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
+  const atCap = headlessAgents.live !== null && headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
   const memory =
     memoryFree.percent === null
       ? unread('memory', memoryFree.error)
       : `memory ${memoryFree.percent}% free/${memoryFree.limit}% floor${memoryFree.percent < memoryFree.limit ? ' LOW' : ''}`
   const swapText = swap.usedPercent === null ? unread('swap', swap.error) : `swap ${swap.usedPercent}% used`
   const parts = [
-    `headless ${headlessAgents.live}/${headlessAgents.limit}${atCap}`,
+    `headless ${headlessAgents.live ?? 'unknown'}/${headlessAgents.limit}${atCap}`,
     memory,
     swapText,
     `suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,

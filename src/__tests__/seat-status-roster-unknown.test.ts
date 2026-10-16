@@ -30,8 +30,8 @@ function deps(agents: StatusDeps['agents']): StatusDeps {
     scored: () => {
       throw new Error('no scorer in this test')
     },
-    machine: () => ({
-      headlessAgents: { live: 0, limit: 10 },
+    machine: roster => ({
+      headlessAgents: { live: roster.length, limit: 10 },
       memoryFree: { percent: 50, limit: 15 },
       swap: { usedPercent: 10 },
       fullSuiteSlots: { inUse: 0, total: 4 },
@@ -68,6 +68,7 @@ describe('seats status when the agents read times out', () => {
       expect(report.ok).toBe(true)
       expect(text).toContain(`agents        unknown (${TIMEOUT})`)
       expect(text).not.toMatch(/implementers|parked|0\/2/)
+      if (!brief) expect(text).toContain('headless unknown/10')
     }
   })
 
@@ -75,7 +76,9 @@ describe('seats status when the agents read times out', () => {
     const report = await statusReport(deps(timesOut), SEAT, true)
     const doc = JSON.parse(report.lines.join('\n'))
     expect(doc.rosterUnknown).toBe(TIMEOUT)
-    for (const key of ['implementers', 'reviewers', 'planners', 'other', 'parked', 'machine', 'agents'])
+    expect(doc.machine.headlessAgents).toEqual({ live: null, limit: 10 })
+    expect(doc.machine.memoryFree.percent).toBe(50)
+    for (const key of ['implementers', 'reviewers', 'planners', 'other', 'parked', 'agents'])
       expect(doc[key]).toBeNull()
   })
 
