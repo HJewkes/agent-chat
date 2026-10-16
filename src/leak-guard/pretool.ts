@@ -222,6 +222,7 @@ export const REASONS = {
   shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
   gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
@@ -470,7 +471,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if ('reason' in env) return env
       ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
-      assigns.push(...env.assigns)
+      for (const assign of env.assigns) assigns.push(assign)
     } else return done()
   }
 }
@@ -1348,8 +1349,9 @@ function pathKey(file: string, scope: Scope): string {
 /** The files a command writes by redirect or `tee`; undefined for a target the guard cannot resolve. */
 function writtenBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): (string | undefined)[] {
   const targets = [...cmd.writes]
-  if (path.basename(cmd.words[0] ?? '') === 'tee')
-    targets.push(...cmd.marked.slice(1).filter(w => !w.startsWith('-')))
+  if (path.basename(cmd.words[0] ?? '') === 'tee') {
+    for (const word of cmd.marked.slice(1)) if (!word.startsWith('-')) targets.push(word)
+  }
   return targets.map(word => {
     const file = resolveWord(word, cmd, ctx, scope)
     return file === undefined ? undefined : pathKey(file, scope)
@@ -2847,6 +2849,9 @@ export const denyOutput = (reason: string): string =>
   })
 
 /** The deny for a call the guard could not check when it mentions git or gh; undefined for any other call. */
+/** The hook's answer when the check runs past its deadline: a deny, whatever the call (CC-1407). */
+export const timeoutDenial = (): string => denyOutput(REASONS.checkTimeout)
+
 export const crashDenial = (raw: string): string | undefined =>
   MENTIONS_GIT.test(raw) ? denyOutput('leak-guard: the guard could not check this call. ' + DOCS) : undefined
 

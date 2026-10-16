@@ -368,7 +368,7 @@ describe('planSeat refusals', () => {
         { ledger: { ...stale, claims: stale.claims.slice(1) }, liveAgent: () => false },
       )
 
-      expect(plan.notes).toContain('seat seat-a implementers used 1 (ledger 5) MISMATCH ledger 5 vs 1 live')
+      expect(plan.notes).toContain('seat seat-a implementers used 1 (ledger 5)')
       expect(within.notes).toContain('seat seat-a implementers used 1 (ledger 4)')
     })
 

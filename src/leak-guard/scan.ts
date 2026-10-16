@@ -235,7 +235,7 @@ export class DiffScanner {
     if (mark === '+' && this.file) {
       const { path, display } = this.file
       const at: Location = { site: 'content', file: path, display, line: this.newLine, commit: this.commit }
-      this.findings.push(...scanLine(line.slice(1), at, this.matchers))
+      for (const finding of scanLine(line.slice(1), at, this.matchers)) this.findings.push(finding)
     }
     if (mark === '+' || mark === ' ') this.newLine++
   }

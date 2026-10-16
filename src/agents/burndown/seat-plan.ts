@@ -34,7 +34,7 @@ import {
 } from './flow-gate.js'
 import type { ReviewBacklog } from './review-backlog.js'
 import { backoffHeld, type Hold } from './backoff.js'
-import { heldClaims, readySlices, slotMismatch, type Claim, type Ledger } from './ledger.js'
+import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import type { AgentIdentity } from '../../protocol.js'
 import {
   agentNameFor,
@@ -659,8 +659,7 @@ function startWalk(inputs: SeatPlanInputs): Walk {
 /** CC-978: what a role counts against its cap, beside the ledger's own count when the two differ. */
 export const roleUsed = (role: Role, used: number, idle: number): string => {
   if (idle === 0) return `${role} used ${used}`
-  const mismatch = slotMismatch(used + idle, used)
-  return `${role} used ${used} (ledger ${used + idle})${mismatch === undefined ? '' : ` ${mismatch}`}`
+  return `${role} used ${used} (ledger ${used + idle})`
 }
 
 const idleNotes = (seat: string, walk: Walk): string[] =>

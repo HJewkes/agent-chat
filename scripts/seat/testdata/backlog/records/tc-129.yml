@@ -1,0 +1,19 @@
+id: tc-129
+seat: titan-coord
+initiative: claude-channels
+task: CC-760
+decision: Decide what Defer means for a backlog question.
+now: none
+options:
+  - key: A
+    proposed: Rest the item seven days, then return it.
+  - key: B
+    proposed: Drop the item until a seat reopens it.
+trade_off: B loses questions nobody remembers to reopen.
+door: two-way
+recommended:
+  option: A
+  reason: The question comes back without anyone tracking it.
+opened_at: 2026-10-01T00:00:00Z
+status: deferred
+deferred_until: 2026-10-10T12:00:00Z

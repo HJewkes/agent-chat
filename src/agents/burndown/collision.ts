@@ -20,7 +20,7 @@ import { GIT_BIN } from './review-diff.js'
 
 export type CollisionKind = Extract<
   RefusalKind,
-  'landed' | 'open-pr' | 'claimed' | 'file-overlap' | 'contract-overlap'
+  'landed' | 'open-pr' | 'claimed' | 'broker-view-unavailable' | 'file-overlap' | 'contract-overlap'
 >
 
 export interface Collision {
@@ -153,7 +153,10 @@ function openPr(work: CollisionWork, facts: CollisionFacts): Collision | undefin
 
 function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   if (facts.names === undefined || facts.claims === undefined)
-    return { kind: 'claimed', reason: 'reader broker-view failed: no live agents or file claims' }
+    return {
+      kind: 'broker-view-unavailable',
+      reason: 'reader broker-view failed: no live agents or file claims',
+    }
   const holder = facts.names.find(name => !facts.ours.has(name) && namesId(name, work.taskId))
   if (holder !== undefined) return { kind: 'claimed', reason: `live agent ${holder} carries ${work.taskId}` }
   const gone = (facts.recentlyExited ?? []).find(

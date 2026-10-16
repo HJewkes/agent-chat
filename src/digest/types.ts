@@ -132,6 +132,8 @@ export interface Digest {
   ledger: LedgerFacts
   readyToMerge: NamedItem[]
   needsGrant: NamedItem[]
+  /** CC-1007: needs-human, human-step and ops-unresolved refusals. */
+  heldForOwner: NamedItem[]
   done: DoneTask[]
   mergedPrs: NamedItem[]
   stalled: StalledClaim[]

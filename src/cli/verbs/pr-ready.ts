@@ -19,6 +19,7 @@ import { depsStep, packageManager } from './pr-ready-deps.js'
 import { resolveBase as resolveStackedBase } from './pr-ready-base.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
 import { hasPrivacyTest, privacyStep } from './pr-ready-privacy.js'
+import { hasTypedLint, typedLintStep } from './pr-ready-typed-lint.js'
 
 export interface RunResult {
   code: number
@@ -194,7 +195,7 @@ interface PackageJson {
   scripts?: Record<string, string>
 }
 
-function readPackage(dir: string): PackageJson | undefined {
+export function readPackage(dir: string): PackageJson | undefined {
   try {
     return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as PackageJson
   } catch {
@@ -248,7 +249,7 @@ export function ownerOf(cwd: string, file: string, isMember: (dir: string) => bo
   return outside === undefined ? { kind: 'root' } : { kind: 'outside', dir: outside }
 }
 
-async function changedFiles(run: Run, cwd: string, base: string): Promise<string[]> {
+export async function changedFiles(run: Run, cwd: string, base: string): Promise<string[]> {
   const diff = await run('git', ['diff', '-z', '--name-only', `${base}...HEAD`], cwd)
   if (diff.code !== 0) throw new Error(`git diff failed: ${lastLine(diff.output)}`)
   return nulSeparated(diff.output)
@@ -408,9 +409,9 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 /**
  * Base: the open PR's base branch, else `branch.<b>.agent-chat-base`, else the stacked origin branch
  * with an open PR, else origin/HEAD (see pr-ready-base.ts).
- * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, privacy
- * (agent-chat only), changeset, scan. A dirty tree, a failed rebase or a failed install stops the
- * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
+ * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, typed-lint
+ * (root lint:types only, always local), privacy (agent-chat only), changeset, scan. A dirty tree,
+ * a failed rebase or a failed install stops the run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
   const { run, cwd } = deps
@@ -434,6 +435,7 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   const install = await guarded(async () => (await depsStep(run, cwd)) ?? { ok: true })
   if (install.reason !== undefined && !report('deps', install)) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
+  if (hasTypedLint(cwd)) ok = (await step('typed-lint', () => typedLintStep(run, cwd, base, deps.err))) && ok
   if (hasPrivacyTest(cwd)) ok = (await step('privacy', () => privacyStep(run, cwd, deps.err))) && ok
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok

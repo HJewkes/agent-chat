@@ -9,6 +9,7 @@ import {
   type JobHost,
 } from '../../mirror/job-host.js'
 import { jobState, startJob, stopJob, type JobControl } from '../../mirror/launchd.js'
+import { jobNodePath } from '../../mirror/node-path.js'
 import { agentChatHomeRefusals, jobEnv, renderPlist, watchdogJob } from '../../mirror/plist.js'
 import { installUnits, uninstallUnits, unitStatus } from '../../mirror/systemd.js'
 import { renderUnits, unitName, unitNameForHome, type RenderedUnits } from '../../mirror/systemd-unit.js'
@@ -41,7 +42,7 @@ function env(target: WatchdogTarget): Record<string, string> {
 const spec = (logDir: string, target: WatchdogTarget) =>
   watchdogJob({
     label: WATCHDOG_LABEL,
-    nodePath: process.execPath,
+    nodePath: jobNodePath(),
     cliEntry: cliEntry(),
     logDir,
     env: env(target),

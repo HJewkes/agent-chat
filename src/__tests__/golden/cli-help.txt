@@ -246,43 +246,50 @@ Usage: agent-chat burndown [options] [command]
 pick and run unattended work for opted-in initiatives
 
 Options:
-  -h, --help                display help for command
+  -h, --help                    display help for command
 
 Commands:
-  plan [options]            dry run: what the tick would dispatch now, and why every other task was
-                            refused
-  milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
-                            throughput, forecast, status
-  seats                     seats mode checks (CC-205)
-  brief                     task brief lifecycle (item 179)
-  status                    claim ledger, stalled claims and each account budget gate
-  dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
-                            refusal mix, registrations, tick health
-  tick [options]            one pass: advance every claim a phase, then spawn new work inside the
-                            ceilings
-  pause [options]           stop new spawns from the next tick on; running agents finish
-  resume [options]          let the tick spawn again
-  release [options] <task>  drop every claim on a task, stalled or not, so the tick may pick it
-                            again; --slice drops only that slice
-  link [options] <task>     record a hand-dispatched PR on a queued slice, so the tick never
-                            dispatches it and finishes it on merge
-  unstall [options] <task>  reload an outside-owns slice's owns from its plan and clear the stall in
-                            place, keeping its PR and agents
-  landed [options]          every open, unreconciled task in a seat's scope that a recent
-                            default-branch subject or Covers clause names (CC-611); writes nothing
-  classify [options]        classify every open task on, off or ambiguous against section 2 of the
-                            accepted plan; --write publishes off-plan-<date>.md (TP-2418)
-  config                    resolved burndown settings (CC-955)
-  preset                    named burndown settings presets (CC-955)
-  override                  a time-boxed patch over the settings (CC-955)
-  seat                      turn a seat on or off in the settings (CC-955)
-  install [options]         print the sign-off checklist, then install and start the launchd tick
-                            job (a systemd --user timer on Linux)
-  uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
-                            also remove its units
-  job-status                launchd state for the tick job (its systemd units on Linux): loaded,
-                            pid, and whether it may spawn
-  help [command]            display help for command
+  plan [options]                dry run: what the tick would dispatch now, and why every other task
+                                was refused
+  milestone [options]           this week's burn-down per milestone: points, critical path, WIP,
+                                throughput, forecast, status
+  seats                         seats mode checks (CC-205)
+  brief                         task brief lifecycle (item 179)
+  status                        claim ledger, stalled claims and each account budget gate
+  relint-deps [options]         queued slices' dependsOn edges over disjoint owns with no dependsWhy
+                                (CC-1155 lint); --apply clears approved ones
+  dispatch-stats [options]      per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
+                                refusal mix, registrations, tick health
+  tick [options]                one pass: advance every claim a phase, then spawn new work inside
+                                the ceilings
+  pause [options]               stop new spawns from the next tick on; running agents finish
+  resume [options]              let the tick spawn again
+  release [options] <task>      drop every claim on a task, stalled or not, so the tick may pick it
+                                again; --slice drops only that slice
+  link [options] <task>         record a hand-dispatched PR on a queued, released or unlinked
+                                implementing slice, so the tick finishes it on merge
+  unstall [options] <task>      reload an outside-owns slice's owns from its plan and clear the
+                                stall in place, keeping its PR and agents
+  reload-owns [options] <task>  reload a live slice's owns from its plan when its branch fits them,
+                                keeping its phase, PR and agents
+  done [options] <task>         finish a PR-less implementing or queued slice by hand, so its
+                                dependents dispatch; retires its agents
+  landed [options]              every open, unreconciled task in a seat's scope that a recent
+                                default-branch subject or Covers clause names (CC-611); writes
+                                nothing
+  classify [options]            classify every open task on, off or ambiguous against section 2 of
+                                the accepted plan; --write publishes off-plan-<date>.md (TP-2418)
+  config                        resolved burndown settings (CC-955)
+  preset                        named burndown settings presets (CC-955)
+  override                      a time-boxed patch over the settings (CC-955)
+  seat                          turn a seat on or off in the settings (CC-955)
+  install [options]             print the sign-off checklist, then install and start the launchd
+                                tick job (a systemd --user timer on Linux)
+  uninstall                     stop the launchd tick job and keep it from starting at login; on
+                                Linux, also remove its units
+  job-status                    launchd state for the tick job (its systemd units on Linux): loaded,
+                                pid, and whether it may spawn
+  help [command]                display help for command
 
 === agent-chat burndown plan
 Usage: agent-chat burndown plan [options]
@@ -366,6 +373,19 @@ claim ledger, stalled claims and each account budget gate
 Options:
   -h, --help  display help for command
 
+=== agent-chat burndown relint-deps
+Usage: agent-chat burndown relint-deps [options]
+
+queued slices' dependsOn edges over disjoint owns with no dependsWhy (CC-1155 lint); --apply clears
+approved ones
+
+Options:
+  --seat <value>           only this seat's claims
+  --json                   one JSON array of edges
+  --apply <approved.json>  clear only the edges in this seat-approved file (dry-run --json rows),
+                           under the ledger lock
+  -h, --help               display help for command
+
 === agent-chat burndown dispatch-stats
 Usage: agent-chat burndown dispatch-stats [options]
 
@@ -425,11 +445,11 @@ Options:
 === agent-chat burndown link
 Usage: agent-chat burndown link [options] <task>
 
-record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on
-merge
+record a hand-dispatched PR on a queued, released or unlinked implementing slice, so the tick
+finishes it on merge
 
 Options:
-  --slice <value>  the queued slice the PR implements
+  --slice <value>  the queued, released or unlinked implementing slice the PR implements
   --pr <value>     the PR, as owner/repo#n or its URL
   -h, --help       display help for command
 
@@ -442,6 +462,26 @@ agents
 Options:
   --slice <value>  the stalled slice whose plan owns were fixed
   -h, --help       display help for command
+
+=== agent-chat burndown reload-owns
+Usage: agent-chat burndown reload-owns [options] <task>
+
+reload a live slice's owns from its plan when its branch fits them, keeping its phase, PR and agents
+
+Options:
+  --slice <value>  the live slice whose plan owns changed
+  -h, --help       display help for command
+
+=== agent-chat burndown done
+Usage: agent-chat burndown done [options] <task>
+
+finish a PR-less implementing or queued slice by hand, so its dependents dispatch; retires its
+agents
+
+Options:
+  --slice <value>     the slice whose work was done and verified outside git
+  --evidence <value>  an existing file that shows the work is done
+  -h, --help          display help for command
 
 === agent-chat burndown landed
 Usage: agent-chat burndown landed [options]
@@ -705,6 +745,9 @@ Commands:
                                   heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
                                   stretches, and each slot that got two deliveries (CC-391). Exits
                                   non-zero when it finds either
+  coordinators [options]          print the coordinator seats a seat merge waits on (CC-1348): the
+                                  charter's seats plus tp-operator, on one space-separated line.
+                                  Exits non-zero when the charter is unreadable or lists no seats
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -889,6 +932,16 @@ Options:
   --hours <value>  how far back to look (default 24)
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
+
+=== agent-chat seats coordinators
+Usage: agent-chat seats coordinators [options]
+
+print the coordinator seats a seat merge waits on (CC-1348): the charter's seats plus tp-operator,
+on one space-separated line. Exits non-zero when the charter is unreadable or lists no seats
+
+Options:
+  --root <value>  autonomy directory holding charter.md
+  -h, --help      display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]

@@ -69,6 +69,7 @@ function needsYou(d: Digest, s: Style): Section {
     lines.push(`reply with ${s.cmd('agent-chat answer <id> "..."')} or ${s.cmd('agent-chat dismiss <id>')}`)
   named('Ready to merge', d.readyToMerge)
   named('Needs a grant in the brief', d.needsGrant)
+  named('Held for you or a brief fix', d.heldForOwner)
   if (d.ledger.otherNotices > 0)
     lines.push(`plus ${d.ledger.otherNotices} open notices: ${s.cmd('agent-chat inbox')}`)
   return { title: `Needs you (${n})`, lines }

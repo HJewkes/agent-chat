@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 const SEAT_DIR = path.resolve(import.meta.dirname, '../../scripts/seat')
 const HERMETIC_SUITES = [
+  'test-backlog.sh',
   'test-ci-wait.sh',
   'test-log.sh',
   'test-merge.sh',

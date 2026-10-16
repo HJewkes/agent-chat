@@ -19,6 +19,8 @@ export interface RemoteLaunch {
   profile: RemoteProfile
   brief: string
   preamble: string
+  /** CC-281: the predecessor was a human's own session, so its successor has no spawner to report to. */
+  adopted?: true
   surface: PackageSurfaceName
   tags?: string[]
   subscriptions?: Subscription[]
@@ -679,12 +681,15 @@ export const SURFACE_NAMES = PACKAGE_SURFACE_NAMES
 export type SurfaceName = PackageSurfaceName
 
 /** Why a session teleported; absent is the ordinary build-refresh case. */
-export const TELEPORT_REASONS = ['park'] as const
+export const TELEPORT_REASONS = ['park', 'account'] as const
 
 export type TeleportReason = (typeof TELEPORT_REASONS)[number]
 
-export const isTeleportReason = (value: unknown): value is TeleportReason =>
-  (TELEPORT_REASONS as readonly unknown[]).includes(value)
+/** CC-892: `account` is set by the human's `account_move` alone, so a session's own frame cannot claim it. */
+export const AGENT_TELEPORT_REASONS = ['park'] as const satisfies readonly TeleportReason[]
+
+export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TELEPORT_REASONS)[number] =>
+  (AGENT_TELEPORT_REASONS as readonly unknown[]).includes(value)
 
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
@@ -1185,6 +1190,13 @@ export type ClientMessage =
    */
   | { t: 'teleport_abort'; name: string }
   /**
+   * CC-892: move the named live session to another account, resuming its same conversation there.
+   * `to` is `claude`, a profile name or a config dir; `force` lifts the usage refusals only. Human-only
+   * like `teleport_abort`: the broker refuses it from a REGISTERED connection. Answered with
+   * `teleport_result`.
+   */
+  | { t: 'account_move'; name: string; to: string; force?: boolean }
+  /**
    * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
    * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
    */
@@ -1221,7 +1233,7 @@ export type ClientMessage =
   | { t: 'host_hello'; host: string; platform: string; surfaces: string[]; proof?: string }
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
-  /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
+  /** CC-951: a launcher's answer to `host_probe`, `host_launch` or `host_spawn`, paired by `id`. */
   | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
@@ -1389,6 +1401,8 @@ export type ServerMessage =
       warnings?: string[]
       /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
       remote?: boolean
+      /** Where the successor opens: typed into this pane, a fresh surface here, or on another machine. */
+      placement?: 'same-pane' | 'new-surface' | 'other-machine'
     }
   /** CC-951: `endSelf` means the successor attached, so the caller ends its own Claude Code. */
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
@@ -1401,6 +1415,8 @@ export type ServerMessage =
   | { t: 'host_probe'; id: string; probe: HostProbe }
   /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
   | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  /** CC-1062: broker -> launcher; launch this spawn with the shared executor; answered by `host_launch_result`. */
+  | { t: 'host_spawn'; id: string; launch: RemoteLaunch }
   | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
   | { t: 'job_kick_result'; ok: boolean; detail: string }
   /**
@@ -1573,6 +1589,16 @@ export function lineReader<T>(onValue: (value: T) => void, onError: (err: Error)
   }
 }
 
-export function encode(message: ClientMessage | ServerMessage): string {
+/**
+ * CC-1343: a request's correlation id, echoed on the reply it gets. Replies are
+ * otherwise matched to requests by type and order, which cannot tell a late reply
+ * from a lost one. Optional both ways: a client that sends none gets none back,
+ * and a broker that predates it echoes nothing, so either side may be older.
+ */
+export interface Correlated {
+  rid?: number
+}
+
+export function encode(message: (ClientMessage | ServerMessage) & Correlated): string {
   return JSON.stringify(message) + '\n'
 }

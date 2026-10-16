@@ -1,4 +1,5 @@
 import type { DeliveredMessage } from '../protocol.js'
+import type { Unpushed } from './report-batch.js'
 import { SEAT_HOLD_MAX_AGE_MS } from './seat-hold.js'
 
 /**
@@ -21,27 +22,40 @@ interface Stranded {
   at: number
 }
 
-export class StrandedReports {
-  private readonly byName = new Map<string, Stranded[]>()
+interface ForName {
+  reports: Stranded[]
+  settled: (() => void)[]
+}
 
-  add(name: string, messages: readonly DeliveredMessage[], now: number): void {
-    if (messages.length === 0) return
-    const kept = this.byName.get(name) ?? []
+export class StrandedReports {
+  private readonly byName = new Map<string, ForName>()
+
+  /** `settled` (CC-337): exit verdicts that waited on these reports, run by whoever takes them. */
+  add(name: string, messages: readonly DeliveredMessage[], now: number, settled: (() => void)[] = []): void {
+    if (messages.length === 0 && settled.length === 0) return
+    const kept = this.byName.get(name) ?? { reports: [], settled: [] }
     // Re-inserted so the map's order is the order names were last stranded on.
     this.byName.delete(name)
-    this.byName.set(
-      name,
-      [...kept, ...messages.map(message => ({ message, at: now }))].slice(-STRANDED_MAX_PER_NAME),
-    )
+    this.byName.set(name, {
+      reports: [...kept.reports, ...messages.map(message => ({ message, at: now }))].slice(
+        -STRANDED_MAX_PER_NAME,
+      ),
+      settled: [...kept.settled, ...settled],
+    })
     if (this.byName.size <= STRANDED_MAX_NAMES) return
     const [oldest] = this.byName.keys()
     if (oldest !== undefined) this.byName.delete(oldest)
   }
 
-  /** What `name` closed on and is still young enough to push, removed either way. */
-  take(name: string, now: number): DeliveredMessage[] {
-    const kept = this.byName.get(name) ?? []
+  /**
+   * What `name` closed on and is still young enough to push, removed either way. Every
+   * waiting verdict is returned, aged or not: an expired report was never pushed, so its
+   * exit is announced rather than lost.
+   */
+  take(name: string, now: number): Unpushed {
+    const kept = this.byName.get(name) ?? { reports: [], settled: [] }
     this.byName.delete(name)
-    return kept.filter(s => now - s.at <= STRANDED_MAX_AGE_MS).map(s => s.message)
+    const young = kept.reports.filter(s => now - s.at <= STRANDED_MAX_AGE_MS)
+    return { messages: young.map(s => s.message), settled: kept.settled }
   }
 }

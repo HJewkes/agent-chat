@@ -20,8 +20,11 @@ import {
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_BODY_FILE_RULE,
+  REVIEWER_WITHOUT_SHEPHERD,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
+import { identityTranscript } from '../agents/resume-session.js'
+import { SESSION_RULES, SPAWNED_RULES } from '../agents/standing-rules.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
 import { HUMAN, type ServerMessage } from '../protocol.js'
@@ -222,13 +225,66 @@ describe('the check-run rule (CC-357)', () => {
   })
 
   // Mutation caught: dropping the reviewer's check-run line.
-  it('has the reviewer confirm every required check-run at the head before a MERGE', () => {
-    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+  it('has a reviewer without Shepherd confirm every required check-run at the head before a MERGE', () => {
+    const text = flat(REVIEWER_WITHOUT_SHEPHERD)
 
     expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
     expect(text).toContain('commits/<head>/check-runs" --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
+  })
+})
+
+describe('the reviewer CI rule (CC-1278)', () => {
+  const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+  // Mutation caught: leaving `or WAIT` in the default verdict line, or dropping the Shepherd CI sentence.
+  it('hands CI to Shepherd and offers no WAIT by default', () => {
+    expect(text).toContain('Verdict: MERGE (or FIX_FIRST)')
+    expect(text).toContain("CI is Shepherd's")
+    expect(text).toContain('pending or unread checks are no verdict input, never WAIT')
+    expect(text.replace('never WAIT', '')).not.toMatch(/\bWAIT\b/)
+    expect(text).not.toContain('Before MERGE, confirm every required check-run')
+  })
+
+  // Mutation caught: a rewrite that drops red CI as a blocker.
+  it('still blocks on a required check that already failed', () => {
+    expect(text).toContain('FIX_FIRST (Class: ci-red) only if a required check-run already failed')
+  })
+
+  // Mutation caught: deleting the old lines instead of moving them into the variant.
+  it('keeps WAIT and the check-run confirmation in the Shepherd: none variant', () => {
+    const variant = flat(REVIEWER_WITHOUT_SHEPHERD)
+
+    expect(variant).toContain('(or FIX_FIRST or WAIT)')
+    expect(variant).toContain('WAIT only for a clean review whose required checks have not finished')
+    expect(variant).not.toContain("CI is Shepherd's")
+  })
+
+  it('keeps the variant whole, generic and under the size cap', () => {
+    expect(REVIEWER_WITHOUT_SHEPHERD).toContain('<spawner>')
+    expect(carriesContract(REVIEWER_WITHOUT_SHEPHERD, 'reviewer')).toBe(true)
+    expect(REVIEWER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+    expect(REVIEWER_WITHOUT_SHEPHERD).not.toMatch(/\/Users\/\w|@\w+\.\w+|[0-9a-f]{40}|npm ci|agent-chat,/)
+  })
+
+  // Mutation caught: leaving blockFor implementer-only.
+  it.each([SHEPHERD_NONE_MARKER, '- Shepherd: none'])(
+    'hands a reviewer brief with the line %j the Shepherd: none variant',
+    async marker => {
+      const brief = `${marker}\nreview PR 7`
+
+      const { text } = await delivered({ profile: 'reviewer', brief })
+
+      expect(text).toBe(`${brief}\n\n${REVIEWER_WITHOUT_SHEPHERD.split('<spawner>').join('coord')}`)
+    },
+  )
+
+  it('hands a reviewer brief without the marker the Shepherd block', async () => {
+    const { text } = await delivered({ profile: 'reviewer', brief: 'review PR 7' })
+
+    expect(text).toBe(`review PR 7\n\n${block('reviewer')}`)
+    expect(text).not.toContain('or WAIT')
   })
 })
 
@@ -574,6 +630,83 @@ describe('a conversation that continues', () => {
 
     expect(readLaunchPlan('successor-1').stdin).toBe('carry on from the handoff')
   })
+
+  // CC-281 a: the meta teleport's relaunchFor writes is what decides it, not the preamble.
+  it.each([
+    ['adopted', false],
+    ['spawned', true],
+  ])('tells a teleported %s successor to report to a spawner only if it has one', async (origin, told) => {
+    await supervisor.relaunch({
+      agentId: `successor-${origin}`,
+      name: 'worker',
+      profile: {
+        ...(BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile),
+        isolation: 'none',
+      },
+      brief: 'carry on',
+      cwd: tmp('agent-chat-ws-'),
+      surface: 'headless',
+      preamble: 'you are the continuation',
+      meta: { origin },
+    })
+
+    const prompt = appendedPrompt(`successor-${origin}`)
+    expect(prompt).toContain(SESSION_RULES)
+    expect(prompt.includes(SPAWNED_RULES)).toBe(told)
+  })
+
+  // `resume` finds agents by byName, which today skips adopted ones, so this drives its launch half directly.
+  it('keeps the spawner line off an adopted successor that a resume relaunches', async () => {
+    const profile: AgentProfile = {
+      ...(BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile),
+      isolation: 'none',
+    }
+    await supervisor.relaunch({
+      agentId: 'successor-resumed',
+      name: 'worker',
+      profile,
+      brief: 'carry on',
+      cwd: tmp('agent-chat-ws-'),
+      surface: 'headless',
+      preamble: 'you are the continuation',
+      meta: { origin: 'adopted' },
+    })
+    const agent = core.agents.get('successor-resumed')!
+    writeTranscript(agent.cwd, agent.sessionId, agent.configDir)
+    const relaunchResumed = (
+      supervisor as unknown as { relaunchResumed: (...args: unknown[]) => Promise<void> }
+    ).relaunchResumed
+
+    await relaunchResumed.call(
+      supervisor,
+      agent,
+      profile,
+      { message: 'pick it up' },
+      identityTranscript(agent),
+    )
+
+    expect(agent.origin).toBe('adopted')
+    expect(readLaunchPlan('successor-resumed').stdin).toBe('pick it up')
+    expect(appendedPrompt('successor-resumed')).toContain(SESSION_RULES)
+    expect(appendedPrompt('successor-resumed')).not.toContain(SPAWNED_RULES)
+  })
+
+  it('marks the remote successor of an adopted session, so the other host drops the spawner line', () => {
+    const relaunch = (agentId: string, origin: string) =>
+      supervisor.prepareRemoteRelaunch({
+        agentId,
+        name: `worker-${origin}`,
+        profile: BUILTIN_PROFILES.find(p => p.name === 'implementer') as AgentProfile,
+        brief: 'carry on',
+        cwd: tmp('agent-chat-ws-'),
+        surface: 'headless',
+        preamble: 'you are the continuation',
+        meta: { origin },
+      })
+
+    expect(relaunch('remote-adopted', 'adopted').adopted).toBe(true)
+    expect(relaunch('remote-spawned', 'spawned').adopted).toBeUndefined()
+  })
 })
 
 // CC-1142. Mutation caught: dropping PROBE_SANDBOX_RULE from the builtin reviewer prelude.
@@ -675,9 +808,12 @@ describe('the Shepherd handoff (TP-468)', () => {
   })
 
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
-  it('pins the reviewer verdict block', () => {
-    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
-      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST or WAIT)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+  it.each([
+    [RETURN_CONTRACT_BLOCKS.reviewer, '(or FIX_FIRST)'],
+    [REVIEWER_WITHOUT_SHEPHERD, '(or FIX_FIRST or WAIT)'],
+  ])('pins the reviewer verdict block', (reviewer, verdicts) => {
+    expect(reviewer).toContain(
+      `exactly these three lines:\nVerdict: MERGE            ${verdicts}\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n`,
     )
   })
 })
@@ -738,10 +874,11 @@ describe('a brief that opts out of Shepherd (CC-452)', () => {
     expect(flat(text)).toContain(REGISTER)
   })
 
-  it('leaves a reviewer brief carrying the marker on the reviewer block', async () => {
+  it('hands a reviewer brief carrying the marker the reviewer variant once', async () => {
     const { text } = await delivered({ profile: 'reviewer', brief: `review it\n${SHEPHERD_NONE_MARKER}` })
 
-    expect(occurrences(text, block('reviewer'))).toBe(1)
+    expect(occurrences(text, REVIEWER_WITHOUT_SHEPHERD.split('<spawner>').join('coord'))).toBe(1)
+    expect(occurrences(text, MARKER.reviewer)).toBe(1)
   })
 
   it('does not double a brief that already pastes the contract and carries the marker', async () => {
@@ -846,6 +983,7 @@ describe('CC-897: bodies and comments go to gh-write on stdin in one call', () =
     ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
     ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
     ['reviewer', RETURN_CONTRACT_BLOCKS.reviewer],
+    ['reviewer without Shepherd', REVIEWER_WITHOUT_SHEPHERD],
   ])('no longer teaches the %s block a write-then-post body file', (_name, block) => {
     expect(block).not.toContain('posted in the next')
     expect(block).not.toContain("made by Write or `<<'EOF'`")
@@ -863,8 +1001,8 @@ describe('CC-690: pr-ready, WAIT and the Class line', () => {
     }
   })
 
-  it('lets the reviewer say WAIT only for a clean review whose required checks have not finished', () => {
-    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+  it('lets a reviewer without Shepherd say WAIT only for a clean review whose required checks have not finished', () => {
+    const text = flat(REVIEWER_WITHOUT_SHEPHERD)
     expect(text).toContain('Verdict: MERGE (or FIX_FIRST or WAIT)')
     expect(text).toContain('WAIT only for a clean review whose required checks have not finished')
   })

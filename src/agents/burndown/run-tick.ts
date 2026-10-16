@@ -1221,7 +1221,7 @@ async function tickCollision(
   return { check, failures }
 }
 
-/** Undefined when the broker cannot answer, which the check turns into a `claimed` refusal per repo. */
+/** Undefined when the broker cannot answer, which the check turns into a `broker-view-unavailable` refusal per repo. */
 async function readView(broker: TickBroker): Promise<BrokerView | undefined> {
   try {
     return await broker.collisionView()

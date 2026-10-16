@@ -20,23 +20,26 @@ export function failOpenLogger(file: string): FailOpen {
   }
 }
 
+/** How long the decision may run, and the deny it gives when it runs longer (CC-1407). */
+export interface Deadline {
+  ms: number
+  denial: () => string
+}
+
 /**
  * The decision. A rejection gives `onCrash`'s answer when it has one (a deny, so unlogged), else
- * '' (allow) with one log line. A run past the deadline allows with one log line.
+ * '' (allow) with one log line. A run past the deadline gives the deadline's deny, unlogged: an
+ * allow there would let a line padded to outrun the check run unchecked.
  */
 export async function decideWithin(
   decide: () => Promise<string>,
-  deadlineMs: number,
+  deadline: Deadline,
   onFailOpen: FailOpen,
   onCrash: () => string | undefined = () => undefined,
 ): Promise<string> {
-  const started = Date.now()
   let timer: NodeJS.Timeout | undefined
   const late = new Promise<string>(resolve => {
-    timer = setTimeout(() => {
-      onFailOpen(`timeout after ${Date.now() - started}ms`)
-      resolve('')
-    }, deadlineMs)
+    timer = setTimeout(() => resolve(deadline.denial()), deadline.ms)
   })
   try {
     return await Promise.race([decide(), late])
