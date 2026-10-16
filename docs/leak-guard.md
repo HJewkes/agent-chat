@@ -1366,43 +1366,55 @@ Not covered, by design or by cost:
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
-- text fed to a shell as its script (CC-1393), in two parts.
+- text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`) named directly as the
-  pipeline stage or here-string target, on a line that may reach git or gh (as for command starts
-  above). The guard reads the fed text as a script, or
-  denies it (pipedScript) when it cannot read it:
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`; `SHELLS` in
+  `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
+  stdin source in scope, on a line that may reach git or gh (as for command starts above). The
+  guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
   - `echo P | bash`, `sh`, `sh -s`, `zsh -f`, `|&`, and `sudo -n bash`; `printf` text as well;
   - `cat` and `tee` passed through in between: `echo P | cat | sh`, `echo P | tee /dev/null | bash`;
   - a quoted heredoc piped in (`cat <<'EOF' | bash`) and a here-string (`bash <<< 'P'`);
   - a `{ }` or `( )` group fed by the pipe: `echo P | { true; bash; }`, `echo P | (true; bash)`,
+    a shell nested in subshell parentheses (`echo P | ( ( bash ) )`, `( ( bash <<< "P" ) )`),
     and a subshell on the feeding side, `(echo P; echo hi) | bash`;
-  - a `-c` string that reads the feed: `echo P | bash -c 'cat | bash'`;
+  - a `-c` string that reads the feed: `echo P | bash -c 'cat | bash'`. A shell in a `-c` string
+    reads the outer shell's own feed, too (`bash -c bash <<EOF` with an expansion in the body);
   - a heredoc the shell expands (`F=--no-verify; bash <<EOF`) and a `< file` redirect
-    (`cat < push.sh | bash`), which the guard cannot read as written, so it denies even when the
-    text is harmless; quoting the delimiter (`<<'EOF'`) avoids it for a heredoc;
+    (`cat < push.sh | bash`, `bash < file`, `<file bash`), which the guard cannot read as written,
+    so it denies even when the text is harmless; quoting the delimiter (`<<'EOF'`) avoids it for
+    a heredoc;
+  - an `exec` redirect anywhere on the line (`exec < file`, `exec 0<<<TEXT`, `exec <<E`,
+    `exec 0<&3`), with any options or words after `exec`, also behind `time [-p]`, `noglob`,
+    `nocorrect`, `command [--]`, `builtin`, an expanded command word or `eval` text holding `exec`;
+  - a redirect on a group, subshell, loop, `if`, `case` or function definition
+    (`{ bash; } <<E`, `( bash ) < file`, `while read -r l; do bash; done <<E`), and a call of a
+    function the line defines, fed by a redirect or a pipe (`f() { bash; }; echo P | f`,
+    `function f { bash; }; f < file`). The guard keeps no group bounds, so every command on the
+    line that inherits its stdin is taken to read these;
+  - `source` and `.` of `/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/0` or an expanded path, and a
+    shell whose script file is one of those paths (`bash /dev/stdin < file`);
+  - `eval` of text the guard cannot read while stdin may carry text it cannot read
+    (`while read -r l; do eval "$l"; done < file`);
   - every later shell on the line may read that text, so nested heredocs check it again at each
     level; past 64 such checks across the line, a line that may reach git or gh denies and any
     other line skips the rest.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1408, CC-1411 and
-  CC-1412 track them:
-  - a shell nested in subshell parentheses and fed by a pipe or here-string (CC-1408):
-    `echo P | ( ( bash ) )`, `echo P | ( (bash) )`, `echo P | ( true; ( bash ) )`,
-    `( ( bash <<< "P" ) )`, and the same shapes with `sh`, `zsh` and `dash`. The lexer's
-    function-definition check also fires on `)`, which hides the inner shell's command word;
-  - a function the line defines, whose body runs a shell (CC-1408): `f() { bash; }; echo P | f`,
-    `function f { bash; }; echo P | f`, `f(){ bash; }; echo P | f`, and chains from one function
-    to another;
-  - stdin from an earlier `exec` redirect, a redirect or heredoc on a compound command,
-    `source /dev/stdin` or `. /dev/stdin` fed by a pipe, and a `-c` inner shell that inherits the
-    outer shell's feed (CC-1408): `exec < file; bash`, `exec 0<<<TEXT; bash`, or `exec <<E`, the
-    body and `E`, then `bash`; `{ bash; } <<E`, `( bash ) < file`,
-    `while read -r l; do bash; done <<E`; `bash -c bash <<EOF` with an expansion in the body;
+  The cost is a few harmless lines denied (pipedScript) on a line that may reach git or gh: a
+  shell given an expanded script path with such a feed
+  (`while read -r f; do bash -n "$f"; done < list`), a shell reading stdin anywhere on a line
+  that also feeds a group an unreadable redirect, and a heredoc whose body expands a variable
+  the line itself assigns, fed to a shell (`N=3; bash <<EOF`, `echo $N`, `EOF`), since the
+  guard does not substitute assigned values. Quoting the delimiter (`<<'EOF'`) avoids the last.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412,
+  CC-1414 and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
-  - a command word the guard cannot resolve (CC-1411): one filled by `read`, a variable such as
-    `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as `echo P | $(echo bash)`;
+  - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
+    word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
+    variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
+    `echo P | $(echo bash)`;
   - a wrapper the guard does not know (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`,
     `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
