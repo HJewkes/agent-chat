@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 import { fakeGitShells } from './helpers/fake-git-shells.js'
@@ -79,6 +81,11 @@ const UNREAD: [string, string, RegExp][] = [
   [`SHELL=/usr/bin/python3 script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
   [`echo '${PY}' | SHELL=/usr/bin/python3 script -q /dev/null`, 'script', /\$SHELL names/],
   [`echo '${PY}' | SHELL=/usr/bin/python3 unshare`, 'unshare', /\$SHELL names/],
+  [`export S''HELL=/usr/bin/python3; script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
+  [`env S''HELL=/usr/bin/python3 script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
+  // s.sh exports SHELL=/usr/bin/python3; the guard cannot read what a sourced file sets.
+  [`. ./s.sh; script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
+  [`X='${P}'; flock ${F} -c "$X"`, 'flock', /option this guard does not know/],
 ]
 
 // Rows real bash cannot run on every host: a forked child, a controlling tty, and a user namespace.
@@ -144,6 +151,7 @@ describe('job and namespace wrappers run the command after their options (CC-141
 
 const real = fakeGitShells('agent-chat-job-wrappers-', P)
 afterAll(real.cleanup)
+fs.writeFileSync(path.join(real.root, 's.sh'), 'export SHELL=/usr/bin/python3\n')
 const BASH = real.shells.find(([shell]) => shell.endsWith('bash'))
 const installed = (name: string): boolean => {
   try {

@@ -102,20 +102,22 @@ export function jobRun(words: readonly string[], i: number, name: string): JobRu
   return afterOperand(words, end, name)
 }
 
+const CHRT_PRIORITY = /^\s*[+-]?\d+$/
+
 /**
  * flock, taskset and chrt take one operand before the command: a lock file, a CPU mask, a
  * priority. A word the shell expands may be none or several, so the command is read from it.
  */
-const CHRT_PRIORITY = /^\s*[+-]?\d+$/
-
-function afterOperand(words: readonly string[], end: number, name: string): JobRun {
+function afterOperand(words: readonly string[], end: number, name: string): JobRun | undefined {
   const operand = words[end]
   if (operand === undefined || operand.includes(LIVE)) return { at: end }
   // chrt reads the priority with strtoimax; a version that drops it for SCHED_OTHER would run any other word.
   if (name === 'chrt' && !CHRT_PRIORITY.test(operand)) return { at: end }
   const flag = words[end + 1]
-  if (name === 'flock' && (flag === '-c' || flag === '--command')) return { script: words[end + 2] ?? '' }
-  return { at: end + 1 }
+  if (name !== 'flock' || (flag !== '-c' && flag !== '--command')) return { at: end + 1 }
+  const script = words[end + 2] ?? ''
+  // Like script's -c value, text the shell expands cannot be read as a script.
+  return script.includes(LIVE) ? undefined : { script }
 }
 
 function readOptions(words: readonly string[], i: number, spec: StrictGetopt): Parsed | undefined {

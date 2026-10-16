@@ -1153,6 +1153,33 @@ const mentions = (said: string, name: string): boolean =>
     said,
   )
 
+/** The variables earlier exports and a command's own assignments set; a bare name is one `env -u` unsets. */
+function settingsFor(
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): Map<string, Setting> {
+  const set = new Map(scope.exports)
+  for (const word of assigns) {
+    const name = ASSIGNMENT.exec(word)?.[1]
+    const value =
+      name === undefined
+        ? undefined
+        : SUBSCRIPTED_OR_APPENDING.test(word)
+          ? UNSURE
+          : (resolveWord(assignedValue(word), cmd, ctx, scope) ?? UNSURE)
+    set.set(name ?? word, value)
+  }
+  return set
+}
+
+/** A variable's value for a command over the hook's env; UNSURE when the guard cannot tell. */
+function settingOf(set: ReadonlyMap<string, Setting>, name: string, scope: Scope): Setting {
+  if (set.has(name)) return set.get(name)
+  return scope.env === undefined || mentions(scope.said, name) ? UNSURE : scope.env[name]
+}
+
 /** What git's config env is for this command over the hook's; undefined when the guard cannot tell. */
 function aliasEnv(
   run: GitRun,
@@ -1160,23 +1187,11 @@ function aliasEnv(
   ctx: GuardContext,
   scope: Scope,
 ): Overrides | undefined {
-  const set = new Map(scope.exports)
-  for (const word of run.assigns) {
-    const name = ASSIGNMENT.exec(word)?.[1]
-    const value =
-      name === undefined
-        ? undefined
-        : SUBSCRIPTED_OR_APPENDING.test(word)
-          ? UNSURE
-          : (resolveWord(assignedValue(word), run.cmd, ctx, scope) ?? UNSURE)
-    set.set(name ?? word, value)
-  }
+  const set = settingsFor(run.assigns, run.cmd, ctx, scope)
   const env: Record<string, string | undefined> = {}
   for (const name of [...CONFIG_ENV, ...vars]) {
-    if (!set.has(name) && (scope.env === undefined || mentions(scope.said, name))) return undefined
-    const value = set.get(name)
-    if (value === UNSURE) return undefined
-    if (set.has(name)) env[name] = value
+    if (settingOf(set, name, scope) === UNSURE) return undefined
+    if (set.has(name)) env[name] = set.get(name) as string | undefined
   }
   return env
 }
@@ -2314,10 +2329,18 @@ const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
 const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
 
-/** Whether `$SHELL` may name a program other than a shell the guard reads: the line sets it, or the hook's is another. */
-function shellUnknown(scope: Scope, ctx: GuardContext): boolean {
-  const own = ctx.env.SHELL
-  return /\bSHELL\b/.test(scope.line) || (own !== undefined && !SHELLS.has(path.basename(own)))
+/**
+ * Whether `$SHELL`, which script and unshare run, may name a program other than a shell the guard
+ * reads, derived as aliasEnv derives git's env. Unset, they run /bin/sh.
+ */
+function shellUnknown(
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  const shell = settingOf(settingsFor(assigns, cmd, ctx, scope), 'SHELL', scope)
+  return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
 }
 
 function checkSimple(
@@ -2333,7 +2356,11 @@ function checkSimple(
     return unwrapped.reason !== REASONS.jobOption || lineMayReachGit(scope, ctx)
       ? unwrapped.reason
       : undefined
-  if (unwrapped.viaShellVar === true && shellUnknown(scope, ctx) && lineMayReachGit(scope, ctx))
+  if (
+    unwrapped.viaShellVar === true &&
+    shellUnknown(unwrapped.assigns, cmd, ctx, scope) &&
+    lineMayReachGit(scope, ctx)
+  )
     return REASONS.jobShell
   const sibling = firstReason(unwrapped.siblings ?? [], s =>
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),

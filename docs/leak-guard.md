@@ -342,14 +342,16 @@ an expansion or xargs input among those words denies (CC-1209).
 
 util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
 are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
-from a table, an option word or option value the shell expands, or any expanded word after
-`script` (whose getopt reads options anywhere), denies on a line that may reach git or gh.
+from a table, an option word or option value the shell expands (a `flock -c` text included), or
+any expanded word after `script` (whose getopt reads options anywhere), denies on a line that may
+reach git or gh.
 `taskset -p` and `chrt -p` run nothing. An operand the shell expands, or a `chrt` priority that
 strtoimax would not read (`+0` and ` 0` are priorities), is read as the command.
 `flock <file> -c <text>` and `script -c <text>` are checked as `sh -c <text>`; `script` without
-`-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, so a line that
-mentions `SHELL`, or a hook `SHELL` outside the guard's shell list, denies them on a line that may
-reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
+`-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
+derives as it derives git's config env: from the command's assignments (`env` included), earlier
+exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
+on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered.
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
