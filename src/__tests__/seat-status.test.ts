@@ -447,7 +447,7 @@ describe('a seat against its concurrency caps', () => {
 
     const report = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
 
-    expect(report.lines[1]).toBe('implementers  1/2 (ledger 5)  MISMATCH ledger 5 vs 1 live  ss-al-1')
+    expect(report.lines[1]).toBe('implementers  1/2 (ledger 5)  ss-al-1')
   })
 
   it('counts a detached implementer as active and names it as detached', async () => {

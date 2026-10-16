@@ -12,7 +12,7 @@ import {
 } from '../burndown/budget-gate.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { seatTrees, type SeatTree } from './trees.js'
-import { slotMismatch, type SeatState } from '../burndown/ledger.js'
+import type { SeatState } from '../burndown/ledger.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
@@ -591,8 +591,7 @@ function roleLine(label: string, load: RoleLoad): string {
   const trees = load.trees ?? []
   const shown = trees.map(t => `${path.basename(t.path)}(${t.cause})`).join(', ')
   const ledger = load.ledger === undefined || load.ledger === load.active ? '' : ` (ledger ${load.ledger})`
-  const mismatch = load.ledger === undefined ? undefined : slotMismatch(load.ledger, load.active)
-  const flag = [load.atCap ? 'AT CAP' : '', mismatch ?? ''].filter(Boolean).join('  ')
+  const flag = load.atCap ? 'AT CAP' : ''
   const text = agentLine(label, load, `${load.active}/${load.cap}${ledger}`, flag)
   return trees.length === 0 ? text : `${text}  trees: ${shown}`
 }
