@@ -62,27 +62,50 @@ const WORKER_NEEDS = [
 ]
 
 /**
- * Claude Code's Bash rule matching, as far as these profiles rely on it: a rule ending `:*` is a
- * prefix that must be followed by a word boundary (`git push --force-with-lease:*` misses
- * `--force-with-lease=x`, the CC-1413 slip); any other `*` is a glob over any characters.
- * Compound commands are not modelled. The boundary rule is observed only through the CC-1413 slip;
- * mid-pattern globs are taken from Claude Code's documented rule syntax and not exercised live.
+ * Claude Code 2.1.301's Bash rule matching, mirrored from its bundle (rule parse YMe, rule match
+ * Kte, deny path mI):
+ * - a rule ending `:*` is a prefix, followed by end-of-string or a single space;
+ * - any other `*` becomes `.*` (dotAll) inside `^...$`, every other metacharacter escaped;
+ * - runs of whitespace collapse to one space on both the rule and the command;
+ * - a rule whose only `*` is a trailing ` *` makes that tail optional, `( .*)?`;
+ * - deny also tries the rule as `xargs <rule>`;
+ * - deny checks the whole compound string and each sub-command split on `&&`, `||`, `;` and `|`.
+ * Because `*` spans `&&`, `;` and `|`, a push rule with a `*` also denies a compound such as
+ * `git push origin x && rm -f f`; agents push as their own Bash call.
  */
-function ruleMatches(rule: string, command: string): boolean {
-  const body = /^Bash\((.*)\)$/.exec(rule)?.[1]
-  if (body === undefined) return false
+const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+function matchesPattern(body: string, command: string): boolean {
   if (body.endsWith(':*')) {
     const prefix = body.slice(0, -2)
     return command === prefix || command.startsWith(`${prefix} `)
   }
-  const glob = body.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-  return new RegExp(`^${glob.join('.*')}$`).test(command)
+  const lonelyTail = body.endsWith(' *') && body.indexOf('*') === body.length - 1
+  const source = lonelyTail ? body.slice(0, -2) : body
+  const glob = source.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`^${glob.join('.*')}${lonelyTail ? '( .*)?' : ''}$`, 's').test(command)
 }
 
-const isDenied = (command: string, denied: string[]): boolean =>
-  denied.some(rule => ruleMatches(rule, command))
+function ruleMatches(rule: string, command: string): boolean {
+  const body = /^Bash\((.*)\)$/.exec(rule)?.[1]
+  if (body === undefined) return false
+  const pattern = collapse(body)
+  return matchesPattern(pattern, command) || matchesPattern(`xargs ${pattern}`, command)
+}
 
-const GIT_FORMS = ['git push', 'git -C /tmp/work push', 'git -c k=v push']
+const isDenied = (command: string, denied: string[]): boolean => {
+  const whole = collapse(command)
+  const parts = whole.split(/&&|\|\||;|\|/).map(collapse)
+  return [whole, ...parts].some(text => denied.some(rule => ruleMatches(rule, text)))
+}
+
+const GIT_FORMS = [
+  'git push',
+  'git -C /tmp/work push',
+  'git -c k=v push',
+  'git --git-dir=/tmp/work/.git push',
+  'git --no-pager push',
+]
 
 const FORCE_SPELLINGS = [
   '--force-with-lease=agent-chat/x origin agent-chat/x',
@@ -119,7 +142,64 @@ const FORCE_SPELLINGS = [
   'origin agent-chat/x --force-with-lease --no-verify',
 ]
 
+const GLOBAL_OPTION_FORCES = [
+  '--force origin agent-chat/x',
+  '--force-with-lease origin agent-chat/x',
+  'origin --force agent-chat/x',
+  'origin --force-with-lease agent-chat/x',
+  '-u origin --force agent-chat/x',
+  'origin agent-chat/x --force',
+]
+
+const PROTECTED_BRANCH_PUSHES = [
+  'origin main',
+  'origin master',
+  '-u origin main',
+  '-u origin master',
+  '--set-upstream origin main',
+  '--set-upstream origin master',
+  'origin HEAD:main',
+  'origin HEAD:master',
+  'origin :main',
+  'origin :master',
+  'origin main --no-verify',
+  'origin HEAD:main --no-verify',
+]
+
+// The `:branch` rules end `:**`, because a rule ending `:*` is read as a prefix, not a glob.
+const DELETE_PRUNE_PUSHES = [
+  '--delete origin agent-chat/x',
+  '-u origin --delete agent-chat/x',
+  'origin agent-chat/x --delete',
+  'origin --delete agent-chat/x',
+  '-d origin agent-chat/x',
+  'origin -d agent-chat/x',
+  'origin agent-chat/x -d',
+  '-ud origin agent-chat/x',
+  'origin -vd agent-chat/x',
+  'origin :agent-chat/x',
+  'origin agent-chat/y :agent-chat/x',
+  '--prune origin',
+  'origin --prune',
+  'origin agent-chat/x --prune',
+]
+
+// `*` spans `&&`, `;` and `|`, so these ordinary commands are denied. Kept: a rule shape that
+// stops at a separator would also stop denying the force spellings the rows above pin.
+const COMPOUND_OVERMATCHES = [
+  'git push origin agent-chat/x && rm -f f',
+  'git push origin agent-chat/x && gh pr create -f',
+  'git push origin agent-chat/x && date +%s',
+  'git push origin agent-chat/x; git commit -m "fix -f"',
+]
+
 const LEGITIMATE_PUSHES = [
+  'origin agent-chat/x --no-verify',
+  'origin agent-chat/fix-f',
+  'origin agent-chat/c++',
+  'origin agent-chat/force-x',
+  'origin agent-chat/main-fix',
+  'origin HEAD:agent-chat/main',
   'origin agent-chat/x',
   '-u origin agent-chat/x',
   '--set-upstream origin agent-chat/x',
@@ -160,6 +240,21 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
 
   it.each(FORCE_SPELLINGS)('denies the force push `git push %s`', tail => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
+  it.each([...GLOBAL_OPTION_FORCES, ...DELETE_PRUNE_PUSHES, ...PROTECTED_BRANCH_PUSHES])(
+    'denies `git push %s` under every global option',
+    tail => {
+      for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+    },
+  )
+
+  it('denies a force push piped through xargs', () => {
+    expect(isDenied('echo origin | xargs git push --force', denied)).toBe(true)
+  })
+
+  it.each(COMPOUND_OVERMATCHES)('knowingly denies the compound `%s`', command => {
+    expect(isDenied(command, denied)).toBe(true)
   })
 
   it.each(LEGITIMATE_PUSHES)('still allows `git push %s`', tail => {
