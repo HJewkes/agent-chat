@@ -1366,8 +1366,9 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393), in two parts.
 
-  Covered: a shell named directly as the pipeline stage or here-string target, on a line that may
-  reach git or gh (as for command starts above). The guard reads the fed text as a script, or
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`) named directly as the
+  pipeline stage or here-string target, on a line that may reach git or gh (as for command starts
+  above). The guard reads the fed text as a script, or
   denies it (pipedScript) when it cannot read it:
   - `echo P | bash`, `sh`, `sh -s`, `zsh -f`, `|&`, and `sudo -n bash`; `printf` text as well;
   - `cat` and `tee` passed through in between: `echo P | cat | sh`, `echo P | tee /dev/null | bash`;
@@ -1398,9 +1399,18 @@ Not covered, by design or by cost:
     `while read -r l; do bash; done <<E`; `bash -c bash <<EOF` with an expansion in the body;
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
-  - a command word filled by `read` (CC-1411);
+  - a command word the guard cannot resolve (CC-1411): one filled by `read`, a variable such as
+    `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as `echo P | $(echo bash)`;
+  - a wrapper the guard does not know (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`,
+    `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
+  - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
+    `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
+  - process substitution (task to be filed): `echo P > >(bash)`. Probed at origin/main
+    (1a0376da): the guard allows it, and real bash and real zsh both run the push;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
+  - more generally: any shell the feed reaches through a command word, wrapper or shell name the
+    guard does not resolve is not covered, whether or not it is listed above.
 
 - text written to a file and then run (`printf … > f; bash f`), CC-1399; and encoded text the
   guard cannot decode, such as printf escapes, `base64 -d` or `xxd -r` piped to a shell;
