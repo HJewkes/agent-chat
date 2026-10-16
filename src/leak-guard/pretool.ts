@@ -76,6 +76,8 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
+import { joinFeeds, NOTHING, ownFeed, pipeFeed, stageOutput, type Feed } from './piped-shell.js'
+import { readShellCall } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -150,6 +152,12 @@ interface Scope {
   deferrable: boolean
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
   hiddenStarts: { left: number; reachesGit?: boolean }
+  /** What a command with no pipe or heredoc of its own reads: the stdin of the shell running the line. */
+  stdin: Feed
+  /** What this command reads on stdin. */
+  fed: Feed
+  /** Fed texts the whole call may still check; nested shells draw on the same budget (CC-1393). */
+  fedChecks: { left: number }
 }
 
 const UNSURE = Symbol('unsure')
@@ -164,6 +172,8 @@ const HEREDOC_POST =
 const MAX_DEPTH = 6
 const MAX_ALIASES = 4
 const MAX_HIDDEN_STARTS = 64
+// A pipe's text carries to every later shell on the line, so nested heredocs re-check it k^depth times.
+const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
@@ -181,6 +191,7 @@ export const REASONS = {
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
+  pipedScript: `leak-guard: a shell reads its script from a pipe, expanded heredoc or redirect the guard cannot read, on a command line that may reach git or gh. Run the commands directly, or feed a quoted heredoc (<<'EOF'). ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
@@ -1927,17 +1938,64 @@ function checkGhClone(
   return checkGitRun(gitRun(words, assigns, cmd, ctx, scope, true), ctx, scope, depth)
 }
 
+/**
+ * A `-c` string, and every text the shell is fed: a `-c` string or script file may run the rest of
+ * stdin too (`bash -c bash`), so piped text is checked whatever the script source (CC-1393). A
+ * shell inside the `-c` string reads the line's stdin, which `feeds` has joined the pipe into.
+ */
 function checkShell(
-  args: readonly string[],
-  stdin: string | undefined,
+  call: ShellRun,
+  cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
   depth: number,
 ): string | undefined {
+  const fed = scope.fed
+  const reason =
+    fed === 'unknown'
+      ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
+      : checkFed(fed.texts, ctx, scope, depth)
+  if (reason !== undefined) return reason
+  const args = call.marked.map(unmark)
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
-  if (flag >= 0) return checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1)
-  const script = args.find(a => !a.startsWith('-'))
-  return script === undefined && stdin !== undefined ? checkAt(stdin, ctx, scope, depth + 1) : undefined
+  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1) : undefined
+}
+
+/** A shell's base name, its marked words after the name, and the assignments it runs with. */
+interface ShellRun {
+  name: string
+  marked: readonly string[]
+  assigns: readonly string[]
+}
+
+/**
+ * A shell fed text the guard cannot read denies when it runs that text as its script on a line
+ * that may reach git or gh. Its heredoc as written is still checked, as before CC-1393.
+ */
+function checkUnknownFeed(
+  { name, marked, assigns }: ShellRun,
+  heredoc: string | undefined,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const written = heredoc === undefined ? undefined : checkFed([heredoc], ctx, scope, depth)
+  if (written !== undefined) return written
+  const { from } = readShellCall(name, marked, assigns).script
+  const fromStdin = from === 'stdin' || from === 'hidden'
+  return fromStdin && lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+}
+
+/** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
+function checkFed(
+  texts: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  scope.fedChecks.left -= texts.length
+  if (scope.fedChecks.left < 0) return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  return firstReason(texts, text => checkAt(text, ctx, { ...scope, stdin: NOTHING }, depth + 1))
 }
 
 /** The gh args `gh-write <gh-args...>` hands gh: commander drops only the first `--` and keeps the words on both sides. */
@@ -2213,7 +2271,7 @@ function checkSimple(
   const name = path.basename(head)
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
-    return checkShell(args, cmd.stdin, ctx, inner, depth)
+    return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
@@ -2671,6 +2729,20 @@ function deniesExpansion(command: string): boolean {
   return risk === 'unreadable' || (risk === 'operator' && NAMES_GH.test(command))
 }
 
+/**
+ * What `cmd` reads. A pipe into a group or loop feeds every command inside it, and the splitter
+ * keeps no group bounds, so any command later on the line may read what an earlier pipe carried.
+ */
+function feeds(
+  cmd: SimpleCommand,
+  prev: { cmd: SimpleCommand; output: Feed } | undefined,
+  scope: Scope,
+): Pick<Scope, 'stdin' | 'fed'> {
+  if (cmd.before !== '|') return { stdin: scope.stdin, fed: ownFeed(cmd, undefined, scope.stdin) }
+  const pipe = pipeFeed(prev?.cmd, prev?.output ?? 'unknown', cmd)
+  return { stdin: joinFeeds(scope.stdin, pipe), fed: ownFeed(cmd, pipe, scope.stdin) }
+}
+
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
@@ -2680,10 +2752,14 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
+  let prev: { cmd: SimpleCommand; output: Feed } | undefined
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
+    const fed = feeds(cmd, prev, at)
+    if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
+    prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
@@ -2709,6 +2785,9 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     line: command,
     gitParams: [],
     hiddenStarts: { left: MAX_HIDDEN_STARTS },
+    fedChecks: { left: MAX_FED_CHECKS },
+    stdin: NOTHING,
+    fed: NOTHING,
   }
   return checkAt(command, ctx, scope, 0)
 }
