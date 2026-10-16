@@ -50,6 +50,15 @@ const BYPASSES: [string, string][] = [
   // Here-strings and heredocs, denied before CC-1393 too.
   [`bash <<< '${PUSH}'`, REASONS.noVerify],
   [`zsh -f <<< '${PUSH}'`, REASONS.noVerify],
+  // ownFeed ignores stdinLive: the shell expands the body or reads the file, and the guard reads the raw text.
+  [`F=--no-verify; cat <<EOF | bash\ngit push $F\nEOF`, REASONS.pipedScript],
+  [`cat <<EOF | bash\ngit push --no-verif\\$'y'\nEOF`, REASONS.pipedScript],
+  [`F=--no-verify; bash <<EOF\ngit push $F\nEOF`, REASONS.pipedScript],
+  [`cat < push.sh | bash`, REASONS.pipedScript],
+  // Gate the unknown-feed deny on namesGit again: no word of this line names git.
+  [`G=gi; cat <<EOF | bash\n\${G}t push --no-verify\nEOF`, REASONS.pipedScript],
+  // Drop the check of the heredoc as written: this denies as pipedScript instead.
+  [`bash <<EOF\n${PUSH} $X\nEOF`, REASONS.noVerify],
 ]
 
 // Each row's mutation: make an unknown pipe deny for every script source, or deny any pipe into a non-shell.
@@ -60,6 +69,9 @@ const BENIGN: [string, RegExp][] = [
   [`echo 'git status' | bash`, /^status$/],
   [`git diff --name-only | bash -c 'while read f; do echo "$f"; done'`, /^diff --name-only$/],
   [`git log --oneline | head -3`, /^log --oneline$/],
+  // Deny an unknown feed whatever the line: an expanded heredoc on a line that cannot reach git.
+  [`cat <<EOF | wc -l\n$HOME\nEOF`, /^$/],
+  [`bash <<EOF\necho $HOME\nEOF`, /^$/],
 ]
 
 describe('checkCommand on text a shell reads as a script', () => {
@@ -124,6 +136,7 @@ fs.mkdirSync(BIN)
 fs.writeFileSync(path.join(BIN, 'git'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$RECORD"\n', { mode: 0o755 })
 // sudo must not prompt or escalate here: the fake runs its command as the test user.
 fs.writeFileSync(path.join(BIN, 'sudo'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 })
+fs.writeFileSync(path.join(ROOT, 'push.sh'), `${PUSH}\n`)
 
 afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }))
 

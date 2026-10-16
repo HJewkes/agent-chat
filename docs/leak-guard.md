@@ -1365,8 +1365,10 @@ Not covered, by design or by cost:
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - a script piped into a shell from a command whose output the guard cannot read (`curl … | bash`),
-  on a line that does not name git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in is
-  checked as a script, and an unreadable pipe on a line that names git or gh denies (CC-1393).
+  on a line that cannot reach git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in,
+  and a quoted heredoc, is checked as a script. A pipe the guard cannot read, a heredoc or
+  here-string the shell expands, and a `<` redirect are unreadable: a shell that runs one as its
+  script denies on a line that may reach git or gh (as for command starts above) (CC-1393).
   Every later shell on the line may read that text, so nested heredocs check it again at each
   level; past 64 such checks across the line, a line that may reach git or gh (as for command
   starts above) denies and any other line skips the rest;

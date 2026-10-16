@@ -185,7 +185,7 @@ export const REASONS = {
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
-  pipedScript: `leak-guard: a shell reads its script from a pipe the guard cannot read, on a command line that names git or gh. Run the commands directly. ${DOCS}`,
+  pipedScript: `leak-guard: a shell reads its script from a pipe, expanded heredoc or redirect the guard cannot read, on a command line that may reach git or gh. Run the commands directly, or feed a quoted heredoc (<<'EOF'). ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
@@ -1932,24 +1932,46 @@ function checkGhClone(
  * shell inside the `-c` string reads the line's stdin, which `feeds` has joined the pipe into.
  */
 function checkShell(
-  name: string,
-  marked: readonly string[],
-  assigns: readonly string[],
+  call: ShellRun,
+  cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
   depth: number,
 ): string | undefined {
-  const args = marked.map(unmark)
   const fed = scope.fed
-  if (fed === 'unknown') {
-    const { from } = readShellCall(name, marked, assigns).script
-    if (scope.namesGit && (from === 'stdin' || from === 'hidden')) return REASONS.pipedScript
-  } else {
-    const reason = checkFed(fed.texts, ctx, scope, depth)
-    if (reason !== undefined) return reason
-  }
+  const reason =
+    fed === 'unknown'
+      ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
+      : checkFed(fed.texts, ctx, scope, depth)
+  if (reason !== undefined) return reason
+  const args = call.marked.map(unmark)
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
   return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1) : undefined
+}
+
+/** A shell's base name, its marked words after the name, and the assignments it runs with. */
+interface ShellRun {
+  name: string
+  marked: readonly string[]
+  assigns: readonly string[]
+}
+
+/**
+ * A shell fed text the guard cannot read denies when it runs that text as its script on a line
+ * that may reach git or gh. Its heredoc as written is still checked, as before CC-1393.
+ */
+function checkUnknownFeed(
+  { name, marked, assigns }: ShellRun,
+  heredoc: string | undefined,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const written = heredoc === undefined ? undefined : checkFed([heredoc], ctx, scope, depth)
+  if (written !== undefined) return written
+  const { from } = readShellCall(name, marked, assigns).script
+  const fromStdin = from === 'stdin' || from === 'hidden'
+  return fromStdin && lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
 }
 
 /** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
@@ -2106,7 +2128,7 @@ function checkSimple(
   const name = path.basename(head)
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
-    return checkShell(name, marked, unwrapped.assigns, ctx, inner, depth)
+    return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')

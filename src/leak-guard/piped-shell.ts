@@ -61,9 +61,17 @@ export function pipeFeed(prev: SimpleCommand | undefined, prevOutput: Feed, cmd:
   return prevOutput
 }
 
-/** What `cmd` reads: its pipe and its heredoc (zsh feeds both), or else the stdin it inherits. */
+/**
+ * What `cmd` reads: its pipe and its heredoc (zsh feeds both), or else the stdin it inherits.
+ * A heredoc or here-string the shell expands, a file redirect or a second source is `stdinLive`:
+ * the text that reaches the reader is not the text the splitter holds, so it is 'unknown'.
+ */
 export function ownFeed(cmd: SimpleCommand, pipe: Feed | undefined, inherited: Feed): Feed {
-  const heredoc: Feed = cmd.stdin === undefined ? NOTHING : { texts: [cmd.stdin] }
-  if (pipe !== undefined) return joinFeeds(pipe, heredoc)
-  return cmd.stdin === undefined ? inherited : heredoc
+  const own: Feed | undefined = cmd.stdinLive
+    ? 'unknown'
+    : cmd.stdin === undefined
+      ? undefined
+      : { texts: [cmd.stdin] }
+  if (pipe !== undefined) return joinFeeds(pipe, own ?? NOTHING)
+  return own ?? inherited
 }
