@@ -1385,6 +1385,10 @@ Not covered, by design or by cost:
     `exec <<E`, the body and `E`, then `bash`;
   - a redirect or heredoc on a compound command: `{ bash; } <<E`, `( bash ) < file`,
     `while read -r l; do bash; done <<E`;
+  - a shell nested in subshell parentheses and fed by a pipe or here-string, which stays allowed:
+    `echo P | ( ( bash ) )`, `echo P | ( (bash) )`, `echo P | ( true; ( bash ) )`,
+    `( ( bash <<< "P" ) )`, and the same shapes with `sh`, `zsh` and `dash`. The lexer's
+    function-definition check also fires on `)`, which hides the inner shell's command word;
   - `source /dev/stdin` and `. /dev/stdin` fed by a pipe;
   - a `-c` shell whose string runs another shell, which inherits the outer shell's own expanded
     heredoc, here-string or redirect: `bash -c bash <<EOF` with an expansion in the body;
