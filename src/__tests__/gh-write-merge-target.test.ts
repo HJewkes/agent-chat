@@ -187,10 +187,9 @@ describe('mergeTarget for gh api', () => {
       ['api', 'repos/o/r/issues/1/comments', '--raw-field', 'repos/o/r/pulls/12/merge'],
     ],
     ['a jq filter', ['api', 'repos/o/r/pulls/12', '--jq', 'repos/o/r/pulls/12/merge']],
-    ['update-branch', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
     ['a PR read', ['api', 'repos/o/r/pulls/12']],
     ['a branch ref read', ['api', 'repos/o/r/git/refs/heads/main']],
-    ['a write to a repo named refinery', ['api', '-X', 'PATCH', 'repos/o/refinery', '-f', 'description=x']],
+    ['a write to a repo named refinery', ['api', 'repos/o/refinery/issues/1/comments', '-f', 'body=x']],
     ['a write to a repo named merges-lib', ['api', 'repos/o/merges-lib/issues', '-f', 'title=x']],
     ['a search read whose query names merges', ['api', 'search/issues?q=is:pull-request+is:merged']],
   ])('passes %s as no merge', (_, args) => {
@@ -355,7 +354,7 @@ describe('each merge operation reads the same over REST and GraphQL', () => {
       'enablePullRequestAutoMerge',
       'disablePullRequestAutoMerge',
     ],
-    'a branch merge': ['merges', 'mergeBranch'],
+    'a branch merge': ['merges', 'merge-upstream', 'mergeBranch'],
     'a merge queue change': ['merge-queue', 'enqueuePullRequest', 'dequeuePullRequest'],
     'any ref create, update or delete': [
       'git/refs',
@@ -469,10 +468,78 @@ describe('mergeTarget for gh pr merge', () => {
     ['--disable-auto', ['pr', 'merge', '12', '--disable-auto']],
     ['pr view', ['pr', 'view', '12']],
     ['a comment whose body says merge', ['pr', 'comment', '12', '--body', 'merge']],
-    ['update-branch', ['pr', 'update-branch', '12']],
     ['issue close', ['issue', 'close', '12']],
     ['a repo command', ['repo', 'view']],
     ['no words', []],
+  ])('passes %s as no merge', (_, args) => {
+    expect(kindOf(args)).toBe('none')
+  })
+})
+
+describe('mergeTarget fails closed on a branch-writing surface it cannot show is no merge', () => {
+  it.each([
+    ['merge-upstream with -X POST', ['api', '-X', 'POST', 'repos/o/r/merge-upstream', '-f', 'branch=main']],
+    ['merge-upstream with no -X', ['api', 'repos/o/r/merge-upstream', '-f', 'branch=main']],
+    ['repo sync', ['repo', 'sync', 'o/r', '--branch', 'main']],
+    ['repo sync --force', ['repo', 'sync', 'o/r', '--branch', 'main', '--force']],
+    [
+      'a contents PUT, which commits to a branch',
+      ['api', '-X', 'PUT', 'repos/o/r/contents/a.md', '-f', 'sha=a'],
+    ],
+    ['a branch rename', ['api', 'repos/o/r/branches/main/rename', '-f', 'new_name=x']],
+    ['update-branch over REST', ['api', '-X', 'PUT', 'repos/o/r/pulls/12/update-branch']],
+    ['a repo settings PATCH', ['api', '-X', 'PATCH', 'repos/o/r', '-f', 'default_branch=x']],
+    ['a write outside any repo', ['api', '-X', 'POST', 'user/repos', '-f', 'name=x']],
+    ['an allow-listed path with a query', ['api', 'repos/o/r/issues/1/comments?x=1', '-f', 'body=x']],
+    ['pr update-branch', ['pr', 'update-branch', '12']],
+    ['pr revert', ['pr', 'revert', '12']],
+    ['an unknown pr verb', ['pr', 'land', '12']],
+    ['repo edit', ['repo', 'edit', 'o/r', '--default-branch', 'x']],
+    ['a flag before the repo verb', ['repo', '--force', 'sync']],
+    ['a flag before the gh group', ['--force', 'repo', 'sync']],
+  ])('refuses %s', (_, args) => {
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
+  it.each([
+    ['createCommitOnBranch', 'mutation{createCommitOnBranch(input:{}){x}}'],
+    ['updatePullRequestBranch', 'mutation{updatePullRequestBranch(input:{}){x}}'],
+    ['an unlisted field beside a listed one', 'mutation{addComment(input:{}){x} createRef(input:{}){x}}'],
+    ['an aliased unlisted field', 'mutation{addComment:mergeBranch(input:{}){x}}'],
+    ['a second operation that writes', 'query{viewer{login}} mutation M{mergeBranch(input:{}){x}}'],
+    ['a fragment spread', 'mutation{...F} fragment F on Mutation{mergeBranch(input:{}){x}}'],
+    ['a directive', 'mutation{addComment(input:{})@skip(if:false){x}}'],
+    ['a keyword after the first name', 'mutation query{mergeBranch(input:{}){x}}'],
+    ['an unclosed string', 'mutation{addComment(input:{body:"x}){x}} mutation{mergeBranch(input:{}){x}}'],
+  ])('refuses a GraphQL mutation with %s', (_, document) => {
+    expect(kindOf(['api', 'graphql', '-f', `query=${document}`])).toBe('unresolved')
+  })
+
+  it.each([
+    ['pr view', ['pr', 'view', '12']],
+    ['pr checks', ['pr', 'checks', '12', '-R', 'o/r']],
+    ['pr list after -R', ['pr', '-R', 'o/r', 'list']],
+    ['pr diff', ['pr', 'diff', '12']],
+    ['repo view', ['repo', 'view', 'o/r']],
+    ['an api GET', ['api', 'repos/o/r/pulls/12']],
+    ['an explicit api GET', ['api', '-X', 'GET', 'repos/o/r/contents/merge.md']],
+    ['an api GET with fields', ['api', '-X', 'GET', 'repos/o/r/pulls', '-f', 'state=open']],
+    ['an api read of merge-upstream docs', ['api', 'repos/o/r/contents/docs/merge-upstream.md']],
+    ['a PR comment', ['api', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=x']],
+    ['a review', ['api', 'repos/o/r/pulls/12/reviews', '-f', 'event=COMMENT']],
+    ['a PR edit', ['api', '-X', 'PATCH', 'repos/o/r/pulls/12', '-f', 'title=x']],
+    ['a GraphQL query', ['api', 'graphql', '-f', 'query=query{viewer{login}}']],
+    [
+      'a listed mutation with an alias, commas and a string',
+      [
+        'api',
+        'graphql',
+        '-f',
+        'query=mutation M($b:String!){c:addComment(input:{body:$b,subjectId:"}"}){x}, x:addReaction(input:{}){y}}',
+      ],
+    ],
+    ['an issue command', ['issue', 'comment', '12', '--body', 'repo sync']],
+    ['gh with no group', ['--version']],
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
   })

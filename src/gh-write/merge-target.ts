@@ -2,7 +2,9 @@
  * The PR a gh argument list would merge (CC-1319 a). gh-write and the agent gh shim read the PR's
  * Shepherd owner hold before a merge starts, so they need its exact `<owner>/<repo>#<n>`. Both see
  * raw argv, so this parser is deliberately narrow: a call it can tell is a merge but cannot name
- * exactly is `unresolved`, which its callers refuse. Anything that is not a merge is `none`.
+ * exactly is `unresolved`, which its callers refuse. On the surfaces that can write a repo's
+ * branches (`api`, `pr`, `repo`), `none` comes only from an allow-list of operations known not to
+ * merge, so a spelling nobody listed fails closed; every other gh group is `none`.
  */
 
 export type MergeTarget =
@@ -128,22 +130,57 @@ function groupIndex(args: readonly string[]): number | undefined {
 /** cobra drops an empty or whitespace-only word when it picks the command, so `'' pr merge` is `pr merge`. */
 const isBlank = (word: string | undefined): boolean => word !== undefined && word.trim() === ''
 
-const mightMerge = (args: readonly string[]): boolean =>
-  args.includes('api') || (args.includes('pr') && args.includes('merge'))
+const BRANCH_WRITING_GROUPS = new Set(['api', 'pr', 'repo'])
+
+/** Read-only verbs, and verbs that change only a PR's conversation or state or a local checkout. */
+const PR_NON_MERGE_VERBS = new Set(
+  'view list ls status checks diff checkout co create new comment review edit close reopen ready lock unlock'.split(
+    ' ',
+  ),
+)
+
+/** Read-only verbs, and verbs that only make a new repo or change local setup. */
+const REPO_NON_MERGE_VERBS = new Set(
+  'view list ls clone create new fork set-default gitignore license'.split(' '),
+)
+
+const mightWrite = (args: readonly string[]): boolean => args.some(word => BRANCH_WRITING_GROUPS.has(word))
 
 export function mergeTarget(args: readonly string[], env: Env): MergeTarget {
   const start = groupIndex(args)
-  if (start === undefined) return mightMerge(args) ? unresolved('a flag before the gh group') : NONE
-  if (isBlank(args[start])) return mightMerge(args) ? unresolved('an empty word before the gh group') : NONE
+  if (start === undefined) return mightWrite(args) ? unresolved('a flag before the gh group') : NONE
+  if (isBlank(args[start])) return mightWrite(args) ? unresolved('an empty word before the gh group') : NONE
   if (args[start] === 'api') return apiTarget(args.slice(start + 1), env)
   if (args[start] === 'pr') return prTarget(args, start, env)
+  if (args[start] === 'repo') return verbTarget(args, start, REPO_NON_MERGE_VERBS)
   return NONE
+}
+
+/** The verb's index past `-R` pairs, or unresolved when a flag or an empty word hides it. */
+function verbIndex(args: readonly string[], start: number): number | MergeTarget {
+  const group = args[start] ?? ''
+  const verbAt = groupIndex(args.slice(start + 1))
+  if (verbAt === undefined) return unresolved(`a flag before the ${group} verb`)
+  const at = start + 1 + verbAt
+  return isBlank(args[at]) ? unresolved(`an empty word before the ${group} verb`) : at
+}
+
+/** `none` only for a verb on `nonMerge`; any other verb, or one that cannot be read, is unresolved. */
+function verbTarget(args: readonly string[], start: number, nonMerge: ReadonlySet<string>): MergeTarget {
+  const at = verbIndex(args, start)
+  if (typeof at !== 'number') return at
+  const verb = args[at] ?? ''
+  return nonMerge.has(verb)
+    ? NONE
+    : unresolved(`a ${args[start]} verb not known to leave branches alone: ${verb}`)
 }
 
 // --- api ------------------------------------------------------------------------------------------
 
 /**
- * Every operation that can land a PR's commits on its base, one row each. A row states what it
+ * The operations known to land a PR's commits on its base, one row each, so a call can be named
+ * or refused with a reason. The table only sharpens the answer: a write that matches no row is
+ * still unresolved unless an allow-list below shows it does not merge. A row states what it
  * covers once, as `vocabulary`, and both readers apply that same pattern, so neither can be
  * narrower than the other:
  * - REST runs it on every decoded API path past its repo, whatever its prefix or suffix. A match is
@@ -197,6 +234,7 @@ function apiTarget(rest: readonly string[], env: Env): MergeTarget {
     return unresolved('a GraphQL call that may merge')
   const writes = isWrite(parsed)
   const merges = parsed.positionals
+    .filter(word => !mentionsGraphql(word))
     .map(word => endpointTarget(word, writes))
     .filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
@@ -232,8 +270,88 @@ function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
   const plain = values as string[]
   if (fields.some(({ name }, at) => /^(?:-F|--field)$/.test(name) && /^[^=]*=@/.test(plain[at] ?? '')))
     return false
-  if (!plain.some(value => /mutation/i.test(value))) return true
-  return !plain.some(value => MERGE_OPERATIONS.some(({ vocabulary }) => vocabulary.test(value)))
+  const mutations = plain.filter(value => /mutation/i.test(value))
+  return mutations.every(value =>
+    mutationFields(value.slice(value.indexOf('=') + 1))?.every(field => NON_MERGE_MUTATIONS.has(field)),
+  )
+}
+
+/** Mutations that change only an issue's or PR's conversation, labels or state. */
+const NON_MERGE_MUTATIONS = new Set(
+  [
+    'addComment updateIssueComment deleteIssueComment minimizeComment addReaction removeReaction',
+    'addPullRequestReview addPullRequestReviewComment addPullRequestReviewThread submitPullRequestReview',
+    'updatePullRequestReview deletePullRequestReview dismissPullRequestReview requestReviews',
+    'resolveReviewThread unresolveReviewThread addLabelsToLabelable removeLabelsFromLabelable',
+    'createIssue updateIssue closeIssue reopenIssue createPullRequest updatePullRequest closePullRequest',
+    'reopenPullRequest markPullRequestReadyForReview convertPullRequestToDraft',
+  ]
+    .join(' ')
+    .split(' '),
+)
+
+const GRAPHQL_TOKEN = /"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|#[^\n\r]*|\.\.\.|[_A-Za-z]\w*|\S/g
+const NAME_TOKEN = /^[_A-Za-z]/
+
+interface Walk {
+  braces: number
+  parens: number
+  keyword: boolean
+  mutation: boolean
+  fields: string[]
+}
+
+/**
+ * The top-level fields of every mutation in a GraphQL document, or `undefined` when the document
+ * does not read plainly: a fragment spread, a directive, an unclosed string or stray punctuation.
+ */
+function mutationFields(document: string): string[] | undefined {
+  const tokens = (document.match(GRAPHQL_TOKEN) ?? []).filter(
+    token => token !== ',' && !/^(?:#|"[\s\S])/.test(token),
+  )
+  const walk: Walk = { braces: 0, parens: 0, keyword: true, mutation: false, fields: [] }
+  for (let i = 0; i < tokens.length; i++) if (!step(walk, tokens[i] ?? '', tokens[i + 1])) return undefined
+  return walk.braces === 0 && walk.parens === 0 ? walk.fields : undefined
+}
+
+/** One token; false when it makes the document unreadable. A name before `:` is an alias, not a field. */
+function step(walk: Walk, token: string, next: string | undefined): boolean {
+  if (walk.parens > 0) return argumentStep(walk, token)
+  if (token === '(') walk.parens = 1
+  else if (token === '{') openBrace(walk)
+  else if (token === '}') return closeBrace(walk)
+  else if (!NAME_TOKEN.test(token)) return token === ':' && walk.braces > 0
+  else if (walk.braces === 0) return definitionName(walk, token)
+  else if (walk.mutation && walk.braces === 1 && next !== ':') walk.fields.push(token)
+  return true
+}
+
+/** Inside arguments or variable definitions only parens nest; object braces there are values. */
+function argumentStep(walk: Walk, token: string): boolean {
+  if (token === '(') walk.parens++
+  if (token === ')') walk.parens--
+  return token !== '"'
+}
+
+function openBrace(walk: Walk): void {
+  if (walk.braces === 0 && walk.keyword) walk.mutation = false
+  walk.keyword = false
+  walk.braces++
+}
+
+function closeBrace(walk: Walk): boolean {
+  if (walk.braces === 0) return false
+  walk.braces--
+  if (walk.braces === 0) Object.assign(walk, { keyword: true, mutation: false })
+  return true
+}
+
+/** The first name of a definition is its keyword; any later one (a name, `on`, a type) is skipped. */
+function definitionName(walk: Walk, token: string): boolean {
+  if (!walk.keyword) return true
+  walk.keyword = false
+  walk.mutation = /^mutation$/i.test(token)
+  return walk.mutation || /^(?:query|subscription|fragment)$/.test(token)
 }
 
 /** False for a path with an empty, `.` or `..` segment, which a later hop may collapse into another path. */
@@ -264,9 +382,26 @@ function endpointTarget(word: string, writes: boolean): MergeTarget {
   const named = MERGE_OPERATIONS.find(
     ({ vocabulary, writesOnly }) => (writes || !writesOnly) && vocabulary.test(scanned),
   )
-  if (named === undefined) return NONE
+  if (named === undefined)
+    return writes && !isNonMergeWrite(path) ? unresolved('a write not known to leave branches alone') : NONE
   const exact = isCanonical(path) ? PR_MERGE_PATH.exec(path) : null
   return exact === null ? unresolved(`a path that may be ${named.covers}`) : prMergeTarget(exact)
+}
+
+/** Repo writes that change only an issue's or PR's conversation, labels, reviewers or state. */
+const NON_MERGE_WRITES: readonly RegExp[] = [
+  /^\/issues(?:\/\d+(?:\/(?:comments|labels|assignees))?)?$/,
+  /^\/issues\/comments\/\d+$/,
+  /^\/pulls(?:\/\d+(?:\/(?:comments|reviews|requested_reviewers))?)?$/,
+  /^\/pulls\/\d+\/reviews\/\d+(?:\/events)?$/,
+  /^\/pulls\/comments\/\d+$/,
+]
+
+/** True only for a canonical repo path whose rest, query and all, is exactly on the allow-list. */
+function isNonMergeWrite(path: string): boolean {
+  if (!isCanonical(path) || !REPO_PREFIX.test(path)) return false
+  const rest = path.replace(REPO_PREFIX, '')
+  return NON_MERGE_WRITES.some(pattern => pattern.test(rest))
 }
 
 function prMergeTarget(match: RegExpExecArray): MergeTarget {
@@ -284,14 +419,11 @@ const PR_URL = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)
 const ANY_URL = /^[a-z][a-z0-9+.-]*:\/\//i
 
 function prTarget(args: readonly string[], start: number, env: Env): MergeTarget {
-  const verbAt = groupIndex(args.slice(start + 1))
-  if (verbAt === undefined) return args.includes('merge') ? unresolved('a flag before the pr verb') : NONE
-  const verbIndex = start + 1 + verbAt
-  if (isBlank(args[verbIndex]))
-    return args.includes('merge') ? unresolved('an empty word before the pr verb') : NONE
-  if (args[verbIndex] !== 'merge') return NONE
-  const before = [...args.slice(0, start), ...args.slice(start + 1, verbIndex)]
-  const parsed = parseWords([...before, ...args.slice(verbIndex + 1)], MERGE_FLAGS)
+  const at = verbIndex(args, start)
+  if (typeof at !== 'number') return at
+  if (args[at] !== 'merge') return verbTarget(args, start, PR_NON_MERGE_VERBS)
+  const before = [...args.slice(0, start), ...args.slice(start + 1, at)]
+  const parsed = parseWords([...before, ...args.slice(at + 1)], MERGE_FLAGS)
   const disables = parsed.flags.filter(flag => flag.name === '--disable-auto')
   if (disables.some(flag => flag.value !== undefined)) return unresolved('--disable-auto with a value')
   if (disables.length > 0) return NONE
