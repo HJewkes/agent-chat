@@ -2001,15 +2001,18 @@ function checkUnknownFeed(
   return undefined
 }
 
-/** `source` or `.` of a stdin path runs what it is fed as a script, like a shell reading stdin (CC-1408). */
+/**
+ * `source` or `.` of a stdin path runs what it is fed as a script, like a shell reading stdin (CC-1408).
+ * Any operand may be the path, whatever `--` or `-p <dir>` sits before it.
+ */
 function checkSourcedStdin(
-  file: string | undefined,
+  operands: readonly string[],
   ctx: GuardContext,
   scope: Scope,
   depth: number,
 ): string | undefined {
   const fed = scope.fed
-  if (!mayReadStdin(file) || isNothing(fed)) return undefined
+  if (!operands.some(mayReadStdin) || isNothing(fed)) return undefined
   if (fed !== 'unknown') return checkFed(fed.texts, ctx, scope, depth)
   return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
 }
@@ -2315,7 +2318,7 @@ function checkSimple(
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
-  const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked[0], ctx, at, depth) : undefined
+  const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked, ctx, at, depth) : undefined
   if (sourced !== undefined) return sourced
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
