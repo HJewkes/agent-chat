@@ -1368,26 +1368,32 @@ Not covered, by design or by cost:
   on a line that cannot reach git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in,
   and a quoted heredoc, is checked as a script. A pipe the guard cannot read, a heredoc or
   here-string the shell expands, and a `<` redirect are unreadable: a shell that runs one as its
-  script denies on a line that may reach git or gh (as for command starts above) (CC-1393). That
-  holds for a redirect on the shell command itself (`bash < file`, `bash 0< file`,
-  `<file bash`), not for an `exec` redirect earlier on the line (see the known gaps below).
-  A heredoc whose body expands a variable the line itself assigns, fed to a shell
-  (`N=3; bash <<EOF`, `echo $N`, `EOF`), is denied (pipedScript) even when harmless; quoting the
-  delimiter (`<<'EOF'`) avoids it.
+  script denies on a line that may reach git or gh (as for command starts above) (CC-1393).
+  A shell reads that text from every stdin source in scope (CC-1408): its own redirect
+  (`bash < file`, `<file bash`), an `exec` redirect anywhere on the line (`exec < file`,
+  `exec 0<<<TEXT`, `exec <<E`, `exec 0<&3`, also behind `command`, `builtin`, an expanded
+  command word or `eval` text holding `exec`), a redirect on a group, subshell, loop, `if`,
+  `case` or function definition (`{ bash; } <<E`, `( bash ) < file`, `while …; done <<E`), and
+  a call of a function the line defines (`f < file`, `… | f`). The guard keeps no group bounds,
+  so every command on the line that inherits its stdin is taken to read these. `source` and `.`
+  of `/dev/stdin`, `/dev/fd/0`, `/proc/self/fd/0` or an expanded path run what they are fed, as
+  does a shell whose script file is one of those paths. A shell in a `-c` string reads the
+  outer shell's own feed (`bash -c bash <<EOF`), and `eval` of text the guard cannot read denies
+  while stdin may carry text it cannot read (`while read -r l; do eval "$l"; done < file`).
+  The cost is a few harmless lines denied (pipedScript) on a line that may reach git or gh: a
+  shell given an expanded script path with such a feed
+  (`while read -r f; do bash -n "$f"; done < list`), a shell reading stdin anywhere on a line
+  that also feeds a group an unreadable redirect, and a heredoc whose body expands a variable
+  the line itself assigns, fed to a shell (`N=3; bash <<EOF`, `echo $N`, `EOF`), since the
+  guard does not substitute assigned values. Quoting the delimiter (`<<'EOF'`) avoids the last.
   Every later shell on the line may read that text, so nested heredocs check it again at each
   level; past 64 such checks across the line, a line that may reach git or gh (as for command
   starts above) denies and any other line skips the rest;
 - text written to a file and then run (`printf … > f; bash f`), CC-1399; and encoded text the
   guard cannot decode, such as printf escapes, `base64 -d` or `xxd -r` piped to a shell;
-- known gaps (CC-1408), each a shell that reads a script the guard does not follow. CC-1408
-  closes them:
-  - stdin from an earlier `exec` redirect: `exec < file; bash`, `exec 0<<<TEXT; bash`, or
-    `exec <<E`, the body and `E`, then `bash`;
-  - a redirect or heredoc on a compound command: `{ bash; } <<E`, `( bash ) < file`,
-    `while read -r l; do bash; done <<E`;
-  - `source /dev/stdin` and `. /dev/stdin` fed by a pipe;
-  - a `-c` shell whose string runs another shell, which inherits the outer shell's own expanded
-    heredoc, here-string or redirect: `bash -c bash <<EOF` with an expansion in the body;
+- a line that `read` takes from stdin and bash then runs by word-splitting a variable
+  (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), as for any variable whose
+  value the guard does not track;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
   command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
   not tie to git (`source ./env.sh; $x pnv`, TP-613);
