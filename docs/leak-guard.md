@@ -1364,6 +1364,9 @@ Not covered, by design or by cost:
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
+- a script piped into a shell from a command whose output the guard cannot read (`curl … | bash`),
+  on a line that does not name git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in is
+  checked as a script, and an unreadable pipe on a line that names git or gh denies (CC-1393);
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
   command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
   not tie to git (`source ./env.sh; $x pnv`, TP-613);

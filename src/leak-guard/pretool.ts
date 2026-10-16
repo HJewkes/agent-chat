@@ -1924,7 +1924,8 @@ function checkGhClone(
 
 /**
  * A `-c` string, and every text the shell is fed: a `-c` string or script file may run the rest of
- * stdin too (`bash -c bash`), so piped text is checked whatever the script source (CC-1393).
+ * stdin too (`bash -c bash`), so piped text is checked whatever the script source (CC-1393). A
+ * shell inside the `-c` string reads the line's stdin, which `feeds` has joined the pipe into.
  */
 function checkShell(
   name: string,
@@ -1944,7 +1945,7 @@ function checkShell(
     if (reason !== undefined) return reason
   }
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
-  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, { ...scope, stdin: fed }, depth + 1) : undefined
+  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1) : undefined
 }
 
 /** The gh args `gh-write <gh-args...>` hands gh: commander drops only the first `--` and keeps the words on both sides. */

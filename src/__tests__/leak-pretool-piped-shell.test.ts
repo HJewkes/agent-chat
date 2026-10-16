@@ -33,13 +33,13 @@ const BYPASSES: [string, string][] = [
   [`printf '${PUSH}\\n' | bash`, REASONS.noVerify],
   [`echo "${PUSH}" |& bash`, REASONS.noVerify],
   [`echo "${PUSH}" | sudo -n bash`, REASONS.noVerify],
-  // Make passesThrough false: cat and tee hand on unknown text, and these deny as pipedScript.
+  // Make passesThrough false for cat: cat hands on unknown text, and these deny as pipedScript.
   [`echo "${PUSH}" | cat | sh`, REASONS.noVerify],
-  [`echo "${PUSH}" | tee /dev/null | bash`, REASONS.noVerify],
   [`cat <<'EOF' | bash\n${PUSH}\nEOF`, REASONS.noVerify],
-  // Pass the -c string `{ ...scope }` instead of `stdin: fed`: the inner shell reads nothing.
+  [`echo "${PUSH}" | tee /dev/null | bash`, REASONS.noVerify],
   [`echo "${PUSH}" | bash -c 'cat | bash'`, REASONS.noVerify],
-  // Feed a group only its first command (feeds returns scope.stdin): bash inside the group allows.
+  // Stop feeds joining the pipe into the line's stdin: a shell in a group or a -c string reads nothing.
+  [`printf '%s\\n' "${PUSH}" | bash -c bash`, REASONS.pipedScript],
   [`echo "${PUSH}" | { true; bash; }`, REASONS.noVerify],
   [`echo "${PUSH}" | (true; bash)`, REASONS.pipedScript],
   // Drop `prev.nested` in pipeFeed: the guard reads only `echo hi` from the subshell.
