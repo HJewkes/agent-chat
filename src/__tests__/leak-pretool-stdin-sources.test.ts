@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 import { fakeGitShells } from './helpers/fake-git-shells.js'
@@ -76,6 +77,15 @@ const BYPASSES: [string, string, string[]][] = [
   [`bash -c 'exec <push.sh; bash'`, REASONS.pipedScript, BOTH],
   // Gate eval only on namesGit again: a line read from a file the guard cannot read runs.
   [`while read -r l; do eval "$l"; done < push.sh`, REASONS.hiddenScript, BOTH],
+  // Mark a word LIVE at a `)` followed by `)`, as if it named a function: every nested row allows.
+  ...['bash', 'sh', 'zsh', 'dash'].flatMap(sh =>
+    [
+      [`echo "${PUSH}" | ( ( ${sh} ) )`, REASONS.pipedScript],
+      [`echo "${PUSH}" | ( (${sh}) )`, REASONS.pipedScript],
+      [`echo "${PUSH}" | ( true; ( ${sh} ) )`, REASONS.pipedScript],
+      [`( ( ${sh} <<< "${PUSH}" ) )`, REASONS.noVerify],
+    ].map(([src, why]): [string, string, string[]] => [src, why, fs.existsSync(`/bin/${sh}`) ? BOTH : []]),
+  ),
 ]
 
 // Each row's mutation: deny every indirect feed, or deny any redirect on a line that names git.
@@ -94,6 +104,8 @@ const BENIGN: [string, RegExp][] = [
   [`bash -c "read x; echo \\$x" <<< "$HOME"`, /^$/],
   [`echo hi | bash -c bash`, /^$/],
   [`git log --oneline | head -3`, /^log --oneline$/],
+  [`f() ( bash ); git status`, /^status$/],
+  [`( ( echo hi ) ); git status`, /^status$/],
 ]
 
 describe('checkCommand on every stdin a shell reads its script from', () => {

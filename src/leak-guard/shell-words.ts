@@ -610,7 +610,7 @@ class ShellLexer {
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1
-    if (defined >= 0 && this.emptyParens()) this.cur.marked[defined] += LIVE
+    if (c === '(' && defined >= 0 && this.emptyParens()) this.cur.marked[defined] += LIVE
     if (c === '(' && kind === 'function') this.cur.defines = this.cur.words.at(-1)
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
