@@ -1368,10 +1368,26 @@ Not covered, by design or by cost:
   on a line that cannot reach git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in,
   and a quoted heredoc, is checked as a script. A pipe the guard cannot read, a heredoc or
   here-string the shell expands, and a `<` redirect are unreadable: a shell that runs one as its
-  script denies on a line that may reach git or gh (as for command starts above) (CC-1393).
+  script denies on a line that may reach git or gh (as for command starts above) (CC-1393). That
+  holds for a redirect on the shell command itself (`bash < file`, `bash 0< file`,
+  `<file bash`), not for an `exec` redirect earlier on the line (see the known gaps below).
+  A heredoc whose body expands a variable the line itself assigns, fed to a shell
+  (`N=3; bash <<EOF`, `echo $N`, `EOF`), is denied (pipedScript) even when harmless; quoting the
+  delimiter (`<<'EOF'`) avoids it.
   Every later shell on the line may read that text, so nested heredocs check it again at each
   level; past 64 such checks across the line, a line that may reach git or gh (as for command
   starts above) denies and any other line skips the rest;
+- text written to a file and then run (`printf … > f; bash f`), CC-1399; and encoded text the
+  guard cannot decode, such as printf escapes, `base64 -d` or `xxd -r` piped to a shell;
+- known gaps (CC-1408), each a shell that reads a script the guard does not follow. CC-1408
+  closes them:
+  - stdin from an earlier `exec` redirect: `exec < file; bash`, `exec 0<<<TEXT; bash`, or
+    `exec <<E`, the body and `E`, then `bash`;
+  - a redirect or heredoc on a compound command: `{ bash; } <<E`, `( bash ) < file`,
+    `while read -r l; do bash; done <<E`;
+  - `source /dev/stdin` and `. /dev/stdin` fed by a pipe;
+  - a `-c` shell whose string runs another shell, which inherits the outer shell's own expanded
+    heredoc, here-string or redirect: `bash -c bash <<EOF` with an expansion in the body;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
   command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
   not tie to git (`source ./env.sh; $x pnv`, TP-613);
