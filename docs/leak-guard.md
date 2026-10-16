@@ -1366,7 +1366,10 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - a script piped into a shell from a command whose output the guard cannot read (`curl … | bash`),
   on a line that does not name git or gh. Text a plain `echo`, `printf`, `cat` or `tee` pipes in is
-  checked as a script, and an unreadable pipe on a line that names git or gh denies (CC-1393);
+  checked as a script, and an unreadable pipe on a line that names git or gh denies (CC-1393).
+  Every later shell on the line may read that text, so nested heredocs check it again at each
+  level; past 64 such checks across the line, a line that may reach git or gh (as for command
+  starts above) denies and any other line skips the rest;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
   command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
   not tie to git (`source ./env.sh; $x pnv`, TP-613);

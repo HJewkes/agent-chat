@@ -72,6 +72,49 @@ describe('checkCommand on text a shell reads as a script', () => {
   })
 })
 
+/** `depth` heredocs, each piped into a shell that `fanOut` runs `k` times around the next. */
+function nestedFeeds(depth: number, k: number, fanOut: (shells: string) => string, tail: string): string {
+  let inner = 'true'
+  for (let level = 1; level <= depth; level++) {
+    inner = `cat <<E${level} | ${fanOut(Array(k).fill('bash').join('; '))}\n${inner}\nE${level}`
+  }
+  return `${inner}${tail}`
+}
+
+const timed = (src: string): { reason: string | undefined; ms: number } => {
+  const start = performance.now()
+  const reason = checkCommand(src, ctx())
+  return { reason, ms: performance.now() - start }
+}
+
+// Each later shell on the line re-reads every fed text, k^depth checks in all: 42 s for the first
+// row without the line's fed-check budget, past the hook's 12 s deadline where it allows. Mutation:
+// drop the budget in checkFed, and these rows time out.
+describe('checkCommand on fed text that fans out', () => {
+  const ROWS: [string, (shells: string) => string][] = [
+    ['`;`-separated shells', shells => shells],
+    ['a `{ …; }` group', shells => `{ ${shells}; }`],
+  ]
+
+  it.each(ROWS)(
+    'denies a push after nested heredocs into %s',
+    (_, fanOut) => {
+      const { reason, ms } = timed(nestedFeeds(6, 12, fanOut, `\n${PUSH}`))
+
+      expect(reason).toBe(REASONS.pipedScript)
+      expect(ms).toBeLessThan(2_000)
+    },
+    5_000,
+  )
+
+  it('allows the same fan-out on a line that cannot reach git', () => {
+    const { reason, ms } = timed(nestedFeeds(6, 12, shells => shells, '\ntrue'))
+
+    expect(reason).toBeUndefined()
+    expect(ms).toBeLessThan(2_000)
+  }, 5_000)
+})
+
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-pretool-piped-')))
 const BIN = path.join(ROOT, 'bin')
 const RECORD = path.join(ROOT, 'git-calls')

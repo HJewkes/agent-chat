@@ -150,6 +150,8 @@ interface Scope {
   stdin: Feed
   /** What this command reads on stdin. */
   fed: Feed
+  /** Fed texts the whole call may still check; nested shells draw on the same budget (CC-1393). */
+  fedChecks: { left: number }
 }
 
 const UNSURE = Symbol('unsure')
@@ -164,6 +166,8 @@ const HEREDOC_POST =
 const MAX_DEPTH = 6
 const MAX_ALIASES = 4
 const MAX_HIDDEN_STARTS = 64
+// A pipe's text carries to every later shell on the line, so nested heredocs re-check it k^depth times.
+const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
@@ -1941,11 +1945,23 @@ function checkShell(
     const { from } = readShellCall(name, marked, assigns).script
     if (scope.namesGit && (from === 'stdin' || from === 'hidden')) return REASONS.pipedScript
   } else {
-    const reason = firstReason(fed.texts, text => checkAt(text, ctx, { ...scope, stdin: NOTHING }, depth + 1))
+    const reason = checkFed(fed.texts, ctx, scope, depth)
     if (reason !== undefined) return reason
   }
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
   return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1) : undefined
+}
+
+/** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
+function checkFed(
+  texts: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  scope.fedChecks.left -= texts.length
+  if (scope.fedChecks.left < 0) return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  return firstReason(texts, text => checkAt(text, ctx, { ...scope, stdin: NOTHING }, depth + 1))
 }
 
 /** The gh args `gh-write <gh-args...>` hands gh: commander drops only the first `--` and keeps the words on both sides. */
@@ -2603,6 +2619,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     line: command,
     gitParams: [],
     hiddenStarts: { left: MAX_HIDDEN_STARTS },
+    fedChecks: { left: MAX_FED_CHECKS },
     stdin: NOTHING,
     fed: NOTHING,
   }
