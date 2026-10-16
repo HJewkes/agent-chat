@@ -340,6 +340,14 @@ by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, s
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
 
+util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
+are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
+from a table, or an option word the shell expands, denies on a line that may reach git or gh.
+`taskset -p` and `chrt -p` run nothing. An operand the shell expands, or a `chrt` priority that is
+not a number, is read as the command. `flock <file> -c <text>` and `script -c <text>` are checked
+as `sh -c <text>`; `script` without `-c`, and `unshare` with no command, as a shell reading stdin.
+Under `unshare` the directory is unknown, since `-R` and `-w` move it.
+
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`                                                                                                                                          | skips the pre-push hook                                     |
@@ -1343,8 +1351,7 @@ Not covered, by design or by cost:
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
   sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
-  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`,
-  `script -q /dev/null gh ...`. The guard
+  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
@@ -1407,16 +1414,18 @@ Not covered, by design or by cost:
   the line itself assigns, fed to a shell (`N=3; bash <<EOF`, `echo $N`, `EOF`), since the
   guard does not substitute assigned values. Quoting the delimiter (`<<'EOF'`) avoids the last.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412,
-  CC-1414 and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
+  A shell behind `setsid`, `flock`, `taskset`, `chrt`, `script -c` or `unshare` reads the feed
+  as above (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`, `echo P | script -qc bash f`.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412
+  and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
     word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
     variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
     `echo P | $(echo bash)`;
-  - a wrapper the guard does not know (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`,
-    `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
+  - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
   - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and

@@ -36,6 +36,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/live-skill-write.test.ts',
   'src/__tests__/opt-out-kick.test.ts',
   'src/__tests__/leak-pretool-backtick.test.ts',
+  'src/__tests__/leak-pretool-job-wrappers.test.ts',
 ]
 
 /**
