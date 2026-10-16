@@ -228,5 +228,5 @@ export const activeWorkPort = (): number =>
 /** One line per seat tool hook (CC-1056) that failed and was swallowed. */
 export const seatHookLogPath = (): string => path.join(home(), 'seat-hook.log')
 
-/** One line per time the PreToolUse leak guard allowed a call because it crashed or ran out of time (CC-371). */
+/** One line per time the PreToolUse leak guard allowed a call because it crashed (CC-371). */
 export const leakGuardLogPath = (): string => path.join(home(), 'leak-guard.log')

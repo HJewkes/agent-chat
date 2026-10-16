@@ -1398,19 +1398,29 @@ remain the record of anything that got through.
 
 ## Fail-open of the PreToolUse hook (CC-371)
 
-The hook allows a call it cannot decide when it crashes on input that does not mention git or
-gh, or when it runs past its 12 s deadline. A crash on a call that mentions git or gh is a deny,
-not a fail-open. That holds for a crash in the worker thread that runs the decision, such as a
-worker that does not start, as well as for one inside the decision. The deadline sits under the 15 s that Claude Code gives the hook, which would
-kill it without a word. The owner accepts both fail-opens, and each writes exactly one line to
-`leak-guard.log` in the agent-chat home:
+The hook allows a call it cannot decide only when it crashes on input that does not mention git
+or gh. A crash on a call that mentions git or gh is a deny, not a fail-open. That holds for a
+crash in the worker thread that runs the decision, such as a worker that does not start, as well
+as for one inside the decision. The owner accepts that fail-open, and it writes exactly one line
+to `leak-guard.log` in the agent-chat home:
 
 ```
 <ISO time> leak-guard pretool fail-open: crash (<error class>)
-<ISO time> leak-guard pretool fail-open: timeout after <elapsed>ms
 ```
 
 The line never holds the command. A log that cannot be written does not change the allow.
+
+### The deadline fails closed (CC-1407)
+
+A check that runs past the hook's 12 s deadline is a deny, whatever the call, and writes no log
+line. The reason tells the agent to split the command into smaller Bash calls. Until CC-1407 the
+hook allowed such a call, so a line padded with a large backtick or `$(...)` body could outrun
+the check and carry `git push --no-verify` into a real shell.
+
+The decision runs in a worker thread, so the deadline timer on the main thread fires even while
+the worker is inside a long synchronous parse. The hook then stops the worker. The deadline sits
+under the 15 s that the hook settings give Claude Code, which would kill the hook without a word.
+A 500 KB padded line is denied in about 12.4 s, node start-up included.
 
 ## The push-time git shim (TP-596)
 
