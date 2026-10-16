@@ -79,12 +79,14 @@ const BYPASSES: [string, string, string[]][] = [
   [`while read -r l; do eval "$l"; done < push.sh`, REASONS.hiddenScript, BOTH],
   // Mark a word LIVE at a `)` followed by `)`, as if it named a function: every nested row allows.
   ...['bash', 'sh', 'zsh', 'dash'].flatMap(sh =>
-    [
-      [`echo "${PUSH}" | ( ( ${sh} ) )`, REASONS.pipedScript],
-      [`echo "${PUSH}" | ( (${sh}) )`, REASONS.pipedScript],
-      [`echo "${PUSH}" | ( true; ( ${sh} ) )`, REASONS.pipedScript],
-      [`( ( ${sh} <<< "${PUSH}" ) )`, REASONS.noVerify],
-    ].map(([src, why]): [string, string, string[]] => [src, why, fs.existsSync(`/bin/${sh}`) ? BOTH : []]),
+    (
+      [
+        [`echo "${PUSH}" | ( ( ${sh} ) )`, REASONS.pipedScript],
+        [`echo "${PUSH}" | ( (${sh}) )`, REASONS.pipedScript],
+        [`echo "${PUSH}" | ( true; ( ${sh} ) )`, REASONS.pipedScript],
+        [`( ( ${sh} <<< "${PUSH}" ) )`, REASONS.noVerify],
+      ] satisfies [string, string][]
+    ).map(([src, why]): [string, string, string[]] => [src, why, fs.existsSync(`/bin/${sh}`) ? BOTH : []]),
   ),
 ]
 
