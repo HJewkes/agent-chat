@@ -66,6 +66,45 @@ KEY is the item's leading id (`TP-487`) or `<section>:<n>` for a numbered item (
 the absolute path of this script, so a seat can run it as printed. The line is left out when
 the install has no `scripts/seat/queue`.
 
+## Backlog
+
+`backlog` keeps seat plan questions outside the 5,000-byte queue cap (CC-760, CC-765): one YAML
+record per question in `<autonomy>/backlog/<seat>/<id>.yml`, while the queue keeps a numbered
+one-line pointer such as `131. tc-131 (one-way): <decision>. backlog/titan-coord/tc-131.yml`.
+It needs `node` and the `yaml` package from this checkout's `node_modules`.
+
+| Field                        | Content                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                         | `tc-131` or `tc-130.2`: at most 3 lowercase letters, a number, an optional dotted sub-id                                             |
+| `seat`, `initiative`, `task` | Owning seat; initiative and task id (`CC-760`) that `task-note` writes to                                                            |
+| `decision`, `now`            | What is being decided, in one sentence; the current value or behaviour, or `none`                                                    |
+| `options[]`                  | `{key, proposed}`, at least two; `proposed` is the proposal text, never a bare heading                                               |
+| `trade_off`                  | Cost of each option that is not recommended                                                                                          |
+| `door`, `why_owner`          | `two-way` or `one-way`; a one-way door needs the charter section 10 reason                                                           |
+| `recommended`                | `{option, reason}`; `option` is one of the keys                                                                                      |
+| `opened_at`                  | ISO time that starts the 12 h clock; `add` stamps it when the draft has none                                                         |
+| `visual`                     | `null` or `{captures: [{key, file, label}]}`; `file` is a relative path under `<id>/img/` beside the record, with no `..` or symlink |
+| `pr`                         | Optional `{url, summary, gate_reason}`, all three                                                                                    |
+| `links`, `blocks`            | Optional lists of references                                                                                                         |
+| `status`                     | `open`, `deferred`, `decided`, `escalated`, `answered` or `closed`                                                                   |
+| `resolution`                 | `{by, answer, comment, cite, confidence, at}`, written by `resolve`                                                                  |
+| `deferred_until`             | Set on a Defer; `due` reopens the record after it                                                                                    |
+
+- `add <seat> <file>`: lint, copy the record and its captures into place, set `open`.
+- `lint <file...>`: print each rule a record breaks; exit 1 if any record fails.
+- `list [<seat>] [--status S]`: one tab-separated line per record.
+- `due`: reopen deferred records past `deferred_until` with the clock restarted, then print the
+  path of every `open` two-way record at least 12 h old. One-way records never appear. The seat
+  puts the list in the decider brief.
+- `resolve <id> --by decider --answer K --cite C --confidence X` sets `decided`; with no
+  precedent the decider runs `resolve <id> --escalate --answer K --rationale R` (`escalated`).
+  Both append a line to the task's notes through `task-note`.
+- `close <id>`: move the record to `<seat>/closed/` and run `queue <seat> done <id>`.
+
+The root is `AUTONOMY_ROOT`, else `$ACTIVE_ROOT/claude-channels/sources/autonomy`; with neither,
+`backlog` exits 2. `BACKLOG_NOW` overrides the clock, and `BACKLOG_TASK_NOTE` and `BACKLOG_QUEUE`
+override the sibling scripts, for tests.
+
 ## Retired
 
 - `merge-check` (CC-1031): replaced by Shepherd's conflict check and carry-merge
@@ -83,5 +122,6 @@ the install has no `scripts/seat/queue`.
   (CC-1058), which stamps the line with the machine clock. Removal itself stays with CC-1021 /
   TP-1570.
 - `queue`: stays while seats keep a queue file. `agent-chat seats boot` names it (below).
+- `backlog`: stays beside `queue`, and retires with it when TP-1570 moves seat queues.
 - `task-note`: retires when `active-work task edit --append` is lock-safe.
 - `scorecard`: no TS home. It stays until a TP task (TP-1537 or a new one) ports its rows.

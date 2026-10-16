@@ -1,0 +1,3 @@
+#!/bin/sh
+# CC-765: seat plan-question backlog; see backlog.mjs and README.md "Backlog".
+exec node "$(dirname "$0")/backlog.mjs" "$@"
