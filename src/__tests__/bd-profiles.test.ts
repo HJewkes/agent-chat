@@ -61,6 +61,72 @@ const WORKER_NEEDS = [
   'Bash(gh pr checks:*)',
 ]
 
+/**
+ * Claude Code's Bash rule matching, as far as these profiles rely on it: a rule ending `:*` is a
+ * prefix that must be followed by a word boundary (`git push --force-with-lease:*` misses
+ * `--force-with-lease=x`, the CC-1413 slip); any other `*` is a glob over any characters.
+ * Compound commands are not modelled. The boundary rule is observed only through the CC-1413 slip;
+ * mid-pattern globs are taken from Claude Code's documented rule syntax and not exercised live.
+ */
+function ruleMatches(rule: string, command: string): boolean {
+  const body = /^Bash\((.*)\)$/.exec(rule)?.[1]
+  if (body === undefined) return false
+  if (body.endsWith(':*')) {
+    const prefix = body.slice(0, -2)
+    return command === prefix || command.startsWith(`${prefix} `)
+  }
+  const glob = body.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`^${glob.join('.*')}$`).test(command)
+}
+
+const isDenied = (command: string, denied: string[]): boolean =>
+  denied.some(rule => ruleMatches(rule, command))
+
+const GIT_FORMS = ['git push', 'git -C /tmp/work push', 'git -c k=v push']
+
+const FORCE_SPELLINGS = [
+  '--force-with-lease=agent-chat/x origin agent-chat/x',
+  '--force-with-lease=agent-chat/x:0123abc origin agent-chat/x',
+  'origin --force-with-lease=agent-chat/x agent-chat/x',
+  'origin --force-with-lease=agent-chat/x:0123abc agent-chat/x',
+  '-u origin --force-with-lease=agent-chat/x:0123abc agent-chat/x',
+  '--set-upstream origin --force-with-lease=agent-chat/x agent-chat/x',
+  'origin agent-chat/x --force-with-lease=agent-chat/x:0123abc',
+  '--force-if-includes origin agent-chat/x',
+  'origin --force-if-includes agent-chat/x',
+  '-u origin --force-if-includes agent-chat/x',
+  'origin agent-chat/x --force-if-includes',
+  '--mirror origin',
+  'origin --mirror',
+  '-u origin --mirror',
+  '-fu origin agent-chat/x',
+  '-uf origin agent-chat/x',
+  '-vf origin agent-chat/x',
+  '-qf origin agent-chat/x',
+  '-nf origin agent-chat/x',
+  'origin -fu agent-chat/x',
+  '-u origin -vf agent-chat/x',
+  'origin agent-chat/x -f',
+  'origin agent-chat/x -fu',
+  'origin +HEAD:agent-chat/x',
+  'origin +agent-chat/x',
+  '-u origin +agent-chat/x',
+  '--set-upstream origin +HEAD:agent-chat/x',
+  'origin agent-chat/x +agent-chat/y',
+  'origin agent-chat/x --force',
+  'origin agent-chat/x --force --no-verify',
+  'origin agent-chat/x --force-with-lease',
+  'origin agent-chat/x --force-with-lease --no-verify',
+]
+
+const LEGITIMATE_PUSHES = [
+  'origin agent-chat/x',
+  '-u origin agent-chat/x',
+  '--set-upstream origin agent-chat/x',
+  'origin HEAD:agent-chat/x',
+  'origin agent-chat/fix-force-with-lease',
+]
+
 describe.each(WORKER_PROFILES)('the %s profile', name => {
   const profile = loadBdProfile(name)
   const denied = profile.disallowedTools ?? []
@@ -90,6 +156,14 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
         'Bash(git push --force-with-lease:*)',
       ]),
     )
+  })
+
+  it.each(FORCE_SPELLINGS)('denies the force push `git push %s`', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
+  it.each(LEGITIMATE_PUSHES)('still allows `git push %s`', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(false)
   })
 
   it('denies deleting a remote branch', () => {
