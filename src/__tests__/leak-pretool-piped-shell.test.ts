@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
+import { fakeGitShells } from './helpers/fake-git-shells.js'
 
 /**
  * Text piped or fed into a shell is a script (CC-1393). Real shells with a fake `git` first on
@@ -127,45 +126,18 @@ describe('checkCommand on fed text that fans out', () => {
   }, 5_000)
 })
 
-const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-pretool-piped-')))
-const BIN = path.join(ROOT, 'bin')
-const RECORD = path.join(ROOT, 'git-calls')
-const ENV = { PATH: `${BIN}:/usr/bin:/bin`, HOME: ROOT, RECORD }
-
-fs.mkdirSync(BIN)
-fs.writeFileSync(path.join(BIN, 'git'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$RECORD"\n', { mode: 0o755 })
+const real = fakeGitShells('agent-chat-pretool-piped-', PUSH)
+const { shells: SHELLS, hasZsh: HAS_ZSH, gitCalls } = real
 // sudo must not prompt or escalate here: the fake runs its command as the test user.
-fs.writeFileSync(path.join(BIN, 'sudo'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 })
-fs.writeFileSync(path.join(ROOT, 'push.sh'), `${PUSH}\n`)
+fs.writeFileSync(path.join(real.bin, 'sudo'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 })
 
-afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }))
-
-const SHELLS: [string, string[]][] = (
-  [
-    ['/bin/bash', ['--noprofile', '--norc']],
-    ['/bin/zsh', ['-f']],
-  ] satisfies [string, string[]][]
-).filter(([shell]) => fs.existsSync(shell))
-const HAS_ZSH = SHELLS.some(([shell]) => shell.endsWith('zsh'))
-
-/** The git calls `shell -c src` made, one per line. */
-function gitCalls(shell: string, args: string[], src: string): string {
-  fs.rmSync(RECORD, { force: true })
-  try {
-    execFileSync(shell, [...args, '-c', src], { env: ENV, cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'] })
-  } catch {
-    // A failing pipeline still counts by what it ran.
-  }
-  return fs.existsSync(RECORD) ? fs.readFileSync(RECORD, 'utf8').trim() : ''
-}
+afterAll(real.cleanup)
 
 const needsZsh = (src: string): boolean => src.includes('zsh') || src.includes('\\x79')
 
 describe.skipIf(SHELLS.length === 0)('real shells run what the guard reads from a pipe', () => {
   it('finds the fake git first on PATH', () => {
-    expect(execFileSync('/bin/sh', ['-c', 'command -v git'], { env: ENV }).toString().trim()).toBe(
-      path.join(BIN, 'git'),
-    )
+    expect(gitCalls('/bin/sh', [], 'git found')).toBe('found')
   })
 
   it.each(BYPASSES.filter(([src]) => HAS_ZSH || !needsZsh(src)))('a shell pushes for %j', src => {

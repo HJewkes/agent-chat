@@ -70,7 +70,17 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
-import { joinFeeds, NOTHING, ownFeed, pipeFeed, stageOutput, type Feed } from './piped-shell.js'
+import {
+  indirectFeed,
+  isNothing,
+  joinFeeds,
+  mayReadStdin,
+  NOTHING,
+  ownFeed,
+  pipeFeed,
+  stageOutput,
+  type Feed,
+} from './piped-shell.js'
 import { readShellCall } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -1946,7 +1956,9 @@ function checkShell(
   if (reason !== undefined) return reason
   const args = call.marked.map(unmark)
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
-  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1) : undefined
+  // A shell the `-c` string runs reads this shell's own stdin (CC-1408).
+  const inner = fed === scope.stdin ? scope : { ...scope, stdin: fed }
+  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, inner, depth + 1) : undefined
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */
@@ -1969,9 +1981,24 @@ function checkUnknownFeed(
 ): string | undefined {
   const written = heredoc === undefined ? undefined : checkFed([heredoc], ctx, scope, depth)
   if (written !== undefined) return written
-  const { from } = readShellCall(name, marked, assigns).script
-  const fromStdin = from === 'stdin' || from === 'hidden'
-  return fromStdin && lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  const { script } = readShellCall(name, marked, assigns)
+  const fromStdin = script.from === 'stdin' || script.from === 'hidden'
+  if (fromStdin || (script.from === 'file' && mayReadStdin(marked[script.at])))
+    return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  return undefined
+}
+
+/** `source` or `.` of a stdin path runs what it is fed as a script, like a shell reading stdin (CC-1408). */
+function checkSourcedStdin(
+  file: string | undefined,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const fed = scope.fed
+  if (!mayReadStdin(file) || isNothing(fed)) return undefined
+  if (fed !== 'unknown') return checkFed(fed.texts, ctx, scope, depth)
+  return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
 }
 
 /** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
@@ -2080,7 +2107,10 @@ function firstReason<T>(items: readonly T[], check: (item: T) => string | undefi
   return undefined
 }
 
-/** Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh. */
+/**
+ * Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh,
+ * or that may reach either while stdin is fed text the guard cannot read, which `read` may hand on (CC-1408).
+ */
 function checkEval(
   marked: readonly string[],
   cmd: SimpleCommand,
@@ -2089,7 +2119,8 @@ function checkEval(
   depth: number,
 ): string | undefined {
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  if (args.includes(undefined) && scope.namesGit) return REASONS.hiddenScript
+  const fedUnread = scope.stdin === 'unknown' && lineMayReachGit(scope, ctx)
+  if (args.includes(undefined) && (scope.namesGit || fedUnread)) return REASONS.hiddenScript
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
@@ -2131,6 +2162,8 @@ function checkSimple(
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
+  const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked[0], ctx, at, depth) : undefined
+  if (sourced !== undefined) return sourced
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh')
@@ -2608,8 +2641,11 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
+  const cmds = parseShell(command)
+  const indirect = indirectFeed(cmds)
+  if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
-  for (const cmd of parseShell(command)) {
+  for (const cmd of cmds) {
     at = settle(cmd, at)
     const fed = feeds(cmd, prev, at)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }

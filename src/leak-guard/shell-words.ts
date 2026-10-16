@@ -33,6 +33,8 @@ export interface SimpleCommand {
   writes: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
+  /** The function name a `name ()` definition gives the body after it. */
+  defines?: string | undefined
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
   after: string
@@ -609,6 +611,7 @@ class ShellLexer {
     this.endWord()
     const defined = this.cur.marked.length - 1
     if (defined >= 0 && this.emptyParens()) this.cur.marked[defined] += LIVE
+    if (c === '(' && kind === 'function') this.cur.defines = this.cur.words.at(-1)
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     if (c === '(') this.parens.push(kind)
@@ -1007,6 +1010,16 @@ class ShellLexer {
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
+  /**
+   * A redirect of stdin after a subshell's `)`, or with no command at all, feeds what the group runs.
+   * It is kept as a `)` command, as `}`, `done` and `fi` keep theirs, so the guard sees the feed (CC-1408).
+   */
+  private readsStdin(cmd: SimpleCommand): boolean {
+    return (
+      cmd.stdinLive || cmd.stdin !== undefined || this.heredocs.some(doc => doc.target === cmd && !doc.aside)
+    )
+  }
+
   /** zsh feeds a command every heredoc and here-string it is given and bash only the last, so a second one is unsure. */
   private feed(target: SimpleCommand, text: string, live: boolean): void {
     target.stdinLive ||= live || target.stdin !== undefined
@@ -1015,15 +1028,19 @@ class ShellLexer {
 
   private endCommand(): void {
     this.endWord()
-    if (this.cur.words.length === 0) appendAll(this.carried, this.cur.writes)
-    else {
-      this.cur.writes = [...this.carried.splice(0), ...this.cur.writes]
-      this.cur.before = this.joiner
-      this.joiner = ''
-      this.last = this.cur
-      this.out.push(this.cur)
-    }
+    const bare = this.cur.words.length === 0
+    if (bare) appendAll(this.carried, this.cur.writes)
+    if (!bare || this.readsStdin(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
+  }
+
+  private keep(cmd: SimpleCommand, bare: boolean): void {
+    if (bare) Object.assign(cmd, { words: [')'], marked: [')'], writes: [] })
+    else cmd.writes = [...this.carried.splice(0), ...cmd.writes]
+    cmd.before = this.joiner
+    this.joiner = ''
+    this.last = cmd
+    this.out.push(cmd)
   }
 
   private readHeredocs(): void {
