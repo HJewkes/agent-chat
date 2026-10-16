@@ -243,6 +243,19 @@ const blur = (cmd: SimpleCommand): void => {
   cmd.stdinLive = true
 }
 
+/** The backtick that closes the one at `at`: the shell skips each backslash pair while it looks (CC-1350). -1 if none. */
+function backtickEnd(src: string, at: number): number {
+  for (let i = at + 1; i < src.length; i++) {
+    if (src[i] === '\\') i++
+    else if (src[i] === '`') return i
+  }
+  return -1
+}
+
+/** A backtick body as the shell parses it: the backslash before `$`, `` ` `` and `\`, and `"` inside double quotes, is dropped. */
+const backtickBody = (body: string, quoted: boolean): string =>
+  body.replace(quoted ? /\\([$`\\"])/g : /\\([$`\\])/g, '$1')
+
 const ANSI_C: Record<string, string> = {
   a: '\x07',
   b: '\b',
@@ -974,8 +987,11 @@ class ShellLexer {
 
   private backtick(quoted: boolean): string {
     const start = this.pos
-    const inner = this.until('`')
-    const lexer = new ShellLexer(inner, 0, true, this.budget)
+    const end = backtickEnd(this.src, start)
+    const stop = end < 0 ? this.src.length : end
+    const inner = this.src.slice(start + 1, stop)
+    this.pos = stop + 1
+    const lexer = new ShellLexer(backtickBody(inner, quoted), 0, true, this.budget)
     const commands = lexer.run()
     if (lexer.mark !== undefined) this.unsettled()
     if (inner.includes('\\')) commands.forEach(blur)
@@ -1123,7 +1139,7 @@ function skipQuoted(src: string, at: number, limits: Limits): Step | undefined {
     const inner = arithSpan(src, at + 1, '"', limits)
     return inner && { next: inner.end + 1, text: `"${inner.text}"` }
   }
-  const close = c === '$' ? nestedClose(src, at) : src.indexOf(c === '`' ? '`' : "'", at + 1)
+  const close = c === '$' ? nestedClose(src, at) : c === '`' ? backtickEnd(src, at) : src.indexOf("'", at + 1)
   if (close < 0) return undefined
   return { next: close + 1, text: c === '`' ? ' ' : src.slice(at, close + 1) }
 }

@@ -542,7 +542,9 @@ second one for the work-tree top. The guard does not skip network verbs, and eac
 in a `!` body is looked up again.
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
-heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. A gh called by
+heredoc fed to a shell. It reads a backtick body as the shell does, skipping each backslash pair to
+find the closing backtick and dropping the backslash before `$`, a backtick and `\`, so a nested
+`` \`...\` `` substitution is seen (CC-1350). `agent-chat gh-write -- <gh args>` is checked like `gh`. A gh called by
 path, such as `/opt/homebrew/bin/gh` or a `$GH` that expands to one, is denied outright: it skips the
 agent's gh shim, and gh-write is the only write path (CC-456). `git push -n` is
 `--dry-run`, which pushes nothing, so it is allowed. `git commit --no-verify` is allowed too:
@@ -1366,9 +1368,10 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell, or `source`/`.` of a stdin path, that reads its script from any stdin
-  source in scope, on a line that may reach git or gh (as for command starts above). The guard
-  reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`; `SHELLS` in
+  `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
+  stdin source in scope, on a line that may reach git or gh (as for command starts above). The
+  guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
   - `echo P | bash`, `sh`, `sh -s`, `zsh -f`, `|&`, and `sudo -n bash`; `printf` text as well;
   - `cat` and `tee` passed through in between: `echo P | cat | sh`, `echo P | tee /dev/null | bash`;
   - a quoted heredoc piped in (`cat <<'EOF' | bash`) and a here-string (`bash <<< 'P'`);
@@ -1404,14 +1407,24 @@ Not covered, by design or by cost:
   the line itself assigns, fed to a shell (`N=3; bash <<EOF`, `echo $N`, `EOF`), since the
   guard does not substitute assigned values. Quoting the delimiter (`<<'EOF'`) avoids the last.
 
-  Not covered: a shell the feed reaches another way. Each is still allowed, and CC-1411 and
-  CC-1412 track them:
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412,
+  CC-1414 and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
-  - a command word filled by `read` (CC-1411), which bash word-splits and runs:
-    `read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`;
+  - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
+    word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
+    variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
+    `echo P | $(echo bash)`;
+  - a wrapper the guard does not know (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`,
+    `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
+  - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
+    `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
+  - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and
+    real zsh both run the push;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
+  - more generally: any shell the feed reaches through a command word, wrapper or shell name the
+    guard does not resolve is not covered, whether or not it is listed above.
 
 - text written to a file and then run (`printf … > f; bash f`), CC-1399; and encoded text the
   guard cannot decode, such as printf escapes, `base64 -d` or `xxd -r` piped to a shell;
@@ -1447,19 +1460,29 @@ remain the record of anything that got through.
 
 ## Fail-open of the PreToolUse hook (CC-371)
 
-The hook allows a call it cannot decide when it crashes on input that does not mention git or
-gh, or when it runs past its 12 s deadline. A crash on a call that mentions git or gh is a deny,
-not a fail-open. That holds for a crash in the worker thread that runs the decision, such as a
-worker that does not start, as well as for one inside the decision. The deadline sits under the 15 s that Claude Code gives the hook, which would
-kill it without a word. The owner accepts both fail-opens, and each writes exactly one line to
-`leak-guard.log` in the agent-chat home:
+The hook allows a call it cannot decide only when it crashes on input that does not mention git
+or gh. A crash on a call that mentions git or gh is a deny, not a fail-open. That holds for a
+crash in the worker thread that runs the decision, such as a worker that does not start, as well
+as for one inside the decision. The owner accepts that fail-open, and it writes exactly one line
+to `leak-guard.log` in the agent-chat home:
 
 ```
 <ISO time> leak-guard pretool fail-open: crash (<error class>)
-<ISO time> leak-guard pretool fail-open: timeout after <elapsed>ms
 ```
 
 The line never holds the command. A log that cannot be written does not change the allow.
+
+### The deadline fails closed (CC-1407)
+
+A check that runs past the hook's 12 s deadline is a deny, whatever the call, and writes no log
+line. The reason tells the agent to split the command into smaller Bash calls. Until CC-1407 the
+hook allowed such a call, so a line padded with a large backtick or `$(...)` body could outrun
+the check and carry `git push --no-verify` into a real shell.
+
+The decision runs in a worker thread, so the deadline timer on the main thread fires even while
+the worker is inside a long synchronous parse. The hook then stops the worker. The deadline sits
+under the 15 s that the hook settings give Claude Code, which would kill the hook without a word.
+A 500 KB padded line is denied in about 12.4 s, node start-up included.
 
 ## The push-time git shim (TP-596)
 
