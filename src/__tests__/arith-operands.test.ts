@@ -444,6 +444,15 @@ describe('arithSubstitutions bounds the work parseShell does', () => {
     expect(bodies).toEqual(['el'])
   })
 
+  // A window cut on a `)` inside a quote in the body leaves a raw that ends in `)` but is not closed.
+  it.each([256, 1024, 4096])('a window of %i cut on a quoted ) still reports the rest of the body', size => {
+    const pad = 'a'.repeat(size - 1 - '$(echo "'.length)
+    const quotedWord = timed(`declare -i x; x='y[$(echo "${pad})"; touch /tmp/marker)]'`).bodies
+    const heredocBody = timed(heredoc(`$(echo "${pad})"; touch /tmp/marker)`)).bodies
+    expect(quotedWord.some(body => body.includes('touch /tmp/marker'))).toBe(true)
+    expect(heredocBody.some(body => body.includes('touch /tmp/marker'))).toBe(true)
+  })
+
   it('an opener its largest window cannot close is the sentinel', () => {
     const { bodies } = timed(heredoc(`$(${'x('.repeat(4096)}`))
     expect(bodies.some(sentinel)).toBe(true)

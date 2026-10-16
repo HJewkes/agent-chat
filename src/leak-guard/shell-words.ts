@@ -16,6 +16,8 @@ export interface Substitution {
   commands: SimpleCommand[]
   /** Inside double quotes, so the shell does not split or glob what it prints. */
   quoted: boolean
+  /** The lexer consumed its closing `)` or backtick; false when the input ran out first, so `raw` is cut short. */
+  closed: boolean
 }
 
 /** One simple command, its words with quotes removed, and any heredoc or here-string fed to it. */
@@ -347,7 +349,8 @@ class ShellLexer {
     }
     const span = this.src.slice(this.pos, end)
     if (SPAN_RUNS.test(span)) {
-      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true, this.budget).run(), false)
+      const commands = new ShellLexer(span.slice(1, -1), 0, true, this.budget).run()
+      this.substituted(span, commands, { quoted: false, closed: true })
     }
     this.split(span)
     this.pos = end
@@ -570,7 +573,7 @@ class ShellLexer {
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
     if (inner.mark !== undefined) this.unsettled()
-    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
+    return this.substituted(this.src.slice(start, this.pos), commands, { quoted, closed: inner.closed })
   }
 
   /** A `$((` is arithmetic when bash finds its `))`; `$((a) )` is a substitution of a subshell. */
@@ -582,17 +585,22 @@ class ShellLexer {
 
   private backtick(quoted: boolean): string {
     const start = this.pos
+    const closed = this.src.indexOf('`', this.pos + 1) >= 0
     const inner = this.until('`')
     const lexer = new ShellLexer(inner, 0, true, this.budget)
     const commands = lexer.run()
     if (lexer.mark !== undefined) this.unsettled()
     if (inner.includes('\\')) commands.forEach(blur)
-    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
+    return this.substituted(this.src.slice(start, this.pos), commands, { quoted, closed })
   }
 
-  private substituted(raw: string, commands: SimpleCommand[], quoted: boolean): string {
+  private substituted(
+    raw: string,
+    commands: SimpleCommand[],
+    flags: { quoted: boolean; closed: boolean },
+  ): string {
     this.out.push(...commands)
-    this.cur.substitutions.push({ raw, commands, quoted })
+    this.cur.substitutions.push({ raw, commands, ...flags })
     return raw
   }
 

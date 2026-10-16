@@ -331,16 +331,14 @@ const PARSE_WINDOWS = [256, 1024, 4096]
 const DEADLINE_MS = 1000
 const SUBSTITUTION_OPENER = /\$\(|`/g
 
-// A raw the lexer closed: `$(...)` ends with `)`, a backtick pair with a backtick.
-const closed = (raw: string): boolean => raw.endsWith(')') || (raw.length > 1 && raw.endsWith('`'))
-
 /**
  * Where each outermost `$(`, `$((` or backtick substitution the lexer closes in the window of `plain` from
  * `from` starts, with its exact raw text, from one `parseShell` of that window, or undefined when it throws.
  * The lexer the guard trusts ends each one, so a `case`, `#` comment or heredoc inside is not cut short. The
- * window starts at an opener, so quote characters in the data before it are not read as quotes; a raw the
- * window cut off is left out, so its opener is read again from its own window. Raws come in source order,
- * so each is found from the end of the one before.
+ * window starts at an opener, so quote characters in the data before it are not read as quotes. Closed is
+ * the lexer's own flag, never the raw's last character: a cut can end on a quoted `)`. A raw that reaches
+ * the edge of a cut window is not trusted either, so its opener is read again from a wider window. Raws
+ * come in source order, so each is found from the end of the one before.
  */
 function windowStarts(plain: string, from: number, size: number): Map<number, string> | undefined {
   const window = plain.slice(from, from + size)
@@ -351,12 +349,14 @@ function windowStarts(plain: string, from: number, size: number): Map<number, st
     return undefined
   }
   const inner = new Set(parsed.flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)))
+  const cut = from + window.length < plain.length
   const starts = new Map<number, string>()
   let cursor = 0
-  for (const { raw } of parsed.filter(cmd => !inner.has(cmd)).flatMap(cmd => cmd.substitutions)) {
+  for (const { raw, closed } of parsed.filter(cmd => !inner.has(cmd)).flatMap(cmd => cmd.substitutions)) {
     const at = window.indexOf(raw, cursor)
     if (at < 0) continue
-    if (closed(raw)) starts.set(from + at, raw)
+    const atEdge = cut && at + raw.length >= window.length
+    if (closed && !atEdge) starts.set(from + at, raw)
     cursor = at + raw.length
   }
   return starts
@@ -426,10 +426,14 @@ function quotedSubstitutions(text: string, read: Read): string[] {
   return bodies
 }
 
-/** Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic. */
+/**
+ * Every quoted substitution body in one command: in each word, its here-string or heredoc, and its arithmetic.
+ * Only a recorded substitution the lexer closed is trusted; one the input cut short is read as an opener.
+ */
 function substitutionsOf(cmd: SimpleCommand, deadline: number): string[] {
   const counts = new Map<string, number>()
-  for (const sub of cmd.substitutions) counts.set(sub.raw, (counts.get(sub.raw) ?? 0) + 1)
+  for (const sub of cmd.substitutions.filter(s => s.closed))
+    counts.set(sub.raw, (counts.get(sub.raw) ?? 0) + 1)
   // A live substitution in an arithmetic body is blanked already, so every one left was quoted.
   const texts = [...cmd.marked, ...(cmd.stdin === undefined ? [] : [cmd.stdin]), ...cmd.arithBodies]
   return texts.flatMap(text => quotedSubstitutions(text, { counts, deadline }))
