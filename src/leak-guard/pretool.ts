@@ -72,6 +72,7 @@ import {
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
+import { envSplitWords } from './env-split.js'
 import {
   expandWord,
   expansionRisk,
@@ -810,7 +811,9 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
     if (split !== undefined) {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
-      const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
+      const value = envSplitWords(split.value)
+      if (value === undefined) return { reason: REASONS.hiddenCommand }
+      const words = [...value, ...args.slice(i + split.width)]
       const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }

@@ -1,7 +1,8 @@
 import { parseTerms } from '@titan-design/egress-scan'
 import { describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
-import { expansionRisk, parseReadings } from '../leak-guard/shell-words.js'
+import { envSplitWords } from '../leak-guard/env-split.js'
+import { expansionRisk, LIVE, parseReadings } from '../leak-guard/shell-words.js'
 
 const ctx: GuardContext = {
   terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
@@ -63,5 +64,37 @@ describe('the bash reading of a line', () => {
     expect(expansionRisk(`echo ${groups} > s`)).toBeUndefined()
     expect(expansionRisk(`echo ${groups} >! s`)).toBe('unreadable')
     expect(expansionRisk(`echo (a) >! s`)).toBeUndefined()
+  })
+})
+
+// env splits a -S value by its own rules, where `>!` and every other shell operator is a plain word:
+// `env -S "git push --repo >! --no-verify origin main"` runs git with `>!` and `--no-verify` as argv.
+describe('an env -S value, which env splits and no shell reads', () => {
+  const SPELLINGS = (value: string): string[] => [
+    `env -S "${value}"`,
+    `env --split-string "${value}"`,
+    `env --split-string="${value}"`,
+  ]
+
+  it.each(
+    [...BANGS, '>', '>>', '>|', '<', '|', ';', '&'].flatMap(op =>
+      SPELLINGS(`git push --repo ${op} --no-verify origin main`),
+    ),
+  )('denies %j, whose split keeps --no-verify', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each(SPELLINGS('git push origin main'))('allows %j', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+
+  it('denies a value env refuses for an unclosed quote', () => {
+    expect(checkCommand(`env -S "git push 'origin main" --no-verify`, ctx)).toBe(REASONS.hiddenCommand)
+  })
+
+  it('splits on blanks, groups quotes, ends at a word-initial # and marks an expansion', () => {
+    expect(envSplitWords(`git  >!\t'a b' "" x#y #c d`)).toEqual(['git', '>!', 'a b', '', 'x#y'])
+    expect(envSplitWords(`a \${X} '\${Y}'`)).toEqual(['a', `${LIVE}\${X}`, '${Y}'])
+    expect(envSplitWords(`a "b`)).toBeUndefined()
   })
 })

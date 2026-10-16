@@ -1257,7 +1257,8 @@ function readLine(src: string): { readings: Reading[]; expansion: ExpansionRisk 
     budget.limits.dialect = 'bash'
     readings.push(readAs(text, budget))
   }
-  return { readings, expansion: readings[0]?.lexer.expansion }
+  // Read after both passes: every lexer reports the budget they share, so this is the worse of the two.
+  return { readings, expansion: readings.at(-1)?.lexer.expansion }
 }
 
 function readAs(text: string, budget: Budget): Reading {
