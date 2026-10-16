@@ -2572,10 +2572,12 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   if (typeof envReason === 'string') return envReason
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
   for (const cmd of parseShell(command)) {
-    at = { ...settle(cmd, at), ...feeds(cmd, prev, at) }
+    at = settle(cmd, at)
+    const fed = feeds(cmd, prev, at)
+    if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
-    prev = { cmd, output: stageOutput(cmd, at.fed) }
+    prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
