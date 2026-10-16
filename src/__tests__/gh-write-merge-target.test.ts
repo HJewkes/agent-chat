@@ -525,7 +525,7 @@ describe('mergeTarget fails closed on a branch-writing surface it cannot show is
     ['an explicit api GET', ['api', '-X', 'GET', 'repos/o/r/contents/merge.md']],
     ['an api GET with fields', ['api', '-X', 'GET', 'repos/o/r/pulls', '-f', 'state=open']],
     ['an api read of merge-upstream docs', ['api', 'repos/o/r/contents/docs/merge-upstream.md']],
-    ['a PR comment', ['api', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=x']],
+    ['a PR comment', ['api', 'repos/o/r/issues/12/comments', '-f', 'body=x']],
     ['a review', ['api', 'repos/o/r/pulls/12/reviews', '-f', 'event=COMMENT']],
     ['a PR edit', ['api', '-X', 'PATCH', 'repos/o/r/pulls/12', '-f', 'title=x']],
     ['a GraphQL query', ['api', 'graphql', '-f', 'query=query{viewer{login}}']],
@@ -543,4 +543,131 @@ describe('mergeTarget fails closed on a branch-writing surface it cannot show is
   ])('passes %s as no merge', (_, args) => {
     expect(kindOf(args)).toBe('none')
   })
+})
+
+describe('mergeTarget reads each value exactly as its consumer receives it', () => {
+  const graphql = (...fields: string[]): string[] => ['api', 'graphql', ...fields.flatMap(f => ['-f', f])]
+  // GitHub runs two mutation fields here; the trailing `# """) }` is a comment it ignores.
+  const smuggled = (body: string, merge = 'mergePullRequest'): string =>
+    `query=mutation { addComment(input:{subjectId:"x", body:"${body}"}) { clientMutationId }\n` +
+    `  ${merge}(input:{pullRequestId:"y"}) { clientMutationId } } # """) }`
+
+  it.each(['mergePullRequest', 'enablePullRequestAutoMerge'])(
+    'refuses %s after a field whose percent-decoded form opens a block string',
+    merge => {
+      expect(kindOf(graphql(smuggled('%22', merge)))).toBe('unresolved')
+    },
+  )
+
+  it.each(['%22', '%5C', '%5c', '%23', '%7B', '%7D', '%28', '%29', '%0A', '%2522'])(
+    'refuses a GraphQL merge beside a field value holding %s',
+    escape => {
+      expect(kindOf(graphql(smuggled(escape)))).toBe('unresolved')
+    },
+  )
+
+  it('refuses a harmless mutation whose value would decode differently', () => {
+    expect(kindOf(graphql('query=mutation{addComment(input:{body:"100%25"}){x}}'))).toBe('unresolved')
+  })
+
+  it.each([
+    ['a block string', 'query=mutation{addComment(input:{body:"""hi"""}){x}}'],
+    ['a carriage return inside a string', 'query=mutation{addComment(input:{body:"a\rb"}){x}}'],
+    ['an escape the spec does not define', 'query=mutation{addComment(input:{body:"a\\qb"}){x}}'],
+    ['a Unicode line separator in a comment', 'query=mutation{addComment(input:{}){x}} # c x'],
+    ['a non-ASCII character outside a string', 'query=mutation{addComment(input:{}) {x}}'],
+    ['a raw field read from a file', 'query=@q.graphql'],
+  ])('refuses a GraphQL document with %s', (_, field) => {
+    expect(kindOf(graphql(field))).toBe('unresolved')
+  })
+
+  it('refuses a block string whose escaped quotes hide a merge', () => {
+    const document =
+      'query=mutation { addComment(input:{body:"""a\\""" """}) { x }\n' +
+      '  mergePullRequest(input:{pullRequestId:"y"}) { x } } # """) }'
+
+    expect(kindOf(graphql(document))).toBe('unresolved')
+  })
+
+  it.each([
+    ['{owner}', ['-F', 'query={owner}{mergePullRequest(input:{pullRequestId:"y"}){x}}']],
+    [':repo', ['-F', 'query=mutation{c:repo(input:{}){x}}']],
+  ])('refuses a -F GraphQL document holding the placeholder %s, which gh fills', (_, fields) => {
+    expect(kindOf(['api', 'graphql', ...fields])).toBe('unresolved')
+  })
+
+  it('refuses a GraphQL endpoint spelled with an escape', () => {
+    expect(kindOf(['api', 'gr%61phql', '-f', 'query=query{viewer{login}}'])).toBe('unresolved')
+  })
+
+  it.each([
+    ['escaped quotes and a newline', 'query=mutation{addComment(input:{body:"say \\"hi\\"\\n"}){x}}'],
+    ['a unicode escape', 'query=mutation{addComment(input:{body:"\\u00e9"}){x}}'],
+    ['non-ASCII text in a string', 'query=mutation{addComment(input:{body:"héllo"}){x}}'],
+    ['a comment', 'query=mutation{addComment(input:{}){x}} # a note'],
+  ])('passes a listed mutation with %s as no merge', (_, field) => {
+    expect(kindOf(graphql(field))).toBe('none')
+  })
+
+  it.each([
+    ['no GH_REPO', ['api', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=x'], NO_ENV],
+    ['a :owner placeholder', ['api', 'repos/:owner/r/issues/12/comments', '-f', 'body=x'], NO_ENV],
+    [
+      'a GH_REPO that spells a merge path',
+      ['api', '-X', 'PUT', 'repos/{owner}/{repo}/issues'],
+      { GH_REPO: 'o/r%2Fpulls%2F12%2Fmerge%3F' },
+    ],
+    [
+      'a {branch} placeholder',
+      ['api', '-X', 'PATCH', 'repos/{owner}/{repo}/issues/{branch}', '-f', 'a=b'],
+      { GH_REPO: 'o/r' },
+    ],
+  ])('refuses a placeholder write path with %s', (_, args, env) => {
+    expect(kindOf(args, env)).toBe('unresolved')
+  })
+
+  it('reads placeholders gh fills from a plain GH_REPO', () => {
+    const env = { GH_REPO: 'o/r' }
+
+    expect(kindOf(['api', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=x'], env)).toBe('none')
+    expect(mergeTarget(['api', '-X', 'PUT', 'repos/{owner}/{repo}/pulls/12/merge'], env)).toEqual({
+      kind: 'merge',
+      repo: 'o/r',
+      pr: 12,
+    })
+  })
+
+  it.each([
+    ['an escape in an allow-listed write path', ['api', 'repos/o/r/issues/1%2Fcomments', '-f', 'body=x']],
+    ['a lower-case get, which gh sends unchanged', ['api', '-X', 'get', 'repos/o/r/contents/a.md']],
+    ['an X-HTTP-Method header', ['api', '-H', 'X-HTTP-Method: PATCH', 'repos/o/r/git/refs/heads/main']],
+  ])('refuses %s', (_, args) => {
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
+  it.each([
+    ['a bare repo with .git', ['pr', 'merge', '12', '-R', 'o/r.git']],
+    ['a bare repo with a trailing slash', ['pr', 'merge', '12', '-R', 'o/r/']],
+    ['a URL with only an owner', ['pr', 'merge', '12', '-R', 'https://github.com/o']],
+    ['a PR URL whose repo ends in .git', ['pr', 'merge', 'https://github.com/o/r.git/pull/12']],
+    ['a PR number past exact integers', ['pr', 'merge', '9007199254740993', '-R', 'o/r']],
+    ['a PR URL number past exact integers', ['pr', 'merge', 'https://github.com/o/r/pull/9007199254740993']],
+    [
+      'a merge path number past exact integers',
+      ['api', '-X', 'PUT', 'repos/o/r/pulls/9007199254740993/merge'],
+    ],
+  ])('refuses %s', (_, args) => {
+    expect(kindOf(args)).toBe('unresolved')
+  })
+
+  it.each(['https://github.com/o/r.git', 'https://github.com/o/r/'])(
+    'names the repo from -R %s as gh trims a URL',
+    repo => {
+      expect(mergeTarget(['pr', 'merge', '12', '-R', repo], NO_ENV)).toEqual({
+        kind: 'merge',
+        repo: 'o/r',
+        pr: 12,
+      })
+    },
+  )
 })

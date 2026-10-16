@@ -4,7 +4,10 @@
  * raw argv, so this parser is deliberately narrow: a call it can tell is a merge but cannot name
  * exactly is `unresolved`, which its callers refuse. On the surfaces that can write a repo's
  * branches (`api`, `pr`, `repo`), `none` comes only from an allow-list of operations known not to
- * merge, so a spelling nobody listed fails closed; every other gh group is `none`.
+ * merge, so a spelling nobody listed fails closed; every other gh group is `none`. Each value is
+ * read exactly as the program that consumes it (cobra, gh, GitHub's router or its GraphQL lexer)
+ * receives it: the only transforms are ones that consumer applies too, and a `none` never rests on
+ * a transform it might not apply.
  */
 
 export type MergeTarget =
@@ -228,14 +231,14 @@ function decoded(word: string): string | undefined {
 function apiTarget(rest: readonly string[], env: Env): MergeTarget {
   const parsed = parseWords(rest, API_FLAGS)
   const graphql = parsed.positionals.filter(mentionsGraphql)
-  if (!graphql.every(word => EXACT_GRAPHQL.test(apiPath(word) ?? '')))
+  if (!graphql.every(word => EXACT_GRAPHQL.test(word.replace(API_PREFIX, ''))))
     return unresolved('a GraphQL path that is not exactly graphql')
   if (graphql.length > 0 && !graphqlIsReadableNonMerge(parsed))
     return unresolved('a GraphQL call that may merge')
   const writes = isWrite(parsed)
   const merges = parsed.positionals
     .filter(word => !mentionsGraphql(word))
-    .map(word => endpointTarget(word, writes))
+    .map(word => endpointTarget(word, writes, env))
     .filter(target => target.kind !== 'none')
   if (merges.length === 0) return NONE
   const host = parsed.flags.findLast(flag => flag.name === '--hostname')?.value ?? env.GH_HOST
@@ -250,30 +253,37 @@ function apiTarget(rest: readonly string[], env: Env): MergeTarget {
 const apiPath = (word: string): string | undefined => decoded(word)?.replace(API_PREFIX, '')
 
 /**
- * Any path that names graphql is the GraphQL endpoint unless proven otherwise: only exactly
- * `graphql` has its fields read, and every other spelling (`graphql.json`, `v3/graphql`) is unresolved.
+ * Any path that names graphql, even encoded, is the GraphQL endpoint unless proven otherwise: only
+ * exactly `graphql` as written has its fields read, and every other spelling (`graphql.json`,
+ * `v3/graphql`, `gr%61phql`) is unresolved.
  */
 const EXACT_GRAPHQL = /^\/?graphql$/i
 const mentionsGraphql = (word: string): boolean => /graphql/i.test(apiPath(word) ?? '')
 
 const FIELD_FLAGS = new Set(['-f', '--raw-field', '-F', '--field'])
 
+/** gh fills these in a path and in every `-F` value from the current repo, which this parser cannot see. */
+const PLACEHOLDER = /\{(?:owner|repo|branch)\}|:(?:owner|repo|branch)\b/
+
 /**
- * True only when every flag is known, every field is inline, and the document is no mutation or
- * names no row's vocabulary; `-F x=@file` and `--input` are unread.
+ * True only when every flag is known and every field reaches GitHub exactly as written, as a
+ * document that is no mutation or whose top-level fields are all on NON_MERGE_MUTATIONS. Neither
+ * gh nor GitHub's GraphQL lexer percent-decodes a field, so this reads the raw value; a value that
+ * would decode differently, a file read (`=@`), `--input` or a `-F` placeholder is unread.
  */
 function graphqlIsReadableNonMerge(parsed: Parsed): boolean {
   if (parsed.unknown.length > 0 || parsed.flags.some(flag => flag.name === '--input')) return false
   const fields = parsed.flags.filter(flag => FIELD_FLAGS.has(flag.name))
-  const values = fields.map(({ value }) => (value === undefined ? undefined : decoded(value)))
-  if (values.some(value => value === undefined)) return false
-  const plain = values as string[]
-  if (fields.some(({ name }, at) => /^(?:-F|--field)$/.test(name) && /^[^=]*=@/.test(plain[at] ?? '')))
-    return false
-  const mutations = plain.filter(value => /mutation/i.test(value))
+  if (!fields.every(field => fieldReachesGithubAsWritten(field))) return false
+  const mutations = fields.map(({ value = '' }) => value).filter(value => /mutation/i.test(value))
   return mutations.every(value =>
     mutationFields(value.slice(value.indexOf('=') + 1))?.every(field => NON_MERGE_MUTATIONS.has(field)),
   )
+}
+
+function fieldReachesGithubAsWritten({ name, value }: Parsed['flags'][number]): boolean {
+  if (value === undefined || decoded(value) !== value || /^[^=]*=@/.test(value)) return false
+  return !(/^(?:-F|--field)$/.test(name) && PLACEHOLDER.test(value))
 }
 
 /** Mutations that change only an issue's or PR's conversation, labels or state. */
@@ -290,8 +300,32 @@ const NON_MERGE_MUTATIONS = new Set(
     .split(' '),
 )
 
-const GRAPHQL_TOKEN = /"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|#[^\n\r]*|\.\.\.|[_A-Za-z]\w*|\S/g
+/**
+ * One lexical token of the subset of GraphQL whose lexing no two parsers dispute: ignored
+ * whitespace and commas, a comment of printable ASCII, a one-line string with only the spec's
+ * escapes, `...`, a name, or one printable ASCII character. Anything else, such as a control or
+ * non-ASCII character outside a string, ends the walk and the document is unread.
+ */
+const GRAPHQL_TOKEN =
+  /[\t\n\r ,]+|#[\t\x20-\x7E]*|"(?:[^"\\\n\r]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"|\.\.\.|[_A-Za-z]\w*|[\x21-\x7E]/y
+const IGNORED_TOKEN = /^(?:[\t\n\r ,]|#|"[\s\S])/
 const NAME_TOKEN = /^[_A-Za-z]/
+
+/**
+ * The document's significant tokens, or `undefined` when it holds a block string (lexers differ
+ * on its `\"""` escape) or anything outside the subset GRAPHQL_TOKEN reads.
+ */
+function graphqlTokens(document: string): string[] | undefined {
+  if (document.includes('"""')) return undefined
+  const tokens: string[] = []
+  GRAPHQL_TOKEN.lastIndex = 0
+  while (GRAPHQL_TOKEN.lastIndex < document.length) {
+    const token = GRAPHQL_TOKEN.exec(document)?.[0]
+    if (token === undefined) return undefined
+    if (!IGNORED_TOKEN.test(token)) tokens.push(token)
+  }
+  return tokens
+}
 
 interface Walk {
   braces: number
@@ -306,9 +340,8 @@ interface Walk {
  * does not read plainly: a fragment spread, a directive, an unclosed string or stray punctuation.
  */
 function mutationFields(document: string): string[] | undefined {
-  const tokens = (document.match(GRAPHQL_TOKEN) ?? []).filter(
-    token => token !== ',' && !/^(?:#|"[\s\S])/.test(token),
-  )
+  const tokens = graphqlTokens(document)
+  if (tokens === undefined) return undefined
   const walk: Walk = { braces: 0, parens: 0, keyword: true, mutation: false, fields: [] }
   for (let i = 0; i < tokens.length; i++) if (!step(walk, tokens[i] ?? '', tokens[i + 1])) return undefined
   return walk.braces === 0 && walk.parens === 0 ? walk.fields : undefined
@@ -360,12 +393,16 @@ function isCanonical(path: string): boolean {
   return segments.every(segment => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-/** gh's own method: `-X` if given, else POST when it sends a body; any override header counts as a write. */
+/**
+ * gh's own method: `-X` as written, since gh sends it unchanged, else POST when it sends a body.
+ * A header whose name mentions a method or an override counts as a write.
+ */
 function isWrite(parsed: Parsed): boolean {
-  if (parsed.flags.some(flag => /^(?:-H|--header)$/.test(flag.name) && /override/i.test(flag.value ?? '')))
-    return true
+  const header = (flag: Parsed['flags'][number]): boolean =>
+    /^(?:-H|--header)$/.test(flag.name) && /^[^:]*(?:method|override)/i.test(flag.value ?? '')
+  if (parsed.flags.some(header)) return true
   const method = parsed.flags.findLast(flag => flag.name === '-X' || flag.name === '--method')
-  if (method !== undefined) return !/^(?:GET|HEAD)$/i.test(method.value ?? '')
+  if (method !== undefined) return !/^(?:GET|HEAD)$/.test(method.value ?? '')
   return parsed.flags.some(flag => FIELD_FLAGS.has(flag.name) || flag.name === '--input')
 }
 
@@ -374,8 +411,11 @@ const REPO_PREFIX = /^\/?(?:repos\/[^/]+\/[^/?#]+|repositories\/[^/?#]+)(?=[/?#]
 /** A canonical path past its repo, so a repo named `refinery` or `merges-lib` is not read as an operation. */
 const afterRepo = (path: string): string => (isCanonical(path) ? path.replace(REPO_PREFIX, '') : path)
 
-function endpointTarget(word: string, writes: boolean): MergeTarget {
-  const path = apiPath(word)
+function endpointTarget(word: string, writes: boolean, env: Env): MergeTarget {
+  const sent = filledPlaceholders(word, env)
+  if (sent === undefined && writes) return unresolved('a write path gh fills from a repo it cannot see')
+  const raw = sent ?? word
+  const path = apiPath(raw)
   if (path === undefined) return unresolved('a path encoded too deeply to read')
   // A read's query string cannot merge, so a GET is scanned only up to `?`.
   const scanned = afterRepo(writes ? path : (path.split('?')[0] ?? ''))
@@ -383,9 +423,23 @@ function endpointTarget(word: string, writes: boolean): MergeTarget {
     ({ vocabulary, writesOnly }) => (writes || !writesOnly) && vocabulary.test(scanned),
   )
   if (named === undefined)
-    return writes && !isNonMergeWrite(path) ? unresolved('a write not known to leave branches alone') : NONE
+    return writes && !isNonMergeWrite(raw, path)
+      ? unresolved('a write not known to leave branches alone')
+      : NONE
   const exact = isCanonical(path) ? PR_MERGE_PATH.exec(path) : null
   return exact === null ? unresolved(`a path that may be ${named.covers}`) : prMergeTarget(exact)
+}
+
+/**
+ * The path gh sends once it fills `{owner}` and `{repo}` from GH_REPO, or `undefined` when gh
+ * would fill one from a git remote or the current branch, which this parser cannot see.
+ */
+function filledPlaceholders(word: string, env: Env): string | undefined {
+  if (!PLACEHOLDER.test(word)) return word
+  const repo = env.GH_REPO === undefined ? undefined : repoName(env.GH_REPO, env)
+  if (typeof repo !== 'string' || /\{branch\}|:branch\b/.test(word)) return undefined
+  const [owner = '', name = ''] = repo.split('/')
+  return word.replace(new RegExp(PLACEHOLDER, 'g'), found => (found.includes('owner') ? owner : name))
 }
 
 /** Repo writes that change only an issue's or PR's conversation, labels, reviewers or state. */
@@ -397,21 +451,35 @@ const NON_MERGE_WRITES: readonly RegExp[] = [
   /^\/pulls\/comments\/\d+$/,
 ]
 
-/** True only for a canonical repo path whose rest, query and all, is exactly on the allow-list. */
-function isNonMergeWrite(path: string): boolean {
-  if (!isCanonical(path) || !REPO_PREFIX.test(path)) return false
+/**
+ * True only for a canonical repo path whose rest, query and all, is exactly on the allow-list and
+ * holds no escape, so the allow-list never rests on how GitHub decodes a path.
+ */
+function isNonMergeWrite(raw: string, path: string): boolean {
+  if (raw.includes('%') || !isCanonical(path) || !REPO_PREFIX.test(path)) return false
   const rest = path.replace(REPO_PREFIX, '')
   return NON_MERGE_WRITES.some(pattern => pattern.test(rest))
 }
 
 function prMergeTarget(match: RegExpExecArray): MergeTarget {
   const [, owner = '', repo = '', pr = ''] = match
-  if (!NAME.test(owner) || !NAME.test(repo)) return unresolved('a merge endpoint whose repo is not literal')
-  if (!PR_NUMBER.test(pr)) return unresolved('a merge endpoint whose PR is not a number')
-  return { kind: 'merge', repo: `${owner}/${stripGit(repo)}`, pr: Number(pr) }
+  if (!NAME.test(owner) || !isRepoName(repo)) return unresolved('a merge endpoint whose repo is not literal')
+  const number = prNumber(pr)
+  if (number === undefined) return unresolved('a merge endpoint whose PR is not a number')
+  return { kind: 'merge', repo: `${owner}/${repo}`, pr: number }
 }
 
-const stripGit = (repo: string): string => repo.replace(/\.git$/i, '')
+/**
+ * A repo name as given. A `.git` suffix is unread rather than stripped: gh strips it only from a
+ * URL, and how GitHub resolves `r.git` is not something this parser can see.
+ */
+const isRepoName = (repo: string): boolean => NAME.test(repo) && !/\.git$/i.test(repo)
+
+/** The PR number, or `undefined` past the integers a JS number holds exactly, which gh would read differently. */
+function prNumber(digits: string): number | undefined {
+  const number = Number(digits)
+  return PR_NUMBER.test(digits) && Number.isSafeInteger(number) ? number : undefined
+}
 
 // --- pr merge -------------------------------------------------------------------------------------
 
@@ -445,33 +513,44 @@ function selectorTarget(selector: string, flagRepos: (string | undefined)[], env
   const url = PR_URL.exec(selector)
   if (url !== null) return urlTarget(url, named[0])
   if (ANY_URL.test(selector)) return unresolved('a PR URL on another host')
-  if (!/^#?\d+$/.test(selector)) return unresolved('a pr merge selector that is not a number or URL')
-  const pr = Number(selector.replace('#', ''))
+  const pr = prNumber(selector.replace(/^#/, ''))
+  if (pr === undefined) return unresolved('a pr merge selector that is not a number or URL')
   const repo = named[0] ?? (env.GH_REPO === undefined ? undefined : repoName(env.GH_REPO, env))
   if (repo !== undefined && typeof repo !== 'string') return repo
   return repo === undefined ? { kind: 'merge', pr } : { kind: 'merge', repo, pr }
 }
 
 function urlTarget(url: RegExpExecArray, flagRepo: string | undefined): MergeTarget {
-  const [, owner = '', repo = '', pr = ''] = url
-  if (!NAME.test(owner) || !NAME.test(repo)) return unresolved('a PR URL whose repo is not literal')
-  const fromUrl = `${owner}/${stripGit(repo)}`
+  const [, owner = '', repo = '', digits = ''] = url
+  if (!NAME.test(owner) || !isRepoName(repo)) return unresolved('a PR URL whose repo is not literal')
+  const pr = prNumber(digits)
+  if (pr === undefined) return unresolved('a PR URL whose PR is not a number')
+  const fromUrl = `${owner}/${repo}`
   if (flagRepo !== undefined && flagRepo.toLowerCase() !== fromUrl.toLowerCase())
     return unresolved('a PR URL that disagrees with -R')
-  return { kind: 'merge', repo: fromUrl, pr: Number(pr) }
+  return { kind: 'merge', repo: fromUrl, pr }
 }
 
 /** `[HOST/]OWNER/REPO` as gh reads `-R` and `GH_REPO`; only github.com is named. */
 function repoName(value: string | undefined, env: Env): string | MergeTarget {
   if (value === undefined) return unresolved('-R with no value')
-  const parts = value
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/+$/, '')
-    .split('/')
+  const parts = repoParts(value)
   const host = parts.length === 3 ? parts[0] : env.GH_HOST
   if (host !== undefined && host.toLowerCase() !== 'github.com') return unresolved('a repo on another host')
   const [owner = '', repo = ''] = parts.slice(-2)
-  if (parts.length > 3 || parts.length < 2 || !NAME.test(owner) || !NAME.test(repo))
+  if (parts.length > 3 || parts.length < 2 || !NAME.test(owner) || !isRepoName(repo))
     return unresolved(`a repo gh-write cannot name: ${value}`)
-  return `${owner}/${stripGit(repo)}`
+  return `${owner}/${repo}`
+}
+
+/**
+ * The words of a repo as gh splits them: a plain value on `/` as written, and an http(s) URL into
+ * its host and a path that must be exactly `OWNER/REPO` once gh trims outer slashes and one `.git`.
+ */
+function repoParts(value: string): string[] {
+  const url = /^https?:\/\/([^/]*)\/(.*)$/i.exec(value)
+  if (url === null) return value.split('/')
+  const [, host = '', path = ''] = url
+  const rest = path.replace(/^\/+|\/+$/g, '').split('/')
+  return rest.length === 2 ? [host, rest[0] ?? '', (rest[1] ?? '').replace(/\.git$/, '')] : []
 }
