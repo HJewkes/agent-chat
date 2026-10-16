@@ -53,6 +53,13 @@ describe('parseShell on nested escaped backticks', () => {
     expect(plain.find(cmd => cmd.words[0] === 'echo')?.words).toEqual(['echo', '"`cmd`"'])
   })
 
+  // skipQuoted ends a backtick at the first backtick again: the span then never closes and no body is kept.
+  it('keeps the arithmetic text past a nested escaped backtick', () => {
+    const cmd = parseShell('(( `echo \\`echo 1\\`` + b ))').find(c => c.arith)
+
+    expect(cmd?.arithBodies).toEqual(['   + b '])
+  })
+
   it('reads an unclosed backtick body to the end of the line', () => {
     expect(heads('echo `\\`cmd')).toContain('cmd')
   })
