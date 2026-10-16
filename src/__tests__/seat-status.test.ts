@@ -381,9 +381,9 @@ describe('every worktree a seat causes counts against the implementer cap', () =
 
     const { implementers } = await status({ repoTrees })
 
-    expect(implementers.active).toBe(2)
-    expect(implementers.names).toEqual(['ss-al-1'])
-    expect(implementers.atCap).toBe(true)
+    expect(implementers?.active).toBe(2)
+    expect(implementers?.names).toEqual(['ss-al-1'])
+    expect(implementers?.atCap).toBe(true)
   })
 
   it('names trees in the text line only when there are some', async () => {
@@ -429,7 +429,7 @@ describe('a seat against its concurrency caps', () => {
 
     const { implementers } = await status()
 
-    expect(implementers.names).toEqual([])
+    expect(implementers?.names).toEqual([])
   })
 
   it("shows the burndown ledger's implementer count beside the live one when they differ (CC-978)", async () => {
@@ -476,7 +476,7 @@ describe('a seat against its concurrency caps', () => {
       const { implementers } = await status()
 
       expect(implementers).toMatchObject({ active: 4, cap: 5, atCap: false, waitingOwner: ['ss-al-5'] })
-      expect(implementers.names).not.toContain('ss-al-5')
+      expect(implementers?.names).not.toContain('ss-al-5')
     })
 
     it('counts a waiting-owner implementer as before when the seat does not opt in', async () => {
@@ -525,7 +525,7 @@ describe('a seat against its concurrency caps', () => {
     const report = await statusReport(deps(), SEAT, false)
 
     expect(result.other).toEqual({ active: 2, names: ['ss-scout', 'ss-scribe'], detached: ['ss-scribe'] })
-    expect(result.implementers.active + result.reviewers.active + result.planners.active).toBe(0)
+    expect(result.implementers?.active + result.reviewers?.active + result.planners?.active).toBe(0)
     expect(report.lines[4]).toBe('other         2  ss-scout, ss-scribe  detached: ss-scribe')
   })
 
@@ -534,9 +534,9 @@ describe('a seat against its concurrency caps', () => {
 
     const result = await status()
 
-    expect(result.implementers.names).toEqual(['ss-al-5'])
-    expect(result.reviewers.names).toEqual([])
-    expect(result.other.names).toEqual([])
+    expect(result.implementers?.names).toEqual(['ss-al-5'])
+    expect(result.reviewers?.names).toEqual([])
+    expect(result.other?.names).toEqual([])
   })
 
   it('counts exited implementers as parked and names the ones whose tree is still on disk', async () => {
@@ -552,7 +552,7 @@ describe('a seat against its concurrency caps', () => {
     const { parked, implementers } = await status()
 
     expect(parked).toEqual({ count: 2, names: ['ss-al-3', 'ss-al-4'], treeOnDisk: ['ss-al-4'] })
-    expect(implementers.active).toBe(1)
+    expect(implementers?.active).toBe(1)
   })
 
   it('counts no exited reviewer or roleless agent as parked', async () => {
@@ -1312,7 +1312,7 @@ describe("the seat's unread inbox", () => {
     expect(result.inbox).toMatchObject({ unread: null, sinceLastSend: null })
     expect(result.inbox.error).toMatch(/\S/)
     expect(result.inbox.error).not.toContain(tmp)
-    expect(result.implementers.active).toBe(1)
+    expect(result.implementers?.active).toBe(1)
     expect(result.budget.sevenDay).toBe(41)
     expect(result.eligible.top).toHaveLength(3)
     expect(report.lines[10]).toBe(`inbox         unavailable: ${result.inbox.error}`)
@@ -1348,7 +1348,7 @@ describe('the top eligible tasks', () => {
     const result = await status({ scored: scorerExplodes })
 
     expect(result.eligible).toEqual({ top: [], skipped: 0, today: '2026-09-29', error: 'scorer exploded' })
-    expect(result.implementers.active).toBe(1)
+    expect(result.implementers?.active).toBe(1)
     expect(result.budget.sevenDay).toBe(41)
     expect(result.inbox.unread).toBe(0)
   })
@@ -1722,7 +1722,7 @@ describe('the verb wired to a running broker', () => {
     const result = JSON.parse(report.lines.join('\n')) as SeatStatus
 
     expect(report.ok).toBe(true)
-    expect(result.implementers.names).toEqual(['ss-al-1'])
+    expect(result.implementers?.names).toEqual(['ss-al-1'])
     expect(result.inbox.unread).toBe(1)
     expect(result.budget).toMatchObject({ sevenDay: 41, stop: null })
   })
