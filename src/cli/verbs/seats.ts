@@ -86,6 +86,7 @@ import {
   renderStatus,
   seatStatus,
   WAITING_OWNER_TAG,
+  withUnknownRoster,
   type StatusDeps,
 } from '../../agents/seats/status.js'
 import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
@@ -635,7 +636,7 @@ export async function statusReport(
   try {
     const status = await seatStatus(deps, seat)
     const lines = json
-      ? [JSON.stringify(status, null, 2)]
+      ? [JSON.stringify(withUnknownRoster(status), null, 2)]
       : brief
         ? renderBrief(status)
         : renderStatus(status)

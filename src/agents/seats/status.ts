@@ -169,6 +169,8 @@ export interface SeatStatus {
   agents: SeatAgentRow[]
   /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
   self: SelfContext | null
+  /** The broker's reason when the agents read timed out: every agent-derived field above is then a placeholder, not a count. */
+  rosterUnknown?: string
 }
 
 export interface StatusDeps {
@@ -548,7 +550,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const policy = loadPolicy(deps.autonomyRoot, seat)
   const now = deps.now()
   const { prefix, concurrency } = policy.seat
-  const roster = await deps.agents()
+  const { roster, unknown } = await readRoster(deps)
   const machineStop = deps.machineStop()
   const mine = ownedBy(roster, seat, prefix)
   const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
@@ -574,8 +576,38 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     waitingPermission: waitingPermission(deps, mine, now.getTime()),
     agents: agentRows(mine, roleOf, deps.contextOf, a => retireThresholdK(a.profile)),
     self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
+    ...(unknown === undefined ? {} : { rosterUnknown: unknown }),
   }
 }
+
+/** Only a missed broker reply is unknown; any other failure is a real fault and ends the run. */
+async function readRoster(deps: StatusDeps): Promise<{ roster: AgentIdentity[]; unknown?: string }> {
+  try {
+    return { roster: await deps.agents() }
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith('broker did not answer')) throw err
+    return { roster: [], unknown: err.message }
+  }
+}
+
+/** The status with every field built from the roster set to null, so a reader cannot take a timeout for zero agents. */
+export function withUnknownRoster(status: SeatStatus): Record<string, unknown> {
+  if (status.rosterUnknown === undefined) return { ...status }
+  return {
+    ...status,
+    implementers: null,
+    reviewers: null,
+    planners: null,
+    other: null,
+    parked: null,
+    machine: null,
+    waitingPermission: null,
+    agents: null,
+  }
+}
+
+const unknownLine = (label: string, status: SeatStatus): string =>
+  line(label, `unknown (${status.rosterUnknown})`)
 
 const LABEL_WIDTH = 13
 const TITLE_WIDTH = 60
@@ -698,16 +730,20 @@ function selfLines(self: SelfContext | null): string[] {
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox } = status
+  const unknown = status.rosterUnknown !== undefined
   return [
     `seat ${status.seat} at ${status.at}`,
-    roleLine('implementers', status.implementers),
-    roleLine('reviewers', status.reviewers),
-    roleLine('planners', status.planners),
+    ...(unknown
+      ? [unknownLine('agents', status)]
+      : [
+          roleLine('implementers', status.implementers),
+          roleLine('reviewers', status.reviewers),
+          roleLine('planners', status.planners),
+        ]),
     line('pool', poolReadingText(budget)),
     line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
-    line('parked', String(status.parked.count)),
-    ...waitingPermissionLines(status),
+    ...(unknown ? [] : [line('parked', String(status.parked.count)), ...waitingPermissionLines(status)]),
   ]
 }
 
@@ -716,13 +752,17 @@ export function renderStatus(status: SeatStatus): string[] {
   const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
   return [
     `seat ${status.seat} at ${status.at}`,
-    roleLine('implementers', status.implementers),
-    roleLine('reviewers', status.reviewers),
-    roleLine('planners', status.planners),
-    agentLine('other', status.other, String(status.other.active)),
-    line('parked', `${parked.count}${trees}`),
-    ...waitingPermissionLines(status),
-    ...retireDueLines(status.agents),
+    ...(status.rosterUnknown === undefined
+      ? [
+          roleLine('implementers', status.implementers),
+          roleLine('reviewers', status.reviewers),
+          roleLine('planners', status.planners),
+          agentLine('other', status.other, String(status.other.active)),
+          line('parked', `${parked.count}${trees}`),
+          ...waitingPermissionLines(status),
+          ...retireDueLines(status.agents),
+        ]
+      : [unknownLine('agents', status)]),
     ...selfLines(status.self),
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
