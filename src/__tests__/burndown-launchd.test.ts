@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { burndownInstall, burndownJobStatus, burndownUninstall } from '../cli/verbs/burndown.js'
 import type { JobControl, Launchctl } from '../mirror/launchd.js'
+import { stableNodePath } from '../mirror/node-path.js'
 import { launchdJobRefusals, renderBurndownPlist } from '../mirror/plist.js'
 
 const LABEL = 'dev.hjewkes.agent-chat-burndown'
@@ -27,6 +28,25 @@ describe('renderBurndownPlist', () => {
       '<string>/repo/dist/cli.js</string>\n    <string>burndown</string>' +
         '\n    <string>tick</string>\n    <string>--once</string>',
     )
+  })
+
+  it('carries no Cellar version path in ProgramArguments when node runs from a Homebrew Cellar', () => {
+    const cellar = '/opt/homebrew/Cellar/node/25.1.0_1/bin/node'
+    const optLink = '/opt/homebrew/opt/node/bin/node'
+    const ops = { exists: (p: string) => p === optLink, realpath: () => cellar }
+
+    const plist = renderBurndownPlist({
+      label: LABEL,
+      nodePath: stableNodePath(cellar, ops),
+      cliEntry: '/repo/dist/cli.js',
+      logDir: '/Users/o/Library/Logs/agent-chat-burndown',
+      env: {},
+      intervalSeconds: 600,
+    })
+
+    const programArguments = plist.slice(plist.indexOf('<key>ProgramArguments</key>'))
+    expect(programArguments).not.toContain('/Cellar/')
+    expect(programArguments).toContain(`<string>${optLink}</string>`)
   })
 })
 
