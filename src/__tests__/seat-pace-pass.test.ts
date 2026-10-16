@@ -6,6 +6,7 @@ import { readAccountBudget, type BudgetRead } from '../agents/budget.js'
 import type { WatchdogDoc } from '../agents/seats/io.js'
 import {
   appendReadingRows,
+  dayOpening,
   readPaceDoc,
   readingHistoryPath,
   writePaceDoc,
@@ -167,13 +168,14 @@ describe('the watchdog pass publishes pool pace', () => {
 
   it('appends one row for the pool whose reading changed, and restarts the count on a new level', async () => {
     const h = harness()
+    h.cache['/synthetic/alpha'] = { sevenDay: 30, ageSeconds: 60 }
     await pass(h)
-    h.cache['/synthetic/alpha'] = { sevenDay: 30, ageSeconds: 10 }
+    h.cache['/synthetic/alpha'] = { sevenDay: 41, ageSeconds: 10 }
 
     await pass(h, 15)
 
-    expect(h.history.map(row => `${row.pool} ${row.seven_day}`)).toEqual(['alpha 41', 'beta 60', 'alpha 30'])
-    expect(h.pace?.pools.alpha).toMatchObject({ level: 'burn', passesAtLevel: 1 })
+    expect(h.history.map(row => `${row.pool} ${row.seven_day}`)).toEqual(['alpha 30', 'beta 60', 'alpha 41'])
+    expect(h.pace?.pools.alpha).toMatchObject({ level: 'behind', passesAtLevel: 1 })
     expect(h.pace?.pools.beta?.passesAtLevel).toBe(2)
   })
 
@@ -266,6 +268,50 @@ describe('the watchdog pass publishes pool pace', () => {
     expect(h.history[1]).not.toHaveProperty('rolled')
   })
 
+  it("reads each pool from its own cache's highest figure, not the status line that redrew last", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-1364-'))
+    const cacheDir = {
+      '/synthetic/alpha': path.join(root, 'workout'),
+      '/synthetic/beta': path.join(root, 'agents'),
+    }
+    const writeStatus = (dir: string, id: string, ageS: number, rate_limits: object) => {
+      const file = path.join(dir, 'status-cache', 'sessions', `${id}.json`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ session_id: id, written_at: h.nowMs / 1000 - ageS, rate_limits }),
+      )
+    }
+    const h = harness()
+    h.deps.readBudget = dir => readAccountBudget(cacheDir[dir as keyof typeof cacheDir], h.nowMs)
+    const agentsReset = RESET_S + 6 * 3600
+    try {
+      for (const minutes of [0, 5, 5]) {
+        h.nowMs += minutes * 60_000
+        writeStatus(cacheDir['/synthetic/alpha'], 'usage-poll', 90, {
+          five_hour: { used_percentage: 4, resets_at: RESET_S - DAY / 1000 },
+          seven_day: { used_percentage: 93, resets_at: RESET_S },
+        })
+        writeStatus(cacheDir['/synthetic/alpha'], 'basement', 5, {
+          seven_day: { used_percentage: 74, resets_at: RESET_S },
+        })
+        writeStatus(cacheDir['/synthetic/beta'], 'usage-poll', 30, {
+          five_hour: { used_percentage: 10, resets_at: RESET_S - DAY / 1000 },
+          seven_day: { used_percentage: 74, resets_at: agentsReset },
+        })
+        await runWatchdog(h.deps, LIVE)
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+
+    const rows = (pool: string) => h.history.filter(r => r.pool === pool)
+    expect(rows('alpha').length).toBeGreaterThan(0)
+    expect(rows('alpha').every(r => r.seven_day === 93 && r.resets_at === RESET_S)).toBe(true)
+    expect(rows('beta').length).toBeGreaterThan(0)
+    expect(rows('beta').every(r => r.seven_day === 74 && r.resets_at === agentsReset)).toBe(true)
+  })
+
   it('warns once a pass while an attended seat it has seen has no seat file', async () => {
     const h = harness()
     const files: Record<string, string | undefined> = {
@@ -298,6 +344,28 @@ describe('the watchdog pass publishes pool pace', () => {
 
     expect(lines).toContain('Watchdog: pace not published: disk full')
     expect(h.doc.lastReadings?.alpha).toMatchObject({ sevenDay: 41, resetsAt: RESET_S * 1000 })
+  })
+})
+
+describe("the day's opening reading", () => {
+  const dayStartMs = new Date(2026, 9, 6, 7).getTime()
+  const row = (pool: string): ReadingRow => ({
+    ts: dayStartMs / 1000 - 600,
+    pool,
+    seven_day: 12,
+    five_hour: 30,
+    resets_at: RESET_S,
+    source: 'watchdog',
+    age_s: 60,
+  })
+
+  it('finds a row another member of the account wrote before the pools were merged', () => {
+    const query = { pool: 'claude', dayStartMs, sevenDay: 16, resetsAt: RESET_S * 1000 }
+
+    expect(dayOpening([row('personal')], { ...query, pools: ['claude', 'personal'] })).toEqual(
+      row('personal'),
+    )
+    expect(dayOpening([row('personal')], query)).toBeUndefined()
   })
 })
 

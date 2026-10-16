@@ -303,6 +303,36 @@ describe('worktree setup on resume re-creation', () => {
 
     expect(again.cwd).toBe(first.cwd)
     expect(calls).toEqual([{ command: ['npm', 'ci'], cwd: first.cwd, treeExisted: true }])
+    expect(again.ref?.setup).toBe('ran')
+    expect(again.note).toMatch(/reinstalled its dependencies/)
+  })
+
+  it('a re-created tree with no declared step says to install and build', async () => {
+    const repo = makeRepo()
+    const first = await createWorktreeStrategy().allocate(ctxFor(repo))
+    git(['worktree', 'remove', '--force', first.cwd], repo)
+    const { runner, calls } = recording()
+
+    const record = { gitRoot: repo, worktree: first.cwd, branch: first.ref?.branch ?? '' }
+    const again = await reattachWorktree(record, { runSetup: runner })
+
+    expect(calls).toEqual([])
+    expect(again.ref?.setup).toBe('none')
+    expect(again.note).toMatch(/install dependencies and build/)
+  })
+
+  it('a failing step on re-create still says to install', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci'] })
+    const first = await createWorktreeStrategy({ runSetup: recording().runner }).allocate(ctxFor(repo))
+    git(['worktree', 'remove', '--force', first.cwd], repo)
+    const { runner } = recording({ exitCode: 1, timedOut: false, output: 'npm ERR!\n' })
+
+    const record = { gitRoot: repo, worktree: first.cwd, branch: first.ref?.branch ?? '' }
+    const again = await reattachWorktree(record, { runSetup: runner })
+
+    expect(again.ref?.setup).toBe('failed')
+    expect(again.note).toMatch(/install dependencies and build/)
+    expect(setupWarnings(again.warnings)).toEqual([expect.stringContaining('exited with code 1')])
   })
 })
 
@@ -635,6 +665,11 @@ describe('a branch-chosen package manager during worktree setup (CC-458)', () =>
   it('pins the corepack settings a branch .corepack.env would otherwise fill', () => {
     const env = setupEnv({ PATH: '/bin', COREPACK_ENV_FILE: '1', COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '1' })
     expect(env).toMatchObject({ COREPACK_ENV_FILE: '0', COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0' })
+  })
+
+  it('pins Playwright browser GC off even when the broker env turns it on', () => {
+    const env = setupEnv({ PATH: '/bin', PLAYWRIGHT_SKIP_BROWSER_GC: '0' })
+    expect(env.PLAYWRIGHT_SKIP_BROWSER_GC).toBe('1')
   })
 
   it.each([

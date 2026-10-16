@@ -34,7 +34,14 @@ agent-chat burndown tick --once [--dry-run]
 agent-chat burndown pause|resume [--by <who>]
                                         stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
-agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
+agent-chat burndown unstall <task> --slice <n>
+                                        reload an outside-owns slice's owns from its plan; keep its PR and agents
+agent-chat burndown reload-owns <task> --slice <n>
+                                        reload a live, not outside-owns slice's owns from its plan; keep the rest
+agent-chat burndown done <task> --slice <n> --evidence <path>
+                                        finish a PR-less implementing or queued slice by hand; retire its agents
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file;
+                                        lifts a brief:held hold
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
@@ -180,6 +187,13 @@ For each listed seat, in order, the tick:
   the lint requires it. An implementer-routed task with no plan is refused `no-owns`; a
   planner-routed one spawns its planner as before. Under `shadow` the implementer still
   dispatches, with a `would-refuse no-owns` note (CC-952);
+- auto-approves a brief: an open `brief:proposed` task whose plan passes the slice lint is
+  promoted to `brief:ready`, and one that fails is routed to the decider (CC-1234). A seat
+  holds a plan by tagging the task `brief:held=<kebab-reason>` (or bare `brief:held`,
+  `blocked` or `needs-decision`) before the next tick; the tick then neither approves nor
+  routes it, and logs the hold each tick. A seat log line or queue entry alone does not
+  hold anything: the tick reads only tags. `burndown brief approve` (which drops
+  `brief:held*`) or removing the tag releases the hold (CC-1349);
 - spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
   new claims carry `seat` and `namePrefix`.
 
@@ -394,11 +408,21 @@ retired because `burndown release` dropped its claim, the broker starts one deta
 `burndown tick --once` 30 seconds later. Exits inside that window share the tick. The ledger
 lock the timer's tick takes is the single-flight lock: while any tick holds it, the broker
 defers its kick by another 30 seconds, and a kicked tick that still races the timer exits
-under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`;
-`burndown_kick` and `burndown_kick_deferred` rows in the broker log record each decision.
+under the lock as a second tick always does. Kicked ticks write to `<home>/burndown-kick.log`,
+which moves to `.1` before a tick once it passes 10 MB; `burndown_kick` and
+`burndown_kick_deferred` rows in the broker log record each decision.
 Brokers on a temp-dir home never kick. A kicked tick runs with the timer job's env plus
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when the broker has them; without the user bus
 `systemctl --user` fails and the service check reads `not loaded` (CC-1144).
+
+A hand-run `burndown tick --once` from an agent's shell (`AGENT_CHAT_AGENT_ID` set) is a kick
+too (CC-1151). It sends the broker a `job_kick` frame and runs nothing in the agent's process,
+where the agent's `PATH`, `GH_*`, `HOME` and the like would steer it. The broker starts the
+tick through the same kicker, so the ledger-lock and no-overlap rules apply, and its output
+is in `<home>/burndown-kick.log`; the command prints only the broker's reply. `--dry-run` is
+refused from an agent shell: use `agent-chat burndown plan`. `seats watchdog` and
+`seats heartbeat-check` behave the same way, with output in `<home>/job-kick.log`. See
+`docs/human-caller-gate.md` for why.
 
 To measure the effect, `node scripts/exit-to-dispatch.mjs --hours 6` (after `npm run build`)
 prints the median wait from a burndown implementer's exit to the next tick that dispatched.
@@ -408,6 +432,21 @@ wait leaves out planning time. An exit with no dispatch within `--max-wait-min` 
 is reported as unmatched and left out of the median, since that slot waited for ready work,
 not for a tick.
 
+### Publish tasks (CC-987)
+
+A publish is its own task, never a slice. It carries `ops:publish`, and its `done_when` is one
+publish at a semver, `publish <package> at <version>`. Only that task waits on the
+`release-through-ci` grant. The build work before it is a separate task it lists with `dep:`, and
+the consumer work after it is another task with `dep:` on the publish task, so both dispatch as
+ordinary code.
+
+- The dispatch gate refuses an `ops:publish` task whose `done_when` is anything else as
+  `ops-unresolved`, naming the split, before it reads the grant.
+- The slice lint fails a slice that declares `publish` in `ops`. A slice with no `ops` field whose
+  `doneWhen` mentions a publish gets a warning, not a failure, since the word is often subject
+  matter; `"ops": []` silences it.
+- The planner and briefer briefs state the rule.
+
 ## What each ledger phase means
 
 `agent-chat burndown status` prints every held claim's phase.
@@ -415,7 +454,7 @@ not for a tick.
 | Phase            | Meaning                                                                                                                                                                                                                                                                                                |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `spawning`       | The tick sent a spawn frame and is waiting for the broker's roster to show the agent. Ten minutes with no row stalls the claim.                                                                                                                                                                        |
-| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice. A missing block, or one failing the slice lint (over 3 points, no `doneWhen`, no `owns`, an unknown or cyclic dep), stalls the claim with one reason line per slice and rule.                        |
+| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice. A missing block, or one failing the slice lint (over 3 points, no `doneWhen`, no `owns`, an unknown or cyclic dep, a declared publish), stalls the claim with one reason line per slice and rule.    |
 | `implementing`   | A worker is running. On exit: a park request moves to `parked`; a `DONE` report with a PR registers the PR with Shepherd and moves to `shepherding`; a reviewable diff with no PR spawns a reviewer and moves to `reviewing`; a clean `DONE` with no diff finishes the claim; anything else stalls it. |
 | `parked`         | The worker asked a question and stopped. An answer with the right `inReplyTo` spawns a successor in the same worktree and moves back to `implementing`.                                                                                                                                                |
 | `reviewing`      | A reviewer is running. `Verdict: APPROVE` on a claim with a PR hands the PR to Shepherd and moves to `shepherding`; a first failure spawns one successor; a second stalls the claim.                                                                                                                   |
@@ -446,8 +485,19 @@ finished, to tell a merge from a stop. The tick no longer reads PRs through `gh`
   owner-gated there.
 
 A claim with a `stalledReason` keeps its task and worktree but never respawns; only
-`agent-chat burndown release <task>` clears it. `agent-chat doctor` reports the stalled
-count.
+`agent-chat burndown release <task>` clears it. `release` also retires the claim's agents. For an
+`outside-owns` stall whose plan owns have since been fixed, `agent-chat burndown unstall <task>
+--slice <n>` reloads the slice's owns from the plan and clears the stall in place when the
+branch fits them. It keeps the claim's PR, phase and agents and retires nobody, so the next tick
+hands the PR to Shepherd with the implementer as fixer. For a live slice that is not stalled
+`outside-owns`, `agent-chat burndown reload-owns <task> --slice <n>` reloads its owns from the plan
+under the same branch check and changes nothing else (CC-1276); a queued slice is refused, since the
+tick already reloads its owns. A slice whose work was done and verified
+outside git has no PR to merge; `agent-chat burndown done <task> --slice <n> --evidence <path>`
+finishes an implementing or queued one by hand, clears its stall, records the evidence path and
+retires its agents, so its dependents dispatch. It refuses a claim with a PR, and nothing checks
+that a git slice really had none, so the evidence file and the `burndown_slice_finished_by_hand`
+event row are the audit trail. `agent-chat doctor` reports the stalled count.
 
 The tick can route a stall to a read-only triager before the owner hears about it. The exception
 classes and the `exceptions.route` dial (default `owner`) are on `main`; the triage job is not

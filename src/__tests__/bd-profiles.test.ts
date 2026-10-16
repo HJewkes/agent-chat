@@ -37,6 +37,7 @@ const HUMAN_ONLY_ACTIONS = [
   'Bash(wrangler:*)',
   'Bash(launchctl:*)',
   'Bash(agent-chat agent:*)',
+  'Bash(agent-chat port:*)',
   'Bash(agent-chat service:*)',
   'Bash(agent-chat teleport:*)',
   'Bash(agent-chat mirror:*)',

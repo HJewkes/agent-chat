@@ -28,6 +28,18 @@ export const metaPath = (): string => path.join(home(), 'broker.meta.json')
  */
 export const tokenPath = (): string => path.join(home(), 'ui.token')
 
+/** CC-1063: the broker's per-host launcher secrets, one 0600 file per configured machine. */
+export const launcherKeysDir = (): string => path.join(home(), 'launcher-keys')
+
+/** The host name becomes a file name, so anything path-like is refused rather than resolved. */
+export const launcherKeyPath = (host: string): string => {
+  if (!/^[a-z0-9.-]+$/i.test(host) || /^\.+$/.test(host)) throw new Error(`not a launcher host name: ${host}`)
+  return path.join(launcherKeysDir(), `${host.toLowerCase()}.key`)
+}
+
+/** The launcher machine's own copy of its secret, copied there out of band by the owner. */
+export const ownLauncherKeyPath = (): string => path.join(home(), 'launcher.key')
+
 /**
  * Built dashboard assets, served by the broker rather than by a separate dev server.
  *
@@ -61,7 +73,10 @@ export const profilesDir = (): string => path.join(home(), 'profiles')
  */
 export const hooksPath = (): string => path.join(home(), 'hooks.json')
 
-/** User-editable settings: the agent-slot cap (`agentSlots`) and the per-repo worktree cap (`worktreeBudget`). */
+/**
+ * User-editable settings: the agent-slot cap (`agentSlots`), the per-repo worktree cap (`worktreeBudget`)
+ * and the per-repo reviewer worktree cap (`reviewerWorktreeBudget`).
+ */
 export const configPath = (): string => path.join(home(), 'config.json')
 
 /** `agent-chat gh-write`'s machine-wide lock (a directory) and the time the next write may start. */
@@ -113,6 +128,9 @@ export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-
 
 /** One JSON summary row per burndown tick, appended; `burndown dispatch-stats` reads it (schema in tick-summary.ts). */
 export const burndownTicksPath = (): string => path.join(home(), 'burndown-ticks.jsonl')
+
+/** CC-1193: one decision record per real tick and the ledgers they read, for the dispatch-workflow shadow diff. */
+export const burndownShadowDir = (): string => path.join(home(), 'burndown-shadow')
 
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')

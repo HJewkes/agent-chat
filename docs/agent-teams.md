@@ -587,6 +587,12 @@ final head. Seats that merge through their own reviewer and `bin/merge` use it, 
 block comes after the brief and overrode prose that said not to register. The opt-out needs no spawn
 parameter. Without the marker the block is unchanged.
 
+The reviewer block has the same split (CC-1278). Without the marker, a reviewer hands CI to Shepherd:
+it answers `Verdict: MERGE` or `FIX_FIRST` only, treats pending or unread checks as no verdict input
+and never says WAIT, and says FIX_FIRST (`Class: ci-red`) only when a required check-run has already
+failed at the head. With the marker it gets `REVIEWER_WITHOUT_SHEPHERD`, which confirms every
+required check-run before MERGE and may say WAIT for a clean review whose checks have not finished.
+
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
 the broker's own environment. Values are stored in plaintext in the launch plan
@@ -799,6 +805,36 @@ an assigned worktree, `owns`, `claim_paths`, `inherit: context` and
 `resume_session` on the caller site: each needs that host's git or transcripts.
 `host: <broker host>` launches on the broker as before. A requester without
 `launchesHere` (an older build) keeps today's broker launch.
+
+On the wire, `spawn_result` carries `launch` and `host` for a caller-site spawn.
+The requester answers with `spawn_launched {agentId, ok, reason?}` (ready, or
+refused on its host), and an ok `spawn_launched_result` is its only go to open the
+surface. Then it sends `spawn_placed`, whose `spawn_placed_result` (the
+`spawn_result` shape) comes once the agent registers, fails, or the attach window
+passes. The socket accepts both reports only from the connection that received the
+launch. A session's host comes from its registration and never its frame. Only the
+CLI, which holds no registration, names its own with `callerHost`.
+
+Both clients run that half (`src/server/caller-spawn.ts`): the `agent_spawn` tool,
+whose `host` argument picks the machine, and `agent-chat agent spawn --host
+<machine>`. Each sends `launchesHere`, its OS and home, and returns the
+`spawn_placed_result` verdict in place of the pending `spawn_result`, naming the
+host (`Spawned "x" (id) on mac`). A lost `spawn_placed_result` is reported as
+placement unconfirmed, not as spawned. An updated client on a Mac whose cwd also
+exists on the broker's host now launches on the Mac; `host: <broker host>` keeps
+the old placement.
+
+Once registered, an agent on another host is known by its spawn row's `host`, which
+`agent_list` shows. The broker can read neither its pids nor its Claude Code session
+records, so a detach that outlasts the settle window is the exit: `agent_exited` is
+inferred with a body naming the host, and the slot taken at spawn is released. A
+reattach after that reopens the row and takes a slot again. Retire cannot signal a
+pid there either, so it pushes `end_self {agentId, reason}` to the agent's own
+connection, and that MCP process ends its own Claude Code when the id is its own
+(`src/server/end-self.ts`). The `agent_retired` row says `reaped:
+remote_end_requested`. That is a request, not a confirmation: retired is terminal,
+so no exit row follows, and an older agent-chat on that host ignores `end_self` and
+keeps running. Check its terminal there until every host runs this build.
 
 #### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
 
@@ -1193,6 +1229,13 @@ fails, the identity exists in a `spawning` state with a failure appended — whi
 is what you want when debugging why a pane never opened. The reverse order loses
 failed spawns entirely.
 
+**On Linux each launch gets its own TMPDIR** (CC-901), on disk at
+`~/.cache/agent-chat/tmp/ac-<name>-<launcher pid>` (CC-1184 for reviewers, CC-1264 for every
+launch), removed when `run-agent` exits and by the broker's sweep, which still scans /tmp for
+dirs made before CC-1264. /tmp is a 1M-inode tmpfs that every agent's harness output shares, so
+one runaway install there starves them all; on the home disk an install also hardlinks from the
+pnpm store on the same filesystem. macOS is unchanged.
+
 #### 8.1 Exit detection differs by surface, and presence papers over it
 
 Headless gets a real `proc.on('exit')` (brain's shape at `dispatch.ts:705-708`)
@@ -1448,6 +1491,12 @@ and for an agent that has not exited. A row with `presence: "exited"` and `infer
 does not prove the process stopped writing: a reboot or a dead launcher can leave a
 reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
 
+`agent ls` shows each live agent's context fill against its role's retire threshold, as
+`ctx=212k/200k` (CC-290). The thresholds are `DEFAULT_CONTEXT_HINTS`, overridable by
+`contextHints` in config. `retire-due` follows when the agent is past its threshold and has
+sent a `Status:` or `Verdict:` report to its spawner, or to `tick.reportTo` for a burndown
+spawn. `--json` rows carry `contextK`, `retireK` and `retireDue`, each null when unread.
+
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
 cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,
@@ -1472,8 +1521,9 @@ directories with `lsof` and refuses, naming the pid, while any process sits insi
 the listing fails it refuses too, since the agent's process may have outlived the broker. An
 `lsof` exit 1 that still printed parseable output counts as a listing. The tree must be clean, on
 its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
-`coverage`, `.turbo`, a `*.tsbuildinfo` file at any depth (a directory so named is searched, not
-trusted), or a top-level `.claude` (CC-334).
+`coverage`, `.turbo`, `.api-extractor-temp` (CC-1258), an `.eslintcache` file, a `*.tsbuildinfo`
+file at any depth (a directory so named is searched, not trusted), or a top-level `.claude`
+(CC-334).
 
 Retire at the final report (CC-921) is off by default. Set `autoRetire.onFinalReport` in
 `~/.agent-chat/config.json` to `true` for every spawner, or to a list of spawner names, for

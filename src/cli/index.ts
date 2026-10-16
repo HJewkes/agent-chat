@@ -3,6 +3,7 @@
 import './warnings.js'
 
 import { Command } from 'commander'
+import { brokerCwd } from '../agents/stable-cwd.js'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
@@ -18,6 +19,7 @@ import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
 import { askVerb, USAGE_EXIT } from './verbs/ask.js'
+import { countsVerb } from './verbs/counts.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
@@ -26,6 +28,7 @@ import { digestVerb } from './verbs/digest.js'
 import { dismissVerb } from './verbs/dismiss.js'
 import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
+import { ghCallsVerb } from './verbs/gh-calls.js'
 import { handoffLastVerb } from './verbs/handoff-last.js'
 import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
@@ -33,6 +36,10 @@ import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { addHostCommands } from './verbs/host.js'
 import { addMachineCommands } from './verbs/machine.js'
+import { portFilesClaimsVerb, portInboxSinceVerb, portRosterVerb } from './verbs/port-reads.js'
+import { portQueueVerb } from './verbs/port-queue.js'
+import { portSendVerb } from './verbs/port-send.js'
+import { portResumeVerb, portRetireVerb, portSpawnVerb } from './verbs/port-agent.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
@@ -97,9 +104,9 @@ function addServiceCommands(program: Command): void {
   svc
     .command('stop')
     .description(
-      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered; --hold keeps auto-starts off for a while',
+      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn; --hold keeps auto-starts off for a while',
     )
-    .option('--force', 'stop even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'stop even if a mid-spawn agent would be lost')
     .option(
       '--hold <seconds>',
       `refuse broker starts, including auto-starts, for this long (at most ${MAX_HOLD_SECONDS})`,
@@ -116,10 +123,10 @@ function addServiceCommands(program: Command): void {
   svc
     .command('restart')
     .description(
-      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn or an ask is unanswered',
+      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn',
     )
     .option('-p, --port <port>', 'bind this port instead of the recorded one', port)
-    .option('--force', 'restart even if a spawn or an unanswered ask would be lost')
+    .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
   svc
@@ -208,6 +215,10 @@ function addAgentCommands(program: Command): void {
       agents.parseSpawnedAs,
     )
     .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
+    .option(
+      '--host <machine>',
+      'the machine to launch on, a configured alias or a hostname (default: this one)',
+    )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
@@ -224,6 +235,8 @@ function addAgentCommands(program: Command): void {
   addVerb(handoff, handoffLastVerb)
 
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
+  addVerb(program, ghCallsVerb, { helpGroup: AGENTS })
+  addVerb(program, countsVerb, { helpGroup: AGENTS })
 
   program
     .command('gh-write <gh-args...>')
@@ -286,6 +299,7 @@ function addAgentCommands(program: Command): void {
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
         'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
         'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
+        'A root lint:types script runs here after <pm> run build, before the push, never deferred.',
       ].join('\n'),
     )
     .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean; strict?: boolean }) => {
@@ -307,7 +321,11 @@ function addAgentCommands(program: Command): void {
  * release because the README and `docs/ideas.md` name them.
  */
 function addHiddenCommands(program: Command): void {
-  program.command('broker', { hidden: true }).action(() => service.start({ foreground: true }))
+  // CC-1096: leave whatever agent tree started us, or every child inherits a cwd that parking removes.
+  program.command('broker', { hidden: true }).action(() => {
+    process.chdir(brokerCwd())
+    return service.start({ foreground: true })
+  })
 
   program.command('mcp', { hidden: true }).action(async () => {
     const { startMcpServer } = await import('../server/index.js')
@@ -339,7 +357,11 @@ function addHiddenCommands(program: Command): void {
       '--self-grant-skills <root>',
       "allow writes under this worktree's .claude/skills/<name>/ (CC-694)",
     )
-    .action(async (options: { deadline: string; selfGrantSkills?: string }) => {
+    .option(
+      '--self-grant-common-dir <dir>',
+      'the git common dir pinned at launch; self-grant refuses without it (CC-1200)',
+    )
+    .action(async (options: { deadline: string; selfGrantSkills?: string; selfGrantCommonDir?: string }) => {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
@@ -388,6 +410,20 @@ function addHiddenCommands(program: Command): void {
   program.command('send <to> <text...>', { hidden: true }).action(debug.send)
 }
 
+function addPortCommands(program: Command): void {
+  const port = program
+    .command('port')
+    .description('JSON envelope ports for the dispatch factory; none of them starts a broker')
+  addVerb(port, portRosterVerb)
+  addVerb(port, portInboxSinceVerb)
+  addVerb(port, portQueueVerb)
+  addVerb(port, portFilesClaimsVerb)
+  addVerb(port, portSpawnVerb)
+  addVerb(port, portRetireVerb)
+  addVerb(port, portResumeVerb)
+  addVerb(port, portSendVerb)
+}
+
 export function buildProgram(): Command {
   const program = new Command('agent-chat')
     .description('cross-session messaging for Claude Code')
@@ -403,6 +439,7 @@ export function buildProgram(): Command {
   addMirrorCommands(program)
   addBurndownCommands(program)
   addSeatsCommands(program)
+  addPortCommands(program)
   addMachineCommands(program)
   addHostCommands(program)
   addDebugCommands(program)

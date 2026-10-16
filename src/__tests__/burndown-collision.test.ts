@@ -16,6 +16,7 @@ import {
   sameTickCollision,
   type CollisionFacts,
   type CollisionWork,
+  type FileClaim,
 } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
 
@@ -109,7 +110,7 @@ describe('collision', () => {
       { claims: [{ owner: 'peer', repo: '/other', patterns: ['src/cli/**'] }] },
       undefined,
     ],
-    ['an unreachable broker', work('CC-9'), { names: undefined }, 'claimed'],
+    ['an unreachable broker', work('CC-9'), { names: undefined }, 'broker-view-unavailable'],
     [
       'a slice file an open PR touches',
       work('CC-9', { owns: ['src/agents/burndown/plan.ts'] }),
@@ -155,7 +156,33 @@ describe('file-overlap exempts the Version Packages PR and .changeset/ paths (CC
   it('still refuses a source file an ordinary open PR touches', () => {
     const w = work('TP-1', { owns: ['.changeset/tp-x.md', 'src/a.ts'] })
     const result = collision(w, facts({ prs: [pr(7)], prFiles: () => ['.changeset/tp-x.md', 'src/a.ts'] }))
-    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts' })
+    expect(result).toEqual({ kind: 'file-overlap', reason: '#7 touches src/a.ts', pr: 7 })
+  })
+})
+
+describe('open-pr ignores the Version Packages PR (CC-1152)', () => {
+  const release = pr(1152, {
+    branch: 'changeset-release/main',
+    title: 'Version Packages',
+    body: '- TP-737 a',
+  })
+
+  it('does not refuse a task named only in a changeset-release PR body', () => {
+    expect(collision(work('TP-737'), facts({ prs: [release] }))).toBeUndefined()
+  })
+
+  it('still refuses on an ordinary PR naming the task alongside the release PR', () => {
+    const ordinary = pr(8, { branch: 'agent-chat/bd-tp-737-a', title: 'Fix the scorer' })
+    const result = collision(work('TP-737'), facts({ prs: [release, ordinary] }))
+    expect(result).toEqual({
+      kind: 'open-pr',
+      reason: '#8 (agent-chat/bd-tp-737-a) names TP-737: Fix the scorer',
+    })
+  })
+
+  it('does not exempt a branch that merely contains changeset-release', () => {
+    const lookalike = pr(9, { branch: 'fix/changeset-release-notes', body: 'Closes TP-737.' })
+    expect(collision(work('TP-737'), facts({ prs: [lookalike] }))?.kind).toBe('open-pr')
   })
 })
 
@@ -359,6 +386,42 @@ describe('sameTickCollision over earlier seats this tick (CC-275)', () => {
 
   it('passes an overlapping owns in another repo', () => {
     expect(sameTickCollision(earlier, '/other', work('CC-2', { owns: ['src/**'] }))).toBeUndefined()
+  })
+})
+
+describe('changeset paths collide only by literal name (CC-1276)', () => {
+  const adding = work('TP-9', { slice: 'a', owns: ['src/x.ts', '.changeset/tp-9-a.md'] })
+  const claimBy = (patterns: string[]) => facts({ claims: [{ owner: 'peer', repo: '/repo', patterns }] })
+
+  it("passes a changeset under another agent's .changeset/* file claim", () => {
+    expect(collision(adding, claimBy(['.changeset/*']))).toBeUndefined()
+  })
+
+  it('passes a changeset under a same-tick dispatch owning .changeset/*', () => {
+    const earlier = [
+      {
+        seat: 'seat-a',
+        repo: '/repo',
+        agentName: 'sa-tp-1-b',
+        work: work('TP-1', { owns: ['.changeset/*'] }),
+      },
+    ]
+    expect(sameTickCollision(earlier, '/repo', adding)).toBeUndefined()
+  })
+
+  it('still refuses the same literal changeset path', () => {
+    const result = collision(work('TP-9', { owns: ['.changeset/tp-9.md'] }), claimBy(['.changeset/tp-9.md']))
+    expect(result).toEqual({
+      kind: 'claimed',
+      reason: ".changeset/tp-9.md is under peer's file claim",
+    })
+  })
+
+  it('still refuses a source path in a claim that also holds .changeset/*', () => {
+    expect(collision(adding, claimBy(['.changeset/*', 'src/x.ts']))).toEqual({
+      kind: 'claimed',
+      reason: "src/x.ts is under peer's file claim",
+    })
   })
 })
 
@@ -570,5 +633,49 @@ describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
 
   it("never refuses a work on its own held claim's owns", () => {
     expect(check([claim({ taskId: 'CC-2', slice: undefined })], ['src/a/x.ts'])).toBeUndefined()
+  })
+})
+
+describe("collisionCheck reads burndown agents' owns from the ledger, not their broker claim (CC-1276)", () => {
+  const claim = (over: Partial<Claim> = {}): Claim => ({
+    taskId: 'TP-1',
+    initiative: 'alpha',
+    spawnedAt: '2026-10-13T09:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-10-13T09:00:00.000Z',
+    slice: 'b',
+    agentName: 'bd-tp-1-b',
+    owns: ['.changeset/tp-1-b*.md', 'src/b.ts'],
+    worktree: '/repo/.worktrees/bd-tp-1-b',
+    ...over,
+  })
+  const check = (claims: Claim[], fileClaims: FileClaim[], owns: string[]) => {
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims }, { names: [], claims: fileClaims }, exec)
+    return run('/repo', work('CC-2', { owns }))
+  }
+  const stale: FileClaim = { owner: 'bd-tp-1-b', repo: '/repo', patterns: ['README.md'] }
+
+  it("passes work on a path only the burndown agent's spawn-time broker claim holds", () => {
+    expect(check([claim()], [stale], ['README.md'])).toBeUndefined()
+  })
+
+  it("refuses work on the ledger's reloaded owns of the same agent", () => {
+    const result = check([claim()], [stale], ['src/b.ts'])
+
+    expect(result).toEqual({ kind: 'file-overlap', reason: "src/b.ts is under TP-1 slice b's owns" })
+  })
+
+  it("still refuses on a non-burndown owner's broker claim", () => {
+    const human: FileClaim = { owner: 'human-session', repo: '/repo', patterns: ['README.md'] }
+
+    expect(check([claim()], [human], ['README.md'])?.kind).toBe('claimed')
+  })
+
+  it("still refuses on the broker claim of a queued claim's agent", () => {
+    expect(check([claim({ phase: 'queued' })], [stale], ['README.md'])?.kind).toBe('claimed')
   })
 })

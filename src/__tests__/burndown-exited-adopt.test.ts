@@ -100,9 +100,13 @@ describe('exited-agent adoption', () => {
       silentExit({ openPr: null, ahead: 0 }, { reviewable: false, reason: 'clean and level' }),
     )
 
-    expect(kinds(actions)).toEqual(['update'])
+    expect(kinds(actions)).toEqual(['update', 'update'])
     expect(after).toEqual([
-      expect.objectContaining({ phase: 'implementing', stalledReason: 'no final report' }),
+      expect.objectContaining({
+        phase: 'implementing',
+        stalledReason: 'no final report',
+        stale: expect.objectContaining({ class: 'other' }),
+      }),
     ])
   })
 
@@ -193,6 +197,211 @@ describe('observe reads exited work only for a silent exit', () => {
     )
 
     expect(reads).toBe(0)
+  })
+
+  it('reads a stalled implementing claim whose roster row is gone on a complete roster (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir, stalledReason: 'no final report' })
+    const work = { openPr: null, ahead: 0 }
+
+    const { observations } = await observe([c], { agents: [] }, deps({ exitedWork: () => work }))
+
+    expect(observations.get(claimKey(c))?.exitedWork).toEqual(work)
+  })
+
+  it('reads nothing for a claim whose row is missing from a partial roster (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir, stalledReason: 'no final report' })
+    let reads = 0
+
+    const { observations } = await observe(
+      [c],
+      { agents: [], partial: 'the roster read timed out' },
+      deps({ exitedWork: () => ((reads += 1), { openPr: null, ahead: 0 }) }),
+    )
+
+    expect(reads).toBe(0)
+    expect(observations.has(claimKey(c))).toBe(false)
+  })
+
+  it('reads nothing for a gone row whose claim is not stalled (CC-1230 a)', async () => {
+    const c = claim({ worktree: dir })
+    let reads = 0
+
+    await observe([c], { agents: [] }, deps({ exitedWork: () => ((reads += 1), undefined) }))
+
+    expect(reads).toBe(0)
+  })
+
+  it('reads a gone row whose .worktrees tree was parked from its branch (CC-981)', async () => {
+    const c = claim({ worktree: path.join(dir, '.worktrees', 'bd-cc-1'), stalledReason: 'no final report' })
+    const reads: string[][] = []
+
+    await observe(
+      [c],
+      { agents: [] },
+      deps({
+        exitedWork: () => (reads.push(['tree']), undefined),
+        parkedWork: (checkout, branch) => (reads.push([checkout, branch]), undefined),
+      }),
+    )
+
+    expect(reads).toEqual([[dir, 'agent-chat/bd-cc-1']])
+  })
+
+  it('reads nothing for a gone row whose absent worktree is not a .worktrees tree (CC-1230 a)', async () => {
+    const c = claim({ worktree: path.join(dir, 'parked'), stalledReason: 'no final report' })
+    let reads = 0
+    const count = (): undefined => ((reads += 1), undefined)
+
+    const { observations } = await observe(
+      [c],
+      { agents: [] },
+      deps({ exitedWork: count, parkedWork: count }),
+    )
+
+    expect(reads).toBe(0)
+    expect(observations.get(claimKey(c))?.exitedWork).toBeUndefined()
+  })
+
+  describe('a tree parked before the tick read the exit (CC-981)', () => {
+    const successor = { ...row, name: 'bd-cc-1-s1' } as AgentIdentity
+    const parked = (): Claim =>
+      claim({ agentName: 'bd-cc-1-s1', worktree: path.join(dir, '.worktrees', 'bd-cc-1') })
+    const byBranch =
+      (work: ExitedWork) =>
+      (checkout: string, branch: string): ExitedWork | undefined =>
+        checkout === dir && branch === 'agent-chat/bd-cc-1' ? work : undefined
+
+    it("adopts a parked tree's open PR by branch and hands it to Shepherd", async () => {
+      const c = parked()
+      const work = { openPr: PR, ahead: 2 }
+
+      const { observations } = await observe(
+        [c],
+        { agents: [successor] },
+        deps({ finalText: () => undefined, parkedWork: byBranch(work) }),
+      )
+      const obs = observations.get(claimKey(c)) ?? {}
+      const { actions, after } = step(c, obs)
+
+      expect(obs.exitedWork).toEqual(work)
+      expect(kinds(actions)).toContain('register')
+      expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+    })
+
+    it('finishes a parked tree whose PR merged', async () => {
+      const c = parked()
+
+      const { observations } = await observe(
+        [c],
+        { agents: [successor] },
+        deps({
+          finalText: () => undefined,
+          parkedWork: byBranch({ openPr: null, ahead: 2 }),
+          prState: () => ({ kind: 'merged', pr: PR, head: 'abc' }),
+        }),
+      )
+      const { after } = step(c, observations.get(claimKey(c)) ?? {})
+
+      expect(after).toEqual([expect.objectContaining({ phase: 'done', pr: PR })])
+    })
+  })
+})
+
+describe('an adopted PR is fenced by its owns (CC-1023)', () => {
+  const owning = (patch: Partial<Claim> = {}): Claim => claim({ owns: ['src/a.ts'], ...patch })
+  const level = { reviewable: false, reason: 'nothing committed past base' }
+  const adopted = (owned: NonNullable<Observation['owned']>): Observation => ({
+    ...silentExit({ openPr: PR, ahead: 0 }, level),
+    owned,
+  })
+
+  it('stalls a silent exit whose PR touches a file outside owns, registering and spawning nothing', () => {
+    const { actions, after } = step(owning(), adopted({ outside: ['src/other/x.ts'] }))
+
+    expect(kinds(actions)).not.toContain('register')
+    expect(kinds(actions)).not.toContain('spawn')
+    expect(after).toEqual([expect.objectContaining({ phase: 'implementing', stallCode: 'outside-owns' })])
+  })
+
+  it('hands a silent exit whose PR stays inside owns to Shepherd', () => {
+    const { actions, after } = step(owning(), adopted({ outside: [] }))
+
+    expect(kinds(actions)).toContain('register')
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+  })
+
+  it('waits a tick when the owns read is unreadable', () => {
+    expect(step(owning(), adopted('unreadable')).actions).toEqual([])
+  })
+
+  it('clears the stall and hands off on the tick the PR drops the outside file', () => {
+    const [stalled] = step(owning(), adopted({ outside: ['src/other/x.ts'] })).after
+
+    const { actions, after } = step(stalled as Claim, adopted({ outside: [] }))
+
+    expect(actions.filter(a => a.kind === 'register')).toHaveLength(1)
+    expect(after).toEqual([
+      expect.objectContaining({
+        phase: 'shepherding',
+        pr: PR,
+        stallCode: undefined,
+        stalledReason: undefined,
+      }),
+    ])
+  })
+
+  describe('observe', () => {
+    let dir: string
+    beforeEach(() => {
+      dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-adopted-')))
+    })
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+    const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+    const levelDeps = (over: Partial<ObserveDeps>): ObserveDeps => ({
+      root: '/active-work',
+      inboxSince: async () => [],
+      finalText: () => undefined,
+      diff: () => level,
+      changedFiles: () => [],
+      exitedWork: () => ({ openPr: PR, ahead: 0 }),
+      ...over,
+    })
+    const observed = async (c: Claim, deps: ObserveDeps): Promise<Observation> =>
+      (await observe([c], { agents: [row] }, deps)).observations.get(claimKey(c)) ?? {}
+
+    it('reads the PR files of a level worktree, so its outside file stalls the claim', async () => {
+      const c = owning({ worktree: dir })
+
+      const obs = await observed(c, levelDeps({ prFiles: () => ['src/a.ts', 'src/other/x.ts'] }))
+
+      expect(obs.owned).toEqual({ outside: ['src/other/x.ts'] })
+      expect(kinds(step(c, obs).actions)).not.toContain('register')
+      expect(step(c, obs).after).toEqual([expect.objectContaining({ stallCode: 'outside-owns' })])
+    })
+
+    it('reads the owns as unreadable when the PR files cannot be read', async () => {
+      const c = owning({ worktree: dir })
+
+      const obs = await observed(c, levelDeps({ prFiles: () => undefined }))
+
+      expect(obs.owned).toBe('unreadable')
+      expect(step(c, obs).actions).toEqual([])
+    })
+
+    it.each([
+      ['a claim with no owns', [], undefined],
+      ['a worker that reported a status', ['src/a.ts'], 'Status: DONE'],
+    ])('never reads the PR files for %s', async (_, owns, text) => {
+      let reads = 0
+
+      await observed(
+        claim({ owns, worktree: dir }),
+        levelDeps({ finalText: () => text, prFiles: () => ((reads += 1), []) }),
+      )
+
+      expect(reads).toBe(0)
+    })
   })
 })
 

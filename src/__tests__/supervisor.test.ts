@@ -34,7 +34,8 @@ import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { writeOutputTail } from '@titan-design/agent-surface'
-import { agentDir } from '../paths.js'
+import { agentDir, home } from '../paths.js'
+import { workerConfigDenies } from '../agents/profiles.js'
 import { RESUMED_BRIEF } from '../agents/resume-session.js'
 
 /**
@@ -387,6 +388,19 @@ describe('spawning', () => {
     expect((await sup.spawn(spawnReq({ profile: 'nope' }))).reason).toMatch(/no profile named "nope"/)
   })
 
+  it('refuses, not rejects, an unknown profile when the profiles dir cannot be listed', async () => {
+    const sup = withStubbedSurface()
+    const dir = path.join(process.env.AGENT_CHAT_HOME!, 'profiles')
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.writeFileSync(dir, '')
+
+    const result = await sup.spawn(spawnReq({ profile: 'nope' }))
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/no profile named "nope"; cannot list profiles in .*\(ENOTDIR/)
+    expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+  })
+
   /**
    * Regression: the isolation context was built without the profile's tool lists,
    * so `toolset-limited` reported that every explorer and reviewer "runs at full
@@ -414,7 +428,13 @@ describe('spawning', () => {
     const result = await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     expect(result.ok).toBe(true)
-    expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit', 'AskUserQuestion'])
+    expect(result.disallowedTools).toEqual([
+      'Bash',
+      'Write',
+      'Edit',
+      'AskUserQuestion',
+      ...workerConfigDenies(home()),
+    ])
   })
 
   /**
@@ -440,7 +460,9 @@ describe('spawning', () => {
       'Bash(agent-chat ask:*)',
       'Bash(agent-chat teleport:*)',
       'Bash(agent-chat agent:*)',
+      'Bash(agent-chat port:*)',
       'AskUserQuestion',
+      ...workerConfigDenies(home()),
     ])
   })
 
@@ -2100,7 +2122,9 @@ describe('spawn privilege', () => {
     await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
-    expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit,AskUserQuestion')
+    expect(spawned?.meta.disallowed_tools).toBe(
+      ['Bash', 'Write', 'Edit', 'AskUserQuestion', ...workerConfigDenies(home())].join(','),
+    )
   })
 
   /**
@@ -2161,6 +2185,25 @@ describe('spawn privilege', () => {
     )
 
     expect(result.ok).toBe(true)
+  })
+
+  /** CC-1094: the child carries the same derived config denies its parent was held to, so the check passes. */
+  it('lets a parent holding the worker config denies spawn a worker that carries them too', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParentWithDeny(
+      'peer-agent',
+      shared,
+      ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+      ['Bash(agent-chat endorse:*)', 'AskUserQuestion', ...workerConfigDenies(home())],
+    )
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'explorer', requestedBy: 'peer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.disallowedTools).toEqual(expect.arrayContaining(workerConfigDenies(home())))
   })
 
   /**

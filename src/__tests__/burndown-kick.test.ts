@@ -1,14 +1,25 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ledgerLockHolder, withLedgerLock } from '../agents/burndown/ledger.js'
-import { burndownKicker, KICK_DEBOUNCE_MS, kickCommand, type KickPorts } from '../broker/burndown-kick.js'
+import {
+  burndownKicker,
+  KICK_DEBOUNCE_MS,
+  KICK_LOG_MAX_BYTES,
+  kickCommand,
+  rotateKickLog,
+  type KickPorts,
+} from '../broker/burndown-kick.js'
 import { cliEntry } from '../paths.js'
 import { jobEnv } from '../mirror/plist.js'
 import type { AppendInput } from '../broker/event-store.js'
 
 const BURNDOWN_AGENTS = new Set(['bd-1', 'bd-2', 'bd-3'])
+
+/** The pid of a process that has already exited. */
+const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid
 
 const exited = (ref: string): AppendInput => ({ kind: 'agent_exited', actor: ref, ref })
 const retired = (ref: string): AppendInput => ({ kind: 'agent_retired', actor: 'human', target: ref, ref })
@@ -111,6 +122,61 @@ describe('burndown kick on a freed slot', () => {
     expect(h.launches).toHaveLength(2)
   })
 
+  it('a hand kick launches at once when idle', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    const detail = kicker.request()
+
+    expect(detail).toBe('launched')
+    expect(h.launches).toHaveLength(1)
+  })
+
+  it('a hand kick defers while another tick holds the ledger lock, then launches once it is free', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+    h.holder.pid = 4242
+
+    const detail = kicker.request()
+    const whileHeld = h.launches.length
+    h.holder.pid = undefined
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(detail).toMatch(/^deferred: 4242/)
+    expect(whileHeld).toBe(0)
+    expect(h.launches).toHaveLength(1)
+  })
+
+  it('a hand kick never overlaps a kicked tick, and coalesces into the follow-up', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    kicker.request()
+    const during = kicker.request()
+    const again = kicker.request()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+    const beforeEnd = h.launches.length
+    h.launches[0]?.()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(during).toMatch(/^deferred: kicked tick/)
+    expect(again).toMatch(/^coalesced/)
+    expect(beforeEnd).toBe(1)
+    expect(h.launches).toHaveLength(2)
+  })
+
+  it('a hand kick rides an exit kick already armed', () => {
+    const h = harness()
+    const kicker = burndownKicker(h.ports)
+
+    kicker.offer(exited('bd-1'))
+    const detail = kicker.request()
+    vi.advanceTimersByTime(KICK_DEBOUNCE_MS)
+
+    expect(detail).toMatch(/^coalesced/)
+    expect(h.launches).toHaveLength(1)
+  })
+
   it('launches nothing after stop', () => {
     const h = harness()
     const kicker = burndownKicker(h.ports)
@@ -143,7 +209,7 @@ describe('ledgerLockHolder', () => {
 
   it('treats a lock left by a dead process as free', () => {
     const file = path.join(dir, 'burndown.json')
-    fs.writeFileSync(`${file}.lock`, '999999\n')
+    fs.writeFileSync(`${file}.lock`, `${deadPid()}\n`)
 
     expect(ledgerLockHolder(file)).toBeUndefined()
   })
@@ -190,5 +256,49 @@ describe('kicked tick env', () => {
 
     expect(command).toBe(process.execPath)
     expect(args).toEqual([cliEntry(), 'burndown', 'tick', '--once'])
+  })
+})
+
+describe('kick log rotation', () => {
+  let dir: string
+  let file: string
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kick-log-'))
+    file = path.join(dir, 'burndown-kick.log')
+  })
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  it('moves a log over 10 MB to .1 so the next tick opens a fresh one', () => {
+    fs.writeFileSync(file, 'old tick output\n')
+    fs.truncateSync(file, 11 * 1024 * 1024)
+
+    rotateKickLog(file, KICK_LOG_MAX_BYTES)
+
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.statSync(`${file}.1`).size).toBe(11 * 1024 * 1024)
+    expect(fs.readFileSync(`${file}.1`, 'utf8').startsWith('old tick output\n')).toBe(true)
+  })
+
+  it('replaces an older .1 generation rather than keeping two', () => {
+    fs.writeFileSync(`${file}.1`, 'oldest')
+    fs.writeFileSync(file, 'newer output')
+
+    rotateKickLog(file, 4)
+
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('newer output')
+  })
+
+  it('leaves a log under the limit in place', () => {
+    fs.writeFileSync(file, 'small')
+
+    rotateKickLog(file, KICK_LOG_MAX_BYTES)
+
+    expect(fs.readFileSync(file, 'utf8')).toBe('small')
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+  })
+
+  it('does not throw when the log does not exist yet', () => {
+    expect(() => rotateKickLog(file, KICK_LOG_MAX_BYTES)).not.toThrow()
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
   })
 })

@@ -43,6 +43,7 @@ interface Case {
   ageSeconds?: number
   maxReadingAgeSeconds?: number
   dispatched?: number
+  dispatchCost?: PoolGateInput['dispatchCost']
   /** Epoch ms the pool's seven_day window resets. */
   resetsAt?: number
 }
@@ -71,6 +72,7 @@ function gate(c: Case) {
         humanLastTurnAt: now.getTime() - (c.ownerTypedMinAgo ?? 120) * MIN,
       },
       ...(c.dispatched === undefined ? {} : { dispatched: c.dispatched }),
+      ...(c.dispatchCost === undefined ? {} : { dispatchCost: c.dispatchCost }),
     },
     c.maxReadingAgeSeconds === undefined ? {} : { maxReadingAgeSeconds: c.maxReadingAgeSeconds },
   )
@@ -343,9 +345,26 @@ describe('per_day_points', () => {
     expect(gate({ now, runStartAt, history: day(20, 35), sevenDay: 37 }).open).toBe(true)
   })
 
-  it('pauses when no reading at or before 07:00 exists, even with no run cap', () => {
+  it("stays open under the cap with no reading at or before 07:00, counting from the day's first (CC-1190)", () => {
     const budget = { ...SEAT_B, spend: {} }
     const history = [{ at: at(7, 1).getTime(), sevenDay: 30 }]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 31 }).open).toBe(true)
+  })
+
+  it("pauses at the cap counting from the day's first reading, naming the fallback", () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [
+      { at: at(8).getTime(), sevenDay: 20 },
+      { at: at(12).getTime(), sevenDay: 30 },
+    ]
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 38 }).reason).toBe(
+      "BUDGET-PAUSE pool pool-y: day spend 18 points since 08:00 (first sample; none at or before 07:00) at or above the pool pool-y's per_day_points 18",
+    )
+  })
+
+  it('pauses when the only reading is the current one, so no earlier reading exists', () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [{ at: now.getTime(), sevenDay: 31 }]
     const result = gate({ budget, now, runStartAt, history, sevenDay: 31 })
     expect(result).toEqual({
       open: false,
@@ -502,7 +521,7 @@ describe("this tick's dispatches charged against the pool (CC-275)", () => {
 
     expect(gate({ budget, now, history, sevenDay: 35, dispatched: 2 }).open).toBe(true)
     expect(gate({ budget, now, history, sevenDay: 35, dispatched: 3 }).reason).toBe(
-      "BUDGET-PAUSE pool pool-y: day spend 20 points since 07:00 at or above the pool pool-y's per_day_points 18; charged 3 dispatch(es) this tick at +15 seven_day, +30 five_hour",
+      "BUDGET-PAUSE pool pool-y: day spend 20 points since 07:00 at or above the pool pool-y's per_day_points 18; seven_day 50% (reading 35% + 15 charged: 3 dispatch(es) this tick at 5 each, charter)",
     )
   })
 
@@ -511,7 +530,7 @@ describe("this tick's dispatches charged against the pool (CC-275)", () => {
 
     expect(gate({ budget, now, history, sevenDay: 31, dispatched: 1 }).open).toBe(true)
     expect(gate({ budget, now, history, sevenDay: 31, dispatched: 2 }).reason).toContain(
-      'five_hour 80% at or above ceiling 80%',
+      'five_hour 80% (reading 10% + 70 charged: 2 dispatch(es) this tick at 35 each, charter) at or above ceiling 80%',
     )
     const line = priced({ dispatch_seven_day_points: 40, dispatch_five_hour_points: 0 })
     expect(
@@ -522,14 +541,91 @@ describe("this tick's dispatches charged against the pool (CC-275)", () => {
         sevenDay: 41,
         dispatched: 1,
       }).reason,
-    ).toContain('seven_day 81% at or above line 80%')
+    ).toContain(
+      'seven_day 81% (reading 41% + 40 charged: 1 dispatch(es) this tick at 40 each, charter) at or above line 80%',
+    )
   })
 
   it('charges the default cost when the pool prices no dispatch', () => {
     const result = gate({ budget: priced({}), now, history, sevenDay: 31, dispatched: 1 })
 
     expect(result.reason).toContain(
-      `seven_day ${31 + DEFAULT_DISPATCH_COST.sevenDay}% vs line 80% (no seven_day resets_at, flat reserve); charged 1 dispatch(es) this tick at +${DEFAULT_DISPATCH_COST.sevenDay} seven_day, +${DEFAULT_DISPATCH_COST.fiveHour} five_hour`,
+      `seven_day ${31 + DEFAULT_DISPATCH_COST.sevenDay}% (reading 31% + ${DEFAULT_DISPATCH_COST.sevenDay} charged: 1 dispatch(es) this tick at ${DEFAULT_DISPATCH_COST.sevenDay} each, default) vs line 80% (no seven_day resets_at, flat reserve)`,
+    )
+  })
+})
+
+describe('the charge is priced by charter, then observed cost, then default, and never outlives its tick (CC-1038)', () => {
+  const now = at(15)
+  const history = [{ at: at(6, 30).getTime(), sevenDay: 27 }]
+  const personal = (cost: { dispatch_five_hour_points?: number } = {}) => ({
+    ...SEAT_B,
+    spend: {},
+    pool: { ...(SEAT_B.pool as PoolRule), ceiling_five_hour: 95, per_day_points: undefined, ...cost },
+  })
+  const observed = { sevenDay: 0.07, fiveHour: 0.4, basis: 'observed: 69 spawns over 12:23-13:38Z' }
+
+  it("judges tick 2 by its own reading, with none of tick 1's charge", () => {
+    const budget = personal()
+
+    const tick1 = gate({ budget, now, history, fiveHour: 46, sevenDay: 27, dispatched: 4 })
+    const tick2 = gate({ budget, now, history, fiveHour: 51, sevenDay: 27, dispatched: 0 })
+
+    expect(tick1.reason).toContain(
+      'five_hour 86% (reading 46% + 40 charged: 4 dispatch(es) this tick at 10 each, default) vs ceiling 95%',
+    )
+    expect(tick2.reason).toContain('five_hour 51% vs ceiling 95%, seven_day 27% vs line 80%')
+    expect(tick2.reason).not.toContain('charged')
+  })
+
+  it('charges the observed cost over the default and names it', () => {
+    const result = gate({
+      budget: personal(),
+      now,
+      history,
+      fiveHour: 46,
+      sevenDay: 27,
+      dispatched: 4,
+      dispatchCost: observed,
+    })
+
+    expect(result).toMatchObject({ open: true, sonnetOnly: false })
+    expect(result.reason).toBe(
+      'pool pool-y: five_hour 47.6% (reading 46% + 1.6 charged: 4 dispatch(es) this tick at 0.4 each, observed) vs ceiling 95%, ' +
+        'seven_day 27.3% (reading 27% + 0.3 charged: 4 dispatch(es) this tick at 0.07 each, observed) vs line 80% ' +
+        '(no seven_day resets_at, flat reserve); observed: 69 spawns over 12:23-13:38Z',
+    )
+  })
+
+  it("lets the charter's figure win over the observed cost, window by window", () => {
+    const result = gate({
+      budget: personal({ dispatch_five_hour_points: 2 }),
+      now,
+      history,
+      fiveHour: 46,
+      sevenDay: 27,
+      dispatched: 4,
+      dispatchCost: observed,
+    })
+
+    expect(result.reason).toContain(
+      'five_hour 54% (reading 46% + 8 charged: 4 dispatch(es) this tick at 2 each, charter)',
+    )
+    expect(result.reason).toContain('seven_day 27.3% (reading 27% + 0.3 charged')
+  })
+
+  it('leaves the reason unchanged when nothing is charged this tick', () => {
+    const result = gate({
+      budget: personal(),
+      now,
+      history,
+      fiveHour: 46,
+      sevenDay: 27,
+      dispatchCost: observed,
+    })
+
+    expect(result.reason).toBe(
+      'pool pool-y: five_hour 46% vs ceiling 95%, seven_day 27% vs line 80% (no seven_day resets_at, flat reserve)',
     )
   })
 })

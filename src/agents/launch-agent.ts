@@ -17,7 +17,14 @@ import { resolveOrphanReapKill } from '../config.js'
 import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
-import { realExitTmpDeps, removeOwnTmpDir } from './agent-tmpdir.js'
+import {
+  diskHarnessRoot,
+  diskTmpRoot,
+  realExitTmpDeps,
+  removeOwnTmpDir,
+  TMP_ROOT,
+  type AgentTmpRequest,
+} from './agent-tmpdir.js'
 import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
@@ -81,9 +88,24 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
   return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }), GIT_ALLOW_PROTOCOL } }
 }
 
+/** Where the launch's private TMPDIR goes, beyond its name and pid. Injected by tests. */
+export type LaunchTmp = Omit<AgentTmpRequest, 'name' | 'pid'>
+
+/**
+ * CC-1264: every Linux launch's TMPDIR goes on disk. /tmp is a 1M-inode tmpfs shared with every
+ * agent's harness output, so one runaway install there starves them all, and an install on the
+ * home disk can hardlink from the pnpm store on the same filesystem. macOS keeps /tmp.
+ */
+export function launchTmpRoot(
+  platform: NodeJS.Platform = process.platform,
+  homeDir: string = os.homedir(),
+): string {
+  return platform === 'linux' ? diskTmpRoot(homeDir) : TMP_ROOT
+}
+
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */
-export function launchOptions(agentId: string, name?: string): RunAgentOptions {
-  const options = name === undefined ? {} : { agentTmp: { name, pid: process.pid } }
+export function launchOptions(agentId: string, name?: string, tmp: LaunchTmp = {}): RunAgentOptions {
+  const options = name === undefined ? {} : { agentTmp: { ...tmp, name, pid: process.pid } }
   return {
     agentDir: agentDir(agentId),
     baseEnv: agentBaseEnv(process.env, undefined, options),
@@ -109,14 +131,39 @@ export function runAgentVerb(agentId: string): void {
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
   const shimmed = withShims(continued)
   const name = shimmed.env.AGENT_CHAT_NAME
-  const options = launchOptions(agentId, name)
+  const root = launchTmpRoot()
+  const options = launchOptions(agentId, name, { root })
   const plan = withScratchAddDir(shimmed, reviewerScratchDir({ ...options.baseEnv, ...shimmed.env }))
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  process.on('exit', () => {
-    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
-    if (name !== undefined) removeOwnTmpDir(name, agentId, process.pid, realExitTmpDeps(logEvent))
-  })
+  process.on('exit', launchExitHook(agentId, name, root))
   runAgent(plan, options)
+}
+
+export interface LaunchExitSteps {
+  reap: typeof reapOwnLaunch
+  removeTmp: typeof removeOwnTmpDir
+}
+
+const realExitSteps: LaunchExitSteps = { reap: reapOwnLaunch, removeTmp: removeOwnTmpDir }
+
+/**
+ * Reaps the launch's orphans, then removes its TMPDIR from the same root it was made under, and
+ * its Claude Code harness dir (CC-1266).
+ */
+export function launchExitHook(
+  agentId: string,
+  name: string | undefined,
+  root: string,
+  steps: LaunchExitSteps = realExitSteps,
+  homeDir: string = os.homedir(),
+): () => void {
+  return () => {
+    steps.reap(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
+    if (name === undefined) return
+    const deps = realExitTmpDeps(logEvent)
+    steps.removeTmp(name, agentId, process.pid, deps, root)
+    steps.removeTmp(name, agentId, process.pid, deps, diskHarnessRoot(homeDir))
+  }
 }
 
 function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {

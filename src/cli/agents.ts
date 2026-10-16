@@ -1,9 +1,14 @@
+import os from 'node:os'
 import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { porcelain, reclaim, sweepWorktrees, type SweptWorktree } from '../agents/isolation/sweep.js'
-import { BRANCH_PREFIX, DEFAULT_WORKTREE_BUDGET } from '../agents/isolation/worktree.js'
+import {
+  BRANCH_PREFIX,
+  DEFAULT_REVIEWER_WORKTREE_BUDGET,
+  DEFAULT_WORKTREE_BUDGET,
+} from '../agents/isolation/worktree.js'
 import {
   formatRows,
   lowDiskWarning,
@@ -15,7 +20,16 @@ import {
   type RepoHeadroom,
 } from '../agents/isolation/worktree-states.js'
 import { parseWorktreeList } from '../agents/seats/trees.js'
-import { resolveWorktreeBudget } from '../config.js'
+import { resolveReviewerWorktreeBudget, resolveWorktreeBudget, retireThresholdK } from '../config.js'
+import { loadResolvedConfig } from '../agents/burndown/settings-store.js'
+import {
+  contextKOf,
+  pastThreshold,
+  reportTargets,
+  retireCell,
+  retireDue,
+  type RetireReading,
+} from '../agents/retire-due.js'
 import { loadProfile, selectProfileNames } from '../agents/profiles.js'
 import {
   createProfileIndex,
@@ -28,6 +42,8 @@ import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName
 import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import { launchHereFields, requestSpawn } from '../server/caller-spawn.js'
 
 /**
  * The roster: durable lifecycle paired with ephemeral presence.
@@ -68,6 +84,7 @@ export async function agentLs(
       (states === undefined || states.has(pairPresence(a, { connected: connectedNames.has(a.name) }).status)),
   )
   const index = createProfileIndex()
+  const retire = options.format === 'line' ? new Map<string, RetireRow>() : await retireRows(agents)
 
   if (options.json) {
     const rows = agents.map(agent =>
@@ -75,6 +92,7 @@ export async function agentLs(
         agent,
         sessions.some(s => s.name === agent.name),
         index,
+        retire.get(agent.agentId),
       ),
     )
     console.log(JSON.stringify(rows, null, 2))
@@ -99,8 +117,10 @@ export async function agentLs(
     // which generation of it you are talking to. Both fields are broker-derived,
     // so they are fact rather than an agent's claim about itself.
     const lineage = agent.teleportFrom ? `  gen=${agent.generation} from=${agent.teleportFrom}` : ''
+    const row = retire.get(agent.agentId)
+    const ctx = row === undefined ? '' : retireCell(row, row.retireDue)
     console.log(
-      `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}`,
+      `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}${ctx === '' ? '' : `  ${ctx}`}`,
     )
     console.log(`${' '.repeat(16)} ${agent.cwd}`)
     // CC-100: the full dir, not just the account's short name — this is the
@@ -108,6 +128,84 @@ export async function agentLs(
     // makes urgent. Omitted when the row predates the field.
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
+  }
+}
+
+type RetireRow = RetireReading & { retireDue: boolean }
+
+const retirable = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
+
+/** A session id the budget reader refuses costs that row its fill, not the whole listing. */
+function readingOf(agent: AgentIdentity): RetireReading {
+  let contextK: number | null = null
+  try {
+    contextK = contextKOf(readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd))
+  } catch {
+    contextK = null
+  }
+  return { contextK, retireK: retireThresholdK(agent.profile) ?? null }
+}
+
+/**
+ * CC-290 b: each live agent's fill against its role's threshold. The broker is asked
+ * about a report only for an agent already past it, so a quiet roster costs no frames.
+ * `since` is the spawn, not the current run, so a resumed agent's earlier report counts.
+ */
+async function retireRows(agents: readonly AgentIdentity[]): Promise<Map<string, RetireRow>> {
+  const readings = agents.filter(retirable).map(agent => [agent, readingOf(agent)] as const)
+  const past = readings.filter(([, reading]) => pastThreshold(reading))
+  const reported =
+    past.length === 0
+      ? new Set<string>()
+      : await withBroker(b =>
+          reportedNames(
+            b,
+            past.map(([agent]) => agent),
+            tickReportTo(),
+          ),
+        )
+  return new Map(
+    readings.map(([agent, reading]) => [
+      agent.agentId,
+      { ...reading, retireDue: retireDue(reading, reported.has(agent.agentId)) },
+    ]),
+  )
+}
+
+async function reportedNames(
+  broker: BrokerClient,
+  agents: readonly AgentIdentity[],
+  reportTo: string | undefined,
+): Promise<Set<string>> {
+  const hits = await Promise.all(
+    agents.map(async agent => {
+      for (const to of reportTargets(agent.spawnedBy, reportTo)) {
+        if (await hasReported(broker, agent, to)) return [agent.agentId]
+      }
+      return []
+    }),
+  )
+  return new Set(hits.flat())
+}
+
+/** An older broker that refuses the frame shows the fill without retire-due rather than failing `agent ls`. */
+async function hasReported(broker: BrokerClient, agent: AgentIdentity, to: string): Promise<boolean> {
+  try {
+    const res = (await broker.request(
+      { t: 'reported', from: agent.name, to, since: agent.spawnedAt },
+      'reported_result',
+    )) as Extract<ServerMessage, { t: 'reported_result' }>
+    return res.reported
+  } catch {
+    return false
+  }
+}
+
+function tickReportTo(): string | undefined {
+  try {
+    return loadResolvedConfig().tick.reportTo
+  } catch {
+    return undefined
   }
 }
 
@@ -134,16 +232,16 @@ function rosterFilter(options: { mine?: boolean; spawner?: string; prefix?: stri
 }
 
 /** A transcript that cannot be read costs that row its model, not the whole listing. */
-function modelOrNull(agent: AgentIdentity): string | null {
+function modelOrNull(agent: AgentIdentity, index: ProfileIndex): string | null {
   try {
-    return observedModel(agent.cwd, agent.sessionId, agent.configDir) ?? null
+    return observedModel(agent.cwd, agent.sessionId, agent.configDir, index) ?? null
   } catch {
     return null
   }
 }
 
 /** One roster row for `agent ls --json`: everything the text view shows, as fields. */
-function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex) {
+function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex, retire?: RetireRow) {
   const { status } = pairPresence(agent, { connected })
   const transcript = findAgentTranscript(agent.cwd, agent.sessionId, agent.configDir, index)
   return {
@@ -154,7 +252,7 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     status,
     profile: agent.profile,
     surface: agent.surface,
-    model: modelOrNull(agent),
+    model: modelOrNull(agent, index),
     cwd: agent.cwd,
     sessionId: agent.sessionId,
     transcriptPath: agent.sessionId === '' ? null : transcript.path,
@@ -165,6 +263,9 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     teleportFrom: agent.teleportFrom ?? null,
     inferred: agent.exit?.inferred === true,
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
+    contextK: retire?.contextK ?? null,
+    retireK: retire?.retireK ?? null,
+    retireDue: retire === undefined || retire.contextK === null ? null : retire.retireDue,
   }
 }
 
@@ -270,12 +371,13 @@ async function headroomByRepo(swept: SweptWorktree[], root: string | null): Prom
   const roots = new Set(swept.map(e => e.gitRoot))
   if (root !== null) roots.add(root)
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
+  const reviewerBudget = resolveReviewerWorktreeBudget(DEFAULT_REVIEWER_WORKTREE_BUDGET)
   const repos: RepoHeadroom[] = []
   for (const gitRoot of roots) {
     const listed = parseWorktreeList(await porcelain(gitRoot).catch(() => ''))
     const nonSeat = listed.filter(t => !t.branch?.startsWith(BRANCH_PREFIX)).map(nonSeatRow)
     const seat = swept.filter(e => e.gitRoot === gitRoot).map(stateRow)
-    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, volumeFreeBytes(gitRoot)))
+    repos.push(repoHeadroom(gitRoot, [...seat, ...nonSeat], budget, reviewerBudget, volumeFreeBytes(gitRoot)))
   }
   return repos
 }
@@ -306,6 +408,18 @@ export function parseSpawnedAs(value: string): SpawnedAs {
   return spawnedAs
 }
 
+/**
+ * CC-1206: the agent identity a spawned agent's shell carries (`launch-plan.ts` sets both), so an
+ * agent's CLI spawn without `--spawned-as` is not taken for the human's. It only lowers trust: an
+ * agent that unsets its env is back to the broker's own checks.
+ */
+export function callerAgentField(env: NodeJS.ProcessEnv): { callerAgent?: string } {
+  const callerAgent = [env.AGENT_CHAT_NAME, env.AGENT_CHAT_AGENT_ID].find(
+    v => v !== undefined && v.trim() !== '',
+  )
+  return callerAgent === undefined ? {} : { callerAgent }
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
@@ -319,6 +433,7 @@ export async function agentSpawn(
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
+  // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
   options: {
     briefing?: string
     briefStdin?: boolean
@@ -328,6 +443,7 @@ export async function agentSpawn(
     surface?: SurfaceName
     spawnedAs?: SpawnedAs
     remoteControl?: boolean
+    host?: string
   } = {},
 ): Promise<void> {
   let brief: string
@@ -336,33 +452,35 @@ export async function agentSpawn(
   } catch (err) {
     fail((err as Error).message)
   }
-  const res = (await withBroker(b =>
-    // The human holds no registry entry (§6.4), so the broker has no cwd to read
-    // for them — send it, or the agent inherits the broker's arbitrary one.
-    b.request(
-      {
-        t: 'spawn',
-        name,
-        profile,
-        brief,
-        cwd: process.cwd(),
-        ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
-        ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
-        ...(options.task === undefined ? {} : { task: options.task }),
-        ...(options.role === undefined ? {} : { workRole: options.role }),
-        ...(options.surface === undefined ? {} : { surface: options.surface }),
-        ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
-        ...(options.remoteControl === true ? { remoteControl: true } : {}),
-        ...(process.env.CLAUDE_CONFIG_DIR === undefined
-          ? {}
-          : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
-      },
-      'spawn_result',
-    ),
-  )) as Extract<ServerMessage, { t: 'spawn_result' }>
+  const res = await withBroker(b =>
+    // The human holds no registry entry (§6.4), so the broker has no cwd or host to
+    // read for them — send both, or the agent inherits the broker's arbitrary ones.
+    requestSpawn(b, {
+      t: 'spawn',
+      name,
+      profile,
+      brief,
+      cwd: process.cwd(),
+      ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
+      ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+      ...(options.task === undefined ? {} : { task: options.task }),
+      ...(options.role === undefined ? {} : { workRole: options.role }),
+      ...(options.surface === undefined ? {} : { surface: options.surface }),
+      ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+      ...callerAgentField(process.env),
+      ...(options.remoteControl === true ? { remoteControl: true } : {}),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
+      ...(options.host === undefined ? {} : { host: options.host }),
+      callerHost: os.hostname(),
+      ...launchHereFields(),
+    }),
+  )
 
   for (const warning of res.warnings ?? []) console.log(warning)
-  console.log(res.ok ? `Spawned ${res.name} (${res.agentId}).` : `Not spawned: ${res.reason}`)
+  const on = res.host === undefined ? '' : ` on ${res.host}`
+  console.log(res.ok ? `Spawned ${res.name} (${res.agentId})${on}.` : `Not spawned: ${res.reason}`)
   if (!res.ok && res.code !== undefined)
     console.log(`code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`)
   process.exit(res.ok ? 0 : 1)

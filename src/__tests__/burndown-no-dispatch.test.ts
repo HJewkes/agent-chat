@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Refusal } from '../agents/burndown/eligibility.js'
-import { dueReasons, noDispatchReason } from '../agents/burndown/no-dispatch.js'
+import { dueReasons, noDispatchReason, refusalTally } from '../agents/burndown/no-dispatch.js'
 
 /** CC-859: the pure side of the seat's "dispatched nothing" line. */
 
@@ -47,6 +47,50 @@ describe('the reason line', () => {
     })
 
     expect(one?.key).toBe(two?.key)
+  })
+})
+
+describe('the refusal tally (CC-1186)', () => {
+  const of = (initiative: string, task: string | undefined, kind: Refusal['kind']): Refusal => ({
+    initiative,
+    ...(task === undefined ? {} : { task }),
+    kind,
+    reason: 'r',
+  })
+
+  it('counts a task refused once per slice and once on its row once, under its first kind', () => {
+    const refusals = [
+      of('demo', 'T', 'file-overlap'),
+      of('demo', 'T', 'role-cap'),
+      of('demo', 'T', 'claimed'),
+      of('demo', 'U', 'plan-blocked'),
+      of('-', undefined, 'plan-blocked'),
+    ]
+
+    const tally = refusalTally(refusals)
+
+    expect(noDispatchReason({ seat: 's', dispatched: 0, refusals })?.text).toMatch(
+      /; refusals plan-blocked 2, file-overlap 1$/,
+    )
+    expect(tally.reduce((sum, [, n]) => sum + n, 0)).toBe(3)
+  })
+
+  it('counts two refusals that name no task twice', () => {
+    const refusals = [of('-', undefined, 'plan-blocked'), of('-', undefined, 'plan-blocked')]
+
+    expect(refusalTally(refusals)).toEqual([['plan-blocked', 2]])
+  })
+
+  it('counts the same task id in two initiatives twice', () => {
+    const refusals = [of('one', 'T-1', 'claimed'), of('two', 'T-1', 'claimed')]
+
+    expect(refusalTally(refusals)).toEqual([['claimed', 2]])
+  })
+
+  it("leaves the stop to read every refusal, not only each task's first", () => {
+    const refusals = [of('demo', 'T', 'file-overlap'), of('demo', 'T', 'role-cap')]
+
+    expect(noDispatchReason({ seat: 's', dispatched: 0, refusals })?.text).toMatch(/; full cap: r;/)
   })
 })
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Pre-merge gate: prints a verdict line, then one final line, `OK ...` or `FAIL <reason>`.
 # Any gh, git or sqlite3 call that errors, or returns an unexpected shape, is a FAIL.
+# An owner-asked Shepherd hold is a FAIL, and so is any titan-factory answer but a timeline or "not registered".
 # usage: premerge <owner/repo> <pr> <head sha> <local clone> [reviewed head]
 set -u
 usage="usage: premerge <owner/repo> <pr> <head sha> <local clone> [reviewed head]"
@@ -9,8 +10,8 @@ R=$1 N=$2 S=$3 L=$4 RV=${5:-$3}
 [[ $R =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ $N =~ ^[0-9]+$ ]] && [[ $S =~ ^[0-9a-f]{40}$ ]] && [[ $RV =~ ^[0-9a-f]{40}$ ]] \
   || { echo "bad argument: $usage" >&2; exit 2; }
 DB=${EVENTS_DB:-${AGENT_CHAT_HOME:-$HOME/.agent-chat}/events.db}
-COORDS=${COORDINATORS:-}
-[ -n "$COORDS" ] || { echo "COORDINATORS unset: export the space-separated coordinator seat names" >&2; exit 2; }
+COORDS=${COORDINATORS:-$(agent-chat seats coordinators 2>/dev/null)}
+[ -n "$COORDS" ] || { echo "COORDINATORS unset and agent-chat seats coordinators gave no list" >&2; exit 2; }
 REVIEWER_PATTERN=${REVIEWER_PATTERN:-'(^rv-|-review(-r[0-9]+)?$)'}
 fail=()
 
@@ -192,6 +193,17 @@ pick_verdict() {
   done <<<"$rows"
 }
 
+# Only `shepherd owner-release` lifts an owner-asked hold (TP-2439). Exit 66 is "not registered with shepherd";
+# every other failure to read the timeline fails closed.
+check_owner_hold() {
+  local tl rc reason
+  tl=$(titan-factory shepherd timeline "$R#$N" --json 2>/dev/null); rc=$?
+  if [ "$rc" = 66 ]; then echo "  owner-hold: unregistered"; return; fi
+  reason=$(jq -er '.row | objects | .held.reason // "" | strings' <<<"$tl" 2>/dev/null) && [ "$rc" = 0 ] \
+    || { echo "  owner-hold: unknown"; fail+=("owner-hold unknown"); return; }
+  if [[ $reason == owner-asked:* ]]; then echo "  owner-hold: $reason"; fail+=("owner-hold $reason"); else echo "  owner-hold: none"; fi
+}
+
 # Fallback when no chat verdict counts (CC-817): a held Shepherd run's newest MERGE or FIX_FIRST timeline verdict.
 # A missing titan-factory, a failed call or an unheld run leaves id empty, so the result stays "no verdict".
 shepherd_verdict() {
@@ -236,6 +248,7 @@ ghjson "repos/$R/compare/$base...$S" '.behind_by|type=="number"' compare
 cmp=$(jq -r .behind_by <<<"$body")
 [ "$strict" = true ] && [ "$cmp" != 0 ] && fail+=("strict and behind_by=$cmp")
 fetch_commits
+check_owner_hold
 check_reviewed_head
 check_merge_tree
 check_verdict

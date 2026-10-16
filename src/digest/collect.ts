@@ -13,13 +13,15 @@ import type { Plan } from '../agents/burndown/plan.js'
 import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk } from '../agents/burndown/milestone-source.js'
 import { defaultAutonomyRoot } from '../agents/burndown/policy.js'
+import { claimHold, stallAgeMs } from '../agents/burndown/claim-hold.js'
 import { localDate } from '../agents/burndown/seat-tick.js'
 import { charterRules, planFromDisk, poolDir } from '../agents/burndown/tick.js'
 import { EMPTY_FACTS, readLedgerFacts } from './ledger.js'
 import { lookupPrs, type Search } from './prs.js'
+import { ownerRefusals } from './refusals.js'
 import { accountSpend } from './spend.js'
 import { doneTasks } from './tasks.js'
-import type { Digest, NamedItem } from './types.js'
+import type { Digest, NamedItem, StalledClaim } from './types.js'
 
 /** Gathers every digest section from its read-only source; a source that fails becomes a gap line. */
 
@@ -57,6 +59,24 @@ const awaitingMerge = (ledger: Ledger): NamedItem[] =>
       detail: `${c.initiative}, ${agentOf(c)} awaiting merge since ${c.phaseAt}`,
     }))
 
+/** CC-985: what each stalled claim holds, its class and age; the digest has no roster, so the hold is the ledger's. */
+export const stalledClaims = (ledger: Ledger, now: Date): StalledClaim[] =>
+  heldClaims(ledger)
+    .filter(c => isStalled(c, now))
+    .map(c => ({
+      taskId: c.taskId,
+      ...(c.slice === undefined ? {} : { slice: c.slice }),
+      initiative: c.initiative,
+      agentId: agentOf(c),
+      phase: c.phase,
+      phaseAt: c.phaseAt,
+      ...(c.stalledReason === undefined ? {} : { reason: c.stalledReason }),
+      cls: c.stalledClass ?? 'unclassed',
+      hold: claimHold(c),
+      ageMs: stallAgeMs(c, now),
+      ...(c.stale === undefined ? {} : { proposed: `${c.stale.class}: ${c.stale.proposed}` }),
+    }))
+
 const milestonesFromDisk = (now: Date): MilestoneReport[] =>
   milestoneReportFromDisk({
     autonomyRoot: defaultAutonomyRoot(),
@@ -85,11 +105,10 @@ export function collectDigest(options: CollectOptions): Digest {
     needsGrant: (planned?.refusals ?? [])
       .filter(r => r.kind === 'needs-grant')
       .map(r => ({ label: `${r.initiative} ${r.task ?? ''}`.trim(), detail: r.reason })),
+    heldForOwner: ownerRefusals(planned?.refusals ?? []),
     done: attempt(gaps, 'active-work tasks', [], () => doneTasks(activeWorkRoot(), sinceMs)),
     mergedPrs: prs.merged,
-    stalled: heldClaims(claims)
-      .filter(c => isStalled(c, new Date(now)))
-      .map(c => ({ ...c, agentId: agentOf(c) })),
+    stalled: stalledClaims(claims, new Date(now)),
     spend: Object.keys(pools.rules).map(account =>
       accountSpend(account, poolDir(pools.rules)(account), sinceMs, now),
     ),

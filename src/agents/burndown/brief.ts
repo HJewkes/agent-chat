@@ -7,6 +7,7 @@
 
 import { PROBE_SANDBOX_RULE } from '../return-contract-blocks.js'
 import { MAX_SLICE_POINTS } from './slice-lint.js'
+import { shepherdTarget, targetRef } from './shepherd.js'
 import type { StallCode } from './stall-code.js'
 
 /** What every agent the tick spawns needs to know about where it runs and who hears its report. */
@@ -18,6 +19,8 @@ export interface Seat {
   defaultBranch: string
   /** The repo `CLAUDE.md`'s verify-before-PR section, from `verifySection`, when the repo has one. */
   verifySteps?: string
+  /** The repo `CLAUDE.md`'s scoped pre-push checks, from `prePushSection`; workers run them under the machine rule. */
+  prePushChecks?: string
 }
 
 export interface TaskBrief extends Seat {
@@ -33,6 +36,8 @@ export interface TaskBrief extends Seat {
   slice?: { n: string; title: string; planPath: string }
   /** A branch a released earlier attempt left (CC-698); the worker reads it before starting over. */
   priorBranch?: string
+  /** CC-1158: the unmerged parent PR this slice is stacked on, and that PR's head branch. */
+  stackedOn?: { pr: string; branch: string }
 }
 
 export interface Answer {
@@ -100,17 +105,49 @@ function capLines(text: string, max: number, note: (kept: number, total: number)
 /** UTF-8 bytes of a repo verify section a brief embeds. The largest real one (agent-chat) is 1.1 kB. */
 export const VERIFY_STEPS_MAX_BYTES = 1_500
 
+/** UTF-8 bytes of a repo pre-push checks section a brief embeds. The titan-platform one is about 560 B. */
+export const PRE_PUSH_CHECKS_MAX_BYTES = 800
+
+/** The body of the first `## <heading>...` section of `claudeMd`, trimmed, or undefined when absent or empty. */
+function sectionBody(claudeMd: string, heading: string): string | undefined {
+  const match = new RegExp(`^## ${heading}[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm').exec(claudeMd)
+  const body = match?.[1]?.trim()
+  return body === '' ? undefined : body
+}
+
 /** The `## Verify ...` section of a repo `CLAUDE.md`, without its heading, or undefined when there is none. */
 export function verifySection(claudeMd: string): string | undefined {
-  const match = /^## Verify[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(claudeMd)
-  const body = match?.[1]?.trim()
-  if (body === undefined || body === '') return undefined
+  const body = sectionBody(claudeMd, 'Verify')
+  if (body === undefined) return undefined
   return capLines(
     body,
     VERIFY_STEPS_MAX_BYTES,
     (kept, total) =>
       `(Verify steps truncated to ${kept} of their ${total} bytes; read the rest under \`## Verify\` in the repo's \`CLAUDE.md\`.)`,
   )
+}
+
+/** CC-1084: the `## Pre-push checks` section of a repo `CLAUDE.md`, the scoped checks a named-tests worker runs. */
+export function prePushSection(claudeMd: string): string | undefined {
+  const body = sectionBody(claudeMd, 'Pre-push checks')
+  if (body === undefined) return undefined
+  return capLines(
+    body,
+    PRE_PUSH_CHECKS_MAX_BYTES,
+    (kept, total) =>
+      `(Pre-push checks truncated to ${kept} of their ${total} bytes; read the rest under \`## Pre-push checks\` in the repo's \`CLAUDE.md\`.)`,
+  )
+}
+
+/** What a worker brief takes from the repo `CLAUDE.md`; empty when the repo has none. */
+export function briefFacts(claudeMd: string | undefined): Pick<Seat, 'verifySteps' | 'prePushChecks'> {
+  if (claudeMd === undefined) return {}
+  const verifySteps = verifySection(claudeMd)
+  const prePushChecks = prePushSection(claudeMd)
+  return {
+    ...(verifySteps === undefined ? {} : { verifySteps }),
+    ...(prePushChecks === undefined ? {} : { prePushChecks }),
+  }
 }
 
 const UNATTENDED =
@@ -127,6 +164,19 @@ const syncStep = (defaultBranch: string): string =>
   `First step, before reading code: \`git fetch origin && git merge --ff-only origin/${defaultBranch}\`. ` +
   'The worktree is cut from a local HEAD that can lag origin.'
 
+/**
+ * CC-1158 (decision 275): a rebase moves the fork point Shepherd restacks the child from, so only merges. The
+ * merge comes first because a broker that predates `baseRef` cuts the tree from the default branch instead.
+ */
+const stackedSyncStep = ({ pr, branch }: { pr: string; branch: string }, defaultBranch: string): string =>
+  `First step: \`git fetch origin && git merge origin/${branch}\`; you are stacked on PR ${pr}. ` +
+  `Open with \`gh pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push. ` +
+  mergedParentLine(pr, defaultBranch)
+
+/** The parent can merge, and its branch be deleted, before the child opens its PR. */
+const mergedParentLine = (pr: string, defaultBranch: string): string =>
+  `If PR ${pr} has merged, \`git merge origin/${defaultBranch}\` and open with \`--base ${defaultBranch}\`, without \`--after\`.`
+
 const accountLine = (configDir: string): string =>
   `You run on the account at \`${configDir}\`. Your profile is a worker and cannot spawn agents; ` +
   'name any agent you need in your report.'
@@ -137,6 +187,11 @@ const parkLine = (handoff: string): string =>
 
 const verifyBlock = (steps: string | undefined): string[] =>
   steps === undefined ? [] : ['Verify before opening a PR, in this order (from the repo CLAUDE.md):', steps]
+
+const prePushBlock = (checks: string | undefined): string[] =>
+  checks === undefined
+    ? []
+    : ['Scoped pre-push checks (from the repo CLAUDE.md); run them before the first push:', checks]
 
 function reportContract(reportTo: string, lines: string): string {
   return (
@@ -149,9 +204,9 @@ function reportContract(reportTo: string, lines: string): string {
 const WORKER_REPORT = '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `PR: <url>`'
 
 const MACHINE_RULE =
-  'Machine rule, over any verify steps above: run named tests only, as ' +
+  'Machine rule, over any verify steps above: run named tests and the scoped pre-push checks above only, as ' +
   "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
-  'never the full suite or `npm run verify`, and never `run_in_background`.'
+  "never the full suite, `npm run verify` or the repo's whole verify chain, and never `run_in_background`."
 
 /** A slice registers with `--slice` so its merge notes the task instead of closing it. */
 function shepherdStep(t: TaskBrief): string {
@@ -159,9 +214,12 @@ function shepherdStep(t: TaskBrief): string {
     t.slice === undefined
       ? '--task <initiative>/<ID>'
       : `--slice ${t.slice.n} --task ${t.initiative}/${t.taskId}`
+  const parent = t.stackedOn === undefined ? undefined : shepherdTarget(t.stackedOn.pr)
+  const after = parent === undefined ? '' : ` --after ${targetRef(parent)}`
+  const merged = t.stackedOn === undefined ? '' : `${mergedParentLine(t.stackedOn.pr, t.defaultBranch)} `
   return (
-    `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target} ` +
-    '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
+    `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target}${after} ` +
+    `--implementer <your agent name> --kind <correctness|security|feature|refactor>\`. ${merged}Report \`PR: <url>\`, ` +
     '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
     '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
   )
@@ -176,6 +234,7 @@ function workerTail(t: TaskBrief): string[] {
     accountLine(t.configDir),
     parkLine(handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)),
     ...verifyBlock(t.verifySteps),
+    ...prePushBlock(t.prePushChecks),
     MACHINE_RULE,
     shepherdStep(t),
     '## Report',
@@ -200,18 +259,21 @@ function workerScope(t: TaskBrief): string {
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
  * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.8 kB, brief writer 11.1 kB, reviewer 2.6 kB),
- * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence, and
- * CC-713 the reviewer budget by the 264-byte probe-sandbox rule.
+ * plus headroom. TP-2395 raised the planner budget by the 269-byte security slice cap sentence,
+ * CC-713 the reviewer budget by the 264-byte probe-sandbox rule, CC-987 the planner budget by the
+ * 234-byte publish-split rule, CC-1158 the worker budget by 200 for a stacked slice's base and `--after`,
+ * CC-1084 the worker budget by 1,000 for a capped pre-push checks section (956 bytes measured),
+ * and CC-1259 the planner budget by 200 for the 190-byte overlapsAccepted sentence.
  */
-export const WORKER_BRIEF_MAX_BYTES = 12_000
-export const PLANNER_BRIEF_MAX_BYTES = 11_300
+export const WORKER_BRIEF_MAX_BYTES = 13_200
+export const PLANNER_BRIEF_MAX_BYTES = 11_800
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
   return [
     '## Scope',
     workerScope(t),
-    syncStep(t.defaultBranch),
+    t.stackedOn === undefined ? syncStep(t.defaultBranch) : stackedSyncStep(t.stackedOn, t.defaultBranch),
     '## Context',
     taskContext(t),
     ...workerTail(t),
@@ -236,9 +298,15 @@ function slicesRequirement(): string {
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
+    'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
+    'A slice sharing a file with an open PR on other lines may list it in `overlapsAccepted` as { pr, path, why }, ' +
+    'path an exact owns entry; any other overlap refuses. ' +
+    'A slice outside the task\'s repo sets "repo" to its checkout name; the plan\'s `Repo:` header is the default. ' +
     'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
     'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
     'The tick lints this block; a plan without it, or failing the lint, stalls. ' +
+    "A publish or release step is never a slice: file it as its own task tagged ops:publish whose done_when is 'publish <package> at <version>', " +
+    'with dep: on the build task; the consumer work is another task with dep: on the publish task. ' +
     'For kind security or a guard area (tool-guard, egress-scan, auth, credentials, allow/deny lists), keep each slice under about 400 non-generated lines ' +
     'and put a parser, matcher or list change in its own slice, apart from its wiring; Shepherd flags a larger one at open.'
   )
@@ -314,9 +382,9 @@ function cappedFence(label: string, text: string, max: number, rest: string): st
 
 /**
  * UTF-8 byte budget for a successor brief, held by the brief tests: capped question, answer or review text
- * and a capped verify section (10.9 kB after an answer, 7.5 kB after a review), plus headroom.
+ * and capped verify and pre-push checks sections (11.9 kB after an answer, 8.6 kB after a review), plus headroom.
  */
-export const SUCCESSOR_BRIEF_MAX_BYTES = 11_500
+export const SUCCESSOR_BRIEF_MAX_BYTES = 12_500
 
 export function successorAfterAnswer(t: TaskBrief, a: Answer): string {
   const handoff = handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)

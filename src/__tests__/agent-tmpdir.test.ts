@@ -6,6 +6,7 @@ import type { AgentIdentity } from '../protocol.js'
 import { agentEnv } from '../agents/agent-env.js'
 import {
   agentTmpPath,
+  diskTmpRoot,
   ensureAgentTmpDir,
   realTmpFs,
   removeAgentTmpDir,
@@ -16,6 +17,7 @@ import {
   type TmpStat,
 } from '../agents/agent-tmpdir.js'
 import { SWEEP_GRACE_MS } from '../agents/orphan-reap.js'
+import { agentTmpSweepRoots } from '../agents/orphan-sweep.js'
 
 const UID = 1000
 
@@ -51,7 +53,8 @@ class FakeFs implements TmpFs {
       .filter(p => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes('/'))
       .map(p => p.slice(path.length + 1))
   }
-  mkdir(path: string, mode: number): void {
+  mkdir(path: string, mode: number, recursive = false): void {
+    if (this.nodes.has(path) && recursive) return
     if (this.nodes.has(path)) throw Object.assign(new Error('exists'), { code: 'EEXIST' })
     this.made.push([path, mode])
     this.nodes.set(path, { kind: 'dir', uid: UID, mode })
@@ -97,6 +100,8 @@ const launch = (agentId: string, launcher: number) => ({
 })
 
 const DIR = '/tmp/ac-worker-4242'
+const DISK_ROOT = '/home/example/.cache/agent-chat/tmp'
+const DISK_DIR = `${DISK_ROOT}/ac-worker-4242`
 const target = { name: 'worker', pid: 4242, agentIds: new Set(['a1']) }
 const deps = (fs: FakeFs, table = procTable({})) => ({ fs, table, uid: UID, self: 1 })
 
@@ -172,6 +177,105 @@ describe('making the per-agent TMPDIR', () => {
   })
 })
 
+describe('a per-agent TMPDIR under the on-disk root (CC-1184)', () => {
+  const request = (fs: FakeFs, root: string) =>
+    ({ name: 'worker', pid: 4242, root, platform: 'linux', fs, uid: UID }) as const
+
+  it('creates the root and then the dir, both 0700', () => {
+    const fs = new FakeFs()
+
+    expect(ensureAgentTmpDir(request(fs, DISK_ROOT))).toBe(DISK_DIR)
+    expect(fs.made).toEqual([
+      [DISK_ROOT, 0o700],
+      [DISK_DIR, 0o700],
+    ])
+  })
+
+  it('reuses an existing root it owns', () => {
+    const fs = new FakeFs().add(DISK_ROOT)
+
+    expect(ensureAgentTmpDir(request(fs, DISK_ROOT))).toBe(DISK_DIR)
+    expect(fs.made).toEqual([[DISK_DIR, 0o700]])
+  })
+
+  it('will not use a root that is a symlink or another user’s', () => {
+    expect(ensureAgentTmpDir(request(new FakeFs().add(DISK_ROOT, 'symlink'), DISK_ROOT))).toBeUndefined()
+    expect(ensureAgentTmpDir(request(new FakeFs().add(DISK_ROOT, 'dir', 0), DISK_ROOT))).toBeUndefined()
+  })
+
+  it('refuses any other root without touching the fs', () => {
+    for (const root of [
+      '/etc',
+      'home/example/.cache/agent-chat/tmp',
+      '/home/example/../../etc/.cache/agent-chat/tmp',
+      '/home/example/.cache/agent-chat/tmp/',
+      '/home/example/.cache/other',
+    ]) {
+      const fs = new FakeFs()
+      expect(ensureAgentTmpDir(request(fs, root)), root).toBeUndefined()
+      expect(agentTmpPath('worker', 4242, root), root).toBeUndefined()
+      expect(fs.made, root).toEqual([])
+    }
+  })
+
+  it('removes exactly the disk dir at exit and leaves the /tmp one', () => {
+    const fs = new FakeFs().add(DISK_ROOT).add(DISK_DIR).add(DIR)
+
+    removeOwnTmpDir('worker', 'a1', 4242, { ...deps(fs), platform: 'linux', log: () => undefined }, DISK_ROOT)
+
+    expect(fs.removed).toEqual([DISK_DIR])
+    expect(fs.nodes.has(DIR)).toBe(true)
+  })
+
+  it('leaves the dir at exit when the disk root is a symlink (CC-1321)', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(DISK_DIR)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    removeOwnTmpDir(
+      'worker',
+      'a1',
+      4242,
+      { ...deps(fs), platform: 'linux', log: (e, d) => events.push([e, d]) },
+      DISK_ROOT,
+    )
+
+    expect(fs.removed).toEqual([])
+    expect(events).toEqual([
+      ['tmpdir_kept', { source: 'exit', agentId: 'a1', path: DISK_DIR, reason: 'root symlink' }],
+    ])
+  })
+})
+
+describe('a per-agent harness dir under the on-disk harness root (CC-1266)', () => {
+  const HARNESS_ROOT = '/home/example/.cache/agent-chat/harness'
+  const HARNESS_DIR = `${HARNESS_ROOT}/ac-worker-4242`
+  const request = (fs: FakeFs, root: string) =>
+    ({ name: 'worker', pid: 4242, root, platform: 'linux', fs, uid: UID }) as const
+
+  it('builds the leaf under the harness root', () => {
+    expect(agentTmpPath('worker', 4242, HARNESS_ROOT)).toBe(HARNESS_DIR)
+  })
+
+  it('creates the root and then the dir, both 0700', () => {
+    const fs = new FakeFs()
+
+    expect(ensureAgentTmpDir(request(fs, HARNESS_ROOT))).toBe(HARNESS_DIR)
+    expect(fs.made).toEqual([
+      [HARNESS_ROOT, 0o700],
+      [HARNESS_DIR, 0o700],
+    ])
+  })
+
+  it('refuses a root that only resembles the harness root', () => {
+    for (const root of [`${HARNESS_ROOT}X`, `${HARNESS_ROOT}/../tmp`, `${HARNESS_ROOT}/`]) {
+      const fs = new FakeFs()
+      expect(ensureAgentTmpDir(request(fs, root)), root).toBeUndefined()
+      expect(agentTmpPath('worker', 4242, root), root).toBeUndefined()
+      expect(fs.made, root).toEqual([])
+    }
+  })
+})
+
 describe('agentEnv with an agent launch', () => {
   const linux = (fs: FakeFs) => ({ name: 'worker', pid: 4242, platform: 'linux' as const, fs, uid: UID })
 
@@ -193,7 +297,7 @@ describe('agentEnv with an agent launch', () => {
     const env = agentEnv(parent, { agentTmp: linux(fs) })
 
     expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([DIR, DIR, DIR])
-    expect(fs.made).toEqual([[DIR, 0o700]])
+    expect(fs.made.filter(([dir]) => dir.startsWith('/tmp/'))).toEqual([[DIR, 0o700]])
   })
 
   it('never passes another agent’s dir on, even when its own cannot be made', () => {
@@ -219,7 +323,7 @@ describe('agentEnv with an agent launch', () => {
     )
 
     expect(env.TMPDIR).toBe('/home/example/.cache/rounds')
-    expect(fs.made).toEqual([])
+    expect(fs.made.filter(([dir]) => dir.startsWith('/tmp/'))).toEqual([])
   })
 
   it('keeps the macOS user temp dir', () => {
@@ -238,6 +342,81 @@ describe('agentEnv with an agent launch', () => {
     const env = agentEnv({ TMPDIR: '/tmp' }, { agentTmp: linux(new FakeFs().add(DIR, 'symlink')) })
 
     expect(env.TMPDIR).toBe('/tmp')
+  })
+})
+
+describe('agentEnv harness dir (CC-1266)', () => {
+  const HOME = '/home/example'
+  const HARNESS_DIR = `${HOME}/.cache/agent-chat/harness/ac-worker-4242`
+  const linux = (fs: FakeFs, root?: string) =>
+    ({
+      name: 'worker',
+      pid: 4242,
+      platform: 'linux',
+      fs,
+      uid: UID,
+      ...(root === undefined ? {} : { root }),
+    }) as const
+  const apart = (a: string | undefined, b: string | undefined): boolean =>
+    a !== undefined && b !== undefined && a !== b && !a.startsWith(`${b}/`) && !b.startsWith(`${a}/`)
+
+  it('puts the harness dir on disk, apart from a /tmp scratch dir', () => {
+    const fs = new FakeFs()
+
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(fs) })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+    expect(env.TMPDIR).toBe(DIR)
+    expect(apart(env.CLAUDE_CODE_TMPDIR, env.TMPDIR)).toBe(true)
+    expect(fs.made).toContainEqual([HARNESS_DIR, 0o700])
+  })
+
+  it('keeps the harness dir apart from scratch on the disk root', () => {
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(new FakeFs(), diskTmpRoot(HOME)) })
+
+    expect(env.TMPDIR).toBe(DISK_DIR)
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+    expect(apart(env.CLAUDE_CODE_TMPDIR, env.TMPDIR)).toBe(true)
+  })
+
+  it('replaces another launch’s harness dir with its own', () => {
+    const parent = { HOME, CLAUDE_CODE_TMPDIR: `${HOME}/.cache/agent-chat/harness/ac-lead-123` }
+
+    const env = agentEnv(parent, { agentTmp: linux(new FakeFs()), tmpDir: () => '/tmp' })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(HARNESS_DIR)
+  })
+
+  it('keeps an operator’s CLAUDE_CODE_TMPDIR and makes no harness dir', () => {
+    const fs = new FakeFs()
+
+    const env = agentEnv(
+      { HOME, CLAUDE_CODE_TMPDIR: `${HOME}/cc` },
+      { agentTmp: linux(fs), tmpDir: () => '/tmp' },
+    )
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBe(`${HOME}/cc`)
+    expect(fs.made.filter(([dir]) => dir.includes('/harness'))).toEqual([])
+  })
+
+  it('leaves it unset when the harness dir cannot be made, without touching TMPDIR', () => {
+    const fs = new FakeFs().add(HARNESS_DIR, 'symlink')
+
+    const env = agentEnv({ HOME, TMPDIR: '/tmp' }, { agentTmp: linux(fs) })
+
+    expect(env.CLAUDE_CODE_TMPDIR).toBeUndefined()
+    expect(env.TMPDIR).toBe(DIR)
+  })
+
+  it('leaves it unset off Linux or for an env with no launch', () => {
+    const darwin = agentEnv(
+      { HOME },
+      { agentTmp: { ...linux(new FakeFs()), platform: 'darwin' }, tmpDir: () => '/x' },
+    )
+    const none = agentEnv({ HOME }, { tmpDir: () => '/tmp' })
+
+    expect(darwin.CLAUDE_CODE_TMPDIR).toBeUndefined()
+    expect(none.CLAUDE_CODE_TMPDIR).toBeUndefined()
   })
 })
 
@@ -337,6 +516,64 @@ describe('removing a per-agent TMPDIR', () => {
     const table = procTable({ 4242: { env: launch('a1', 4242), cwd: '/home/example', ppid: 1 } })
 
     expect(removeAgentTmpDir(target, { ...deps(fs, table), self: 4242 })).toMatchObject({ removed: true })
+  })
+})
+
+describe('removing a per-agent TMPDIR under an unsafe disk root (CC-1321)', () => {
+  const rootTarget = { ...target, root: DISK_ROOT }
+
+  it('refuses to remove through a symlinked disk root', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toEqual({
+      removed: false,
+      path: DISK_DIR,
+      reason: 'root symlink',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('refuses to remove under a disk root another user owns', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'dir', 0).add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({
+      removed: false,
+      reason: 'root owned by uid 0',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('refuses to remove under a disk root that is not a directory', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'file').add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({
+      removed: false,
+      reason: 'root not a directory',
+    })
+    expect(fs.removed).toEqual([])
+  })
+
+  it('treats a missing disk root as nothing to do', () => {
+    const fs = new FakeFs()
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toEqual({
+      removed: false,
+      path: DISK_DIR,
+      reason: 'missing',
+    })
+  })
+
+  it('still removes under /tmp, whose owner is root', () => {
+    const fs = new FakeFs().add(DIR)
+
+    expect(removeAgentTmpDir(target, deps(fs))).toMatchObject({ removed: true, path: DIR })
+  })
+
+  it('removes under an own disk root', () => {
+    const fs = new FakeFs().add(DISK_ROOT).add(DISK_DIR)
+
+    expect(removeAgentTmpDir(rootTarget, deps(fs))).toMatchObject({ removed: true, path: DISK_DIR })
+    expect(fs.removed).toEqual([DISK_DIR])
   })
 })
 
@@ -546,6 +783,87 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
         }),
       ],
     ])
+  })
+
+  it('removes a finished agent’s dir under each root it is given', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11').add(DISK_ROOT).add(`${DISK_ROOT}/ac-worker-12`)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: ['/tmp', DISK_ROOT],
+    })
+
+    expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
+  })
+
+  it('does not sweep through a symlinked disk root (CC-1321)', () => {
+    const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(`${DISK_ROOT}/ac-worker-12`)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: [DISK_ROOT],
+    })
+
+    expect(fs.removed).toEqual([])
+    expect(events).toContainEqual([
+      'tmpdir_kept',
+      expect.objectContaining({ source: 'sweep', reason: 'root symlink' }),
+    ])
+  })
+
+  it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', () => {
+    const dir = `${DISK_ROOT}/ac-seat-a-impl-4242`
+    const fs = new FakeFs().add(DISK_ROOT).add(dir)
+    const events: Array<[string, Record<string, unknown>]> = []
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'seat-a-impl', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e, d) => events.push([e, d]),
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([dir])
+    expect(events).toContainEqual(['tmpdir_removed', expect.objectContaining({ source: 'sweep', path: dir })])
+  })
+
+  it('removes a finished agent’s harness dir and keeps a live agent’s (CC-1266)', () => {
+    const harness = '/home/example/.cache/agent-chat/harness'
+    const fs = new FakeFs().add(harness).add(`${harness}/ac-worker-4242`).add(`${harness}/ac-lead-77`)
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited'), row('a2', 'lead', 'live')],
+      now: () => now,
+      ...deps(fs),
+      log: () => undefined,
+      roots: agentTmpSweepRoots('/home/example'),
+    })
+
+    expect(fs.removed).toEqual([`${harness}/ac-worker-4242`])
+    expect(fs.nodes.has(`${harness}/ac-lead-77`)).toBe(true)
+  })
+
+  it('skips a root that does not exist', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11')
+
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: () => undefined,
+      roots: [DISK_ROOT, '/tmp'],
+    })
+
+    expect(fs.removed).toEqual(['/tmp/ac-worker-11'])
   })
 
   it('does nothing when no agent is finished', () => {

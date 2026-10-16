@@ -48,15 +48,20 @@ export interface PoolPick {
 
 const noRoute = (reason: string): PoolPick => ({ order: [], reason, candidates: [] })
 
-/** The pools `funds` lets pay for all of `initiatives`; undefined is every pool. */
-function fundedPools(funds: FundsMap, initiatives: readonly string[]): Set<string> | undefined {
-  const lists = (
-    initiatives.length === 0 ? [funds.fallback] : initiatives.map(i => funds.only.get(i) ?? funds.fallback)
-  ).filter(list => list !== undefined)
-  const [first, ...rest] = lists
-  if (first === undefined) return undefined
-  return new Set(first.filter(pool => rest.every(list => list.includes(pool))))
+/**
+ * Whether `funds` lets `pool` pay for `initiative`'s work: the initiative's own entry, else `default`; with neither,
+ * every pool may. A human-only initiative has no pool, and an undefined initiative reads `default`. The broker's pick
+ * and the burndown tick (CC-1145) both judge funding by this one rule.
+ */
+export function poolFunds(funds: FundsMap, pool: string, initiative: string | undefined): boolean {
+  if (initiative !== undefined && funds.never.includes(initiative)) return false
+  const list = (initiative === undefined ? undefined : funds.only.get(initiative)) ?? funds.fallback
+  return list === undefined || list.includes(pool)
 }
+
+/** Whether `pool` may pay for all of `initiatives`; none reads `default`. */
+const fundsAll = (funds: FundsMap, pool: string, initiatives: readonly string[]): boolean =>
+  (initiatives.length === 0 ? [undefined] : initiatives).every(i => poolFunds(funds, pool, i))
 
 function readingSkip(pool: Pool, row: PacePool | undefined, now: number): string | undefined {
   if (row === undefined) return 'no pace row'
@@ -97,10 +102,10 @@ function ordered(eligible: Eligible[], home: string | undefined): { order: strin
 function skipReason(
   pool: Pool,
   row: PacePool | undefined,
-  funded: Set<string> | undefined,
+  funds: FundsMap,
   input: PoolPickInput,
 ): string | undefined {
-  if (funded !== undefined && !funded.has(pool.name)) return 'not in the funds map for this work'
+  if (!fundsAll(funds, pool.name, input.initiatives)) return 'not in the funds map for this work'
   const reading = readingSkip(pool, row, input.now)
   if (reading !== undefined) return reading
   return input.trusted(pool) ? undefined : 'its config dir does not trust the cwd'
@@ -113,14 +118,38 @@ export function pickPool(input: PoolPickInput): PoolPick {
   if (funds === undefined) return noRoute('the charter has no funds map')
   const humanOnly = input.initiatives.find(i => funds.never.includes(i))
   if (humanOnly !== undefined) return noRoute(`initiative ${humanOnly} is human-only`)
-  const funded = fundedPools(funds, input.initiatives)
   const eligible: Eligible[] = []
   const candidates = input.pools.map((pool): PoolCandidate => {
     const row = pace.pools.get(pool.name)
-    const skip = skipReason(pool, row, funded, input)
+    const skip = skipReason(pool, row, funds, input)
     const behind = row === undefined ? {} : { behind: row.behind }
     if (row !== undefined && skip === undefined) eligible.push({ pool: pool.name, row })
     return { pool: pool.name, ...behind, ...(skip === undefined ? {} : { skip }) }
   })
-  return { ...ordered(eligible, input.home), candidates }
+  const kept = oneByAccount(eligible, input.home)
+  return {
+    ...ordered(
+      eligible.filter(e => kept.get(e.pool) === e.pool),
+      input.home,
+    ),
+    candidates: candidates.map(c => sameAccountSkip(c, kept)),
+  }
+}
+
+/**
+ * CC-1289: pools whose pace rows share an account are one budget, so the pick offers one of them: the home pool when
+ * it is eligible, else the first in seat order. Maps each eligible pool to the pool kept for its account.
+ */
+function oneByAccount(eligible: readonly Eligible[], home: string | undefined): Map<string, string> {
+  const accountOf = (e: Eligible): string => e.row.account ?? e.pool
+  const keeper = new Map<string, string>()
+  for (const e of eligible) if (e.pool === home) keeper.set(accountOf(e), e.pool)
+  for (const e of eligible) if (!keeper.has(accountOf(e))) keeper.set(accountOf(e), e.pool)
+  return new Map(eligible.map(e => [e.pool, keeper.get(accountOf(e)) ?? e.pool]))
+}
+
+function sameAccountSkip(candidate: PoolCandidate, kept: Map<string, string>): PoolCandidate {
+  const keeper = kept.get(candidate.pool)
+  if (keeper === undefined || keeper === candidate.pool) return candidate
+  return { ...candidate, skip: `same account as ${keeper}` }
 }

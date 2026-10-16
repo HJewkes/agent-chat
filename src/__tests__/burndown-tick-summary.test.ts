@@ -106,6 +106,7 @@ describe('the tick summary row', () => {
       refusals: { untriaged: 1, 'role-cap': 2, 'plan-blocked': 1 },
       roles: { used: { implementers: 1, reviewers: 1, planners: 0 }, cap: CAPS },
       registrations: { ok: 1, refused: 1, failed: 0 },
+      binding: null,
     })
   })
 
@@ -223,6 +224,35 @@ describe('registration recording', () => {
     expect(seatOf({ ...registration, implementer: 'st-u-t-4' })).toBe('seat-u')
     expect(seatOf({ ...registration, implementer: 'st-t-4' })).toBe('seat-t')
     expect(seatOf({ ...registration, implementer: 'xy-t-4' })).toBeUndefined()
+  })
+})
+
+describe('the service-check read on the row (CC-1127)', () => {
+  it('records a stopped tick with its cause and stopped true', () => {
+    const serviceCheck = { cause: 'serve down', stopped: true, message: 'GET /health refused' }
+
+    const row = tickSummary(inputs({ serviceCheck }))
+
+    expect(row.serviceCheck).toEqual(serviceCheck)
+  })
+
+  it('records an ok tick with a null cause', () => {
+    const row = tickSummary(inputs({ serviceCheck: { cause: null, stopped: false, message: 'ok' } }))
+
+    expect(row.serviceCheck).toEqual({ cause: null, stopped: false, message: 'ok' })
+  })
+
+  it('keeps the message to one line of at most 200 chars', () => {
+    const message = `first\nsecond ${'x'.repeat(300)}`
+
+    const row = tickSummary(inputs({ serviceCheck: { cause: 'unreadable', stopped: false, message } }))
+
+    expect(row.serviceCheck?.message).toHaveLength(200)
+    expect(row.serviceCheck?.message.startsWith('first second x')).toBe(true)
+  })
+
+  it('omits the field when the tick made no read', () => {
+    expect(tickSummary(inputs())).not.toHaveProperty('serviceCheck')
   })
 })
 

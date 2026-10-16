@@ -155,7 +155,8 @@ export function readSwapUsage(
 }
 
 export interface MachineStatus {
-  headlessAgents: { live: number; limit: number }
+  /** `live` is null when the broker's roster could not be read, so the count is unknown, not zero. */
+  headlessAgents: { live: number | null; limit: number }
   memoryFree: { percent: number | null; limit: number; error?: string }
   /** Reported only; no limit applies. */
   swap: { usedPercent: number | null; error?: string }

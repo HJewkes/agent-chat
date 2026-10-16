@@ -15,7 +15,13 @@ export const SEAT_HOLD_MAX_AGE_MS = 24 * 3_600_000
 /** `meta.held` on a message row the hold wrote. */
 export const SEAT_HOLD_MARK = 'seat_dark'
 
-export type HoldVerdict = { hold: true } | { hold: false; reason: string }
+/** Where a dark episode began: the log id inbox reads start after, and when. */
+export interface DarkEpisode {
+  id: number
+  at: number
+}
+
+export type HoldVerdict = { hold: true; dark: DarkEpisode } | { hold: false; reason: string }
 
 /** Undefined when `name` has no dark episode on record, which leaves the send to fail as it always has. */
 export function holdVerdict(events: EventStore, name: string, now: number): HoldVerdict | undefined {
@@ -31,7 +37,7 @@ export function holdVerdict(events: EventStore, name: string, now: number): Hold
       hold: false,
       reason: `no active session named "${name}", and its hold is full (${SEAT_HOLD_MAX} messages)`,
     }
-  return { hold: true }
+  return { hold: true, dark }
 }
 
 /** What to push to a seat registering out of the dark episode that began at log id `darkId`: oldest first. */

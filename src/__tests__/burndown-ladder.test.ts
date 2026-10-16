@@ -436,7 +436,9 @@ describe('ladderActions rung 3', () => {
     expect(after.claims[0]).toMatchObject({ stalledClass: 'stalled', stallCode: 'phase-timeout' })
     expect(after.claims[0]?.stalledReason).toMatch(/^phase-timeout: ladder exhausted/)
     expect(after.ladder?.[KEY]).toMatchObject({ respawns: 1, releases: 1, owner: NOW.toISOString() })
-    expect((seatEvents(before, after, []).alpha ?? []).map(e => e.kind)).toEqual(['stalled'])
+    expect((seatEvents(before, after, [], {}, { now: NOW }).alpha ?? []).map(e => e.kind)).toEqual([
+      'stalled',
+    ])
   })
 })
 

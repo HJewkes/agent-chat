@@ -1,56 +1,48 @@
-import { spawnSync } from 'node:child_process'
-import { pinGitProtocols } from '../../git.js'
+import { appendCall, type GhCallLine } from '../../gh-calls/log.js'
+import { shimCallLine } from '../../gh-shim/call-log.js'
+import { callShape } from '../../gh-shim/call-shape.js'
+import { run as baseRun, type Runner } from '../../exec.js'
+
+// Kept so burndown and its tests need no import churn during the NA3 port freeze; C3 (CC-1197) removes it.
+export {
+  IDENTITY_ENV,
+  childEnv,
+  describeExecFailure,
+  type ExecFailureContext,
+  type RunOptions,
+  type RunResult,
+  type Runner,
+} from '../../exec.js'
+
+export const BURNDOWN_CALLER = 'burndown-tick'
+
+export type GhCallSink = (line: GhCallLine) => void
+
+const fileSink: GhCallSink = line => void appendCall(line)
 
 /**
- * The tick's only way to run a subprocess (`git`, `gh`). Argv only, a
- * timeout, and an environment without the agent-chat identity: a child that
- * inherits `AGENT_CHAT_NAME`/`AGENT_CHAT_AGENT_ID` registers as its parent and
- * displaces it (CC-174), and a tick run from an agent's shell carries both.
- * GIT_ALLOW_PROTOCOL is pinned so its git never runs an `ext::` remote (CC-1095).
+ * Wraps a runner so every `gh` call that reaches GitHub appends one gh-calls v1 line (TP-1172 c).
+ * Stderr is only classified into `limit`, never stored, since it can quote content.
  */
-
-export const IDENTITY_ENV = ['AGENT_CHAT_NAME', 'AGENT_CHAT_AGENT_ID'] as const
-
-export function childEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env, GIT_ALLOW_PROTOCOL: pinGitProtocols(env.GIT_ALLOW_PROTOCOL) }
-  for (const key of IDENTITY_ENV) delete out[key]
-  return out
-}
-
-export interface RunResult {
-  status: number | null
-  stdout: string
-  /** Read only to classify a failure (an HTTP status); never relayed, since it can quote content. */
-  stderr?: string
-  /** Set when the child was killed for outliving its timeout, so a caller can tell "slow" from "broken" (CC-1125). */
-  timedOut?: boolean
-}
-
-export interface RunOptions {
-  /** Overrides the default 15 s for one call whose child is known to run longer. */
-  timeoutMs?: number
-}
-
-export type Runner = (bin: string, args: string[], cwd?: string, options?: RunOptions) => RunResult
-
-const TIMEOUT_MS = 15_000
-/** `shepherd status --json` lists finished runs too and passed Node's 1 MiB default (CC-1149); same bound as egress-runner. */
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024
-
-/** A spawn failure (missing binary, timeout) is a non-zero result, never a throw: callers treat it as "could not tell". */
-export const run: Runner = (bin, args, cwd, options) => {
-  const result = spawnSync(bin, args, {
-    cwd,
-    env: childEnv(),
-    encoding: 'utf8',
-    timeout: options?.timeoutMs ?? TIMEOUT_MS,
-    maxBuffer: MAX_OUTPUT_BYTES,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  return {
-    status: result.error === undefined ? result.status : null,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
+export function loggingRunner(
+  inner: Runner,
+  sink: GhCallSink = fileSink,
+  clock: () => number = Date.now,
+): Runner {
+  return (bin, args, cwd, options) => {
+    const shape = bin === 'gh' ? callShape(args) : undefined
+    if (shape === undefined) return inner(bin, args, cwd, options)
+    const started = clock()
+    const result = inner(bin, args, cwd, options)
+    const outcome = {
+      exitCode: result.status ?? -1,
+      stdout: result.stdout,
+      stderr: result.stderr ?? '',
+      ms: clock() - started,
+    }
+    sink(shimCallLine(BURNDOWN_CALLER, shape, outcome))
+    return result
   }
 }
+
+export const run: Runner = loggingRunner(baseRun)

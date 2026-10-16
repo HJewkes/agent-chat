@@ -292,7 +292,6 @@ describe('the bypass guard leaves ordinary commands alone', () => {
     'echo a | xargs -n 1 cat push-verify.txt',
     'xargs --process-slot-var=V --max-args=1 echo',
     'git ls-files | xargs grep foo',
-    'echo origin | xargs -I {} git push {}',
     'xargs -n 1 git status',
   ])('%s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
@@ -2578,7 +2577,6 @@ describe('a config key the guard does not list as inert (TP-636)', () => {
     'git -c protocol.file.allow=always submodule update',
     'git -c protocol.allow=never fetch origin',
     'git -c advice.detachedHead=false checkout x',
-    'git -c safe.directory="$PWD" status',
     'git -c color.diff.meta="$C" log',
     'git -c commit.gpgSign=false commit -m x',
     'git -c remote.o.url="$U" fetch o',
@@ -2627,10 +2625,14 @@ describe('a config value git clone applies before it fetches (TP-636)', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
 
+  it('denies a repository URL the guard cannot read (TP-2444)', () => {
+    expect(checkCommand('git clone -b main --depth=1 "$URL" x', ctx())).toBe(REASONS.remoteUrlUnresolved)
+  })
+
   it.each([
     'git clone -c core.sshCommand="ssh -i key" ssh://h/r x',
     'git clone -qc core.sshCommand="ssh -i key" ssh://h/r x',
-    'git clone -b main --depth=1 "$URL" x',
+    'git clone -b main --depth=1 https://github.com/o/r "$DIR"',
     'git clone -o c "core.sshCommand=git push --no-verify"',
     'git clone --config user.name=x /r x',
     'git clone /r x -- -c',

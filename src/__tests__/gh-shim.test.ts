@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseRequest } from '../gh-shim/argv.js'
 import { writeGhShim } from '../gh-shim/install.js'
+import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -94,6 +95,9 @@ beforeEach(() => {
     PATH: [shimDir, fakeDir, '/usr/bin', '/bin'].join(':'),
     FAKE_GH_LOG: logFile,
     FAKE_GH_FIXTURES: fixturesFile,
+    XDG_STATE_HOME: path.join(dir, 'state'),
+    // Port 1 refuses at once, so a live Shepherd serve's ghBudget never gates these reads.
+    [GH_BUDGET_URL_ENV]: 'http://127.0.0.1:1/rpc/shepherd.ghBudget',
   }
 })
 
@@ -115,13 +119,14 @@ const calls = (): string[][] =>
         .map(line => JSON.parse(line) as string[])
     : []
 
-/** Every call the shim made is `gh api <path>` with a REST path, which is the whole point of it. */
+/** Every call the shim made is `gh api <path> -i` with a REST path, which is the whole point of it. */
 function expectRestOnly(): void {
   expect(calls().length).toBeGreaterThan(0)
   for (const argv of calls()) {
-    expect(argv).toHaveLength(2)
+    expect(argv).toHaveLength(3)
     expect(argv[0]).toBe('api')
     expect(argv[1]).toMatch(/^repos\//)
+    expect(argv[2]).toBe('-i')
   }
 }
 
@@ -422,7 +427,7 @@ describe('gh shim passing commands through to the real gh', () => {
     const result = gh({}, 'pr', 'view', '404', '--repo', 'acme/widgets', '--json', 'number')
 
     expect(calls()).toEqual([
-      ['api', `${REPO}/pulls/404`],
+      ['api', `${REPO}/pulls/404`, '-i'],
       ['pr', 'view', '404', '--repo', 'acme/widgets', '--json', 'number'],
     ])
     expect(result.stdout).toBe('real-gh pr view 404 --repo acme/widgets --json number\n')

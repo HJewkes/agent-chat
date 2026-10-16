@@ -31,6 +31,51 @@ describe('a slice PR against its owns', () => {
     ])
   })
 
+  describe('a companion carries a dir segment of its owned file before the name (CC-832)', () => {
+    it('reports a test whose name only ends with the owned stem', () => {
+      expect(outsideOwns(['src/__tests__/launch-plan.test.ts'], ['src/agents/burndown/plan.ts'])).toEqual([
+        'src/__tests__/launch-plan.test.ts',
+      ])
+      expect(outsideOwns(['src/__tests__/exit-report.test.ts'], ['src/agents/burndown/report.ts'])).toEqual([
+        'src/__tests__/exit-report.test.ts',
+      ])
+    })
+
+    it('reports a test whose prefix is not a dir segment of the owned file', () => {
+      expect(
+        outsideOwns(['src/__tests__/mirror-launchd.test.ts'], ['src/agents/burndown/launchd.ts']),
+      ).toEqual(['src/__tests__/mirror-launchd.test.ts'])
+    })
+
+    it('allows a test with words between the dir segment and the owned stem', () => {
+      expect(
+        outsideOwns(['src/__tests__/burndown-claim-advance.test.ts'], ['src/agents/burndown/advance.ts']),
+      ).toEqual([])
+    })
+
+    it('allows a test named for a hyphenated owned stem under its dir segment', () => {
+      expect(
+        outsideOwns(['src/__tests__/burndown-owns-fence.test.ts'], ['src/agents/burndown/owns-fence.ts']),
+      ).toEqual([])
+    })
+
+    it("allows a test prefixed with a dir's singular or its leading word", () => {
+      expect(outsideOwns(['src/__tests__/seat-status.test.ts'], ['src/agents/seats/status.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/agent-identity.test.ts'], ['src/agents/identity.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/agent-park.test.ts'], ['src/agents/isolation/park.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/leak-scan.test.ts'], ['src/leak-guard/scan.ts'])).toEqual([])
+      expect(outsideOwns(['src/__tests__/seat-watchdog-lock.test.ts'], ['src/agents/seats/lock.ts'])).toEqual(
+        [],
+      )
+    })
+
+    it('still reports a prefix that is only a part of a dir name past its leading word', () => {
+      expect(outsideOwns(['src/__tests__/guard-scan.test.ts'], ['src/leak-guard/scan.ts'])).toEqual([
+        'src/__tests__/guard-scan.test.ts',
+      ])
+    })
+  })
+
   it("allows a test named for a wildcard entry's dir, and reports one named for another", () => {
     const files = ['src/__tests__/burndown-owns-fence.test.ts', 'src/__tests__/seats-owns.test.ts']
 
@@ -58,5 +103,54 @@ describe('a slice PR against its owns', () => {
   it('keeps a file the implicit allowlist covers protected for PR adoption', () => {
     expect(outsideOwns(['audit/spawn-doors.json'], [])).toEqual([])
     expect(isProtectedPath('audit/spawn-doors.json')).toBe(true)
+  })
+
+  describe('generated api declarations and lockfiles (CC-1150 d)', () => {
+    const SRC_OWNS = ['packages/code-graph/src/a.ts']
+
+    it('allows a generated api d.ts and lockfiles without owns, at any depth and at the root', () => {
+      const files = [
+        'packages/code-graph/api/index.d.ts',
+        'api/index.d.ts',
+        'pnpm-lock.yaml',
+        'packages/x/pnpm-lock.yaml',
+        'package-lock.json',
+        'packages/x/package-lock.json',
+        'yarn.lock',
+        'packages/x/yarn.lock',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual([])
+    })
+
+    it('still reports a source file under api/, a d.ts outside api/, and a nested api d.ts', () => {
+      const files = [
+        'packages/code-graph/api/index.ts',
+        'packages/code-graph/src/types.d.ts',
+        'packages/code-graph/api/nested/deep.d.ts',
+        'packages/code-graph/api/index.d.ts.map',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual(files)
+    })
+
+    it('still reports a path that only looks like a lockfile', () => {
+      const files = [
+        'lockfile.json',
+        'package-lock.json.bak',
+        'my-package-lock.json',
+        'src/pnpm-lock.yaml.ts',
+        'notyarn.lock',
+        'pnpm-lock.yml',
+      ]
+
+      expect(outsideOwns(files, SRC_OWNS)).toEqual(files)
+    })
+
+    it('keeps lockfiles and package manifests protected for PR adoption', () => {
+      expect(outsideOwns(['package-lock.json'], [])).toEqual([])
+      expect(isProtectedPath('package-lock.json')).toBe(true)
+      expect(isProtectedPath('packages/x/package-lock.json')).toBe(true)
+    })
   })
 })

@@ -461,3 +461,87 @@ describe('a process substitution is no variable name (TP-2371 final round)', () 
     },
   )
 })
+
+describe('git clone of a repository the guard cannot read (TP-2444)', () => {
+  it.each([
+    'git clone "$U"',
+    'git clone "$U" d',
+    'git clone "${U}" d',
+    'git clone "$(cat u)" d',
+    'git clone x"$U" d',
+    'git clone --bare "$U"',
+    'git clone --mirror "$U"',
+    'git clone -o up -b main "$U" d',
+    'git clone --origin=up --depth 1 "$U"',
+    'git clone -- "$U" d',
+    'git -C /tmp clone "$U"',
+    'git clone --template=t --reference /r "$U" d',
+    'git clone -qb main "$U"',
+    'git clone --frobnicate "$U" d',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git clone https://github.com/o/r "$DIR"',
+    'git clone -b main https://github.com/o/r',
+    'git clone --reference "$R" https://github.com/o/r d',
+    'git clone -o "$O" https://github.com/o/r',
+    'git clone -h',
+    'git clone --frobnicate https://github.com/o/r d',
+    'git clone --recurse-submodules=p https://github.com/o/r d',
+    'gh repo clone "$R"',
+    'gh repo clone o/r "$DIR"',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it('keeps gitConfigUnresolved for a word the shell may split', () => {
+    expect(hookReason('git clone $U d')).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each([
+    'git clone -c remote.up.url="$U" https://github.com/o/r',
+    'git clone -c remote.origin.pushurl="$U" https://github.com/o/r d',
+    'git clone --config remote.up.url="$U" https://github.com/o/r',
+    'git clone --config=submodule.s.url="$U" https://github.com/o/r',
+    'git clone -c submodule.s.url="$U" https://github.com/o/r',
+  ])('denies a URL config value it cannot read: %s', command => {
+    expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  it.each([
+    'git clone -c remote.up.url=https://github.com/o/u https://github.com/o/r',
+    'git clone --config submodule.s.url=https://github.com/o/s https://github.com/o/r d',
+    'git -c remote.up.url=https://github.com/o/u clone https://github.com/o/r',
+  ])('allows a readable URL config value: %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it('reads a same-line literal assignment', () => {
+    expect(hookReason('U=https://github.com/o/r; git clone "$U"')).toBe(REASONS.remoteUrlUnresolved)
+  })
+})
+
+describe('GIT_ALLOW_PROTOCOL on a line with no git (CC-1137 d)', () => {
+  it.each([
+    'GIT_ALLOW_PROTOCOL=ext make',
+    'export GIT_ALLOW_PROTOCOL=ext; ./build.sh',
+    'GIT_ALLOW_PROTOCOL=https:EXT npm test',
+    'env GIT_ALLOW_PROTOCOL=file:ext bash run.sh',
+    'GIT_ALLOW_PROTOCOL=ext',
+    'declare -x GIT_ALLOW_PROTOCOL=ext; make',
+  ])('denies a literal list naming ext anywhere: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.extProtocol)
+  })
+
+  it.each([
+    'unset GIT_ALLOW_PROTOCOL; ls',
+    'GIT_ALLOW_PROTOCOL="$P" make',
+    'env -u GIT_ALLOW_PROTOCOL npm test',
+    'GIT_ALLOW_PROTOCOL=https:ssh make',
+    'echo $GIT_ALLOW_PROTOCOL',
+  ])('leaves an unset or unread list off a git line to the CC-1095 pin: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})

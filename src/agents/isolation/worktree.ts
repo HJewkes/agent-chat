@@ -5,8 +5,9 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
-import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
-import { resolveWorktreeBudget } from '../../config.js'
+import { runWorktreeSetup, setupWorktree, type SetupRunner, type SetupTarget } from './worktree-setup.js'
+import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
+import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
@@ -18,6 +19,8 @@ export { findGitRoot }
 const execFileAsync = promisify(execFile)
 
 export const DEFAULT_WORKTREE_BUDGET = 3
+/** CC-1040: Shepherd's reviewer cap, so a full reviewer round never waits on implementer slots. */
+export const DEFAULT_REVIEWER_WORKTREE_BUDGET = 8
 const DEFAULT_BASE_PATH = '.worktrees'
 export const BRANCH_PREFIX = 'agent-chat/'
 
@@ -40,12 +43,24 @@ export const WORKTREE_ADD_TIMEOUT_MS = 300_000
  */
 export const RECLAIM_GRACE_MS = 120_000
 
+export type WorktreePool = 'implementer' | 'reviewer'
+
+const POOL_BUDGET_KEY: Record<WorktreePool, string> = {
+  implementer: 'worktreeBudget',
+  reviewer: 'reviewerWorktreeBudget',
+}
+
+const poolExhausted = (pool: WorktreePool, allocated: number, budget: number): string =>
+  `${pool} worktree pool exhausted: ${allocated}/${budget} allocated ` +
+  `(budget exhausted: ${allocated}/${budget}, ${POOL_BUDGET_KEY[pool]})`
+
 export class WorktreeBudgetExhaustedError extends Error {
   constructor(
     readonly allocated: number,
     readonly budget: number,
+    readonly pool: WorktreePool = 'implementer',
   ) {
-    super(`Worktree budget exhausted: ${allocated}/${budget} allocated`)
+    super(poolExhausted(pool, allocated, budget))
     this.name = 'WorktreeBudgetExhaustedError'
   }
 }
@@ -54,6 +69,8 @@ export interface WorktreeOptions {
   /** Relative to the git root. */
   basePath?: string
   budget?: number
+  /** Reviewer pool size; read from `reviewerWorktreeBudget` per spawn when absent. */
+  reviewerBudget?: number
   /** Bound on fetching origin's default branch before cutting a new one. */
   fetchTimeoutMs?: number
   /** Bound on one `git worktree add`; the add is killed and the repo's queue moves on when it passes. */
@@ -100,6 +117,42 @@ async function allocatedPaths(gitRoot: string, basePath: string): Promise<string
     .filter(line => line.startsWith('worktree '))
     .map(line => path.resolve(line.slice('worktree '.length).trim()))
     .filter(dir => dir.startsWith(base))
+}
+
+export interface PoolUse {
+  pool: WorktreePool
+  allocated: number
+  budget: number
+}
+
+const poolOf = (name: string): WorktreePool => (isReviewerTreeName(name) ? 'reviewer' : 'implementer')
+
+/** CC-1040: trees under basePath in the same pool as `agentName`, against that pool's budget. */
+async function poolUse(
+  gitRoot: string,
+  basePath: string,
+  agentName: string,
+  opts: WorktreeOptions,
+): Promise<PoolUse> {
+  const pool = poolOf(agentName)
+  const allocated = (await allocatedPaths(gitRoot, basePath)).filter(
+    dir => poolOf(path.basename(dir)) === pool,
+  )
+  const budget =
+    pool === 'reviewer'
+      ? (opts.reviewerBudget ?? resolveReviewerWorktreeBudget(DEFAULT_REVIEWER_WORKTREE_BUDGET))
+      : (opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET))
+  return { pool, allocated: allocated.length, budget }
+}
+
+async function claimPoolSlot(
+  gitRoot: string,
+  basePath: string,
+  agentName: string,
+  opts: WorktreeOptions,
+): Promise<void> {
+  const use = await poolUse(gitRoot, basePath, agentName, opts)
+  if (use.allocated >= use.budget) throw new WorktreeBudgetExhaustedError(use.allocated, use.budget, use.pool)
 }
 
 /**
@@ -400,6 +453,45 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
       `worktree branched from the local HEAD at ${sha} because ${reason}; ` +
       'it may lag origin or carry unpushed commits',
   }
+}
+
+/** CC-1158: a stacked slice's base, fetched fresh; a stale or default-branch cut would lose its parent's work. */
+export async function resolveRequestedBase(
+  gitRoot: string,
+  ref: string,
+  timeoutMs: number,
+): Promise<BranchBase> {
+  const branch = ref.startsWith('origin/') ? ref.slice('origin/'.length) : ''
+  const valid =
+    branch !== '' &&
+    !branch.startsWith('-') &&
+    (await gitOrNull(['check-ref-format', '--branch', branch], gitRoot)) !== null
+  if (!valid) throw new Error(`base ${ref} is not a branch on origin; not spawned`)
+  const sha = await fetchTip(gitRoot, branch, timeoutMs)
+  if (sha === null)
+    throw new Error(`fetching base ${ref} failed or timed out; not cut from the default branch instead`)
+  return { sha, ref }
+}
+
+/**
+ * CC-1281: pr-ready reads `branch.<b>.agent-chat-base` to rebase a stacked branch onto its
+ * parent rather than the default branch. The key outlives the worktree in the shared config,
+ * so a default-base cut clears one a reused branch name inherited. Best effort: a spawn never
+ * fails over it.
+ */
+async function recordStackBase(
+  gitRoot: string,
+  branch: string,
+  baseRef: string | undefined,
+): Promise<string[]> {
+  const key = `branch.${branch}.agent-chat-base`
+  if (baseRef === undefined) {
+    await gitOrNull(['config', '--unset', key], gitRoot)
+    return []
+  }
+  const parent = baseRef.slice('origin/'.length)
+  if ((await gitOrNull(['config', key, parent], gitRoot)) !== null) return []
+  return [warn(`could not record ${key}=${parent}; pr-ready may not find this branch's stack base`)]
 }
 
 /** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
@@ -787,9 +879,7 @@ export async function reattachWorktree(
   checkRecordPlacement(record, basePath)
   if (existsSync(worktree)) throw new WorktreeInUseError(branch, worktree)
   await pruneStaleWorktrees(gitRoot)
-  const allocated = await allocatedPaths(gitRoot, basePath)
-  const budget = opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
-  if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+  await claimPoolSlot(gitRoot, basePath, path.basename(worktree), opts)
   const holder = await checkoutOf(gitRoot, branch)
   if (holder !== null) throw new WorktreeInUseError(branch, holder)
 
@@ -808,16 +898,29 @@ export async function reattachWorktree(
     boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
   )
   copyClaudeDir(gitRoot, worktree)
-  const warnings = [
-    ...reattachWarnings(record, source, base),
-    ...(await runWorktreeSetup(setupTarget(gitRoot, worktree, base), opts.runSetup)),
-  ]
+  const setup = await setupWorktree(setupTarget(gitRoot, worktree, base), opts.runSetup)
+  const warnings = [...reattachWarnings(record, source, base), ...setup.warnings]
   return {
     cwd: worktree,
-    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
-    ref: { branch, worktree, gitRoot, base: base.sha, base_ref: base.ref, reattached: source },
+    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. ${dependencyNote(setup.outcome)} Commit your work there; nothing outside it is yours to change.`,
+    ref: {
+      branch,
+      worktree,
+      gitRoot,
+      base: base.sha,
+      base_ref: base.ref,
+      reattached: source,
+      setup: setup.outcome,
+    },
     ...(warnings.length === 0 ? {} : { warnings }),
   }
+}
+
+/** CC-1046: a re-created tree has none of its ignored files, so say whether anything put the dependencies back. */
+function dependencyNote(outcome: string | undefined): string {
+  return outcome === 'ran'
+    ? "The repository's setup step reinstalled its dependencies; build outputs such as dist were not rebuilt, so build before relying on them."
+    : 'Ignored files such as node_modules and dist were not restored and no setup step reinstalled them, so install dependencies and build before running checks.'
 }
 
 /**
@@ -830,7 +933,7 @@ async function readoptWorktree(record: WorktreeRecord, opts: WorktreeOptions): P
   const allocation = await reattachWorktree(record, opts, true)
   return {
     ...allocation,
-    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. You may be sharing it with other agents, so stay inside the paths you were given.`,
+    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. ${dependencyNote(allocation.ref?.setup)} You may be sharing it with other agents, so stay inside the paths you were given.`,
     ref: { ...allocation.ref, assigned: 'true' },
   }
 }
@@ -886,8 +989,6 @@ async function releaseParked(alloc: Allocation, gitRoot: string, worktreePath: s
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
-
   return {
     name: 'worktree',
 
@@ -896,12 +997,10 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       if (gitRoot === null) return [`${ctx.baseCwd} is not a git repository; worktree isolation needs one`]
 
       await pruneStaleWorktrees(gitRoot)
-      const allocated = await allocatedPaths(gitRoot, basePath)
-      const budget = budgetNow()
+      const use = await poolUse(gitRoot, basePath, slug(ctx.agentName), opts)
       const reasons: string[] = []
-      if (allocated.length >= budget) {
-        reasons.push(`worktree budget exhausted: ${allocated.length}/${budget} allocated under ${basePath}`)
-      }
+      if (use.allocated >= use.budget)
+        reasons.push(`${poolExhausted(use.pool, use.allocated, use.budget)} under ${basePath}`)
       if ((await gitOrNull(['rev-parse', '--verify', branchFor(ctx.agentName)], gitRoot)) !== null) {
         reasons.push(
           warn(
@@ -934,13 +1033,15 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       }
 
       await pruneStaleWorktrees(gitRoot)
-      const allocated = await allocatedPaths(gitRoot, basePath)
-      const budget = budgetNow()
-      if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+      await claimPoolSlot(gitRoot, basePath, slug(ctx.agentName), opts)
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))
-      const base = await resolveBranchBase(gitRoot, opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
+      const fetchTimeout = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+      const base =
+        ctx.baseRef === undefined
+          ? await resolveBranchBase(gitRoot, fetchTimeout)
+          : await resolveRequestedBase(gitRoot, ctx.baseRef, fetchTimeout)
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
         base: base.sha,
         force: ctx.forceReset === true,
@@ -949,6 +1050,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       await excludeBasePath(gitRoot, basePath)
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
+        ...(await recordStackBase(gitRoot, branch, ctx.baseRef)),
         ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
       ]
 

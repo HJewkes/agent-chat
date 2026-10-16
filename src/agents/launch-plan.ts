@@ -2,7 +2,9 @@ import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
+import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
+import { deniesChatSend, standingRulesFor } from './standing-rules.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -56,7 +58,12 @@ export const HOOK_DENIAL_NOTE =
  * here as well would only duplicate it.
  */
 const systemPrompt = (input: LaunchPlanInput, hooked: boolean): string =>
-  [input.preamble ?? PEER_PREAMBLE, hooked ? HOOK_DENIAL_NOTE : '', input.profile.promptPrelude]
+  [
+    input.preamble ?? PEER_PREAMBLE,
+    standingRulesFor(input.adopted, !deniesChatSend(input.profile)),
+    hooked ? HOOK_DENIAL_NOTE : '',
+    input.profile.promptPrelude,
+  ]
     .filter(part => part.trim() !== '')
     .join('\n\n')
 
@@ -127,6 +134,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // The role the child's context hint is tuned to (CC-128); absent means a human-started session.
   AGENT_CHAT_PROFILE: input.profile.name,
+  // The leak guard keys its agent-chat config guard on this (CC-1094); AGENT_CHAT_ keeps a profile from setting it.
+  AGENT_CHAT_ROLE: roleOf(input.profile),
   // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // Defaults chosen by whoever spawned it, applied on that first registration —
@@ -149,6 +158,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...(input.gitHooksDir === undefined ? {} : gitHooksEnv(input.gitHooksDir)),
   // The push-time git shim (TP-596) checks that same hooks path; AGENT_CHAT_ keeps a profile from moving it.
   ...(input.gitHooksDir === undefined ? {} : { [GIT_SHIM_DIR_ENV]: gitShimDirFor(input.gitHooksDir) }),
+  // CC-1346: a Playwright install's GC prunes browsers other checkouts still use from the shared cache.
+  PLAYWRIGHT_SKIP_BROWSER_GC: '1',
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which

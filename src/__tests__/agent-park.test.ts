@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
@@ -650,6 +651,189 @@ describe('refusing to park what the removal would lose', () => {
     expect((await sup.park('worker-a')).ok).toBe(true)
     expect(fs.existsSync(agent.cwd)).toBe(false)
   })
+
+  it('parks a tree whose only ignored files are api-extractor temp reports in a package dir', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses a scratch file beside api-extractor temp, naming only the scratch file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.api-extractor-temp/\nscratch.md\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    const tempDir = path.join(agent.cwd, 'packages', 'ui', '.api-extractor-temp')
+    fs.mkdirSync(tempDir, { recursive: true })
+    fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.md'), 'notes\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(scratch\.md\)/) })
+    expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
+  })
+
+  describe('a codewatch graph index (CC-1163)', () => {
+    async function withCodewatchIgnored(extraIgnores = ''): Promise<AgentIdentity> {
+      const agent = await spawnIn('worker-a', makeRepo())
+      fs.writeFileSync(path.join(agent.cwd, '.gitignore'), `.codewatch/\n${extraIgnores}`)
+      git(['add', '.gitignore'], agent.cwd)
+      git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+      fs.mkdirSync(path.join(agent.cwd, '.codewatch'))
+      return agent
+    }
+
+    function writeGraphDb(worktree: string, verdicts: number): string {
+      const file = path.join(worktree, '.codewatch', 'graph.db')
+      const db = new DatabaseSync(file)
+      db.exec('PRAGMA journal_mode = WAL')
+      db.exec('CREATE TABLE snapshot (id INTEGER PRIMARY KEY, commit_hash TEXT)')
+      db.exec("INSERT INTO snapshot (commit_hash) VALUES ('abc')")
+      db.exec('CREATE TABLE verdict (snapshot_id INTEGER, key TEXT, verdict TEXT, cost_usd REAL)')
+      for (let i = 0; i < verdicts; i++) db.exec(`INSERT INTO verdict VALUES (1, 'k${i}', 'confirmed', 0.02)`)
+      db.exec('CREATE TABLE blob_cache (namespace TEXT, key TEXT, value BLOB)')
+      db.close()
+      return file
+    }
+
+    function addRow(file: string, sql: string): void {
+      const db = new DatabaseSync(file)
+      db.exec(sql)
+      db.close()
+    }
+
+    it('parks a tree whose only ignored file is a graph index with no paid output', async () => {
+      const agent = await withCodewatchIgnored()
+      writeGraphDb(agent.cwd, 0)
+      await exit(agent)
+
+      expect((await sup.park('worker-a')).ok).toBe(true)
+      expect(fs.existsSync(agent.cwd)).toBe(false)
+    })
+
+    it('refuses a graph index holding a triage verdict, naming it', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 1)
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a graph index holding a cached area summary, naming it', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 0)
+      addRow(db, "INSERT INTO blob_cache VALUES ('code-graph/community-summary', 'area-1', 'summary')")
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a graph index with rows in a table re-indexing does not rebuild', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = writeGraphDb(agent.cwd, 0)
+      addRow(db, "CREATE TABLE future_paid (x TEXT); INSERT INTO future_paid VALUES ('paid')")
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses a check.json beside an index-only graph index, naming only check.json', async () => {
+      const agent = await withCodewatchIgnored()
+      writeGraphDb(agent.cwd, 0)
+      const check = path.join(agent.cwd, '.codewatch', 'check.json')
+      fs.writeFileSync(check, '{}\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/\(\.codewatch\/check\.json\); /),
+      })
+      expect(fs.existsSync(check)).toBe(true)
+    })
+
+    it('refuses a graph.db that is not SQLite', async () => {
+      const agent = await withCodewatchIgnored()
+      const db = path.join(agent.cwd, '.codewatch', 'graph.db')
+      fs.writeFileSync(db, 'not a database\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('.codewatch/graph.db') })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    it('refuses an index-only graph index nested in a package dir', async () => {
+      const agent = await withCodewatchIgnored()
+      const nested = path.join(agent.cwd, 'packages', 'ui')
+      fs.mkdirSync(path.join(nested, '.codewatch'), { recursive: true })
+      const db = writeGraphDb(nested, 0)
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('packages/ui/.codewatch/graph.db'),
+      })
+      expect(fs.existsSync(db)).toBe(true)
+    })
+
+    function writeApiExtractorTemp(worktree: string): void {
+      const tempDir = path.join(worktree, 'packages', 'ui', '.api-extractor-temp')
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(path.join(tempDir, 'ui.api.md'), '## API Report\n')
+    }
+
+    it('parks a titan-design tree holding api-extractor temp reports and an index-only graph index (CC-1344)', async () => {
+      const agent = await withCodewatchIgnored('.api-extractor-temp/\n')
+      writeGraphDb(agent.cwd, 0)
+      writeApiExtractorTemp(agent.cwd)
+      await exit(agent)
+
+      expect((await sup.park('worker-a')).ok).toBe(true)
+      expect(fs.existsSync(agent.cwd)).toBe(false)
+    })
+
+    it('refuses a test-results file beside api-extractor temp and a graph index, naming only it (CC-1344)', async () => {
+      const agent = await withCodewatchIgnored('.api-extractor-temp/\ntest-results/\n')
+      writeGraphDb(agent.cwd, 0)
+      writeApiExtractorTemp(agent.cwd)
+      const results = path.join(agent.cwd, 'packages', 'ui', 'test-results', 'x.json')
+      fs.mkdirSync(path.dirname(results), { recursive: true })
+      fs.writeFileSync(results, '{}\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/\(packages\/ui\/test-results\/x\.json\); /),
+      })
+      expect(fs.existsSync(results)).toBe(true)
+    })
+  })
 })
 
 describe('refusing to park a running or shared agent', () => {
@@ -853,5 +1037,107 @@ describe('parking a tree pushed under another branch name (CC-1039)', () => {
     expect(resumed.reason).toBeUndefined()
     expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe('side')
     expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(pushed)
+  })
+})
+
+describe('parking a squash-merged tree whose head branch origin deleted (CC-1064)', () => {
+  const branch = 'agent-chat/worker-a'
+
+  /** A tree whose HEAD was pushed as its PR branch, which origin then deleted and a fetch pruned. */
+  async function mergedAndDeleted(): Promise<{ repo: string; tree: string; head: string }> {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const head = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', `HEAD:${branch}`], agent.cwd)
+    git(['branch', '-q', '-D', branch], git(['remote', 'get-url', 'origin'], repo))
+    git(['fetch', '-q', '--prune', 'origin'], repo)
+    return { repo, tree: agent.cwd, head }
+  }
+
+  const targetOf = (repo: string, tree: string) => ({
+    gitRoot: repo,
+    worktree: tree,
+    branch,
+    assigned: false,
+  })
+
+  it('parks when a merged PR on the branch has HEAD as its head commit, keeping the branch', async () => {
+    const { repo, tree, head } = await mergedAndDeleted()
+    const asked: string[] = []
+    const reader = async (_root: string, b: string) => (asked.push(b), [{ number: 7, headSha: head }])
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toEqual({ ok: true, head, branch, mergedPr: 7 })
+    expect(asked).toEqual([branch])
+    expect(fs.existsSync(tree)).toBe(false)
+    expect(branchHead(repo, branch)).toBe(head)
+  })
+
+  it('refuses when no merged PR is on the branch', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const parked = await parkWorktree(
+      targetOf(repo, tree),
+      () => undefined,
+      undefined,
+      async () => [],
+    )
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses when gh cannot answer', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+    const reader = async () => Promise.reject(new Error('gh: not logged in'))
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses a commit made after the merged PR head', async () => {
+    const { repo, tree, head } = await mergedAndDeleted()
+    commitIn(tree, 'more.ts')
+
+    const reader = async () => [{ number: 7, headSha: head }]
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('refuses a PR head commit whose object is not local', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const reader = async () => [{ number: 7, headSha: 'f'.repeat(40) }]
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, reader)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+
+  it('parks a tree on a local side branch whose merged PR holds HEAD, keeping that branch', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '-b', 'side'], agent.cwd)
+    const head = commitIn(agent.cwd, 'feature.ts')
+    const reader = async (_root: string, b: string) => (b === 'side' ? [{ number: 9, headSha: head }] : [])
+
+    const parked = await parkWorktree(targetOf(repo, agent.cwd), () => undefined, undefined, reader)
+
+    expect(parked).toEqual({ ok: true, head, branch: 'side', mergedPr: 9 })
+    expect(branchHead(repo, 'side')).toBe(head)
+  })
+
+  it('refuses as before when no reader is passed', async () => {
+    const { repo, tree } = await mergedAndDeleted()
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined)
+
+    expect(parked).toEqual({ ok: false, reason: `${branch} is not on origin; push it first` })
+    expect(fs.existsSync(tree)).toBe(true)
   })
 })

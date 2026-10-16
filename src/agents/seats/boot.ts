@@ -223,9 +223,17 @@ function statusLines({ status }: SeatBoot): string[] {
     inbox.error !== undefined
       ? `inbox unavailable: ${inbox.error}`
       : `inbox ${inbox.unread} unread since ${inbox.sinceLastSend ?? 'the start (the seat has sent nothing)'}`
+  const caps =
+    implementers === null ||
+    reviewers === null ||
+    planners === null ||
+    status.other === null ||
+    status.parked === null
+      ? `agents unknown (${status.rosterUnknown})`
+      : `caps ${[cap('implementers', implementers), cap('reviewers', reviewers), cap('planners', planners)].join(', ')}; other ${status.other.active}; parked ${status.parked.count}`
   return [
     '== status',
-    `caps ${[cap('implementers', implementers), cap('reviewers', reviewers), cap('planners', planners)].join(', ')}; other ${status.other.active}; parked ${status.parked.count}`,
+    caps,
     poolReadingText(status.budget),
     `stop ${budget.stop ?? `none; ${budget.margin}`}`,
     unread,

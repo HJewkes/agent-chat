@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { retireThresholdK } from '../../config.js'
 import type { AgentIdentity } from '../../protocol.js'
 import type { BudgetRead } from '../budget.js'
 import {
@@ -11,12 +12,13 @@ import {
 } from '../burndown/budget-gate.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { seatTrees, type SeatTree } from './trees.js'
-import { slotMismatch, type SeatState } from '../burndown/ledger.js'
+import type { SeatState } from '../burndown/ledger.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
+import { accountLabel, charterAccounts, stopDisagreements } from '../burndown/tick.js'
 import { seatSpend, type SeatSpend } from '../burndown/spend-meter.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
@@ -35,7 +37,14 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
-import { agentRows, selfContext, type AgentRole, type SeatAgentRow, type SelfContext } from './agent-rows.js'
+import {
+  agentRows,
+  roleOfProfile,
+  selfContext,
+  type AgentRole,
+  type SeatAgentRow,
+  type SelfContext,
+} from './agent-rows.js'
 
 export type { SeatAgentRow, SelfContext } from './agent-rows.js'
 
@@ -135,15 +144,15 @@ export interface SeatStatus {
   seat: string
   at: string
   heartbeat: HeartbeatStatus
-  implementers: RoleLoad
-  reviewers: RoleLoad
-  planners: RoleLoad
+  implementers: RoleLoad | null
+  reviewers: RoleLoad | null
+  planners: RoleLoad | null
   /** Running agents of the seat whose profile names none of the three roles; no cap applies. */
-  other: AgentLoad
-  parked: ParkedLoad
+  other: AgentLoad | null
+  parked: ParkedLoad | null
   budget: BudgetStatus
-  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. */
-  pace: PoolPace[]
+  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. CC-1289: one row per account. */
+  pace: AccountPace[]
   inbox: InboxReading
   /** CC-606: the broker's last pool picks for the seat's spawns; in shadow mode, what it would have billed. */
   poolPicks: PoolPickStatus
@@ -155,11 +164,13 @@ export interface SeatStatus {
   /** The readings behind a machine stop; null without one. */
   machineStop: MachineStop | null
   /** CC-610: the seat's agents parked on the permission hook, oldest first. Empty when events.db cannot be read. */
-  waitingPermission: WaitingPermission[]
-  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against `retire_k`. */
-  agents: SeatAgentRow[]
+  waitingPermission: WaitingPermission[] | null
+  /** CC-317 b: every agent the seat owns, exited ones included, with context fill and retire-due against its role's `retireThresholdK` (CC-290). */
+  agents: SeatAgentRow[] | null
   /** CC-317 b: the calling session's own context fill against `teleport_k`; null when its session cannot be named. */
   self: SelfContext | null
+  /** The broker's reason when the agents read timed out: every roster-derived field above is then null, not a count. */
+  rosterUnknown?: string
 }
 
 export interface StatusDeps {
@@ -173,6 +184,8 @@ export interface StatusDeps {
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
+  /** CC-1289: a config dir's Anthropic login. Absent: read from its `.claude.json` under `homeDir`. */
+  identify?: (configDir: string) => string | undefined
   /** Throws when seat-watchdog.json exists and cannot be read or parsed. */
   loadDoc: () => WatchdogDoc
   /** Throws when events.db cannot be read. */
@@ -235,11 +248,9 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
-const ROLES = ['implementer', 'reviewer', 'planner'] as const
 type Role = AgentRole
 
-/** The first role word in the profile, so a profile holding two counts once. */
-const roleOf = (agent: AgentIdentity): Role => ROLES.find(role => agent.profile.includes(role)) ?? 'other'
+const roleOf = (agent: AgentIdentity): Role => roleOfProfile(agent.profile)
 
 function agentLoad(agents: AgentIdentity[], role: Role): AgentLoad {
   const active = agents.filter(a => roleOf(a) === role && running(a))
@@ -459,13 +470,25 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   }
 }
 
-/** A pool with no reserve has no day 7 line to pace against, so it has no row. */
-function poolPaces(deps: StatusDeps, policy: Policy, now: Date): PoolPace[] {
+/** CC-1289: a pace row for one account, naming its other pools and the stops they disagree on. */
+export type AccountPace = PoolPace & { members?: string[]; warnings?: string[] }
+
+/** A pool with no reserve has no day 7 line to pace against, so it has no row; an account's key pool sets its reserve. */
+export function poolPaces(
+  deps: Pick<StatusDeps, 'homeDir' | 'readBudget' | 'identify'>,
+  pools: Policy['charter']['pools'],
+  now: Date,
+): AccountPace[] {
   const nowMs = now.getTime()
-  return Object.entries(policy.charter.pools).flatMap(([name, pool]) => {
-    if (pool.reserve_seven_day === undefined) return []
+  const accounts = charterAccounts(pools, deps.homeDir, deps.identify)
+  return Object.entries(pools).flatMap(([name, pool]) => {
+    if (pool.reserve_seven_day === undefined || accounts.keyOf(name) !== name) return []
     const read = deps.readBudget(expandHome(pool.config_dir, deps.homeDir), nowMs)
-    return [poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)]
+    const row: AccountPace = poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)
+    const members = accounts.members(name)
+    if (members.length < 2) return [row]
+    const warnings = stopDisagreements(members, pools)
+    return [{ ...row, members, ...(warnings.length === 0 ? {} : { warnings }) }]
   })
 }
 
@@ -522,39 +545,86 @@ function heartbeatStatus(deps: StatusDeps, seat: string): HeartbeatStatus {
   }
 }
 
-/** Throws for a name the charter does not list as a seat, an unreadable charter or seat file, and a broker that does not answer. */
+/** Throws for a name the charter does not list as a seat and an unreadable charter or seat file; a missed agents reply is `rosterUnknown`. */
 export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatStatus> {
   const policy = loadPolicy(deps.autonomyRoot, seat)
   const now = deps.now()
-  const { prefix, concurrency } = policy.seat
-  const roster = await deps.agents()
+  const { roster, unknown } = await readRoster(deps)
   const machineStop = deps.machineStop()
-  const mine = ownedBy(roster, seat, prefix)
-  const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
-  const trees = await countedTrees(deps, policy, mine, waiting)
+  const fromRoster =
+    unknown === undefined ? await rosterFields(deps, policy, seat, roster, now.getTime()) : NO_ROSTER
   return {
     seat,
     at: now.toISOString(),
     heartbeat: heartbeatStatus(deps, seat),
+    ...fromRoster,
+    budget: budgetStatus(deps, policy, seat, now, plain),
+    pace: poolPaces(deps, policy.charter.pools, now),
+    inbox: inboxReading(deps, seat, plain),
+    poolPicks: poolPickStatus(deps, seat, plain),
+    eligible: eligibleStatus(deps, seat, localDate(now), plain),
+    machine: machineReading(deps.machine(roster), unknown !== undefined),
+    stop: machineStop === null ? null : 'machine',
+    machineStop,
+    self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
+    ...(unknown === undefined ? {} : { rosterUnknown: unknown }),
+  }
+}
+
+type RosterFields = Pick<
+  SeatStatus,
+  'implementers' | 'reviewers' | 'planners' | 'other' | 'parked' | 'waitingPermission' | 'agents'
+>
+
+/** What an unknown roster leaves: null, never the zero counts an empty list would give. */
+const NO_ROSTER: RosterFields = {
+  implementers: null,
+  reviewers: null,
+  planners: null,
+  other: null,
+  parked: null,
+  waitingPermission: null,
+  agents: null,
+}
+
+async function rosterFields(
+  deps: StatusDeps,
+  policy: ReturnType<typeof loadPolicy>,
+  seat: string,
+  roster: AgentIdentity[],
+  nowMs: number,
+): Promise<RosterFields> {
+  const { prefix, concurrency } = policy.seat
+  const mine = ownedBy(roster, seat, prefix)
+  const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
+  const trees = await countedTrees(deps, policy, mine, waiting)
+  return {
     implementers: withLedger(implementerLoad(mine, concurrency.implementers, waiting, trees), deps, seat),
     reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
     planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
-    budget: budgetStatus(deps, policy, seat, now, plain),
-    pace: poolPaces(deps, policy, now),
-    inbox: inboxReading(deps, seat, plain),
-    poolPicks: poolPickStatus(deps, seat, plain),
-    eligible: eligibleStatus(deps, seat, localDate(now), plain),
-    machine: deps.machine(roster),
-    stop: machineStop === null ? null : 'machine',
-    machineStop,
-    waitingPermission: waitingPermission(deps, mine, now.getTime()),
-    agents: agentRows(mine, roleOf, deps.contextOf, policy.charter.defaults.retire_k),
-    self: selfContext(deps.selfContext?.() ?? null, policy.charter.defaults.teleport_k),
+    waitingPermission: waitingPermission(deps, mine, nowMs),
+    agents: agentRows(mine, roleOf, deps.contextOf, a => retireThresholdK(a.profile)),
   }
 }
+
+const machineReading = (machine: MachineStatus, rosterUnknown: boolean): MachineStatus =>
+  rosterUnknown ? { ...machine, headlessAgents: { ...machine.headlessAgents, live: null } } : machine
+
+/** Only a missed broker reply is unknown; any other failure is a real fault and ends the run. */
+async function readRoster(deps: StatusDeps): Promise<{ roster: AgentIdentity[]; unknown?: string }> {
+  try {
+    return { roster: await deps.agents() }
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith('broker did not answer')) throw err
+    return { roster: [], unknown: err.message }
+  }
+}
+
+const unknownLine = (label: string, status: SeatStatus): string =>
+  line(label, `unknown (${status.rosterUnknown})`)
 
 const LABEL_WIDTH = 13
 const TITLE_WIDTH = 60
@@ -570,8 +640,7 @@ function roleLine(label: string, load: RoleLoad): string {
   const trees = load.trees ?? []
   const shown = trees.map(t => `${path.basename(t.path)}(${t.cause})`).join(', ')
   const ledger = load.ledger === undefined || load.ledger === load.active ? '' : ` (ledger ${load.ledger})`
-  const mismatch = load.ledger === undefined ? undefined : slotMismatch(load.ledger, load.active)
-  const flag = [load.atCap ? 'AT CAP' : '', mismatch ?? ''].filter(Boolean).join('  ')
+  const flag = load.atCap ? 'AT CAP' : ''
   const text = agentLine(label, load, `${load.active}/${load.cap}${ledger}`, flag)
   return trees.length === 0 ? text : `${text}  trees: ${shown}`
 }
@@ -612,14 +681,14 @@ const unread = (what: string, error: string | undefined): string =>
   `${what} unread${error === undefined ? '' : ` (${error})`}`
 
 function machineLine({ headlessAgents, memoryFree, swap, fullSuiteSlots }: MachineStatus): string {
-  const atCap = headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
+  const atCap = headlessAgents.live !== null && headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
   const memory =
     memoryFree.percent === null
       ? unread('memory', memoryFree.error)
       : `memory ${memoryFree.percent}% free/${memoryFree.limit}% floor${memoryFree.percent < memoryFree.limit ? ' LOW' : ''}`
   const swapText = swap.usedPercent === null ? unread('swap', swap.error) : `swap ${swap.usedPercent}% used`
   const parts = [
-    `headless ${headlessAgents.live}/${headlessAgents.limit}${atCap}`,
+    `headless ${headlessAgents.live ?? 'unknown'}/${headlessAgents.limit}${atCap}`,
     memory,
     swapText,
     `suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
@@ -636,9 +705,13 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
-function paceLines(status: SeatStatus): string[] {
+export function paceLines(status: Pick<SeatStatus, 'at' | 'pace'>): string[] {
   const nowMs = Date.parse(status.at)
-  return status.pace.map((row, i) => line(i === 0 ? 'pace' : '', paceLine(row, nowMs)))
+  const texts = status.pace.flatMap(row => [
+    paceLine({ ...row, pool: accountLabel(row.members ?? [row.pool]) }, nowMs),
+    ...(row.warnings ?? []).map(warning => `WARNING ${warning}`),
+  ])
+  return texts.map((text, i) => line(i === 0 ? 'pace' : '', text))
 }
 
 /** No line until the broker has picked for the seat, so a seat it never routes reads as before. */
@@ -654,11 +727,13 @@ function waitAge(since: string, at: string): string {
 
 /** No line while nothing waits, so a seat with no parked prompt reads as before. */
 function waitingPermissionLines(status: SeatStatus): string[] {
-  const waits = status.waitingPermission.map(w => `${w.agent} (${w.tool}, ${waitAge(w.since, status.at)})`)
+  const waits = (status.waitingPermission ?? []).map(
+    w => `${w.agent} (${w.tool}, ${waitAge(w.since, status.at)})`,
+  )
   return waits.length === 0 ? [] : [line('waiting-permission', waits.join(', '))]
 }
 
-/** No line while no agent is past `retire_k`, so the page reads as before. */
+/** No line while no agent is past its retire threshold, so the page reads as before. */
 function retireDueLines(agents: SeatAgentRow[]): string[] {
   const due = agents.filter(a => a.retireDue).map(a => `${a.name} (${a.contextK}k)`)
   return due.length === 0 ? [] : [line('retire-due', due.join(', '))]
@@ -671,34 +746,44 @@ function selfLines(self: SelfContext | null): string[] {
   return [line('self', self.teleportDue ? `${fill}  TELEPORT` : fill)]
 }
 
+/** The agent lines, or one unknown line while the roster could not be read. */
+function agentLines(status: SeatStatus, brief: boolean): string[] {
+  const { implementers, reviewers, planners, other, parked, agents } = status
+  if (implementers === null || reviewers === null || planners === null) return [unknownLine('agents', status)]
+  const roles = [
+    roleLine('implementers', implementers),
+    roleLine('reviewers', reviewers),
+    roleLine('planners', planners),
+  ]
+  if (brief || other === null || parked === null || agents === null) return roles
+  const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
+  return [
+    ...roles,
+    agentLine('other', other, String(other.active)),
+    line('parked', `${parked.count}${trees}`),
+    ...waitingPermissionLines(status),
+    ...retireDueLines(agents),
+  ]
+}
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
-  const { budget, inbox } = status
+  const { budget, inbox, parked } = status
   return [
     `seat ${status.seat} at ${status.at}`,
-    roleLine('implementers', status.implementers),
-    roleLine('reviewers', status.reviewers),
-    roleLine('planners', status.planners),
+    ...agentLines(status, true),
     line('pool', poolReadingText(budget)),
     line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
-    line('parked', String(status.parked.count)),
-    ...waitingPermissionLines(status),
+    ...(parked === null ? [] : [line('parked', String(parked.count)), ...waitingPermissionLines(status)]),
   ]
 }
 
 export function renderStatus(status: SeatStatus): string[] {
-  const { parked, budget } = status
-  const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
+  const { budget } = status
   return [
     `seat ${status.seat} at ${status.at}`,
-    roleLine('implementers', status.implementers),
-    roleLine('reviewers', status.reviewers),
-    roleLine('planners', status.planners),
-    agentLine('other', status.other, String(status.other.active)),
-    line('parked', `${parked.count}${trees}`),
-    ...waitingPermissionLines(status),
-    ...retireDueLines(status.agents),
+    ...agentLines(status, false),
     ...selfLines(status.self),
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),

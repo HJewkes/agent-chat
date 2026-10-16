@@ -238,3 +238,28 @@ export function handReserveOverflow(input: HandReserveInput): HandReserveOverflo
     reason: `${SEAT_HAND_RESERVE}: the seat holds ${held} of ${reserve} hand implementer slots; the tick owns the rest of the cap`,
   }
 }
+
+export const SEAT_SPAWN_UNPREFIXED = 'seat_spawn_unprefixed'
+export type SeatUnprefixedRefusalCode = typeof SEAT_SPAWN_UNPREFIXED
+
+export interface UnprefixedSpawnInput {
+  mode: SeatSpawnMode
+  role: string
+  override?: string | undefined
+  /** The spawning seat's agent-name prefix. */
+  prefix: string
+  name: string
+}
+
+/**
+ * CC-965: a seat's implementer spawn under a name without the seat's prefix, which no seat's reserve, journal or
+ * dispatch log would count. Reviewer, planner and fix-round roles pass, as they do for the reserve. Pure.
+ */
+export function unprefixedSeatSpawn(input: UnprefixedSpawnInput): { reason: string } | undefined {
+  const { mode, role, prefix, name } = input
+  if (mode === 'off' || role !== 'implementer' || input.override === FIX_ROUND_OVERRIDE) return undefined
+  if (name.startsWith(`${prefix}-`)) return undefined
+  return {
+    reason: `${SEAT_SPAWN_UNPREFIXED}: implementer ${name} lacks the seat prefix ${prefix}-; name it ${prefix}-<task>`,
+  }
+}

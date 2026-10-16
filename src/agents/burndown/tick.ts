@@ -1,7 +1,9 @@
 import os from 'node:os'
 import { burndownLedgerPath } from '../../paths.js'
+import { accountGroups, accountIdentity, type AccountGroups } from '../account-identity.js'
 import { activeWorkRoot } from '../active-work.js'
-import { gateAccount, type AccountReading } from './budget-gate.js'
+import { claimKey } from './advance.js'
+import { gateAccount, RUN_CAP_MS, type AccountReading } from './budget-gate.js'
 import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
@@ -10,12 +12,16 @@ import type { Runner } from './exec.js'
 import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { lineStopFrom, readServiceCheck, serviceCheckLine } from './service-check.js'
-import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
+import { defaultAutonomyRoot, loadCharterPools, seatScope, type CharterPool } from './policy.js'
 import { expandHome } from './seat-dispatch.js'
+import { projectMix, shareOrder, type ProjectShares, type ShareRow } from './project-shares.js'
+import { scoredSeatFromDisk } from './score-render.js'
+import { priorPicksOf } from './seat-plan.js'
 import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  localDate,
   planSeats,
   type LoadedSeats,
   type SeatPlanDeps,
@@ -104,6 +110,13 @@ export interface SeatPlanOptions {
   roster?: Roster
   /** Runs `titan-factory` and `git` for the service-check read; defaults to the real runner. */
   exec?: Runner
+  /** CC-1107: forecast the next picks by project under these shares, beside the plan. */
+  whatIf?: ShareWhatIfRequest
+}
+
+export interface ShareWhatIfRequest {
+  shares: ProjectShares
+  picks: number
 }
 
 /** The ledger, the seat as the tick loads it, and the planning deps the tick passes; shared by `plan --seat` and `seats compare`. */
@@ -135,18 +148,100 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
 }
 
 /** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
-export function seatPlanFromDisk(opts: SeatPlanOptions): Plan {
-  const { seats, deps, serviceCheck } = seatPlanSetup(opts)
+export function seatPlanFromDisk(opts: SeatPlanOptions): Plan & { shareMix?: string } {
+  const { ledger, seats, deps, serviceCheck } = seatPlanSetup(opts)
   const planned = planSeats(seats.loaded, deps, opts.root)
   const [skipped] = [...seats.skipped, ...planned.skipped]
   if (skipped !== undefined) throw new Error(skipped.reason)
+  const [seat] = seats.loaded
+  const shareMix =
+    opts.whatIf === undefined || seat === undefined
+      ? undefined
+      : renderShareMix(
+          shareWhatIfFromDisk(opts, opts.whatIf, {
+            priorPicks: priorPicksOf(ledger, opts.seat, runStartOf(seat.budget)),
+            readySet: deps.brief?.briefGate[opts.seat] === 'on',
+          }),
+        )
   return {
     dispatch: planned.dispatch,
     refusals: planned.refusals,
     notOptedIn: [],
     skippedTasks: planned.skippedTasks.flatMap(s => s.files),
     serviceCheck,
+    ...(shareMix !== undefined && { shareMix }),
   }
+}
+
+/** The start of the seat's run as `planSeat` bounds its prior picks: the meter's start, at most 12 h back. */
+const runStartOf = ({ runStartAt, ctx }: { runStartAt: number; ctx: { now: Date } }): number =>
+  Math.max(runStartAt, ctx.now.getTime() - RUN_CAP_MS)
+
+/** Each initiative's count of the next `picks` whole-task picks, before and after the shares. */
+export interface ShareWhatIf {
+  picks: number
+  /** Initiatives in report order: the shares' own, then any other the forecast picks from. */
+  slugs: string[]
+  before: Record<string, number>
+  after: Record<string, number>
+}
+
+/**
+ * CC-1107: the next picks by project. `before` is the seat's order as it stands; `after` is the order
+ * scored under the shares' defaults and interleaved by `shareOrder` from the run's prior picks.
+ */
+export function shareWhatIf(
+  before: readonly ShareRow[],
+  after: readonly ShareRow[],
+  { shares, picks }: ShareWhatIfRequest,
+  priorPicks: Readonly<Record<string, number>> = {},
+): ShareWhatIf {
+  const mix = {
+    before: projectMix(before, picks),
+    after: projectMix(shareOrder(after, shares, priorPicks), picks),
+  }
+  const slugs = [
+    ...new Set([...Object.keys(shares.initiatives), ...Object.keys(mix.before), ...Object.keys(mix.after)]),
+  ]
+  return { picks, slugs, ...mix }
+}
+
+export function renderShareMix({ picks, slugs, before, after }: ShareWhatIf): string {
+  const counts = slugs.map(slug => `${slug} ${before[slug] ?? 0} -> ${after[slug] ?? 0}`)
+  return `next ${picks} picks by project: ${counts.join(', ')}`
+}
+
+/**
+ * The what-if over the seat's scored order (`burndown plan --seat --scored`), every open row in scope;
+ * throws on a share naming an initiative outside the seat's scope.
+ */
+export function shareWhatIfFromDisk(
+  opts: Pick<SeatPlanOptions, 'seat' | 'now' | 'root' | 'autonomyRoot'>,
+  whatIf: ShareWhatIfRequest,
+  live: { priorPicks: Readonly<Record<string, number>>; readySet: boolean },
+): ShareWhatIf {
+  const disk = {
+    seat: opts.seat,
+    top: Number.MAX_SAFE_INTEGER,
+    today: localDate(opts.now),
+    autonomyRoot: opts.autonomyRoot,
+    activeWorkRoot: opts.root,
+  }
+  const before = scoredSeatFromDisk({ ...disk, readySet: live.readySet })
+  checkShareScope(before.policy, opts, whatIf.shares)
+  const after = scoredSeatFromDisk({ ...disk, shares: whatIf.shares }).plan.order
+  return shareWhatIf(before.plan.order, after, whatIf, live.priorPicks)
+}
+
+function checkShareScope(
+  policy: ReturnType<typeof scoredSeatFromDisk>['policy'],
+  opts: Pick<SeatPlanOptions, 'seat' | 'root'>,
+  shares: ProjectShares,
+): void {
+  const scope = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.root))
+  const unknown = Object.keys(shares.initiatives).filter(slug => !(slug in scope))
+  if (unknown.length > 0)
+    throw new Error(`--shares names ${unknown.join(', ')}, not in seat ${opts.seat}'s scope`)
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {
@@ -173,6 +268,14 @@ export function renderPlan(result: Plan, now: Date): string[] {
 const findingSuffix = (c: Claim): string =>
   c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
 
+/** Why a queued claim went back: the ladder's last release, its reason over its stall code (CC-1222). */
+function releaseSuffix(c: Claim, ledger: Ledger): string {
+  const record = ledger.ladder?.[claimKey(c)]
+  if (c.phase !== 'queued' || record?.releases === undefined || record.releases === 0) return ''
+  const branch = record.branch === undefined ? '' : `, branch ${record.branch}`
+  return ` RELEASED ${record.releases}x: ${record.reason ?? record.code ?? 'unknown'}${branch}`
+}
+
 /** A stall's or open finding's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
 function stallSuffix(c: Claim, route: RouteConfig): string {
   const exception = exceptionOf(c)
@@ -183,16 +286,50 @@ function stallSuffix(c: Claim, route: RouteConfig): string {
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
 }
 
-/** One line per charter pool, judged by `gateAccount` on the same line and ceiling `seats status` prints. */
+/** CC-1289: the charter's pools grouped by the Anthropic account their config dirs log in to. */
+export function charterAccounts(
+  rules: CharterRules['rules'],
+  home = os.homedir(),
+  identify: (configDir: string) => string | undefined = dir => accountIdentity(dir, home),
+): AccountGroups {
+  const dirOf = poolDir(rules, home)
+  return accountGroups(
+    Object.keys(rules).map(name => ({ name, configDir: dirOf(name) })),
+    identify,
+  )
+}
+
+const MEMBER_STOPS = ['reserve_seven_day', 'ceiling_five_hour', 'per_day_points'] as const
+
+/** One warning per stop the pools of one account set differently, since each pool still gates on its own. */
+export function stopDisagreements(members: readonly string[], rules: CharterRules['rules']): string[] {
+  return MEMBER_STOPS.flatMap(stop => {
+    const values = members.map(name => rules[name]?.[stop])
+    if (new Set(values).size < 2) return []
+    const shown = values.map(v => (v === undefined ? 'unset' : String(v))).join(' vs ')
+    return [`pools ${members.join(', ')} share one account but set ${stop} ${shown}`]
+  })
+}
+
+/** `claude (+personal)`: the account's key pool, naming any other pool that logs in to it. */
+export const accountLabel = (members: readonly string[]): string =>
+  members.length < 2 ? (members[0] ?? '') : `${members[0]} (+${members.slice(1).join(', +')})`
+
+/** One line per account, judged by `gateAccount` on its key pool's line and ceiling, as `seats status` prints. */
 export function poolStatusLines(
   { rules, error }: CharterRules,
   readings: ReadonlyMap<string, AccountReading>,
   now: Date,
+  accounts: AccountGroups = charterAccounts(rules),
 ): string[] {
   const lines = error === undefined ? [] : [`pools: closed, no charter pools: ${error}`]
   for (const [account, rule] of Object.entries(rules)) {
-    const gate = gateAccount(account, rule, readings.get(account), { now })
-    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+    if (accounts.keyOf(account) !== account) continue
+    const members = accounts.members(account)
+    const reading = members.map(name => readings.get(name)).find(r => r !== undefined)
+    const gate = gateAccount(account, rule, reading, { now })
+    lines.push(`account ${accountLabel(members)}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+    lines.push(...stopDisagreements(members, rules))
   }
   return lines
 }
@@ -207,7 +344,7 @@ export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAu
   ]
   for (const c of held)
     lines.push(
-      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}`,
+      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}${releaseSuffix(c, ledger)}`,
     )
   for (const c of ledger.claims.filter(c => c.phase === 'done' || c.respawn !== undefined))
     for (const u of c.unretired ?? [])

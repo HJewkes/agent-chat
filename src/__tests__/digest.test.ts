@@ -272,6 +272,43 @@ describe('Decided while you were away', () => {
     expect(shown).not.toContain('q-old for')
     expect(shown).toContain('reversal rate, last 7 days: agent_ops 0/1 (0%), tech_design 1/2 (50%)')
   })
+
+  it('carries how to undo, confidence and principle ids from the decided meta into the JSON and text', () => {
+    const base = decided('q1', NOW - 4 * HOUR, 'tech_design')
+    ledger([
+      question('q1', NOW - 5 * HOUR),
+      { ...base, meta: { ...base.meta, confidence: '0.82', principle_ids: '["p1","p2"]' } },
+    ])
+
+    const [entry] = digest().ledger.decided
+    const shown = section(text(), 'Decided while you were away')
+
+    expect(entry).toMatchObject({ reversible: 'revert', confidence: 0.82, principleIds: ['p1', 'p2'] })
+    expect(shown).toContain('  conf 0.82 · principles p1,p2\n  to undo: revert\n  overrule:')
+  })
+
+  it('renders a decision without the optional meta as before, and reads malformed values as absent', () => {
+    ledger([
+      question('q1', NOW - 5 * HOUR),
+      { ...decided('q1', NOW - 4 * HOUR, 'tech_design'), meta: { class: 'tech_design', basis: 'policy' } },
+      question('q2', NOW - 5 * HOUR),
+      {
+        ...decided('q2', NOW - 4 * HOUR, 'tech_design'),
+        meta: { class: 'tech_design', basis: 'policy', confidence: 'high', principle_ids: 'p1' },
+      },
+    ])
+
+    const entries = digest().ledger.decided
+    const shown = section(text(), 'Decided while you were away')
+
+    for (const entry of entries) {
+      expect(entry).not.toHaveProperty('reversible')
+      expect(entry).not.toHaveProperty('confidence')
+      expect(entry).not.toHaveProperty('principleIds')
+    }
+    expect(shown).toContain('  cites: (none)\n  overrule: agent-chat answer q1 "..."')
+    expect(shown).not.toMatch(/conf |principles |to undo:/)
+  })
 })
 
 describe('Done', () => {
@@ -406,6 +443,18 @@ describe('Exited with no Status report', () => {
     const rendered = section(text(), 'Exited with no Status report')
     expect(rendered).toContain('== Exited with no Status report (4)')
     expect(rendered).toContain(`- ${day(today)} ScheduleWakeup x1: w-c`)
+  })
+
+  it("counts a human-spawned agent's notice alongside a coordinator's message (CC-1182)", () => {
+    const today = NOW - HOUR
+    ledger([
+      exit(today, 'w-coord', 'Bash(rm)'),
+      { ...exit(today, 'rv-human', 'Bash(rm)'), kind: 'notice', target: 'human' },
+    ])
+
+    const [group] = digest().ledger.unreportedExits
+
+    expect(group).toMatchObject({ lastAction: 'Bash(rm)', count: 2, agents: ['rv-human', 'w-coord'] })
   })
 })
 

@@ -7,14 +7,18 @@ import {
   type DecisionCitation,
   type DeliveredMessage,
   type AnswerChannel,
+  type SurfaceName,
   type WakeSource,
+  isInteractiveSurface,
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
-import { ReportBatcher } from './report-batch.js'
+import { EventLog, isReport, isTerminalReport } from './event-log.js'
+import { ReportBatcher, type Unpushed } from './report-batch.js'
+import type { ExitJudgement } from './subscriptions.js'
+import { StrandedReports } from './stranded-reports.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
@@ -108,17 +112,26 @@ export class BrokerCore<C = Conn> {
   private readonly reports: ReportBatcher<C>
   private readonly isSeat: (name: string) => boolean
   /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
-  private readonly stranded = new Map<string, DeliveredMessage[]>()
+  private readonly stranded = new StrandedReports()
+  /** CC-1140: the log id a non-seat name went dark at, read as it registers, until its missed answers are pushed. */
+  private readonly missedSince = new Map<string, number>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
-    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
+    this.events = options.events ?? new EventLog(options.dbPath)
+    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs, () =>
+      this.mintMsgId(),
+    )
     this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
-    this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
     this.agents = new AgentLog(this.events)
     this.startedAt = Date.now()
+  }
+
+  /** CC-1188: a log-checked id for a caller that needs one before it appends, or never logs it. */
+  mintMsgId(): string {
+    return this.events.mintMsgId()
   }
 
   /**
@@ -193,9 +206,12 @@ export class BrokerCore<C = Conn> {
     // holder. A session id is merely evidence of which Claude Code process this
     // is, and letting it evict would turn the name lease — the property that makes
     // "held by another session" mean anything — into a claim anyone can make.
+    const missedSince = this.answersMissedSince(msg.name)
     const result = this.registry.register(conn, msg, this.teleportPredecessor(msg.agentId))
     logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
     if (!result.ok) return { ok: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
+    if (missedSince === undefined) this.missedSince.delete(msg.name)
+    else this.missedSince.set(msg.name, missedSince)
     if (result.evicted !== undefined)
       this.supersede(msg.name, msg.agentId, result.evictedAgentId, result.evicted, evict)
 
@@ -214,10 +230,24 @@ export class BrokerCore<C = Conn> {
         actor: msg.name,
         ref: agentId,
         body: msg.workingOn,
-        ...(msg.agentId === undefined ? { meta: provisionalMeta(msg) } : {}),
+        ...this.attachMeta(msg, agentId),
       })
     }
     return { ok: true }
+  }
+
+  private attachMeta(msg: RegisterMessage, agentId: string): { meta?: Record<string, string> } {
+    if (msg.agentId === undefined) return { meta: provisionalMeta(msg) }
+    const movedFrom = this.movedFrom(agentId)
+    return movedFrom === undefined ? {} : { meta: { account_from: movedFrom } }
+  }
+
+  /** CC-892: an account-moved successor's first attach says where it moved from, which a seat's file follows. */
+  private movedFrom(agentId: string): string | undefined {
+    const rows = this.events.agentEventsFor(agentId)
+    const from = rows.find(r => r.kind === 'agent_spawned')?.meta.account_from
+    if (from === undefined || rows.some(r => r.kind === 'agent_attached')) return undefined
+    return from
   }
 
   /**
@@ -378,18 +408,44 @@ export class BrokerCore<C = Conn> {
     gap.unref()
   }
 
-  private strand(name: string, unpushed: DeliveredMessage[]): void {
-    if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
+  private strand(name: string, unpushed: Unpushed): void {
+    this.stranded.add(name, unpushed.messages, Date.now(), unpushed.settled)
   }
 
-  /** Push `name`'s new connection the reports its last one closed on, once (CC-321). */
+  /**
+   * CC-1140: where a name registering out of the dark starts missing answers. A seat
+   * or teleport is skipped: `deliverHeld` already pushes its answers.
+   */
+  private answersMissedSince(name: string): number | undefined {
+    if (this.darkSeat(name) !== undefined) return undefined
+    return this.events.darkSince(name)?.id
+  }
+
+  /**
+   * Push `name`'s new connection the reports its last one closed on (CC-321), and the
+   * answers to its own questions recorded while it was dark (CC-1140), once.
+   */
   deliverStranded(name: string): void {
-    const unpushed = this.stranded.get(name)
+    this.deliverMissedAnswers(name)
     const conn = this.registry.connFor(name)
-    if (unpushed === undefined || conn === undefined) return
-    this.stranded.delete(name)
-    this.reports.resend(conn, unpushed)
-    logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+    if (conn === undefined) return
+    const { messages, settled } = this.stranded.take(name, Date.now())
+    if (messages.length > 0) {
+      this.reports.resend(conn, messages)
+      logEvent('stranded_reports_delivered', { name, count: messages.length })
+    }
+    // CC-337: after the resend, so an exit that waited on a stranded report is judged against it.
+    for (const then of settled) then()
+  }
+
+  private deliverMissedAnswers(name: string): void {
+    const afterId = this.missedSince.get(name)
+    const conn = this.registry.connFor(name)
+    if (afterId === undefined || conn === undefined) return
+    this.missedSince.delete(name)
+    const missed = this.events.answersToAskerSince(name, afterId, this.registry.entryFor(conn)?.agentId)
+    for (const message of missed) this.reports.now(conn, message)
+    if (missed.length > 0) logEvent('missed_answers_delivered', { name, count: missed.length })
   }
 
   /** Deliver to a named session if it happens to be connected right now. */
@@ -424,26 +480,41 @@ export class BrokerCore<C = Conn> {
 
   /**
    * The spawner whose `agent_exited` notice would repeat what it already has (CC-321).
-   * Any held report from the agent is pushed first, so the notice never overtakes it.
+   * CC-337: when that exit could be muted and the agent's report is still held, the window
+   * is kept and `later` is called with the verdict once the batch is written, so a burst of
+   * finished agents is one wake. Any other exit pushes the held report first, so the notice
+   * never overtakes it.
    */
-  reportedSpawner(agentId: string | undefined, exit: Record<string, string> = {}): string | undefined {
+  reportedSpawner(
+    agentId: string | undefined,
+    exit: Record<string, string> = {},
+    later: (spawner: string, muted: boolean) => void = () => undefined,
+  ): ExitJudgement | undefined {
     const identity = agentId === undefined ? undefined : this.agents.get(agentId)
     if (identity === undefined) return undefined
+    const exitAt = Date.now()
+    const mutable = closedLikeCleanExit(identity, exit)
+    const muted = (): boolean => mutable && this.closedWithReport(identity, exitAt)
     const spawner = this.registry.connFor(identity.spawnedBy)
+    if (
+      spawner !== undefined &&
+      mutable &&
+      this.reports.afterFlushFrom(spawner, identity.name, () => later(identity.spawnedBy, muted()))
+    )
+      return { spawner: identity.spawnedBy, deferred: true }
     if (spawner !== undefined) this.reports.flushFrom(spawner, identity.name)
-    if (!exitedCleanly(exit)) return undefined
-    return this.closedWithReport(identity) ? identity.spawnedBy : undefined
+    return muted() ? { spawner: identity.spawnedBy, deferred: false } : undefined
   }
 
   /**
    * The agent's newest message to its spawner in this run is a terminal report, written
-   * to the spawner's open connection, shortly before now, with nothing sent back since.
+   * to the spawner's open connection, shortly before it exited, with nothing sent back since.
    */
-  private closedWithReport(identity: AgentIdentity): boolean {
+  private closedWithReport(identity: AgentIdentity, exitAt: number): boolean {
     const { name, spawnedBy } = identity
     const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
     if (last === undefined || !isTerminalReport(last.text)) return false
-    if (Date.now() - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
+    if (exitAt - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
     return this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at }) === undefined
   }
 
@@ -470,7 +541,14 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { ...sendMeta, held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
+      meta: {
+        ...sendMeta,
+        held: SEAT_HOLD_MARK,
+        // CC-345: the episode survives a later boot, which would otherwise restart it at the new log opening.
+        dark_id: String(verdict.dark.id),
+        dark_at: String(verdict.dark.at),
+        ...(source === undefined ? {} : { source }),
+      },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
@@ -520,12 +598,10 @@ export class BrokerCore<C = Conn> {
 
   private pushForward(forward: SeatForward): SeatForwardResult {
     const { from, to, steward, text, inReplyTo, source } = forward
-    const msgId = newMsgId()
-    this.append({
+    const { msgId } = this.append({
       kind: 'message',
       actor: from,
       target: steward,
-      msgId,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
       meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
@@ -542,9 +618,14 @@ export class BrokerCore<C = Conn> {
     return { steward, msgId, held: false }
   }
 
-  /** The log id of the dark episode seat `name` is in, read before it registers. */
+  /**
+   * The log id of the dark episode seat `name` is in, read before it registers. CC-345: a name
+   * no longer holdable, such as a seat stopped while dark, still gets the mail it was held.
+   */
   darkSeat(name: string): number | undefined {
-    return this.holdable(name) ? this.events.darkSince(name)?.id : undefined
+    const dark = this.events.darkSince(name)
+    if (dark === undefined) return undefined
+    return this.holdable(name) || this.events.hasHeldSince(name, dark.id) ? dark.id : undefined
   }
 
   /** CC-301: a teleport's successor keeps the name, so a send in the gap waits for it like a seat's. */
@@ -580,24 +661,23 @@ export class BrokerCore<C = Conn> {
       overrules: decision.msgId,
       overruled_decider: decision.by,
     }
+    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
+    const written = this.append({
+      kind: 'answer',
+      actor: HUMAN,
+      target: author,
+      ref: msgId,
+      body: text,
+      meta: { ...overrule, channel },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: HUMAN,
       text: overrule ? overruleText(text, overrule) : text,
       inReplyTo: msgId,
       ...(overrule ? { event: 'overrule' } : {}),
       at: Date.now(),
     }
-    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
-    this.append({
-      kind: 'answer',
-      actor: HUMAN,
-      target: author,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...overrule, channel },
-    })
 
     const live = this.deliverTo(author, message)
     logEvent('route', {
@@ -626,8 +706,16 @@ export class BrokerCore<C = Conn> {
     const check = checkDecision(question.text, text, citation)
     if (!check.ok) return check
 
+    const written = this.append({
+      kind: 'decided',
+      actor: decider,
+      target: question.from,
+      ref: msgId,
+      body: text,
+      meta: { ...citation },
+    })
     const message: DeliveredMessage = {
-      msgId: newMsgId(),
+      msgId: written.msgId,
       from: decider,
       text: decidedText(text, decider, citation),
       inReplyTo: msgId,
@@ -635,15 +723,6 @@ export class BrokerCore<C = Conn> {
       event: 'decided',
       at: Date.now(),
     }
-    this.append({
-      kind: 'decided',
-      actor: decider,
-      target: question.from,
-      msgId: message.msgId,
-      ref: msgId,
-      body: text,
-      meta: { ...citation },
-    })
     const live = this.deliverTo(question.from, message)
     logEvent('route', {
       kind: 'decided',
@@ -690,24 +769,23 @@ export class BrokerCore<C = Conn> {
     }
 
     this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
-    const message: DeliveredMessage = {
-      msgId: newMsgId(),
-      from: request.composer,
-      text: request.text,
-      provenance: 'human-endorsed',
-      at: Date.now(),
-    }
-    this.append({
+    const written = this.append({
       kind: 'message',
       actor: request.composer,
       target: request.recipient,
-      msgId: message.msgId,
       body: request.text,
       // `endorsed_from` rather than `ref`: the recipient never saw the request,
       // so surfacing it as an in-reply-to would show them a thread they were not
       // part of. The audit trail wants the edge; the conversation does not.
       meta: { provenance: 'human-endorsed', endorsed_from: msgId },
     })
+    const message: DeliveredMessage = {
+      msgId: written.msgId,
+      from: request.composer,
+      text: request.text,
+      provenance: 'human-endorsed',
+      at: Date.now(),
+    }
 
     const live = this.deliverTo(request.recipient, message)
     logEvent('route', {
@@ -784,6 +862,24 @@ function staleness(request: OpenEndorsement): string | undefined {
 
 /** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */
 const exitedCleanly = (exit: Record<string, string>): boolean => exit.code === '0'
+
+/**
+ * CC-337: a visible pane is not the broker's child, so its agent's exit is only ever inferred
+ * from presence and never carries a code. Such an exit counts as clean; a headless agent's
+ * inferred exit is a reaped process that may have crashed, so it does not. An empty surface
+ * is a row written before surfaces were recorded.
+ */
+function closedLikeCleanExit(identity: AgentIdentity, exit: Record<string, string>): boolean {
+  if (exitedCleanly(exit)) return true
+  if (
+    exit.inferred !== 'true' ||
+    exit.failed === 'true' ||
+    exit.code !== undefined ||
+    exit.signal !== undefined
+  )
+    return false
+  return identity.surface !== '' && isInteractiveSurface(identity.surface as SurfaceName)
+}
 
 export interface VerdictResult {
   ok: boolean

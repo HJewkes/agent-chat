@@ -15,7 +15,11 @@ import {
   runOnBasement,
   type BasementTarget,
 } from './pr-ready-basement.js'
+import { depsStep, packageManager } from './pr-ready-deps.js'
+import { resolveBase as resolveStackedBase } from './pr-ready-base.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
+import { hasPrivacyTest, privacyStep } from './pr-ready-privacy.js'
+import { hasTypedLint, typedLintStep } from './pr-ready-typed-lint.js'
 
 export interface RunResult {
   code: number
@@ -150,7 +154,8 @@ async function abortRebase(run: Run, cwd: string, gitDir: string): Promise<strin
 export async function rebaseStep(run: Run, cwd: string, base: string, gitDir: string): Promise<StepOutcome> {
   const branch = base.slice(REMOTE_PREFIX.length)
   const fetch = await run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${base}`], cwd)
-  if (fetch.code !== 0) return { ok: false, reason: `git fetch failed: ${lastLine(fetch.output)}` }
+  if (fetch.code !== 0)
+    return { ok: false, reason: `git fetch of ${branch} failed: ${lastLine(fetch.output)}` }
   const rebase = await run('git', ['rebase', base], cwd)
   if (rebase.code === 0) return { ok: true }
   if (!rebaseInProgress(gitDir)) return { ok: false, reason: `git rebase failed: ${lastLine(rebase.output)}` }
@@ -190,7 +195,7 @@ interface PackageJson {
   scripts?: Record<string, string>
 }
 
-function readPackage(dir: string): PackageJson | undefined {
+export function readPackage(dir: string): PackageJson | undefined {
   try {
     return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as PackageJson
   } catch {
@@ -200,9 +205,6 @@ function readPackage(dir: string): PackageJson | undefined {
 
 const scriptsIn = (pkg: PackageJson | undefined): string[] =>
   CHECK_SCRIPTS.filter(script => pkg?.scripts?.[script] !== undefined)
-
-export const packageManager = (cwd: string): 'pnpm' | 'npm' =>
-  fs.existsSync(path.join(cwd, 'pnpm-lock.yaml')) ? 'pnpm' : 'npm'
 
 const escapeRegExp = (text: string): string => text.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
 
@@ -247,7 +249,7 @@ export function ownerOf(cwd: string, file: string, isMember: (dir: string) => bo
   return outside === undefined ? { kind: 'root' } : { kind: 'outside', dir: outside }
 }
 
-async function changedFiles(run: Run, cwd: string, base: string): Promise<string[]> {
+export async function changedFiles(run: Run, cwd: string, base: string): Promise<string[]> {
   const diff = await run('git', ['diff', '-z', '--name-only', `${base}...HEAD`], cwd)
   if (diff.code !== 0) throw new Error(`git diff failed: ${lastLine(diff.output)}`)
   return nulSeparated(diff.output)
@@ -405,8 +407,11 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 }
 
 /**
- * Order: clean tree, base, rebase, checks, changeset, scan. A dirty tree or a failed rebase stops the
- * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
+ * Base: the open PR's base branch, else `branch.<b>.agent-chat-base`, else the stacked origin branch
+ * with an open PR, else origin/HEAD (see pr-ready-base.ts).
+ * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, typed-lint
+ * (root lint:types only, always local), privacy (agent-chat only), changeset, scan. A dirty tree,
+ * a failed rebase or a failed install stops the run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
   const { run, cwd } = deps
@@ -415,8 +420,9 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   const fail = (): number => (deps.out('PR-READY FAIL exit=1'), 1)
   let base = ''
   const resolveBase = async (): Promise<StepOutcome> => {
-    base = await defaultBaseRef(run, cwd)
-    return { ok: true, reason: base }
+    const resolved = await resolveStackedBase(run, cwd, await defaultBaseRef(run, cwd))
+    base = resolved.ref
+    return { ok: true, reason: resolved.reason }
   }
   const rebase = async (): Promise<StepOutcome> => {
     if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }
@@ -426,7 +432,11 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
+  const install = await guarded(async () => (await depsStep(run, cwd)) ?? { ok: true })
+  if (install.reason !== undefined && !report('deps', install)) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
+  if (hasTypedLint(cwd)) ok = (await step('typed-lint', () => typedLintStep(run, cwd, base, deps.err))) && ok
+  if (hasPrivacyTest(cwd)) ok = (await step('privacy', () => privacyStep(run, cwd, deps.err))) && ok
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()

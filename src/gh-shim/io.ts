@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { parseIncluded, restRead, type CallLogger } from './call-log.js'
 import type { ShimIo } from './commands.js'
 
 const realDir = (dir: string): string => {
@@ -33,10 +34,17 @@ export function findOnPath(name: string, pathVar: string | undefined, skipDir?: 
 
 const MAX_BUFFER = 64 * 1024 * 1024
 
-function ghApi(realGh: string, apiPath: string): unknown {
-  const result = spawnSync(realGh, ['api', apiPath], { encoding: 'utf8', maxBuffer: MAX_BUFFER })
-  if (result.status !== 0) throw new Error(`gh api ${apiPath}: ${result.stderr || 'failed'}`)
-  return JSON.parse(result.stdout)
+/** `-i` puts the status and rate-limit headers ahead of the body; a failed call is logged before it throws. */
+function ghApi(realGh: string, apiPath: string, log: CallLogger): unknown {
+  const started = Date.now()
+  const result = spawnSync(realGh, ['api', apiPath, '-i'], { encoding: 'utf8', maxBuffer: MAX_BUFFER })
+  const stdout = result.stdout ?? ''
+  const stderr = result.stderr ?? ''
+  if (result.error === undefined) {
+    log(restRead(apiPath), { exitCode: result.status ?? 1, stdout, stderr, ms: Date.now() - started })
+  }
+  if (result.status !== 0) throw new Error(`gh api ${apiPath}: ${stderr || 'failed'}`)
+  return JSON.parse(parseIncluded(stdout)?.body ?? stdout)
 }
 
 /** gh's `--jq` prints strings raw and everything else as compact JSON, which is `jq -rc`. */
@@ -56,11 +64,11 @@ export interface BufferedIo extends ShimIo {
   flush: () => void
 }
 
-export function processIo(realGh: string, jqBin: string | undefined): BufferedIo {
+export function processIo(realGh: string, jqBin: string | undefined, log: CallLogger): BufferedIo {
   const out: string[] = []
   const err: string[] = []
   return {
-    api: apiPath => ghApi(realGh, apiPath),
+    api: async apiPath => ghApi(realGh, apiPath, log),
     currentBranch,
     jq: (value, expr) => {
       if (jqBin === undefined) throw new Error('jq not on PATH')
