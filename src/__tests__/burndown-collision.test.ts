@@ -110,7 +110,7 @@ describe('collision', () => {
       { claims: [{ owner: 'peer', repo: '/other', patterns: ['src/cli/**'] }] },
       undefined,
     ],
-    ['an unreachable broker', work('CC-9'), { names: undefined }, 'claimed'],
+    ['an unreachable broker', work('CC-9'), { names: undefined }, 'broker-view-unavailable'],
     [
       'a slice file an open PR touches',
       work('CC-9', { owns: ['src/agents/burndown/plan.ts'] }),

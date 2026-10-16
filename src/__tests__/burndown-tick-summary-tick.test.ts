@@ -269,6 +269,21 @@ describe('the burndown tick summary in the live tick', () => {
     })
   })
 
+  it('counts a failed broker-view read as broker-view-unavailable, never claimed', async () => {
+    const failing: TickBroker = {
+      ...broker,
+      collisionView: async () => {
+        throw new Error('agent ls timed out')
+      },
+    }
+
+    await tick(() => {}, factory, { broker: failing })
+
+    const { refusals } = JSON.parse(fs.readFileSync(ticksFile(), 'utf8')).seats['seat-t']
+    expect(refusals['broker-view-unavailable']).toBeGreaterThan(0)
+    expect(refusals).not.toHaveProperty('claimed')
+  })
+
   it('counts a live hand-spawned seat agent in roles used, as the role cap does', async () => {
     agents = [{ name: 'st-hand', profile: 'bd-reviewer', state: 'live', cwd: '/elsewhere' } as AgentIdentity]
 
