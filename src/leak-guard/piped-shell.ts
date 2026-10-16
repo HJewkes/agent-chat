@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { LIVE, unmark, type SimpleCommand } from './shell-words.js'
 
 /**
@@ -75,3 +76,79 @@ export function ownFeed(cmd: SimpleCommand, pipe: Feed | undefined, inherited: F
   if (pipe !== undefined) return joinFeeds(pipe, own ?? NOTHING)
   return own ?? inherited
 }
+
+// The words a redirect on a group, subshell, loop, if or case attaches to; the splitter keeps a `)` for a subshell's.
+const CLOSERS = new Set(['}', ')', 'done', 'fi', 'esac'])
+
+/**
+ * A command as the shell runs it: its marked words from the command name on, past reserved words,
+ * assignments and prefix words such as `time -p`, `noglob`, `command --` and `exec -a NAME`, and
+ * whether one of the words dropped was `exec`.
+ */
+export interface CommandHead {
+  words: readonly string[]
+  execs: boolean
+}
+
+/** The names the commands define as functions, by `name ()` or `function name`. */
+function definedFunctions(cmds: readonly SimpleCommand[]): Set<string> {
+  const names = new Set<string>()
+  for (const cmd of cmds) {
+    if (cmd.defines !== undefined) names.add(cmd.defines)
+    cmd.words.forEach(
+      (word, i) => word === 'function' && i + 1 < cmd.words.length && names.add(cmd.words[i + 1] as string),
+    )
+  }
+  return names
+}
+
+/** What a pipe hands a function call, reading the stage before it with stdin it cannot read. */
+const callPipe = (prev: SimpleCommand | undefined, cmd: SimpleCommand): Feed | undefined =>
+  cmd.before === '|' && prev !== undefined ? pipeFeed(prev, stageOutput(prev, 'unknown'), cmd) : undefined
+
+/**
+ * What the line feeds commands the splitter cannot place under their reader (CC-1408): a redirect
+ * on a group, subshell, loop, if or case, an `exec` redirect, and a call of a function the line
+ * defines. The splitter keeps no group bounds and checks a function body where it is defined, so
+ * every command on the line that reads the stdin it inherits is taken to read this too.
+ */
+export function indirectFeed(
+  cmds: readonly SimpleCommand[],
+  headOf: (cmd: SimpleCommand) => CommandHead | undefined,
+): Feed {
+  const functions = definedFunctions(cmds)
+  return cmds.reduce<Feed>(
+    (feed, cmd, i) => joinFeeds(feed, indirectSource(cmd, headOf(cmd), cmds[i - 1], functions)),
+    NOTHING,
+  )
+}
+
+/**
+ * What one command feeds the line that way. Whatever follows an `exec`, its redirect may stay on
+ * the line's stdin: with a program after it the rest of the line never runs, so counting it costs
+ * nothing. An expanded command word may be `exec`, and `eval` text may hold one, so that is 'unknown'.
+ */
+function indirectSource(
+  cmd: SimpleCommand,
+  head: CommandHead | undefined,
+  prev: SimpleCommand | undefined,
+  functions: Set<string>,
+): Feed {
+  const [first, ...rest] = head?.words ?? []
+  if (head?.execs === true) return ownFeed(cmd, undefined, NOTHING)
+  if (first === undefined) return NOTHING
+  const name = unmark(first)
+  if (name === 'eval' && rest.some(word => /\bexec\b/.test(unmark(word)))) return 'unknown'
+  if (first.includes(LIVE) || (CLOSERS.has(name) && rest.length === 0))
+    return ownFeed(cmd, undefined, NOTHING)
+  return functions.has(name) ? ownFeed(cmd, callPipe(prev, cmd), NOTHING) : NOTHING
+}
+
+export const isNothing = (feed: Feed): boolean => feed !== 'unknown' && feed.texts.length === 0
+
+// The paths through which a reader opens its own stdin: /dev/stdin, /dev/fd/0, /proc/self/fd/0.
+const STDIN_PATH = /(?:^|\/)(?:stdin|fd\/0+)$/
+
+/** Whether a script operand may be the reader's own stdin: a stdin path, or a word the shell expands. */
+export const mayReadStdin = (marked: string | undefined): boolean =>
+  marked !== undefined && (marked.includes(LIVE) || STDIN_PATH.test(path.posix.normalize(unmark(marked))))
