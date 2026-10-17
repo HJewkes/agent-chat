@@ -45,9 +45,6 @@ const BYPASSES: [string, string][] = [
   [`chrt -b -v 0 ${P}`, 'chrt'],
   [`chrt -o +0 ${P}`, 'chrt'],
   [`chrt -o ' 0' ${P}`, 'chrt'],
-  // chrt, unlike taskset and flock, skips one -- after the priority.
-  [`chrt -o 0 -- ${P}`, 'chrt'],
-  [`chrt -o 0 -- bash -c '${P}'`, 'chrt'],
   [`script -qc '${P}' /dev/null`, 'script'],
   [`script -q -c '${P}' /dev/null`, 'script'],
   [`script /dev/null -qc '${P}'`, 'script'],
@@ -161,6 +158,9 @@ const SPLIT_OPERAND: [string, string][] = [
   ],
 ]
 
+// util-linux 2.41's chrt, unlike taskset and flock, skips one -- after the priority; 2.39's runs a command named --.
+const CHRT_DASHES = [`chrt -o 0 -- ${P}`, `chrt -o 0 -- bash -c '${P}'`]
+
 // Rows real bash cannot run on every host: a forked child, a controlling tty, and a user namespace.
 const UNCONFIRMED = [
   `setsid -c ${P}`,
@@ -174,7 +174,7 @@ const UNCONFIRMED = [
 ]
 
 describe('job and namespace wrappers run the command after their options (CC-1414)', () => {
-  it.each([...BYPASSES.map(([line]) => line), ...UNCONFIRMED])('denies %s', line => {
+  it.each([...BYPASSES.map(([line]) => line), ...CHRT_DASHES, ...UNCONFIRMED])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
   })
 
@@ -279,6 +279,7 @@ const pushes = (line: string): string =>
 const PUSHED = 'push --no-verify origin HEAD:main'
 // Many hosts and CI runners refuse an unprivileged user namespace; then the unshare -r premise is unconfirmed.
 const userNamespaces = installed('unshare') && pushes('unshare -r git ns') === 'ns'
+const chrtSkipsDashes = installed('chrt') && pushes('chrt -o 0 -- git ns') === 'ns'
 
 describe.skipIf(BASH === undefined)('real bash runs the push behind each wrapper', () => {
   it.each(BYPASSES.filter(([, wrapper]) => installed(wrapper)))('%s pushes', line => {
@@ -299,6 +300,10 @@ describe.skipIf(BASH === undefined)('real bash runs the push behind each wrapper
 
   it.skipIf(!installed('setsid'))('setsid -f pushes from its forked child', () => {
     expect(pushes(`setsid -f ${P}`)).toBe(PUSHED)
+  })
+
+  it.skipIf(!chrtSkipsDashes).each(CHRT_DASHES)('%s pushes where chrt skips --', line => {
+    expect(pushes(line)).toBe(PUSHED)
   })
 
   it.skipIf(!userNamespaces)('unshare -r pushes inside a user namespace', () => {

@@ -349,8 +349,9 @@ reach git or gh.
 pid 0 (`0`, `00`, `+0`) runs the words after the mask or priority. An operand the shell expands
 (`~/f.lock`, `"$HOME/f.lock"`, `$F`) is not read as the command: like an expanded option, it denies
 on a line that may reach git or gh. A `chrt` priority that strtoimax would not read (`+0` and ` 0`
-are priorities) is read as the command. `chrt` skips one `--` after its priority, so the command
-follows it; `taskset` and `flock` run a command named `--`.
+are priorities) is read as the command. util-linux 2.41's `chrt` skips one `--` after its priority, so the
+command is read after it (2.39's runs a command named `--`); `taskset` and `flock` run a command
+named `--`.
 `flock <file> -c <text>` and `script -c <text>` are checked as `sh -c <text>`, also when the lock
 file is a `~/` path. Every word the guard reads to find where the command or `-c` text starts goes
 through one test: a word the shell may turn into an option, `--`, or none or several words denies on
