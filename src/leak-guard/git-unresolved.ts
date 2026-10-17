@@ -231,11 +231,69 @@ const sequenceYieldsDash = (text: string): boolean =>
     from <= to ? from <= '-' && '-' <= to : to <= '-' && '-' <= from,
   )
 
+// Nesting deeper than this is read as both empty and leading with `-`.
+const MAX_GROUP_DEPTH = 64
+
+/** The index of the `}` that closes the `{` at `open`, or -1. */
+function closeOf(text: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}' && --depth === 0) return i
+  }
+  return -1
+}
+
+/** A comma group's alternatives, split at its top-level commas; one alternative when it has none. */
+function topAlternatives(body: string): string[] {
+  const alts: string[] = []
+  let depth = 0
+  let from = 0
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '{') depth++
+    else if (body[i] === '}') depth--
+    else if (body[i] === ',' && depth === 0) {
+      alts.push(body.slice(from, i))
+      from = i + 1
+    }
+  }
+  alts.push(body.slice(from))
+  return alts
+}
+
+/** The leading comma group of `text`: its alternatives and the text after it. */
+function leadingGroup(text: string): { alts: string[]; rest: string } | undefined {
+  const close = text.startsWith('{') ? closeOf(text, 0) : -1
+  const alts = close < 0 ? [] : topAlternatives(text.slice(1, close))
+  return alts.length < 2 ? undefined : { alts, rest: text.slice(close + 1) }
+}
+
+/** Whether `text` may expand to an empty word: it is empty, or comma groups that each may be. */
+function mayBeEmpty(text: string, depth: number): boolean {
+  if (text === '' || depth > MAX_GROUP_DEPTH) return true
+  const group = leadingGroup(text)
+  return (
+    group !== undefined && group.alts.some(alt => mayBeEmpty(alt, depth + 1)) && mayBeEmpty(group.rest, depth)
+  )
+}
+
+/** Whether a word of `text`'s expansion may start with `-`, as `{,}--no-verify` and `{a,{,}}--no-verify` do. */
+function mayLeadWithDash(text: string, depth = 0): boolean {
+  if (text.startsWith('-') || depth > MAX_GROUP_DEPTH) return true
+  const group = leadingGroup(text)
+  if (group === undefined) return false
+  const empty = group.alts.some(alt => mayBeEmpty(alt, depth + 1))
+  return (
+    group.alts.some(alt => mayLeadWithDash(alt, depth + 1)) ||
+    (empty && mayLeadWithDash(group.rest, depth + 1))
+  )
+}
+
 /** A brace expansion whose words may include an option, such as `--no-verif{y..y}` or `{main,--no-verify}`. */
 function braceSpellsOption(text: string): boolean {
   if (![INTEGER_SEQUENCE, CHAR_SEQUENCE, BRACE_LIST].some(group => group.test(text))) return false
   if (text.startsWith('-')) return !COUNT.test(text)
-  return OPTION_ALTERNATIVE.test(text) || sequenceYieldsDash(text)
+  return OPTION_ALTERNATIVE.test(text) || sequenceYieldsDash(text) || mayLeadWithDash(text)
 }
 
 const spellsOption = (word: string): boolean => {

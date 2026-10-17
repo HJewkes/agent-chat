@@ -35,7 +35,35 @@ const DENIED = [
   "git push --rec{e..e}ive-pack='git push --no-verify' origin",
 ]
 
+// A group that may expand to nothing, glued before a `-`: allowed at 97ff08e9; dropping mayLeadWithDash allows them again.
+// Each line with what bash 5.3 and zsh 5.9 both pass git.
+const EMPTY_LED: [string, string][] = [
+  ['git push {,}--no-verify origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
+  ['git push {"",}--no-verify o', 'push --no-verify --no-verify o'],
+  ["git push {'',}--no-verify o", 'push --no-verify --no-verify o'],
+  ['git push {,,}--no-verify o', 'push --no-verify --no-verify --no-verify o'],
+  ['git push {a,{,}}--no-verify o', 'push a--no-verify --no-verify --no-verify o'],
+  ['git push {,}{,}--no-verify o', 'push --no-verify --no-verify --no-verify --no-verify o'],
+  ['git push {,}--no-verif{y,} o', 'push --no-verify --no-verif --no-verify --no-verif o'],
+  ['bash -c "git push {,}--no-verify origin HEAD:main"', 'push --no-verify --no-verify origin HEAD:main'],
+  ['git push origin HEAD:main {,}--no-verify', 'push origin HEAD:main --no-verify --no-verify'],
+  ['git push {{,}-x,a} o', 'push -x -x a o'],
+]
+
+// A group glued before a `-` that cannot expand to nothing, and a count, which git reads as no option.
+const GLUED_ALLOWED: [string, string][] = [
+  [
+    'git push origin feat/{a,b}-x HEAD:refs/heads/feat-{1..2}',
+    'push origin feat/a-x feat/b-x HEAD:refs/heads/feat-1 HEAD:refs/heads/feat-2',
+  ],
+  ['git push origin {a,b}-x', 'push origin a-x b-x'],
+  ['git push -{1..3} origin HEAD', 'push -1 -2 -3 origin HEAD'],
+]
+
 const ALLOWED = [
+  ...GLUED_ALLOWED.map(([src]) => src),
+  'git push origin feat/{a,b}',
+  'git commit --no-verif{y,} -m x',
   'for i in {1..3}; do echo $i; done',
   'mkdir -p d{1..3}',
   'echo {a..c}',
@@ -49,7 +77,7 @@ const ALLOWED = [
 ]
 
 describe('checkCommand on brace expansions (CC-1427)', () => {
-  it.each(DENIED)('denies %j', src => {
+  it.each([...DENIED, ...EMPTY_LED.map(([src]) => src)])('denies %j', src => {
     expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
   })
 
@@ -98,6 +126,10 @@ describe.skipIf(BASH === undefined)('bash expands brace sequences in what git re
   it('leaves a zsh character sequence as written', () => {
     expect(bash('git push origin {+../}-no-verify')).toEqual(['push origin {+../}-no-verify'])
   })
+
+  it.each([...EMPTY_LED, ...GLUED_ALLOWED])('runs %j as git %j', (src, call) => {
+    expect(bash(src)).toEqual([call])
+  })
 })
 
 describe.skipIf(ZSH === undefined)('zsh expands brace sequences in what git receives (CC-1427)', () => {
@@ -111,5 +143,9 @@ describe.skipIf(ZSH === undefined)('zsh expands brace sequences in what git rece
     expect(zsh('git push origin {+../}-no-verify')).toEqual([
       'push origin +-no-verify ,-no-verify --no-verify .-no-verify /-no-verify',
     ])
+  })
+
+  it.each([...EMPTY_LED, ...GLUED_ALLOWED])('runs %j as git %j', (src, call) => {
+    expect(zsh(src)).toEqual([call])
   })
 })
