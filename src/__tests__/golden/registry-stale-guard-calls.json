@@ -1,0 +1,263 @@
+[
+  {
+    "name": "current session no output",
+    "argv": [
+      "stale-session-guard",
+      "current"
+    ],
+    "stdout": "",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "id": "current"
+      },
+      {
+        "read": "/synthetic-marker/current"
+      }
+    ]
+  },
+  {
+    "name": "superseded exact hook JSON",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "{\"decision\":\"block\",\"reason\":\"This session was resumed from a transcript that a teleport has since superseded, so a newer session now holds this name. It takes no turn. Close it.\"}\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "empty id remains allowed",
+    "argv": [
+      "stale-session-guard",
+      ""
+    ],
+    "stdout": "",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "id": ""
+      },
+      {
+        "read": "/synthetic-marker/"
+      }
+    ]
+  },
+  {
+    "name": "whitespace id unchanged",
+    "argv": [
+      "stale-session-guard",
+      "  "
+    ],
+    "stdout": "",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "id": "  "
+      },
+      {
+        "read": "/synthetic-marker/  "
+      }
+    ]
+  },
+  {
+    "name": "option-like id after terminator",
+    "argv": [
+      "stale-session-guard",
+      "--",
+      "-old"
+    ],
+    "stdout": "",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "id": "-old"
+      },
+      {
+        "read": "/synthetic-marker/-old"
+      }
+    ]
+  },
+  {
+    "name": "missing id",
+    "argv": [
+      "stale-session-guard"
+    ],
+    "stdout": "",
+    "stderr": "error: missing required argument 'agentId'\n\nUsage: agent-chat stale-session-guard [options] <agentId>\n\nOptions:\n  -h, --help  display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "excess positional",
+    "argv": [
+      "stale-session-guard",
+      "old",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "error: too many arguments for 'stale-session-guard'. Expected 1 argument but got 2: old, extra.\n\nUsage: agent-chat stale-session-guard [options] <agentId>\n\nOptions:\n  -h, --help  display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "stale-session-guard",
+      "old",
+      "--unexpected"
+    ],
+    "stdout": "",
+    "stderr": "error: unknown option '--unexpected'\n\nUsage: agent-chat stale-session-guard [options] <agentId>\n\nOptions:\n  -h, --help  display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "command help",
+    "argv": [
+      "stale-session-guard",
+      "--help"
+    ],
+    "stdout": "Usage: agent-chat stale-session-guard [options] <agentId>\n\nOptions:\n  -h, --help  display help for command\n",
+    "stderr": "",
+    "exits": [
+      0
+    ],
+    "calls": []
+  },
+  {
+    "name": "read Error message",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "synthetic read error\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "read numeric code Error remains one",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "synthetic unavailable\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "read object exact Console",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "{ code: 69, message: 'synthetic rejected' }\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "read array exact Console",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "[ 'synthetic', 69 ]\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "read primitive exact Console",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "69\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      },
+      {
+        "read": "/synthetic-marker/old"
+      }
+    ]
+  },
+  {
+    "name": "path rejection exact Console",
+    "argv": [
+      "stale-session-guard",
+      "old"
+    ],
+    "stdout": "",
+    "stderr": "{ code: 69 }\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {
+        "id": "old"
+      }
+    ]
+  }
+]

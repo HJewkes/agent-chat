@@ -49,6 +49,7 @@ import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import { answerVerb } from './verbs/answer.js'
 import { serviceLogsVerb } from './verbs/service-logs.js'
 import { serviceStatusVerb } from './verbs/service-status.js'
+import { staleSessionGuardVerb } from './verbs/stale-session-guard-command.js'
 import { parsePort } from './service-options.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
@@ -345,10 +346,7 @@ function addHiddenCommands(program: Command): void {
     })
 
   // Run by Claude Code as every spawned agent's UserPromptSubmit hook (CC-762), never by a person.
-  program.command('stale-session-guard <agentId>', { hidden: true }).action(async (agentId: string) => {
-    const { staleSessionGuard } = await import('./verbs/stale-session-guard.js')
-    staleSessionGuard(agentId)
-  })
+  addVerb(program, staleSessionGuardVerb, { hidden: true, usageExit: 1, exitOnSuccess: false })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
   program
