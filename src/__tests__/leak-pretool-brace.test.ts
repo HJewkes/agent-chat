@@ -185,6 +185,7 @@ const OFF_PUSH_GUARD = [
   // zsh runs `fetch -upload-pack=x …`: a class with no `,`, after a list that may be empty.
   "zsh -f -o braceccl -c 'git fetch {,}{a-}upload-pack=x'",
   'git fetch {-x-upload-pack=x',
+  'git fetch {x-upload-pack=x',
 ]
 
 // Braces off push that cannot lead a word with `-`, or that sit in an option's value.
