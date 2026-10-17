@@ -17,6 +17,7 @@ import {
   PANE_SETTLE_MS,
   PARK_LINE,
   REMOTE_LAUNCH_TIMEOUT_MS,
+  SEAT_HANDOFF_MAX_CHARS,
 } from '../agents/teleport.js'
 import { planPath, readRuntimeState, supersededMarkerPath } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
@@ -312,6 +313,63 @@ describe('what teleport refuses before it commits to anything', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/refused rather than truncated/)
     expect(kinds()).not.toContain('agent_handoff')
+  })
+
+  describe('seat handoff cap (TP-1600 f)', () => {
+    function asSeat(name: string): void {
+      const root = workspace()
+      fs.mkdirSync(path.join(root, 'seats'))
+      fs.writeFileSync(
+        path.join(root, 'seats', `${name}.md`),
+        `---\nname: ${name}\nprefix: al\npool: p1\n---\n`,
+      )
+      supervisor.close()
+      makeSupervisor(undefined, () => 'claude', {
+        autonomyRoot: root,
+        now: () => new Date(),
+        shepherd: async () => undefined,
+      })
+    }
+
+    it("refuses a seat's handoff one char over the cap, naming seat_note", async () => {
+      asSeat('alpha')
+      const agentId = await spawnAgent({ name: 'alpha' })
+
+      const result = await supervisor.teleport({
+        subject: subject(agentId, { name: 'alpha' }),
+        handoff: 'x'.repeat(SEAT_HANDOFF_MAX_CHARS + 1),
+      })
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toContain('seat_note')
+      expect(result.reason).toContain(`${SEAT_HANDOFF_MAX_CHARS + 1}`)
+      expect(kinds()).not.toContain('agent_handoff')
+    })
+
+    it("accepts a seat's handoff at exactly the cap", async () => {
+      asSeat('alpha')
+      const agentId = await spawnAgent({ name: 'alpha' })
+
+      const result = await supervisor.teleport({
+        subject: subject(agentId, { name: 'alpha' }),
+        handoff: 'é'.repeat(SEAT_HANDOFF_MAX_CHARS),
+      })
+
+      expect(result.ok).toBe(true)
+    })
+
+    it('still accepts a worker handoff far over the seat cap', async () => {
+      asSeat('alpha')
+      const agentId = await spawnAgent()
+
+      const result = await supervisor.teleport({
+        subject: subject(agentId),
+        handoff: 'x'.repeat(HANDOFF_MAX_BYTES),
+      })
+
+      expect(result.ok).toBe(true)
+      expect(kinds()).toContain('agent_handoff')
+    })
   })
 
   /**

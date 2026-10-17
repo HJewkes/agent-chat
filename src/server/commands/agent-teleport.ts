@@ -78,7 +78,8 @@ export const agentTeleport = defineTool({
         'what you already tried that did NOT work, which is the most expensive thing to lose; (5) ' +
         'who you owe a reply to and what you promised; (6) files to read first, in order, as ' +
         '@-prefixed absolute paths — Claude Code expands those into your successor’s first turn, ' +
-        'so point at files instead of pasting them.',
+        'so point at files instead of pasting them. A seat is capped at 1,500 chars; the rest goes ' +
+        'in seat_note.',
     ),
     model: z
       .string()
