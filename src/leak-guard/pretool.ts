@@ -37,7 +37,7 @@ import {
   type ParallelCall,
   type ParallelInputs,
 } from './run-wrappers.js'
-import { JOB_WRAPPERS, jobRun } from './job-wrappers.js'
+import { JOB_WRAPPERS, jobRun, mayExpand } from './job-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -210,6 +210,7 @@ export const REASONS = {
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
   jobShell: `leak-guard: flock, script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
+  wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
@@ -289,6 +290,21 @@ const IONICE_GETOPT: Getopt = {
     pgid: true,
     uid: true,
     ignore: false,
+    help: false,
+    version: false,
+  },
+}
+// coreutils nice: `+n:`, after it reads a leading `-NUM` itself.
+const NICE_GETOPT: Getopt = { shortValue: 'n', long: { adjustment: true, help: false, version: false } }
+// coreutils timeout: `+k:s:v`. zsh's repeat takes no options, so reading it the same way changes nothing.
+const TIMEOUT_GETOPT: Getopt = {
+  shortValue: 'ks',
+  long: {
+    foreground: false,
+    'kill-after': true,
+    'preserve-status': false,
+    signal: true,
+    verbose: false,
     help: false,
     version: false,
   },
@@ -453,7 +469,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     if (fed !== undefined && head.includes(XARGS_ARGS)) return { reason: REASONS.hiddenCommand }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
-    const next = wrapperEnd(rest, at, name)
+    const values: number[] = []
+    const next = wrapperEnd(rest, at, name, values)
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
     if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
       return { reason: REASONS.xargsWrapper }
@@ -462,8 +479,10 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       assigns.push(head)
       at++
     } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
-    else if (next !== undefined) at = next
-    else if (name === 'xargs') {
+    else if (next !== undefined) {
+      if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
+      at = next
+    } else if (name === 'xargs') {
       const after = dropXargsOptions(rest, at + 1, splits)
       if (after === undefined) return { reason: REASONS.xargsOption }
       at = after.at
@@ -576,21 +595,52 @@ const nestedFed = (outer: Fed, inner: Fed): Fed => ({
   hidden: outer.hidden === true || inner.hidden === true,
 })
 
-/** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
-function wrapperEnd(words: readonly string[], at: number, name: string): number | undefined {
+/**
+ * Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper.
+ * The index of each word read as an option's value goes into `values`.
+ */
+function wrapperEnd(
+  words: readonly string[],
+  at: number,
+  name: string,
+  values: number[] = [],
+): number | undefined {
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
-  if (name === 'exec') return dropOptions(words, at + 1, ['-a'])
-  if (name === 'nice') return dropOptions(words, at + 1, ['-n'])
-  if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT)
-  if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT)
-  if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'])
-  if (name === 'timeout' || name === 'repeat') return dropOptions(words, at + 1, ['-s', '-k']) + 1
+  if (name === 'exec') return dropOptions(words, at + 1, ['-a'], values)
+  if (name === 'nice') return dropGetopt(words, at + 1, NICE_GETOPT, values)
+  if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT, values)
+  if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT, values)
+  if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'], values)
+  if (name === 'timeout' || name === 'repeat') return dropGetopt(words, at + 1, TIMEOUT_GETOPT, values) + 1
   return undefined
 }
 
-/** The index of the first word from `i` on that is not an option or an option's value. */
-function dropOptions(words: readonly string[], i: number, withValue: readonly string[] = []): number {
+/**
+ * Whether the shell may move where a wrapper's command starts (CC-1421): by splitting an option value
+ * into several words or none, or by turning an option word or the timeout's duration into an option,
+ * `--`, or several words or none. A quoted value stays one word, so only its splitting counts.
+ */
+function movesCommand(
+  words: readonly string[],
+  from: number,
+  to: number,
+  values: readonly number[],
+  splits: readonly string[],
+): boolean {
+  return words
+    .slice(from, to)
+    .some((word, k) => (values.includes(from + k) ? expandsToWords(word, splits) : mayExpand(word, splits)))
+}
+
+/** The index of the first word from `i` on that is not an option or an option's value, each recorded in `values`. */
+function dropOptions(
+  words: readonly string[],
+  i: number,
+  withValue: readonly string[] = [],
+  values: number[] = [],
+): number {
   while (i < words.length && (words[i] as string).startsWith('-') && words[i] !== '-') {
+    if (withValue.includes(words[i] as string)) values.push(i + 1)
     i += withValue.includes(words[i] as string) ? 2 : 1
   }
   return Math.min(i, words.length)
@@ -599,9 +649,9 @@ function dropOptions(words: readonly string[], i: number, withValue: readonly st
 /**
  * The index of the command after a getopt_long wrapper's options, read as getopt reads them: an unambiguous long-name
  * prefix, `--name=value`, and a short cluster whose value letter takes the rest of the word or the next one.
- * A word the guard cannot read stops the scan there, so it is read as the command.
+ * An option word the guard cannot read takes one word here; unwrap fails closed on it (CC-1421).
  */
-function dropGetopt(words: readonly string[], i: number, spec: Getopt): number {
+function dropGetopt(words: readonly string[], i: number, spec: Getopt, values: number[] = []): number {
   while (i < words.length) {
     const word = words[i] as string
     if (word === '--') return i + 1
@@ -609,8 +659,8 @@ function dropGetopt(words: readonly string[], i: number, spec: Getopt): number {
     const width = word.startsWith('--')
       ? longOptionWidth(word.slice(2), spec)
       : shortClusterWidth(word.slice(1), spec)
-    if (width === undefined) return i
-    i += width
+    if (width === 2) values.push(i + 1)
+    i += width ?? 1
   }
   return words.length
 }
@@ -2343,6 +2393,9 @@ function shellUnknown(
   return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
 }
 
+/** Reasons unwrap gives for a wrapper it cannot read, which deny only on a line that may reach git or gh. */
+const GATED_REASONS: ReadonlySet<string> = new Set([REASONS.jobOption, REASONS.wrapperValue])
+
 function checkSimple(
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -2353,9 +2406,7 @@ function checkSimple(
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped)
-    return unwrapped.reason !== REASONS.jobOption || lineMayReachGit(scope, ctx)
-      ? unwrapped.reason
-      : undefined
+    return !GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx) ? unwrapped.reason : undefined
   if (
     unwrapped.viaShellVar === true &&
     shellUnknown(unwrapped.assigns, cmd, ctx, scope) &&
