@@ -396,6 +396,12 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
+A brace expansion after `git push`, whose options alone the guard denies, is read like such a glob
+group (CC-1427): a comma list or a sequence (`{x..y}`, `{x..y..step}`) that may yield an option,
+as in `--no-verif{y..y}`, `--no-verif{y,}` or `{main,--no-verify}`, is denied, and so is a zsh character sequence such as `{+../}` whose range
+holds `-`. git's count `-<n>`, as in `-{1..3}`, stays allowed, and a brace that yields no option,
+such as `HEAD:mai{n..n}`, is checked as the push it is.
+
 bash 5.3 runs a funsub, `${ cmd;}` (`${` followed by a blank, tab or newline) or `${|cmd;}`, as
 commands in the current shell, so `echo ${ git push --no-verify;}` pushes (CC-1327). The splitter
 reads a funsub's body as commands, quoted or unquoted, in an assignment, inside `$(...)` and in a

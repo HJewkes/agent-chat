@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 /**
- * A brace expansion after git's subcommand that may spell an option, a sequence such as
+ * A brace expansion after `git push` that may spell an option, a sequence such as
  * `--no-verif{y..y}` as much as a list such as `--no-verif{y,}`, is denied (CC-1427). Real shells
  * with a fake `git` first on PATH confirm what each line runs.
  */
@@ -43,6 +43,8 @@ const ALLOWED = [
   'git log -{1..1}',
   'git add f{1..3}.txt',
   'git push origin HEAD:feat/{a,b}',
+  // As `git commit --no-verify` is: the pre-push scan still runs.
+  'git commit --no-verif{y..y} -m x',
   'gh api repos/{owner}/{repo}/pulls',
 ]
 

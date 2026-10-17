@@ -242,19 +242,27 @@ const spellsOption = (word: string): boolean => {
   const text = unmark(word).replace(QUOTING_CHARS, '')
   return (
     (word.includes(`${LIVE}(`) && OPTION_GROUP.test(text)) ||
-    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text)) ||
-    (word.includes(`${LIVE}{`) && braceSpellsOption(text))
+    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text))
   )
 }
 
-/** Whether an argument after the subcommand may expand to an option through a glob group, bracket class or brace expansion (CC-728, CC-1427). */
+const braceOption = (word: string): boolean =>
+  word.includes(`${LIVE}{`) && braceSpellsOption(unmark(word).replace(QUOTING_CHARS, ''))
+
+/**
+ * Whether an argument after the subcommand may expand to an option through a glob group or bracket
+ * class (CC-728), or, for `push`, whose options alone the guard denies, a brace expansion (CC-1427).
+ */
 export function hasOptionAlternation(
   marked: readonly string[],
   splits: readonly string[],
   resolved: readonly (string | undefined)[],
 ): boolean {
   const { at } = scanOptions(resolved, marked, splits)
-  return resolved[at] !== undefined && marked.slice(at + 1).some(spellsOption)
+  const sub = resolved[at]
+  if (sub === undefined) return false
+  const args = marked.slice(at + 1)
+  return args.some(spellsOption) || (sub === 'push' && args.some(braceOption))
 }
 
 /** Whether git's options hold a word the shell may split into several, which quoting would fix. */
