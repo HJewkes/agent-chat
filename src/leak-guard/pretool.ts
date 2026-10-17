@@ -208,7 +208,7 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
-  jobShell: `leak-guard: flock, script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
+  jobShell: `leak-guard: flock, script, unshare or sudo -s runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
@@ -520,6 +520,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
           return { reason: REASONS.hiddenCommand }
         rest = sudoShell(script)
         at = 0
+        viaShellVar ||= after.envShell
       } else at = after.at
     } else if (JOB_WRAPPERS.has(name)) {
       const run = jobRun(rest, at + 1, name, splits)
@@ -800,11 +801,14 @@ const replaceString = (marked: string): string => {
 interface SudoRun {
   at: number
   shell: boolean
+  /** -s or --shell, which run $SHELL; -i and --login run the shell the target user's passwd entry names. */
+  envShell: boolean
 }
 
 interface SudoOption {
   width: number
   shell: boolean
+  envShell: boolean
 }
 
 const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
@@ -815,17 +819,19 @@ const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
  */
 function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefined {
   let shell = false
+  let envShell = false
   for (; i < words.length; i++) {
     const a = words[i] as string
-    if (a === '--') return { at: i + 1, shell }
+    if (a === '--') return { at: i + 1, shell, envShell }
     if (!a.startsWith('-') || a === '-') break
     if (a.includes(LIVE)) return undefined
     const option = a.startsWith('--') ? sudoLongOption(a) : sudoCluster(a, i + 1 < words.length)
     if (option === undefined) return undefined
     shell ||= option.shell
+    envShell ||= option.envShell
     i += option.width
   }
-  return { at: Math.min(i, words.length), shell }
+  return { at: Math.min(i, words.length), shell, envShell }
 }
 
 function sudoLongOption(option: string): SudoOption | undefined {
@@ -834,6 +840,7 @@ function sudoLongOption(option: string): SudoOption | undefined {
   return {
     width: SUDO_LONG_VALUE.has(name) && !option.includes('=') ? 1 : 0,
     shell: SUDO_SHELL_LONG.has(name),
+    envShell: name === '--shell',
   }
 }
 
@@ -843,14 +850,16 @@ function sudoLongOption(option: string): SudoOption | undefined {
  */
 function sudoCluster(cluster: string, hasNext: boolean): SudoOption | undefined {
   let shell = false
+  let envShell = false
   for (let k = 1; k < cluster.length; k++) {
     const letter = cluster[k] as string
     const last = k === cluster.length - 1
-    if (SUDO_SHORT_VALUE.has(letter)) return { width: last ? 1 : 0, shell }
-    if (letter === 'h') return last && hasNext ? undefined : { width: 0, shell }
+    if (SUDO_SHORT_VALUE.has(letter)) return { width: last ? 1 : 0, shell, envShell }
+    if (letter === 'h') return last && hasNext ? undefined : { width: 0, shell, envShell }
     shell ||= letter === 's' || letter === 'i'
+    envShell ||= letter === 's'
   }
-  return { width: 0, shell }
+  return { width: 0, shell, envShell }
 }
 
 /** sudo -s or -i runs `shell -c` on its words joined, each character but alnum, _, - and $ escaped. */

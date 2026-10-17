@@ -116,3 +116,32 @@ describe('the bypass guard allows sudo lines that skip no hook', () => {
     expect(checkCommand(line, ctx())).toBeUndefined()
   })
 })
+
+// CC-1423. `sudo -s` runs $SHELL, so a SHELL set on the line decides what reads the text. Premise
+// observed where passwordless sudo exists: `echo 'import sys;print(1)' | SHELL=/usr/bin/python3 sudo -s`
+// ran python, while the same line under `sudo -i` ran sh (the passwd-entry shell).
+const PUSH = 'git push --no-verify origin HEAD:main'
+const PY = `import os;os.system("${PUSH}")`
+
+describe('the bypass guard fails closed when sudo -s runs a $SHELL the line sets', () => {
+  it.each([
+    `echo '${PY}' | SHELL=/usr/bin/python3 sudo -s`,
+    `SHELL=/usr/bin/python3 sudo -s <<< '${PY}'`,
+    `export SHELL=/usr/bin/python3; echo '${PY}' | sudo -s`,
+    `echo '${PY}' | env SHELL=/usr/bin/python3 sudo -s`,
+    `echo '${PY}' | SHELL=/usr/bin/python3 sudo --shell`,
+    `echo '${PY}' | SHELL=$X sudo -s`,
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx())).toMatch(/\$SHELL names/)
+  })
+
+  it.each([
+    "echo 'echo hi' | sudo -s",
+    "SHELL=/bin/bash sudo -s <<< 'echo hi'",
+    "echo 'echo hi' | SHELL=/usr/bin/python3 sudo -i",
+    'sudo -u bob ls',
+    'sudo git status',
+  ])('allows %s', line => {
+    expect(checkCommand(line, ctx())).toBeUndefined()
+  })
+})
