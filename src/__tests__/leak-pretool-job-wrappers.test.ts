@@ -61,6 +61,18 @@ const BYPASSES: [string, string][] = [
   [`echo '${P}' | chrt -o 0 bash`, 'chrt'],
   [`echo '${P}' | flock ${F} -c bash`, 'flock'],
   [`echo '${P}' | script -qc bash /dev/null`, 'script'],
+  // util-linux reads -p's pid from the last word, and pid 0 is the wrapper itself, which then runs the rest.
+  [`taskset -p 1 bash -c '${P}' 0`, 'taskset'],
+  [`taskset --pid 1 bash -c '${P}' 0`, 'taskset'],
+  [`taskset -p 1 bash -c '${P}' 00`, 'taskset'],
+  [`taskset -p 1 bash -c '${P}' +0`, 'taskset'],
+  [`chrt -o -p 0 sh -c '${P}' 0`, 'chrt'],
+  [`F=${F}; flock "$F" -c '${P}'`, 'flock'],
+  [`flock "$HOME/${F}" -c '${P}'`, 'flock'],
+  [`flock ~/${F} -c '${P}'`, 'flock'],
+  [`F=${F}; flock $F --command '${P}'`, 'flock'],
+  [`F=${F}; flock "\${F}" -c '${P}'`, 'flock'],
+  [`flock "$PWD/${F}" -c '${P}'`, 'flock'],
 ]
 
 const PY = `import os;os.system("${P}")`

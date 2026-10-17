@@ -93,9 +93,7 @@ export function jobRun(words: readonly string[], i: number, name: string): JobRu
   const parsed = readOptions(words, i, spec)
   if (parsed === undefined) return undefined
   const { options, end } = parsed
-  const has = (...names: string[]): boolean => options.some(o => names.includes(o.name))
   if (name === 'script') return { script: options.filter(o => o.name === 'command').at(-1)?.value }
-  if ((name === 'taskset' || name === 'chrt') && has('pid')) return { at: words.length }
   if (name === 'unshare')
     return end < words.length ? { at: end, chdir: true } : { script: undefined, chdir: true }
   if (name === 'setsid') return { at: end }
@@ -106,16 +104,25 @@ const CHRT_PRIORITY = /^\s*[+-]?\d+$/
 
 /**
  * flock, taskset and chrt take one operand before the command: a lock file, a CPU mask, a
- * priority. A word the shell expands may be none or several, so the command is read from it.
+ * priority. With -p the pid is the last word, and pid 0 runs the command, so -p reads the same.
+ * A word the shell expands may be none or several, so the command is read from it.
  */
 function afterOperand(words: readonly string[], end: number, name: string): JobRun | undefined {
   const operand = words[end]
-  if (operand === undefined || operand.includes(LIVE)) return { at: end }
+  if (operand === undefined) return { at: end }
+  const script = name === 'flock' ? flockScript(words[end + 1], words[end + 2]) : null
+  if (script !== null) return script
+  if (operand.includes(LIVE)) return { at: end }
   // chrt reads the priority with strtoimax; a version that drops it for SCHED_OTHER would run any other word.
   if (name === 'chrt' && !CHRT_PRIORITY.test(operand)) return { at: end }
-  const flag = words[end + 1]
-  if (name !== 'flock' || (flag !== '-c' && flag !== '--command')) return { at: end + 1 }
-  const script = words[end + 2] ?? ''
+  return { at: end + 1 }
+}
+
+/** The text after flock's `-c`, whatever its lock file; null when no `-c` follows the file. */
+function flockScript(flag: string | undefined, next: string | undefined): JobRun | undefined | null {
+  const glued = flag?.startsWith('--command=') === true ? flag.slice('--command='.length) : undefined
+  if (glued === undefined && flag !== '-c' && flag !== '--command') return null
+  const script = glued ?? next ?? ''
   // Like script's -c value, text the shell expands cannot be read as a script.
   return script.includes(LIVE) ? undefined : { script }
 }
