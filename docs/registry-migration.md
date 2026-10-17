@@ -309,7 +309,9 @@ registry valueName field. The embedded-label formatting branch is deleted. Origi
 help and parse bytes are retained by the captured baseline fixture; no defaults,
 coercion, broker semantics or S8 verb mounting changes are included.
 
-Only the legacy literal-switch bridge remains. It must be removed through a separate
-generic registry fix proved against boolean true and string literal cases; this
-checkpoint does not broaden literal classification. Published dependency adoption,
-full verify and remaining S8 conversions still gate TP-617 completion.
+The legacy literal-switch bridge is now deleted in the separate consumer follow-up,
+using independently reviewed registry e063ec66's exact singleton-true handling.
+addVerb calls optionFlagSpec directly; fieldSchema/schemaKind bridge imports are
+removed. Original help, parse, MCP and port fixtures remain unchanged. This is
+candidate validation only: published dependency adoption, full verify and remaining
+S8 conversions still gate TP-617 completion.

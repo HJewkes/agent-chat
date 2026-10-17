@@ -3,8 +3,6 @@ import { z } from 'zod'
 import {
   EXIT,
   collectCliArgs,
-  fieldSchema,
-  schemaKind,
   collectOptionParser,
   commandPath,
   defineCommand,
@@ -57,20 +55,6 @@ export type Verb<Args> = Command<Args, Report, VerbContext>
 
 export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(verb)
 
-/** Temporary legacy literal-switch bridge; value labels now belong to registry metadata. */
-const flagSpec = <Args>(
-  verb: Verb<Args>,
-  key: string,
-  option: Parameters<typeof optionFlagSpec>[2],
-): string =>
-  isTrueSwitch(verb, key)
-    ? `${option.short ? `${option.short}, ` : ''}${option.long}`
-    : optionFlagSpec(verb, key, option)
-
-/** A required `z.literal(true)` flag is a bare switch: commander yields `true` when it is present. */
-const isTrueSwitch = <Args>(verb: Verb<Args>, key: string): boolean =>
-  schemaKind(fieldSchema(verb.args, key)) === 'literal'
-
 export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
   return collectCliArgs(verb, positionals, opts)
 }
@@ -95,7 +79,7 @@ export function addVerb<Args>(
   for (const name of verb.cli?.positional ?? []) sub.argument(positionalSpec(verb, name))
   for (const [key, option] of Object.entries(verb.cli?.options ?? {})) {
     const parser = collectOptionParser(verb, key)
-    const spec = flagSpec(verb, key, option)
+    const spec = optionFlagSpec(verb, key, option)
     if (parser) sub.option(spec, option.description, parser)
     else sub.option(spec, option.description)
   }
