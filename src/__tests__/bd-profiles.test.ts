@@ -282,7 +282,21 @@ const LEGITIMATE_PUSHES = [
   'origin -- agent-chat/x',
 ]
 
-const LEGITIMATE_COMMANDS = ['git push -u origin agent-chat/x && gh pr create --draft --title t']
+// The global-option rules start `git -* push`: every git global option starts with `-`, so a
+// plain subcommand whose message or pattern says push and main is not read as a push.
+const LEGITIMATE_COMMANDS = [
+  'git push -u origin agent-chat/x && gh pr create --draft --title t',
+  'git commit -m "a push b main c"',
+  'git commit -m "a push origin main c"',
+  'git log --grep "push main"',
+  'git log --grep "push origin HEAD:main --force"',
+]
+
+// A global option before any subcommand still reaches `git -* push`, so these are denied too.
+const GLOBAL_OPTION_OVERMATCHES = [
+  'git -C x commit -m "a push b main c"',
+  'git -C x commit -m "no push --force here"',
+]
 
 describe.each(WORKER_PROFILES)('the %s profile', name => {
   const profile = loadBdProfile(name)
@@ -344,6 +358,10 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
 
   it.each(LEGITIMATE_PUSHES)('still allows `git push %s`', tail => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(false)
+  })
+
+  it.each(GLOBAL_OPTION_OVERMATCHES)('knowingly denies `%s`', command => {
+    expect(isDenied(command, denied)).toBe(true)
   })
 
   it.each(LEGITIMATE_COMMANDS)('still allows `%s`', command => {
