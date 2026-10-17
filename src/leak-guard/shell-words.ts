@@ -229,7 +229,7 @@ function bracedRisk(src: string, start: number, text: string): ExpansionRisk | u
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
-// gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
+// gh fills these in a `gh api` path itself; no shell expands a brace group with neither a comma nor a `..` sequence.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
 // In a heredoc with an unquoted delimiter the shell expands these and joins a line ending in a backslash.
 const HEREDOC_LIVE = /[$`\\]/
@@ -311,6 +311,10 @@ class ShellLexer {
   closesOnBrace = false
   private braceDepth = 0
   private braceClosed = false
+  /** The brace-expansion groups a live `{` opened in the current word and no `}` has closed yet. */
+  private openGroups = 0
+  /** The last text appended to the word is a live `{`. */
+  private justOpened = false
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
   /*
@@ -858,9 +862,25 @@ class ShellLexer {
       return this.append(this.src[this.pos - 1] ?? '')
     }
     this.pos++
-    const live = this.expands(c, next)
+    const live = this.expands(c, next) || this.braceStructure(c)
     this.splitting ||= live && (c === '$' || GLOB.includes(c))
     this.append(c, live)
+    if (c === '{' && live) {
+      this.openGroups++
+      this.justOpened = true
+    }
+  }
+
+  /**
+   * An unquoted `,` or `}` inside a group a live `{` of this word opened, which the shell reads as the
+   * group's structure; a quoted or escaped one stays text, so a reader can tell them apart (CC-1427).
+   * The `}` of an empty `{}` stays unmarked: find, xargs and parallel read that pair as written.
+   */
+  private braceStructure(c: string): boolean {
+    if (this.word === null || this.openGroups === 0 || (c !== ',' && c !== '}')) return false
+    if (c === ',') return true
+    this.openGroups--
+    return !this.justOpened
   }
 
   /** Appends an unquoted expansion, which the shell splits into words. */
@@ -869,11 +889,16 @@ class ShellLexer {
     this.append(text, true)
   }
 
-  /** A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path. */
+  /**
+   * A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path.
+   * A placeholder inside a live group is a nested group to the shell, so its `{` is counted like any
+   * other, or its `}` would read as the outer group's close (CC-1427).
+   */
   private expands(c: string, next: string | undefined): boolean {
     const starts = this.word === null
     if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
-    if (GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
+    const inGroup = !starts && this.openGroups > 0
+    if (!inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
     return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
   }
 
@@ -895,11 +920,13 @@ class ShellLexer {
 
   private append(text: string, live = false): void {
     if (this.word === null) this.startWord()
+    this.justOpened = false
     this.marked = (this.word === null ? '' : this.marked) + (live ? LIVE : '') + text
     this.word = (this.word ?? '') + text
   }
 
   private startWord(): void {
+    this.openGroups = 0
     this.wordStartOk = this.reservedOk
     this.wordStartNames = this.atStart || this.lastToken === 'function'
   }
@@ -1225,6 +1252,8 @@ export function expandWord(
  * after it, even one spelt `g''h`, and zsh's `${(e)...}` runs the text it expands (CC-718).
  */
 export function expansionRisk(src: string): ExpansionRisk | undefined {
+  // A raw NUL is LIVE, which the splitter strips, while zsh ends the word at it: `--no-veri<NUL>x` runs as `--no-veri`.
+  if (src.includes(LIVE)) return 'unreadable'
   const lexer = new ShellLexer(unmark(src))
   lexer.run()
   return lexer.expansion
