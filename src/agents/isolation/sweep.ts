@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import path from 'node:path'
+import { agentWorktreesIn as platformAgentWorktreesIn } from '@titan-design/worktree'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
 import { stoppedAt } from '../identity.js'
@@ -88,24 +88,7 @@ export async function agentWorktreesIn(
   gitRoot: string,
   list: GitLister,
 ): Promise<{ worktree: string; branch: string }[]> {
-  const out = await list(gitRoot).catch(() => '')
-  return (
-    out
-      .split('\n\n')
-      .map(block => ({
-        worktree: block.match(/^worktree (.+)$/m)?.[1]?.trim(),
-        branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1]?.trim(),
-        locked: /^locked/m.test(block),
-      }))
-      .filter(
-        (entry): entry is { worktree: string; branch: string; locked: boolean } =>
-          entry.worktree !== undefined && entry.branch !== undefined,
-      )
-      // Locked is another tool's "do not touch"; honour it rather than reporting a
-      // reclaim we would then refuse to perform.
-      .filter(entry => !entry.locked && entry.branch.startsWith(BRANCH_PREFIX))
-      .map(({ worktree, branch }) => ({ worktree: path.resolve(worktree), branch }))
-  )
+  return platformAgentWorktreesIn(gitRoot, list, BRANCH_PREFIX)
 }
 
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
