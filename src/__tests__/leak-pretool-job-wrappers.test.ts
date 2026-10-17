@@ -67,11 +67,7 @@ const BYPASSES: [string, string][] = [
   [`taskset -p 1 bash -c '${P}' 00`, 'taskset'],
   [`taskset -p 1 bash -c '${P}' +0`, 'taskset'],
   [`chrt -o -p 0 sh -c '${P}' 0`, 'chrt'],
-  [`F=${F}; flock "$F" -c '${P}'`, 'flock'],
-  [`flock "$HOME/${F}" -c '${P}'`, 'flock'],
   [`flock ~/${F} -c '${P}'`, 'flock'],
-  [`F=${F}; flock "\${F}" -c '${P}'`, 'flock'],
-  [`flock "$PWD/${F}" -c '${P}'`, 'flock'],
 ]
 
 const PY = `import os;os.system("${P}")`
@@ -105,6 +101,14 @@ const UNREAD: [string, string, RegExp][] = [
   [`flock ~/${F} bash -c '${P}'`, 'flock', /option this guard does not know/],
   [`echo '${P}' | flock ~/${F} bash`, 'flock', /option this guard does not know/],
   [`F=${F}; flock $F --command '${P}'`, 'flock', /option this guard does not know/],
+  // A quoted lock file may expand to an option or `--`, and the word after it to -c.
+  [`F=${F}; flock "$F" -c '${P}'`, 'flock', /option this guard does not know/],
+  [`flock "$HOME/${F}" -c '${P}'`, 'flock', /option this guard does not know/],
+  [`F=${F}; flock "\${F}" -c '${P}'`, 'flock', /option this guard does not know/],
+  [`flock "$PWD/${F}" -c '${P}'`, 'flock', /option this guard does not know/],
+  [`X=--; flock "$X" -c ${P}`, 'flock', /option this guard does not know/],
+  [`X=-c; flock ${F} "$X" '${P}'`, 'flock', /option this guard does not know/],
+  [`X=--command; flock ${F} $X '${P}'`, 'flock', /option this guard does not know/],
 ]
 
 // An unquoted operand splits, so flock sees no -c where it is written and runs the operand's words: line, git's argv.
@@ -168,10 +172,12 @@ describe('job and namespace wrappers run the command after their options (CC-141
   })
 
   // Real bash cannot push with these: $TMPDIR is unset, a path is no CPU mask or priority, gh is not faked,
-  // and with a split lock file real git refuses the --command it is handed.
+  // with a split lock file real git refuses the --command it is handed, and flock runs no "$X"'P' or empty word.
   it.each([
     `F='lock git'; flock $F --command core.hooksPath=/dev/null push origin HEAD:main`,
     `F='l git'; flock $F --command=x push origin HEAD:main`,
+    `X=--command=; flock ${F} "$X"'${P}'`,
+    `flock ${F} "$X" '${P}'`,
     `flock "$TMPDIR/x" ${P}`,
     `flock ~/${F} gh pr create --body x`,
     `taskset "$HOME" ${P}`,
@@ -198,6 +204,8 @@ describe('job and namespace wrappers run the command after their options (CC-141
     `flock /tmp/l -c 'echo hi'`,
     `flock "$HOME/l" -c 'echo hi'`,
     'script -qc ls /dev/null',
+    'flock /tmp/l git status',
+    'taskset -c 0 git status',
     `flock ${F} -c 'git status'`,
     'setsid -w git push origin HEAD:feature',
     `script -qc 'git status' /dev/null`,

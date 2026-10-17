@@ -97,10 +97,10 @@ export function jobRun(
   splits: readonly string[] = [],
 ): JobRun | undefined {
   const spec = GETOPTS[name] as StrictGetopt
-  const parsed = readOptions(words, i, spec)
+  const parsed = readOptions(words, i, spec, splits)
   if (parsed === undefined) return undefined
   const { options, end } = parsed
-  if (name === 'script') return { script: options.filter(o => o.name === 'command').at(-1)?.value }
+  if (name === 'script') return scriptText(options.filter(o => o.name === 'command').at(-1)?.value)
   if (name === 'unshare')
     return end < words.length ? { at: end, chdir: true } : { script: undefined, chdir: true }
   if (name === 'setsid') return { at: end }
@@ -108,6 +108,21 @@ export function jobRun(
 }
 
 const CHRT_PRIORITY = /^\s*[+-]?\d+$/
+
+/**
+ * Whether the shell may turn a word the walk reads to find the command into an option, `--`, or
+ * none or several words, which moves where the command starts. One word that starts with a literal
+ * other than `-`, or with `~/`, cannot become an option.
+ */
+const mayExpand = (word: string, splits: readonly string[]): boolean =>
+  word.includes(LIVE) &&
+  (expandsToWords(word, splits) ||
+    word.startsWith('-') ||
+    (word.startsWith(LIVE) && !word.startsWith(`${LIVE}~/`)))
+
+/** A `-c` text to check as `sh -c`; like any script, text the shell expands cannot be read as one. */
+const scriptText = (text: string | undefined): JobRun | undefined =>
+  text?.includes(LIVE) === true ? undefined : { script: text }
 
 /**
  * flock, taskset and chrt take one operand before the command: a lock file, a CPU mask, a
@@ -122,9 +137,7 @@ function afterOperand(
 ): JobRun | undefined {
   const operand = words[end]
   if (operand === undefined) return { at: end }
-  // An operand that may split moves every later word, so `-c` may not be where it is written.
-  if (expandsToWords(operand, splits)) return undefined
-  const script = name === 'flock' ? flockScript(words[end + 1], words[end + 2]) : null
+  const script = name === 'flock' ? flockScript(words[end + 1], words[end + 2], splits) : null
   if (script !== null) return script
   // Reading only the operand as the command would leave the words after it unread.
   if (operand.includes(LIVE)) return undefined
@@ -134,33 +147,40 @@ function afterOperand(
 }
 
 /** The text after flock's `-c`, whatever its lock file; null when no `-c` follows the file. */
-function flockScript(flag: string | undefined, next: string | undefined): JobRun | undefined | null {
+function flockScript(
+  flag: string | undefined,
+  next: string | undefined,
+  splits: readonly string[],
+): JobRun | undefined | null {
+  if (flag !== undefined && mayExpand(flag, splits)) return undefined
   const glued = flag?.startsWith('--command=') === true ? flag.slice('--command='.length) : undefined
   if (glued === undefined && flag !== '-c' && flag !== '--command') return null
-  const script = glued ?? next ?? ''
-  // Like script's -c value, text the shell expands cannot be read as a script.
-  return script.includes(LIVE) ? undefined : { script }
+  return scriptText(glued ?? next ?? '')
 }
 
-function readOptions(words: readonly string[], i: number, spec: StrictGetopt): Parsed | undefined {
+function readOptions(
+  words: readonly string[],
+  i: number,
+  spec: StrictGetopt,
+  splits: readonly string[],
+): Parsed | undefined {
   const options: Option[] = []
   for (; i < words.length; i++) {
     const word = words[i] as string
+    if (mayExpand(word, splits)) return undefined
     if (word === '--') return { options, end: i + 1 }
     if (!word.startsWith('-') || word === '-') {
-      // A permuting getopt reads options anywhere, and an expanded operand may be one.
-      if (spec.permute === true && word.includes(LIVE)) return undefined
+      // A permuting getopt reads options anywhere, so it reads on past an operand.
       if (spec.permute === true) continue
       return { options, end: i }
     }
-    if (word.includes(LIVE)) return undefined
     const read = word.startsWith('--') ? longOption(word.slice(2), spec) : cluster(word.slice(1), spec)
     if (read === undefined) return undefined
     for (const option of read.options) options.push(option)
     if (read.next) {
       const value = words[++i] ?? ''
       // The shell may split an expanded value into words that move the operands.
-      if (value.includes(LIVE)) return undefined
+      if (mayExpand(value, splits)) return undefined
       options.push({ name: read.next, value })
     }
   }
