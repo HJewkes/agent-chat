@@ -54,10 +54,32 @@ const takesValue = (word: string): boolean =>
  */
 function mayBecomeRisky(marked: string, splits: readonly string[]): boolean {
   if (expandsToWords(marked, splits)) return true
-  const prefix = unmark(marked.slice(0, Math.max(0, marked.indexOf(LIVE))))
+  const prefix = literalPrefix(marked)
   return (
     '--no-verify'.startsWith(prefix) ||
     SHORT_VALUE_START.test(prefix) ||
     VALUE_OPTIONS.some(option => option.startsWith(prefix))
   )
+}
+
+/** The text of a marked word before its first expansion. */
+const literalPrefix = (marked: string): string => unmark(marked.slice(0, Math.max(0, marked.indexOf(LIVE))))
+
+/**
+ * Whether a word after `push` starts with `-` and holds an expansion, so it may spell `--no-verify`
+ * (CC-1438), as in `"--no-${V:-verify}"` or `$"--no-$V"`. The guard cannot tell what the expansion
+ * holds, so an unknown variable is not empty. A word that opens with an expansion, as in `"$BRANCH"`,
+ * or whose literal start rules the flag out, as in `"--push-option=$X"`, is left readable. Only the
+ * words before a literal `--` are options.
+ */
+export function pushFlagMayForm(marked: readonly string[], at: number): boolean {
+  for (const word of marked.slice(at + 1)) {
+    if (!word.includes(LIVE)) {
+      if (word === '--') return false
+      continue
+    }
+    const prefix = literalPrefix(word)
+    if (prefix.startsWith('-') && '--no-verify'.startsWith(prefix)) return true
+  }
+  return false
 }
