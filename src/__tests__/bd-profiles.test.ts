@@ -215,6 +215,29 @@ const ABBREVIATED_PUSHES = [
   'origin agent-chat/x --m',
 ]
 
+// A destination is main when it is a whole word after a space (`-- main`, `-v origin main`),
+// follows a colon (`<src>:main`), or ends `heads/main` (git resolves `HEAD:heads/main` to main).
+const mainDestinationPushes = (branch: string): string[] => [
+  `origin agent-chat/x:${branch}`,
+  `origin HEAD^0:${branch}`,
+  `origin ${branch}:${branch}`,
+  `origin HEAD:refs/heads/${branch}`,
+  `origin HEAD:heads/${branch}`,
+  `origin refs/heads/${branch}`,
+  `origin -- ${branch}`,
+  `-- origin ${branch}`,
+  `--set-u origin ${branch}`,
+  `--no-verify origin ${branch}`,
+  `-v origin ${branch}`,
+  `-q origin ${branch}`,
+  `-o x origin ${branch}`,
+  `--push-option=x origin ${branch}`,
+  `-v origin agent-chat/x:${branch}`,
+  `origin agent-chat/y agent-chat/x:${branch}`,
+  `origin agent-chat/x:${branch} --no-verify`,
+]
+const MAIN_DESTINATION_PUSHES = [...mainDestinationPushes('main'), ...mainDestinationPushes('master')]
+
 // `*` spans `&&`, `;` and `|`, so these ordinary commands are denied. Kept: a rule shape that
 // stops at a separator would also stop denying the force spellings the rows above pin.
 const COMPOUND_OVERMATCHES = [
@@ -248,7 +271,18 @@ const LEGITIMATE_PUSHES = [
   '-u origin m/x',
   'origin agent-chat/x:de-x',
   'origin agent-chat/x--de',
+  'origin HEAD:agent-chat/main-fix',
+  'origin agent-chat/x:agent-chat/main',
+  'origin agent-chat/x:agent-chat/master',
+  'origin maintenance',
+  'origin mainline-notes',
+  'origin HEAD:mainline-notes',
+  '-v origin agent-chat/main',
+  'origin main:agent-chat/x',
+  'origin -- agent-chat/x',
 ]
+
+const LEGITIMATE_COMMANDS = ['git push -u origin agent-chat/x && gh pr create --draft --title t']
 
 describe.each(WORKER_PROFILES)('the %s profile', name => {
   const profile = loadBdProfile(name)
@@ -296,6 +330,10 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
   })
 
+  it.each(MAIN_DESTINATION_PUSHES)('denies `git push %s`, whose destination is protected', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
   it('denies a force push piped through xargs', () => {
     expect(isDenied('echo origin | xargs git push --force', denied)).toBe(true)
   })
@@ -306,6 +344,10 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
 
   it.each(LEGITIMATE_PUSHES)('still allows `git push %s`', tail => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(false)
+  })
+
+  it.each(LEGITIMATE_COMMANDS)('still allows `%s`', command => {
+    expect(isDenied(command, denied)).toBe(false)
   })
 
   it('denies deleting a remote branch', () => {
