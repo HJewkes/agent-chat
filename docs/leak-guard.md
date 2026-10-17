@@ -443,8 +443,9 @@ denied, and so is one led by `-` that holds an unquoted `{`, git's count such as
 Off `push`, where braces in paths are common, only the run of groups that leads a word can make
 it start with `-`; the text after the run is copied after every alternative. A word led by `{`
 denies when an alternative in that run starts with `-`, as in `{a,-}-upload-pack=x`, or when a
-group with no `,` holds a `-`, which braceccl reads as a class, as in `{-}-upload-pack=x`. A group
-that never closes denies on any `-`. So `git add {src,test}/foo-bar.ts`, `git rm {a,b}-old.txt`
+group with no `,` holds a `-`, which braceccl reads as a class, as in `{-}-upload-pack=x`. braceccl
+does not nest, so such a group is read over its whole text, inner braces included: `{+-{b}}` holds
+the range `+-{`, which takes in `-`. A group that never closes denies on any `-`. So `git add {src,test}/foo-bar.ts`, `git rm {a,b}-old.txt`
 and `git show {HEAD,main}:a-b.txt` stay allowed. A word led by `-` denies when a `{` is in its
 option name, before any `=`. A brace after a long option's `=` only copies the option, so
 `git log --grep={fix,feat}` and `git diff --color={always,never}` stay allowed, while
