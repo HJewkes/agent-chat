@@ -19,7 +19,11 @@ export const ghCallsVerb = defineVerb({
   cli: {
     options: {
       since: { long: '--since', description: 'window to read, like 90m, 24h or 3d (default 24h)' },
-      top: { long: '--top <n>', description: `how many callers and routes to list (default ${DEFAULT_TOP})` },
+      top: {
+        long: '--top',
+        valueName: 'n',
+        description: `how many callers and routes to list (default ${DEFAULT_TOP})`,
+      },
       json: { long: '--json', description: 'print the summary as one JSON object' },
     },
   },

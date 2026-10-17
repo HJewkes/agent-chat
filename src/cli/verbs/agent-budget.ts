@@ -25,8 +25,8 @@ export const agentBudgetVerb = defineVerb({
     positional: ['name'],
     options: {
       mine: { long: '--mine', description: 'only agents you spawned (needs a registered session name)' },
-      spawner: { long: '--spawner <name>', description: 'only agents spawned by <name>' },
-      prefix: { long: '--prefix <p>', description: 'only agents whose name starts with <p>' },
+      spawner: { long: '--spawner', valueName: 'name', description: 'only agents spawned by <name>' },
+      prefix: { long: '--prefix', valueName: 'p', description: 'only agents whose name starts with <p>' },
       accounts: {
         long: '--accounts',
         description: 'one line per account config dir: both rate-limit windows, resets and reading age',

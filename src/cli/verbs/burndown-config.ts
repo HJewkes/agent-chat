@@ -284,7 +284,11 @@ export async function pauseSet(env: SettingsEnv, paused: boolean, by: string): P
 }
 
 const byArg = requiredString('by')
-const byOption = { long: '--by <who>', description: 'who is making the change; recorded in the settings log' }
+const byOption = {
+  long: '--by',
+  valueName: 'who',
+  description: 'who is making the change; recorded in the settings log',
+}
 
 export const burndownPresetApplyVerb = defineVerb({
   name: 'burndown.preset.apply',
@@ -331,9 +335,9 @@ export const burndownOverrideSetVerb = defineVerb({
   cli: {
     positional: ['patch'],
     options: {
-      for: { long: '--for <duration>', description: 'how long the patch holds: 30m, 2h or 1d' },
+      for: { long: '--for', valueName: 'duration', description: 'how long the patch holds: 30m, 2h or 1d' },
       by: byOption,
-      reason: { long: '--reason <text>', description: 'why, kept with the override' },
+      reason: { long: '--reason', valueName: 'text', description: 'why, kept with the override' },
     },
   },
   run: ({ patch, for: duration, by, reason }) =>

@@ -25,7 +25,8 @@ const hasTmux = (): boolean => {
 }
 
 const HOST_FLAG = {
-  long: '--host <name>',
+  long: '--host',
+  valueName: 'name',
   description: "the machine name to announce; defaults to this machine's hostname, as sessions report it",
 }
 

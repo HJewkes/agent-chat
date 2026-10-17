@@ -35,8 +35,16 @@ export const answersVerb = defineVerb({
   cli: {
     positional: ['name'],
     options: {
-      since: { long: '--since <msgId>', description: 'only rows after this msg_id: an ask, or a last next' },
-      limit: { long: '--limit <n>', description: `at most this many rows (default ${DEFAULT_LIMIT})` },
+      since: {
+        long: '--since',
+        valueName: 'msgId',
+        description: 'only rows after this msg_id: an ask, or a last next',
+      },
+      limit: {
+        long: '--limit',
+        valueName: 'n',
+        description: `at most this many rows (default ${DEFAULT_LIMIT})`,
+      },
       json: { long: '--json', description: 'print the reply as one JSON object: { answers, next? }' },
     },
   },

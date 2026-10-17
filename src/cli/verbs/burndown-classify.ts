@@ -252,7 +252,8 @@ export const burndownClassifyVerb = defineVerb({
       },
       write: { long: '--write', description: 'write the file; without it the run is a dry run' },
       ask: {
-        long: '--ask <label>',
+        long: '--ask',
+        valueName: 'label',
         description:
           'ask the owner on/off once per ambiguous task under this service label, and apply answers (needs --write)',
       },

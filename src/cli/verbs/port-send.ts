@@ -61,12 +61,12 @@ export const portSendVerb = defineVerb({
   cli: {
     positional: ['to'],
     options: {
-      as: { long: '--as <sender>', description: `the sender label; only ${BURNDOWN_SENDER}` },
+      as: { long: '--as', valueName: 'sender', description: `the sender label; only ${BURNDOWN_SENDER}` },
       notify: {
         long: '--notify',
         description: 'file a notice on the human queue instead of messaging an agent',
       },
-      task: { long: '--task <id>', description: 'the task a notice is about (with --notify)' },
+      task: { long: '--task', valueName: 'id', description: 'the task a notice is about (with --notify)' },
     },
   },
   run: (args, ctx) => portSend(args, ctx),

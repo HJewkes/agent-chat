@@ -47,11 +47,13 @@ export const teleportRequestVerb = defineVerb({
     positional: ['name'],
     options: {
       surface: {
-        long: '--surface <surface>',
+        long: '--surface',
+        valueName: 'surface',
         description: `where the successor runs: ${SURFACE_NAMES.join(', ')}`,
       },
       to: {
-        long: '--to <machine>',
+        long: '--to',
+        valueName: 'machine',
         description: 'the machine it lands on: an alias from config machines, or a hostname',
       },
     },

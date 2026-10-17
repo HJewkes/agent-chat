@@ -57,13 +57,13 @@ export type Verb<Args> = Command<Args, Report, VerbContext>
 
 export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(verb)
 
-/** The registry appends `<value>` to every non-boolean flag; a flag that already names its argument keeps its own. */
+/** Temporary legacy literal-switch bridge; value labels now belong to registry metadata. */
 const flagSpec = <Args>(
   verb: Verb<Args>,
   key: string,
   option: Parameters<typeof optionFlagSpec>[2],
 ): string =>
-  option.long.includes('<') || isTrueSwitch(verb, key)
+  isTrueSwitch(verb, key)
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
 

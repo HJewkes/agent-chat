@@ -1,0 +1,248 @@
+[
+  {
+    "path": "agent-chat burndown brief approve",
+    "flags": "--off-plan-ok <reason>",
+    "attribute": "offPlanOk",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown relint-deps",
+    "flags": "--apply <approved.json>",
+    "attribute": "apply",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown pause",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown resume",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown classify",
+    "flags": "--ask <label>",
+    "attribute": "ask",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown preset apply",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown preset clear",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown override set",
+    "flags": "--for <duration>",
+    "attribute": "for",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown override set",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown override set",
+    "flags": "--reason <text>",
+    "attribute": "reason",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown override clear",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown seat on",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat burndown seat off",
+    "flags": "--by <who>",
+    "attribute": "by",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat port send",
+    "flags": "--as <sender>",
+    "attribute": "as",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat port send",
+    "flags": "--task <id>",
+    "attribute": "task",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat host serve",
+    "flags": "--host <name>",
+    "attribute": "host",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat host install",
+    "flags": "--host <name>",
+    "attribute": "host",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat agent ls",
+    "flags": "--spawner <name>",
+    "attribute": "spawner",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat agent ls",
+    "flags": "--prefix <p>",
+    "attribute": "prefix",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat agent spawn",
+    "flags": "--task <id>",
+    "attribute": "task",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat agent spawn",
+    "flags": "--surface <surface>",
+    "attribute": "surface",
+    "parsed": "headless"
+  },
+  {
+    "path": "agent-chat agent budget",
+    "flags": "--spawner <name>",
+    "attribute": "spawner",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat agent budget",
+    "flags": "--prefix <p>",
+    "attribute": "prefix",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat teleport request",
+    "flags": "--surface <surface>",
+    "attribute": "surface",
+    "parsed": "headless"
+  },
+  {
+    "path": "agent-chat teleport request",
+    "flags": "--to <machine>",
+    "attribute": "to",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat gh-calls",
+    "flags": "--top <n>",
+    "attribute": "top",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--as <label>",
+    "attribute": "as",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--kind <kind>",
+    "attribute": "kind",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--task <id>",
+    "attribute": "task",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--header <text>",
+    "attribute": "header",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--recommended <option>",
+    "attribute": "recommended",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--default <option>",
+    "attribute": "default",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--door <door>",
+    "attribute": "door",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--category <name>",
+    "attribute": "category",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--initiative <slug>",
+    "attribute": "initiative",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--blocking <mode>",
+    "attribute": "blocking",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--reversible <text>",
+    "attribute": "reversible",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat ask",
+    "flags": "--on-no-answer <text>",
+    "attribute": "onNoAnswer",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat answers",
+    "flags": "--since <msgId>",
+    "attribute": "since",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat answers",
+    "flags": "--limit <n>",
+    "attribute": "limit",
+    "parsed": "7"
+  },
+  {
+    "path": "agent-chat teleport-land",
+    "flags": "--surface <surface>",
+    "attribute": "surface",
+    "parsed": "headless"
+  }
+]

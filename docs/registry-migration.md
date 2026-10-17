@@ -301,3 +301,15 @@ Exact embedded-label metadata follow-up inventory at pinned45de964:
 - src/cli/verbs/port-send.ts:69: task: { long: '--task <id>', description: 'the task a notice is about (with --notify)' },
 - src/cli/verbs/teleport-request.ts:50: long: '--surface <surface>',
 - src/cli/verbs/teleport-request.ts:54: long: '--to <machine>',
+
+### Option-label candidate checkpoint
+
+All28 declarations in the pinned inventory above now use bare long flags plus the
+registry valueName field. The embedded-label formatting branch is deleted. Original
+help and parse bytes are retained by the captured baseline fixture; no defaults,
+coercion, broker semantics or S8 verb mounting changes are included.
+
+Only the legacy literal-switch bridge remains. It must be removed through a separate
+generic registry fix proved against boolean true and string literal cases; this
+checkpoint does not broaden literal classification. Published dependency adoption,
+full verify and remaining S8 conversions still gate TP-617 completion.

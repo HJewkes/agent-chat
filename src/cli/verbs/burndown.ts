@@ -507,7 +507,8 @@ export const burndownRelintDepsVerb = defineVerb({
       seat: { long: '--seat', description: "only this seat's claims" },
       json: { long: '--json', description: 'one JSON array of edges' },
       apply: {
-        long: '--apply <approved.json>',
+        long: '--apply',
+        valueName: 'approved.json',
         description:
           'clear only the edges in this seat-approved file (dry-run --json rows), under the ledger lock',
       },
@@ -721,7 +722,8 @@ export const burndownBriefApproveVerb = defineVerb({
     positional: ['task'],
     options: {
       offPlanOk: {
-        long: '--off-plan-ok <reason>',
+        long: '--off-plan-ok',
+        valueName: 'reason',
         description: 'approve an off-plan task for owner-ordered work; the reason is logged as a task note',
       },
     },
