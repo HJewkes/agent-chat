@@ -313,6 +313,8 @@ class ShellLexer {
   private braceClosed = false
   /** The brace-expansion groups a live `{` opened in the current word and no `}` has closed yet. */
   private openGroups = 0
+  /** The last text appended to the word is a live `{`. */
+  private justOpened = false
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
   /*
@@ -863,17 +865,22 @@ class ShellLexer {
     const live = this.expands(c, next) || this.braceStructure(c)
     this.splitting ||= live && (c === '$' || GLOB.includes(c))
     this.append(c, live)
-    if (c === '{' && live) this.openGroups++
+    if (c === '{' && live) {
+      this.openGroups++
+      this.justOpened = true
+    }
   }
 
   /**
    * An unquoted `,` or `}` inside a group a live `{` of this word opened, which the shell reads as the
    * group's structure; a quoted or escaped one stays text, so a reader can tell them apart (CC-1427).
+   * The `}` of an empty `{}` stays unmarked: find, xargs and parallel read that pair as written.
    */
   private braceStructure(c: string): boolean {
     if (this.word === null || this.openGroups === 0 || (c !== ',' && c !== '}')) return false
-    if (c === '}') this.openGroups--
-    return true
+    if (c === ',') return true
+    this.openGroups--
+    return !this.justOpened
   }
 
   /** Appends an unquoted expansion, which the shell splits into words. */
@@ -908,6 +915,7 @@ class ShellLexer {
 
   private append(text: string, live = false): void {
     if (this.word === null) this.startWord()
+    this.justOpened = false
     this.marked = (this.word === null ? '' : this.marked) + (live ? LIVE : '') + text
     this.word = (this.word ?? '') + text
   }

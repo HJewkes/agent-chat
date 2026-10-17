@@ -26,9 +26,19 @@ const COUNT = new RegExp(`^-[\\d.${OPEN}${SEP}${CLOSE}]+$`)
 // Nesting deeper than this is read as both empty and leading with `-`.
 const MAX_GROUP_DEPTH = 64
 
+// The splitter leaves the `}` of an empty `{}` unmarked, so this is either that pair or a `{` before a quoted `}`.
+const AMBIGUOUS_PAIR = `${LIVE}{}`
+const MARKED_STRUCTURE = new RegExp(`${LIVE}[,}]`)
+
 /** The word's text, with each `{`, `,` and `}` the shell reads as brace structure replaced by its sentinel. */
 const structure = (marked: string): string =>
   unmark(marked.replaceAll(`${LIVE}{`, OPEN).replaceAll(`${LIVE},`, SEP).replaceAll(`${LIVE}}`, CLOSE))
+
+/** The word read with `{}` as an empty pair, and read with it as a `{` before a quoted `}`. */
+function readings(marked: string): string[] {
+  if (!marked.includes(AMBIGUOUS_PAIR)) return [structure(marked)]
+  return [structure(marked.replaceAll(AMBIGUOUS_PAIR, '{}')), structure(marked)]
+}
 
 /** Whether a zsh character sequence in `text`, such as `{+../}`, yields `-`. */
 const sequenceYieldsDash = (text: string): boolean =>
@@ -91,10 +101,15 @@ function mayLeadWithDash(text: string, depth = 0): boolean {
   )
 }
 
-/** Whether the marked word holds a brace expansion that may yield an option. */
+/** Whether the marked word holds a brace expansion that may yield an option, on either reading of a `{}`. */
 export function braceOption(marked: string): boolean {
   if (!marked.includes(`${LIVE}{`)) return false
-  const text = structure(marked)
+  // Several `{}` would need every mix of readings; with any brace structure beside them, fail closed.
+  if (marked.split(AMBIGUOUS_PAIR).length > 2 && MARKED_STRUCTURE.test(marked)) return true
+  return readings(marked).some(spellsOption)
+}
+
+function spellsOption(text: string): boolean {
   if (![INTEGER_SEQUENCE, CHAR_SEQUENCE, BRACE_LIST].some(group => group.test(text))) return false
   if (text.startsWith('-')) return !COUNT.test(text)
   return OPTION_ALTERNATIVE.test(text) || sequenceYieldsDash(text) || mayLeadWithDash(text)

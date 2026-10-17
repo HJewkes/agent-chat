@@ -402,7 +402,8 @@ as in `--no-verif{y..y}`, `--no-verif{y,}` or `{main,--no-verify}`, is denied. S
 may expand to nothing before a `-`, as in `{,}--no-verify`, and a zsh character sequence such as
 `{+../}` whose range holds `-`. The splitter marks only an unquoted `{`, `,` or `}` as the group's
 structure, so a quoted or escaped one is text, as the shell reads it: `{,x"}"}--no-verify` closes
-after the quoted `}`. git's count `-<n>`, as in `-{1..3}`, stays allowed, and a brace that yields
+after the quoted `}`. The `}` of an empty `{}` stays unmarked for find, xargs and parallel, so a `{`
+before a quoted `}`, as in `{"}",}`, is read both ways and denies if either may. git's count `-<n>`, as in `-{1..3}`, stays allowed, and a brace that yields
 no option, such as `HEAD:mai{n..n}`, is checked as the push it is.
 
 bash 5.3 runs a funsub, `${ cmd;}` (`${` followed by a blank, tab or newline) or `${|cmd;}`, as

@@ -80,6 +80,10 @@ const QUOTED_TEXT: [string, string][] = [
   ["git push origin {,a'}'}--no-verify", 'push origin --no-verify a}--no-verify'],
   ['git push origin {\\{,}--no-verify', 'push origin {--no-verify --no-verify'],
   ["git push origin {'{',}--no-verify", 'push origin {--no-verify --no-verify'],
+  // The splitter leaves an empty `{}` unmarked, so a `{` before a quoted `}` reads both ways.
+  ['git push origin {"}",}--no-verify', 'push origin }--no-verify --no-verify'],
+  ['git push origin {,{}}--no-verify', 'push origin --no-verify {}--no-verify'],
+  ['git push origin {"}",{}}--no-verify', 'push origin }--no-verify {}--no-verify'],
 ]
 
 // Quoted braces the shell leaves as text, or that yield no option.
@@ -87,6 +91,7 @@ const QUOTED_ALLOWED: [string, string][] = [
   ['git push origin "feat/{a,b}"', 'push origin feat/{a,b}'],
   ['git push origin feat/{a,b}"-x"', 'push origin feat/a-x feat/b-x'],
   ['git commit -m "{,}--no-verify"', 'commit -m {,}--no-verify'],
+  ['git push origin x{}', 'push origin x{}'],
 ]
 
 const ALLOWED = [
