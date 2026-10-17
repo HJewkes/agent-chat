@@ -1,30 +1,21 @@
+import type { SurfaceLifetime, AgentProfile } from '@titan-design/agent-protocol/wire'
+export {
+  SURFACE_LIFETIMES,
+  EFFORT_LEVELS,
+  AGENT_ROLES,
+  SETTING_SOURCES,
+  RETURN_CONTRACTS,
+} from '@titan-design/agent-protocol/wire'
+export type {
+  SurfaceLifetime,
+  EffortLevel,
+  AgentRole,
+  SettingSource,
+  ReturnContract,
+  AgentProfile,
+} from '@titan-design/agent-protocol/wire'
 import type { CarriedPermissionMode } from '../broker/host-channels.js'
-import type { IsolationName, Subscription, SurfaceName } from '../protocol.js'
-
-/**
- * What happens to an agent's pane when the agent itself ends (CC-95).
- *
- * A PROFILE decision, and that is the whole point of it being a field rather
- * than a rule. The human settled it that way after both global answers had been
- * tried and both were wrong for somebody: retire-only left four finished agents'
- * panes sitting at `-zsh` for six and a half hours, and close-on-exit throws
- * away the last output of a collaborator someone was reading.
- *
- * In their words: "it should be part of the profile for launching items. We
- * might be launching totally new agents - new window, independent of session.
- * Might be subagents, new pane to the right, closes when the session in the pane
- * closes." The lifetime of the surface follows what KIND of thing was launched.
- *
- * `keep` is not "leaks a pane": retire still closes it, as it always has. It
- * means the agent's own death is not what triggers that.
- */
-export const SURFACE_LIFETIMES = ['close-on-exit', 'keep'] as const
-
-export type SurfaceLifetime = (typeof SURFACE_LIFETIMES)[number]
-
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
-
-export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+import type { Subscription, SurfaceName } from '../protocol.js'
 
 /**
  * The default for a profile that does not say, and for every profile file
@@ -35,78 +26,6 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number]
  * belonging to agents nobody opted in for. The builtins opt in explicitly.
  */
 export const DEFAULT_SURFACE_LIFETIME: SurfaceLifetime = 'keep'
-
-/**
- * CC-163: what an agent is allowed to do with the bus beyond its own work.
- * A coordinator may spawn agents and run with Remote Control; a worker may
- * do neither and reports needs to its spawner instead.
- */
-export const AGENT_ROLES = ['coordinator', 'worker'] as const
-
-export type AgentRole = (typeof AGENT_ROLES)[number]
-
-/** The settings files `--setting-sources` can name; `user` is the one holding the account's own allow rules. */
-export const SETTING_SOURCES = ['user', 'project', 'local'] as const
-
-export type SettingSource = (typeof SETTING_SOURCES)[number]
-
-/** CC-286: the report rules the broker appends to a spawned agent's brief. */
-export const RETURN_CONTRACTS = ['implementer', 'reviewer'] as const
-
-export type ReturnContract = (typeof RETURN_CONTRACTS)[number]
-
-/**
- * A profile bundles the things that always travel together, so a spawn is one
- * noun rather than six flags.
- *
- * There is deliberately no `permissionMode` field — not `bypassPermissions`, and
- * not a milder alias for it. A profile widens a posture by naming tools, which
- * is auditable and reviewable in a diff; a mode flag widens it by category,
- * which is neither. agent-chat already refuses to let one Claude answer
- * another's permission prompt; spawning an agent that is never prompted is the
- * larger hole, not the smaller one.
- */
-export interface AgentProfile {
-  name: string
-  description: string
-  model: string
-  /**
-   * Passed to --allowed-tools, and THE permission lever. Declare the narrowest
-   * set that actually completes the work: too wide leaks authority, too narrow
-   * yields an agent that silently produces degraded output.
-   */
-  allowedTools: string[]
-  disallowedTools?: string[]
-  isolation: IsolationName
-  surface: SurfaceName
-  /**
-   * Whether this kind of agent's pane goes with it when it ends. Inert for a
-   * headless profile, which has no surface to close. See {@link SurfaceLifetime}.
-   */
-  surfaceLifetime?: SurfaceLifetime
-  /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
-  role?: AgentRole
-  /** CC-924: spawn and teleport with Remote Control unless the request says otherwise. Coordinator profiles only. */
-  remoteControl?: boolean
-  /** Absent means the contract is inferred from the name and grants; `none` opts out. */
-  returnContract?: ReturnContract | 'none'
-  /** Passed as --effort when set; unset leaves the harness default. */
-  effort?: EffortLevel
-  /** Appended via --append-system-prompt, after the standard peer preamble. */
-  promptPrelude: string
-  /** Extra MCP servers merged into the generated --mcp-config. */
-  mcpServers?: Record<string, unknown>
-  /** Load only the generated --mcp-config, dropping user-scope and plugin MCP servers. Absent means on for a headless worker. */
-  strictMcpConfig?: boolean
-  /** Passed to --setting-sources. Absent means project and local for a worker, and no flag for a coordinator. */
-  settingSources?: SettingSource[]
-  /** Drop every skill and slash command, which otherwise load into each turn. */
-  disableSlashCommands?: boolean
-  /** Extra environment for the launched process. Never overrides AGENT_CHAT_* or CLAUDE_CONFIG_DIR. */
-  env?: Record<string, string>
-  /** Set by the loader, never read from a file: keys in the file that no field here answers to. */
-  warnings?: string[]
-}
 
 /**
  * Everything `buildLaunchPlan` needs, with nothing left for it to go and find.

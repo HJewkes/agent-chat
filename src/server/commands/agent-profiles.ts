@@ -1,3 +1,4 @@
+import { AgentProfilesArgsSchema } from '@titan-design/agent-protocol/wire'
 import { z } from 'zod'
 import { loadProfile, roleOf, selectProfileNames } from '../../agents/profiles.js'
 import { defineTool } from '../command.js'
@@ -10,7 +11,7 @@ export const agentProfiles = defineTool({
     'List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. ' +
     'Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. ' +
     'Pass name to read one profile; an unknown name errors with close matches.',
-  args: z.object({ name: z.string().optional().describe('Return only this profile.') }),
+  args: AgentProfilesArgsSchema,
   result: z.string(),
   async run({ name: only }) {
     const rows = selectProfileNames(only).map(name => {

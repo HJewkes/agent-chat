@@ -1,3 +1,5 @@
+import type { AgentEventRow, LoggedEventRow } from '@titan-design/agent-protocol/wire'
+export type { AgentEventRow, LoggedEventRow } from '@titan-design/agent-protocol/wire'
 import type {
   CursoredMessage,
   DecidedItem,
@@ -49,34 +51,6 @@ export type OpenApproval =
 
 /** A decider's answer to one question, with the human answer that overruled it (autonomy slice 3). */
 export type Decision = DecidedItem['decision'] & { overruledBy?: string }
-
-/**
- * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
- * no `id`. Deliberately not the sqlite `Row` — nothing downstream of the fold
- * should depend on the storage schema.
- */
-export interface AgentEventRow {
-  kind: EventKind
-  ts: number
-  actor: string
-  target: string | null
-  msgId: string | null
-  ref: string | null
-  body: string | null
-  meta: Record<string, string>
-}
-
-/**
- * An `AgentEventRow` with the log id that ordered it.
- *
- * The id is deliberately absent from `AgentEventRow` — the agent fold is a pure
- * function over content and has no business knowing storage order. The SSE tail
- * is the opposite case: there the id IS the contract, because it becomes the
- * frame's `id:` and therefore the browser's resume cursor.
- */
-export interface LoggedEventRow extends AgentEventRow {
-  id: number
-}
 
 export interface EventStore {
   append(input: AppendInput): { id: number; msgId: string }

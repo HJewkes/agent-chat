@@ -1,3 +1,4 @@
+import { AgentListArgsSchema } from '@titan-design/agent-protocol/wire'
 import { z } from 'zod'
 import type { AgentIdentity, ServerMessage } from '../../protocol.js'
 import { accountReader, accountUsageLines, budgetSegment, readBudget } from '../../agents/budget.js'
@@ -24,14 +25,7 @@ export const agentList = defineTool({
   description:
     'List durable agents with their lifecycle state and whether a process is currently attached. ' +
     'An agent can exist without being connected — identity outlives presence.',
-  args: z.object({
-    include_retired: z
-      .boolean()
-      .describe('Also list retired agents, with the session id agent_spawn resume_session needs.')
-      .optional(),
-    mine: z.boolean().describe('Only agents this session spawned.').optional(),
-    prefix: z.string().describe('Only agents whose name starts with this.').optional(),
-  }),
+  args: AgentListArgsSchema,
   result: z.string(),
   async run({ include_retired, mine, prefix }, ctx) {
     const includeRetired = include_retired === true

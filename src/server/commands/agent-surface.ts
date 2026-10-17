@@ -1,5 +1,5 @@
+import { AgentSurfaceArgsSchema } from '@titan-design/agent-protocol/wire'
 import { z } from 'zod'
-import { requiredString } from '../../args.js'
 import type { ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 
@@ -14,9 +14,7 @@ export const agentSurface = defineTool({
     'opens beside you in the same window; if you are headless it opens its own. COST, and say so if ' +
     'you report this: the agent is stopped and resumed, so whatever turn it was part way through is ' +
     'lost. Refused for an agent already in a terminal — agent_list shows where each one is.',
-  args: z.object({
-    name: requiredString('name').describe('The headless agent to bring up, as shown by agent_list.'),
-  }),
+  args: AgentSurfaceArgsSchema,
   result: z.string(),
   async run({ name }, ctx) {
     const res = (await ctx.broker.request({ t: 'surface', name }, 'switch_result')) as Extract<

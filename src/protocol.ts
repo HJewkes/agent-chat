@@ -1,46 +1,48 @@
+import { WAKE_SOURCES } from '@titan-design/agent-protocol/wire'
+import type {
+  RemoteLaunch,
+  SpawnResultFields,
+  EventKind,
+  SubscribableKind,
+  WakeSource,
+  SubscriptionSelector,
+  Subscription,
+  ExperimentArm,
+  SpawnRequest,
+  ResumeRequest,
+  RetireRequest,
+  AgentListRequest,
+  SurfaceRequest,
+  AgentListResult,
+  SurfaceResult,
+} from '@titan-design/agent-protocol/wire'
+export {
+  EVENT_KINDS,
+  SUBSCRIBABLE_KINDS,
+  ISOLATION_NAMES,
+  AGENT_LIFECYCLES,
+  AGENT_ORIGINS,
+  WAKE_SOURCES,
+} from '@titan-design/agent-protocol/wire'
+export type {
+  RemoteLaunch,
+  SpawnResultFields,
+  RemoteProfile,
+  EventKind,
+  SubscribableKind,
+  IsolationName,
+  AgentLifecycle,
+  AgentOrigin,
+  WakeSource,
+  SubscriptionSelector,
+  Subscription,
+  ExperimentArm,
+  AgentIdentity,
+} from '@titan-design/agent-protocol/wire'
 import {
   SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
   type SurfaceName as PackageSurfaceName,
 } from '@titan-design/agent-surface'
-import type { AgentProfile } from './agents/types.js'
-
-// Wire protocol between a session's MCP subprocess and the shared broker.
-// Newline-delimited JSON over a unix socket.
-
-/**
- * CC-881: a teleport successor for a session on another host, in host-neutral terms only. The
- * broker records the successor; the caller's MCP process builds the plan, every path, the env and
- * the MCP config from its OWN host, so nothing here names a binary, a directory or a variable.
- */
-export interface RemoteLaunch {
-  agentId: string
-  sessionId: string
-  name: string
-  profile: RemoteProfile
-  brief: string
-  preamble: string
-  /** CC-281: the predecessor was a human's own session, so its successor has no spawner to report to. */
-  adopted?: true
-  surface: PackageSurfaceName
-  tags?: string[]
-  subscriptions?: Subscription[]
-  remoteControl?: boolean
-  /** CC-951: carried channel targets; the caller's host checks each one before it reaches an argv. */
-  channels?: string[]
-  /** CC-951: carried permission mode, checked against the same allowlist on the caller's host. */
-  permissionMode?: string
-  anchor?: string
-  /** CC-913: this landing's secret; the only proof a later `teleport_land_failed` came from the caller that armed it. */
-  landToken?: string
-  /** CC-951: launch now, not after the predecessor exits, and end it only on a later `endSelf` plan. */
-  successorFirst?: true
-  /** CC-951: set only for a host launcher, which has no predecessor of its own to take these from. */
-  cwd?: string
-  /** CC-951: the account the predecessor spent, which must exist on the launcher's machine. */
-  configDir?: string
-  /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
-  configDirUnset?: true
-}
 
 /** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
 export interface HostProbe {
@@ -60,49 +62,6 @@ export interface HostLauncherInfo {
   surfaces: PackageSurfaceName[]
   connectedAt: number
 }
-
-/** What a spawn, resume or retire answers with, and a remote spawn's placement (CC-1059) too. */
-export interface SpawnResultFields {
-  ok: boolean
-  agentId?: string
-  name?: string
-  reason?: string
-  /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
-  code?:
-    | 'surface_refused'
-    | 'spawn_rate_limit'
-    | 'machine_headless_limit'
-    | 'machine_memory_floor'
-    | 'seat_budget_stop'
-    | 'seat_spawn_overlap'
-    | 'seat_hand_reserve'
-    | 'seat_spawn_unprefixed'
-    | 'reviewer_account_limit'
-    | 'broker_draining'
-  /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
-  retryable?: boolean
-  /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
-  retryAfterMs?: number
-  warnings?: string[]
-  /**
-   * The profile's own deny list, echoed back on success. CC-29's finding:
-   * a toolset-confined agent cannot report being stuck — the tool is absent
-   * from its schema, not refused — so the only place this is knowable with
-   * certainty is here, at spawn time, before the agent can fail silently.
-   */
-  disallowedTools?: string[]
-  /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
-  transcript?: { path: string; found: boolean }
-  /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
-  base?: { ref: string; sha: string }
-  /** CC-1059: recorded, not launched: the requester launches this on `host`, then reports `spawn_launched`. */
-  launch?: RemoteLaunch
-  /** CC-1059: the host the agent launches on, when that is not the broker's. */
-  host?: string
-}
-
-/** A profile without the fields that run something or set the environment on the caller's host. */
-export type RemoteProfile = Omit<AgentProfile, 'env' | 'mcpServers' | 'warnings'>
 
 export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
 
@@ -307,134 +266,9 @@ export const RESERVED_NAMES = new Set([HUMAN, 'user', 'system', 'claude', 'all',
  */
 export const MAX_MULTICAST_RECIPIENTS = 8
 
-/**
- * Every event kind, as a runtime value rather than only a type.
- *
- * This is deliberate and it is load-bearing. The SSE contract enumerates this
- * union, and test files are excluded from tsconfig — so a purely type-level
- * exhaustiveness guard is silently inert and a new kind can slip past the
- * contract with nothing failing. Deriving the type from an array makes the list
- * checkable at runtime, which is the only place a check actually runs here.
- * Same shape as SESSION_STATUSES above.
- */
-export const EVENT_KINDS = [
-  'message',
-  'broadcast',
-  'question',
-  'notice',
-  'answer',
-  'resolution',
-  'approval_request',
-  'registered',
-  'deregistered',
-  'route_failed',
-  // Agent identity lifecycle. Landed ahead of any agent code on purpose: this
-  // union is enumerated in the SSE contract, so adding kinds later unfreezes
-  // that contract and re-serialises everything built against it.
-  //
-  // Id convention, and it is load-bearing rather than cosmetic: `agent_spawned`
-  // puts the AGENT ID in `msg_id`, and every later row puts it in `ref`. That
-  // makes both hot queries hit indexes that already exist — "the spawn record
-  // for agent X" on events_msg_id, "everything that happened to agent X" on
-  // events_ref.
-  'agent_spawned',
-  'agent_attached',
-  'agent_detached',
-  'agent_resumed',
-  'agent_exited',
-  'agent_retired',
-  // Teleport (CC-20). Two kinds rather than one with a `meta.phase`: "wrote its
-  // handoff" and "the countdown ran out" are different instants, and a query for
-  // either should not have to filter on a stringly field.
-  'agent_handoff',
-  'agent_stood_down',
-  'isolation_allocated',
-  'isolation_released',
-  // CC-282: a finished agent's worktree was removed and its branch kept, for `agent resume` to re-create.
-  'isolation_parked',
-  // Refusals are events rather than just `reason` strings on a reply: they are
-  // the security-relevant thing, and must be in the log whether or not anyone
-  // was watching at the time.
-  'agent_spawn_refused',
-  'verdict_refused',
-  // CC-22. A message an agent composed and wants delivered with its human's
-  // authority. It sits in the human queue like a `question` and is closed by the
-  // same `resolution` row, so approving and declining both reuse machinery that
-  // already retires an item — an `endorse_verdict` kind would leave it open
-  // forever until someone also taught CLOSED about it.
-  'endorse_request',
-  // Autonomy slice 3. The decider's answer to a human-queue question, written
-  // only by the broker for the one configured decider identity. It leaves the
-  // question open so the human can still overrule it with `answer`.
-  'decided',
-  // CC-1056: the M0 criterion-3 instrument. Written by the seat's tool hooks, never by the broker.
-  'seat_blocked',
-  'seat_unblocked',
-  'seat_activity',
-  // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
-  'seat_ask_denied',
-] as const
-
-export type EventKind = (typeof EVENT_KINDS)[number]
-
-/**
- * What a session may ask to be pushed. LIFECYCLE ONLY, and the omissions are the
- * point: `message`, `broadcast`, `question` and `answer` are absent so that no
- * subscription can turn into a wiretap on traffic between other peers. A global
- * subscriber learns who is here, never what they said.
- *
- * Reading another session's trail stays possible through chat_activity, which is
- * explicit, one session at a time, and itself logged.
- *
- * Note this is a filter over kinds that already exist. Subscriptions deliberately
- * add NO new EventKind, because the union is frozen into the SSE contract and
- * extending it re-serialises everything built against it.
- *
- * `agent_handoff` is absent for a stronger reason than the rest: its body is a
- * whole document, and `SystemEventFeed.offer` copies a row's body into the
- * pushed event. Subscribing to it would fan one session's handoff into every
- * subscriber's context — a content leak by construction, into the one channel
- * whose stated guarantee is "you learn who is here, never what anyone said".
- * Succession is already visible through the descendant's `agent_spawned` and the
- * predecessor's `agent_retired`, both of which are here.
- */
-export const SUBSCRIBABLE_KINDS = [
-  'registered',
-  'deregistered',
-  'agent_spawned',
-  'agent_attached',
-  'agent_detached',
-  'agent_resumed',
-  'agent_exited',
-  'agent_retired',
-  'agent_spawn_refused',
-] as const satisfies readonly EventKind[]
-
-export type SubscribableKind = (typeof SUBSCRIBABLE_KINDS)[number]
-
-/**
- * Who an event must be about for a subscriber to hear it. `all` is the noisy one
- * and exists knowingly — coalescing is what makes it survivable. `spawnedBy` is
- * provenance rather than naming: it matches whatever the subscribing connection
- * has itself spawned, so it stays correct as more agents come and go without the
- * subscriber having to name each one or repoint at a shared tag.
- */
-export type SubscriptionSelector = { all: true } | { name: string } | { tag: string } | { spawnedBy: 'self' }
-
-/** CC-168: which experiment a spawn belongs to and which arm it runs, recorded on its spawn row. */
-export interface ExperimentArm {
-  id: string
-  arm: string
-}
-
 /** CC-168: why a follow-up message was sent, recorded on its message rows for the experiment tables. */
 export const FOLLOWUP_KINDS = ['fix', 'rebase', 'extension', 'review'] as const
 export type FollowupKind = (typeof FOLLOWUP_KINDS)[number]
-
-export interface Subscription {
-  selector: SubscriptionSelector
-  kinds: SubscribableKind[]
-}
 
 /**
  * A log row reshaped for a subscriber. `subject` is who the event is about,
@@ -665,16 +499,6 @@ export interface QueueItem {
   meta: Record<string, string>
 }
 
-/**
- * Names an agent-teams isolation strategy, and where a spawned agent's process
- * is presented. Runtime arrays rather than bare type unions for the same reason
- * EVENT_KINDS is one: profile files are user-authored JSON, so these have to be
- * checkable at the point a string arrives from disk, not only at compile time.
- */
-export const ISOLATION_NAMES = ['none', 'worktree', 'file-ownership', 'toolset-limited'] as const
-
-export type IsolationName = (typeof ISOLATION_NAMES)[number]
-
 /** Derived from the package so the two lists cannot drift. */
 export const SURFACE_NAMES = PACKAGE_SURFACE_NAMES
 
@@ -693,11 +517,6 @@ export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TE
 
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
-
-export const WAKE_SOURCES = ['watchdog', 'shepherd'] as const
-
-/** CC-203, CC-436: marks a send or resume the seat watchdog or Shepherd made, so its event row is not read as the human typing. */
-export type WakeSource = (typeof WAKE_SOURCES)[number]
 
 /** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */
 export const wakeSource = (value: unknown): WakeSource | undefined =>
@@ -984,136 +803,8 @@ export type ClientMessage =
   | ({ t: 'service_ask'; as: string; text: string } & ItemShape)
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
-  | {
-      t: 'spawn'
-      name: string
-      profile: string
-      brief: string
-      cwd?: string
-      isolation?: IsolationName
-      surface?: SurfaceName
-      /**
-       * An active-work initiative slug, or `auto`, whose brief, open tasks and
-       * latest session are prepended to `brief` by the broker (CC-63), followed by
-       * what the active-work daemon ranks as related to `brief` (CC-101). Sent as a
-       * pointer rather than as text so the requester cannot use it to have
-       * arbitrary files read back to it — the broker resolves what it will read.
-       */
-      briefing?: string
-      /**
-       * A worktree the TASK SYSTEM assigned, rather than one the profile's
-       * isolation strategy chose (CC-72). Isolation is a property of the work,
-       * not of the agent: several tasks can share one worktree under file
-       * ownership, and a child task inherits its parent's. agent-chat's side of
-       * that is ACCEPTING an assignment, never computing one — so this is an
-       * absolute path that must already exist, and the strategy is bypassed
-       * rather than asked.
-       */
-      worktree?: string
-      /**
-       * Path globs, relative to the worktree, that this agent owns (CC-81).
-       * Turns `file-ownership` isolation from a no-op into a real assignment:
-       * they become the agent's claim, checked against what live peers already
-       * hold in the same worktree.
-       */
-      owns?: string[]
-      /**
-       * CC-952: path globs, relative to the agent's own worktree, the broker
-       * claims as a `files` claim held by the agent's name, so the burndown tick
-       * sees them before the agent registers. Unlike `owns` it isolates nothing
-       * and is accepted with a worktree profile.
-       */
-      claimPaths?: string[]
-      /** CC-1158: the `origin/<branch>` a worktree spawn is cut from; a stacked slice names its parent's PR branch. */
-      baseRef?: string
-      /**
-       * CC-44: start the agent from a COPY of the requester's own conversation
-       * instead of from an empty one. `'context'` is the only value, and there
-       * is deliberately no field naming WHOSE conversation — the broker resolves
-       * that from the requesting connection, the same discipline `anchor` and
-       * `parentAgentId` follow, because a fork hands an entire conversation to a
-       * new process and only the session that owns one may do that.
-       */
-      inherit?: 'context'
-      /** H-12: explicit opt-in to `--remote-control` for an interactive agent; headless ignores it. */
-      remoteControl?: boolean
-      /**
-       * The Claude Code session id the requester claims to be forking, checked
-       * against the one the broker observed for this connection and REFUSED when
-       * they differ.
-       *
-       * Exists only to make that refusal explicit. The MCP tool never sends it —
-       * a model has no way to name a transcript — but the socket is one client
-       * among several (see `sanitizeSubscriptions` for the same reasoning), and a
-       * raw client asking to fork a peer should be told no rather than quietly
-       * getting its own transcript back.
-       */
-      forkFrom?: string
-      /** Tags and subscriptions the spawned agent starts with, before it runs. */
-      tags?: string[]
-      subscriptions?: Subscription[]
-      /**
-       * CC-100: the Claude config dir — and therefore the ACCOUNT — this agent
-       * should run on, named explicitly. An absolute path under the user's home
-       * that already exists; anything else is refused rather than corrected,
-       * because running on a different account than the one asked for is the
-       * failure this field exists to prevent.
-       */
-      configDir?: string
-      /**
-       * The REQUESTER's own `CLAUDE_CONFIG_DIR`, observed by its MCP server from
-       * its own environment (CC-100).
-       *
-       * Sent rather than only read from the registry because the human at the CLI
-       * holds no registry entry to read it from, and they are the caller most
-       * likely to have switched accounts in their shell. For a registered session
-       * the broker falls back to what that session reported on `register`, which
-       * is the same value from the same environment.
-       */
-      spawnerConfigDir?: string
-      /**
-       * CC-126: a Claude Code session uuid to continue instead of minting a new
-       * one. Its transcript must already exist under the chosen config dir and
-       * cwd; the broker refuses otherwise and names the path it checked.
-       */
-      resumeSession?: string
-      /**
-       * CC-133: the name of the agent whose work this one takes over. Sent as a
-       * name, not text: the broker reads its last report, branch and transcript
-       * from the log, and refuses unless the requester spawned it.
-       */
-      predecessor?: string
-      /** CC-168: the experiment and arm this spawn runs; both must be non-empty or the spawn is refused. */
-      experiment?: ExperimentArm
-      /** CC-286: `none` stops the broker appending its return contract to `brief`. */
-      returnContract?: 'none'
-      /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */
-      tier?: number
-      /**
-       * CC-802: who a CLI spawn is on behalf of. Only an unregistered connection's claim is read, since a
-       * session is already named by its registration; the row then records it in place of the human.
-       */
-      spawnedAs?: 'burndown' | 'shepherd'
-      /** CC-1206: the agent identity in the CLI caller's env; only lowers trust, read only from an unregistered connection. */
-      callerAgent?: string
-      /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
-      task?: string
-      /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
-      workRole?: string
-      /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
-      override?: 'fix-round'
-      /** CC-1059: the requester's own OS, sent by its process and never by the model; picks a remote surface. */
-      hostPlatform?: string
-      /** CC-1059: the requester can launch a spawn on its own host; absent is an older client, launched here. */
-      launchesHere?: true
-      /** CC-1059: the machine to launch on, a config `machines` alias or a hostname. */
-      host?: string
-      /** CC-1059: the CLI's own hostname. Read only from an unregistered connection; a session's comes from its registration. */
-      callerHost?: string
-      /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
-      callerHome?: string
-    }
-  | { t: 'agents'; includeRetired?: boolean }
+  | SpawnRequest
+  | AgentListRequest
   /**
    * CC-1059: the requester checked and wrote a remote spawn's `launch` on its host (`ok`), or refused
    * it there. Accepted only from the connection that received the launch; an ok ack lets it open the
@@ -1126,15 +817,7 @@ export type ClientMessage =
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
    */
-  | {
-      t: 'resume'
-      name: string
-      surface?: SurfaceName
-      message?: string
-      source?: WakeSource
-      /** CC-883: run with `--remote-control` if the agent is a coordinator; a worker resumes without it. */
-      remoteControl?: boolean
-    }
+  | ResumeRequest
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
    * commits it was protecting. Optional so an older client still type-checks,
@@ -1146,7 +829,7 @@ export type ClientMessage =
    * CC-959: `agentId` retires that row only, and only while it still holds `name` and is not live.
    * The reply then echoes it, so a caller can tell a broker that ignored it and retired by name.
    */
-  | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
+  | RetireRequest
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
@@ -1219,7 +902,7 @@ export type ClientMessage =
    * session relays no permission prompts (CC-2). It only ever widens what a human
    * can see, and the broker refuses it for anything not already headless.
    */
-  | { t: 'surface'; name: string }
+  | SurfaceRequest
   /**
    * Go headless. NAMES NO AGENT, exactly as `teleport` does not: making another
    * peer's work invisible is the operation worth making unrepresentable, so there
@@ -1371,7 +1054,7 @@ export type ServerMessage =
   /** CC-1059: the remote spawn's final verdict, sent once it registers, fails, or the attach window passes. */
   | ({ t: 'spawn_placed_result' } & SpawnResultFields)
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
-  | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
+  | AgentListResult
   /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
   | {
       t: 'retire_finished_result'
@@ -1425,128 +1108,7 @@ export type ServerMessage =
    * anchor is gone, and a caller that reported the request rather than the
    * outcome would tell the human to look in the wrong place.
    */
-  | {
-      t: 'switch_result'
-      ok: boolean
-      reason?: string
-      name?: string
-      agentId?: string
-      surface?: SurfaceName
-      warnings?: string[]
-    }
-
-/**
- * The lifecycle an agent identity is folded into. Durable: it is a projection of
- * the event log, so it survives a broker restart in a way presence cannot.
- */
-export const AGENT_LIFECYCLES = ['spawning', 'live', 'detached', 'exited', 'retired'] as const
-
-export type AgentLifecycle = (typeof AGENT_LIFECYCLES)[number]
-
-/**
- * How an identity came to exist, and therefore how much of it to trust.
- *
- * `spawned` — the broker minted the id AND assigned the name from a launch plan,
- * then handed both to the process in its environment. Every field is
- * broker-derived.
- *
- * `adopted` — an ordinary human-started session, given an identity by the broker
- * when it registered. The id, the Claude Code session id and the cwd are still
- * broker- or host-derived, but the NAME and the BRIEF are whatever the model
- * typed into `chat_register`. That is the weaker guarantee `from` already has
- * versus `source`, and it is recorded here rather than left to convention
- * because a roster (CC-11) and an endorsement (CC-22) need to tell the two
- * apart.
- */
-export const AGENT_ORIGINS = ['spawned', 'adopted'] as const
-
-export type AgentOrigin = (typeof AGENT_ORIGINS)[number]
-
-/**
- * A durable agent identity, produced by the A1 read model (`agents/identity.ts`).
- * Presence is deliberately NOT in here — that is the registry's job, and it is
- * ephemeral by design. The two are paired at render time, never stored together.
- *
- * The first six fields were frozen with the rest of the contract in step 2a; the
- * rest were added by A1 under the "may add fields" allowance. `isolation` and
- * `surface` are plain strings rather than IsolationName / SurfaceName because
- * they are read back out of a free-text `meta` blob, and the fold cannot promise
- * a value written by an older binary is still in either union.
- */
-export interface AgentIdentity {
-  agentId: string
-  name: string
-  profile: string
-  state: AgentLifecycle
-  /** Whether the name and brief are broker-assigned or self-reported. */
-  origin: AgentOrigin
-  spawnedBy: string
-  spawnedAt: number
-  brief: string
-  cwd: string
-  isolation: string
-  surface: string
-  /** The uuid passed to --session-id. The resume handle. */
-  sessionId: string
-  /**
-   * The Claude config dir this agent was launched on, resolved at spawn (CC-100).
-   *
-   * Recorded rather than recomputed because it is where the agent's transcript and
-   * status-cache actually live: an agent spawned from a session on a dedicated
-   * account writes neither under the broker's own dir, so a reader that assumes
-   * `CLAUDE_CONFIG_DIR` from its own environment finds nothing and reports "not
-   * written yet" forever. Empty for rows written before CC-100.
-   */
-  configDir?: string
-  /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
-  configDirUnset?: boolean
-  /** CC-1059: the machine the spawn launched on; absent on rows written before it was recorded. */
-  host?: string
-  /** CC-959: an adopted session's current name was derived from its directory (CC-82), not chosen. */
-  provisionalName?: true
-  /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
-  repo?: string
-  /** CC-915: the worktree's branch. */
-  branch?: string
-  /** CC-915: the commit a new worktree branch was cut from; a resume onto a fresh branch replaces it. */
-  base?: { sha: string; ref: string }
-  /** CC-915: the task id the spawner assigned. */
-  task?: string
-  /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other. Set on every folded identity. */
-  workRole?: string
-  /** CC-915: the role was read from the profile and name, not stated by the spawner. */
-  workRoleInferred?: true
-  /** Timestamp of the newest row referencing this identity, spawn included. */
-  lastEventAt: number
-  /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */
-  exitedAt?: number
-  /** Timestamp of the newest `agent_detached` row, cleared by a resume or attach; stands in for `exitedAt` while no exit is recorded. */
-  detachedAt?: number
-  /**
-   * How many teleports deep this identity is: 1 for one that has never
-   * teleported, incrementing per hop. Broker-derived, like `teleportFrom` —
-   * written by the broker from its own resolution of the predecessor, never from
-   * a client-supplied field, which is what makes it lineage rather than a claim.
-   */
-  generation: number
-  /** The immediate predecessor's agentId. The rest of the chain is a walk of these. */
-  teleportFrom?: string
-  /**
-   * `failedToStart` (CC-95) separates "this agent ran and finished" from "this
-   * agent never came up". Carried on the exit rather than as a sixth lifecycle
-   * because the durable fact IS an exit — the process is gone and the identity is
-   * terminal — and only the roster needs to say WHICH kind, which it does without
-   * every consumer of `AgentLifecycle` growing a case for it.
-   */
-  exit?: {
-    code: number | null
-    summary: string
-    costUsd?: number
-    failedToStart?: boolean
-    /** CC-333: written by the settle timer or a presence check, not by a recorded process exit. */
-    inferred?: boolean
-  }
-}
+  | SurfaceResult
 
 /** One agent in a bulk retire's plan: retired, or skipped for `reason`. */
 export interface RetirePlanEntry {
