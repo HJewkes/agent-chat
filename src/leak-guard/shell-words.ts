@@ -845,11 +845,16 @@ class ShellLexer {
   private wordPart(c: string): void {
     const next = this.peek(this.pos + 1)
     this.quoted ||= c === "'" || c === '"' || c === '\\'
-    // bash's parser sees `$'if'` quoted too, so it is neither a reserved word nor an assignment's name.
-    if (this.quoted || (c === '$' && next === "'"))
+    // bash's parser sees `$'if'` and `$"if"` quoted too, so neither is a reserved word nor an assignment's name.
+    if (this.quoted || (c === '$' && (next === "'" || next === '"')))
       this.quoteStart = Math.min(this.quoteStart, this.word?.length ?? 0)
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
+    // bash translates `$"…"` as a double-quoted string; zsh keeps the `$`, so the git word differs and the guard reads bash's.
+    if (c === '$' && next === '"') {
+      this.pos++
+      return this.doubleQuoted()
+    }
     if (c === '$' && next === "'") return this.ansiC()
     if (c === '$' && next === '[') this.noteBracket()
     if (c === '$' && next === '(') return this.split(this.substitution(false))
