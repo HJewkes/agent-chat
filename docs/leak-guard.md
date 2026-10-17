@@ -340,6 +340,31 @@ by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, s
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
 
+util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
+are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
+from a table, an option word or option value the shell expands (a `flock -c` text included), or
+any expanded word after `script` (whose getopt reads options anywhere), denies on a line that may
+reach git or gh.
+`taskset -p` and `chrt -p` read the same way: util-linux takes the pid from the last word, and
+pid 0 (`0`, `00`, `+0`) runs the words after the mask or priority. An operand the shell expands
+(`~/f.lock`, `"$HOME/f.lock"`, `$F`) is not read as the command: like an expanded option, it denies
+on a line that may reach git or gh. A `chrt` priority that strtoimax would not read (`+0` and ` 0`
+are priorities) is read as the command. util-linux 2.41's `chrt` skips one `--` after its priority, so the
+command is read after it (2.39's runs a command named `--`); `taskset` and `flock` run a command
+named `--`.
+`flock <file> -c <text>` and `script -c <text>` are checked as `sh -c <text>`, also when the lock
+file is a `~/` path. Every word the guard reads to find where the command or `-c` text starts goes
+through one test: a word the shell may turn into an option, `--`, or none or several words denies on
+a line that may reach git or gh. That covers an unquoted `$F`, which may split, a quoted `"$F"` or
+`"$HOME/f.lock"`, which may start with `-`, and an expanded word where flock's `-c` would be
+(`flock f "$X" TEXT`), the word after `--` included. One word that starts with a literal other than `-`, or with `~/`, passes.
+`script` without
+`-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
+derives as it derives git's config env: from the command's assignments (`env` included), earlier
+exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
+on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
+macOS `script [file [command ...]]`, which runs its trailing words, is not covered.
+
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`                                                                                                                                          | skips the pre-push hook                                     |
@@ -1343,8 +1368,7 @@ Not covered, by design or by cost:
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
   sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
-  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`,
-  `script -q /dev/null gh ...`. The guard
+  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
@@ -1407,16 +1431,18 @@ Not covered, by design or by cost:
   the line itself assigns, fed to a shell (`N=3; bash <<EOF`, `echo $N`, `EOF`), since the
   guard does not substitute assigned values. Quoting the delimiter (`<<'EOF'`) avoids the last.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412,
-  CC-1414 and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
+  A shell behind `setsid`, `flock`, `taskset`, `chrt`, `script -c` or `unshare` reads the feed
+  as above (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`, `echo P | script -qc bash f`.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412
+  and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
     word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
     variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
     `echo P | $(echo bash)`;
-  - a wrapper the guard does not know (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`,
-    `echo P | taskset 1 bash`, `echo P | chrt 1 bash`, `script -c bash`;
+  - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
   - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and
