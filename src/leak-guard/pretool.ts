@@ -37,6 +37,7 @@ import {
   type ParallelCall,
   type ParallelInputs,
 } from './run-wrappers.js'
+import { JOB_WRAPPERS, jobRun } from './job-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -207,6 +208,8 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
+  jobShell: `leak-guard: flock, script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
+  jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
@@ -294,6 +297,7 @@ const IONICE_GETOPT: Getopt = {
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
   ...OPTION_WRAPPERS,
+  ...JOB_WRAPPERS,
   ...SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
@@ -386,6 +390,8 @@ type Unwrapped =
       fed?: Fed | undefined
       /** Commands that also run, each read as a command line of its own: find's later action clauses. */
       siblings?: Sibling[]
+      /** A wrapper runs the shell `$SHELL` names, read here as `sh`. */
+      viaShellVar?: boolean
     }
   | { reason: string }
 
@@ -427,11 +433,19 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   // An xargs given a command whose wrappers leave none runs a command its input names, as `xargs nice` does.
   let fedCommand = false
   let siblings: Sibling[] | undefined
+  let viaShellVar = false
   const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
-      : { words: rest.slice(at), chdir, assigns, fed, ...(siblings && { siblings }) }
+      : {
+          words: rest.slice(at),
+          chdir,
+          assigns,
+          fed,
+          ...(siblings && { siblings }),
+          ...(viaShellVar && { viaShellVar }),
+        }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
@@ -488,6 +502,18 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         rest = sudoShell(script)
         at = 0
       } else at = after.at
+    } else if (JOB_WRAPPERS.has(name)) {
+      const run = jobRun(rest, at + 1, name, splits)
+      if (run === undefined) return { reason: REASONS.jobOption }
+      chdir ||= run.chdir === true
+      if ('at' in run) at = run.at
+      // Words xargs adds may be another -c or the script itself.
+      else if (fed !== undefined) return { reason: REASONS.hiddenCommand }
+      else {
+        rest = run.script === undefined ? ['sh'] : ['sh', '-c', run.script]
+        at = 0
+        viaShellVar = true
+      }
     } else if (name === 'env') {
       const env = unwrapEnv(rest, at + 1, fed !== undefined)
       if ('reason' in env) return env
@@ -1127,6 +1153,33 @@ const mentions = (said: string, name: string): boolean =>
     said,
   )
 
+/** The variables earlier exports and a command's own assignments set; a bare name is one `env -u` unsets. */
+function settingsFor(
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): Map<string, Setting> {
+  const set = new Map(scope.exports)
+  for (const word of assigns) {
+    const name = ASSIGNMENT.exec(word)?.[1]
+    const value =
+      name === undefined
+        ? undefined
+        : SUBSCRIPTED_OR_APPENDING.test(word)
+          ? UNSURE
+          : (resolveWord(assignedValue(word), cmd, ctx, scope) ?? UNSURE)
+    set.set(name ?? word, value)
+  }
+  return set
+}
+
+/** A variable's value for a command over the hook's env; UNSURE when the guard cannot tell. */
+function settingOf(set: ReadonlyMap<string, Setting>, name: string, scope: Scope): Setting {
+  if (set.has(name)) return set.get(name)
+  return scope.env === undefined || mentions(scope.said, name) ? UNSURE : scope.env[name]
+}
+
 /** What git's config env is for this command over the hook's; undefined when the guard cannot tell. */
 function aliasEnv(
   run: GitRun,
@@ -1134,23 +1187,11 @@ function aliasEnv(
   ctx: GuardContext,
   scope: Scope,
 ): Overrides | undefined {
-  const set = new Map(scope.exports)
-  for (const word of run.assigns) {
-    const name = ASSIGNMENT.exec(word)?.[1]
-    const value =
-      name === undefined
-        ? undefined
-        : SUBSCRIPTED_OR_APPENDING.test(word)
-          ? UNSURE
-          : (resolveWord(assignedValue(word), run.cmd, ctx, scope) ?? UNSURE)
-    set.set(name ?? word, value)
-  }
+  const set = settingsFor(run.assigns, run.cmd, ctx, scope)
   const env: Record<string, string | undefined> = {}
   for (const name of [...CONFIG_ENV, ...vars]) {
-    if (!set.has(name) && (scope.env === undefined || mentions(scope.said, name))) return undefined
-    const value = set.get(name)
-    if (value === UNSURE) return undefined
-    if (set.has(name)) env[name] = value
+    if (settingOf(set, name, scope) === UNSURE) return undefined
+    if (set.has(name)) env[name] = set.get(name) as string | undefined
   }
   return env
 }
@@ -2288,6 +2329,20 @@ const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
 const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
 
+/**
+ * Whether `$SHELL`, which script and unshare run, may name a program other than a shell the guard
+ * reads, derived as aliasEnv derives git's env. Unset, they run /bin/sh.
+ */
+function shellUnknown(
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  const shell = settingOf(settingsFor(assigns, cmd, ctx, scope), 'SHELL', scope)
+  return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
+}
+
 function checkSimple(
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -2297,7 +2352,16 @@ function checkSimple(
   lead?: Lead,
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
-  if ('reason' in unwrapped) return unwrapped.reason
+  if ('reason' in unwrapped)
+    return unwrapped.reason !== REASONS.jobOption || lineMayReachGit(scope, ctx)
+      ? unwrapped.reason
+      : undefined
+  if (
+    unwrapped.viaShellVar === true &&
+    shellUnknown(unwrapped.assigns, cmd, ctx, scope) &&
+    lineMayReachGit(scope, ctx)
+  )
+    return REASONS.jobShell
   const sibling = firstReason(unwrapped.siblings ?? [], s =>
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )
