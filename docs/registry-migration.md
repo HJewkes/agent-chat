@@ -414,17 +414,3 @@ parsers, including parse-stage error precedence and repeated-option behavior. Re
 delegation awaits each controller, keeps natural success and assigned exit codes, and
 preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
 fixtures replace the entire service module; no live daemon lifecycle is exercised.
-
-The three service control definitions preserve the original controllers byte-for-byte.
-Their mounted Commander options retain the original parsePort and Number-based hold
-parsers, including parse-stage error precedence and repeated-option behavior. Registry
-delegation awaits each controller, keeps natural success and assigned exit codes, and
-preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
-fixtures replace the entire service module; no live daemon lifecycle is exercised.
-
-The three service control definitions preserve the original controllers byte-for-byte.
-Their mounted Commander options retain the original parsePort and Number-based hold
-parsers, including parse-stage error precedence and repeated-option behavior. Registry
-delegation awaits each controller, keeps natural success and assigned exit codes, and
-preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
-fixtures replace the entire service module; no live daemon lifecycle is exercised.
