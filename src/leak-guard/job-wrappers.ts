@@ -114,7 +114,7 @@ const CHRT_PRIORITY = /^\s*[+-]?\d+$/
  * none or several words, which moves where the command starts. One word that starts with a literal
  * other than `-`, or with `~/`, cannot become an option.
  */
-const mayExpand = (word: string, splits: readonly string[]): boolean =>
+export const mayExpand = (word: string, splits: readonly string[]): boolean =>
   word.includes(LIVE) &&
   (expandsToWords(word, splits) ||
     word.startsWith('-') ||

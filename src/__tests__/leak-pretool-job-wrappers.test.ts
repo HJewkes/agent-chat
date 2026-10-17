@@ -259,6 +259,71 @@ describe('job and namespace wrappers run the command after their options (CC-141
   })
 })
 
+const PUSHED = 'push --no-verify origin HEAD:main'
+// An option value or timeout duration the shell may split moves the command word (CC-1421): line, wrapper.
+const SPLIT_VALUE: [string, string][] = [
+  [`N='5 git'; nice -n $N ${PUSHED}`, 'nice'],
+  [`N='5 git'; nice --adjustment $N ${PUSHED}`, 'nice'],
+  [`C='3 git'; ionice -c $C ${PUSHED}`, 'ionice'],
+  [`C='3 git'; ionice -c3 -n $C ${PUSHED}`, 'ionice'],
+  [`C='3 git'; ionice --class $C ${PUSHED}`, 'ionice'],
+  [`T='5 git'; timeout $T ${PUSHED}`, 'timeout'],
+  [`K='1 5 git'; timeout -k $K ${PUSHED}`, 'timeout'],
+  [`S='TERM 5 git'; timeout -s $S ${PUSHED}`, 'timeout'],
+  [`nice -n {5,git} ${PUSHED}`, 'nice'],
+  [`timeout {5,git} ${PUSHED}`, 'timeout'],
+  [`ionice -c {3,git} ${PUSHED}`, 'ionice'],
+  [`nice -n $EMPTY 5 ${P}`, 'nice'],
+  [`timeout $EMPTY 5 ${P}`, 'timeout'],
+  [`nice -n $(echo 5 git) ${PUSHED}`, 'nice'],
+  [`timeout $(echo 5 git) ${PUSHED}`, 'timeout'],
+  [`A=(5 git); nice -n "\${A[@]}" ${PUSHED}`, 'nice'],
+  [`A=(5 git); timeout "\${A[@]}" ${PUSHED}`, 'timeout'],
+  [`M='L git'; stdbuf -o $M ${PUSHED}`, 'stdbuf'],
+  [`M='L git'; stdbuf --output $M ${PUSHED}`, 'stdbuf'],
+  [`N='x git'; exec -a $N ${PUSHED}`, 'exec'],
+  // An option word the shell expands may become an option that takes a value.
+  [`N='5 git'; nice -$N ${PUSHED}`, 'nice'],
+  [`X=n; nice "-$X" 5 ${P}`, 'nice'],
+  // A quoted duration stays one word, but it may be an option that takes the next word as its value.
+  [`T=-k; timeout "$T" 1 5 ${P}`, 'timeout'],
+]
+
+// Long options and glued values that take a value, which nice and timeout read as getopt_long does.
+const LONG_VALUE: [string, string][] = [
+  [`nice --adjustment 5 ${P}`, 'nice'],
+  [`nice --adj 5 ${P}`, 'nice'],
+  [`timeout --signal TERM 5 ${P}`, 'timeout'],
+  [`timeout --sig TERM 5 ${P}`, 'timeout'],
+  [`timeout --kill-after 1 5 ${P}`, 'timeout'],
+  [`timeout -sTERM 5 ${P}`, 'timeout'],
+  [`timeout -vk 1 5 ${P}`, 'timeout'],
+]
+
+describe('nice, ionice, timeout, stdbuf and exec read a value the shell may split (CC-1421)', () => {
+  it.each(SPLIT_VALUE)('denies %s, whose command word may move', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.wrapperValue)
+  })
+
+  it.each(LONG_VALUE)('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'nice -n 5 git status',
+    `N='5 git'; nice -n "$N" git status`,
+    'timeout 5 git fetch',
+    `timeout "$T" make`,
+    'ionice -c3 make',
+    `nice -n $N make`,
+    'timeout -s TERM 5 git fetch',
+    `M=L; stdbuf -o "$M" git status`,
+    `N=x; exec -a "$N" git status`,
+  ])('allows %s', line => {
+    expect(checkCommand(line, ctx)).toBeUndefined()
+  })
+})
+
 const real = fakeGitShells('agent-chat-job-wrappers-', P)
 afterAll(real.cleanup)
 fs.writeFileSync(path.join(real.root, 's.sh'), 'export SHELL=/usr/bin/python3\n')
@@ -276,7 +341,6 @@ const settled = (line: string): string =>
   `${line}; i=0; while [ ! -s git-calls ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done`
 const pushes = (line: string): string =>
   BASH === undefined ? '' : real.gitCalls(BASH[0], BASH[1], settled(line))
-const PUSHED = 'push --no-verify origin HEAD:main'
 // Many hosts and CI runners refuse an unprivileged user namespace; then the unshare -r premise is unconfirmed.
 const userNamespaces = installed('unshare') && pushes('unshare -r git ns') === 'ns'
 const chrtSkipsDashes = installed('chrt') && pushes('chrt -o 0 -- git ns') === 'ns'
@@ -296,6 +360,17 @@ describe.skipIf(BASH === undefined)('real bash runs the push behind each wrapper
 
   it.skipIf(!installed('flock')).each(SPLIT_OPERAND)('%s runs git %s', (line, call) => {
     expect(pushes(line)).toBe(call)
+  })
+
+  it.each([...SPLIT_VALUE, ...LONG_VALUE].filter(([, wrapper]) => wrapper === 'exec' || installed(wrapper)))(
+    '%s pushes',
+    line => {
+      expect(pushes(line)).toBe(PUSHED)
+    },
+  )
+
+  it('a quoted value that does not split runs no git', () => {
+    expect(pushes(`N='5 git'; nice -n "$N" git status`)).toBe('')
   })
 
   it.skipIf(!installed('setsid'))('setsid -f pushes from its forked child', () => {
