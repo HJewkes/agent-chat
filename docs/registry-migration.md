@@ -407,3 +407,24 @@ The watch definition delegates the original polling loop, preserving defaults, i
 The pr-ready definition delegates the unchanged controller once, preserving its raw options, negated rebase flag, help and streamed output. Completed codes assign exitCode and return naturally; import and unexpected helper rejections retain immediate exit1. Owned fake-controller pipe fixtures qualify CLI adaptation, while selected original controller tests cover their owned Git and signal fixtures. Published dependency adoption, full verification and remaining lifecycle commands stay pending.
 
 The hidden seat-blocks definition preserves natural success without changing an inherited exit code, and assigns a failed completed report's code while returning naturally. Its import failure remains immediate; helper, join and synchronous stdout failures retain the original caught String rendering. The product-local set-failure-code report mode adds no package API or hook authority. The original EventLog/report effect is unchanged; fixtures replace it in owned copies and do not exercise live seat state.
+
+The three service control definitions preserve the original controllers byte-for-byte.
+Their mounted Commander options retain the original parsePort and Number-based hold
+parsers, including parse-stage error precedence and repeated-option behavior. Registry
+delegation awaits each controller, keeps natural success and assigned exit codes, and
+preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
+fixtures replace the entire service module; no live daemon lifecycle is exercised.
+
+The three service control definitions preserve the original controllers byte-for-byte.
+Their mounted Commander options retain the original parsePort and Number-based hold
+parsers, including parse-stage error precedence and repeated-option behavior. Registry
+delegation awaits each controller, keeps natural success and assigned exit codes, and
+preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
+fixtures replace the entire service module; no live daemon lifecycle is exercised.
+
+The three service control definitions preserve the original controllers byte-for-byte.
+Their mounted Commander options retain the original parsePort and Number-based hold
+parsers, including parse-stage error precedence and repeated-option behavior. Registry
+delegation awaits each controller, keeps natural success and assigned exit codes, and
+preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
+fixtures replace the entire service module; no live daemon lifecycle is exercised.

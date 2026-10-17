@@ -1,0 +1,849 @@
+[
+  {
+    "name": "omitted options",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "foreground or force",
+    "argv": [
+      "service",
+      "stop",
+      "--force"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "force": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeat bare switch",
+    "argv": [
+      "service",
+      "stop",
+      "--force",
+      "--force"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "force": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "service",
+      "stop",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "service",
+      "stop",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess operand",
+    "argv": [
+      "service",
+      "stop",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'stop'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "literal excess operand",
+    "argv": [
+      "service",
+      "stop",
+      "--",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'stop'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing value",
+    "argv": [
+      "service",
+      "stop",
+      "--hold"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--hold <seconds>' argument missing\n\nUsage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown consumed as required value",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: --unknown (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then unknown",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "0",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown then invalid",
+    "argv": [
+      "service",
+      "stop",
+      "--unknown",
+      "--hold",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then excess",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "0",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess then invalid",
+    "argv": [
+      "service",
+      "stop",
+      "extra",
+      "--hold",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then help",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "0",
+      "--help"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help then invalid",
+    "argv": [
+      "service",
+      "stop",
+      "--help",
+      "--hold",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "repeated values last wins",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "1",
+      "--hold",
+      "2"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 2
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "invalid repeated first",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "0",
+      "--hold",
+      "2"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid repeated last",
+    "argv": [
+      "service",
+      "stop",
+      "--hold",
+      "2",
+      "--hold",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "awaited foreground lifetime",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\nowned stop after\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      "late",
+      "controller-awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "controller assigned exit",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 9,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller stderr natural return",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "owned controller stderr\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller immediate exit",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "owned immediate refusal\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"1\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=1"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"3600\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=3600"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 3600
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"1e2\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=1e2"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 100
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"0x10\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=0x10"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 16
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"1.0\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=1.0"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \" 1 \"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold= 1 "
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"+1\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=+1"
+    ],
+    "code": 7,
+    "stdout": "owned stop before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {
+          "hold": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold="
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold:  (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"nope\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=nope"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: nope (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"1tail\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=1tail"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 1tail (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"0\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 0 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"-1\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=-1"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: -1 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"1.5\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=1.5"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 1.5 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"3601\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=3601"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: 3601 (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"Infinity\"",
+    "argv": [
+      "service",
+      "stop",
+      "--hold=Infinity"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad --hold: Infinity (whole seconds, 1 to 3600)\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject error",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "synthetic controller failure\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject code69",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject object",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject array",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject string",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject number",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "69\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject null",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "null\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject undefined",
+    "argv": [
+      "service",
+      "stop"
+    ],
+    "code": 1,
+    "stdout": "owned stop before\n",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "controller": "stop",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "force false is operand",
+    "argv": [
+      "service",
+      "stop",
+      "--force",
+      "false"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'stop'. Expected 0 arguments but got 1: false.\n\nUsage: agent-chat service stop [options]\n\nSIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is\nmid-spawn; --hold keeps auto-starts off for a while\n\nOptions:\n  --force           stop even if a mid-spawn agent would be lost\n  --hold <seconds>  refuse broker starts, including auto-starts, for this long\n                    (at most 3600)\n  -h, --help        display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]

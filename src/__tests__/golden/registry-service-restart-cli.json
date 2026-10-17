@@ -1,0 +1,839 @@
+[
+  {
+    "name": "omitted options",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "foreground or force",
+    "argv": [
+      "service",
+      "restart",
+      "--force"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "force": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeat bare switch",
+    "argv": [
+      "service",
+      "restart",
+      "--force",
+      "--force"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "force": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "service",
+      "restart",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "service",
+      "restart",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess operand",
+    "argv": [
+      "service",
+      "restart",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'restart'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "literal excess operand",
+    "argv": [
+      "service",
+      "restart",
+      "--",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'restart'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing value",
+    "argv": [
+      "service",
+      "restart",
+      "--port"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '-p, --port <port>' argument missing\n\nUsage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown consumed as required value",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: --unknown\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then unknown",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "0",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown then invalid",
+    "argv": [
+      "service",
+      "restart",
+      "--unknown",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then excess",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "0",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess then invalid",
+    "argv": [
+      "service",
+      "restart",
+      "extra",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then help",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "0",
+      "--help"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help then invalid",
+    "argv": [
+      "service",
+      "restart",
+      "--help",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "repeated values last wins",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "1",
+      "--port",
+      "2"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 2
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "invalid repeated first",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "0",
+      "--port",
+      "2"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid repeated last",
+    "argv": [
+      "service",
+      "restart",
+      "--port",
+      "2",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "awaited foreground lifetime",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\nowned restart after\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      "late",
+      "controller-awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "controller assigned exit",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 9,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller stderr natural return",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "owned controller stderr\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller immediate exit",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "owned immediate refusal\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"1\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=1"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"65535\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=65535"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 65535
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"9023tail\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=9023tail"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 9023
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"9024.9\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=9024.9"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 9024
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"1e2\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=1e2"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \" 9025 \"",
+    "argv": [
+      "service",
+      "restart",
+      "--port= 9025 "
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 9025
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"+9026\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=+9026"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 9026
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port="
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: \n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"nope\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=nope"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: nope\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"0\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"-1\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=-1"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: -1\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"65536\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=65536"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 65536\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"Infinity\"",
+    "argv": [
+      "service",
+      "restart",
+      "--port=Infinity"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: Infinity\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject error",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "synthetic controller failure\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject code69",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject object",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject array",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject string",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject number",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "69\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject null",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "null\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject undefined",
+    "argv": [
+      "service",
+      "restart"
+    ],
+    "code": 1,
+    "stdout": "owned restart before\n",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "short port",
+    "argv": [
+      "service",
+      "restart",
+      "-p",
+      "9020"
+    ],
+    "code": 7,
+    "stdout": "owned restart before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "restart",
+        "options": {
+          "port": 9020
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "force false is operand",
+    "argv": [
+      "service",
+      "restart",
+      "--force",
+      "false"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'restart'. Expected 0 arguments but got 1: false.\n\nUsage: agent-chat service restart [options]\n\nstop then start, reusing the port from broker.meta.json; refuses while an agent\nis mid-spawn\n\nOptions:\n  -p, --port <port>  bind this port instead of the recorded one\n  --force            restart even if a mid-spawn agent would be lost\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]

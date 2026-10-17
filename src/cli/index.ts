@@ -7,7 +7,6 @@ import { prReadyVerb } from './verbs/pr-ready-command.js'
 
 import { Command } from 'commander'
 import { brokerCwd } from '../agents/stable-cwd.js'
-import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
 import { SURFACE_NAMES } from '../protocol.js'
@@ -56,7 +55,8 @@ import { serviceLogsVerb } from './verbs/service-logs.js'
 import { serviceOpenVerb } from './verbs/service-open.js'
 import { serviceStatusVerb } from './verbs/service-status.js'
 import { staleSessionGuardVerb } from './verbs/stale-session-guard-command.js'
-import { parsePort } from './service-options.js'
+import { holdSeconds, parsePort } from './service-options.js'
+import { serviceStartVerb, serviceStopVerb, serviceRestartVerb } from './verbs/service-controls.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
@@ -84,46 +84,19 @@ function addHumanCommands(program: Command): void {
   addVerb(program, digestVerb, { helpGroup: HUMAN })
 }
 
-const holdSeconds = (value: string): number => {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_HOLD_SECONDS)
-    throw new Error(`bad --hold: ${value} (whole seconds, 1 to ${MAX_HOLD_SECONDS})`)
-  return parsed
-}
-
 function addServiceCommands(program: Command): void {
   const svc = program.command('service').description('run and inspect the broker daemon')
 
-  svc
-    .command('start')
-    .description('start the broker, detached by default')
-    .option('-p, --port <port>', 'HTTP port to bind', parsePort)
-    .option('-f, --foreground', 'run in this terminal instead of detaching')
-    .action(service.start)
+  const start = addVerb(svc, serviceStartVerb, { usageExit: 1, exitOnSuccess: false })
+  for (const option of start.options) if (option.long === '--port') option.argParser(parsePort)
 
-  svc
-    .command('stop')
-    .description(
-      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn; --hold keeps auto-starts off for a while',
-    )
-    .option('--force', 'stop even if a mid-spawn agent would be lost')
-    .option(
-      '--hold <seconds>',
-      `refuse broker starts, including auto-starts, for this long (at most ${MAX_HOLD_SECONDS})`,
-      holdSeconds,
-    )
-    .action(service.stop)
+  const stop = addVerb(svc, serviceStopVerb, { usageExit: 1, exitOnSuccess: false })
+  for (const option of stop.options) if (option.long === '--hold') option.argParser(holdSeconds)
 
   addVerb(svc, serviceStatusVerb, { exitOnSuccess: false })
 
-  svc
-    .command('restart')
-    .description(
-      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn',
-    )
-    .option('-p, --port <port>', 'bind this port instead of the recorded one', parsePort)
-    .option('--force', 'restart even if a mid-spawn agent would be lost')
-    .action(service.restart)
+  const restart = addVerb(svc, serviceRestartVerb, { usageExit: 1, exitOnSuccess: false })
+  for (const option of restart.options) if (option.long === '--port') option.argParser(parsePort)
 
   addVerb(svc, serviceLogsVerb, { schemaDefaults: true, exitOnSuccess: false })
 

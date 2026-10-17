@@ -1,0 +1,825 @@
+[
+  {
+    "name": "omitted options",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "foreground or force",
+    "argv": [
+      "service",
+      "start",
+      "-f"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "foreground": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeat bare switch",
+    "argv": [
+      "service",
+      "start",
+      "--foreground",
+      "--foreground"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "foreground": true
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "service",
+      "start",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat service start [options]\n\nstart the broker, detached by default\n\nOptions:\n  -p, --port <port>  HTTP port to bind\n  -f, --foreground   run in this terminal instead of detaching\n  -h, --help         display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "service",
+      "start",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat service start [options]\n\nstart the broker, detached by default\n\nOptions:\n  -p, --port <port>  HTTP port to bind\n  -f, --foreground   run in this terminal instead of detaching\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess operand",
+    "argv": [
+      "service",
+      "start",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'start'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service start [options]\n\nstart the broker, detached by default\n\nOptions:\n  -p, --port <port>  HTTP port to bind\n  -f, --foreground   run in this terminal instead of detaching\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "literal excess operand",
+    "argv": [
+      "service",
+      "start",
+      "--",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'start'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat service start [options]\n\nstart the broker, detached by default\n\nOptions:\n  -p, --port <port>  HTTP port to bind\n  -f, --foreground   run in this terminal instead of detaching\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing value",
+    "argv": [
+      "service",
+      "start",
+      "--port"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '-p, --port <port>' argument missing\n\nUsage: agent-chat service start [options]\n\nstart the broker, detached by default\n\nOptions:\n  -p, --port <port>  HTTP port to bind\n  -f, --foreground   run in this terminal instead of detaching\n  -h, --help         display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown consumed as required value",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: --unknown\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then unknown",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "0",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown then invalid",
+    "argv": [
+      "service",
+      "start",
+      "--unknown",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then excess",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "0",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess then invalid",
+    "argv": [
+      "service",
+      "start",
+      "extra",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then help",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "0",
+      "--help"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help then invalid",
+    "argv": [
+      "service",
+      "start",
+      "--help",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "repeated values last wins",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "1",
+      "--port",
+      "2"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 2
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "invalid repeated first",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "0",
+      "--port",
+      "2"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid repeated last",
+    "argv": [
+      "service",
+      "start",
+      "--port",
+      "2",
+      "--port",
+      "0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "awaited foreground lifetime",
+    "argv": [
+      "service",
+      "start",
+      "--foreground"
+    ],
+    "code": 7,
+    "stdout": "owned start before\nowned start after\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "foreground": true
+        }
+      },
+      "late",
+      "controller-awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "controller assigned exit",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 9,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller stderr natural return",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "owned controller stderr\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "controller immediate exit",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "owned immediate refusal\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"1\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=1"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"65535\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=65535"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 65535
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"9023tail\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=9023tail"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 9023
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"9024.9\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=9024.9"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 9024
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"1e2\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=1e2"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 1
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \" 9025 \"",
+    "argv": [
+      "service",
+      "start",
+      "--port= 9025 "
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 9025
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"+9026\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=+9026"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 9026
+        }
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "value \"\"",
+    "argv": [
+      "service",
+      "start",
+      "--port="
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: \n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"nope\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=nope"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: nope\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"0\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=0"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 0\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"-1\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=-1"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: -1\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"65536\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=65536"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: 65536\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "value \"Infinity\"",
+    "argv": [
+      "service",
+      "start",
+      "--port=Infinity"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "bad port: Infinity\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject error",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "synthetic controller failure\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject code69",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject object",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject array",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject string",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject number",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "69\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject null",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "null\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "reject undefined",
+    "argv": [
+      "service",
+      "start"
+    ],
+    "code": 1,
+    "stdout": "owned start before\n",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "controller": "start",
+        "options": {}
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "short port",
+    "argv": [
+      "service",
+      "start",
+      "-p",
+      "9020"
+    ],
+    "code": 7,
+    "stdout": "owned start before\n",
+    "stderr": "",
+    "events": [
+      {
+        "controller": "start",
+        "options": {
+          "port": 9020
+        }
+      },
+      "completed",
+      "late"
+    ]
+  }
+]
