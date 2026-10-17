@@ -1,0 +1,750 @@
+[
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "default rebase true and reset inherited code",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "failed completion returns naturally",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--no-rebase",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": false,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "no rebase",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--strict",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+          "strict": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "strict",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--title",
+      "raw title",
+      "--body-file",
+      "synthetic.md",
+      "--no-rebase",
+      "--strict",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "bodyFile": "synthetic.md",
+          "rebase": false,
+          "strict": true,
+          "title": "raw title",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "all options",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--title",
+      "",
+      "--body-file",
+      "",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "bodyFile": "",
+          "rebase": true,
+          "title": "",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "empty strings",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--title",
+      "  ",
+      "--body-file",
+      "  ",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "bodyFile": "  ",
+          "rebase": true,
+          "title": "  ",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "whitespace strings",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--title",
+      "one",
+      "--title",
+      "two",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+          "title": "two",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated last title",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--body-file",
+      "one",
+      "--body-file",
+      "two",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "bodyFile": "two",
+          "rebase": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated last file",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--no-rebase",
+      "--no-rebase",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": false,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated no rebase",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--strict",
+      "--strict",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+          "strict": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated strict",
+    "stderr": [
+      "synthetic stderr",
+      "",
+    ],
+    "stdout": [
+      "synthetic stdout",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--help",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "immediateExit": 0,
+      },
+    ],
+    "name": "help",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--title",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing title",
+    "stderr": [
+      "error: option '--title <t>' argument missing",
+      "",
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--body-file",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing body file",
+    "stderr": [
+      "error: option '--body-file <path>' argument missing",
+      "",
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "extra",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "excess positional",
+    "stderr": [
+      "error: too many arguments for 'pr-ready'. Expected 0 arguments but got 1: extra.",
+      "",
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--unknown",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "unknown option",
+    "stderr": [
+      "error: unknown option '--unknown'",
+      "",
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+      "--rebase",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "unrecognized positive rebase",
+    "stderr": [
+      "error: unknown option '--rebase'",
+      "(Did you mean --no-rebase?)",
+      "",
+      "Usage: agent-chat pr-ready [options]",
+      "",
+      "before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0",
+      "only when all pass",
+      "",
+      "Options:",
+      "  --title <t>         PR title, scanned with gh-write's leak scan",
+      "  --body-file <path>  PR body file, scanned with gh-write's leak scan",
+      "  --no-rebase         check and report only; do not rebase onto the default",
+      "                      branch",
+      "  --strict            fail, not just note, a pushed branch that is behind the",
+      "                      default branch",
+      "  -h, --help          display help for command",
+      "",
+      "Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;",
+      "with an unpushed head they are deferred until after the push, and with basement unreachable they run here.",
+      "On the basement host itself pr-ready calls basement-suite directly, without ssh.",
+      "AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.",
+      "A root lint:types script runs here after <pm> run build, before the push, never deferred.",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "Error immediate one",
+    "stderr": [
+      "synthetic failure",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "code69 immediate one",
+    "stderr": [
+      "synthetic unavailable",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw object immediate one",
+    "stderr": [
+      "{ reason: 'synthetic', items: [ 1, 2 ] }",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw array immediate one",
+    "stderr": [
+      "[ 'synthetic', 2 ]",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw string immediate one",
+    "stderr": [
+      "synthetic rejection",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "import Error immediate one",
+    "stderr": [
+      "synthetic import failure",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "import object immediate one",
+    "stderr": [
+      "{ reason: 'synthetic import', items: [ 1, 2 ] }",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "success large stdout stderr pipe",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+  {
+    "argv": [
+      "pr-ready",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "rebase": true,
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "failure large stdout stderr pipe",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+]

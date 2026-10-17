@@ -1,3 +1,4 @@
+import { prReadyVerb } from './verbs/pr-ready-command.js'
 // FIRST, before anything that can touch node:sqlite — including the imports
 // below, which reach the event log transitively. See warnings.ts.
 import './warnings.js'
@@ -226,31 +227,17 @@ function addAgentCommands(program: Command): void {
 
   addVerb(program, leakScanVerb, { helpGroup: AGENTS, usageExit: 2, reportExit: 'set-code' })
 
-  program
-    .command('pr-ready')
-    .description(
-      'before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0 only when all pass',
-    )
-    .helpGroup(AGENTS)
-    .option('--title <t>', "PR title, scanned with gh-write's leak scan")
-    .option('--body-file <path>', "PR body file, scanned with gh-write's leak scan")
-    .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
-    .option('--strict', 'fail, not just note, a pushed branch that is behind the default branch')
-    .addHelpText(
-      'after',
-      [
-        '',
-        'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
-        'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
-        'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
-        'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
-        'A root lint:types script runs here after <pm> run build, before the push, never deferred.',
-      ].join('\n'),
-    )
-    .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean; strict?: boolean }) => {
-      const { prReady } = await import('./verbs/pr-ready.js')
-      process.exitCode = await prReady(options)
-    })
+  addVerb(program, prReadyVerb, { helpGroup: AGENTS, usageExit: 1, reportExit: 'set-code' }).addHelpText(
+    'after',
+    [
+      '',
+      'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
+      'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
+      'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
+      'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
+      'A root lint:types script runs here after <pm> run build, before the push, never deferred.',
+    ].join('\n'),
+  )
 }
 
 /**
