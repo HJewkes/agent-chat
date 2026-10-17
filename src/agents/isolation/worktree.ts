@@ -262,6 +262,7 @@ function platformOptions(opts: WorktreeOptions): PlatformOptions {
   return {
     ...(opts.basePath === undefined ? {} : { basePath: opts.basePath }),
     branchPrefix: BRANCH_PREFIX,
+    releaseProof: 'git-or-merged-pr-tip',
     ...(opts.fetchTimeoutMs === undefined ? {} : { fetchTimeoutMs: opts.fetchTimeoutMs }),
     ...(opts.addTimeoutMs === undefined ? {} : { addTimeoutMs: opts.addTimeoutMs }),
     ...(opts.runWorktreeAdd === undefined ? {} : { runWorktreeAdd: opts.runWorktreeAdd }),
