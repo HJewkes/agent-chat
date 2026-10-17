@@ -8,6 +8,7 @@ import {
   defineCommand,
   invokeCommand,
   optionFlagSpec,
+  optionDefault,
   positionalSpec,
   type BaseContext,
   type Command,
@@ -68,7 +69,7 @@ export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Re
 export function addVerb<Args>(
   parent: Commander,
   verb: Verb<Args>,
-  options: { helpGroup?: string; hidden?: boolean; usageExit?: number } = {},
+  options: { helpGroup?: string; hidden?: boolean; usageExit?: number; schemaDefaults?: boolean } = {},
 ): Commander {
   const sub = parent.command(
     commandPath(verb.name).at(-1) ?? verb.name,
@@ -80,7 +81,11 @@ export function addVerb<Args>(
   for (const [key, option] of Object.entries(verb.cli?.options ?? {})) {
     const parser = collectOptionParser(verb, key)
     const spec = optionFlagSpec(verb, key, option)
-    if (parser) sub.option(spec, option.description, parser)
+    if (options.schemaDefaults === true) {
+      const mounted = sub.createOption(spec, option.description).default(optionDefault(verb, key))
+      if (parser) mounted.argParser(parser)
+      sub.addOption(mounted)
+    } else if (parser) sub.option(spec, option.description, parser)
     else sub.option(spec, option.description)
   }
   const usageExit = options.usageExit ?? EXIT.USAGE

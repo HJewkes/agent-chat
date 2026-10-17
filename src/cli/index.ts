@@ -47,6 +47,7 @@ import { teleportRequestVerb } from './verbs/teleport-request.js'
 import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import { answerVerb } from './verbs/answer.js'
+import { serviceLogsVerb } from './verbs/service-logs.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
@@ -125,11 +126,7 @@ function addServiceCommands(program: Command): void {
     .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
-  svc
-    .command('logs')
-    .description('tail the broker log; no --follow, by design')
-    .option('-n, --lines <n>', 'how many lines', (v: string) => Number.parseInt(v, 10), 50)
-    .action(service.logs)
+  addVerb(svc, serviceLogsVerb, { schemaDefaults: true })
 
   svc
     .command('open')

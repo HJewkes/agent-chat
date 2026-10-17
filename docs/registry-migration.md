@@ -343,3 +343,18 @@ and reused unchanged afterward. It pins complete stdout/stderr, frames and proce
 status through a fake broker; validation sends no live message or registration.
 Remaining S8 conversions, published dependency adoption and full verify still gate
 TP-617 completion.
+
+### S8 service logs candidate checkpoint
+
+Service logs now uses a registry verb with its original parseInt policy in the
+declared schema. NaN, prefixes, negative and zero counts retain their original
+tail behavior. Only this mount opts into schema defaults through existing
+optionDefault; every other mount retains its existing default behavior. The
+handwritten logs action is deleted, with tailLines retained as a compatibility
+reexport for original callers.
+
+The 19-case original fake-file/controller fixture pins complete output, reads,
+argv, exit status and help, including the numeric50 default, malformed counts,
+missing/unreadable files and unsupported follow mode. No live log, service,
+process or broker operation is used in validation. TP-617 remains open for other
+S8 units, published dependency adoption and full verification.

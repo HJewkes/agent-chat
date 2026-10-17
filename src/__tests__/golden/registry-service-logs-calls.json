@@ -1,0 +1,391 @@
+[
+  {
+    "name": "default fifty lines",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: line 6",
+      "stdout: line 7",
+      "stdout: line 8",
+      "stdout: line 9",
+      "stdout: line 10",
+      "stdout: line 11",
+      "stdout: line 12",
+      "stdout: line 13",
+      "stdout: line 14",
+      "stdout: line 15",
+      "stdout: line 16",
+      "stdout: line 17",
+      "stdout: line 18",
+      "stdout: line 19",
+      "stdout: line 20",
+      "stdout: line 21",
+      "stdout: line 22",
+      "stdout: line 23",
+      "stdout: line 24",
+      "stdout: line 25",
+      "stdout: line 26",
+      "stdout: line 27",
+      "stdout: line 28",
+      "stdout: line 29",
+      "stdout: line 30",
+      "stdout: line 31",
+      "stdout: line 32",
+      "stdout: line 33",
+      "stdout: line 34",
+      "stdout: line 35",
+      "stdout: line 36",
+      "stdout: line 37",
+      "stdout: line 38",
+      "stdout: line 39",
+      "stdout: line 40",
+      "stdout: line 41",
+      "stdout: line 42",
+      "stdout: line 43",
+      "stdout: line 44",
+      "stdout: line 45",
+      "stdout: line 46",
+      "stdout: line 47",
+      "stdout: line 48",
+      "stdout: line 49",
+      "stdout: line 50",
+      "stdout: line 51",
+      "stdout: line 52",
+      "stdout: line 53",
+      "stdout: line 54",
+      "stdout: line 55"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "short tail",
+    "argv": [
+      "service",
+      "logs",
+      "-n",
+      "2"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "long equals trailing text",
+    "argv": [
+      "service",
+      "logs",
+      "--lines=2tail"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "zero",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "0"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [],
+    "exit": 0
+  },
+  {
+    "name": "negative",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "-1"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [],
+    "exit": 0
+  },
+  {
+    "name": "fractional",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "2.9"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "exponent",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "1e2"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "empty value becomes NaN",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      ""
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: first",
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "non numeric becomes NaN",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "nonsense"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: first",
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "infinity becomes NaN",
+    "argv": [
+      "service",
+      "logs",
+      "--lines",
+      "Infinity"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: first",
+      "stdout: second",
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "last repeated value wins",
+    "argv": [
+      "service",
+      "logs",
+      "-n",
+      "3",
+      "--lines",
+      "1"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: third"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "empty file",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [],
+    "exit": 0
+  },
+  {
+    "name": "blank final line preserved",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: first",
+      "stdout: "
+    ],
+    "exit": 0
+  },
+  {
+    "name": "missing file",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: No log at /tmp/synthetic-service-logs/broker.log yet."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "unreadable file",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: No log at /tmp/synthetic-service-logs/broker.log yet."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "string read failure",
+    "argv": [
+      "service",
+      "logs"
+    ],
+    "reads": [
+      {
+        "path": "/tmp/synthetic-service-logs/broker.log",
+        "encoding": "utf8"
+      }
+    ],
+    "output": [
+      "stdout: No log at /tmp/synthetic-service-logs/broker.log yet."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "follow unsupported",
+    "argv": [
+      "service",
+      "logs",
+      "--follow"
+    ],
+    "reads": [],
+    "output": [
+      "stderr: error: unknown option '--follow'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat service logs [options]\n\ntail the broker log; no --follow, by design\n\nOptions:\n  -n, --lines <n>  how many lines (default: 50)\n  -h, --help       display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing option argument",
+    "argv": [
+      "service",
+      "logs",
+      "-n"
+    ],
+    "reads": [],
+    "output": [
+      "stderr: error: option '-n, --lines <n>' argument missing\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat service logs [options]\n\ntail the broker log; no --follow, by design\n\nOptions:\n  -n, --lines <n>  how many lines (default: 50)\n  -h, --help       display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "help default retained",
+    "argv": [
+      "service",
+      "logs",
+      "--help"
+    ],
+    "reads": [],
+    "output": [
+      "stdout: Usage: agent-chat service logs [options]\n\ntail the broker log; no --follow, by design\n\nOptions:\n  -n, --lines <n>  how many lines (default: 50)\n  -h, --help       display help for command\n"
+    ],
+    "exit": 0
+  }
+]

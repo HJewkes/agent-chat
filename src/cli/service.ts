@@ -1,12 +1,11 @@
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
 import type { HealthPayload } from '../api-contract.js'
 import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { exitWithWatchedPid } from '../broker/parent-watch.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
 import { recordLoginPath, resolveBasePath } from '../agents/base-path.js'
-import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
+import { cliEntry, defaultPort, home, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
 import { withoutLaunchIdentity } from '../launch-identity.js'
 import { fail, withBroker } from './client.js'
@@ -179,23 +178,7 @@ export async function restart(options: { port?: number; force?: boolean }): Prom
   await start(port === undefined ? {} : { port })
 }
 
-/** Last `n` lines of `text`, ignoring a trailing newline. */
-export function tailLines(text: string, n: number): string[] {
-  const lines = text.split('\n')
-  if (lines.at(-1) === '') lines.pop()
-  return lines.slice(Math.max(0, lines.length - n))
-}
-
-export function logs(options: { lines: number }): void {
-  let raw: string
-  try {
-    raw = fs.readFileSync(logPath(), 'utf8')
-  } catch {
-    console.log(`No log at ${logPath()} yet.`)
-    return
-  }
-  for (const line of tailLines(raw, options.lines)) console.log(line)
-}
+export { tailLines } from './verbs/service-logs.js'
 
 export async function open(options: { port?: number }): Promise<void> {
   const port = options.port ?? readMeta()?.port ?? defaultPort()
