@@ -116,6 +116,73 @@ export function braceOption(marked: string): boolean {
   return readings(marked).some(spellsOption)
 }
 
+// The `{` of a lone `{}`, the one brace no shell expands, braceccl included.
+const LONE_PAIR = /^\}[^}]*$/
+// git's `-<n>` count as written, such as `-{1..3}`.
+const WRITTEN_COUNT = /^-[\d.{},]+$/
+
+/**
+ * Whether the marked word's expansion may start with `-`, decided at its first character (CC-1432)
+ * rather than by reading the group: zsh's braceccl expands any `{chars}`, so `{-}-no-verify` and
+ * `--no-verif{y}` are options too. A word led by a live `{` other than a lone `{}`, or led by `-`
+ * with a live `{` in it, counts; a count does not. Off `push`, where braces in paths are common, a
+ * `{`-led word counts only when its leading run of groups may start a word with `-`, and a `-`-led
+ * one only when the `{` is in the option's name, before any `=`, since brace expansion copies the
+ * text before the group into every word.
+ */
+export function leadsWithOption(marked: string, push: boolean): boolean {
+  const text = unmark(marked)
+  if (marked.startsWith(`${LIVE}{`))
+    return !LONE_PAIR.test(text.slice(1)) && (push || runMayLeadWithDash(marked))
+  if (!text.startsWith('-') || WRITTEN_COUNT.test(text)) return false
+  return (push ? marked : optionName(marked)).includes(`${LIVE}{`)
+}
+
+/** The marked text before the first `=`, the part of an option word git reads as its name. */
+const optionName = (marked: string): string => marked.split('=', 1)[0] as string
+
+/**
+ * The run of live groups that leads the marked word, adjacent and nested ones included, as in
+ * `{a}{-}` of `{a}{-}x`: text after it is copied after every alternative, so only the run can lead
+ * a word with `-`. A group that never closes runs to the end of the word.
+ */
+function leadingGroups(marked: string): { run: string; closed: boolean } {
+  let depth = 0
+  for (let i = 0; i < marked.length; i++) {
+    if (marked[i] !== LIVE) {
+      if (depth === 0) return { run: marked.slice(0, i), closed: true }
+      continue
+    }
+    if (marked[i + 1] === '{') depth++
+    else if (marked[i + 1] === '}') depth--
+    i++
+  }
+  return { run: marked, closed: depth <= 0 }
+}
+
+// The text between two pieces of live structure, with the structure on each side.
+const SEGMENTS = new RegExp(`(?<=^|${LIVE}([{,}]))([^${LIVE}]|${LIVE}[^{,}])*(?=${LIVE}([{,}])|$)`, 'g')
+
+/**
+ * Whether the leading run may start a word with `-`: an alternative led by `-`, as in `{a,-}-x`, or a
+ * `-` in a body with no `,`, which braceccl reads as a class, as in `{-}-x` or `{a-}x`. A `-` inside
+ * an alternative, as in `{src/a-b,c}`, is copied after its first character. braceOption reads
+ * groups that may be empty and zsh's sequences. A group that never closes counts any `-`.
+ */
+function runMayLeadWithDash(marked: string): boolean {
+  const { run, closed } = leadingGroups(marked)
+  if (!closed) return unmark(run).includes('-')
+  return [...run.matchAll(SEGMENTS)].some(([segment, before, , after]) => {
+    const body = unmark(segment)
+    if (body.startsWith('-')) return before === '{' || before === ','
+    return body.includes('-') && before === '{' && after === '}'
+  })
+}
+
+/** Whether a `--` option word's first live `{` comes after its `=`, in a value git never reads as an option. */
+export const braceInValue = (marked: string): boolean =>
+  unmark(marked).startsWith('--') && !optionName(marked).includes(`${LIVE}{`) && marked.includes('=')
+
 function spellsOption(text: string): boolean {
   if (![INTEGER_SEQUENCE, CHAR_SEQUENCE, BRACE_LIST].some(group => group.test(text))) return false
   if (text.startsWith('-')) return !COUNT.test(text)

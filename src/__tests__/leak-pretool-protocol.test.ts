@@ -351,7 +351,6 @@ describe('words the shell may expand to none or several (TP-2371 fix round 7)', 
     'git config set {protocol.ext.allow,always}',
     'git config --global {protocol.allow,always}',
     'git config protocol.{ext.allow,always}',
-    'git config {--rename-section,foo,protocol}',
     "X='protocol.ext.allow always'; git config $X",
     'set -- protocol.ext.allow always; git config "$@"',
     "git config $(printf 'protocol.ext.allow always')",
@@ -368,6 +367,11 @@ describe('words the shell may expand to none or several (TP-2371 fix round 7)', 
     'git submodule--helper set-url {p,"$U"}',
   ])('denies %s', command => {
     expect(hookReason(command)).toBe(REASONS.remoteUrlUnresolved)
+  })
+
+  // A brace that may spell an option is read first on every subcommand (CC-1434), under that rule's reason.
+  it('denies git config {--rename-section,foo,protocol}', () => {
+    expect(hookReason('git config {--rename-section,foo,protocol}')).toBe(REASONS.noVerify)
   })
 
   it.each([
