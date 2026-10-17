@@ -47,6 +47,17 @@ const HEREDOCS: [string, string[], string[]][] = [
   ['cat <<$"E"x\nEx\ngit push --no-verify origin HEAD:main\n$Ex', [PUSH], []],
 ]
 
+// n heredocs whose ends differ, then the one that hides a push from bash: the fork budget (64) must not run out open.
+const chain = (n: number): string =>
+  `${'cat <<$"E"\n$E\nE\n'.repeat(n)}cat <<$"E"\n$E\ngit push --no-verify origin HEAD:main\nE`
+const CHAINS = [63, 64, 65, 130].map(n => chain(n))
+
+// A `$"E"` delimiter is quoted in both shells, so neither runs a substitution in the body (a loosening against main).
+const QUOTED_BODY = [
+  'cat <<$"E"\n$(git push --no-verify origin HEAD:main)\nE',
+  'cat <<$"E"\n`git push --no-verify origin HEAD:main`\nE',
+]
+
 const HEREDOCS_ALLOWED = [
   'cat <<EOF\nhi\nEOF',
   'cat <<"EOF"\nhi\nEOF',
@@ -75,6 +86,22 @@ describe('checkCommand on bash locale quoting (CC-1430)', () => {
 
   it.each(HEREDOCS.map(([src]) => src))('denies the heredoc %j', src => {
     expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(CHAINS)('denies a chain of heredocs ending in a hidden push (%#)', src => {
+    expect(checkCommand(src, ctx())).toBeDefined()
+  })
+
+  it('allows 130 heredocs that hold no locale quote', () => {
+    expect(checkCommand('cat <<"E"\nx\nE\n'.repeat(130), ctx())).toBeUndefined()
+  })
+
+  it('denies an unreadable line in the region only zsh runs', () => {
+    expect(checkCommand('cat <<$"E"\n$E\necho a(b c)\nE\ngit status', ctx())).toBeDefined()
+  })
+
+  it.each(QUOTED_BODY)('allows the quoted-delimiter body %j', src => {
+    expect(checkCommand(src, ctx())).toBeUndefined()
   })
 
   it.each(HEREDOCS_ALLOWED)('allows the heredoc %j', src => {
@@ -125,6 +152,14 @@ describe.skipIf(BASH === undefined)('bash runs $"…" as a double-quoted string 
   it.each(HEREDOCS)('runs %j as git calls %j', (src, calls) => {
     expect(bash(src)).toEqual(calls)
   })
+
+  it.each(CHAINS)('runs a chain of heredocs (%#) without the push', src => {
+    expect(bash(src)).toEqual([])
+  })
+
+  it.each(QUOTED_BODY)('runs %j without a git call', src => {
+    expect(bash(src)).toEqual([])
+  })
 })
 
 describe.skipIf(ZSH === undefined)('zsh reads $"…" as a literal $ and a string (CC-1430)', () => {
@@ -136,5 +171,13 @@ describe.skipIf(ZSH === undefined)('zsh reads $"…" as a literal $ and a string
 
   it.each(HEREDOCS)('runs %j as git calls %j', (src, _bash, calls) => {
     expect(gitCalls(ZSH as string, ['-f'], src)).toEqual(calls)
+  })
+
+  it.each(CHAINS)('runs a chain of heredocs (%#) ending in the push', src => {
+    expect(gitCalls(ZSH as string, ['-f'], src)).toEqual([PUSH])
+  })
+
+  it.each(QUOTED_BODY)('runs %j without a git call', src => {
+    expect(gitCalls(ZSH as string, ['-f'], src)).toEqual([])
   })
 })

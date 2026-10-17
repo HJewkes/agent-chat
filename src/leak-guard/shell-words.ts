@@ -1138,9 +1138,12 @@ class ShellLexer {
 
   /** The shells end the body at different lines, so what follows zsh's end is read as commands too. */
   private readAsZsh(end: number): void {
-    if (this.budget.forks-- <= 0) return this.unsettled()
+    // With the fork spent, a command in zsh's region stays unread and no mark reaches it, so the line is unreadable.
+    if (this.budget.forks-- <= 0) return void (this.budget.expansion = 'unreadable')
     const rest = new ShellLexer(this.src, end, this.nested || this.depth !== 0, this.budget)
-    appendAll(this.out, rest.run())
+    const commands = rest.run()
+    if (rest.mark !== undefined) this.unsettled()
+    appendAll(this.out, commands)
   }
 
   private heredocBody({ delim, strip }: Heredoc): string {
