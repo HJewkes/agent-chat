@@ -1,0 +1,616 @@
+[
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      "completed",
+      "late",
+    ],
+    "name": "nonTTY metadata",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9011/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      "completed",
+      "late",
+    ],
+    "name": "nonTTY default without metadata",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:8765/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      "completed",
+      "late",
+    ],
+    "name": "null metadata port falls back",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:8765/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      "completed",
+      "late",
+    ],
+    "name": "zero metadata port is retained",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:0/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "9022",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "explicit port skips failed metadata",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9022/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      "unref",
+      "completed",
+      "late",
+    ],
+    "name": "TTY darwin unrefs opener",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9011/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "xdg-open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      "unref",
+      "completed",
+      "late",
+    ],
+    "name": "TTY linux uses xdg",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9011/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "xdg-open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      "unref",
+      "completed",
+      "late",
+    ],
+    "name": "TTY other platform uses xdg",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9011/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 7,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      "unref",
+      "completed",
+      "late",
+      "opener-error",
+    ],
+    "name": "asynchronous opener failure prints second URL",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9011/ui
+http://127.0.0.1:9011/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "--port=9023tail",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "trailing port text parseInt",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9023/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "9024.9",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "fractional port parseInt",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9024/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "1e2",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "exponent port parseInt",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:1/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      " 9025 ",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "whitespace port parseInt",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9025/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "9000",
+      "--port",
+      "9001",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "repeated port last wins",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:9001/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "65535",
+    ],
+    "code": 7,
+    "events": [
+      "completed",
+      "late",
+    ],
+    "name": "highest accepted port",
+    "stderr": "",
+    "stdout": "http://127.0.0.1:65535/ui
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "0",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "bad zero port",
+    "stderr": "bad port: 0
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "65536",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "bad high port",
+    "stderr": "bad port: 65536
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "--port=",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "bad empty port",
+    "stderr": "bad port: 
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+      "nope",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "bad text port",
+    "stderr": "bad port: nope
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "-p",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing port value",
+    "stderr": "error: option '-p, --port <port>' argument missing
+
+Usage: agent-chat service open [options]
+
+open the dashboard, or print its URL when not a TTY
+
+Options:
+  -p, --port <port>  port the dashboard is on
+  -h, --help         display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "--unknown",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "unknown option",
+    "stderr": "error: unknown option '--unknown'
+
+Usage: agent-chat service open [options]
+
+open the dashboard, or print its URL when not a TTY
+
+Options:
+  -p, --port <port>  port the dashboard is on
+  -h, --help         display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "extra",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "excess positional",
+    "stderr": "error: too many arguments for 'open'. Expected 0 arguments but got 1: extra.
+
+Usage: agent-chat service open [options]
+
+open the dashboard, or print its URL when not a TTY
+
+Options:
+  -p, --port <port>  port the dashboard is on
+  -h, --help         display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+      "--help",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "immediateExit": 0,
+      },
+    ],
+    "name": "help",
+    "stderr": "",
+    "stdout": "Usage: agent-chat service open [options]
+
+open the dashboard, or print its URL when not a TTY
+
+Options:
+  -p, --port <port>  port the dashboard is on
+  -h, --help         display help for command
+",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "metadata Error",
+    "stderr": "synthetic metadata failure
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "metadata code69 remains one",
+    "stderr": "synthetic unavailable
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "metadata raw object",
+    "stderr": "{ reason: 'synthetic', items: [ 1, 2 ] }
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "metadata raw array",
+    "stderr": "[ 'synthetic', 2 ]
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "metadata raw string",
+    "stderr": "synthetic rejection
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "synchronous opener Error",
+    "stderr": "synthetic opener failure
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "service",
+      "open",
+    ],
+    "code": 1,
+    "events": [
+      "readMeta",
+      {
+        "spawn": {
+          "args": [
+            "http://127.0.0.1:9011/ui",
+          ],
+          "file": "open",
+          "options": {
+            "detached": true,
+            "stdio": "ignore",
+          },
+        },
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "synchronous opener code69 remains one",
+    "stderr": "synthetic opener unavailable
+",
+    "stdout": "",
+  },
+]

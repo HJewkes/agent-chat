@@ -50,6 +50,7 @@ import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import { answerVerb } from './verbs/answer.js'
 import { serviceLogsVerb } from './verbs/service-logs.js'
+import { serviceOpenVerb } from './verbs/service-open.js'
 import { serviceStatusVerb } from './verbs/service-status.js'
 import { staleSessionGuardVerb } from './verbs/stale-session-guard-command.js'
 import { parsePort } from './service-options.js'
@@ -123,11 +124,7 @@ function addServiceCommands(program: Command): void {
 
   addVerb(svc, serviceLogsVerb, { schemaDefaults: true, exitOnSuccess: false })
 
-  svc
-    .command('open')
-    .description('open the dashboard, or print its URL when not a TTY')
-    .option('-p, --port <port>', 'port the dashboard is on', parsePort)
-    .action(service.open)
+  addVerb(svc, serviceOpenVerb, { usageExit: 1, exitOnSuccess: false })
 }
 
 /** The tier the dashboard largely replaces day to day (§10). */
