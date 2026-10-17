@@ -79,7 +79,10 @@ export function pushFlagMayForm(marked: readonly string[], at: number): boolean 
       continue
     }
     const prefix = literalPrefix(word)
-    if (prefix.startsWith('-') && '--no-verify'.startsWith(prefix)) return true
+    if (substitutes(word) && prefix.startsWith('-') && '--no-verify'.startsWith(prefix)) return true
   }
   return false
 }
+
+// A glob or brace in the word is read by the alternation check, which knows a `-{1..3}` count.
+const substitutes = (marked: string): boolean => /[$`]/.test(marked.charAt(marked.indexOf(LIVE) + 1))
