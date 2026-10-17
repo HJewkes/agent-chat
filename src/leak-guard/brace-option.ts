@@ -18,7 +18,9 @@ const TEXT = `[^${OPEN}${SEP}${CLOSE}]`
 const INTEGER_SEQUENCE = new RegExp(`${OPEN}-?\\d+\\.\\.-?\\d+(?:\\.\\.-?\\d+)?${CLOSE}`)
 const CHAR_SEQUENCE = new RegExp(`${OPEN}(${TEXT})\\.\\.(${TEXT})(?:\\.\\.-?\\d+)?${CLOSE}`)
 const CHAR_SEQUENCES = new RegExp(CHAR_SEQUENCE.source, 'g')
-const BRACE_LIST = new RegExp(`${OPEN}[^${OPEN}${CLOSE}]*${SEP}[^${OPEN}${CLOSE}]*${CLOSE}`)
+// The splitter marks a `,` only inside a group a live `{` opened, so any SEP is a comma list, nested
+// groups and all, as in `{{a},}`; one that is never closed only over-reads.
+const BRACE_LIST = new RegExp(SEP)
 // An alternative, or a negative integer sequence, that starts with `-`.
 const OPTION_ALTERNATIVE = new RegExp(`[${OPEN}${SEP}]-`)
 // git's `-<n>`, as in `git log -{1..3}`, is a count, never an option that skips a hook or runs a program.
