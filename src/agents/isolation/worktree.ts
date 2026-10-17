@@ -6,6 +6,8 @@ import {
   createWorktreeAllocator,
   MissingAssignedWorktreeRecordError,
   pruneStaleWorktrees,
+  setupWorktree,
+  type SetupRunner,
   reattachWorktree as platformReattach,
   recreateWorktree as platformRecreate,
   type WorktreeAllocation,
@@ -14,7 +16,6 @@ import {
 } from '@titan-design/worktree'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
-import { setupWorktree, type SetupRunner } from './worktree-setup.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
@@ -192,6 +193,7 @@ function platformOptions(opts: WorktreeOptions): PlatformOptions {
     ...(opts.addTimeoutMs === undefined ? {} : { addTimeoutMs: opts.addTimeoutMs }),
     ...(opts.runWorktreeAdd === undefined ? {} : { runWorktreeAdd: opts.runWorktreeAdd }),
     skipSetup: true,
+    includeSetupTarget: true,
     allocationGroup: poolOf,
     budget: name =>
       poolOf(name) === 'reviewer'
@@ -202,22 +204,20 @@ function platformOptions(opts: WorktreeOptions): PlatformOptions {
   }
 }
 
-/** Keep product setup authority/outcomes unchanged while the engine suppresses its own setup. */
+/** Run setup against the engine-selected target after product metadata is recorded. */
 async function decorateAllocation(
-  allocation: WorktreeAllocation,
+  rawAllocation: WorktreeAllocation,
   opts: WorktreeOptions,
   baseRef?: string,
 ): Promise<Allocation> {
+  const { setupTarget: selectedTarget, ...allocation } = rawAllocation
   const { branch, worktree, gitRoot, base, base_ref: baseRefUsed, reattached, assigned } = allocation.ref
   if (!branch || !worktree || !gitRoot || !base || !baseRefUsed) return allocation
   const metadataWarnings =
     reattached || assigned === 'true' ? [] : await recordStackBase(gitRoot, branch, baseRef)
-  const setup = await setupWorktree(
-    { gitRoot, worktree, baseSha: base, fetched: baseRefUsed.startsWith('origin/') },
-    opts.runSetup,
-  )
-  const warnings = [...(allocation.warnings ?? []), ...metadataWarnings, ...setup.warnings]
-  const dependency = dependencyNote(setup.outcome)
+  const setup = selectedTarget === undefined ? undefined : await setupWorktree(selectedTarget, opts.runSetup)
+  const warnings = [...(allocation.warnings ?? []), ...metadataWarnings, ...(setup?.warnings ?? [])]
+  const dependency = dependencyNote(setup?.outcome)
   const note = !reattached
     ? allocation.note
     : assigned === 'true'
@@ -226,7 +226,7 @@ async function decorateAllocation(
   return {
     ...allocation,
     note,
-    ref: { ...allocation.ref, ...(reattached ? { setup: setup.outcome } : {}) },
+    ref: { ...allocation.ref, ...(reattached && setup !== undefined ? { setup: setup.outcome } : {}) },
     ...(warnings.length ? { warnings } : {}),
   }
 }

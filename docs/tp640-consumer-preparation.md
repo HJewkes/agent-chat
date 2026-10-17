@@ -19,3 +19,11 @@ Evidence: live basement active-work titan-platform sources/codex-seat-tp640-type
 The product now imports strict `fetchDefaultTip` directly in park and reexports the shared helper, `BranchBase` type and fetch timeout constant from its compatibility module. Three duplicate fetch helpers and the local base interface are deleted. Park ancestry, refusal, provider proof, metadata, setup and sweep logic are unchanged. Allocation retains its existing separate HEAD-fallback resolver behavior.
 
 This is validation-only source preparation against the reviewed composite plus tree-equivalent public strict-fetch prerequisite 0a2630033c970bff0ca87238f4e7bb6598fa62ee (original reviewed d1dd preserved). Composite c2aab196ccea002bd224c2d6cd41a973efb47d08, tree 3ad6b1734d2b5139dcf47fa8bd42d12766fac5cc; tar SHA256 f763fd01be7eb21cbe14f55252ac72bdd3433d1b8c2b4202b7ab07cd14c6fde9. The unreleased tar retains fixture version 0.1.5 and must never be published. Manifest, lockfile and original test assertions remain unchanged. Published consumption, full verification and remaining setup/git/park/sweep deletion are still required.
+
+## Shared setup reports and authority
+
+The local setup module now contains only public package reexports; its parser, guarded-file checks, environment pins, runner, log and report engine are removed. Original callers and test imports remain compatible. Product allocation metadata and dependency guidance remain here.
+
+The allocator keeps `skipSetup: true` and opts into `includeSetupTarget: true`. Product composition records stack metadata first, then passes the engine-selected target unchanged to the shared report helper once. It performs no additional default lookup and strips the target from product replies. The engine preserves its existing default-branch selection and diagnostic fallback with `fetched: false`; a requested checkout branch never gains setup authority. Missing or unreadable fallback declarations report no setup; any present fallback declaration is skipped before parsing. The requested checkout's metadata remains unchanged.
+
+This is validation-only source preparation against the reviewed combined package artifact. Published dependency adoption, full verify and remaining TP640 acceptance remain open; the compatibility file still exists and contains no setup mechanism.
