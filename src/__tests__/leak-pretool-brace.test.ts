@@ -23,6 +23,8 @@ const ctx = (): GuardContext => ({
 
 // On main every row here was allowed. Dropping braceOption from hasOptionAlternation allows them all again.
 const DENIED = [
+  // CI has no zsh, so this wrapping is checked by the guard alone.
+  "zsh -c 'git push origin {{repo},}--no-verify'",
   'git push --no-verif{y..y} origin HEAD:main',
   // bash runs `git push --no-verifx --no-verify origin HEAD:main`.
   'git push --no-verif{x..y} origin HEAD:main',
@@ -109,7 +111,7 @@ const NESTED: [string, string][] = [
   ['git push origin {{owner},--no-verify}', 'push origin {owner} --no-verify'],
   ['git push {{repo},-}-no-verify origin HEAD:main', 'push {repo}-no-verify --no-verify origin HEAD:main'],
   ['git push origin {{owner}{repo},}--no-verify', 'push origin {owner}{repo}--no-verify --no-verify'],
-  ["zsh -c 'git push origin {{repo},}--no-verify'", 'push origin {repo}--no-verify --no-verify'],
+  ["bash -c 'git push origin {{repo},}--no-verify'", 'push origin {repo}--no-verify --no-verify'],
 ]
 
 const NESTED_ALLOWED: [string, string][] = [
