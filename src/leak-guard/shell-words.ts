@@ -889,11 +889,16 @@ class ShellLexer {
     this.append(text, true)
   }
 
-  /** A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path. */
+  /**
+   * A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path.
+   * A placeholder inside a live group is a nested group to the shell, so its `{` is counted like any
+   * other, or its `}` would read as the outer group's close (CC-1427).
+   */
   private expands(c: string, next: string | undefined): boolean {
     const starts = this.word === null
     if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
-    if (GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
+    const inGroup = !starts && this.openGroups > 0
+    if (!inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
     return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
   }
 

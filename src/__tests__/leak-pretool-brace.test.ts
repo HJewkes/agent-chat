@@ -98,6 +98,18 @@ const NESTED: [string, string][] = [
     "bash -c 'git push {{a},}--no-verify origin HEAD:main'",
     'push {a}--no-verify --no-verify origin HEAD:main',
   ],
+  // A gh api placeholder is a nested group to the shell, not the close of the list around it.
+  ['git push origin {{repo},}--no-verify', 'push origin {repo}--no-verify --no-verify'],
+  ['git push {{owner},}--no-verify origin HEAD:main', 'push {owner}--no-verify --no-verify origin HEAD:main'],
+  [
+    'git push origin HEAD:main {{branch},}--no-verify',
+    'push origin HEAD:main {branch}--no-verify --no-verify',
+  ],
+  ['git push origin {{owner},HEAD:main,--no-verify}', 'push origin {owner} HEAD:main --no-verify'],
+  ['git push origin {{owner},--no-verify}', 'push origin {owner} --no-verify'],
+  ['git push {{repo},-}-no-verify origin HEAD:main', 'push {repo}-no-verify --no-verify origin HEAD:main'],
+  ['git push origin {{owner}{repo},}--no-verify', 'push origin {owner}{repo}--no-verify --no-verify'],
+  ["zsh -c 'git push origin {{repo},}--no-verify'", 'push origin {repo}--no-verify --no-verify'],
 ]
 
 const NESTED_ALLOWED: [string, string][] = [
