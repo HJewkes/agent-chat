@@ -311,6 +311,8 @@ class ShellLexer {
   closesOnBrace = false
   private braceDepth = 0
   private braceClosed = false
+  /** The brace-expansion groups a live `{` opened in the current word and no `}` has closed yet. */
+  private openGroups = 0
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
   /*
@@ -858,9 +860,20 @@ class ShellLexer {
       return this.append(this.src[this.pos - 1] ?? '')
     }
     this.pos++
-    const live = this.expands(c, next)
+    const live = this.expands(c, next) || this.braceStructure(c)
     this.splitting ||= live && (c === '$' || GLOB.includes(c))
     this.append(c, live)
+    if (c === '{' && live) this.openGroups++
+  }
+
+  /**
+   * An unquoted `,` or `}` inside a group a live `{` of this word opened, which the shell reads as the
+   * group's structure; a quoted or escaped one stays text, so a reader can tell them apart (CC-1427).
+   */
+  private braceStructure(c: string): boolean {
+    if (this.word === null || this.openGroups === 0 || (c !== ',' && c !== '}')) return false
+    if (c === '}') this.openGroups--
+    return true
   }
 
   /** Appends an unquoted expansion, which the shell splits into words. */
@@ -900,6 +913,7 @@ class ShellLexer {
   }
 
   private startWord(): void {
+    this.openGroups = 0
     this.wordStartOk = this.reservedOk
     this.wordStartNames = this.atStart || this.lastToken === 'function'
   }

@@ -21,7 +21,7 @@ const ctx = (): GuardContext => ({
   readIncludedHooksPath: () => false,
 })
 
-// On main every row here was allowed. Dropping braceSpellsOption from spellsOption allows them all again.
+// On main every row here was allowed. Dropping braceOption from hasOptionAlternation allows them all again.
 const DENIED = [
   'git push --no-verif{y..y} origin HEAD:main',
   // bash runs `git push --no-verifx --no-verify origin HEAD:main`.
@@ -60,8 +60,38 @@ const GLUED_ALLOWED: [string, string][] = [
   ['git push -{1..3} origin HEAD', 'push -1 -2 -3 origin HEAD'],
 ]
 
+// A quoted or escaped `{`, `,` or `}` is text to the shell, not the group's structure: allowed at fda21f05,
+// where quotes were removed before the group was read. Each line with what bash 5.3 and zsh 5.9 both pass git.
+const QUOTED_TEXT: [string, string][] = [
+  [
+    'git push origin HEAD:main {,HEAD:x"}"}--no-verify',
+    'push origin HEAD:main --no-verify HEAD:x}--no-verify',
+  ],
+  [
+    'git push origin HEAD:main {,HEAD:x\\}}--no-verify',
+    'push origin HEAD:main --no-verify HEAD:x}--no-verify',
+  ],
+  ['git push origin HEAD:main {"{",}--no-verify', 'push origin HEAD:main {--no-verify --no-verify'],
+  [
+    'git push origin HEAD:main {HEAD:x"{",}--no-verify',
+    'push origin HEAD:main HEAD:x{--no-verify --no-verify',
+  ],
+  ['git push origin {,a"}"}--no-verify', 'push origin --no-verify a}--no-verify'],
+  ["git push origin {,a'}'}--no-verify", 'push origin --no-verify a}--no-verify'],
+  ['git push origin {\\{,}--no-verify', 'push origin {--no-verify --no-verify'],
+  ["git push origin {'{',}--no-verify", 'push origin {--no-verify --no-verify'],
+]
+
+// Quoted braces the shell leaves as text, or that yield no option.
+const QUOTED_ALLOWED: [string, string][] = [
+  ['git push origin "feat/{a,b}"', 'push origin feat/{a,b}'],
+  ['git push origin feat/{a,b}"-x"', 'push origin feat/a-x feat/b-x'],
+  ['git commit -m "{,}--no-verify"', 'commit -m {,}--no-verify'],
+]
+
 const ALLOWED = [
   ...GLUED_ALLOWED.map(([src]) => src),
+  ...QUOTED_ALLOWED.map(([src]) => src),
   'git push origin feat/{a,b}',
   'git commit --no-verif{y,} -m x',
   'for i in {1..3}; do echo $i; done',
@@ -77,7 +107,7 @@ const ALLOWED = [
 ]
 
 describe('checkCommand on brace expansions (CC-1427)', () => {
-  it.each([...DENIED, ...EMPTY_LED.map(([src]) => src)])('denies %j', src => {
+  it.each([...DENIED, ...[...EMPTY_LED, ...QUOTED_TEXT].map(([src]) => src)])('denies %j', src => {
     expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
   })
 
@@ -127,9 +157,12 @@ describe.skipIf(BASH === undefined)('bash expands brace sequences in what git re
     expect(bash('git push origin {+../}-no-verify')).toEqual(['push origin {+../}-no-verify'])
   })
 
-  it.each([...EMPTY_LED, ...GLUED_ALLOWED])('runs %j as git %j', (src, call) => {
-    expect(bash(src)).toEqual([call])
-  })
+  it.each([...EMPTY_LED, ...GLUED_ALLOWED, ...QUOTED_TEXT, ...QUOTED_ALLOWED])(
+    'runs %j as git %j',
+    (src, call) => {
+      expect(bash(src)).toEqual([call])
+    },
+  )
 })
 
 describe.skipIf(ZSH === undefined)('zsh expands brace sequences in what git receives (CC-1427)', () => {
@@ -145,7 +178,10 @@ describe.skipIf(ZSH === undefined)('zsh expands brace sequences in what git rece
     ])
   })
 
-  it.each([...EMPTY_LED, ...GLUED_ALLOWED])('runs %j as git %j', (src, call) => {
-    expect(zsh(src)).toEqual([call])
-  })
+  it.each([...EMPTY_LED, ...GLUED_ALLOWED, ...QUOTED_TEXT, ...QUOTED_ALLOWED])(
+    'runs %j as git %j',
+    (src, call) => {
+      expect(zsh(src)).toEqual([call])
+    },
+  )
 })
