@@ -127,10 +127,28 @@ const QUOTED_ALLOWED: [string, string][] = [
   ['git push origin x{}', 'push origin x{}'],
 ]
 
+// The structure sentinels brace-option.ts substitutes, written raw into the word: allowed at d026ea2b,
+// where they read as structure the shell never sees. Each line with what bash 5.3 passes git.
+const SENTINELS: [string, string][] = [
+  ['git push {,}--no-verify origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
+  ['git push {,}--no-verify origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
+  ['git push {,}--no-verify origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
+  // Fails closed, though git gets no bare --no-verify here.
+  ['git push {,}--no-verify origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
+  ['bash -c "git push {,}--no-verify origin HEAD:main"', 'push --no-verify --no-verify origin HEAD:main'],
+]
+
+// A sentinel or HOLE in a word with no brace expansion, read as the text the shell passes.
+const SENTINEL_ALLOWED: [string, string][] = [
+  ['git push origin feat/x', 'push origin feat/x'],
+  ['git push origin feat/\x01x', 'push origin feat/\x01x'],
+]
+
 const ALLOWED = [
   ...GLUED_ALLOWED.map(([src]) => src),
   ...QUOTED_ALLOWED.map(([src]) => src),
   ...NESTED_ALLOWED.map(([src]) => src),
+  ...SENTINEL_ALLOWED.map(([src]) => src),
   'git push origin feat/{a,b}',
   'git commit --no-verif{y,} -m x',
   'for i in {1..3}; do echo $i; done',
@@ -146,12 +164,25 @@ const ALLOWED = [
 ]
 
 describe('checkCommand on brace expansions (CC-1427)', () => {
-  it.each([...DENIED, ...[...EMPTY_LED, ...QUOTED_TEXT, ...NESTED].map(([src]) => src)])('denies %j', src => {
-    expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
-  })
+  it.each([...DENIED, ...[...EMPTY_LED, ...QUOTED_TEXT, ...NESTED, ...SENTINELS].map(([src]) => src)])(
+    'denies %j',
+    src => {
+      expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
+    },
+  )
 
   it.each(ALLOWED)('allows %j', src => {
     expect(checkCommand(src, ctx())).toBeUndefined()
+  })
+
+  // The splitter strips a raw NUL, its own LIVE mark, while zsh cuts the word there and runs `--no-veri`.
+  it('denies a line that holds a raw NUL', () => {
+    expect(checkCommand('git push --no-veri\0x origin HEAD:main', ctx())).toBe(REASONS.operatorExpansion)
+  })
+
+  it('denies a long empty-group chain inside an alternative without overflowing the stack', () => {
+    const src = `git push {a,${'{,}'.repeat(20000)}}--no-verify origin HEAD:main`
+    expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
   })
 
   it('reads a sequence that spells a branch as the branch it spells', () => {
@@ -202,6 +233,9 @@ describe.skipIf(BASH === undefined)('bash expands brace sequences in what git re
       expect(bash(src)).toEqual([call])
     },
   )
+  it.each([...SENTINELS, ...SENTINEL_ALLOWED])('runs %j as git %j', (src, call) => {
+    expect(bash(src)).toEqual([call])
+  })
 })
 
 describe.skipIf(ZSH === undefined)('zsh expands brace sequences in what git receives (CC-1427)', () => {

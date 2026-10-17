@@ -11,6 +11,7 @@ import { LIVE, unmark } from './shell-words.js'
 const OPEN = ''
 const SEP = ''
 const CLOSE = ''
+const SENTINEL = new RegExp(`[${OPEN}${SEP}${CLOSE}]`)
 const TEXT = `[^${OPEN}${SEP}${CLOSE}]`
 
 // A comma list, or a sequence `{x..y}` or `{x..y..step}`; bash's is over integers or letters,
@@ -82,12 +83,14 @@ function leadingGroup(text: string): { alts: string[]; rest: string } | undefine
   return alts.length < 2 ? undefined : { alts, rest: text.slice(close + 1) }
 }
 
-/** Whether `text` may expand to an empty word: it is empty, or comma groups that each may be. */
+/** Whether `text` may expand to an empty word: it is empty, or comma groups that each may be. A long chain counts as depth. */
 function mayBeEmpty(text: string, depth: number): boolean {
   if (text === '' || depth > MAX_GROUP_DEPTH) return true
   const group = leadingGroup(text)
   return (
-    group !== undefined && group.alts.some(alt => mayBeEmpty(alt, depth + 1)) && mayBeEmpty(group.rest, depth)
+    group !== undefined &&
+    group.alts.some(alt => mayBeEmpty(alt, depth + 1)) &&
+    mayBeEmpty(group.rest, depth + 1)
   )
 }
 
@@ -106,6 +109,8 @@ function mayLeadWithDash(text: string, depth = 0): boolean {
 /** Whether the marked word holds a brace expansion that may yield an option, on either reading of a `{}`. */
 export function braceOption(marked: string): boolean {
   if (!marked.includes(`${LIVE}{`)) return false
+  // A sentinel already in the word would read as structure the shell never sees, so it fails closed.
+  if (SENTINEL.test(marked)) return true
   // Several `{}` would need every mix of readings; with any brace structure beside them, fail closed.
   if (marked.split(AMBIGUOUS_PAIR).length > 2 && MARKED_STRUCTURE.test(marked)) return true
   return readings(marked).some(spellsOption)

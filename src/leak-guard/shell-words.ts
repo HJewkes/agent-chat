@@ -1252,6 +1252,8 @@ export function expandWord(
  * after it, even one spelt `g''h`, and zsh's `${(e)...}` runs the text it expands (CC-718).
  */
 export function expansionRisk(src: string): ExpansionRisk | undefined {
+  // A raw NUL is LIVE, which the splitter strips, while zsh ends the word at it: `--no-veri<NUL>x` runs as `--no-veri`.
+  if (src.includes(LIVE)) return 'unreadable'
   const lexer = new ShellLexer(unmark(src))
   lexer.run()
   return lexer.expansion
