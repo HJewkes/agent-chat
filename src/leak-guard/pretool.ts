@@ -208,7 +208,7 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
-  jobShell: `leak-guard: script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
+  jobShell: `leak-guard: flock, script or unshare runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
@@ -503,7 +503,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         at = 0
       } else at = after.at
     } else if (JOB_WRAPPERS.has(name)) {
-      const run = jobRun(rest, at + 1, name)
+      const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
       chdir ||= run.chdir === true
       if ('at' in run) at = run.at

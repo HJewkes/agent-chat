@@ -5,6 +5,7 @@
  * missing from a table fails closed, since these programs gain options between releases.
  */
 
+import { expandsToWords } from './git-unresolved.js'
 import { LIVE } from './shell-words.js'
 
 interface StrictGetopt {
@@ -84,11 +85,17 @@ interface Parsed {
 /**
  * The words a wrapper runs from `at`, or a `-c` string it runs through `$SHELL -c` (`script`
  * undefined: an interactive shell, which reads stdin). Undefined on an option the table lacks
- * or an option word the shell expands. `chdir` is set when the command may run elsewhere.
+ * or an option word the shell expands. `chdir` is set when the command may run elsewhere. `splits`
+ * holds the marked words the shell may split, as `SimpleCommand.splits` does.
  */
 export type JobRun = { at: number; chdir?: boolean } | { script: string | undefined; chdir?: boolean }
 
-export function jobRun(words: readonly string[], i: number, name: string): JobRun | undefined {
+export function jobRun(
+  words: readonly string[],
+  i: number,
+  name: string,
+  splits: readonly string[] = [],
+): JobRun | undefined {
   const spec = GETOPTS[name] as StrictGetopt
   const parsed = readOptions(words, i, spec)
   if (parsed === undefined) return undefined
@@ -97,7 +104,7 @@ export function jobRun(words: readonly string[], i: number, name: string): JobRu
   if (name === 'unshare')
     return end < words.length ? { at: end, chdir: true } : { script: undefined, chdir: true }
   if (name === 'setsid') return { at: end }
-  return afterOperand(words, end, name)
+  return afterOperand(words, end, name, splits)
 }
 
 const CHRT_PRIORITY = /^\s*[+-]?\d+$/
@@ -107,9 +114,16 @@ const CHRT_PRIORITY = /^\s*[+-]?\d+$/
  * priority. With -p the pid is the last word, and pid 0 runs the command, so -p reads the same.
  * A word the shell expands may be none or several, so the command may start at it or after it.
  */
-function afterOperand(words: readonly string[], end: number, name: string): JobRun | undefined {
+function afterOperand(
+  words: readonly string[],
+  end: number,
+  name: string,
+  splits: readonly string[],
+): JobRun | undefined {
   const operand = words[end]
   if (operand === undefined) return { at: end }
+  // An operand that may split moves every later word, so `-c` may not be where it is written.
+  if (expandsToWords(operand, splits)) return undefined
   const script = name === 'flock' ? flockScript(words[end + 1], words[end + 2]) : null
   if (script !== null) return script
   // Reading only the operand as the command would leave the words after it unread.

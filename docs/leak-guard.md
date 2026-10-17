@@ -347,11 +347,12 @@ any expanded word after `script` (whose getopt reads options anywhere), denies o
 reach git or gh.
 `taskset -p` and `chrt -p` read the same way: util-linux takes the pid from the last word, and
 pid 0 (`0`, `00`, `+0`) runs the words after the mask or priority. An operand the shell expands
-(`~/f.lock`, `"$HOME/f.lock"`) may be no word or several, so the command may start at it or after
-it: like an expanded option, it denies on a line that may reach git or gh. A `chrt` priority that
-strtoimax would not read (`+0` and ` 0` are priorities) is read as the command.
-`flock <file> -c <text>`, its lock file expanded or not, and `script -c <text>` are checked as
-`sh -c <text>`; `script` without
+(`~/f.lock`, `"$HOME/f.lock"`, `$F`) is not read as the command: like an expanded option, it denies
+on a line that may reach git or gh. A `chrt` priority that strtoimax would not read (`+0` and ` 0`
+are priorities) is read as the command.
+`flock <file> -c <text>` and `script -c <text>` are checked as `sh -c <text>`, also when the lock
+file is a quoted expansion or a `~` path. An unquoted lock file such as `$F` may split and move the
+`-c`, so it denies on a line that may reach git or gh. `script` without
 `-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
 derives as it derives git's config env: from the command's assignments (`env` included), earlier
 exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named

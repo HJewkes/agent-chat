@@ -70,7 +70,6 @@ const BYPASSES: [string, string][] = [
   [`F=${F}; flock "$F" -c '${P}'`, 'flock'],
   [`flock "$HOME/${F}" -c '${P}'`, 'flock'],
   [`flock ~/${F} -c '${P}'`, 'flock'],
-  [`F=${F}; flock $F --command '${P}'`, 'flock'],
   [`F=${F}; flock "\${F}" -c '${P}'`, 'flock'],
   [`flock "$PWD/${F}" -c '${P}'`, 'flock'],
 ]
@@ -105,6 +104,23 @@ const UNREAD: [string, string, RegExp][] = [
   [`flock /tmp/$USER.lock ${P}`, 'flock', /option this guard does not know/],
   [`flock ~/${F} bash -c '${P}'`, 'flock', /option this guard does not know/],
   [`echo '${P}' | flock ~/${F} bash`, 'flock', /option this guard does not know/],
+  [`F=${F}; flock $F --command '${P}'`, 'flock', /option this guard does not know/],
+]
+
+// An unquoted operand splits, so flock sees no -c where it is written and runs the operand's words: line, git's argv.
+const SPLIT_OPERAND: [string, string][] = [
+  [
+    `F='lock git'; flock $F -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `F='lock git push --no-verify -o'; flock $F -c origin HEAD:main`,
+    'push --no-verify -o -c origin HEAD:main',
+  ],
+  [
+    `F='lock git push --no-verify -o'; flock $F --command origin HEAD:main`,
+    'push --no-verify -o --command origin HEAD:main',
+  ],
 ]
 
 // Rows real bash cannot run on every host: a forked child, a controlling tty, and a user namespace.
@@ -128,6 +144,10 @@ describe('job and namespace wrappers run the command after their options (CC-141
     expect(checkCommand(line, ctx)).toMatch(reason)
   })
 
+  it.each(SPLIT_OPERAND)('denies %s, whose operand may split', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.jobOption)
+  })
+
   it('denies script when the hook runs a $SHELL that is no shell it reads', () => {
     expect(
       checkCommand(`script -qc 'git status' /dev/null`, { ...ctx, env: { SHELL: '/usr/bin/fish' } }),
@@ -147,8 +167,11 @@ describe('job and namespace wrappers run the command after their options (CC-141
     expect(checkCommand(line, ctx)).toMatch(/option this guard does not know/)
   })
 
-  // Real bash cannot run these here: $TMPDIR is unset, a path is no CPU mask or priority, and gh is not faked.
+  // Real bash cannot push with these: $TMPDIR is unset, a path is no CPU mask or priority, gh is not faked,
+  // and with a split lock file real git refuses the --command it is handed.
   it.each([
+    `F='lock git'; flock $F --command core.hooksPath=/dev/null push origin HEAD:main`,
+    `F='l git'; flock $F --command=x push origin HEAD:main`,
     `flock "$TMPDIR/x" ${P}`,
     `flock ~/${F} gh pr create --body x`,
     `taskset "$HOME" ${P}`,
@@ -173,6 +196,8 @@ describe('job and namespace wrappers run the command after their options (CC-141
     'taskset -p 1234',
     'chrt -p 1234',
     `flock /tmp/l -c 'echo hi'`,
+    `flock "$HOME/l" -c 'echo hi'`,
+    'script -qc ls /dev/null',
     `flock ${F} -c 'git status'`,
     'setsid -w git push origin HEAD:feature',
     `script -qc 'git status' /dev/null`,
@@ -217,6 +242,10 @@ describe.skipIf(BASH === undefined)('real bash runs the push behind each wrapper
     ),
   )('%s pushes', line => {
     expect(pushes(line)).toBe(PUSHED)
+  })
+
+  it.skipIf(!installed('flock')).each(SPLIT_OPERAND)('%s runs git %s', (line, call) => {
+    expect(pushes(line)).toBe(call)
   })
 
   it.skipIf(!installed('setsid'))('setsid -f pushes from its forked child', () => {
