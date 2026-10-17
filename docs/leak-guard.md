@@ -423,8 +423,8 @@ a syntax error for most of these lines and runs nothing.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
-`git fetch --upload-pac{k..k}=<cmd>` or `git init --templat{e..e}=<dir>`: a comma list or a sequence (`{x..y}`, `{x..y..step}`) that may yield an option,
-as in `--no-verif{y..y}`, `--no-verif{y,}` or `{main,--no-verify}`, is denied. So is a group that
+`git fetch --upload-pac{k..k}=<cmd>` or `git init --templat{e..e}=<dir>`: a comma list or a
+sequence (`{x..y}`, `{x..y..step}`) that may yield an option, as in `--no-verif{y..y}`, `--no-verif{y,}` or `{main,--no-verify}`, is denied. So is a group that
 may expand to nothing before a `-`, as in `{,}--no-verify`, and a zsh character sequence such as
 `{+../}` whose range holds `-`. The splitter marks only an unquoted `{`, `,` or `}` as the group's
 structure, so a quoted or escaped one is text, as the shell reads it: `{,x"}"}--no-verify` closes
@@ -438,9 +438,18 @@ than read every brace grammar, the guard decides whether a word may become an op
 character (CC-1432). A `git push` argument led by an unquoted `{`, other than a lone `{}`, is
 denied, and so is one led by `-` that holds an unquoted `{`, git's count such as `-{1..3}` aside.
 `feat/{a,b}-x` and gh's `{owner}/{repo}` stay allowed, while a refspec led by a group, such as
-`{a,b}-x`, is denied; write it out. Off `push`, where braces in paths are common, a word led by a
-`{` denies only when it holds a `-`, and a word led by `-` only when the `{` is in the option's name
-before any `=`, so `git add {src,test}/x` and `git log --format=%H{x}` stay allowed.
+`{a,b}-x`, is denied; write it out.
+
+Off `push`, where braces in paths are common, only the run of groups that leads a word can make
+it start with `-`; the text after the run is copied after every alternative. A word led by `{`
+denies when an alternative in that run starts with `-`, as in `{a,-}-upload-pack=x`, or when a
+group with no `,` holds a `-`, which braceccl reads as a class, as in `{-}-upload-pack=x`. A group
+that never closes denies on any `-`. So `git add {src,test}/foo-bar.ts`, `git rm {a,b}-old.txt`
+and `git show {HEAD,main}:a-b.txt` stay allowed. A word led by `-` denies when a `{` is in its
+option name, before any `=`. A brace after a long option's `=` only copies the option, so
+`git log --grep={fix,feat}` and `git diff --color={always,never}` stay allowed, while
+`git fetch --{upload-pack=x,y}` is denied. A short option word with a brace, such as
+`git log -S{foo}`, is denied.
 
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as

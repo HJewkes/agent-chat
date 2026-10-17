@@ -169,6 +169,22 @@ const OFF_PUSH: [string, string][] = [
   // As `git commit --no-verif[y]` is under CC-728.
   ['git commit --no-verif{y,} -m x', 'commit --no-verify --no-verif -m x'],
   ['git commit --no-verif{y..y} -m x', 'commit --no-verify -m x'],
+  // A `-` inside the run of groups that leads the word, or a brace before the option name's `=`.
+  ['git fetch {a,-}-upload-pack=x', 'fetch a-upload-pack=x --upload-pack=x'],
+  ['git fetch {-x,y}upload-pack=x', 'fetch -xupload-pack=x yupload-pack=x'],
+  ['git fetch --{upload-pack=x,y}', 'fetch --upload-pack=x --y'],
+  ['git fetch {,}-x', 'fetch -x -x'],
+]
+
+// Off push, read by the guard alone: zsh sequences and braceccl that yield `-`, which CI cannot run,
+// and a group that never closes, which the shells pass as written but which fails closed.
+const OFF_PUSH_GUARD = [
+  'git fetch {+../}{+../}upload-pack=x',
+  'git fetch {+..0}{+..0}upload-pack=x',
+  "zsh -f -o braceccl -c 'git fetch {a,}{-}x'",
+  // zsh runs `fetch -upload-pack=x …`: a class with no `,`, after a list that may be empty.
+  "zsh -f -o braceccl -c 'git fetch {,}{a-}upload-pack=x'",
+  'git fetch {-x-upload-pack=x',
 ]
 
 // Braces off push that cannot lead a word with `-`, or that sit in an option's value.
@@ -178,6 +194,22 @@ const OFF_PUSH_ALLOWED: [string, string][] = [
   ['git add {src,test}/x', 'add src/x test/x'],
   ['git log --format=%H{x}', 'log --format=%H{x}'],
   ['git log --format=\'{"sha":"%H"}\'', 'log --format={"sha":"%H"}'],
+  // A `-` after the leading group is copied after every alternative, so it never leads the word.
+  ['git add {src,test}/foo-bar.ts', 'add src/foo-bar.ts test/foo-bar.ts'],
+  [
+    'git add {src/leak-guard/brace-option.ts,docs/leak-guard.md}',
+    'add src/leak-guard/brace-option.ts docs/leak-guard.md',
+  ],
+  ['git diff -- {src,test}/foo-bar.ts', 'diff -- src/foo-bar.ts test/foo-bar.ts'],
+  ['git rm {a,b}-old.txt', 'rm a-old.txt b-old.txt'],
+  ['git branch -D {old,older}-branch', 'branch -D old-branch older-branch'],
+  ['git show {HEAD,main}:a-b.txt', 'show HEAD:a-b.txt main:a-b.txt'],
+  // A brace after a long option's `=` copies the option into every word.
+  ['git log --grep={fix,feat}', 'log --grep=fix --grep=feat'],
+  ['git log --pretty=format:{%h,%s}', 'log --pretty=format:%h --pretty=format:%s'],
+  ['git log --since={1..2}', 'log --since=1 --since=2'],
+  ['git log --format={a,b}', 'log --format=a --format=b'],
+  ['git diff --color={always,never}', 'diff --color=always --color=never'],
 ]
 
 // Quoted braces the shell leaves as text, or that yield no option.
@@ -238,6 +270,7 @@ const DENIED_PAIRS = [
 describe('checkCommand on brace expansions (CC-1427, CC-1432, CC-1434)', () => {
   it.each([
     ...DENIED,
+    ...OFF_PUSH_GUARD,
     ...DENIED_PAIRS.map(([src]) => src),
     ...BRACECCL.flatMap(([src]) => BRACECCL_FORMS.map(form => form(src))),
   ])('denies %j', src => {
