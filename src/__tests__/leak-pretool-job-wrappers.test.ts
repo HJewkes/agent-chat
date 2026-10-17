@@ -45,6 +45,9 @@ const BYPASSES: [string, string][] = [
   [`chrt -b -v 0 ${P}`, 'chrt'],
   [`chrt -o +0 ${P}`, 'chrt'],
   [`chrt -o ' 0' ${P}`, 'chrt'],
+  // chrt, unlike taskset and flock, skips one -- after the priority.
+  [`chrt -o 0 -- ${P}`, 'chrt'],
+  [`chrt -o 0 -- bash -c '${P}'`, 'chrt'],
   [`script -qc '${P}' /dev/null`, 'script'],
   [`script -q -c '${P}' /dev/null`, 'script'],
   [`script /dev/null -qc '${P}'`, 'script'],
@@ -109,6 +112,9 @@ const UNREAD: [string, string, RegExp][] = [
   [`X=--; flock "$X" -c ${P}`, 'flock', /option this guard does not know/],
   [`X=-c; flock ${F} "$X" '${P}'`, 'flock', /option this guard does not know/],
   [`X=--command; flock ${F} $X '${P}'`, 'flock', /option this guard does not know/],
+  // The word after -- places the command as much as any word before it.
+  [`X='bash -c'; setsid -- $X '${P}'`, 'setsid', /option this guard does not know/],
+  [`X='bash -c'; unshare -- $X '${P}'`, 'unshare', /option this guard does not know/],
 ]
 
 // An unquoted operand splits, so flock sees no -c where it is written and runs the operand's words: line, git's argv.
@@ -124,6 +130,34 @@ const SPLIT_OPERAND: [string, string][] = [
   [
     `F='lock git push --no-verify -o'; flock $F --command origin HEAD:main`,
     'push --no-verify -o --command origin HEAD:main',
+  ],
+  [
+    `F='lock git'; flock -- $F -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `F='lock git push --no-verify -o'; flock -- $F -c origin HEAD:main`,
+    'push --no-verify -o -c origin HEAD:main',
+  ],
+  [
+    `F='lock git'; flock -x -- $F -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `A=(lock git); flock -- "\${A[@]}" -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `flock -- $(echo lock git) -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `flock -- {lock,git} -c core.hooksPath=/dev/null push origin HEAD:main`,
+    '-c core.hooksPath=/dev/null push origin HEAD:main',
+  ],
+  [
+    `F='lock git'; flock -- $F --command core.hooksPath=/dev/null push origin HEAD:main`,
+    '--command core.hooksPath=/dev/null push origin HEAD:main',
   ],
 ]
 
@@ -206,6 +240,13 @@ describe('job and namespace wrappers run the command after their options (CC-141
     'script -qc ls /dev/null',
     'flock /tmp/l git status',
     'taskset -c 0 git status',
+    'flock -n /tmp/x.lock git pull --ff-only',
+    'chrt -i 0 git gc',
+    'setsid -f npm run dev',
+    // Real taskset and flock exec a command named --, and chrt skips only one, so none of these runs git.
+    `taskset 1 -- ${P}`,
+    `flock ${F} -- ${P}`,
+    `chrt -o 0 -- -- ${P}`,
     `flock ${F} -c 'git status'`,
     'setsid -w git push origin HEAD:feature',
     `script -qc 'git status' /dev/null`,

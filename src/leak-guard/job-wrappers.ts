@@ -143,7 +143,8 @@ function afterOperand(
   if (operand.includes(LIVE)) return undefined
   // chrt reads the priority with strtoimax; a version that drops it for SCHED_OTHER would run any other word.
   if (name === 'chrt' && !CHRT_PRIORITY.test(operand)) return { at: end }
-  return { at: end + 1 }
+  // chrt, unlike taskset and flock, skips one `--` after the priority.
+  return { at: name === 'chrt' && words[end + 1] === '--' ? end + 2 : end + 1 }
 }
 
 /** The text after flock's `-c`, whatever its lock file; null when no `-c` follows the file. */
@@ -168,7 +169,8 @@ function readOptions(
   for (; i < words.length; i++) {
     const word = words[i] as string
     if (mayExpand(word, splits)) return undefined
-    if (word === '--') return { options, end: i + 1 }
+    // The word after `--` places the operand or command as much as any word before it.
+    if (word === '--') return mayExpand(words[i + 1] ?? '', splits) ? undefined : { options, end: i + 1 }
     if (!word.startsWith('-') || word === '-') {
       // A permuting getopt reads options anywhere, so it reads on past an operand.
       if (spec.permute === true) continue
