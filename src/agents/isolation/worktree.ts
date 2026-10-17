@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import {
   createWorktreeAllocator,
+  runGit as gitOrNull,
   MissingAssignedWorktreeRecordError,
   pruneStaleWorktrees,
   reattachWorktree as platformReattach,
@@ -17,7 +16,7 @@ import { warn } from './warnings.js'
 import { setupWorktree, type SetupRunner } from './worktree-setup.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
-import { findGitRoot, gitChildEnv } from '../../git.js'
+import { findGitRoot } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
 export { findGitRoot, pruneStaleWorktrees }
@@ -32,8 +31,6 @@ export {
   WorktreeInUseError,
 } from '@titan-design/worktree'
 export type { BranchBase, ReleaseCheck, WorktreeReleaseSafety, WorktreeRecord } from '@titan-design/worktree'
-
-const execFileAsync = promisify(execFile)
 
 export const DEFAULT_WORKTREE_BUDGET = 3
 /** CC-1040: Shepherd's reviewer cap, so a full reviewer round never waits on implementer slots. */
@@ -134,25 +131,6 @@ export interface WorktreeOptions {
 }
 
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>
-
-async function git(args: readonly string[], cwd: string, timeout?: number): Promise<string> {
-  const { stdout } = await execFileAsync('git', [...args], {
-    cwd,
-    encoding: 'utf8',
-    env: gitChildEnv(),
-    ...(timeout === undefined ? {} : { timeout }),
-  })
-  return stdout.trim()
-}
-
-/** git failures are routine control flow here — "does this ref exist" is a failing command. */
-async function gitOrNull(args: readonly string[], cwd: string, timeout?: number): Promise<string | null> {
-  try {
-    return await git(args, cwd, timeout)
-  } catch {
-    return null
-  }
-}
 
 /** A name reaches this from a model, so it must not be able to escape basePath. */
 const slug = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[.-]+/, '') || 'agent'
