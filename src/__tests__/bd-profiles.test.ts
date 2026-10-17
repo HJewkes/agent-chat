@@ -215,6 +215,32 @@ const ABBREVIATED_PUSHES = [
   'origin agent-chat/x --m',
 ]
 
+// A destination is main when it is a whole word after a space (`-- main`, `-v origin main`),
+// follows a colon (`<src>:main`), or ends `heads/main` (git resolves `HEAD:heads/main` to main).
+const mainDestinationPushes = (branch: string): string[] => [
+  `origin agent-chat/x:${branch}`,
+  `origin HEAD^0:${branch}`,
+  `origin ${branch}:${branch}`,
+  `origin HEAD:refs/heads/${branch}`,
+  `origin HEAD:heads/${branch}`,
+  `origin refs/heads/${branch}`,
+  `origin -- ${branch}`,
+  `-- origin ${branch}`,
+  `--set-u origin ${branch}`,
+  `--no-verify origin ${branch}`,
+  `-v origin ${branch}`,
+  `-q origin ${branch}`,
+  `-o x origin ${branch}`,
+  `--push-option=x origin ${branch}`,
+  `-v origin agent-chat/x:${branch}`,
+  `origin agent-chat/y agent-chat/x:${branch}`,
+  `origin agent-chat/x:${branch} --no-verify`,
+  `-v origin ${branch} --no-verify`,
+  `origin HEAD:refs/heads/${branch} -v`,
+  `origin HEAD:heads/${branch} --no-verify`,
+]
+const MAIN_DESTINATION_PUSHES = [...mainDestinationPushes('main'), ...mainDestinationPushes('master')]
+
 // `*` spans `&&`, `;` and `|`, so these ordinary commands are denied. Kept: a rule shape that
 // stops at a separator would also stop denying the force spellings the rows above pin.
 const COMPOUND_OVERMATCHES = [
@@ -222,6 +248,23 @@ const COMPOUND_OVERMATCHES = [
   'git push origin agent-chat/x && gh pr create -f',
   'git push origin agent-chat/x && date +%s',
   'git push origin agent-chat/x; git commit -m "fix -f"',
+  // The main and master rules match the word anywhere after the push, so a later command that
+  // names main is denied too.
+  'git push -u origin agent-chat/x && gh pr create --base main --title t',
+  'git push -u origin agent-chat/x 2>&1 | grep -v main',
+  'git push -u origin agent-chat/x && git fetch origin main',
+]
+
+// bash strips the quotes, the backslash and the expansion, so each of these really pushes. The
+// older `git * push` rules catch them; the newer main and master rules start `git -* push` and
+// do not.
+const QUOTED_GLOBAL_OPTION_PUSHES = [
+  'git "-C" x push origin main',
+  'git "-C" x push origin HEAD:main',
+  'git "-C" x push --force origin x',
+  "git '-c' k=v push --force origin x",
+  'git \\-C x push --force origin x',
+  'git $G push --force origin x',
 ]
 
 const LEGITIMATE_PUSHES = [
@@ -248,6 +291,32 @@ const LEGITIMATE_PUSHES = [
   '-u origin m/x',
   'origin agent-chat/x:de-x',
   'origin agent-chat/x--de',
+  'origin HEAD:agent-chat/main-fix',
+  'origin agent-chat/x:agent-chat/main',
+  'origin agent-chat/x:agent-chat/master',
+  'origin maintenance',
+  'origin mainline-notes',
+  'origin HEAD:mainline-notes',
+  '-v origin agent-chat/main',
+  'origin main:agent-chat/x',
+  'origin -- agent-chat/x',
+]
+
+// The main and master rules start `git -* push`, since every git global option starts with `-`,
+// so a plain subcommand whose message or pattern says push and main is not read as a push.
+const LEGITIMATE_COMMANDS = [
+  'git push -u origin agent-chat/x && gh pr create --draft --title t',
+  'git commit -m "a push b main c"',
+  'git log --grep "push main"',
+  'git log --grep "push origin HEAD:main --force"',
+]
+
+// The older `git * push` rules read any later ` push ` as the subcommand, and a global option
+// before any subcommand reaches `git -* push`, so these non-push lines are denied.
+const SUBCOMMAND_OVERMATCHES = [
+  'git commit -m "a push origin main c"',
+  'git -C x commit -m "a push b main c"',
+  'git -C x commit -m "no push --force here"',
 ]
 
 describe.each(WORKER_PROFILES)('the %s profile', name => {
@@ -296,6 +365,14 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
   })
 
+  it.each(QUOTED_GLOBAL_OPTION_PUSHES)('denies `%s`, whose quoting bash strips', command => {
+    expect(isDenied(command, denied)).toBe(true)
+  })
+
+  it.each(MAIN_DESTINATION_PUSHES)('denies `git push %s`, whose destination is protected', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
   it('denies a force push piped through xargs', () => {
     expect(isDenied('echo origin | xargs git push --force', denied)).toBe(true)
   })
@@ -306,6 +383,14 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
 
   it.each(LEGITIMATE_PUSHES)('still allows `git push %s`', tail => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(false)
+  })
+
+  it.each(SUBCOMMAND_OVERMATCHES)('knowingly denies `%s`', command => {
+    expect(isDenied(command, denied)).toBe(true)
+  })
+
+  it.each(LEGITIMATE_COMMANDS)('still allows `%s`', command => {
+    expect(isDenied(command, denied)).toBe(false)
   })
 
   it('denies deleting a remote branch', () => {
