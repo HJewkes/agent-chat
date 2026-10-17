@@ -1,6 +1,4 @@
 import { spawn } from 'node:child_process'
-import type { HealthPayload } from '../api-contract.js'
-import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { exitWithWatchedPid } from '../broker/parent-watch.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
@@ -14,48 +12,7 @@ import { brokerSource, guardRestart, unreachableMessage } from './restart-guard.
 /** How long `stop` waits for a polite exit before it stops being polite. */
 const TERM_GRACE_MS = 3_000
 
-export interface ServiceStatus {
-  /** Authoritative liveness: something answered on the unix socket. */
-  socket: boolean
-  /** Diagnostic only — a PID file survives `kill -9`, so it never answers "is it running". */
-  pid: number | null
-  meta: ReturnType<typeof readMeta>
-  /** Null when the HTTP surface did not answer, which is a legible state, not a failure. */
-  health: HealthPayload | null
-}
-
-/**
- * Three-stage, extending active-work's two-stage (§4.3). Each stage is collected
- * separately so "running but HTTP down" stays legible instead of collapsing into
- * one boolean.
- */
-export async function collectStatus(port?: number): Promise<ServiceStatus> {
-  const socket = await probeSocket()
-  const meta = readMeta()
-  const health = await probeHealth(port ?? meta?.port ?? defaultPort())
-  return { socket, pid: readPidFile(), meta, health }
-}
-
-export async function status(options: { port?: number }): Promise<void> {
-  const s = await collectStatus(options.port)
-  console.log(`socket   ${s.socket ? 'up' : 'down'}  ${socketPath()}`)
-  console.log(
-    s.pid === null
-      ? 'pid      no pid file'
-      : `pid      ${s.pid}${isProcessAlive(s.pid) ? '' : ' (stale — no such process)'}`,
-  )
-  if (s.meta) {
-    console.log(`meta     version ${s.meta.version}  port ${s.meta.port ?? 'unbound'}`)
-  }
-  console.log(
-    s.health === null
-      ? 'http     no answer'
-      : `http     ok  uptime ${Math.round(s.health.uptime_ms / 1000)}s  ` +
-          `${s.health.sessions} sessions  ${s.health.queue_open} open`,
-  )
-  // The socket is the answer to "is it running"; nothing else here is.
-  if (!s.socket) process.exit(1)
-}
+export { collectStatus, type ServiceStatus } from './verbs/service-status.js'
 
 /** Attached sessions at stop time, or null when the broker is already unreachable. */
 async function attachedSessions(): Promise<number | null> {

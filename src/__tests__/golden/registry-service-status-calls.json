@@ -1,0 +1,631 @@
+[
+  {
+    "name": "healthy metadata port and uptime rounding up",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "socket down despite live pid and HTTP",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   down  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "socket up without HTTP",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     no answer"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "no pid file",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      no pid file",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "stale pid",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123 (stale — no such process)",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "no metadata default port",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 8765
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "metadata null port falls back",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 8765
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port unbound",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "explicit port wins",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "9001"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 9001
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "trailing text port",
+    "argv": [
+      "service",
+      "status",
+      "--port=9002tail"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 9002
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "fractional port parseInt",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "9003.9"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 9003
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "exponent port parseInt",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "1e2"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 1
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "last repeated port wins",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "9001",
+      "--port",
+      "9004"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 9004
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 2s  2 sessions  3 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "zero bad port",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "0"
+    ],
+    "calls": [],
+    "output": [
+      "stderr: bad port: 0"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "negative bad port",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "-1"
+    ],
+    "calls": [],
+    "output": [
+      "stderr: bad port: -1"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "ceiling bad port",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "65536"
+    ],
+    "calls": [],
+    "output": [
+      "stderr: bad port: 65536"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "nonnumeric bad port",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      "nonsense"
+    ],
+    "calls": [],
+    "output": [
+      "stderr: bad port: nonsense"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "empty bad port",
+    "argv": [
+      "service",
+      "status",
+      "-p",
+      ""
+    ],
+    "calls": [],
+    "output": [
+      "stderr: bad port: "
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing port argument",
+    "argv": [
+      "service",
+      "status",
+      "-p"
+    ],
+    "calls": [],
+    "output": [
+      "stderr: error: option '-p, --port <port>' argument missing\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat service status [options]\n\nsocket, pid file and /health, reported separately\n\nOptions:\n  -p, --port <port>  port to probe for /health\n  -h, --help         display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "uptime rounding down",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stdout: pid      123",
+      "stdout: meta     version fixture-version  port 7600",
+      "stdout: http     ok  uptime 1s  0 sessions  0 open"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "probe error",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      }
+    ],
+    "output": [
+      "stderr: synthetic probe failed"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "health code69 maps legacy1",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      }
+    ],
+    "output": [
+      "stderr: synthetic health unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "pid read string failure",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      }
+    ],
+    "output": [
+      "stderr: synthetic pid failure"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "partial socket output before liveness error69",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stderr: synthetic liveness failed"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "help",
+    "argv": [
+      "service",
+      "status",
+      "--help"
+    ],
+    "calls": [],
+    "output": [
+      "stdout: Usage: agent-chat service status [options]\n\nsocket, pid file and /health, reported separately\n\nOptions:\n  -p, --port <port>  port to probe for /health\n  -h, --help         display help for command\n"
+    ],
+    "exit": 0
+  }
+]

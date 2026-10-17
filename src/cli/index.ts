@@ -48,6 +48,8 @@ import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import { answerVerb } from './verbs/answer.js'
 import { serviceLogsVerb } from './verbs/service-logs.js'
+import { serviceStatusVerb } from './verbs/service-status.js'
+import { parsePort } from './service-options.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
@@ -75,12 +77,6 @@ function addHumanCommands(program: Command): void {
   addVerb(program, digestVerb, { helpGroup: HUMAN })
 }
 
-const port = (value: string): number => {
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed >= 65536) throw new Error(`bad port: ${value}`)
-  return parsed
-}
-
 const holdSeconds = (value: string): number => {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_HOLD_SECONDS)
@@ -94,7 +90,7 @@ function addServiceCommands(program: Command): void {
   svc
     .command('start')
     .description('start the broker, detached by default')
-    .option('-p, --port <port>', 'HTTP port to bind', port)
+    .option('-p, --port <port>', 'HTTP port to bind', parsePort)
     .option('-f, --foreground', 'run in this terminal instead of detaching')
     .action(service.start)
 
@@ -111,18 +107,14 @@ function addServiceCommands(program: Command): void {
     )
     .action(service.stop)
 
-  svc
-    .command('status')
-    .description('socket, pid file and /health, reported separately')
-    .option('-p, --port <port>', 'port to probe for /health', port)
-    .action(service.status)
+  addVerb(svc, serviceStatusVerb)
 
   svc
     .command('restart')
     .description(
       'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn',
     )
-    .option('-p, --port <port>', 'bind this port instead of the recorded one', port)
+    .option('-p, --port <port>', 'bind this port instead of the recorded one', parsePort)
     .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
@@ -131,7 +123,7 @@ function addServiceCommands(program: Command): void {
   svc
     .command('open')
     .description('open the dashboard, or print its URL when not a TTY')
-    .option('-p, --port <port>', 'port the dashboard is on', port)
+    .option('-p, --port <port>', 'port the dashboard is on', parsePort)
     .action(service.open)
 }
 

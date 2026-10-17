@@ -358,3 +358,18 @@ argv, exit status and help, including the numeric50 default, malformed counts,
 missing/unreadable files and unsupported follow mode. No live log, service,
 process or broker operation is used in validation. TP-617 remains open for other
 S8 units, published dependency adoption and full verification.
+
+### S8 service status candidate checkpoint
+
+Service status now uses a registry report over the existing three-stage status
+collector. The original collector and DTO remain available through compatibility
+exports. Socket liveness alone determines success; PID/HTTP observations remain
+diagnostic. The original port parsing policy is shared once with the remaining
+service mounts. Partial stdout before a liveness error and legacy exit1 for
+numeric broker errors are preserved.
+
+The original 24-case fake-controller fixture pins probe order, explicit/meta/default
+port precedence, full output and help, stale PID and rounding, parser failures
+and partial error output. No live socket/HTTP/process/filesystem/broker or service
+operation is used. Original help and other fixtures remain unchanged. Other S8
+units, published dependency adoption and full verification still gate TP-617.
