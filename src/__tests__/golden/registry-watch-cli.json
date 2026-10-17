@@ -1,0 +1,1273 @@
+[
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "default now once skips backlog",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "all once starts zero",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "12",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 12,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "explicit cursor",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "0x10",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 16,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "hex cursor Number semantics",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "empty cursor is zero",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "  ",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "whitespace cursor is zero",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "12",
+      "--since",
+      "14",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 14,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "repeated cursor last wins",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 1): synthetic message 1",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--interval",
+      "0.2",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "fractional interval accepted",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--interval",
+      "0x10",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "hex interval accepted",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "empty name preserved",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "  ",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "  ",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "  ",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "whitespace name preserved",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "empty inbox prints nothing",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "multiple and broadcast rows",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from one (msg 11): first line",
+      "[agent-chat] broadcast two (msg 12): broadcast second",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 7,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "completed",
+      "late",
+    ],
+    "name": "empty body keeps exact line",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] broadcast worker (msg 2): ",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "1.5",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "invalid since fractional",
+    "stderrLines": [
+      "--since takes a log id, "now", or "all"; got "1.5"",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since=-1",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "invalid since negative",
+    "stderrLines": [
+      "--since takes a log id, "now", or "all"; got "-1"",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--interval",
+      "0",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "invalid interval zero before initial poll",
+    "stderrLines": [
+      "--interval takes a positive number of seconds; got "0"",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--interval",
+      "",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "invalid interval empty",
+    "stderrLines": [
+      "--interval takes a positive number of seconds; got """,
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--interval",
+      "Infinity",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "invalid interval infinity",
+    "stderrLines": [
+      "--interval takes a positive number of seconds; got "Infinity"",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing name",
+    "stderrLines": [
+      "error: missing required argument 'name'",
+      "",
+      "Usage: agent-chat watch [options] <name>",
+      "",
+      "stream messages for a session that cannot receive channel pushes",
+      "",
+      "Options:",
+      "  --since <id|now|all>  start from a log id, the current head, or the whole",
+      "                        backlog (default: "now")",
+      "  --interval <seconds>  how often to poll (default: "2")",
+      "  --once                print what is waiting and exit, instead of following",
+      "  -h, --help            display help for command",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing since argument",
+    "stderrLines": [
+      "error: option '--since <id|now|all>' argument missing",
+      "",
+      "Usage: agent-chat watch [options] <name>",
+      "",
+      "stream messages for a session that cannot receive channel pushes",
+      "",
+      "Options:",
+      "  --since <id|now|all>  start from a log id, the current head, or the whole",
+      "                        backlog (default: "now")",
+      "  --interval <seconds>  how often to poll (default: "2")",
+      "  --once                print what is waiting and exit, instead of following",
+      "  -h, --help            display help for command",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "extra",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "extra positional",
+    "stderrLines": [
+      "error: too many arguments for 'watch'. Expected 1 argument but got 2: synthetic, extra.",
+      "",
+      "Usage: agent-chat watch [options] <name>",
+      "",
+      "stream messages for a session that cannot receive channel pushes",
+      "",
+      "Options:",
+      "  --since <id|now|all>  start from a log id, the current head, or the whole",
+      "                        backlog (default: "now")",
+      "  --interval <seconds>  how often to poll (default: "2")",
+      "  --once                print what is waiting and exit, instead of following",
+      "  -h, --help            display help for command",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--unknown",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "unknown option",
+    "stderrLines": [
+      "error: unknown option '--unknown'",
+      "",
+      "Usage: agent-chat watch [options] <name>",
+      "",
+      "stream messages for a session that cannot receive channel pushes",
+      "",
+      "Options:",
+      "  --since <id|now|all>  start from a log id, the current head, or the whole",
+      "                        backlog (default: "now")",
+      "  --interval <seconds>  how often to poll (default: "2")",
+      "  --once                print what is waiting and exit, instead of following",
+      "  -h, --help            display help for command",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "--help",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "immediateExit": 0,
+      },
+    ],
+    "name": "help",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "Usage: agent-chat watch [options] <name>",
+      "",
+      "stream messages for a session that cannot receive channel pushes",
+      "",
+      "Options:",
+      "  --since <id|now|all>  start from a log id, the current head, or the whole",
+      "                        backlog (default: "now")",
+      "  --interval <seconds>  how often to poll (default: "2")",
+      "  --once                print what is waiting and exit, instead of following",
+      "  -h, --help            display help for command",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "initial now failure is fatal",
+    "stderrLines": [
+      "synthetic poll failure",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "once later failure is fatal",
+    "stderrLines": [
+      "synthetic poll failure",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "once code69 remains one",
+    "stderrLines": [
+      "synthetic poll failure",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "once raw object failure",
+    "stderrLines": [
+      "{ reason: 'synthetic', items: [ 1, 2 ] }",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "once raw array failure",
+    "stderrLines": [
+      "[ 'synthetic', 2 ]",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--once",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "once raw string failure",
+    "stderrLines": [
+      "synthetic rejection",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+    ],
+    "code": 88,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 2000,
+      },
+      "late",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 2000,
+      },
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 43,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "fixture-stop",
+      {
+        "immediateExit": 88,
+      },
+    ],
+    "name": "follow later failure retries same cursor",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 3): synthetic message 3",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+    ],
+    "code": 88,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 2000,
+      },
+      "late",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 2000,
+      },
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 41,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "fixture-stop",
+      {
+        "immediateExit": 88,
+      },
+    ],
+    "name": "follow repeated failures retain cursor",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+      "--since",
+      "all",
+      "--interval",
+      "0.25",
+    ],
+    "code": 88,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 250,
+      },
+      "late",
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 0,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 250,
+      },
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 42,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "sleep": 250,
+      },
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 43,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "fixture-stop",
+      {
+        "immediateExit": 88,
+      },
+    ],
+    "name": "follow all can recover first loop failure",
+    "stderrLines": [
+      "",
+    ],
+    "stdoutLines": [
+      "[agent-chat] from worker (msg 2): synthetic message 2",
+      "[agent-chat] from worker (msg 3): synthetic message 3",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "watch",
+      "synthetic",
+    ],
+    "code": 1,
+    "events": [
+      "open",
+      {
+        "expected": "inbox_since_result",
+        "request": {
+          "afterId": 9007199254740991,
+          "limit": 50,
+          "name": "synthetic",
+          "t": "inbox_since",
+        },
+      },
+      "close",
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "follow initial now failure remains fatal",
+    "stderrLines": [
+      "synthetic poll failure",
+      "",
+    ],
+    "stdoutLines": [
+      "",
+    ],
+  },
+]

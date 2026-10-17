@@ -57,7 +57,7 @@ import { parsePort } from './service-options.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
-import { watch, type WatchOptions } from './watch.js'
+import { watchVerb } from './verbs/watch-command.js'
 
 const HUMAN = 'Human commands:'
 const AGENTS = 'Agent commands:'
@@ -145,14 +145,7 @@ function addServiceAskCommands(program: Command): void {
 }
 
 function addAgentCommands(program: Command): void {
-  program
-    .command('watch <name>')
-    .description('stream messages for a session that cannot receive channel pushes')
-    .helpGroup(AGENTS)
-    .option('--since <id|now|all>', 'start from a log id, the current head, or the whole backlog', 'now')
-    .option('--interval <seconds>', 'how often to poll', '2')
-    .option('--once', 'print what is waiting and exit, instead of following')
-    .action((name: string, options: WatchOptions) => watch(name, options))
+  addVerb(program, watchVerb, { helpGroup: AGENTS, schemaDefaults: true, usageExit: 1, exitOnSuccess: false })
 
   const agent = program.command('agent').description('durable agents').helpGroup(AGENTS)
 

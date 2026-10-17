@@ -402,3 +402,5 @@ Agent listing now declares its existing options through the registry and mounts 
 The leak-scan mount delegates its unchanged scanner to one registry definition. Its explicit completed-report mode assigns exitCode for clean/findings/cannot-pass results and returns naturally so output drains; parser and unexpected-invocation failures remain immediate. Published dependency adoption and full verification remain pending.
 
 The service.open definition delegates the unchanged opener and returns naturally, preserving inherited exit status and its late error callback URL. Port parsing retains parseInt behavior; no actual browser launch or published adoption is qualified by the fixture.
+
+The watch definition delegates the original polling loop, preserving defaults, initial cursor refusal, follow-mode retry and natural once completion. The fixture uses a fake broker and virtual sleep; it does not qualify live registration, channel wakeup or a real bus connection.
