@@ -46,7 +46,7 @@ import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import { teleportRequestVerb } from './verbs/teleport-request.js'
 import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
-import * as human from './human.js'
+import { answerVerb } from './verbs/answer.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
@@ -66,11 +66,7 @@ function addHumanCommands(program: Command): void {
   addVerb(program, inboxVerb, { helpGroup: HUMAN })
   addVerb(program, queueReadVerb, { helpGroup: HUMAN })
 
-  program
-    .command('answer <id> <text...>')
-    .description('answer a question; routes back to the asker')
-    .helpGroup(HUMAN)
-    .action((id: string, text: string[]) => human.verdict(id, text, 'answer'))
+  addVerb(program, answerVerb, { helpGroup: HUMAN })
 
   addVerb(program, dismissVerb, { helpGroup: HUMAN })
   addVerb(program, approveVerb, { helpGroup: HUMAN })

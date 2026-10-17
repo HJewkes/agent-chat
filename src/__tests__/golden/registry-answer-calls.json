@@ -1,0 +1,278 @@
+[
+  {
+    "name": "success",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stdout: Answered fixture-id."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "success reason",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stdout: Answered fixture-id. fixture note"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "success empty reason",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stdout: Answered fixture-id."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "refusal",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture refused"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "refusal absent reason",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: refused"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "refusal empty reason",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: "
+    ],
+    "exit": 1
+  },
+  {
+    "name": "blank id and text preserved",
+    "argv": [
+      "answer",
+      "",
+      ""
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "",
+        "text": ""
+      }
+    ],
+    "output": [
+      "stdout: Answered ."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "control words preserved",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "line1\nline2",
+      "\tword"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "line1\nline2 \tword"
+      }
+    ],
+    "output": [
+      "stdout: Answered fixture-id."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "end of options payload",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "--",
+      "--source",
+      "watchdog"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "--source watchdog"
+      }
+    ],
+    "output": [
+      "stdout: Answered fixture-id."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "missing text",
+    "argv": [
+      "answer",
+      "fixture-id"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: missing required argument 'text'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat answer [options] <id> <text...>\n\nanswer a question; routes back to the asker\n\nOptions:\n  -h, --help  display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing id",
+    "argv": [
+      "answer"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: missing required argument 'id'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat answer [options] <id> <text...>\n\nanswer a question; routes back to the asker\n\nOptions:\n  -h, --help  display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "source unsupported",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "--source",
+      "watchdog"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: unknown option '--source'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat answer [options] <id> <text...>\n\nanswer a question; routes back to the asker\n\nOptions:\n  -h, --help  display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "numeric unavailable error keeps legacy exit1",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "ordinary error",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture failure"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "string error",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture string failure"
+    ],
+    "exit": 1
+  }
+]

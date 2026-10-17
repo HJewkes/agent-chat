@@ -1,0 +1,8 @@
+# TP617 S8 answer checkpoint
+UTC: 2026-10-17T20:21:34.821440+00:00
+Approved bounded slice from e690d1f. Before production changes, capture original answer CLI frames, complete output, permissive string/word parsing, missing args/options, reason nullish/empty behavior and all rejected-action exit1 behavior using in-process fake broker only.
+Then replace handwritten mounting with registry answerVerb, delete unused human.verdict and its exclusive imports after reference audit. Preserve group/order, human identity, no source or registration, original help/MCP/send/port/label/null/true fixtures unchanged.
+Use reviewed e063 registry candidate validation-only no-save/no-lock with manifest/lock unchanged. Focused suites, product/test/dashboard types, build, formatting, spawn audit and substantive mutants; no full/global-marker suite, live broker/account/settings or push/release. Freeze for independent review and restore frozen npm ci after review. TP617 remains open for remaining S8/published adoption/full verify.
+
+Results: original 15-case fakebroker golden captured before production conversion; same byte-identical golden green after conversion. Original CLI/MCP/port/label/send/null/true assertions untouched. 93 tests/9 files green including queue-read after four snapshot mutants (frame identity, joined words, nullish reason, numeric error exit) each failed and source restored. Product/test/dashboard types, build, formatting and spawn audit exit0. Manifest/lock byte-identical; installed registry JS bound to reviewed e063 tar. No full/global-marker suite or live broker/account operation. Await independent review before restoring frozen registry0.2.
+UTC: 2026-10-17T20:23:32.771104+00:00

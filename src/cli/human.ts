@@ -7,7 +7,7 @@ import {
 } from '../protocol.js'
 import { CONTROL_MARK, hasControls, visible } from '../endorse-command.js'
 import type { Report } from './command.js'
-import { ago, fail, withBroker } from './client.js'
+import { ago } from './client.js'
 
 export const isBehavior = (value: string): value is PermissionBehavior =>
   (PERMISSION_BEHAVIORS as readonly string[]).includes(value)
@@ -142,27 +142,4 @@ export function describeApprove(
 export function describeDismiss(msgId: string, res: Extract<ServerMessage, { t: 'answer_result' }>): Report {
   if (!res.ok) return { ok: false, lines: [], errors: [res.reason ?? 'refused'] }
   return { ok: true, lines: [`Dismissed ${msgId}.`] }
-}
-
-/**
- * `answer`/`dismiss`, called for `verb === 'answer'` only since S7a moved
- * `dismiss` onto a registry verb (`describeDismiss`); the `dismiss` branch here
- * stays reachable, unconverted, until slice 8 converts `answer` too.
- */
-export async function verdict(msgId: string, words: string[], verb: 'answer' | 'dismiss'): Promise<void> {
-  if (verb === 'answer' && words.length === 0) fail('usage: agent-chat answer <id> <text>')
-
-  const request =
-    verb === 'answer'
-      ? ({ t: 'answer', msgId, text: words.join(' ') } as const)
-      : ({ t: 'dismiss', msgId } as const)
-
-  const res = (await withBroker(b => b.request(request, 'answer_result'))) as Extract<
-    ServerMessage,
-    { t: 'answer_result' }
-  >
-  if (!res.ok) fail(res.reason ?? 'refused')
-  console.log(
-    verb === 'answer' ? `Answered ${msgId}.${res.reason ? ` ${res.reason}` : ''}` : `Dismissed ${msgId}.`,
-  )
 }

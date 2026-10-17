@@ -328,3 +328,18 @@ exit status, including blank strings, missing results, source validation and
 broker errors. A numeric broker error remains legacy exit1, not its numeric code.
 No live message or registration is performed by validation. Other S8 verbs and
 published dependency adoption/full verify remain open under TP-617.
+
+### S8 human answer candidate checkpoint
+
+The answer CLI now mounts a registry verb over the existing unregistered human
+broker request. The handwritten human.verdict function and its dead dismiss
+branch are deleted after verifying answer was its sole caller. Human display
+helpers remain. Plain string arguments, joined words, absent source option,
+nullish refusal fallback (including an empty reason), output and legacy exit1
+error behavior are retained.
+
+A 15-case fixture was captured against the original e690 action before conversion
+and reused unchanged afterward. It pins complete stdout/stderr, frames and process
+status through a fake broker; validation sends no live message or registration.
+Remaining S8 conversions, published dependency adoption and full verify still gate
+TP-617 completion.
