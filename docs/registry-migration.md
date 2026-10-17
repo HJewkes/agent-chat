@@ -388,3 +388,9 @@ Faithful real Console/Writable fixtures cover object/array and primitive errors;
 57 full CLI cases retain the original33 cases unchanged. The whole original45de
 source was overlaid for the baseline and every touched path restored exactly
 before testing the formatting correction.
+
+## Preserve natural success for the migrated one-shot commands
+
+The original answer, service logs and socket-up service status actions return naturally. Their registry mounts opt out of immediate successful exit, allowing pending stdout and callbacks to finish and preserving an inherited process.exitCode. Their errors/refusals still exit immediately; debug and hidden send retain their original explicit exits and all other registry mounts keep their existing default.
+
+A fake-only original/current process audit exposed successful truncation of an eight-MiB logs report. Regression tests now distinguish a natural return from explicit zero, cover the failure/default paths, and drain the actual built command helper through a real pipe with a late callback. No broker or service controller is invoked. This is source preparation under the reviewed registry candidate; published dependency adoption, full verification and the remaining imperative commands are still open.

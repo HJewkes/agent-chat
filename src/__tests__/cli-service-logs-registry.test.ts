@@ -153,3 +153,25 @@ describe('S8 original service logs ABI', () => {
     )
   })
 })
+
+describe('original successful logs process lifetime', () => {
+  it.each([
+    { name: 'readable', argv: ['service', 'logs'] },
+    { name: 'missing', argv: ['service', 'logs'], failure: new Error('synthetic missing') },
+    { name: 'unreadable', argv: ['service', 'logs'], failure: new Error('synthetic unreadable') },
+  ])('returns naturally for $name logs', async sample => {
+    await invoke(sample)
+    expect(process.exit).not.toHaveBeenCalled()
+  })
+  it('preserves an inherited exitCode while returning naturally', async () => {
+    const previous = process.exitCode
+    try {
+      process.exitCode = 23
+      await invoke({ name: 'inherited code', argv: ['service', 'logs'] })
+      expect(process.exit).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(23)
+    } finally {
+      process.exitCode = previous
+    }
+  })
+})

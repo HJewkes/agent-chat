@@ -203,3 +203,13 @@ describe('S8 original human send ABI', () => {
     )
   })
 })
+
+describe('original send process lifetime remains explicit', () => {
+  it.each([
+    ['debug', 'send', 'fixture-recipient', 'fixture text'],
+    ['send', 'fixture-recipient', 'fixture text'],
+  ])('still exits immediately with zero for %j', async (...argv) => {
+    await invoke({ name: 'send lifecycle', argv })
+    expect(process.exit).toHaveBeenCalledExactlyOnceWith(0)
+  })
+})

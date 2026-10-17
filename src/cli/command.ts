@@ -69,7 +69,14 @@ export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Re
 export function addVerb<Args>(
   parent: Commander,
   verb: Verb<Args>,
-  options: { helpGroup?: string; hidden?: boolean; usageExit?: number; schemaDefaults?: boolean } = {},
+  options: {
+    helpGroup?: string
+    hidden?: boolean
+    usageExit?: number
+    schemaDefaults?: boolean
+    /** Preserve a migrated command's natural success return and pending output. */
+    exitOnSuccess?: boolean
+  } = {},
 ): Commander {
   const sub = parent.command(
     commandPath(verb.name).at(-1) ?? verb.name,
@@ -91,7 +98,7 @@ export function addVerb<Args>(
   const usageExit = options.usageExit ?? EXIT.USAGE
   if (options.usageExit !== undefined)
     sub.exitOverride(err => process.exit(err.exitCode === 0 ? 0 : usageExit))
-  sub.action(() => runVerb(verb, sub.processedArgs, sub.opts(), usageExit))
+  sub.action(() => runVerb(verb, sub.processedArgs, sub.opts(), usageExit, options.exitOnSuccess ?? true))
   return sub
 }
 
@@ -100,6 +107,7 @@ async function runVerb<Args>(
   positionals: unknown[],
   opts: Record<string, unknown>,
   usageExit: number,
+  exitOnSuccess: boolean,
 ) {
   const ctx: VerbContext = { warnings: [], format: 'human', withBroker, terminal: stdinTerminal() }
   const args = cliArgs(verb, positionals, opts)
@@ -111,5 +119,6 @@ async function runVerb<Args>(
   const report = verb.result.parse(envelope.data)
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
+  if (report.ok && !exitOnSuccess) return
   process.exit(report.ok ? 0 : (report.exit ?? 1))
 }

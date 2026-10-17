@@ -233,3 +233,14 @@ describe('S8 original service status ABI', () => {
     )
   })
 })
+
+describe('original service status process lifetime', () => {
+  it('returns naturally when the socket is up', async () => {
+    await invoke({ name: 'socket up lifecycle', argv: ['service', 'status'] })
+    expect(process.exit).not.toHaveBeenCalled()
+  })
+  it('still exits immediately with one when the socket is down', async () => {
+    await invoke({ name: 'socket down lifecycle', argv: ['service', 'status'], socket: false })
+    expect(process.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+})

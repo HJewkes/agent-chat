@@ -206,3 +206,18 @@ describe('S8 original human answer ABI', () => {
     )
   })
 })
+
+describe('original answer process lifetime', () => {
+  it('returns naturally after a successful answer', async () => {
+    await invoke({ name: 'answer lifecycle', argv: ['answer', 'fixture-id', 'fixture text'] })
+    expect(process.exit).not.toHaveBeenCalled()
+  })
+  it('still exits immediately with one after a refusal', async () => {
+    await invoke({
+      name: 'answer refusal lifecycle',
+      argv: ['answer', 'fixture-id', 'fixture text'],
+      reply: { t: 'answer_result', ok: false, reason: 'synthetic refusal' },
+    })
+    expect(process.exit).toHaveBeenCalledExactlyOnceWith(1)
+  })
+})

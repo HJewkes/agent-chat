@@ -69,7 +69,7 @@ function addHumanCommands(program: Command): void {
   addVerb(program, inboxVerb, { helpGroup: HUMAN })
   addVerb(program, queueReadVerb, { helpGroup: HUMAN })
 
-  addVerb(program, answerVerb, { helpGroup: HUMAN })
+  addVerb(program, answerVerb, { helpGroup: HUMAN, exitOnSuccess: false })
 
   addVerb(program, dismissVerb, { helpGroup: HUMAN })
   addVerb(program, approveVerb, { helpGroup: HUMAN })
@@ -107,7 +107,7 @@ function addServiceCommands(program: Command): void {
     )
     .action(service.stop)
 
-  addVerb(svc, serviceStatusVerb)
+  addVerb(svc, serviceStatusVerb, { exitOnSuccess: false })
 
   svc
     .command('restart')
@@ -118,7 +118,7 @@ function addServiceCommands(program: Command): void {
     .option('--force', 'restart even if a mid-spawn agent would be lost')
     .action(service.restart)
 
-  addVerb(svc, serviceLogsVerb, { schemaDefaults: true })
+  addVerb(svc, serviceLogsVerb, { schemaDefaults: true, exitOnSuccess: false })
 
   svc
     .command('open')
