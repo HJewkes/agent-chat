@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   createWorktreeAllocator,
+  MissingAssignedWorktreeRecordError,
   pruneStaleWorktrees,
   reattachWorktree as platformReattach,
   recreateWorktree as platformRecreate,
@@ -310,7 +311,17 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
     },
 
     async allocate(ctx: IsolationContext): Promise<Allocation> {
-      const allocation = await allocator.allocate(ctx)
+      let allocation: WorktreeAllocation
+      try {
+        allocation = await allocator.allocate(ctx)
+      } catch (error) {
+        if (error instanceof MissingAssignedWorktreeRecordError)
+          throw new Error(
+            `assigned worktree ${error.worktreePath} does not exist, and agent-chat has no record of allocating it ` +
+              'to re-create it from. Not spawned',
+          )
+        throw error
+      }
       return decorateAllocation(allocation, opts, ctx.baseRef)
     },
 
@@ -325,7 +336,11 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
         allocation,
         opts,
       )
-      if (!result.released) recordRefusal(allocation, result.refusal ?? 'worktree release refused')
+      if (!result.released)
+        recordRefusal(
+          allocation,
+          result.refusalCode === 'unsaved-changes' ? 'uncommitted changes in the worktree' : result.refusal,
+        )
       return result.released
     },
   }
