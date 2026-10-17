@@ -248,3 +248,56 @@ implied.
 Rollback is to revert the merge commit and rebuild. There is no state, log or schema to migrate
 back. Sessions that started on the new build keep it until they restart, and that is harmless
 because the wire is unchanged.
+
+## TP-617 candidate adapter checkpoint (2026-10-17)
+
+Validation-only against reviewed registry b31fcb660dd5dc46a8023705d1c6f6c79446c965.
+No published dependency or lockfile cutover is included. This remains partial TP-617;
+published release, remaining CLI conversion and full verify are required.
+
+The MCP projection now delegates schema controls to commandToTool. Explicit output
+mode preserves the captured nested additionalProperties markers: input mode would
+change agent_spawn/chat_send experiment and chat_ask option schemas. A root-only
+identity override preserves the original open root; declared presentation uses an
+instance-keyed override, retaining the exact null-tolerant product validator and
+runtime caps. No new parser, serializer or authority is added.
+
+CLI variadic rendering and placeholder readback now use registry directly. flagSpec
+remains a temporary compatibility bridge for legacy embedded labels and required
+literal switches. Its deletion requires the metadata conversion below; literal true
+switches must keep bare-switch semantics. Remaining handwritten S8 verbs (answer,
+service start/stop/status/restart/logs/open, debug send, hidden send, watch, agent
+spawn, lifecycle backfill) and agent ls need separate original-behavior fixtures,
+thin registry definitions and eventual deletion of their redundant mounting logic.
+MCP and CLI identities/results stay distinct. No permanent fallback is complete.
+
+Exact embedded-label metadata follow-up inventory at pinned45de964:
+
+- src/cli/verbs/agent-budget.ts:28: spawner: { long: '--spawner <name>', description: 'only agents spawned by <name>' },
+- src/cli/verbs/agent-budget.ts:29: prefix: { long: '--prefix <p>', description: 'only agents whose name starts with <p>' },
+- src/cli/verbs/answers.ts:38: since: { long: '--since <msgId>', description: 'only rows after this msg_id: an ask, or a last next' },
+- src/cli/verbs/answers.ts:39: limit: { long: '--limit <n>', description: `at most this many rows (default ${DEFAULT_LIMIT})` },
+- src/cli/verbs/ask.ts:99: as: { long: '--as <label>', description: 'the label answers are read back under' },
+- src/cli/verbs/ask.ts:101: kind: { long: '--kind <kind>', description: `one of ${QUEUE_ITEM_KINDS.join(', ')}` },
+- src/cli/verbs/ask.ts:102: task: { long: '--task <id>', description: 'the task or gate the question is about' },
+- src/cli/verbs/ask.ts:103: header: { long: '--header <text>', description: 'a one-line title for the queue, at most 80 chars' },
+- src/cli/verbs/ask.ts:109: recommended: { long: '--recommended <option>', description: 'the option you recommend' },
+- src/cli/verbs/ask.ts:110: default: { long: '--default <option>', description: 'the option taken if nobody answers' },
+- src/cli/verbs/ask.ts:111: door: { long: '--door <door>', description: `${ASK_DOORS.join(' or ')}; absent is treated as one-way` },
+- src/cli/verbs/ask.ts:112: category: { long: '--category <name>', description: 'decision category, e.g. tech_design' },
+- src/cli/verbs/ask.ts:113: initiative: { long: '--initiative <slug>', description: 'the initiative the question belongs to' },
+- src/cli/verbs/ask.ts:115: long: '--blocking <mode>',
+- src/cli/verbs/ask.ts:118: reversible: { long: '--reversible <text>', description: 'one line on how to undo the answer' },
+- src/cli/verbs/ask.ts:119: onNoAnswer: { long: '--on-no-answer <text>', description: 'what happens if nobody answers' },
+- src/cli/verbs/burndown-classify.ts:255: long: '--ask <label>',
+- src/cli/verbs/burndown-config.ts:287: const byOption = { long: '--by <who>', description: 'who is making the change; recorded in the settings log' }
+- src/cli/verbs/burndown-config.ts:334: for: { long: '--for <duration>', description: 'how long the patch holds: 30m, 2h or 1d' },
+- src/cli/verbs/burndown-config.ts:336: reason: { long: '--reason <text>', description: 'why, kept with the override' },
+- src/cli/verbs/burndown.ts:510: long: '--apply <approved.json>',
+- src/cli/verbs/burndown.ts:724: long: '--off-plan-ok <reason>',
+- src/cli/verbs/gh-calls.ts:22: top: { long: '--top <n>', description: `how many callers and routes to list (default ${DEFAULT_TOP})` },
+- src/cli/verbs/host.ts:28: long: '--host <name>',
+- src/cli/verbs/port-send.ts:64: as: { long: '--as <sender>', description: `the sender label; only ${BURNDOWN_SENDER}` },
+- src/cli/verbs/port-send.ts:69: task: { long: '--task <id>', description: 'the task a notice is about (with --notify)' },
+- src/cli/verbs/teleport-request.ts:50: long: '--surface <surface>',
+- src/cli/verbs/teleport-request.ts:54: long: '--to <machine>',

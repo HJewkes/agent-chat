@@ -58,7 +58,7 @@ function answering(reply: SpawnResultFields | Error) {
   return { ctx, sent }
 }
 
-async function report<A>(verb: Verb<A>, args: A, ctx: VerbContext): Promise<Report> {
+async function report<A>(verb: Verb<A>, args: NoInfer<A>, ctx: VerbContext): Promise<Report> {
   const { envelope } = await invokeCommand(verb, args, ctx)
   expect(envelope.ok).toBe(true)
   return (envelope as { data: Report }).data

@@ -58,33 +58,21 @@ export type Verb<Args> = Command<Args, Report, VerbContext>
 export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(verb)
 
 /** The registry appends `<value>` to every non-boolean flag; a flag that already names its argument keeps its own. */
-const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof optionFlagSpec>[2]): string =>
+const flagSpec = <Args>(
+  verb: Verb<Args>,
+  key: string,
+  option: Parameters<typeof optionFlagSpec>[2],
+): string =>
   option.long.includes('<') || isTrueSwitch(verb, key)
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
 
 /** A required `z.literal(true)` flag is a bare switch: commander yields `true` when it is present. */
-const isTrueSwitch = (verb: Verb<unknown>, key: string): boolean =>
+const isTrueSwitch = <Args>(verb: Verb<Args>, key: string): boolean =>
   schemaKind(fieldSchema(verb.args, key)) === 'literal'
 
-/** An array-typed positional takes every remaining word: `[name...]`. */
-function variadicAware<Args>(verb: Verb<Args>, name: string): string {
-  const spec = positionalSpec(verb, name)
-  return schemaKind(fieldSchema(verb.args, name)) === 'array' ? spec.replace(/([\]>])$/, '...$1') : spec
-}
-
-/** The registry's `flagToKey` keeps a `<value>` placeholder in the key, so its read of the option misses; strip it here until the package does. */
-const stripPlaceholder = (long: string): string => long.replace(/\s+[<[].*$/, '')
-
-/** Args for `verb` from commander's parse, reading options whose declared flag names their argument. */
 export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
-  const options = Object.fromEntries(
-    Object.entries(verb.cli?.options ?? {}).map(([key, option]) => [
-      key,
-      { ...option, long: stripPlaceholder(option.long) },
-    ]),
-  )
-  return collectCliArgs({ ...verb, cli: { ...verb.cli, options } }, positionals, opts)
+  return collectCliArgs(verb, positionals, opts)
 }
 
 /**
@@ -104,7 +92,7 @@ export function addVerb<Args>(
   )
   if (!options.hidden) sub.description(verb.description)
   if (options.helpGroup !== undefined) sub.helpGroup(options.helpGroup)
-  for (const name of verb.cli?.positional ?? []) sub.argument(variadicAware(verb, name))
+  for (const name of verb.cli?.positional ?? []) sub.argument(positionalSpec(verb, name))
   for (const [key, option] of Object.entries(verb.cli?.options ?? {})) {
     const parser = collectOptionParser(verb, key)
     const spec = flagSpec(verb, key, option)

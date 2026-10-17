@@ -42,11 +42,27 @@ export const text = (value: string) => ({ content: [{ type: 'text' as const, tex
 /** Names are used verbatim: `chat_send` is already the tool name, with no namespace to add. */
 const NAMING = { prefix: '' }
 
+// Compatibility presentation only: validation and authority remain product decisions.
+const declaredSchemas = new WeakSet<object>()
+
 export function toolDefinition<Args>(tool: Tool<Args>): McpToolDescriptor {
-  const { name, description, inputSchema } = commandToTool(tool, NAMING)
-  // G1 (TP-171): registry closes the root object; delete this strip when commandToTool takes io: 'input'.
-  const { additionalProperties, ...open } = inputSchema
-  return { name, description, inputSchema: additionalProperties === false ? open : inputSchema }
+  const rootSchema: object = tool.args
+  return commandToTool(tool, NAMING, {
+    // Legacy nested object schemas remain output-shaped; only the stripping root is open.
+    io: 'output',
+    override: ctx => {
+      if (ctx.zodSchema === rootSchema && ctx.jsonSchema.additionalProperties === false)
+        delete ctx.jsonSchema.additionalProperties
+      if (declaredSchemas.has(ctx.zodSchema)) {
+        // Captured tools/list bytes place the description after the declared shape.
+        const description = ctx.jsonSchema.description
+        delete ctx.jsonSchema.description
+        ctx.jsonSchema.type = 'object'
+        ctx.jsonSchema.additionalProperties = { type: 'string' }
+        if (description !== undefined) ctx.jsonSchema.description = description
+      }
+    },
+  })
 }
 
 /** Same contract as ToolHandler.handle: the reply as text content, or a throw the server renders as `Error:`. */
@@ -63,9 +79,8 @@ const isLabelBag = (value: unknown): value is Record<string, unknown> =>
  * `declared` for chat_register and chat_status: an open bag of short string labels a session asserts
  * about itself, which every peer's chat_list renders. Shape errors reject in the schema.
  */
-export const declaredField = (description: string) =>
-  // G2 (TP-171): z.record publishes propertyNames; delete this adapter when registry emits the bag as written.
-  z
+export const declaredField = (description: string) => {
+  const field = z
     .unknown()
     .superRefine((value, ctx) => {
       if (value === null) return
@@ -83,9 +98,11 @@ export const declaredField = (description: string) =>
           message: `declared.${nested} must be a string — declared carries labels, not nested structure`,
         })
     })
-    .meta({ type: 'object', additionalProperties: { type: 'string' } })
     .describe(description)
     .optional()
+  declaredSchemas.add(field)
+  return field
+}
 
 /**
  * The labels, with the size caps applied. REJECTS rather than trims: a model that gets an error learns
