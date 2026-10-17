@@ -13,3 +13,9 @@ The original two wording assertions both fail before these mappings and both pas
 Product reviewer/implementer roles and dynamic budgets, branch metadata, setup exactly once, advisory check, strict park fetch, park and sweep mechanisms remain explicit acceptance residuals. Preserve all ignored/unreadable/nonforced safety and original exact-tip/moved-head refusals. The legacy stale-classification forced reclaim must not become a completion shortcut. No main/live dist build, broker restart, settings/claim/account mutation, merge, release or task closure is implied.
 
 Evidence: live basement active-work titan-platform sources/codex-seat-tp640-typed-consumer-2026-10-17.md and sources/codex-seat-tp640-acceptance-reconciliation-2026-10-17.md.
+
+## Strict-fetch consumer checkpoint
+
+The product now imports strict `fetchDefaultTip` directly in park and reexports the shared helper, `BranchBase` type and fetch timeout constant from its compatibility module. Three duplicate fetch helpers and the local base interface are deleted. Park ancestry, refusal, provider proof, metadata, setup and sweep logic are unchanged. Allocation retains its existing separate HEAD-fallback resolver behavior.
+
+This is validation-only source preparation against the reviewed composite plus tree-equivalent public strict-fetch prerequisite 0a2630033c970bff0ca87238f4e7bb6598fa62ee (original reviewed d1dd preserved). Composite c2aab196ccea002bd224c2d6cd41a973efb47d08, tree 3ad6b1734d2b5139dcf47fa8bd42d12766fac5cc; tar SHA256 f763fd01be7eb21cbe14f55252ac72bdd3433d1b8c2b4202b7ab07cd14c6fde9. The unreleased tar retains fixture version 0.1.5 and must never be published. Manifest, lockfile and original test assertions remain unchanged. Published consumption, full verification and remaining setup/git/park/sweep deletion are still required.
