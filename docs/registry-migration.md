@@ -373,3 +373,8 @@ port precedence, full output and help, stale PID and rounding, parser failures
 and partial error output. No live socket/HTTP/process/filesystem/broker or service
 operation is used. Original help and other fixtures remain unchanged. Other S8
 units, published dependency adoption and full verification still gate TP-617.
+
+Status non-Error rejections use Node console formatting so structured rejection
+fields remain visible. Two object-rejection cases captured against the original
+action extend the unchanged24-case fixture; actual Console/Writable capture
+checks prevent string-joining mocks from hiding this output difference.

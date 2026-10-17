@@ -1,3 +1,6 @@
+import { Console } from 'node:console'
+import { Writable } from 'node:stream'
+import { format } from 'node:util'
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -74,10 +77,10 @@ const output: string[] = []
 beforeEach(() => {
   vi.spyOn(process, 'kill').mockImplementation(forbidden)
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-    output.push('stdout: ' + args.join(' '))
+    output.push('stdout: ' + format(...args))
   })
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-    output.push('stderr: ' + args.join(' '))
+    output.push('stderr: ' + format(...args))
   })
   vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => {
     throw new Exit(Number(code ?? 0))
@@ -149,6 +152,18 @@ const cases: Case[] = [
     failure: Object.assign(new Error('synthetic liveness failed'), { code: 69 }),
   },
   { name: 'help', argv: ['service', 'status', '--help'] },
+  {
+    name: 'plain object probe rejection preserves console formatting',
+    argv: ['service', 'status'],
+    failureAt: 'probeSocket',
+    failure: { code: 69, message: 'synthetic failure' },
+  },
+  {
+    name: 'plain object liveness rejection preserves partial output',
+    argv: ['service', 'status'],
+    failureAt: 'isProcessAlive',
+    failure: { code: 69, message: 'synthetic failure' },
+  },
 ]
 
 async function invoke(sample: Case) {
@@ -195,6 +210,21 @@ async function invoke(sample: Case) {
 }
 
 describe('S8 original service status ABI', () => {
+  it('captures plain object errors exactly as an actual Console and Writable', () => {
+    const chunks: string[] = []
+    const sink = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(String(chunk))
+        callback()
+      },
+    })
+    const actual = new Console({ stdout: sink, stderr: sink, colorMode: false })
+    const rejection = { code: 69, message: 'synthetic failure' }
+    actual.error(rejection)
+    expect(chunks.join('')).toBe(format(rejection) + '\n')
+    expect(chunks.join('')).toBe("{ code: 69, message: 'synthetic failure' }\n")
+  })
+
   it('preserves original frames, output, failures and service status argv without invoking a broker', async () => {
     const results = []
     for (const sample of cases) results.push(await invoke(sample))

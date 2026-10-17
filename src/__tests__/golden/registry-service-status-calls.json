@@ -627,5 +627,52 @@
       "stdout: Usage: agent-chat service status [options]\n\nsocket, pid file and /health, reported separately\n\nOptions:\n  -p, --port <port>  port to probe for /health\n  -h, --help         display help for command\n"
     ],
     "exit": 0
+  },
+  {
+    "name": "plain object probe rejection preserves console formatting",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      }
+    ],
+    "output": [
+      "stderr: { code: 69, message: 'synthetic failure' }"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "plain object liveness rejection preserves partial output",
+    "argv": [
+      "service",
+      "status"
+    ],
+    "calls": [
+      {
+        "name": "probeSocket"
+      },
+      {
+        "name": "readMeta"
+      },
+      {
+        "name": "probeHealth",
+        "arg": 7600
+      },
+      {
+        "name": "readPidFile"
+      },
+      {
+        "name": "isProcessAlive",
+        "arg": 123
+      }
+    ],
+    "output": [
+      "stdout: socket   up  /tmp/synthetic-service-status/chat.sock",
+      "stderr: { code: 69, message: 'synthetic failure' }"
+    ],
+    "exit": 1
   }
 ]

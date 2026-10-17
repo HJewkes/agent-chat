@@ -1,3 +1,4 @@
+import { format } from 'node:util'
 import { z } from 'zod'
 import type { HealthPayload } from '../../api-contract.js'
 import { probeHealth } from '../../broker/doctor.js'
@@ -58,7 +59,7 @@ export const serviceStatusVerb = defineVerb({
       return { ok: s.socket, lines }
     } catch (error) {
       // Keep already-rendered stdout and the entrypoint's legacy exit1 for all errors.
-      return { ok: false, lines, errors: [error instanceof Error ? error.message : String(error)] }
+      return { ok: false, lines, errors: [error instanceof Error ? error.message : format(error)] }
     }
   },
 })
