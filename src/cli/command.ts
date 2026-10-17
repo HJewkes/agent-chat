@@ -72,6 +72,8 @@ export function addVerb<Args>(
   options: {
     helpGroup?: string
     hidden?: boolean
+    /** Mount the same definition as Commander's default child. */
+    isDefault?: boolean
     usageExit?: number
     schemaDefaults?: boolean
     /** Preserve a migrated command's natural success return and pending output. */
@@ -80,7 +82,12 @@ export function addVerb<Args>(
 ): Commander {
   const sub = parent.command(
     commandPath(verb.name).at(-1) ?? verb.name,
-    options.hidden ? { hidden: true } : undefined,
+    options.hidden || options.isDefault === true
+      ? {
+          ...(options.hidden ? { hidden: true } : {}),
+          ...(options.isDefault === true ? { isDefault: true } : {}),
+        }
+      : undefined,
   )
   if (!options.hidden) sub.description(verb.description)
   if (options.helpGroup !== undefined) sub.helpGroup(options.helpGroup)

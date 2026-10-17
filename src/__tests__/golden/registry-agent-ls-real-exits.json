@@ -1,0 +1,196 @@
+[
+  {
+    "name": "bare empty",
+    "stdout": "No agents. Spawn one with: agent-chat agent spawn <name> <profile> \"<brief>\"\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "late"
+    ]
+  },
+  {
+    "name": "explicit empty JSON",
+    "stdout": "[]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index"
+    ]
+  },
+  {
+    "name": "actual early format refusal",
+    "stdout": "",
+    "stderr": "--format must be: line\n",
+    "code": 1,
+    "events": []
+  },
+  {
+    "name": "actual early state refusal",
+    "stdout": "",
+    "stderr": "--state sleeping is not a roster state; use: starting, running, blocked, stalled?, reconnecting, detached, finished, failed, retired\n",
+    "code": 1,
+    "events": []
+  },
+  {
+    "name": "actual mine caller refusal",
+    "stdout": "",
+    "stderr": "--mine needs AGENT_CHAT_NAME, which only spawned agents have, and this shell has none. Use --spawner <your registered name> instead.\n",
+    "code": 1,
+    "events": []
+  },
+  {
+    "name": "explicit spawner overrides mine",
+    "stdout": "worker running implementer id-one /synthetic/worker\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index"
+    ]
+  },
+  {
+    "name": "populated line skips readings",
+    "stdout": "worker running implementer id-one /synthetic/worker\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index"
+    ]
+  },
+  {
+    "name": "JSON plus line keeps JSON but skips readings",
+    "stdout": "[\n  {\n    \"name\": \"worker\",\n    \"agentId\": \"id-one\",\n    \"state\": \"live\",\n    \"presence\": \"live\",\n    \"status\": \"running\",\n    \"profile\": \"implementer\",\n    \"surface\": \"headless\",\n    \"model\": \"synthetic-model\",\n    \"cwd\": \"/synthetic/worker\",\n    \"sessionId\": \"synthetic-session\",\n    \"transcriptPath\": \"/synthetic/transcript\",\n    \"transcriptExists\": false,\n    \"spawnedBy\": \"boss\",\n    \"account\": null,\n    \"generation\": 1,\n    \"teleportFrom\": null,\n    \"inferred\": false,\n    \"spawnedAt\": \"1970-01-01T00:00:00.001Z\",\n    \"contextK\": null,\n    \"retireK\": null,\n    \"retireDue\": null\n  }\n]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "transcript",
+      "model"
+    ]
+  },
+  {
+    "name": "default populated text",
+    "stdout": "worker           running       implementer  id-one\n                 /synthetic/worker\n                 transcript: synthetic\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "budget",
+      "threshold",
+      "transcriptLine"
+    ]
+  },
+  {
+    "name": "past threshold optional second scope",
+    "stdout": "[\n  {\n    \"name\": \"worker\",\n    \"agentId\": \"id-one\",\n    \"state\": \"live\",\n    \"presence\": \"live\",\n    \"status\": \"running\",\n    \"profile\": \"implementer\",\n    \"surface\": \"headless\",\n    \"model\": \"synthetic-model\",\n    \"cwd\": \"/synthetic/worker\",\n    \"sessionId\": \"synthetic-session\",\n    \"transcriptPath\": \"/synthetic/transcript\",\n    \"transcriptExists\": false,\n    \"spawnedBy\": \"boss\",\n    \"account\": null,\n    \"generation\": 1,\n    \"teleportFrom\": null,\n    \"inferred\": false,\n    \"spawnedAt\": \"1970-01-01T00:00:00.001Z\",\n    \"contextK\": 120,\n    \"retireK\": 80,\n    \"retireDue\": true\n  }\n]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "budget",
+      "threshold",
+      "open",
+      "reported",
+      "close",
+      "transcript",
+      "model"
+    ]
+  },
+  {
+    "name": "reported error degrades",
+    "stdout": "[\n  {\n    \"name\": \"worker\",\n    \"agentId\": \"id-one\",\n    \"state\": \"live\",\n    \"presence\": \"live\",\n    \"status\": \"running\",\n    \"profile\": \"implementer\",\n    \"surface\": \"headless\",\n    \"model\": \"synthetic-model\",\n    \"cwd\": \"/synthetic/worker\",\n    \"sessionId\": \"synthetic-session\",\n    \"transcriptPath\": \"/synthetic/transcript\",\n    \"transcriptExists\": false,\n    \"spawnedBy\": \"boss\",\n    \"account\": null,\n    \"generation\": 1,\n    \"teleportFrom\": null,\n    \"inferred\": false,\n    \"spawnedAt\": \"1970-01-01T00:00:00.001Z\",\n    \"contextK\": 120,\n    \"retireK\": 80,\n    \"retireDue\": false\n  }\n]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "budget",
+      "threshold",
+      "open",
+      "reported",
+      "close",
+      "transcript",
+      "model"
+    ]
+  },
+  {
+    "name": "budget error degrades",
+    "stdout": "[\n  {\n    \"name\": \"worker\",\n    \"agentId\": \"id-one\",\n    \"state\": \"live\",\n    \"presence\": \"live\",\n    \"status\": \"running\",\n    \"profile\": \"implementer\",\n    \"surface\": \"headless\",\n    \"model\": \"synthetic-model\",\n    \"cwd\": \"/synthetic/worker\",\n    \"sessionId\": \"synthetic-session\",\n    \"transcriptPath\": \"/synthetic/transcript\",\n    \"transcriptExists\": false,\n    \"spawnedBy\": \"boss\",\n    \"account\": null,\n    \"generation\": 1,\n    \"teleportFrom\": null,\n    \"inferred\": false,\n    \"spawnedAt\": \"1970-01-01T00:00:00.001Z\",\n    \"contextK\": null,\n    \"retireK\": 80,\n    \"retireDue\": null\n  }\n]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "budget",
+      "threshold",
+      "transcript",
+      "model"
+    ]
+  },
+  {
+    "name": "model error degrades",
+    "stdout": "[\n  {\n    \"name\": \"worker\",\n    \"agentId\": \"id-one\",\n    \"state\": \"live\",\n    \"presence\": \"live\",\n    \"status\": \"running\",\n    \"profile\": \"implementer\",\n    \"surface\": \"headless\",\n    \"model\": null,\n    \"cwd\": \"/synthetic/worker\",\n    \"sessionId\": \"synthetic-session\",\n    \"transcriptPath\": \"/synthetic/transcript\",\n    \"transcriptExists\": false,\n    \"spawnedBy\": \"boss\",\n    \"account\": null,\n    \"generation\": 1,\n    \"teleportFrom\": null,\n    \"inferred\": false,\n    \"spawnedAt\": \"1970-01-01T00:00:00.001Z\",\n    \"contextK\": null,\n    \"retireK\": null,\n    \"retireDue\": null\n  }\n]\n",
+    "stderr": "",
+    "code": 0,
+    "events": [
+      "open",
+      "agents",
+      "list",
+      "close",
+      "index",
+      "transcript",
+      "model"
+    ]
+  },
+  {
+    "name": "broker69 remains one",
+    "stdout": "",
+    "stderr": "synthetic unavailable\n",
+    "code": 1,
+    "events": [
+      "open",
+      "close"
+    ]
+  },
+  {
+    "name": "unknown actual preflight",
+    "stdout": "",
+    "stderr": "error: unknown command 'unknown'\n\nUsage: agent-chat [options] [command]\n\ncross-session messaging for Claude Code\n\nOptions:\n  -V, --version              output the version number\n  -h, --help                 display help for command\n\nHuman commands:\n  inbox [options]            what your agents need from you\n  queue [options]            read the human queue; read-only, it cannot answer,\n                             approve or endorse\n  answer <id> <text...>      answer a question; routes back to the asker\n  dismiss <id>               close an item without answering, or decline an\n                             endorsement\n  approve <id> <allow|deny>  answer an agent's permission prompt from here\n  endorse [options] <id>     approve a composed message; delivers it with your\n                             authority\n  digest [options]           morning digest: asks, decisions, done, stalled,\n                             spend and next picks\n\nCommands:\n  service                    run and inspect the broker daemon\n  mirror                     project the human queue into a Matrix room and fold\n                             phone verdicts back\n  burndown                   pick and run unattended work for opted-in\n                             initiatives\n  seats                      autonomy seats: the idle watchdog\n  port                       JSON envelope ports for the dispatch factory; none\n                             of them starts a broker\n  machine                    operator HOLDs, owner stops and the machine stop\n  host                       host launchers: machines a teleport can land a\n                             successor on\n  debug                      diagnostics: sessions, history, routing\n  doctor                     check the things that fail silently\n  lifecycle                  offline maintenance of the agent lifecycle ledger\n  help [command]             display help for command\n\nAgent commands:\n  watch [options] <name>     stream messages for a session that cannot receive\n                             channel pushes\n  agent                      durable agents\n  teleport                   teleport control\n  handoff                    stored teleport handoffs\n  profiles [name]            agent profiles available to spawn with\n  gh-calls [options]         read the GitHub call log: top callers and routes,\n                             and 403s split by limit\n  counts [options]           every count derived from live state, beside what\n                             each surface shows, with a verdict per difference\n  gh-write <gh-args...>      one gh write after --, spaced machine-wide and\n                             retried on the secondary rate limit\n  suite-slot <command...>    run a full test suite after --, holding one of the\n                             machine-wide full-suite slots\n  leak-scan [options]        scan added lines for private data; exit 0 clean, 1\n                             findings, 2 cannot pass\n  pr-ready [options]         before gh pr create: clean tree, rebase, checks,\n                             changeset, leak scan; exit 0 only when all pass\n\nService commands:\n  ask [options] [text...]    put a question to the human under a service label\n                             and print its msg_id\n  answers [options] <name>   read answers and dismissals to a service label's\n                             asks\n\nBroker socket: /synthetic/agent-ls-fixture/chat.sock\nState lives in ~/.agent-chat (override with AGENT_CHAT_HOME).\n",
+    "code": 1,
+    "events": []
+  }
+]

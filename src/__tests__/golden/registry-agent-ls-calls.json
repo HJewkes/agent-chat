@@ -1,0 +1,448 @@
+[
+  {
+    "name": "bare default",
+    "argv": [
+      "agent"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "explicit listing",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "bare default actual run",
+    "argv": [
+      "agent"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "bare JSON",
+    "argv": [
+      "agent",
+      "--json"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "json": true
+      }
+    ]
+  },
+  {
+    "name": "explicit JSON",
+    "argv": [
+      "agent",
+      "ls",
+      "--json"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "json": true
+      }
+    ]
+  },
+  {
+    "name": "bare line format",
+    "argv": [
+      "agent",
+      "--format",
+      "line"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "format": "line"
+      }
+    ]
+  },
+  {
+    "name": "JSON and line flags",
+    "argv": [
+      "agent",
+      "ls",
+      "--json",
+      "--format",
+      "line"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "format": "line",
+        "json": true
+      }
+    ]
+  },
+  {
+    "name": "all filters",
+    "argv": [
+      "agent",
+      "ls",
+      "--mine",
+      "--spawner",
+      "boss",
+      "--prefix",
+      "work-",
+      "--name",
+      "worker",
+      "--state",
+      "running",
+      "--format",
+      "line"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "format": "line",
+        "mine": true,
+        "name": "worker",
+        "prefix": "work-",
+        "spawner": "boss",
+        "state": [
+          "running"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "repeat union duplicates",
+    "argv": [
+      "agent",
+      "ls",
+      "--state",
+      "finished",
+      "--state",
+      "retired",
+      "--state",
+      "finished"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "state": [
+          "finished",
+          "retired",
+          "finished"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "raw invalid state forwarded",
+    "argv": [
+      "agent",
+      "ls",
+      "--state",
+      "sleeping"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "state": [
+          "sleeping"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "empty strings forwarded",
+    "argv": [
+      "agent",
+      "ls",
+      "--spawner",
+      "",
+      "--prefix",
+      "",
+      "--name",
+      "",
+      "--format",
+      "",
+      "--state",
+      ""
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "format": "",
+        "name": "",
+        "prefix": "",
+        "spawner": "",
+        "state": [
+          ""
+        ]
+      }
+    ]
+  },
+  {
+    "name": "whitespace strings forwarded",
+    "argv": [
+      "agent",
+      "ls",
+      "--spawner",
+      "  ",
+      "--prefix",
+      "  ",
+      "--name",
+      "  ",
+      "--format",
+      "  ",
+      "--state",
+      "  "
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "format": "  ",
+        "name": "  ",
+        "prefix": "  ",
+        "spawner": "  ",
+        "state": [
+          "  "
+        ]
+      }
+    ]
+  },
+  {
+    "name": "repeat last strings",
+    "argv": [
+      "agent",
+      "ls",
+      "--name",
+      "old",
+      "--name",
+      "new"
+    ],
+    "stdout": "synthetic listing\nsecond synthetic line\n",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {
+        "name": "new"
+      }
+    ]
+  },
+  {
+    "name": "unknown actual preflight",
+    "argv": [
+      "agent",
+      "unknown",
+      "--help"
+    ],
+    "stdout": "",
+    "stderr": "error: unknown command 'unknown'\n\nUsage: agent-chat [options] [command]\n\ncross-session messaging for Claude Code\n\nOptions:\n  -V, --version              output the version number\n  -h, --help                 display help for command\n\nHuman commands:\n  inbox [options]            what your agents need from you\n  queue [options]            read the human queue; read-only, it cannot answer,\n                             approve or endorse\n  answer <id> <text...>      answer a question; routes back to the asker\n  dismiss <id>               close an item without answering, or decline an\n                             endorsement\n  approve <id> <allow|deny>  answer an agent's permission prompt from here\n  endorse [options] <id>     approve a composed message; delivers it with your\n                             authority\n  digest [options]           morning digest: asks, decisions, done, stalled,\n                             spend and next picks\n\nCommands:\n  service                    run and inspect the broker daemon\n  mirror                     project the human queue into a Matrix room and fold\n                             phone verdicts back\n  burndown                   pick and run unattended work for opted-in\n                             initiatives\n  seats                      autonomy seats: the idle watchdog\n  port                       JSON envelope ports for the dispatch factory; none\n                             of them starts a broker\n  machine                    operator HOLDs, owner stops and the machine stop\n  host                       host launchers: machines a teleport can land a\n                             successor on\n  debug                      diagnostics: sessions, history, routing\n  doctor                     check the things that fail silently\n  lifecycle                  offline maintenance of the agent lifecycle ledger\n  help [command]             display help for command\n\nAgent commands:\n  watch [options] <name>     stream messages for a session that cannot receive\n                             channel pushes\n  agent                      durable agents\n  teleport                   teleport control\n  handoff                    stored teleport handoffs\n  profiles [name]            agent profiles available to spawn with\n  gh-calls [options]         read the GitHub call log: top callers and routes,\n                             and 403s split by limit\n  counts [options]           every count derived from live state, beside what\n                             each surface shows, with a verdict per difference\n  gh-write <gh-args...>      one gh write after --, spaced machine-wide and\n                             retried on the secondary rate limit\n  suite-slot <command...>    run a full test suite after --, holding one of the\n                             machine-wide full-suite slots\n  leak-scan [options]        scan added lines for private data; exit 0 clean, 1\n                             findings, 2 cannot pass\n  pr-ready [options]         before gh pr create: clean tree, rebase, checks,\n                             changeset, leak scan; exit 0 only when all pass\n\nService commands:\n  ask [options] [text...]    put a question to the human under a service label\n                             and print its msg_id\n  answers [options] <name>   read answers and dismissals to a service label's\n                             asks\n\nBroker socket: /tmp/synthetic-agent-list/chat.sock\nState lives in ~/.agent-chat (override with AGENT_CHAT_HOME).\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "extra actual positional",
+    "argv": [
+      "agent",
+      "ls",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "error: too many arguments for 'ls'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat agent ls [options]\n\nagents, with lifecycle and presence\n\nOptions:\n  --json             print one JSON array, one object per agent\n  --mine             only agents you spawned (needs a registered session name)\n  --spawner <name>   only agents spawned by <name>\n  --prefix <p>       only agents whose name starts with <p>\n  --state <state>    only agents showing this status, e.g. running, finished,\n                     retired (repeatable)\n  --name <name>      only the agent with exactly this name\n  --format <format>  line: one line per agent (name state profile id cwd)\n  -h, --help         display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "agent",
+      "ls",
+      "--unexpected"
+    ],
+    "stdout": "",
+    "stderr": "error: unknown option '--unexpected'\n\nUsage: agent-chat agent ls [options]\n\nagents, with lifecycle and presence\n\nOptions:\n  --json             print one JSON array, one object per agent\n  --mine             only agents you spawned (needs a registered session name)\n  --spawner <name>   only agents spawned by <name>\n  --prefix <p>       only agents whose name starts with <p>\n  --state <state>    only agents showing this status, e.g. running, finished,\n                     retired (repeatable)\n  --name <name>      only the agent with exactly this name\n  --format <format>  line: one line per agent (name state profile id cwd)\n  -h, --help         display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "missing spawner value",
+    "argv": [
+      "agent",
+      "ls",
+      "--spawner"
+    ],
+    "stdout": "",
+    "stderr": "error: option '--spawner <name>' argument missing\n\nUsage: agent-chat agent ls [options]\n\nagents, with lifecycle and presence\n\nOptions:\n  --json             print one JSON array, one object per agent\n  --mine             only agents you spawned (needs a registered session name)\n  --spawner <name>   only agents spawned by <name>\n  --prefix <p>       only agents whose name starts with <p>\n  --state <state>    only agents showing this status, e.g. running, finished,\n                     retired (repeatable)\n  --name <name>      only the agent with exactly this name\n  --format <format>  line: one line per agent (name state profile id cwd)\n  -h, --help         display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "missing state value",
+    "argv": [
+      "agent",
+      "ls",
+      "--state"
+    ],
+    "stdout": "",
+    "stderr": "error: option '--state <state>' argument missing\n\nUsage: agent-chat agent ls [options]\n\nagents, with lifecycle and presence\n\nOptions:\n  --json             print one JSON array, one object per agent\n  --mine             only agents you spawned (needs a registered session name)\n  --spawner <name>   only agents spawned by <name>\n  --prefix <p>       only agents whose name starts with <p>\n  --state <state>    only agents showing this status, e.g. running, finished,\n                     retired (repeatable)\n  --name <name>      only the agent with exactly this name\n  --format <format>  line: one line per agent (name state profile id cwd)\n  -h, --help         display help for command\n",
+    "exits": [
+      1
+    ],
+    "calls": []
+  },
+  {
+    "name": "group help",
+    "argv": [
+      "agent",
+      "--help"
+    ],
+    "stdout": "Usage: agent-chat agent [options] [command]\n\ndurable agents\n\nOptions:\n  -h, --help                                   display help for command\n\nCommands:\n  ls [options]                                 agents, with lifecycle and presence\n  spawn [options] <name> <profile> [brief...]  start a new agent\n  retire [options] [name...]                   release isolation, end the process, and free the name\n  park <name>                                  remove an exited agent's clean, pushed worktree and\n                                               keep its branch\n  resume [options] <name>                      bring a stopped agent back on its own conversation\n                                               (headless by default)\n  worktrees [options]                          worktrees agent-chat is holding, and which nobody is\n                                               using\n  surface <name>                               bring a headless agent into a window you can answer\n  budget [options] [name]                      context fill and account rate limits, per agent\n  help [command]                               display help for command\n",
+    "stderr": "",
+    "exits": [
+      0
+    ],
+    "calls": []
+  },
+  {
+    "name": "list help",
+    "argv": [
+      "agent",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage: agent-chat agent ls [options]\n\nagents, with lifecycle and presence\n\nOptions:\n  --json             print one JSON array, one object per agent\n  --mine             only agents you spawned (needs a registered session name)\n  --spawner <name>   only agents spawned by <name>\n  --prefix <p>       only agents whose name starts with <p>\n  --state <state>    only agents showing this status, e.g. running, finished, retired (repeatable)\n  --name <name>      only the agent with exactly this name\n  --format <format>  line: one line per agent (name state profile id cwd)\n  -h, --help         display help for command\n",
+    "stderr": "",
+    "exits": [
+      0
+    ],
+    "calls": []
+  },
+  {
+    "name": "empty effect output",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "",
+    "exits": [],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "Error rejection",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "synthetic rejected\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "code69 Error remains1",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "synthetic unavailable\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "object rejection",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "{ code: 69, message: 'synthetic object' }\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "array rejection",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "[ 'synthetic array', 69 ]\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {}
+    ]
+  },
+  {
+    "name": "primitive rejection",
+    "argv": [
+      "agent",
+      "ls"
+    ],
+    "stdout": "",
+    "stderr": "69\n",
+    "exits": [
+      1
+    ],
+    "calls": [
+      {}
+    ]
+  }
+]

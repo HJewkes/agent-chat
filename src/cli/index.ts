@@ -11,6 +11,7 @@ import { SURFACE_NAMES } from '../protocol.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
+import { agentLsVerb } from './verbs/agent-ls.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
@@ -157,21 +158,7 @@ function addAgentCommands(program: Command): void {
 
   const agent = program.command('agent').description('durable agents').helpGroup(AGENTS)
 
-  agent
-    .command('ls', { isDefault: true })
-    .description('agents, with lifecycle and presence')
-    .option('--json', 'print one JSON array, one object per agent')
-    .option('--mine', 'only agents you spawned (needs a registered session name)')
-    .option('--spawner <name>', 'only agents spawned by <name>')
-    .option('--prefix <p>', 'only agents whose name starts with <p>')
-    .option(
-      '--state <state>',
-      'only agents showing this status, e.g. running, finished, retired (repeatable)',
-      (value: string, previous: string[] | undefined) => [...(previous ?? []), value],
-    )
-    .option('--name <name>', 'only the agent with exactly this name')
-    .option('--format <format>', 'line: one line per agent (name state profile id cwd)')
-    .action(agents.agentLs)
+  addVerb(agent, agentLsVerb, { isDefault: true, usageExit: 1, exitOnSuccess: false })
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
     // way to supply it; `resolveBrief` still refuses a spawn with neither, so
