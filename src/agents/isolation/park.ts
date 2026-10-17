@@ -10,7 +10,7 @@ import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import type { MergedPrReader } from './merged-pr.js'
 import { occupantOf } from './sweep.js'
-import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
+import { fetchDefaultTip, type WorktreeRecord } from '@titan-design/worktree'
 
 /**
  * CC-282: park a finished agent's worktree. The tree is removed and the branch
