@@ -1,0 +1,600 @@
+[
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "default window natural inherited seven",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+      "90m",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "90m",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "explicit window",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+      "",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "empty raw window",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+      "  ",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "  ",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "whitespace raw window",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+      "1h",
+      "--since",
+      "7d",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "7d",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated last window",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+      "not-a-window",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "not-a-window",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "semantic validation remains helper owned",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "synthetic line",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "empty array still newline",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "joined multiple rows",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "one",
+      "two",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "preserve row whitespace",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "  one  ",
+      "",
+      "two\n line  ",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--help",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "immediateExit": 0,
+      },
+    ],
+    "name": "help hidden command",
+    "stderr": [
+      "",
+    ],
+    "stdout": [
+      "Usage: agent-chat seat-blocks [options]",
+      "",
+      "each seat's blocked minutes over a window, and any block still open",
+      "",
+      "Options:",
+      "  --since <window>  window such as 90m, 24h or 7d (default: "24h")",
+      "  -h, --help        display help for command",
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--since",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "missing window argument",
+    "stderr": [
+      "error: option '--since <window>' argument missing",
+      "",
+      "Usage: agent-chat seat-blocks [options]",
+      "",
+      "each seat's blocked minutes over a window, and any block still open",
+      "",
+      "Options:",
+      "  --since <window>  window such as 90m, 24h or 7d (default: "24h")",
+      "  -h, --help        display help for command",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "extra",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "extra positional",
+    "stderr": [
+      "error: too many arguments for 'seat-blocks'. Expected 0 arguments but got 1: extra.",
+      "",
+      "Usage: agent-chat seat-blocks [options]",
+      "",
+      "each seat's blocked minutes over a window, and any block still open",
+      "",
+      "Options:",
+      "  --since <window>  window such as 90m, 24h or 7d (default: "24h")",
+      "  -h, --help        display help for command",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+      "--unknown",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "unknown option",
+    "stderr": [
+      "error: unknown option '--unknown'",
+      "",
+      "Usage: agent-chat seat-blocks [options]",
+      "",
+      "each seat's blocked minutes over a window, and any block still open",
+      "",
+      "Options:",
+      "  --since <window>  window such as 90m, 24h or 7d (default: "24h")",
+      "  -h, --help        display help for command",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "Error caught natural one",
+    "stderr": [
+      "synthetic failure",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "code69 caught natural one",
+    "stderr": [
+      "synthetic unavailable",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "object caught String rendering",
+    "stderr": [
+      "[object Object]",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "array caught String rendering",
+    "stderr": [
+      "synthetic,2",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "string caught rendering",
+    "stderr": [
+      "synthetic rejection",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "join failure caught",
+    "stderr": [
+      "Cannot read properties of null (reading 'join')",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "sync stdout failure caught",
+    "stderr": [
+      "synthetic stdout failure",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "import Error immediate",
+    "stderr": [
+      "synthetic import failure",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "import code69 immediate one",
+    "stderr": [
+      "synthetic import unavailable",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "import object Console formatting",
+    "stderr": [
+      "{ reason: 'synthetic import', items: [ 1, 2 ] }",
+      "",
+    ],
+    "stdout": [
+      "",
+    ],
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 7,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "large stdout natural inherited seven",
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+  {
+    "argv": [
+      "seat-blocks",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "since": "24h",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "large caught stderr natural assigned one",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+  },
+]

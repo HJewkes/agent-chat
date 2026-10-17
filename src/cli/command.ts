@@ -78,8 +78,8 @@ export function addVerb<Args>(
     schemaDefaults?: boolean
     /** Preserve a migrated command's natural success return and pending output. */
     exitOnSuccess?: boolean
-    /** Assign the completed report code and return naturally; takes precedence over exitOnSuccess. */
-    reportExit?: 'set-code'
+    /** Return naturally after assigning the completed code, optionally preserving the success code. */
+    reportExit?: 'set-code' | 'set-failure-code'
   } = {},
 ): Commander {
   const sub = parent.command(
@@ -126,7 +126,7 @@ async function runVerb<Args>(
   opts: Record<string, unknown>,
   usageExit: number,
   exitOnSuccess: boolean,
-  reportExit?: 'set-code',
+  reportExit?: 'set-code' | 'set-failure-code',
 ) {
   const ctx: VerbContext = { warnings: [], format: 'human', withBroker, terminal: stdinTerminal() }
   const args = cliArgs(verb, positionals, opts)
@@ -139,8 +139,8 @@ async function runVerb<Args>(
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
   const code = report.ok ? 0 : (report.exit ?? 1)
-  if (reportExit === 'set-code') {
-    process.exitCode = code
+  if (reportExit === 'set-code' || reportExit === 'set-failure-code') {
+    if (reportExit === 'set-code' || !report.ok) process.exitCode = code
     return
   }
   if (report.ok && !exitOnSuccess) return

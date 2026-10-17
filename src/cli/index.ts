@@ -1,3 +1,4 @@
+import { seatBlocksVerb } from './verbs/seat-blocks-command.js'
 import { prReadyVerb } from './verbs/pr-ready-command.js'
 // FIRST, before anything that can touch node:sqlite — including the imports
 // below, which reach the event log transitively. See warnings.ts.
@@ -318,19 +319,12 @@ function addHiddenCommands(program: Command): void {
     await seatHook(phase)
   })
 
-  program
-    .command('seat-blocks', { hidden: true })
-    .description("each seat's blocked minutes over a window, and any block still open")
-    .option('--since <window>', 'window such as 90m, 24h or 7d', '24h')
-    .action(async (options: { since: string }) => {
-      const { seatBlocks } = await import('./verbs/seat-hook.js')
-      try {
-        console.log(seatBlocks(options).join('\n'))
-      } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err))
-        process.exitCode = 1
-      }
-    })
+  addVerb(program, seatBlocksVerb, {
+    hidden: true,
+    schemaDefaults: true,
+    usageExit: 1,
+    reportExit: 'set-failure-code',
+  }).description(seatBlocksVerb.description)
 
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
