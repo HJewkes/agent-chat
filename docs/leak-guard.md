@@ -346,9 +346,10 @@ from a table, an option word or option value the shell expands (a `flock -c` tex
 any expanded word after `script` (whose getopt reads options anywhere), denies on a line that may
 reach git or gh.
 `taskset -p` and `chrt -p` read the same way: util-linux takes the pid from the last word, and
-pid 0 (`0`, `00`, `+0`) runs the words after the mask or priority. An operand the shell expands,
-or a `chrt` priority that strtoimax would not read (`+0` and ` 0` are priorities), is read as the
-command.
+pid 0 (`0`, `00`, `+0`) runs the words after the mask or priority. An operand the shell expands
+(`~/f.lock`, `"$HOME/f.lock"`) may be no word or several, so the command may start at it or after
+it: like an expanded option, it denies on a line that may reach git or gh. A `chrt` priority that
+strtoimax would not read (`+0` and ` 0` are priorities) is read as the command.
 `flock <file> -c <text>`, its lock file expanded or not, and `script -c <text>` are checked as
 `sh -c <text>`; `script` without
 `-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard

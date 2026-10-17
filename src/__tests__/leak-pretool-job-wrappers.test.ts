@@ -98,6 +98,13 @@ const UNREAD: [string, string, RegExp][] = [
   // s.sh exports SHELL=/usr/bin/python3; the guard cannot read what a sourced file sets.
   [`. ./s.sh; script -qc '${PY}' /dev/null`, 'script', /\$SHELL names/],
   [`X='${P}'; flock ${F} -c "$X"`, 'flock', /option this guard does not know/],
+  // An operand the shell expands may be no word or several, so the command may start after it.
+  [`flock ~/${F} ${P}`, 'flock', /option this guard does not know/],
+  [`flock "$HOME/${F}" bash -c '${P}'`, 'flock', /option this guard does not know/],
+  [`flock "$HOME/${F}" ${P}`, 'flock', /option this guard does not know/],
+  [`flock /tmp/$USER.lock ${P}`, 'flock', /option this guard does not know/],
+  [`flock ~/${F} bash -c '${P}'`, 'flock', /option this guard does not know/],
+  [`echo '${P}' | flock ~/${F} bash`, 'flock', /option this guard does not know/],
 ]
 
 // Rows real bash cannot run on every host: a forked child, a controlling tty, and a user namespace.
@@ -140,6 +147,16 @@ describe('job and namespace wrappers run the command after their options (CC-141
     expect(checkCommand(line, ctx)).toMatch(/option this guard does not know/)
   })
 
+  // Real bash cannot run these here: $TMPDIR is unset, a path is no CPU mask or priority, and gh is not faked.
+  it.each([
+    `flock "$TMPDIR/x" ${P}`,
+    `flock ~/${F} gh pr create --body x`,
+    `taskset "$HOME" ${P}`,
+    `chrt -o "$HOME" ${P}`,
+  ])('fails closed on an expanded operand, on a line that may reach git or gh: %s', line => {
+    expect(checkCommand(line, ctx)).toMatch(/option this guard does not know/)
+  })
+
   it.each([
     'setsid sleep 1',
     `flock ${F} echo hi`,
@@ -149,6 +166,13 @@ describe('job and namespace wrappers run the command after their options (CC-141
     'unshare -r id',
     'setsid --frob make',
     'taskset -p 1 1234',
+    `flock ~/${F} make`,
+    `flock "$HOME/${F}" make`,
+    'flock /tmp/l make',
+    'taskset -c 0 make',
+    'taskset -p 1234',
+    'chrt -p 1234',
+    `flock /tmp/l -c 'echo hi'`,
     `flock ${F} -c 'git status'`,
     'setsid -w git push origin HEAD:feature',
     `script -qc 'git status' /dev/null`,

@@ -105,14 +105,15 @@ const CHRT_PRIORITY = /^\s*[+-]?\d+$/
 /**
  * flock, taskset and chrt take one operand before the command: a lock file, a CPU mask, a
  * priority. With -p the pid is the last word, and pid 0 runs the command, so -p reads the same.
- * A word the shell expands may be none or several, so the command is read from it.
+ * A word the shell expands may be none or several, so the command may start at it or after it.
  */
 function afterOperand(words: readonly string[], end: number, name: string): JobRun | undefined {
   const operand = words[end]
   if (operand === undefined) return { at: end }
   const script = name === 'flock' ? flockScript(words[end + 1], words[end + 2]) : null
   if (script !== null) return script
-  if (operand.includes(LIVE)) return { at: end }
+  // Reading only the operand as the command would leave the words after it unread.
+  if (operand.includes(LIVE)) return undefined
   // chrt reads the priority with strtoimax; a version that drops it for SCHED_OTHER would run any other word.
   if (name === 'chrt' && !CHRT_PRIORITY.test(operand)) return { at: end }
   return { at: end + 1 }
