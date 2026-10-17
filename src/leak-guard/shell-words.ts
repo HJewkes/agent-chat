@@ -229,7 +229,7 @@ function bracedRisk(src: string, start: number, text: string): ExpansionRisk | u
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
-// gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
+// gh fills these in a `gh api` path itself; no shell expands a brace group with neither a comma nor a `..` sequence.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
 // In a heredoc with an unquoted delimiter the shell expands these and joins a line ending in a backslash.
 const HEREDOC_LIVE = /[$`\\]/

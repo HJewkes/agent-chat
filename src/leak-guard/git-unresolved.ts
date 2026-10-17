@@ -214,15 +214,40 @@ const OPTION_GROUP = /^-|[(|)]-|[(|)]\[[^\]]*-/
 // A bracket class that holds `-`, as in `[-]-no-verify`, or an option-shaped word with a class in it, may spell an option.
 const OPTION_CLASS = /^-*\[[^\]]*-|^-.*\[/
 
+// A brace group the shell expands: a comma list, or a sequence `{x..y}` or `{x..y..step}` (CC-1427).
+// bash's sequence is over integers or letters; zsh's is over integers or any single characters.
+const INTEGER_SEQUENCE = /\{-?\d+\.\.-?\d+(?:\.\.-?\d+)?\}/
+const CHAR_SEQUENCE = /\{([^{}])\.\.([^{}])(?:\.\.-?\d+)?\}/
+const CHAR_SEQUENCES = new RegExp(CHAR_SEQUENCE.source, 'g')
+const BRACE_LIST = /\{[^{}]*,[^{}]*\}/
+// An alternative, or a negative integer sequence, that starts with `-`.
+const OPTION_ALTERNATIVE = /[{,]-/
+// git's `-<n>`, as in `git log -{1..3}`, is a count, never an option that skips a hook or runs a program.
+const COUNT = /^-[\d{}.,]+$/
+
+/** Whether a zsh character sequence in `text`, such as `{+../}`, yields `-`. */
+const sequenceYieldsDash = (text: string): boolean =>
+  [...text.matchAll(CHAR_SEQUENCES)].some(([, from = '', to = '']) =>
+    from <= to ? from <= '-' && '-' <= to : to <= '-' && '-' <= from,
+  )
+
+/** A brace expansion whose words may include an option, such as `--no-verif{y..y}` or `{main,--no-verify}`. */
+function braceSpellsOption(text: string): boolean {
+  if (![INTEGER_SEQUENCE, CHAR_SEQUENCE, BRACE_LIST].some(group => group.test(text))) return false
+  if (text.startsWith('-')) return !COUNT.test(text)
+  return OPTION_ALTERNATIVE.test(text) || sequenceYieldsDash(text)
+}
+
 const spellsOption = (word: string): boolean => {
   const text = unmark(word).replace(QUOTING_CHARS, '')
   return (
     (word.includes(`${LIVE}(`) && OPTION_GROUP.test(text)) ||
-    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text))
+    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text)) ||
+    (word.includes(`${LIVE}{`) && braceSpellsOption(text))
   )
 }
 
-/** Whether an argument after the subcommand may expand to an option through a glob group or bracket class (CC-728). */
+/** Whether an argument after the subcommand may expand to an option through a glob group, bracket class or brace expansion (CC-728, CC-1427). */
 export function hasOptionAlternation(
   marked: readonly string[],
   splits: readonly string[],
