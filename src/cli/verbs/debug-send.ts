@@ -1,3 +1,4 @@
+import { format } from 'node:util'
 import { z } from 'zod'
 import { WAKE_SOURCES, wakeSource, type ServerMessage } from '../../protocol.js'
 import { defineVerb, Report, type Verb } from '../command.js'
@@ -27,7 +28,7 @@ const run: Verb<z.infer<typeof Args>>['run'] = async ({ to, text, source: reques
     }
   } catch (error) {
     // The legacy CLI entrypoint maps every rejected send, including code 69, to exit 1.
-    return { ok: false, lines: [], errors: [error instanceof Error ? error.message : String(error)] }
+    return { ok: false, lines: [], errors: [error instanceof Error ? error.message : format(error)] }
   }
 }
 

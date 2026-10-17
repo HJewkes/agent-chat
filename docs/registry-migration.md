@@ -378,3 +378,13 @@ Status non-Error rejections use Node console formatting so structured rejection
 fields remain visible. Two object-rejection cases captured against the original
 action extend the unchanged24-case fixture; actual Console/Writable capture
 checks prevent string-joining mocks from hiding this output difference.
+
+### Human command rejection formatting
+
+Answer, debug send and hidden send preserve Node console formatting for
+non-Error rejections while retaining Error.message and exit1. Their existing
+frames, options, successful output and refusal behavior remain unchanged.
+Faithful real Console/Writable fixtures cover object/array and primitive errors;
+57 full CLI cases retain the original33 cases unchanged. The whole original45de
+source was overlaid for the baseline and every touched path restored exactly
+before testing the formatting correction.

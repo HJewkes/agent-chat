@@ -274,5 +274,165 @@
       "stderr: fixture string failure"
     ],
     "exit": 1
+  },
+  {
+    "name": "answer rejection object",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: { code: 69, message: 'synthetic failure' }"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection array",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: [ 'synthetic', 'failure' ]"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection null",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: null"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection number",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: 69"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection boolean",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: false"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection undefined",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: undefined"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection error69",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "answer rejection string",
+    "argv": [
+      "answer",
+      "fixture-id",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "answer",
+        "msgId": "fixture-id",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic failure"
+    ],
+    "exit": 1
   }
 ]

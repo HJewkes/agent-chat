@@ -1,11 +1,43 @@
+import { Console } from 'node:console'
+import { Writable } from 'node:stream'
+import { format } from 'node:util'
 import type { Command } from 'commander'
 import type { ServerMessage } from '../protocol.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const fake = vi.hoisted(() => ({
   sent: [] as unknown[],
+  shouldFail: false,
   reply: { t: 'answer_result', ok: true } as unknown,
   failure: undefined as unknown,
+}))
+const forbidden = () => {
+  throw new Error('unexpected human command controller/process/fs operation')
+}
+vi.mock('node:child_process', async importOriginal => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  spawn: forbidden,
+  exec: forbidden,
+  execFile: forbidden,
+}))
+vi.mock('node:fs', async importOriginal => {
+  const original = await importOriginal<typeof import('node:fs')>()
+  const overrides = {
+    readFileSync: forbidden,
+    writeFileSync: forbidden,
+    unlinkSync: forbidden,
+    mkdirSync: forbidden,
+  }
+  return { ...original, ...overrides, default: { ...original, ...overrides } }
+})
+vi.mock('../cli/service.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../cli/service.js')>()),
+  start: forbidden,
+  stop: forbidden,
+  status: forbidden,
+  restart: forbidden,
+  logs: forbidden,
+  open: forbidden,
 }))
 vi.mock('../cli/client.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../cli/client.js')>()),
@@ -13,7 +45,7 @@ vi.mock('../cli/client.js', async importOriginal => ({
     fn({
       request: async (frame: unknown) => {
         fake.sent.push(frame)
-        if (fake.failure !== undefined) throw fake.failure
+        if (fake.shouldFail) throw fake.failure
         return fake.reply
       },
     }),
@@ -30,11 +62,12 @@ class Exit extends Error {
 }
 const output: string[] = []
 beforeEach(() => {
+  vi.spyOn(process, 'kill').mockImplementation(forbidden)
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-    output.push('stdout: ' + args.join(' '))
+    output.push('stdout: ' + format(...args))
   })
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-    output.push('stderr: ' + args.join(' '))
+    output.push('stderr: ' + format(...args))
   })
   vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => {
     throw new Exit(Number(code ?? 0))
@@ -90,10 +123,24 @@ const cases: Case[] = [
   { name: 'string error', argv: ['answer', 'fixture-id', 'hello'], failure: 'fixture string failure' },
 ]
 
+const rejectionCases: [string, unknown][] = [
+  ['object', { code: 69, message: 'synthetic failure' }],
+  ['array', ['synthetic', 'failure']],
+  ['null', null],
+  ['number', 69],
+  ['boolean', false],
+  ['undefined', undefined],
+  ['error69', Object.assign(new Error('synthetic unavailable'), { code: 69 })],
+  ['string', 'synthetic failure'],
+]
+for (const [name, failure] of rejectionCases)
+  cases.push({ name: 'answer rejection ' + name, argv: ['answer', 'fixture-id', 'hello', 'there'], failure })
+
 async function invoke(sample: Case) {
   output.length = 0
   fake.sent = []
   fake.failure = sample.failure
+  fake.shouldFail = Object.hasOwn(sample, 'failure')
   fake.reply = sample.reply ?? { t: 'answer_result', ok: true }
   let exit = 0
   const program = buildProgram()
@@ -128,6 +175,29 @@ async function invoke(sample: Case) {
 }
 
 describe('S8 original human answer ABI', () => {
+  it('captures structured rejections as an actual Console and Writable', () => {
+    const chunks: string[] = []
+    const sink = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(String(chunk))
+        callback()
+      },
+    })
+    const actual = new Console({ stdout: sink, stderr: sink, colorMode: false })
+    for (const rejection of [
+      { code: 69, message: 'synthetic failure' },
+      ['synthetic', 'failure'],
+      null,
+      69,
+      false,
+      undefined,
+    ]) {
+      chunks.length = 0
+      actual.error(rejection)
+      expect(chunks.join('')).toBe(format(rejection) + '\n')
+    }
+  })
+
   it('preserves original frames, output, failures and answer argv without invoking a broker', async () => {
     const results = []
     for (const sample of cases) results.push(await invoke(sample))

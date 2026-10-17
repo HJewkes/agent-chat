@@ -339,5 +339,333 @@
       "stderr: fixture string failure"
     ],
     "exit": 1
+  },
+  {
+    "name": "debug rejection object",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: { code: 69, message: 'synthetic failure' }"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection array",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: [ 'synthetic', 'failure' ]"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection null",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: null"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection number",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: 69"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection boolean",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: false"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection undefined",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: undefined"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection error69",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "debug rejection string",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic failure"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection object",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: { code: 69, message: 'synthetic failure' }"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection array",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: [ 'synthetic', 'failure' ]"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection null",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: null"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection number",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: 69"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection boolean",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: false"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection undefined",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: undefined"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection error69",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden rejection string",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stderr: synthetic failure"
+    ],
+    "exit": 1
   }
 ]

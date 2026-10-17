@@ -1,3 +1,4 @@
+import { format } from 'node:util'
 import { z } from 'zod'
 import type { ServerMessage } from '../../protocol.js'
 import { defineVerb, Report } from '../command.js'
@@ -19,7 +20,7 @@ export const answerVerb = defineVerb({
       return { ok: true, lines: [`Answered ${id}.${res.reason ? ` ${res.reason}` : ''}`] }
     } catch (error) {
       // The legacy CLI entrypoint maps every rejected action, including code 69, to exit 1.
-      return { ok: false, lines: [], errors: [error instanceof Error ? error.message : String(error)] }
+      return { ok: false, lines: [], errors: [error instanceof Error ? error.message : format(error)] }
     }
   },
 })
