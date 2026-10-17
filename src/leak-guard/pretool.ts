@@ -76,6 +76,7 @@ import {
   hasUnreadableConfig,
   hasUnreadableOption,
 } from './git-unresolved.js'
+import { pushFlagMayForm } from './push-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
   indirectFeed,
@@ -1043,6 +1044,7 @@ const unsure = (run: GitRun): string | undefined =>
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   return (
     checkGit(run.args) ??
+    checkPushExpansion(run, scope) ??
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
@@ -1052,6 +1054,14 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkFedPush(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/** A `git push` option word whose expansion may complete it into `--no-verify` (CC-1438). */
+function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  return at >= 0 && run.resolved[at] === 'push' && pushFlagMayForm(run.marked, at)
+    ? REASONS.noVerify
+    : undefined
 }
 
 /** git push options that take no value, so a `--` after them ends the options. */
