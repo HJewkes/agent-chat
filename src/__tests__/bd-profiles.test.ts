@@ -184,6 +184,37 @@ const DELETE_PRUNE_PUSHES = [
   'origin agent-chat/x --prune',
 ]
 
+// git 2.53 takes any unambiguous prefix of a long option. The shortest it accepts are `--de`,
+// `--force` (`--forc` and `--force-` are ambiguous), `--pru` and `--m`, so the rules anchor
+// there after a space and no branch name is touched.
+const ABBREVIATED_PUSHES = [
+  '--de origin agent-chat/x',
+  '--del origin agent-chat/x',
+  '--delet origin agent-chat/x',
+  'origin --de agent-chat/x',
+  '-u origin --dele agent-chat/x',
+  'origin agent-chat/x --de',
+  '--force-w origin agent-chat/x',
+  '--force-with origin agent-chat/x',
+  '--force-with-leas origin agent-chat/x',
+  'origin --force-w agent-chat/x',
+  'origin --force-w=agent-chat/x agent-chat/x',
+  '-u origin --force-w agent-chat/x',
+  'origin agent-chat/x --force-w',
+  '--force-i origin agent-chat/x',
+  'origin --force-if agent-chat/x',
+  'origin agent-chat/x --force-i',
+  '--pru origin',
+  '--prun origin',
+  'origin --pru',
+  'origin agent-chat/x --prun',
+  '--m origin',
+  '--mi origin',
+  'origin --mirr',
+  '-u origin --mir',
+  'origin agent-chat/x --m',
+]
+
 // `*` spans `&&`, `;` and `|`, so these ordinary commands are denied. Kept: a rule shape that
 // stops at a separator would also stop denying the force spellings the rows above pin.
 const COMPOUND_OVERMATCHES = [
@@ -205,6 +236,18 @@ const LEGITIMATE_PUSHES = [
   '--set-upstream origin agent-chat/x',
   'origin HEAD:agent-chat/x',
   'origin agent-chat/fix-force-with-lease',
+  'origin de',
+  'origin dev-x',
+  'origin delete-x',
+  '-u origin de/x',
+  'origin pr-x',
+  'origin prune-x',
+  'origin HEAD:pru-x',
+  'origin mi',
+  'origin mirror-x',
+  '-u origin m/x',
+  'origin agent-chat/x:de-x',
+  'origin agent-chat/x--de',
 ]
 
 describe.each(WORKER_PROFILES)('the %s profile', name => {
@@ -248,6 +291,10 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
       for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
     },
   )
+
+  it.each(ABBREVIATED_PUSHES)('denies the abbreviated `git push %s` under every global option', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
 
   it('denies a force push piped through xargs', () => {
     expect(isDenied('echo origin | xargs git push --force', denied)).toBe(true)
