@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   createWorktreeAllocator,
+  MissingAssignedWorktreeRecordError,
   pruneStaleWorktrees,
   reattachWorktree as platformReattach,
   recreateWorktree as platformRecreate,
@@ -321,13 +322,18 @@ export async function recreateWorktree(
   return decorateAllocation(await platformRecreate(record, platformOptions(opts)), opts)
 }
 
-/** CC-1469: the package's budget hook sees no tree list, so the holder breakdown is added on refusal. */
-async function withHoldings(
+/** Product wording for package refusals; CC-1469 adds the holder breakdown, which the budget hook cannot see. */
+async function productAllocationError(
   err: unknown,
   ctx: IsolationContext,
   basePath: string,
   opts: WorktreeOptions,
 ): Promise<unknown> {
+  if (err instanceof MissingAssignedWorktreeRecordError)
+    return new Error(
+      `assigned worktree ${err.worktreePath} does not exist, and agent-chat has no record of allocating it ` +
+        'to re-create it from. Not spawned',
+    )
   if (!(err instanceof WorktreeBudgetExhaustedError)) return err
   const gitRoot = await findGitRoot(ctx.baseCwd)
   if (gitRoot === null) return err
@@ -366,7 +372,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
     async allocate(ctx: IsolationContext): Promise<Allocation> {
       const allocation = await allocator.allocate(ctx).catch(async (err: unknown) => {
-        throw await withHoldings(err, ctx, basePath, opts)
+        throw await productAllocationError(err, ctx, basePath, opts)
       })
       return decorateAllocation(allocation, opts, ctx.baseRef)
     },
@@ -382,7 +388,11 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
         allocation,
         opts,
       )
-      if (!result.released) recordRefusal(allocation, result.refusal ?? 'worktree release refused')
+      if (!result.released)
+        recordRefusal(
+          allocation,
+          result.refusalCode === 'unsaved-changes' ? 'uncommitted changes in the worktree' : result.refusal,
+        )
       return result.released
     },
   }
