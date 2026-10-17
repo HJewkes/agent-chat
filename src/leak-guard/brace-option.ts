@@ -1,3 +1,4 @@
+import { LONE_PAIR } from './option-operand.js'
 import { LIVE, unmark } from './shell-words.js'
 
 /**
@@ -116,8 +117,6 @@ export function braceOption(marked: string): boolean {
   return readings(marked).some(spellsOption)
 }
 
-// The `{` of a lone `{}`, the one brace no shell expands, braceccl included.
-const LONE_PAIR = /^\}[^}]*$/
 // git's `-<n>` count as written, such as `-{1..3}`.
 const WRITTEN_COUNT = /^-[\d.{},]+$/
 
@@ -172,11 +171,29 @@ const SEGMENTS = new RegExp(`(?<=^|${LIVE}([{,}]))([^${LIVE}]|${LIVE}[^{,}])*(?=
 function runMayLeadWithDash(marked: string): boolean {
   const { run, closed } = leadingGroups(marked)
   if (!closed) return unmark(run).includes('-')
-  return [...run.matchAll(SEGMENTS)].some(([segment, before, , after]) => {
-    const body = unmark(segment)
-    if (body.startsWith('-')) return before === '{' || before === ','
-    return body.includes('-') && before === '{' && after === '}'
-  })
+  return (
+    [...run.matchAll(SEGMENTS)].some(([segment, before, , after]) => {
+      const body = unmark(segment)
+      if (body.startsWith('-')) return before === '{' || before === ','
+      return body.includes('-') && before === '{' && after === '}'
+    }) || startsClassWithDash(structure(run))
+  )
+}
+
+/**
+ * Whether a group that starts a word or an alternative, with no top-level `,`, holds a `-` anywhere
+ * in its text. braceccl does not nest, so in `{+-{b}}` the inner braces are class characters and
+ * `+-{` is a range that takes in `-`.
+ */
+function startsClassWithDash(text: string): boolean {
+  for (let open = text.indexOf(OPEN); open >= 0; open = text.indexOf(OPEN, open + 1)) {
+    if (open > 0 && ![OPEN, SEP, CLOSE].includes(text[open - 1] as string)) continue
+    const close = closeOf(text, open)
+    if (close < 0) continue
+    const body = text.slice(open + 1, close)
+    if (topAlternatives(body).length === 1 && body.includes('-')) return true
+  }
+  return false
 }
 
 /** Whether a `--` option word's first live `{` comes after its `=`, in a value git never reads as an option. */

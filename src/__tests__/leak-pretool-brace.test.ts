@@ -132,6 +132,16 @@ const BRACECCL: [string, string][] = [
   ['git fetch --upload-pac{k}=x origin', 'fetch --upload-pack=x origin'],
   ['git fetch {-}-upload-pack=x origin', 'fetch --upload-pack=x origin'],
 ]
+// Off push under braceccl, which does not nest: in `{+-{b}}` the inner braces are class characters and
+// `+-{` is a range that takes in `-` (CC-1437). Each line with the option word zsh 5.9 passes git.
+const NESTED_CLASS: [string, string][] = [
+  ['git fetch {+-{b}}{+-{b}}upload-pack=x origin', '--upload-pack=x'],
+  ['git fetch {x,{+-{b}}{+-{b}}upload-pack=x} origin', '--upload-pack=x'],
+  ['git commit {+-{b}}{+-{b}}no-verify -m x', '--no-verify'],
+  ['git fetch {*-{b}}{*-{b}}upload-pack=x origin', '--upload-pack=x'],
+  ['git fetch {+-{{b}}}{+-{{b}}}upload-pack=x origin', '--upload-pack=x'],
+  ['git commit {*-{b}}{*-{b}}no-verify -m x', '--no-verify'],
+]
 // The ways a line turns braceccl on before git runs.
 const BRACECCL_FORMS = [
   (src: string) => `zsh -f -o braceccl -c '${src}'`,
@@ -205,6 +215,8 @@ const OFF_PUSH_ALLOWED: [string, string][] = [
   ['git rm {a,b}-old.txt', 'rm a-old.txt b-old.txt'],
   ['git branch -D {old,older}-branch', 'branch -D old-branch older-branch'],
   ['git show {HEAD,main}:a-b.txt', 'show HEAD:a-b.txt main:a-b.txt'],
+  ['git add {src/{a,b},test}/x-y.ts', 'add src/a/x-y.ts src/b/x-y.ts test/x-y.ts'],
+  ['git show HEAD:{a,b}/c-d.md', 'show HEAD:a/c-d.md HEAD:b/c-d.md'],
   // A brace after a long option's `=` copies the option into every word.
   ['git log --grep={fix,feat}', 'log --grep=fix --grep=feat'],
   ['git log --pretty=format:{%h,%s}', 'log --pretty=format:%h --pretty=format:%s'],
@@ -274,6 +286,7 @@ describe('checkCommand on brace expansions (CC-1427, CC-1432, CC-1434)', () => {
     ...OFF_PUSH_GUARD,
     ...DENIED_PAIRS.map(([src]) => src),
     ...BRACECCL.flatMap(([src]) => BRACECCL_FORMS.map(form => form(src))),
+    ...NESTED_CLASS.flatMap(([src]) => BRACECCL_FORMS.map(form => form(src))),
   ])('denies %j', src => {
     expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
   })
@@ -391,3 +404,12 @@ describe.skipIf(ZSH === undefined)(
     })
   },
 )
+
+describe.skipIf(ZSH === undefined)('zsh under braceccl reads a nested class as one range (CC-1437)', () => {
+  it.each(NESTED_CLASS)('passes git the option word from %j', (src, option) => {
+    const words = gitCalls(ZSH as string, ['-f', '-o', 'braceccl'], src)
+      .join(' ')
+      .split(' ')
+    expect(words).toContain(option)
+  })
+})

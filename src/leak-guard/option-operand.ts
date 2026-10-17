@@ -59,8 +59,8 @@ function braceBody(word: string, from: number): string | undefined {
 // A word's unquoted `{` is marked; an operand inside `${...}` carries no marks, so any `{` there counts.
 const LIVE_BRACE = `${LIVE}{`
 const OPERAND_BRACE = '{'
-// `{}` with no `}` after it is the one brace that never expands.
-const EMPTY_BRACES = /^\}[^}]*$/
+/** The text after a lone `{}`, the one brace no shell expands, braceccl included: a `}` with no `}` after it. */
+export const LONE_PAIR = /^\}[^}]*$/
 
 /**
  * Whether `text` holds an `opener` that may start a brace expansion. zsh's braceccl expands any
@@ -70,7 +70,7 @@ const EMPTY_BRACES = /^\}[^}]*$/
  */
 function mayBraceExpand(text: string, opener: string): boolean {
   for (let at = text.indexOf(opener); at >= 0; at = text.indexOf(opener, at + 1)) {
-    if (!EMPTY_BRACES.test(text.slice(at + opener.length))) return true
+    if (!LONE_PAIR.test(text.slice(at + opener.length))) return true
   }
   return false
 }
