@@ -1,11 +1,11 @@
 import fs from 'node:fs'
-import { agentWorktreesIn as platformAgentWorktreesIn } from '@titan-design/worktree'
+import { agentWorktreesIn as platformAgentWorktreesIn, createWorktreeAllocator } from '@titan-design/worktree'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
 import { stoppedAt } from '../identity.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
-import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
+import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS } from './worktree.js'
 import type { Allocation } from './index.js'
 import type { AgentIdentity } from '../../protocol.js'
 
@@ -219,15 +219,11 @@ export async function reclaim(
     cwd: entry.worktree,
     ref: { branch: entry.branch, worktree: entry.worktree, gitRoot: entry.gitRoot },
   }
-  // Forced at the strategy either way: the grace window and the dirty/unmerged
-  // check have already run, in `classify`, against the report the caller read.
-  // Letting release re-derive them would refuse a reclaim the human just saw
-  // offered, on a `stoppedAt` this call site does not have.
-  const released = await worktreeStrategy.release(
-    { agentId: alloc?.agentId ?? '', agentName: entry.agent?.name ?? entry.branch, baseCwd: entry.gitRoot },
-    allocation,
-    { force: true },
-  )
+  // The report owns the lifecycle decision; refresh file/commit safety without
+  // inventing another exit timestamp or granting merged-PR release authority.
+  const { released } = await createWorktreeAllocator({ releaseProof: 'git' }).release({}, allocation, {
+    force: options.force === true,
+  })
   if (released && alloc !== undefined) fs.rmSync(runtimeStatePath(alloc.agentId), { force: true })
   return released ? { ok: true } : { ok: false, reason: `git would not release ${entry.worktree}` }
 }
