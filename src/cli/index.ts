@@ -44,7 +44,7 @@ import { profilesVerb } from './verbs/profiles.js'
 import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import { teleportRequestVerb } from './verbs/teleport-request.js'
-import * as debug from './debug.js'
+import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
@@ -150,14 +150,7 @@ function addDebugCommands(program: Command): void {
   addVerb(dbg, debugClaimsVerb)
   addVerb(dbg, debugHistoryVerb)
   addVerb(dbg, debugLogVerb)
-  dbg
-    .command('send <to> <text...>')
-    .description('message a session as the human')
-    .option(
-      '--source <source>',
-      'record the send as made by this source (watchdog, shepherd) in the event log',
-    )
-    .action(debug.send)
+  addVerb(dbg, debugSendVerb)
 }
 
 /** For processes that are not Claude sessions, such as a factory gate notifier (CC-169). */
@@ -407,7 +400,7 @@ function addHiddenCommands(program: Command): void {
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })
 
-  program.command('send <to> <text...>', { hidden: true }).action(debug.send)
+  addVerb(program, sendVerb, { hidden: true })
 }
 
 function addPortCommands(program: Command): void {

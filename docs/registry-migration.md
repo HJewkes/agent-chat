@@ -315,3 +315,16 @@ addVerb calls optionFlagSpec directly; fieldSchema/schemaKind bridge imports are
 removed. Original help, parse, MCP and port fixtures remain unchanged. This is
 candidate validation only: published dependency adoption, full verify and remaining
 S8 conversions still gate TP-617 completion.
+
+### S8 human send candidate checkpoint
+
+debug send and the hidden send alias now use one human_send registry action with
+two CLI metadata projections. The hidden alias still has no source option. The
+original handwritten debug.send implementation and its imports are deleted.
+MCP chat_send remains a separate registered-session command.
+
+The original18-case fakebroker fixture pins argv, frames, full stdout/stderr and
+exit status, including blank strings, missing results, source validation and
+broker errors. A numeric broker error remains legacy exit1, not its numeric code.
+No live message or registration is performed by validation. Other S8 verbs and
+published dependency adoption/full verify remain open under TP-617.

@@ -1,0 +1,343 @@
+[
+  {
+    "name": "debug success",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "success missing message id",
+    "argv": [
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id undefined)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "hidden success",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "there"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello there"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "watchdog source",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "--source",
+      "watchdog"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello",
+        "source": "watchdog"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "shepherd source",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "--source",
+      "shepherd",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello",
+        "source": "shepherd"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "empty source",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "--source",
+      ""
+    ],
+    "frames": [],
+    "output": [
+      "stderr: unknown --source \"\"; known: watchdog, shepherd"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "invalid source",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello",
+      "--source",
+      "WATCHDOG"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: unknown --source \"WATCHDOG\"; known: watchdog, shepherd"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "hidden source unsupported",
+    "argv": [
+      "send",
+      "bob",
+      "hello",
+      "--source",
+      "watchdog"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: unknown option '--source'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat send [options] <to> <text...>\n\nOptions:\n  -h, --help  display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "refusal",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stdout: Not delivered: fixture refused"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "reason absent",
+    "argv": [
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stdout: Not delivered: undefined"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "blank recipient and text preserved",
+    "argv": [
+      "send",
+      "",
+      ""
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "",
+        "text": ""
+      }
+    ],
+    "output": [
+      "stdout: Delivered to  (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "control words preserved",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "line1\nline2",
+      "\tword"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "line1\nline2 \tword"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "end of options payload",
+    "argv": [
+      "send",
+      "bob",
+      "--",
+      "--source",
+      "watchdog"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "--source watchdog"
+      }
+    ],
+    "output": [
+      "stdout: Delivered to bob (msg_id fixture-msg)."
+    ],
+    "exit": 0
+  },
+  {
+    "name": "missing text",
+    "argv": [
+      "send",
+      "bob"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: missing required argument 'text'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat send [options] <to> <text...>\n\nOptions:\n  -h, --help  display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing recipient",
+    "argv": [
+      "debug",
+      "send"
+    ],
+    "frames": [],
+    "output": [
+      "stderr: error: missing required argument 'to'\n",
+      "stderr: \n",
+      "stderr: Usage: agent-chat debug send [options] <to> <text...>\n\nmessage a session as the human\n\nOptions:\n  --source <source>  record the send as made by this source (watchdog, shepherd)\n                     in the event log\n  -h, --help         display help for command\n"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "numeric unavailable error keeps legacy exit1",
+    "argv": [
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "ordinary error",
+    "argv": [
+      "debug",
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture failure"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "string error",
+    "argv": [
+      "send",
+      "bob",
+      "hello"
+    ],
+    "frames": [
+      {
+        "t": "human_send",
+        "to": "bob",
+        "text": "hello"
+      }
+    ],
+    "output": [
+      "stderr: fixture string failure"
+    ],
+    "exit": 1
+  }
+]
