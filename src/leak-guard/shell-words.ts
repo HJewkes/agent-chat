@@ -63,6 +63,8 @@ interface Heredoc {
   strip: boolean
   aside: boolean
   quoted: boolean
+  /** The delimiter zsh reads when the word holds `$"`, where bash drops the `$`. */
+  zshDelim: string | undefined
   target: SimpleCommand
 }
 
@@ -273,6 +275,15 @@ const ANSI_C: Record<string, string> = {
 }
 const ANSI_C_CODE = /^(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3}))/
 
+/** The word with a `$` put back at each offset where bash dropped the one of a `$"`. */
+function withDollars(word: string, at: number[]): string {
+  let out = ''
+  for (let i = 0; i <= word.length; i++) {
+    out += '$'.repeat(at.filter(n => n === i).length) + (word[i] ?? '')
+  }
+  return out
+}
+
 /** The `$'...'` escape whose backslash is at `src[at]`; `live` when the splitter cannot decode it, as with `\cX`. */
 export function ansiCEscape(src: string, at: number): { text: string; width: number; live: boolean } {
   const next = src[at + 1] ?? ''
@@ -339,6 +350,8 @@ class ShellLexer {
   private beforeLast: Token
   /** Where in the current word its first quote or escape began, so whether it can be an assignment. */
   private quoteStart = Infinity
+  /** Offsets in the word where a `$"` stood: bash drops the `$` there and zsh keeps it. */
+  private localeAt: number[] = []
   /** The last token was a word that is not reserved, so a `}x` after it is a plain argument. */
   private lastPlain = false
   /** The last token was an unquoted word that may name a function, as `f` in `f ()`. */
@@ -852,6 +865,8 @@ class ShellLexer {
     if (c === '"') return this.doubleQuoted()
     // bash translates `$"…"` as a double-quoted string; zsh keeps the `$`, so the git word differs and the guard reads bash's.
     if (c === '$' && next === '"') {
+      this.quoted = true
+      this.localeAt.push(this.word?.length ?? 0)
       this.pos++
       return this.doubleQuoted()
     }
@@ -1046,6 +1061,8 @@ class ShellLexer {
     this.word = null
     this.quoted = false
     this.quoteStart = Infinity
+    const localeAt = this.localeAt
+    this.localeAt = []
     const pending = this.pending
     this.pending = null
     if (pending === null) {
@@ -1055,7 +1072,10 @@ class ShellLexer {
       this.afterWord(word, quoteStart)
     } else if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
-    else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
+    else if (pending !== 'discard') {
+      const zshDelim = localeAt.length > 0 ? withDollars(word, localeAt) : undefined
+      this.heredocs.push({ delim: word, ...pending, quoted, zshDelim, target: this.cur })
+    }
   }
 
   /**
@@ -1093,7 +1113,9 @@ class ShellLexer {
 
   private readHeredocs(): void {
     for (const doc of this.heredocs) {
+      const zshEnd = this.zshHeredocEnd(doc)
       const body = this.heredocBody(doc)
+      if (zshEnd !== undefined && zshEnd !== this.pos) this.readAsZsh(zshEnd)
       // The shell expands an unquoted body whatever the descriptor, so `3<<E` runs its substitutions too.
       if (!doc.quoted) this.expandBody(body, doc.target)
       if (doc.aside) continue
@@ -1102,6 +1124,23 @@ class ShellLexer {
       this.feed(doc.target, body, doc.quoted ? backslash : HEREDOC_LIVE.test(body))
     }
     this.heredocs = []
+  }
+
+  /** Where the body ends when the delimiter is read as zsh does, or undefined when it reads the same as bash's. */
+  private zshHeredocEnd(doc: Heredoc): number | undefined {
+    if (doc.zshDelim === undefined) return undefined
+    const start = this.pos
+    this.heredocBody({ ...doc, delim: doc.zshDelim })
+    const end = this.pos
+    this.pos = start
+    return end
+  }
+
+  /** The shells end the body at different lines, so what follows zsh's end is read as commands too. */
+  private readAsZsh(end: number): void {
+    if (this.budget.forks-- <= 0) return this.unsettled()
+    const rest = new ShellLexer(this.src, end, this.nested || this.depth !== 0, this.budget)
+    appendAll(this.out, rest.run())
   }
 
   private heredocBody({ delim, strip }: Heredoc): string {

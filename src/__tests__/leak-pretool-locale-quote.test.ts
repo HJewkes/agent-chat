@@ -29,12 +29,32 @@ const DENIED: [string, string][] = [
   ['git push {,}$"--no-verify" origin HEAD:main', 'push --no-verify --no-verify origin HEAD:main'],
   ['git push {x,$"--no-verify"} origin HEAD:main', 'push x --no-verify origin HEAD:main'],
   ['git push $"--no-""verify" origin HEAD:main', 'push --no-verify origin HEAD:main'],
+  ['git push --no-$"veri"fy origin HEAD:main', 'push --no-verify origin HEAD:main'],
+  ['git push --no-verif$"y" origin HEAD:main', 'push --no-verify origin HEAD:main'],
   ['git push $"--no-verify"$"" origin HEAD:main', 'push --no-verify origin HEAD:main'],
   ['bash -c \'git push $"--no-verify" origin HEAD:main\'', 'push --no-verify origin HEAD:main'],
 ]
 
-// Expansions inside `$"…"` behave as they do inside "…".
-const EXPANDING = ['${V:-verify}', '$(echo verify)', '`echo verify`', '$V']
+// bash reads the delimiter `$"E"` as E and zsh as $E, so the shells end the body at different lines and each
+// runs the git line the other keeps as text. Each line with the git calls bash 5.3 and zsh 5.9 make.
+const PUSH = 'push --no-verify origin HEAD:main'
+const HEREDOCS: [string, string[], string[]][] = [
+  ['cat <<$"E"\n$E\ngit push --no-verify origin HEAD:main\nE', [], [PUSH]],
+  ['cat <<$"E"\nE\ngit push --no-verify origin HEAD:main\n$E', [PUSH], []],
+  ['cat <<-$"E"\n$E\ngit push --no-verify origin HEAD:main\nE', [], [PUSH]],
+  ['cat <<-$"E"\nE\ngit push --no-verify origin HEAD:main\n$E', [PUSH], []],
+  ['cat <<$"E"x\n$Ex\ngit push --no-verify origin HEAD:main\nEx', [], [PUSH]],
+  ['cat <<$"E"x\nEx\ngit push --no-verify origin HEAD:main\n$Ex', [PUSH], []],
+]
+
+const HEREDOCS_ALLOWED = [
+  'cat <<EOF\nhi\nEOF',
+  'cat <<"EOF"\nhi\nEOF',
+  "cat <<'EOF'\nhi\nEOF",
+  'git commit -F - <<EOF\nmsg\nEOF',
+  'cat <<-EOF\nhi\nEOF',
+  'cat <<$"EOF"\nhi\nEOF',
+]
 
 const ALLOWED: [string, string][] = [
   ['echo $"hello"', ''],
@@ -53,9 +73,12 @@ describe('checkCommand on bash locale quoting (CC-1430)', () => {
     expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
   })
 
-  it.each(EXPANDING)('reads $"--no-%s" as it reads "--no-%s"', body => {
-    const plain = checkCommand(`git push "--no-${body}" origin HEAD:main`, ctx())
-    expect(checkCommand(`git push $"--no-${body}" origin HEAD:main`, ctx())).toBe(plain)
+  it.each(HEREDOCS.map(([src]) => src))('denies the heredoc %j', src => {
+    expect(checkCommand(src, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(HEREDOCS_ALLOWED)('allows the heredoc %j', src => {
+    expect(checkCommand(src, ctx())).toBeUndefined()
   })
 
   it.each(ALLOWED.map(([src]) => src))('allows %j', src => {
@@ -79,7 +102,12 @@ const ZSH = fs.existsSync('/bin/zsh') ? '/bin/zsh' : undefined
 /** The argument lines `shell -c src` passed the fake git. */
 function gitCalls(shell: string, args: string[], src: string): string[] {
   fs.rmSync(RECORD, { force: true })
-  execFileSync(shell, [...args, '-c', src], { env: ENV, cwd: ROOT, stdio: 'ignore' })
+  // A heredoc line the shell runs as a command, such as `E`, exits non-zero.
+  try {
+    execFileSync(shell, [...args, '-c', src], { env: ENV, cwd: ROOT, stdio: 'ignore' })
+  } catch {
+    // only the calls the fake git recorded matter
+  }
   return fs.existsSync(RECORD) ? fs.readFileSync(RECORD, 'utf8').trim().split('\n') : []
 }
 
@@ -93,6 +121,10 @@ describe.skipIf(BASH === undefined)('bash runs $"…" as a double-quoted string 
   it.each(ALLOWED.filter(([src]) => src.startsWith('git ')))('runs %j as git %j', (src, call) => {
     expect(bash(src)).toEqual([call])
   })
+
+  it.each(HEREDOCS)('runs %j as git calls %j', (src, calls) => {
+    expect(bash(src)).toEqual(calls)
+  })
 })
 
 describe.skipIf(ZSH === undefined)('zsh reads $"…" as a literal $ and a string (CC-1430)', () => {
@@ -100,5 +132,9 @@ describe.skipIf(ZSH === undefined)('zsh reads $"…" as a literal $ and a string
     expect(gitCalls(ZSH as string, ['-f'], 'git push $"--no-verify" origin HEAD:main')).toEqual([
       'push $--no-verify origin HEAD:main',
     ])
+  })
+
+  it.each(HEREDOCS)('runs %j as git calls %j', (src, _bash, calls) => {
+    expect(gitCalls(ZSH as string, ['-f'], src)).toEqual(calls)
   })
 })
