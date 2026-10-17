@@ -1,0 +1,454 @@
+[
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {},
+      },
+      "completed",
+      "late",
+    ],
+    "name": "clean resets inherited code",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+      "a..b",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {
+          "range": "a..b",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "findings return naturally",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--text-file",
+      "synthetic.txt",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "effect": {
+          "textFile": "synthetic.txt",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "cannot pass returns naturally",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+      "a..b",
+      "--text-file",
+      "synthetic.txt",
+      "--json",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "effect": {
+          "json": true,
+          "range": "a..b",
+          "textFile": "synthetic.txt",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "all options",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+      "",
+      "--text-file",
+      "",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "effect": {
+          "range": "",
+          "textFile": "",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "empty values",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+      "  ",
+      "--text-file",
+      "  ",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "effect": {
+          "range": "  ",
+          "textFile": "  ",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "whitespace values",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+      "a..b",
+      "--range",
+      "c..d",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {
+          "range": "c..d",
+        },
+      },
+      "completed",
+      "late",
+    ],
+    "name": "repeated last value",
+    "stderr": "synthetic stderr
+",
+    "stdout": "synthetic stdout
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--help",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "immediateExit": 0,
+      },
+    ],
+    "name": "help",
+    "stderr": "",
+    "stdout": "Usage: agent-chat leak-scan [options]
+
+scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass
+
+Options:
+  --range <from..to>  scan added lines, added file names and commit messages in
+                      this range
+  --text-file <file>  scan every line of a file, such as a PR body
+  --json              print one JSON object with the findings
+  -h, --help          display help for command
+",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--range",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "immediateExit": 2,
+      },
+    ],
+    "name": "missing range",
+    "stderr": "error: option '--range <from..to>' argument missing
+
+Usage: agent-chat leak-scan [options]
+
+scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass
+
+Options:
+  --range <from..to>  scan added lines, added file names and commit messages in
+                      this range
+  --text-file <file>  scan every line of a file, such as a PR body
+  --json              print one JSON object with the findings
+  -h, --help          display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--text-file",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "immediateExit": 2,
+      },
+    ],
+    "name": "missing text file",
+    "stderr": "error: option '--text-file <file>' argument missing
+
+Usage: agent-chat leak-scan [options]
+
+scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass
+
+Options:
+  --range <from..to>  scan added lines, added file names and commit messages in
+                      this range
+  --text-file <file>  scan every line of a file, such as a PR body
+  --json              print one JSON object with the findings
+  -h, --help          display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "extra",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "immediateExit": 2,
+      },
+    ],
+    "name": "excess positional",
+    "stderr": "error: too many arguments for 'leak-scan'. Expected 0 arguments but got 1: extra.
+
+Usage: agent-chat leak-scan [options]
+
+scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass
+
+Options:
+  --range <from..to>  scan added lines, added file names and commit messages in
+                      this range
+  --text-file <file>  scan every line of a file, such as a PR body
+  --json              print one JSON object with the findings
+  -h, --help          display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+      "--unknown",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "immediateExit": 2,
+      },
+    ],
+    "name": "unknown option",
+    "stderr": "error: unknown option '--unknown'
+
+Usage: agent-chat leak-scan [options]
+
+scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass
+
+Options:
+  --range <from..to>  scan added lines, added file names and commit messages in
+                      this range
+  --text-file <file>  scan every line of a file, such as a PR body
+  --json              print one JSON object with the findings
+  -h, --help          display help for command
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "Error immediate one",
+    "stderr": "synthetic failure
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "code69 immediate one",
+    "stderr": "synthetic unavailable
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw object immediate one",
+    "stderr": "{ reason: 'synthetic', items: [ 1, 2 ] }
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw array immediate one",
+    "stderr": "[ 'synthetic', 2 ]
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      {
+        "immediateExit": 1,
+      },
+    ],
+    "name": "raw string immediate one",
+    "stderr": "synthetic rejection
+",
+    "stdout": "",
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 0,
+    "events": [
+      {
+        "effect": {},
+      },
+      "completed",
+      "late",
+    ],
+    "name": "clean large pipe",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 1,
+    "events": [
+      {
+        "effect": {},
+      },
+      "completed",
+      "late",
+    ],
+    "name": "findings large pipe",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+  {
+    "argv": [
+      "leak-scan",
+    ],
+    "code": 2,
+    "events": [
+      {
+        "effect": {},
+      },
+      "completed",
+      "late",
+    ],
+    "name": "cannot pass large pipe",
+    "stderr": {
+      "bytes": 8388609,
+      "sha256": "762cc1586af2f9af77b4ad28155e3b3f3e7e49ab1802ae4b23af9b3858675538",
+    },
+    "stdout": {
+      "bytes": 8388609,
+      "sha256": "3c491c81e8a6ee4d5235b5b086fb615c0d39d44b65be69252a0e5108017facb4",
+    },
+  },
+]

@@ -12,6 +12,7 @@ import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentLsVerb } from './verbs/agent-ls.js'
+import { leakScanVerb } from './verbs/leak-scan-command.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
@@ -233,19 +234,7 @@ function addAgentCommands(program: Command): void {
       await suiteSlotCommand(command)
     })
 
-  program
-    .command('leak-scan')
-    .description('scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass')
-    .helpGroup(AGENTS)
-    .option('--range <from..to>', 'scan added lines, added file names and commit messages in this range')
-    .option('--text-file <file>', 'scan every line of a file, such as a PR body')
-    .option('--json', 'print one JSON object with the findings')
-    // A usage error must not exit 1, which means "findings".
-    .exitOverride(err => process.exit(err.exitCode === 0 ? 0 : 2))
-    .action(async (options: { range?: string; textFile?: string; json?: boolean }) => {
-      const { leakScan } = await import('./verbs/leak-scan.js')
-      process.exitCode = await leakScan(options)
-    })
+  addVerb(program, leakScanVerb, { helpGroup: AGENTS, usageExit: 2, reportExit: 'set-code' })
 
   program
     .command('pr-ready')

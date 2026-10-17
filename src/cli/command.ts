@@ -78,6 +78,8 @@ export function addVerb<Args>(
     schemaDefaults?: boolean
     /** Preserve a migrated command's natural success return and pending output. */
     exitOnSuccess?: boolean
+    /** Assign the completed report code and return naturally; takes precedence over exitOnSuccess. */
+    reportExit?: 'set-code'
   } = {},
 ): Commander {
   const sub = parent.command(
@@ -105,7 +107,16 @@ export function addVerb<Args>(
   const usageExit = options.usageExit ?? EXIT.USAGE
   if (options.usageExit !== undefined)
     sub.exitOverride(err => process.exit(err.exitCode === 0 ? 0 : usageExit))
-  sub.action(() => runVerb(verb, sub.processedArgs, sub.opts(), usageExit, options.exitOnSuccess ?? true))
+  sub.action(() =>
+    runVerb(
+      verb,
+      sub.processedArgs,
+      sub.opts(),
+      usageExit,
+      options.exitOnSuccess ?? true,
+      options.reportExit,
+    ),
+  )
   return sub
 }
 
@@ -115,6 +126,7 @@ async function runVerb<Args>(
   opts: Record<string, unknown>,
   usageExit: number,
   exitOnSuccess: boolean,
+  reportExit?: 'set-code',
 ) {
   const ctx: VerbContext = { warnings: [], format: 'human', withBroker, terminal: stdinTerminal() }
   const args = cliArgs(verb, positionals, opts)
@@ -126,6 +138,11 @@ async function runVerb<Args>(
   const report = verb.result.parse(envelope.data)
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
+  const code = report.ok ? 0 : (report.exit ?? 1)
+  if (reportExit === 'set-code') {
+    process.exitCode = code
+    return
+  }
   if (report.ok && !exitOnSuccess) return
-  process.exit(report.ok ? 0 : (report.exit ?? 1))
+  process.exit(code)
 }
