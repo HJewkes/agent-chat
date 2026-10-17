@@ -421,8 +421,9 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
-A brace expansion after `git push`, whose options alone the guard denies, is read like such a glob
-group (CC-1427): a comma list or a sequence (`{x..y}`, `{x..y..step}`) that may yield an option,
+A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
+the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
+`git fetch --upload-pac{k..k}=<cmd>` or `git init --templat{e..e}=<dir>`: a comma list or a sequence (`{x..y}`, `{x..y..step}`) that may yield an option,
 as in `--no-verif{y..y}`, `--no-verif{y,}` or `{main,--no-verify}`, is denied. So is a group that
 may expand to nothing before a `-`, as in `{,}--no-verify`, and a zsh character sequence such as
 `{+../}` whose range holds `-`. The splitter marks only an unquoted `{`, `,` or `}` as the group's
@@ -430,6 +431,21 @@ structure, so a quoted or escaped one is text, as the shell reads it: `{,x"}"}--
 after the quoted `}`. The `}` of an empty `{}` stays unmarked for find, xargs and parallel, so a `{`
 before a quoted `}`, as in `{"}",}`, is read both ways and denies if either may. git's count `-<n>`, as in `-{1..3}`, stays allowed, and a brace that yields
 no option, such as `HEAD:mai{n..n}`, is checked as the push it is.
+
+zsh's `BRACE_CCL` expands any `{chars}` into its characters, so under `zsh -o braceccl`,
+`--braceccl` or `setopt braceccl`, `{-}-no-verify` and `--no-verif{y}` are `--no-verify`. Rather
+than read every brace grammar, the guard decides whether a word may become an option at its first
+character (CC-1432). A `git push` argument led by an unquoted `{`, other than a lone `{}`, is
+denied, and so is one led by `-` that holds an unquoted `{`, git's count such as `-{1..3}` aside.
+`feat/{a,b}-x` and gh's `{owner}/{repo}` stay allowed, while a refspec led by a group, such as
+`{a,b}-x`, is denied; write it out. Off `push`, where braces in paths are common, a word led by a
+`{` denies only when it holds a `-`, and a word led by `-` only when the `{` is in the option's name
+before any `=`, so `git add {src,test}/x` and `git log --format=%H{x}` stay allowed.
+
+Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
+splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
+`--no-veri`; and the private-use characters U+E000 to U+E002 in a git argument that holds a brace
+expansion, since the brace reader uses them to mark a group's structure.
 
 bash 5.3 runs a funsub, `${ cmd;}` (`${` followed by a blank, tab or newline) or `${|cmd;}`, as
 commands in the current shell, so `echo ${ git push --no-verify;}` pushes (CC-1327). The splitter

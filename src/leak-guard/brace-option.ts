@@ -116,6 +116,27 @@ export function braceOption(marked: string): boolean {
   return readings(marked).some(spellsOption)
 }
 
+// The `{` of a lone `{}`, the one brace no shell expands, braceccl included.
+const LONE_PAIR = /^\}[^}]*$/
+// git's `-<n>` count as written, such as `-{1..3}`.
+const WRITTEN_COUNT = /^-[\d.{},]+$/
+
+/**
+ * Whether the marked word's expansion may start with `-`, decided at its first character (CC-1432)
+ * rather than by reading the group: zsh's braceccl expands any `{chars}`, so `{-}-no-verify` and
+ * `--no-verif{y}` are options too. A word led by a live `{` other than a lone `{}`, or led by `-`
+ * with a live `{` in it, counts; a count does not. Off `push`, where braces in paths are common, a
+ * `{`-led word counts only when it holds a `-`, and a `-`-led one only when the `{` is in the
+ * option's name, before any `=`, since brace expansion copies the text before the group into every word.
+ */
+export function leadsWithOption(marked: string, push: boolean): boolean {
+  const text = unmark(marked)
+  if (marked.startsWith(`${LIVE}{`)) return !LONE_PAIR.test(text.slice(1)) && (push || text.includes('-'))
+  if (!text.startsWith('-') || WRITTEN_COUNT.test(text)) return false
+  const eq = marked.indexOf('=')
+  return (push || eq < 0 ? marked : marked.slice(0, eq)).includes(`${LIVE}{`)
+}
+
 function spellsOption(text: string): boolean {
   if (![INTEGER_SEQUENCE, CHAR_SEQUENCE, BRACE_LIST].some(group => group.test(text))) return false
   if (text.startsWith('-')) return !COUNT.test(text)

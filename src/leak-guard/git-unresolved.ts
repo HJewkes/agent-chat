@@ -1,4 +1,4 @@
-import { braceOption } from './brace-option.js'
+import { braceOption, leadsWithOption } from './brace-option.js'
 import { GIT_BUILTINS, GIT_VALUE_OPTS } from './git-alias.js'
 import { CLONE_CONFIG, optionSpans } from './git-scripts.js'
 import { LIVE, NAME, unmark } from './shell-words.js'
@@ -225,7 +225,8 @@ const spellsOption = (word: string): boolean => {
 
 /**
  * Whether an argument after the subcommand may expand to an option through a glob group or bracket
- * class (CC-728), or, for `push`, whose options alone the guard denies, a brace expansion (CC-1427).
+ * class (CC-728), or a brace expansion (CC-1427, CC-1434), on every subcommand: the guard denies
+ * options of `fetch`, `pull`, `difftool` and `init` as much as of `push`.
  */
 export function hasOptionAlternation(
   marked: readonly string[],
@@ -235,8 +236,8 @@ export function hasOptionAlternation(
   const { at } = scanOptions(resolved, marked, splits)
   const sub = resolved[at]
   if (sub === undefined) return false
-  const args = marked.slice(at + 1)
-  return args.some(spellsOption) || (sub === 'push' && args.some(braceOption))
+  const push = sub === 'push'
+  return marked.slice(at + 1).some(arg => spellsOption(arg) || braceOption(arg) || leadsWithOption(arg, push))
 }
 
 /** Whether git's options hold a word the shell may split into several, which quoting would fix. */
