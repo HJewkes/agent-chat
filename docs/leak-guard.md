@@ -363,7 +363,7 @@ a line that may reach git or gh. That covers an unquoted `$F`, which may split, 
 derives as it derives git's config env: from the command's assignments (`env` included), earlier
 exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
-macOS `script [file [command ...]]`, which runs its trailing words, is not covered.
+macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
