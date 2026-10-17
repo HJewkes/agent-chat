@@ -785,6 +785,61 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     ])
   })
 
+  it('reads each process at most once in a pass however many dirs it checks (CC-1447)', () => {
+    const fs = new FakeFs()
+    for (let pid = 11; pid < 61; pid++) fs.add(`/tmp/ac-worker-${pid}`)
+    const procs: Record<number, FakeProc> = {}
+    for (let pid = 1000; pid < 1100; pid++) procs[pid] = { env: {}, cwd: '/home/example', fds: ['/dev/null'] }
+    const reads = new Map<string, number>()
+    const counted = (table: TmpProcessTable): TmpProcessTable => {
+      const count =
+        <A extends unknown[], R>(name: string, read: (...args: A) => R) =>
+        (...args: A): R => {
+          const key = `${name}:${String(args[0])}`
+          reads.set(key, (reads.get(key) ?? 0) + 1)
+          return read(...args)
+        }
+      return {
+        pids: count('pids', table.pids),
+        environ: count('environ', table.environ),
+        command: count('command', table.command),
+        parentOf: count('parentOf', table.parentOf),
+        isAlive: count('isAlive', table.isAlive),
+        cwd: count('cwd', table.cwd),
+        fds: count('fds', table.fds),
+      }
+    }
+
+    run(fs, [row('a1', 'worker', 'exited')], counted(procTable(procs)))
+
+    expect(fs.removed).toHaveLength(50)
+    expect(Math.max(...reads.values())).toBe(1)
+  })
+
+  it('reads the table afresh on the next pass, so a dir freed meanwhile goes', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11')
+    const procs = new Map<number, FakeProc>([[500, { cwd: '/tmp/ac-worker-11' }]])
+    const table = procTable({})
+    const live: TmpProcessTable = {
+      ...table,
+      pids: () => [...procs.keys()],
+      isAlive: pid => procs.has(pid),
+      cwd: pid => procs.get(pid)?.cwd,
+    }
+    const sweep = {
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs, live),
+      log: () => undefined,
+    }
+
+    sweepAgentTmpDirs(sweep)
+    procs.delete(500)
+    sweepAgentTmpDirs(sweep)
+
+    expect(fs.removed).toEqual(['/tmp/ac-worker-11'])
+  })
+
   it('removes a finished agent’s dir under each root it is given', () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11').add(DISK_ROOT).add(`${DISK_ROOT}/ac-worker-12`)
     const events: Array<[string, Record<string, unknown>]> = []

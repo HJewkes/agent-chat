@@ -375,12 +375,39 @@ function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
   logRemoval(deps.log, 'sweep', [...target.agentIds].join(','), result)
 }
 
+function memoized<T>(read: (pid: number) => T): (pid: number) => T {
+  const seen = new Map<number, T>()
+  return pid => {
+    if (!seen.has(pid)) seen.set(pid, read(pid))
+    return seen.get(pid) as T
+  }
+}
+
+/**
+ * CC-1447: each /proc entry read at most once per sweep pass. `holder` scans every process for
+ * every kept dir, so with ~770 dirs and ~2,400 processes an unshared table re-read /proc for
+ * minutes, synchronously, and the broker stopped answering frames.
+ */
+export function passSnapshot(table: TmpProcessTable): TmpProcessTable {
+  let pids: number[] | undefined
+  return {
+    pids: () => (pids ??= table.pids()),
+    environ: memoized(pid => table.environ(pid)),
+    command: memoized(pid => table.command(pid)),
+    parentOf: memoized(pid => table.parentOf(pid)),
+    isAlive: memoized(pid => table.isAlive(pid)),
+    cwd: memoized(pid => table.cwd(pid)),
+    fds: memoized(pid => table.fds(pid)),
+  }
+}
+
 /** One pass: removes the dirs of agents whose rows are finished, for launches that left one behind. */
 export function sweepAgentTmpDirs(deps: TmpSweepDeps): void {
   const names = finishedNames(deps.roster(), deps.now())
   if (names.size === 0) return
+  const pass = { ...deps, table: passSnapshot(deps.table) }
   for (const root of deps.roots ?? [TMP_ROOT]) {
-    if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) sweepRoot(root, names, deps)
+    if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) sweepRoot(root, names, pass)
   }
 }
 
