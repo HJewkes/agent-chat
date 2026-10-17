@@ -1,8 +1,9 @@
-import { seatBlocksVerb } from './verbs/seat-blocks-command.js'
-import { prReadyVerb } from './verbs/pr-ready-command.js'
 // FIRST, before anything that can touch node:sqlite — including the imports
 // below, which reach the event log transitively. See warnings.ts.
 import './warnings.js'
+
+import { seatBlocksVerb } from './verbs/seat-blocks-command.js'
+import { prReadyVerb } from './verbs/pr-ready-command.js'
 
 import { Command } from 'commander'
 import { brokerCwd } from '../agents/stable-cwd.js'
