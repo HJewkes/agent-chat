@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { markSuperseded, writeLaunchFiles } from '../agents/launch-files.js'
+import { clearSuperseded, markSuperseded, writeLaunchFiles } from '../agents/launch-files.js'
 import { surfaceFor } from '../agents/launcher.js'
 import { SENSITIVE_DIRS } from '../agents/spawn-cwd.js'
+import { findTranscript } from '../agents/transcript.js'
 import { launcherTrustRefusal } from '../agents/trust.js'
 import { surfaceBlockerFor } from '../agents/surface-resolution.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -25,6 +26,7 @@ import { buildCallerLaunch, type LocalHost } from './caller-teleport.js'
 import {
   checkLaunch,
   defaultSpawnHost,
+  isSessionId,
   placeRemoteSpawn,
   prepareRemoteSpawn,
   type SpawnHost,
@@ -56,6 +58,7 @@ export interface LauncherDeps {
   writeFiles(plan: LaunchPlan, mcpConfig: Record<string, unknown>): void
   launch(surface: SurfaceName, plan: LaunchPlan): Promise<void>
   markSuperseded(agentId: string): void
+  clearSuperseded(agentId: string): void
   /** CC-1063: this machine's launcher key, read from its 0600 file on every connect, never from env. */
   readKey(): string | null
   /** CC-1062: the shared executor's view of this machine, for a `host_spawn`. */
@@ -135,11 +138,36 @@ function resolvePaths(
 
 const refused = (reason: string): HostAnswer => ({ ok: false, reason })
 
+type TranscriptVerdict = NonNullable<HostAnswer['transcript']>
+
+/**
+ * CC-1472: the session's transcript under the account it ran on. An account the spec leaves unset
+ * is this machine's default one, never the launcher's own `CLAUDE_CONFIG_DIR`.
+ */
+function transcriptVerdict(paths: LocalPaths, sessionId: string, homeDir: string): TranscriptVerdict {
+  const found = findTranscript(paths.cwd, sessionId, paths.configDir ?? path.join(homeDir, '.claude'))
+  return { path: found.path, found: found.exists }
+}
+
+function transcriptRefusal(verdict: TranscriptVerdict, sessionId: string, host: string): string {
+  return `the transcript of session ${sessionId} is not on ${host} at ${verdict.path}`
+}
+
+function resumeAnswer(paths: LocalPaths, sessionId: string, host: string, homeDir: string): HostAnswer {
+  if (!isSessionId(sessionId))
+    return refused(`the session to resume ${JSON.stringify(sessionId)} is not a uuid`)
+  const transcript = transcriptVerdict(paths, sessionId, homeDir)
+  if (transcript.found) return { ok: true, transcript }
+  return { ok: false, reason: transcriptRefusal(transcript, sessionId, host), transcript }
+}
+
 export function answerProbe(probe: HostProbe, identity: LauncherIdentity, deps: LauncherDeps): HostAnswer {
   const surface = surfaceReason(probe.surface, identity)
   if (surface !== undefined) return refused(surface)
   const paths = resolvePaths(probe, deps.homeDir)
-  return typeof paths === 'string' ? refused(paths) : { ok: true }
+  if (typeof paths === 'string') return refused(paths)
+  if (probe.resumeSession === undefined) return { ok: true }
+  return resumeAnswer(paths, probe.resumeSession, identity.host, deps.homeDir)
 }
 
 /** This machine's env with the predecessor's account, or none when it ran on the default one. */
@@ -203,7 +231,9 @@ function spawnReason(spec: RemoteLaunch, identity: LauncherIdentity, homeDir: st
   const blocked = surfaceReason(spec.surface, identity)
   if (blocked !== undefined) return blocked
   const paths = resolvePaths({ cwd: spec.cwd, configDir: spec.configDir }, homeDir)
-  return typeof paths === 'string' ? paths : undefined
+  if (typeof paths === 'string') return paths
+  // CC-1472: checked again, since the transcript can go between the broker's probe and this launch.
+  return spec.resume === true ? resumeAnswer(paths, spec.sessionId, identity.host, homeDir).reason : undefined
 }
 
 /**
@@ -219,6 +249,8 @@ export async function answerSpawn(
 ): Promise<HostAnswer> {
   const reason = spawnReason(spec, identity, deps.homeDir)
   if (reason !== undefined) return refused(reason)
+  // CC-1472: a resume reuses the agent's permanent id, which an earlier timed-out resume here marked.
+  if (spec.resume === true) deps.clearSuperseded(spec.agentId)
   const prepared = prepareRemoteSpawn(spec, deps.spawnHost)
   if (!prepared.ok) return refused(prepared.reason)
   const failed = await within(placeRemoteSpawn(spec, prepared.plan, deps.spawnHost), budgetMs)
@@ -267,6 +299,7 @@ export const defaultLauncherDeps = (homeDir: string): LauncherDeps => ({
   writeFiles: writeLaunchFiles,
   launch: async (surface, plan) => void (await surfaceFor(surface).launch(plan)),
   markSuperseded,
+  clearSuperseded,
   readKey: ownKey,
   spawnHost: { ...defaultSpawnHost(), homeDir },
 })
