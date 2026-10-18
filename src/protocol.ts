@@ -1124,7 +1124,12 @@ export type ClientMessage =
       /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
       callerHome?: string
     }
-  | { t: 'agents'; includeRetired?: boolean }
+  /**
+   * CC-1464: `view` asks the broker to filter and cap the roster before sending it,
+   * and to count what it dropped in `hidden`. An older broker ignores it and sends
+   * the whole roster, so a client applies the same view again on receipt.
+   */
+  | { t: 'agents'; includeRetired?: boolean; view?: RosterView }
   /**
    * CC-1059: the requester checked and wrote a remote spawn's `launch` on its host (`ok`), or refused
    * it there. Accepted only from the connection that received the launch; an ok ack lets it open the
@@ -1386,7 +1391,13 @@ export type ServerMessage =
   /** CC-1059: the remote spawn's final verdict, sent once it registers, fails, or the attach window passes. */
   | ({ t: 'spawn_placed_result' } & SpawnResultFields)
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
-  | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
+  | {
+      t: 'agents_result'
+      agents: AgentIdentity[]
+      slots?: { held: number; cap: number }
+      /** CC-1464: present only when the frame carried a `view` and the broker applied it. */
+      hidden?: RosterHidden
+    }
   /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
   | {
       t: 'retire_finished_result'
@@ -1454,6 +1465,24 @@ export type ServerMessage =
  * The lifecycle an agent identity is folded into. Durable: it is a projection of
  * the event log, so it survives a broker restart in a way presence cannot.
  */
+/** CC-1464: what an `agents` frame's `view` asks the broker to cut before it replies. */
+export interface RosterView {
+  /** Only agents spawned by this name. */
+  spawner?: string
+  prefix?: string
+  includeFinished?: boolean
+  includeRetired?: boolean
+  /** Rows kept from the front of the roster, which is newest first. */
+  limit?: number
+}
+
+/** CC-1464: how many rows each cut dropped, so a reader knows the page is not the whole roster. */
+export interface RosterHidden {
+  finished: number
+  retired: number
+  overLimit: number
+}
+
 export const AGENT_LIFECYCLES = ['spawning', 'live', 'detached', 'exited', 'retired'] as const
 
 export type AgentLifecycle = (typeof AGENT_LIFECYCLES)[number]
