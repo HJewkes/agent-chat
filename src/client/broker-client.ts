@@ -13,6 +13,9 @@ import {
   type ServerMessage,
 } from '../protocol.js'
 import { withoutLaunchIdentity } from '../launch-identity.js'
+import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
+import { RetryKeys } from './retry-keys.js'
+import { timeoutAdvice } from './timeout-advice.js'
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
@@ -60,13 +63,26 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
 /** Timed-out request ids remembered so their late replies are dropped; bounded against a broker that never answers. */
 const MAX_TIMED_OUT_RIDS = 256
 
-/** A broker request that got no reply in time. The message is unchanged so `startsWith` checks keep matching. */
+/** A broker request that got no reply in time. The message keeps its prefix so `startsWith` checks keep matching. */
 export class BrokerTimeoutError extends Error {
   override readonly name = 'BrokerTimeoutError'
-  constructor(readonly replyType: ReplyType) {
-    super(`broker did not answer ${replyType}`)
+  constructor(
+    readonly replyType: ReplyType,
+    advice?: string,
+  ) {
+    super(`broker did not answer ${replyType}${advice === undefined ? '' : `: ${advice}`}`)
   }
 }
+
+/** A keyed frame as written, with the fingerprint its key is remembered under (CC-1454). */
+interface Keyed {
+  frame: KeyedFrame
+  fingerprint: string
+  nonce: string
+}
+
+const isKeyable = (message: ClientMessage): message is KeyedFrame =>
+  (message.t === 'send' || message.t === 'resume') && message.nonce === undefined
 
 /** Retries `call` after each delay while it fails on a broker timeout; any other error is thrown at once. */
 export async function retryOnBrokerTimeout<T>(
@@ -179,6 +195,7 @@ export class BrokerClient {
   private nextRid = 1
   /** Ids of requests that timed out, whose replies may still arrive and must answer nothing. */
   private readonly timedOut = new Set<number>()
+  private readonly retryKeys = new RetryKeys()
 
   /**
    * `onFatal` fires when the broker says stop rather than retry. The only sender
@@ -422,6 +439,8 @@ export class BrokerClient {
       const socket = this.socket
       if (!socket) return reject(new Error('not connected to the broker'))
 
+      const keyed = this.stampKey(message)
+      const sentAt = Date.now()
       const queue = this.waiters.get(replyType) ?? []
       const rid = this.nextRid++
       // Cleared on reply, otherwise a resolved request would hold the event
@@ -431,13 +450,14 @@ export class BrokerClient {
         if (index === -1) return
         queue.splice(index, 1)
         this.forgetTimedOut(rid)
-        reject(new BrokerTimeoutError(replyType))
+        reject(this.timeoutError(replyType, keyed, sentAt))
       }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
 
       const waiter: Waiter = {
         rid,
         resolve: msg => {
           clearTimeout(timer)
+          if (keyed) this.retryKeys.settled(keyed.fingerprint)
           resolve(msg)
         },
         reject: err => {
@@ -447,8 +467,25 @@ export class BrokerClient {
       }
       queue.push(waiter)
       this.waiters.set(replyType, queue)
-      socket.write(encode({ ...message, rid }))
+      socket.write(encode({ ...(keyed?.frame ?? message), rid }))
     })
+  }
+
+  /** CC-1454: a `send` or `resume` the caller left unkeyed gets a key, reused if an identical one timed out. */
+  private stampKey(message: ClientMessage): Keyed | undefined {
+    if (!isKeyable(message)) return undefined
+    const fingerprint = requestFingerprint(message)
+    const nonce = this.retryKeys.keyFor(fingerprint)
+    return { frame: { ...message, nonce }, fingerprint, nonce }
+  }
+
+  private timeoutError(replyType: ReplyType, keyed: Keyed | undefined, sentAt: number): BrokerTimeoutError {
+    if (keyed === undefined) return new BrokerTimeoutError(replyType)
+    this.retryKeys.rememberTimedOut(keyed.fingerprint, keyed.nonce)
+    return new BrokerTimeoutError(
+      replyType,
+      timeoutAdvice(keyed.frame, keyed.nonce, sentAt, this.identity?.name),
+    )
   }
 
   close(): void {
