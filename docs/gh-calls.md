@@ -60,8 +60,8 @@ The shim on a spawned agent's PATH writes one line per real-gh call, with `calle
   `error` from the exit code. Commands that never reach GitHub (`help`, `version`, `config`, ...) get
   no line. On a terminal the streams stay inherited and only the exit status is logged.
 
-The burndown tick writes one `rate-limit` line per tick from `gh api rate_limit`, which does not count
-against the limit.
+A `rate-limit` line with a `limits` field is still read when one exists. GET `rate_limit` rows record no
+`remaining`, so the reader takes the reading from the per-call `remaining` and `resource` fields instead.
 
 ## Reading it
 
@@ -70,7 +70,7 @@ agent-chat gh-calls [--since 24h] [--top 5] [--json]
 ```
 
 Prints the call count in the window, the top callers and top `method route` pairs, the newest
-`rate-limit` reading, and refused calls (403 and 429) split by limit:
+`rate-limit` reading when one exists, the window's min and latest `remaining` per resource, and refused calls (403 and 429) split by limit:
 
 - **secondary**: the writer read a secondary-limit message, or the call had quota left (`remaining > 0`).
 - **primary**: the writer read a primary-limit message, or `remaining` was `0`.
