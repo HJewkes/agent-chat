@@ -540,6 +540,7 @@ function remoteSpawnMeta(
     coordinator_depth: String(lineage.coordinatorDepth),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+    ...callerAgentMeta(req),
     ...launchMeta(req),
     // The worktree half of provenance reads git on this host, which holds no copy of that cwd.
     ...assignmentMeta(req, profile.name),
@@ -657,6 +658,8 @@ export interface SpawnRequest {
   tier?: number
   /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
   spawnedAs?: 'burndown' | 'shepherd'
+  /** CC-1206: an agent the broker found behind an unregistered CLI spawn; such a spawn is not the human's. */
+  callerAgent?: string
   /** CC-915: the task id this agent runs; required for a burndown spawn. */
   task?: string
   /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
@@ -696,6 +699,10 @@ export interface SpawnRequest {
 }
 
 /** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
+/** CC-1206: the agent found behind a CLI spawn the row would otherwise credit to the human. */
+const callerAgentMeta = (req: { callerAgent?: string }): Record<string, string> =>
+  req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }
+
 const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
   req.launchedBy === undefined
     ? {}
@@ -933,8 +940,12 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   return { tokens, usd_est, usage, models, price_table }
 }
 
-/** Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`. */
-const isHumanSpawn = (req: SpawnRequest): boolean => req.requestedBy === HUMAN && req.spawnedAs === undefined
+/**
+ * Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`.
+ * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
+ */
+const isHumanSpawn = (req: SpawnRequest): boolean =>
+  req.requestedBy === HUMAN && req.spawnedAs === undefined && req.callerAgent === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1993,7 +2004,9 @@ export class Supervisor implements TeleportHost {
     const refused = !human && this.profileDriftMode === 'refuse'
     logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
-      return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
+      return {
+        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code`,
+      }
     if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
     return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
@@ -2716,6 +2729,7 @@ export class Supervisor implements TeleportHost {
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
         // CC-802: stored so the retire row names the same spawner as the dispatched one.
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+        ...callerAgentMeta(req),
         ...launchMeta(req),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
