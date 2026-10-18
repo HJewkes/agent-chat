@@ -124,9 +124,9 @@ describe('a surface switch and a resume on one agent', () => {
     const resuming = sup.resume('seat-x')
     await vi.waitFor(() => expect(launcher.launches()).toBe(1))
 
-    const refused = await surface()
+    const surfacing = surface()
     launcher.open()
-    const resumed = await resuming
+    const [refused, resumed] = await Promise.all([surfacing, resuming])
     await recordExit()
     const later = await surface()
 
@@ -143,9 +143,9 @@ describe('a surface switch and a resume on one agent', () => {
     const switching = surface()
     await vi.waitFor(() => expect(launcher.launches()).toBe(1))
 
-    const refused = await sup.resume('seat-x')
+    const resumeRetry = sup.resume('seat-x')
     launcher.open()
-    const switched = await switching
+    const [refused, switched] = await Promise.all([resumeRetry, switching])
     await recordExit()
     const later = await sup.resume('seat-x')
 
@@ -164,9 +164,9 @@ describe('two resume_session spawns on one session', () => {
     const first = spawnOn('seat-x', SESSION)
     await vi.waitFor(() => expect(launcher.launches()).toBe(1))
 
-    const refused = await spawnOn('seat-y', SESSION)
+    const second = spawnOn('seat-y', SESSION)
     launcher.open()
-    const spawned = await first
+    const [refused, spawned] = await Promise.all([second, first])
     const later = await spawnOn('seat-z', SESSION)
 
     expect(refused).toMatchObject({ ok: false })
@@ -198,11 +198,12 @@ describe('two resume_session spawns on one session', () => {
     const resuming = sup.resume('seat-x')
     await vi.waitFor(() => expect(launcher.launches()).toBe(1))
 
-    const refused = await spawnOn('seat-y', SEAT_SESSION)
+    const spawning = spawnOn('seat-y', SEAT_SESSION)
     launcher.open()
+    const [refused, resumed] = await Promise.all([spawning, resuming])
 
     expect(refused.reason).toMatch(new RegExp(`^session ${SEAT_SESSION} is already launching for seat-x`))
-    expect(await resuming).toMatchObject({ ok: true })
+    expect(resumed).toMatchObject({ ok: true })
     expect(launcher.launches()).toBe(1)
   })
 })
