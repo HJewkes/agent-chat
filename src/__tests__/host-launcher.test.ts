@@ -3,6 +3,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { transcriptPath } from '../agents/transcript.js'
 import type { LaunchPlan } from '../agents/types.js'
 import { helloProof } from '../broker/launcher-key.js'
 import { encode, lineReader, type ClientMessage, type RemoteLaunch, type ServerMessage } from '../protocol.js'
@@ -43,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -101,6 +103,7 @@ function fakeDeps(
   const launched: { surface: string; plan: LaunchPlan }[] = []
   const written: LaunchPlan[] = []
   const superseded: string[] = []
+  const cleared: string[] = []
   const { spawnHost, calls: spawned } = fakeSpawnHost(launch)
   const deps: LauncherDeps = {
     homeDir: home,
@@ -112,10 +115,11 @@ function fakeDeps(
       await launch(plan)
     },
     markSuperseded: agentId => void superseded.push(agentId),
+    clearSuperseded: agentId => void cleared.push(agentId),
     readKey,
     spawnHost,
   }
-  return { deps, launched, written, superseded, spawned }
+  return { deps, launched, written, superseded, cleared, spawned }
 }
 
 describe('a host_launch spec', () => {
@@ -442,6 +446,147 @@ describe('handleHostFrame', () => {
     expect(launched).toHaveLength(1)
     expect(superseded).toEqual(['abcd1234'])
     expect(sent).toEqual([])
+  })
+})
+
+describe('a host resume (CC-1472)', () => {
+  const SESSION = spec().sessionId
+
+  const resumeSpec = (over: Partial<RemoteLaunch> = {}): RemoteLaunch => {
+    const { successorFirst: _teleportOnly, ...launch } = spec({ surface: 'headless', brief: 'carry on' })
+    return { ...launch, resume: true, ...over }
+  }
+
+  const writeTranscript = (account: string): string => {
+    const file = transcriptPath(cwd, SESSION, account)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    return file
+  }
+
+  it("finds the transcript under the probe's account, not the launcher's own", () => {
+    const file = writeTranscript(configDir)
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'headless', resumeSession: SESSION }, LINUX, deps)
+
+    expect(answer).toEqual({ ok: true, transcript: { path: file, found: true } })
+  })
+
+  it('refuses a probe whose transcript is missing, naming where it looked', () => {
+    const { deps } = fakeDeps()
+    const expected = transcriptPath(cwd, SESSION, configDir)
+
+    const answer = answerProbe({ cwd, configDir, surface: 'headless', resumeSession: SESSION }, LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer.reason).toContain(expected)
+    expect(answer.transcript).toEqual({ path: expected, found: false })
+  })
+
+  it("looks in the home's .claude for an unset account, whatever the launcher's own variable says", () => {
+    vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(home, 'elsewhere'))
+    const file = writeTranscript(path.join(home, '.claude'))
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, surface: 'headless', resumeSession: SESSION }, LINUX, deps)
+
+    expect(answer).toEqual({ ok: true, transcript: { path: file, found: true } })
+  })
+
+  it('refuses a session id that is not a uuid before it reaches a path', () => {
+    const { deps } = fakeDeps()
+
+    const answer = answerProbe({ cwd, configDir, surface: 'headless', resumeSession: '../x' }, LINUX, deps)
+
+    expect(answer).toEqual({ ok: false, reason: 'the session to resume "../x" is not a uuid' })
+  })
+
+  it('launches with --resume on the same session and feeds a headless one its brief', async () => {
+    writeTranscript(configDir)
+    const { deps, spawned } = fakeDeps()
+
+    const answer = await answerSpawn(resumeSpec(), LINUX, deps)
+
+    expect(answer).toEqual({ ok: true })
+    const plan = spawned.launched[0]?.plan
+    expect(plan?.args).toContain('--resume')
+    expect(plan?.args[plan.args.indexOf('--resume') + 1]).toBe(SESSION)
+    expect(plan?.args).not.toContain('--session-id')
+    expect(plan?.stdin).toBe('carry on')
+  })
+
+  it('checks the transcript again at launch, and writes nothing when it has gone since the probe', async () => {
+    const file = writeTranscript(configDir)
+    const { deps, spawned } = fakeDeps()
+    const probe = answerProbe({ cwd, configDir, surface: 'headless', resumeSession: SESSION }, LINUX, deps)
+    fs.rmSync(file)
+
+    const answer = await answerSpawn(resumeSpec(), LINUX, deps)
+
+    expect(probe.ok).toBe(true)
+    expect(answer).toEqual({
+      ok: false,
+      reason: `the transcript of session ${SESSION} is not on ${LINUX.host} at ${file}`,
+    })
+    expect(spawned.written).toEqual([])
+    expect(spawned.launched).toEqual([])
+  })
+
+  it('clears a superseded mark an earlier resume left on the id, and a fresh spawn never does', async () => {
+    writeTranscript(configDir)
+    const { deps, cleared } = fakeDeps()
+    const { resume: _resume, ...fresh } = resumeSpec()
+
+    await answerSpawn(fresh, LINUX, deps)
+    const afterSpawn = [...cleared]
+    await answerSpawn(resumeSpec(), LINUX, deps)
+
+    expect(afterSpawn).toEqual([])
+    expect(cleared).toEqual(['abcd1234'])
+  })
+
+  it.each([
+    ['an agent id that is not one', { agentId: '../../../etc/x' }],
+    ['a name that would steer a path', { name: 'a/b' }],
+  ])('leaves the superseded mark alone for a resume refused for %s', async (_case, over) => {
+    writeTranscript(configDir)
+    const { deps, cleared, spawned } = fakeDeps()
+
+    const answer = await answerSpawn(resumeSpec(over), LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(cleared).toEqual([])
+    expect(spawned.launched).toEqual([])
+  })
+
+  it('relays the transcript verdict on host_probe_result', async () => {
+    const file = writeTranscript(configDir)
+    const { deps } = fakeDeps()
+    const sent: ClientMessage[] = []
+    const link = { send: (frame: ClientMessage) => void sent.push(frame), isOpen: () => true }
+    const probe = { cwd, configDir, surface: 'headless' as const, resumeSession: SESSION }
+
+    await handleHostFrame({ t: 'host_probe', id: 'p2', probe }, LINUX, deps, link)
+
+    expect(sent).toEqual([
+      { t: 'host_probe_result', id: 'p2', ok: true, transcript: { path: file, found: true } },
+    ])
+  })
+
+  it('leaves a probe and a spawn that ask for no resume exactly as before', async () => {
+    const { deps, spawned, cleared } = fakeDeps()
+    const { resume: _resume, ...fresh } = resumeSpec()
+
+    const probe = answerProbe({ cwd, configDir, surface: 'headless' }, LINUX, deps)
+    const answer = await answerSpawn(fresh, LINUX, deps)
+
+    expect(probe).toEqual({ ok: true })
+    expect(answer).toEqual({ ok: true })
+    const plan = spawned.launched[0]?.plan
+    expect(plan?.args[plan.args.indexOf('--session-id') + 1]).toBe(SESSION)
+    expect(plan?.args).not.toContain('--resume')
+    expect(cleared).toEqual([])
   })
 })
 

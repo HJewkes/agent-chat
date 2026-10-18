@@ -28,6 +28,8 @@ export interface LauncherEntry extends LauncherHello {
 export interface HostAnswer {
   ok: boolean
   reason?: string
+  /** CC-1472: where a probe looked for the session it was asked to resume, and whether it was there. */
+  transcript?: { path: string; found: boolean }
 }
 
 /** A frame the broker asks a launcher to act on; `id` pairs it with the answer. */
