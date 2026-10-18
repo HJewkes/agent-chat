@@ -1,5 +1,11 @@
 import type { AgentEventRow, EventStore } from '../broker/event-store.js'
-import type { AgentIdentity, AgentLifecycle, AgentOrigin } from '../protocol.js'
+import {
+  launcherOf,
+  type AgentIdentity,
+  type AgentLifecycle,
+  type AgentOrigin,
+  type Launcher,
+} from '../protocol.js'
 import { inferWorkRole } from './spawn-provenance.js'
 
 /**
@@ -78,6 +84,7 @@ const spawnedFields = (row: AgentEventRow, id: string): Omit<AgentIdentity, 'bri
   state: 'spawning',
   origin: originOf(row),
   spawnedBy: row.actor,
+  ...launchedByOf(row),
   spawnedAt: row.ts,
   cwd: row.meta.cwd ?? '',
   isolation: row.meta.isolation ?? '',
@@ -95,6 +102,12 @@ const spawnedFields = (row: AgentEventRow, id: string): Omit<AgentIdentity, 'bri
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
 })
+
+/** CC-1466: the automation that ran a human-requested spawn, beside `spawnedBy` and never in place of it. */
+function launchedByOf(row: AgentEventRow): { launchedBy?: Launcher } {
+  const launchedBy = launcherOf(row.meta.launched_by)
+  return launchedBy === undefined ? {} : { launchedBy }
+}
 
 /** CC-915: rows written before the fields existed get an inferred role and no worktree provenance. */
 function provenanceOf(row: AgentEventRow): Partial<AgentIdentity> {

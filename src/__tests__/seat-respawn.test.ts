@@ -54,6 +54,7 @@ const incident: SeatRelaunchPlan = {
   account: { configDir: PERSONAL, poolDir: PERSONAL, profile: 'operator', cwd: '/home/example/elsewhere' },
   message: 'Watchdog: resume',
   fresh: 'HANDOFF',
+  reason: 'relaunch: no log line for 40 min and no live session',
 }
 
 /** CC-1053: teleport 140 is the owner's `claude --resume` of a session a spawned row of the seat ran as. */
@@ -92,6 +93,9 @@ describe('respawnSeat', () => {
         returnContract: 'none',
         cwd: SEAT_CWD,
         resumeSession: '7016a7ee',
+        launchedBy: 'seat-watchdog',
+        launchReason: 'relaunch: no log line for 40 min and no live session',
+        lineageFrom: '7b1a88f1',
       },
     ])
     expect(out).toEqual({
@@ -370,7 +374,12 @@ describe('respawnSeat', () => {
       configDir: PERSONAL,
     })
     expect(b.frames[2]).not.toHaveProperty('resumeSession')
-    expect(out).toEqual({ ok: true, detail: `relaunched fresh on ${PERSONAL}, tmux-window (seat file)` })
+    expect(out).toEqual({
+      ok: true,
+      detail:
+        `relaunched fresh on ${PERSONAL}, tmux-window (seat file); ` +
+        'the previous conversation is lost, the seat starts on its handoff',
+    })
   })
 
   // CC-1053, catches: lineage read from every row the broker returns rather than the seat's own.

@@ -97,6 +97,11 @@ const notSeen = (names: string[], msgId: string | undefined): string =>
   `NOT SEEN: ${names.join(', ')} — a print-mode (claude -p) session takes no pushes, so the message ` +
   `(msg_id ${msgId}) is only in its inbox and it sees it only if it calls chat_inbox. Do not wait on a reply`
 
+/** CC-1455: a print-mode recipient whose inbox hook shows the spooled message when it next acts. */
+const queuedFor = (names: string[], msgId: string | undefined): string =>
+  `queued for ${names.join(', ')}'s next tool call (msg_id ${msgId}); a print-mode (claude -p) session sees ` +
+  'it then, or at its next prompt'
+
 /**
  * A multicast reports per recipient, because "ok" over a list of names hides the
  * one that failed — and the sender's next move (chase that peer, or not) depends
@@ -108,11 +113,12 @@ function formatFanout(results: RecipientResult[], msgId: string | undefined, rea
   // a sender that reads only the first clause would wait for a reply that
   // nothing is going to prompt (CC-73).
   const took = results.filter(r =>
-    ['delivered', 'held', 'no_channel', 'headless_no_channel'].includes(r.status),
+    ['delivered', 'held', 'no_channel', 'headless_no_channel', 'queued'].includes(r.status),
   )
   const missed = results.filter(r => !took.includes(r))
   const unseen = took.filter(r => r.status === 'headless_no_channel')
-  const reached = took.filter(r => !unseen.includes(r))
+  const queued = took.filter(r => r.status === 'queued')
+  const reached = took.filter(r => !unseen.includes(r) && !queued.includes(r))
   const parts: string[] = []
   if (reached.length > 0) parts.push(`Delivered to ${reached.map(r => r.name).join(', ')} (msg_id ${msgId})`)
   const held = took.filter(r => r.status === 'held')
@@ -122,6 +128,13 @@ function formatFanout(results: RecipientResult[], msgId: string | undefined, rea
     parts.push(
       `NOT WOKEN: ${unwoken.map(r => r.name).join(', ')} — started without agent-chat on --channels, so the ` +
         'message sits in the inbox unread until that session next looks. Do not wait on a reply',
+    )
+  if (queued.length > 0)
+    parts.push(
+      queuedFor(
+        queued.map(r => r.name),
+        msgId,
+      ),
     )
   if (unseen.length > 0)
     parts.push(
@@ -155,6 +168,7 @@ function describeFirstSend(res: SendResult, { to, toTag }: Target): string {
   if (Array.isArray(to)) return formatFanout(res.results ?? [], res.msgId, res.reason)
   if (res.held) return `Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`
   if (res.results?.[0]?.status === 'headless_no_channel') return `${notSeen([`"${to}"`], res.msgId)}.`
+  if (res.results?.[0]?.status === 'queued') return `Message ${queuedFor([`"${to}"`], res.msgId)}.`
   return `Delivered to "${to}" (msg_id ${res.msgId}).`
 }
 

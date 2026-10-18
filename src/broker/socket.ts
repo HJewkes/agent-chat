@@ -7,7 +7,10 @@ import {
   HUMAN,
   isAnswerChannel,
   isAgentTeleportReason,
+  LAUNCH_REASON_MAX,
+  launcherOf,
   SURFACE_NAMES,
+  type Launcher,
   type ClientMessage,
   type Correlated,
   type DeliveredMessage,
@@ -97,6 +100,17 @@ const spawnedAsOf = (msg: {
   return spawnedAs === undefined ? {} : { spawnedAs }
 }
 
+/** CC-1466: an allow-listed launcher and its reason, cut to one bounded line; a reason alone is dropped. */
+export const launchFieldsOf = (msg: {
+  launchedBy?: unknown
+  launchReason?: unknown
+}): { launchedBy?: Launcher; launchReason?: string } => {
+  const launchedBy = launcherOf(msg.launchedBy)
+  if (launchedBy === undefined) return {}
+  const reason = typeof msg.launchReason === 'string' ? msg.launchReason.replace(/\s+/g, ' ').trim() : ''
+  return { launchedBy, ...(reason === '' ? {} : { launchReason: reason.slice(0, LAUNCH_REASON_MAX) }) }
+}
+
 /**
  * The request being handled, carried across its awaits (CC-1343), so every one of
  * the reply sites echoes its id without threading it through each handler. Only a
@@ -153,17 +167,21 @@ const replyHeld = (conn: Conn, to: string, msgId: string): void => {
 
 /**
  * CC-1455: the route row's `delivered` says whether any recipient will see the push, not just that
- * one was resolved. A print-mode host takes the row but never shows it, so it counts for nothing.
+ * one was resolved. A print-mode host takes the row but never shows it, so it counts for nothing;
+ * one that spools it for its inbox hook is named in `queued`, still not delivered yet.
  */
 const routeDelivery = (
   result: RouteResult<Conn>,
-): { delivered: boolean; reason?: string; unwoken?: string[] } => {
-  const unwoken = result.results.filter(r => r.status === 'headless_no_channel').map(r => r.name)
-  const delivered = result.ok && result.recipients.length > unwoken.length
-  if (unwoken.length === 0) return { delivered }
+): { delivered: boolean; reason?: string; unwoken?: string[]; queued?: string[] } => {
+  const named = (status: string): string[] => result.results.filter(r => r.status === status).map(r => r.name)
+  const unwoken = named('headless_no_channel')
+  const queued = named('queued')
+  const delivered = result.ok && result.recipients.length > unwoken.length + queued.length
+  const spooled = queued.length === 0 ? {} : { queued }
+  if (unwoken.length === 0) return { delivered, ...spooled }
   return result.recipients.length === 1
     ? { delivered, reason: 'headless_no_channel' }
-    : { delivered, unwoken }
+    : { delivered, unwoken, ...spooled }
 }
 
 /** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
@@ -506,6 +524,8 @@ export class SocketServer {
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
       ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
+      ...(requestedBy === HUMAN ? launchFieldsOf(msg) : {}),
+      ...(typeof msg.lineageFrom === 'string' ? { lineageFrom: msg.lineageFrom } : {}),
       // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
@@ -1011,6 +1031,7 @@ export class SocketServer {
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(requester === undefined ? launchFieldsOf(msg) : {}),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -2035,6 +2056,7 @@ export class SocketServer {
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
             ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+            ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>
             reply(conn, {

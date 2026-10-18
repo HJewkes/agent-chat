@@ -38,7 +38,15 @@ import {
   transcriptLine,
   type ProfileIndex,
 } from '../agents/transcript.js'
-import { SURFACE_NAMES, type AgentIdentity, type ServerMessage, type SurfaceName } from '../protocol.js'
+import {
+  LAUNCHERS,
+  launcherOf,
+  SURFACE_NAMES,
+  type AgentIdentity,
+  type Launcher,
+  type ServerMessage,
+  type SurfaceName,
+} from '../protocol.js'
 import { InvalidArgumentError } from 'commander'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
@@ -258,6 +266,7 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     transcriptPath: agent.sessionId === '' ? null : transcript.path,
     transcriptExists: transcript.exists,
     spawnedBy: agent.spawnedBy,
+    launchedBy: agent.launchedBy ?? null,
     account: agent.configDir || null,
     generation: agent.generation,
     teleportFrom: agent.teleportFrom ?? null,
@@ -408,6 +417,13 @@ export function parseSpawnedAs(value: string): SpawnedAs {
   return spawnedAs
 }
 
+/** The commander parser for `--launched-by` (CC-1466): only the automations on `LAUNCHERS`. */
+export function parseLauncher(value: string): Launcher {
+  const launcher = launcherOf(value)
+  if (launcher === undefined) throw new InvalidArgumentError(`one of: ${LAUNCHERS.join(', ')}`)
+  return launcher
+}
+
 /**
  * CC-1206: the agent identity a spawned agent's shell carries (`launch-plan.ts` sets both), so an
  * agent's CLI spawn without `--spawned-as` is not taken for the human's. It only lowers trust: an
@@ -444,6 +460,8 @@ export async function agentSpawn(
     spawnedAs?: SpawnedAs
     remoteControl?: boolean
     host?: string
+    launchedBy?: Launcher
+    launchReason?: string
   } = {},
 ): Promise<void> {
   let brief: string
@@ -467,6 +485,8 @@ export async function agentSpawn(
       ...(options.role === undefined ? {} : { workRole: options.role }),
       ...(options.surface === undefined ? {} : { surface: options.surface }),
       ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+      ...(options.launchedBy === undefined ? {} : { launchedBy: options.launchedBy }),
+      ...(options.launchReason === undefined ? {} : { launchReason: options.launchReason }),
       ...callerAgentField(process.env),
       ...(options.remoteControl === true ? { remoteControl: true } : {}),
       ...(process.env.CLAUDE_CONFIG_DIR === undefined

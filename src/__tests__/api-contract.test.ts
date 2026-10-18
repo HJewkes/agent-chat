@@ -82,6 +82,8 @@ const KINDS_AT_FREEZE = [
   'seat_activity',
   // CC-1092, added through this test. A seat's denied pane question; rendered generically. Not subscribable.
   'seat_ask_denied',
+  // CC-1455, added through this test. A print-mode session's inbox hook receipt; rendered generically. Not subscribable.
+  'inbox_shown',
 ]
 
 describe('SSE event names cover every EventKind', () => {

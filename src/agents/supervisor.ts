@@ -13,6 +13,7 @@ import {
   type AgentIdentity,
   type ExperimentArm,
   type IsolationName,
+  type Launcher,
   type RemoteLaunch,
   type Subscription,
   type SurfaceName,
@@ -303,6 +304,13 @@ const KILL_GRACE_MS = 3000
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
 
+/**
+ * CC-1468: how long a resume waits on a park of its tree before refusing. A resume answers on
+ * `spawn_result`, whose client ceiling is 60s, and the launch after the wait can take the 30s
+ * attach window, so this leaves the launch its time inside that ceiling.
+ */
+const PARK_WAIT_MS = 20_000
+
 /** CC-402: the pause before a teleport successor's one relaunch retry, so a surface that just failed can come back. */
 export const RELAUNCH_RETRY_MS = 10_000
 
@@ -520,6 +528,7 @@ function remoteSpawnMeta(
     coordinator_depth: String(lineage.coordinatorDepth),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+    ...launchMeta(req),
     // The worktree half of provenance reads git on this host, which holds no copy of that cwd.
     ...assignmentMeta(req, profile.name),
     host: draft.site.host,
@@ -667,6 +676,26 @@ export interface SpawnRequest {
   host?: string
   /** CC-1059: the requester's home, which a cwd on its host must sit under. */
   callerHome?: string
+  /** CC-1466: the automation behind a human-requested spawn; written to the row, read by no gate. */
+  launchedBy?: Launcher
+  launchReason?: string
+  /** CC-1466: an earlier identity of this name whose depth and coordinator depth the spawn keeps. */
+  lineageFrom?: string
+}
+
+/** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
+const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
+  req.launchedBy === undefined
+    ? {}
+    : {
+        launched_by: req.launchedBy,
+        ...(req.launchReason === undefined ? {} : { launch_reason: req.launchReason }),
+      }
+
+/** A recorded depth that only raises `computed`, so naming an earlier identity never lifts a cap. */
+function raised(computed: number, recorded: string | undefined): number {
+  const value = Number.parseInt(recorded ?? '', 10)
+  return Number.isFinite(value) ? Math.max(computed, value) : computed
 }
 
 export type SpawnRefusalCode =
@@ -746,6 +775,8 @@ export interface SpawnOutcome {
 export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
   /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
   checkProcesses?: boolean
+  /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
+  noFixRoundCheck?: boolean
 }
 
 export interface ResumeRequest {
@@ -763,6 +794,9 @@ export interface ResumeRequest {
   remoteControl?: boolean
   /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
   cause?: typeof BACKGROUND_RESUME
+  /** CC-1466: as on {@link SpawnRequest}. */
+  launchedBy?: Launcher
+  launchReason?: string
 }
 
 interface Live {
@@ -800,6 +834,8 @@ export interface SupervisorOptions {
   attachCeilingMs?: number
   /** CC-1059: how long a remote spawn's ready report may take. Shortened in tests. */
   remoteReportMs?: number
+  /** CC-1468: how long a resume waits on a park of its tree. Shortened in tests. */
+  parkWaitMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
    * reaches the real AppleScript and opens a real window on any machine that
@@ -1028,8 +1064,9 @@ export class Supervisor implements TeleportHost {
   /** CC-881: a remote successor's session id, held between its plan and its host's report. */
   private readonly remoteSessions = new Map<string, string>()
   private readonly cwdLister: CwdLister
-  /** CC-282: agents mid-park, to the canonical tree being removed. */
-  private readonly parking = new Map<string, string>()
+  /** CC-282: agents mid-park, to the canonical tree being removed; CC-1468: and the park's end, for a resume to wait on. */
+  private readonly parking = new Map<string, { tree: string; done: Promise<void> }>()
+  private readonly parkWaitMs: number
   /** CC-1456: agents with a resume in flight, to when it started. */
   private readonly resuming = new Map<string, number>()
   /** CC-1457: session ids with a launch in flight, to the name launching it and when it started. */
@@ -1084,6 +1121,7 @@ export class Supervisor implements TeleportHost {
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
     this.attachCeilingMs = options.attachCeilingMs ?? ATTACH_CEILING_MS
+    this.parkWaitMs = options.parkWaitMs ?? PARK_WAIT_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
@@ -1894,6 +1932,19 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-1466: a seat relaunch keeps where its earlier identity sat. Only an identity of the same name
+   * counts, and each depth only rises, so the carry can tighten the coordinator cap but never loosen it.
+   */
+  private lineageOf(req: SpawnRequest, computed: Lineage): Lineage {
+    const row = req.lineageFrom === undefined ? undefined : this.spawnEventOf(req.lineageFrom)
+    if (row === undefined || row.target !== req.name) return computed
+    return {
+      depth: raised(computed.depth, row.meta.depth),
+      coordinatorDepth: raised(computed.coordinatorDepth, row.meta.coordinator_depth ?? row.meta.depth),
+    }
+  }
+
+  /**
    * The requester's role and coordinator depth, read from its own spawn row so
    * both survive its spawner. No parent is a human-started root; a parent with
    * no row resolves to a worker, because a cap that opens on missing data is not one.
@@ -2134,10 +2185,10 @@ export class Supervisor implements TeleportHost {
 
     const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
-    const lineage: Lineage = {
+    const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
-    }
+    })
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
@@ -2651,6 +2702,7 @@ export class Supervisor implements TeleportHost {
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
         // CC-802: stored so the retire row names the same spawner as the dispatched one.
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+        ...launchMeta(req),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
         // CC-1059: where it launched, so a later reader can tell a remote agent from a local one.
@@ -3293,23 +3345,43 @@ export class Supervisor implements TeleportHost {
     const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
     const blocked = this.parkBlockerFor(identity.agentId, target)
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
-    this.parking.set(identity.agentId, canonicalPath(target.worktree))
+    let settle = (): void => undefined
+    const done = new Promise<void>(resolve => (settle = resolve))
+    this.parking.set(identity.agentId, { tree: canonicalPath(target.worktree), done })
     try {
-      const fixRound = this.shepherdSkip && (await fixRoundBlocker(this.shepherdSkip, identity, target))
-      if (fixRound) return { ok: false, reason: fixRound }
-      const parked = await parkWorktree(
-        target,
-        () => this.parkBlockerFor(identity.agentId, target),
-        identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
-      )
-      if (!parked.ok) return parked
-      this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
-      return {
-        ok: true,
-        reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
-      }
+      return await this.parkTree(name, identity, target, req)
     } finally {
       this.parking.delete(identity.agentId)
+      settle()
+    }
+  }
+
+  /**
+   * The entry is set before the fix-round check, not after: a spawn into the tree registers as
+   * its tenant only after several awaits, so the occupancy re-check before removal cannot see
+   * one that got past `parkingRefusal`. CC-1468: it is dropped once the removal answers, and the
+   * row is written in the same turn, so a resume woken by `done` reads it.
+   */
+  private async parkTree(
+    name: string,
+    identity: AgentIdentity,
+    target: ParkTarget,
+    req: ParkRequest,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
+    const fixRound = check && (await fixRoundBlocker(check, identity, target))
+    if (fixRound) return { ok: false, reason: fixRound }
+    const parked = await parkWorktree(
+      target,
+      () => this.parkBlockerFor(identity.agentId, target),
+      identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
+    )
+    this.parking.delete(identity.agentId)
+    if (!parked.ok) return parked
+    this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
+    return {
+      ok: true,
+      reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
     }
   }
 
@@ -3438,7 +3510,7 @@ export class Supervisor implements TeleportHost {
   private parkingRefusal(dir: string | undefined): string | undefined {
     if (dir === undefined) return undefined
     const at = canonicalPath(dir)
-    for (const tree of this.parking.values())
+    for (const { tree } of this.parking.values())
       if (isAtOrUnder(at, tree)) return `${tree} is being parked; try again once the park finishes`
     return undefined
   }
@@ -3661,6 +3733,7 @@ export class Supervisor implements TeleportHost {
    * outcome carries the verdict either way so the caller never has to guess.
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
+    await this.parkSettled(this.core.agents.byName(name)?.cwd)
     const drained = this.drainRefusal()
     if (drained) return { ok: false, ...drained }
     const identity = this.core.agents.byName(name)
@@ -3672,6 +3745,23 @@ export class Supervisor implements TeleportHost {
       this.resumingRefusal(identity)
     if (refused) return { ok: false, reason: refused }
     return this.holdingLaunch(identity, () => this.resumeUnguarded(identity, req))
+  }
+
+  /**
+   * CC-1468: a resume into a tree mid-park waits for that park, then runs every check afresh:
+   * a park that removed the tree has written its `isolation_parked` row, so the tree is
+   * re-created, and a refused one left it in place. The wait takes no launch hold, and park
+   * never waits on one, so the two cannot deadlock; past `parkWaitMs`, `parkingRefusal` answers.
+   */
+  private async parkSettled(dir: string | undefined): Promise<void> {
+    if (!dir) return
+    const at = canonicalPath(dir)
+    const pending = [...this.parking.values()].filter(p => isAtOrUnder(at, p.tree)).map(p => p.done)
+    if (pending.length === 0) return
+    let timer: NodeJS.Timeout | undefined
+    const bound = new Promise<void>(resolve => (timer = setTimeout(resolve, this.parkWaitMs)))
+    await Promise.race([Promise.all(pending), bound])
+    clearTimeout(timer)
   }
 
   /**
@@ -3926,6 +4016,7 @@ export class Supervisor implements TeleportHost {
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
+        ...launchMeta(req),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },
