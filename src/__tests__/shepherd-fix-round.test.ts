@@ -159,6 +159,91 @@ describe('parking while a Shepherd run is in a fix round', () => {
   })
 })
 
+describe('a resume issued while park waits on the fix-round check (CC-1468)', () => {
+  const gated = (): { release: (r: ShepherdRun[]) => void } => {
+    let release: (r: ShepherdRun[]) => void = () => undefined
+    const gate = new Promise<ShepherdRun[]>(resolve => (release = resolve))
+    runs = () => gate
+    return { release }
+  }
+  const parkedRows = (agentId: string) =>
+    core.events.agentEvents().filter(row => row.kind === 'isolation_parked' && row.ref === agentId)
+
+  it('waits for the park to remove the tree, then resumes into a re-created one', async () => {
+    const agent = await finishedPushed('impl')
+    const { release } = gated()
+
+    const parking = sup.park('impl')
+    const resuming = sup.resume('impl')
+    release([run({ phase: 'review' })])
+    const [parked, resumed] = await Promise.all([parking, resuming])
+
+    expect(parked.ok).toBe(true)
+    expect(parkedRows(agent.agentId)).toHaveLength(1)
+    expect(resumed.reason).toBeUndefined()
+    expect(resumed.ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('waits for a park the fix round refuses, then resumes in the tree it left', async () => {
+    const agent = await finishedPushed('impl')
+    const { release } = gated()
+
+    const parking = sup.park('impl')
+    const resuming = sup.resume('impl')
+    release([run()])
+    const [parked, resumed] = await Promise.all([parking, resuming])
+
+    expect(parked.ok).toBe(false)
+    expect(parkedRows(agent.agentId)).toHaveLength(0)
+    expect(resumed.ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses the resume once the wait passes its bound, and leaves the park running', async () => {
+    sup.close()
+    sup = new Supervisor(core, {
+      cwdLister: async () => [],
+      shepherdSkip: port,
+      parkWaitMs: 50,
+      surface: {
+        platform: 'linux',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+      },
+    })
+    await finishedPushed('impl')
+    const { release } = gated()
+
+    const parking = sup.park('impl')
+    const resumed = await sup.resume('impl')
+    release([run({ phase: 'review' })])
+
+    expect(resumed).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
+    expect((await parking).ok).toBe(true)
+  })
+
+  it('still refuses a spawn into the tree while the fix-round check runs', async () => {
+    const agent = await finishedPushed('impl')
+    const { release } = gated()
+
+    const parking = sup.park('impl')
+    const during = await sup.spawn({
+      name: 'agent-x',
+      profile: 'explorer',
+      brief: 'do the task',
+      requestedBy: 'human',
+      cwd: agent.cwd,
+      worktree: agent.cwd,
+      surface: 'headless',
+      spawnerConfigDir: tmp('fix-round-account-'),
+    })
+    release([])
+    await parking
+
+    expect(during).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
+  })
+})
+
 describe('fixRoundBlocker', () => {
   const agent = { name: 'impl' } as AgentIdentity
 
