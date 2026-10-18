@@ -249,7 +249,11 @@ describe('the pass lines', () => {
 
   it('prints nothing when there was nothing to retire', async () => {
     const lines = await staleRetirePass({
-      retireStale: async () => ({ ok: true, plan: [{ name: 'agent-x', action: 'skip', reason: 'r' }], results: [] }),
+      retireStale: async () => ({
+        ok: true,
+        plan: [{ name: 'agent-x', action: 'skip', reason: 'r' }],
+        results: [],
+      }),
     })
 
     expect(lines).toEqual([])
