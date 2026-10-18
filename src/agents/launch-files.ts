@@ -5,6 +5,7 @@ import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName, SurfaceName } from '../protocol.js'
+import { inboxSpoolDir } from '../server/inbox-spool.js'
 import type { Allocation } from './isolation/index.js'
 import { readLaunchPlan as readPlanFile, relaunchScript } from '@titan-design/agent-surface'
 import { defaultConfigDir } from './config-dir.js'
@@ -120,6 +121,28 @@ const seatHookEntry = (entry: string, phase: 'pre' | 'post' | 'end', matcher?: s
   ],
 })
 
+const INBOX_HOOK_TIMEOUT_S = 10
+
+/** CC-1455 S6 turns this on; until then a turn end shows nothing and claims nothing. */
+const INBOX_STOP_BLOCKS = false
+
+/**
+ * CC-1455: a print-mode session drops channel pushes, so its MCP server spools them and
+ * this hook shows them. It runs on every tool call, so the guard uses only shell builtins
+ * and execs node only when a record is waiting. The glob stays outside the quotes.
+ */
+export function inboxHookCommand(entry: string, agentId: string, phase: 'post' | 'prompt' | 'stop'): string {
+  const verb = `${shellQuote(process.execPath)} ${shellQuote(entry)} inbox-hook ${shellQuote(agentId)} ${phase}`
+  const block = phase === 'stop' && INBOX_STOP_BLOCKS ? ' --block' : ''
+  return `for f in ${shellQuote(inboxSpoolDir(agentId))}/*.json; do [ -e "$f" ] && exec ${verb}${block}; break; done`
+}
+
+const inboxHookEntry = (entry: string, agentId: string, phase: 'post' | 'prompt' | 'stop'): HookEntry => ({
+  hooks: [
+    { type: 'command', command: inboxHookCommand(entry, agentId, phase), timeout: INBOX_HOOK_TIMEOUT_S },
+  ],
+})
+
 /**
  * CC-1056: the block instrument. A question opens a block at PreToolUse and closes it at
  * PostToolUse; a prompt, stop or session end also closes it, since an interrupted question
@@ -128,11 +151,18 @@ const seatHookEntry = (entry: string, phase: 'pre' | 'post' | 'end', matcher?: s
 function seatHooks(
   entry: string,
   staleGuard: { UserPromptSubmit?: HookEntry[] },
+  agentId?: string,
 ): Record<string, HookEntry[]> {
+  const inbox = (phase: 'post' | 'prompt' | 'stop'): HookEntry[] =>
+    agentId === undefined ? [] : [inboxHookEntry(entry, agentId, phase)]
   return {
-    PostToolUse: [seatHookEntry(entry, 'post', 'AskUserQuestion')],
-    UserPromptSubmit: [...(staleGuard.UserPromptSubmit ?? []), seatHookEntry(entry, 'end')],
-    Stop: [seatHookEntry(entry, 'end')],
+    PostToolUse: [seatHookEntry(entry, 'post', 'AskUserQuestion'), ...inbox('post')],
+    UserPromptSubmit: [
+      ...(staleGuard.UserPromptSubmit ?? []),
+      ...inbox('prompt'),
+      seatHookEntry(entry, 'end'),
+    ],
+    Stop: [seatHookEntry(entry, 'end'), ...inbox('stop')],
     SessionEnd: [seatHookEntry(entry, 'end')],
   }
 }
@@ -205,7 +235,7 @@ export function buildHookSettings(
   ]
   const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
   if (permissionTimeoutSeconds === undefined)
-    return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard) } }
+    return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard, agentId) } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const pinArgs =
     selfGrant === undefined
@@ -216,7 +246,7 @@ export function buildHookSettings(
     ...account,
     hooks: {
       PreToolUse: pretool,
-      ...seatHooks(entry, staleGuard),
+      ...seatHooks(entry, staleGuard, agentId),
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],

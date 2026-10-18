@@ -181,7 +181,10 @@ describe('agent_list carries budget per row', () => {
     const readsFor = async (agents: AgentIdentity[]): Promise<{ out: string; reads: number }> => {
       const readFileSpy = vi.spyOn(fs, 'readFileSync')
       const out = textOf(
-        await new ToolHandler(stubBroker({ t: 'agents_result', agents })).handle('agent_list', {}),
+        await new ToolHandler(stubBroker({ t: 'agents_result', agents })).handle('agent_list', {
+          include_finished: true,
+          include_retired: true,
+        }),
       )
       // Read the call history before restoring: mockRestore() also clears it.
       const reads = readFileSpy.mock.calls.filter(c => String(c[0]).includes('sess-retired')).length
@@ -257,7 +260,7 @@ describe('agent_list at the scale a long-lived machine actually reaches', () => 
     )
 
     const handler = new ToolHandler(stubBroker({ t: 'agents_result', agents: [...nonLive, ...live] }))
-    const out = textOf(await handler.handle('agent_list', {}))
+    const out = textOf(await handler.handle('agent_list', { include_finished: true, limit: 500 }))
 
     // One live row has a reading, the other 33 do not — every non-live row is
     // silent either way.

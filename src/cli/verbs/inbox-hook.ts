@@ -33,25 +33,27 @@ function hookOutput(phase: InboxHookPhase, context: string): string {
 /**
  * The hook's stdout, or '' when there is nothing to show. A superseded identity
  * claims nothing, and a Stop re-entry never blocks again, so a turn always ends.
+ * A Stop without `stopBlocks` claims nothing either: the next prompt shows the spool.
  */
 export function inboxHookOutput(
   agentId: string,
   phase: string,
   raw: string,
   deps: DrainDeps = {},
+  stopBlocks = false,
 ): { out: string; claimed: string[] } {
   const none = { out: '', claimed: [] }
   if (!isPhase(phase) || fs.existsSync(supersededMarkerPath(agentId))) return none
-  if (phase === 'stop' && stopHookActive(raw)) return none
+  if (phase === 'stop' && (!stopBlocks || stopHookActive(raw))) return none
   const drained = drainInbox(inboxSpoolDir(agentId), deps)
   if (drained.blocks.length === 0) return none
   return { out: hookOutput(phase, [HEADER, ...drained.blocks].join('\n\n')), claimed: drained.claimed }
 }
 
-/** `agent-chat inbox-hook <agentId> <post|prompt|stop>`: never fails the tool call (same posture as seat-hook). */
-export async function inboxHook(agentId: string, phase: string): Promise<void> {
+/** `agent-chat inbox-hook <agentId> <post|prompt|stop> [--block]`: never fails the tool call (same posture as seat-hook). */
+export async function inboxHook(agentId: string, phase: string, block = false): Promise<void> {
   try {
-    const { out, claimed } = inboxHookOutput(agentId, phase, await readStdin())
+    const { out, claimed } = inboxHookOutput(agentId, phase, await readStdin(), {}, block)
     if (out === '') return
     process.stdout.write(`${out}\n`)
     releaseClaims(claimed)
