@@ -3267,7 +3267,7 @@ describe('a failed spawn and its name', () => {
     const again = await sup.spawn(spawnReq({ name: 'done' }))
 
     expect(again.ok).toBe(false)
-    expect(again.reason).toMatch(/held by a live agent/)
+    expect(again.reason).toContain(`held by ${first.agentId} (exited since `)
   })
 })
 

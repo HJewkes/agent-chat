@@ -315,6 +315,15 @@ export function pairPresence(agent: AgentIdentity, presence: PresenceInput): Ros
 }
 
 /**
+ * CC-1453: the broker launched this identity from a plan it can rebuild: a
+ * spawn, or any teleport successor. A successor of a hand-started session is
+ * recorded as adopted, because it keeps that session's inherited configuration,
+ * but it was still launched here, so it resolves by name like a spawn does.
+ */
+export const launchedByBroker = (agent: AgentIdentity): boolean =>
+  agent.origin === 'spawned' || agent.teleportFrom !== undefined
+
+/**
  * Query surface over the identity rows. Holds no state: every call re-reads and
  * re-folds, so it can never drift from the log the way a cached aggregate would.
  */
@@ -344,15 +353,15 @@ export class AgentLog {
   /**
    * The most recently spawned identity still holding `name`.
    *
-   * Adopted identities are deliberately not matched. This is what `retire` and
-   * `resume` resolve through, and neither is meaningful for a session the broker
-   * did not launch: there is no launch plan to relaunch and no isolation to
-   * release. It also keeps them out of the name lease below — nothing can bring
-   * an adopted identity back under its name, so leasing one past its process
-   * would block a spawn on that name forever.
+   * Only identities the broker launched are matched (`launchedByBroker`). This
+   * is what `retire` and `resume` resolve through, and neither is meaningful for
+   * a session the broker did not launch: there is no launch plan to relaunch and
+   * no isolation to release. It also keeps them out of the name lease below —
+   * nothing can bring a hand-started session back under its name, so leasing one
+   * past its process would block a spawn on that name forever.
    */
   byName(name: string): AgentIdentity | undefined {
-    return this.all().find(a => a.name === name && a.origin === 'spawned' && a.state !== 'retired')
+    return this.all().find(a => a.name === name && launchedByBroker(a) && a.state !== 'retired')
   }
 
   /**
@@ -367,7 +376,19 @@ export class AgentLog {
    */
   supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
     return this.all().find(
-      a => a.name === agent.name && a.spawnedAt > agent.spawnedAt && a.provisionalName !== true,
+      a =>
+        a.name === agent.name &&
+        a.spawnedAt > agent.spawnedAt &&
+        a.provisionalName !== true &&
+        !this.neverRan(a),
+    )
+  }
+
+  /** CC-1453: a teleport successor retired before it ever attached never held the conversation, so it supersedes nothing. */
+  private neverRan(agent: AgentIdentity): boolean {
+    return (
+      agent.state === 'retired' &&
+      !this.events.agentEventsFor(agent.agentId).some(row => row.kind === 'agent_attached')
     )
   }
 
@@ -396,10 +417,15 @@ export class AgentLog {
    * retired a corpse by hand.
    */
   nameIsClaimed(name: string): boolean {
-    return this.all().some(
+    return this.nameHolder(name) !== undefined
+  }
+
+  /** The identity holding the name lease `nameIsClaimed` describes, so a refusal can say who it is. */
+  nameHolder(name: string): AgentIdentity | undefined {
+    return this.all().find(
       a =>
         a.name === name &&
-        a.origin === 'spawned' &&
+        launchedByBroker(a) &&
         a.state !== 'retired' &&
         !(a.state === 'exited' && a.exit?.failedToStart === true),
     )
