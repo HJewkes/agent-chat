@@ -273,6 +273,13 @@ function restrictToOwner(file: string): void {
   fs.chmodSync(path.dirname(file), 0o700)
 }
 
+/** Frozen because the cache hands the same row to every caller; a mutation would leak into later folds. */
+const toCachedAgentRow = (row: Row): AgentEventRow => {
+  const agentRow = toAgentEventRow(row)
+  Object.freeze(agentRow.meta)
+  return Object.freeze(agentRow)
+}
+
 const toLogged = (row: Row): LoggedEventRow => ({
   id: row.id,
   kind: row.kind as EventKind,
@@ -290,6 +297,8 @@ export class EventLog implements EventStore {
   private readonly noticeTtlMs: () => number
   /** The newest log id when this log was opened, and when: for the broker, its boot. */
   private readonly opened: { id: number; at: number }
+  /** CC-1459: the agent rows read so far, and the log's highest id when they were read. */
+  private agentCache: { rows: AgentEventRow[]; throughId: number } = { rows: [], throughId: 0 }
 
   constructor(dbPath?: string, options: { noticeTtlMs?: () => number } = {}) {
     this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
@@ -858,12 +867,25 @@ export class EventLog implements EventStore {
    *
    * TP-801: `NOT INDEXED` reads the rowid scan, which is already in id order; the
    * `events_kind` IN-walk is not, and needs a temp B-tree sort of every agent row.
+   *
+   * CC-1459: rows are only ever appended, so each call reads just the rowid range past
+   * the last one and keeps the rest from before; a full scan per call was ~188 MB of reads.
+   * The range comes from the db, not from `append`, so rows other processes wrote are seen.
+   * `high` is read first: ids follow commit order, so nothing at or below it can commit
+   * after it. Inside an open transaction the tail may yet roll back, so it is not kept.
    */
   agentEvents(): AgentEventRow[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM events NOT INDEXED WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
-      .all() as unknown as Row[]
-    return rows.map(toAgentEventRow)
+    const high = this.latestId()
+    const raw = this.db
+      .prepare(
+        `SELECT * FROM events NOT INDEXED WHERE id > ? AND kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`,
+      )
+      .all(this.agentCache.throughId) as unknown as Row[]
+    const tail = raw.map(toCachedAgentRow)
+    if (this.db.isTransaction) return this.agentCache.rows.concat(tail)
+    for (const row of tail) this.agentCache.rows.push(row)
+    this.agentCache.throughId = Math.max(high, this.agentCache.throughId, raw.at(-1)?.id ?? 0)
+    return this.agentCache.rows.slice()
   }
 
   /** CC-476: one agent's rows, by the same id rule as `groupByAgent`, so a lookup skips the full fold. */
@@ -916,6 +938,7 @@ export class EventLog implements EventStore {
   }
 
   close(): void {
+    this.agentCache = { rows: [], throughId: 0 }
     this.db.close()
   }
 }

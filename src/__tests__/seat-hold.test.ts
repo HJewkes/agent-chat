@@ -201,6 +201,25 @@ describe('the dark-seat hold', () => {
     expect(routeFailures()).toBe(1)
   })
 
+  // CC-1452. Catches: handleHumanSend dropping the hold's refusal for a fixed 'no active session'.
+  it('tells the human why a seat dark for 25 hours took no hold, and records why without the text', () => {
+    seatGoesDark()
+    const human = wire()
+    at(T0 + 25 * 60 * MINUTE)
+
+    server.handleMessage(human.conn, { t: 'human_send', to: SEAT, text: 'are you there' })
+    const result = human.frames.at(-1) as SendResult
+
+    expect(result).toMatchObject({ t: 'send_result', ok: false, recipients: [] })
+    expect(result.reason).toContain('dark too long')
+    const failed = core.events.history(1000).filter(item => item.kind === 'route_failed')
+    expect(failed).toEqual([
+      expect.objectContaining({ from: 'human', meta: { held: 'refused', target: SEAT } }),
+    ])
+    expect(failed[0]?.text).toContain('dark too long')
+    expect(JSON.stringify(failed)).not.toContain('are you there')
+  })
+
   it('leaves a held message older than the age bound in the inbox instead of pushing it', () => {
     seatGoesDark()
     send(join('rev-one'), SEAT, 'stale report')
