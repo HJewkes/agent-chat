@@ -159,6 +159,39 @@ describe('parking while a Shepherd run is in a fix round', () => {
   })
 })
 
+describe('a park Shepherd asks for itself (CC-1470)', () => {
+  let reads: number
+  beforeEach(() => {
+    reads = 0
+  })
+  const counted = (answer: ShepherdRun[]) => () => {
+    reads += 1
+    return Promise.resolve(answer)
+  }
+
+  it('parks without reading Shepherd when told to skip the fix-round check', async () => {
+    const agent = await finishedPushed('impl')
+    runs = counted([run()])
+
+    const parked = await sup.park('impl', { noFixRoundCheck: true })
+
+    expect(parked.ok).toBe(true)
+    expect(reads).toBe(0)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('reads Shepherd and refuses a fix round when not told to skip', async () => {
+    const agent = await finishedPushed('impl')
+    runs = counted([run()])
+
+    const parked = await sup.park('impl', { noFixRoundCheck: false })
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/is in a fix round/) })
+    expect(reads).toBe(1)
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+})
+
 describe('a resume issued while park waits on the fix-round check (CC-1468)', () => {
   const gated = (): { release: (r: ShepherdRun[]) => void } => {
     let release: (r: ShepherdRun[]) => void = () => undefined

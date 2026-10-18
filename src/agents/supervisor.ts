@@ -753,6 +753,8 @@ export interface SpawnOutcome {
 export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
   /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
   checkProcesses?: boolean
+  /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
+  noFixRoundCheck?: boolean
 }
 
 export interface ResumeRequest {
@@ -3322,7 +3324,8 @@ export class Supervisor implements TeleportHost {
     target: ParkTarget,
     req: ParkRequest,
   ): Promise<{ ok: boolean; reason?: string }> {
-    const fixRound = this.shepherdSkip && (await fixRoundBlocker(this.shepherdSkip, identity, target))
+    const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
+    const fixRound = check && (await fixRoundBlocker(check, identity, target))
     if (fixRound) return { ok: false, reason: fixRound }
     const parked = await parkWorktree(
       target,

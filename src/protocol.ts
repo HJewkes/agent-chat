@@ -1165,8 +1165,11 @@ export type ClientMessage =
    * The reply then echoes it, so a caller can tell a broker that ignored it and retired by name.
    */
   | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
-  /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
-  | { t: 'park'; name: string }
+  /**
+   * CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`.
+   * CC-1470: `noFixRoundCheck` skips the Shepherd fix-round check, for Shepherd's own parks.
+   */
+  | { t: 'park'; name: string; noFixRoundCheck?: boolean }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
   | { t: 'retire_finished'; spawner?: string; prefix?: string; dryRun?: boolean }
   /**

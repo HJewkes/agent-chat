@@ -1252,7 +1252,7 @@ Commands:
   ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
   retire [options] [name...]                   release isolation, end the process, and free the name
-  park <name>                                  remove an exited agent's clean, pushed worktree and
+  park [options] <name>                        remove an exited agent's clean, pushed worktree and
                                                keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
                                                (headless by default)
@@ -1315,7 +1315,9 @@ Usage: agent-chat agent park [options] <name>
 remove an exited agent's clean, pushed worktree and keep its branch
 
 Options:
-  -h, --help  display help for command
+  --no-fix-round-check  skip asking Shepherd whether the agent's run is in a fix round (for
+                        Shepherd's own parks)
+  -h, --help            display help for command
 
 === agent-chat agent resume
 Usage: agent-chat agent resume [options] <name>

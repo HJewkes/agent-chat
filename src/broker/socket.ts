@@ -2035,6 +2035,7 @@ export class SocketServer {
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
             ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+            ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>
             reply(conn, {

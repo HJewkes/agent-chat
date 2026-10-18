@@ -1525,6 +1525,12 @@ its branch and pushed. Ignored files block the removal unless they are `node_mod
 file at any depth (a directory so named is searched, not trusted), or a top-level `.claude`
 (CC-334).
 
+Park also refuses while the agent's Shepherd run is in a fix round (CC-754). Shepherd's own
+parks pass `--no-fix-round-check` (`noFixRoundCheck: true` on the `park` frame), so the
+broker does not call back into `shepherd status` while Shepherd waits on it (CC-1470). A
+resume of the tree issued during a park waits up to 20s for the park to finish, then resumes
+from what the park left; a spawn into the tree is still refused until the park ends (CC-1468).
+
 Retire at the final report (CC-921) is off by default. Set `autoRetire.onFinalReport` in
 `~/.agent-chat/config.json` to `true` for every spawner, or to a list of spawner names, for
 example `"autoRetire": { "onFinalReport": ["my-coordinator"] }`. The key is read on each exit,
