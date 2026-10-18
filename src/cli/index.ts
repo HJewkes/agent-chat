@@ -372,6 +372,14 @@ function addHiddenCommands(program: Command): void {
     staleSessionGuard(agentId)
   })
 
+  // Run by Claude Code as a spawned agent's tool, prompt and turn-end hook (CC-1455), never by a person.
+  program
+    .command('inbox-hook <agentId> <phase>', { hidden: true })
+    .action(async (agentId: string, phase: string) => {
+      const { inboxHook } = await import('./verbs/inbox-hook.js')
+      await inboxHook(agentId, phase)
+    })
+
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
   program
     .command('leak-guard', { hidden: true })
