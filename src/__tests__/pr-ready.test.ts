@@ -84,12 +84,12 @@ type Override = (line: string, args: string[], cwd: string) => Promise<RunResult
 /** Real git; every package-manager call is recorded and answered from `failing`. */
 function recorder(failing: string[], override?: Override) {
   const calls: string[] = []
-  const run: Run = async (cmd, args, cwd) => {
+  const run: Run = async (cmd, args, cwd, env) => {
     const line = [cmd, ...args].join(' ')
     calls.push(line)
     const overridden = override?.(line, args, cwd)
     if (overridden) return overridden
-    if (cmd === 'git') return spawnRun(cmd, args, cwd)
+    if (cmd === 'git') return spawnRun(cmd, args, cwd, env)
     return failing.includes(line)
       ? { code: 1, output: `synthetic failure: ${line}` }
       : { code: 0, output: '' }
@@ -291,6 +291,71 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.toolCalls).toEqual([])
     expect(rebaseInProgress(work)).toBe(false)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
+  })
+})
+
+describe('pr-ready rebase identity', () => {
+  it('keeps the branch identity on rewritten commits when the configured identity differs', async () => {
+    const work = fixtureRepo({}, { 'f.txt': 'f\n' })
+    const scout = { GIT_COMMITTER_NAME: 'scout', GIT_COMMITTER_EMAIL: 'scout@example.invalid' }
+    for (const name of ['one', 'two']) {
+      writeFiles(work, { [`${name}.txt`]: `${name}\n` })
+      git(work, 'add', '-A')
+      execFileSync('git', ['commit', '-q', '-m', name], {
+        cwd: work,
+        env: {
+          ...process.env,
+          ...scout,
+          GIT_AUTHOR_NAME: 'scout',
+          GIT_AUTHOR_EMAIL: 'scout@example.invalid',
+        },
+      })
+    }
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(git(work, 'log', '--format=%cn %ce', 'refs/remotes/origin/main..HEAD')).toBe(
+      'scout scout@example.invalid\nscout scout@example.invalid\nscout scout@example.invalid',
+    )
+  })
+
+  it('uses the author identity when the HEAD committer was already tainted by an earlier rebase', async () => {
+    const work = fixtureRepo({}, { 'f.txt': 'f\n' })
+    writeFiles(work, { 'one.txt': 'one\n' })
+    git(work, 'add', '-A')
+    execFileSync('git', ['commit', '-q', '-m', 'one'], {
+      cwd: work,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'scout',
+        GIT_AUTHOR_EMAIL: 'scout@example.invalid',
+        GIT_COMMITTER_NAME: 'stale',
+        GIT_COMMITTER_EMAIL: 'stale@example.invalid',
+      },
+    })
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(git(work, 'log', '--format=%cn %ce', 'refs/remotes/origin/main..HEAD')).toBe(
+      'scout scout@example.invalid\nscout scout@example.invalid',
+    )
+  })
+
+  it('warns and keeps the configured committer when HEAD identity cannot be read', async () => {
+    const work = fixtureRepo({}, { 'f.txt': 'f\n' })
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+    const override: Override = line =>
+      line.startsWith('git log -1') ? { code: 1, output: 'synthetic failure' } : undefined
+
+    const result = await runPrReady(work, [], {}, { override })
+
+    expect(result.code).toBe(0)
+    expect(result.errLines.join('\n')).toContain("could not read HEAD's identity")
+    expect(git(work, 'log', '-1', '--format=%ce')).toBe('fixture@example.invalid')
   })
 })
 
