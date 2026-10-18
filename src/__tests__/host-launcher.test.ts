@@ -44,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -490,7 +491,6 @@ describe('a host resume (CC-1472)', () => {
 
     const answer = answerProbe({ cwd, surface: 'headless', resumeSession: SESSION }, LINUX, deps)
 
-    vi.unstubAllEnvs()
     expect(answer).toEqual({ ok: true, transcript: { path: file, found: true } })
   })
 
