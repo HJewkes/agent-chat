@@ -4,8 +4,15 @@ import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BudgetRead } from '../agents/budget.js'
+import { BrokerCore, type Conn } from '../broker/core.js'
+import { EventLog } from '../broker/event-log.js'
+import { Registry } from '../broker/registry.js'
+import { SocketServer } from '../broker/socket.js'
+import { seatTarget } from '../agents/seats/seat-target.js'
+import type { AgentIdentity, ClientMessage, ServerMessage } from '../protocol.js'
+import { autoAttach } from './broker-harness.js'
 import {
   appendSeatLog,
   isWatchedSeat,
@@ -723,6 +730,7 @@ describe('seat liveness (CC-320)', () => {
           account: expect.objectContaining({ configDir: PERSONAL, profile: 'lead' }),
           message: RESUME_MESSAGE,
           fresh: 'HANDOFF',
+          reason: expect.stringMatching(/^resume: /),
         },
       },
     ])
@@ -1833,7 +1841,14 @@ describe('wakeSeat', () => {
     const c = client({ t: 'spawn_result', ok: true })
     await wakeSeat(c.client, 's', 'Watchdog: x', false)
     expect(c.frames).toEqual([
-      { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
+      {
+        t: 'resume',
+        name: 's',
+        surface: 'headless',
+        message: 'Watchdog: x',
+        source: 'watchdog',
+        launchedBy: 'seat-watchdog',
+      },
     ])
   })
 
@@ -1846,7 +1861,14 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(c.frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
+      {
+        t: 'resume',
+        name: 's',
+        surface: 'iterm-window',
+        source: 'watchdog',
+        launchedBy: 'seat-watchdog',
+        remoteControl: true,
+      },
       { t: 'human_send', to: 's', text: 'Watchdog: x', source: 'watchdog' },
     ])
     expect(woke).toEqual({ ok: true, detail: 'resumed on iterm-window (seat file); message m2' })
@@ -1889,8 +1911,22 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
-      { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
+      {
+        t: 'resume',
+        name: 's',
+        surface: 'iterm-window',
+        source: 'watchdog',
+        launchedBy: 'seat-watchdog',
+        remoteControl: true,
+      },
+      {
+        t: 'resume',
+        name: 's',
+        surface: 'headless',
+        message: 'Watchdog: x',
+        source: 'watchdog',
+        launchedBy: 'seat-watchdog',
+      },
     ])
     expect(woke).toEqual({
       ok: true,
@@ -1936,6 +1972,7 @@ describe('wakeSeat', () => {
       surface: 'headless',
       message: 'Watchdog: x',
       source: 'watchdog',
+      launchedBy: 'seat-watchdog',
     })
     expect(woke).toEqual({
       ok: true,
@@ -2248,6 +2285,123 @@ describe('a resume whose launch throws (CC-326)', () => {
     expect(lines[0]?.[0]).toContain('resume failed: spawn claude ENOENT')
     expect(lines[7]?.[0]).toContain('try 8 of 8 after a failed resume; resume FAILED')
     expect(lines[9]?.[0]).toContain('not resumed: 8 resume attempts failed this dark episode')
+  })
+})
+
+/** CC-1466: the relaunch row over the real socket handler and supervisor, as the watchdog's CLI connection sends it. */
+describe('a watchdog relaunch row (CC-1466)', () => {
+  const SEAT_NAME = 'seat-a'
+  const REASON = 'relaunch: no log line for 40 min and no live session'
+  const dirs: string[] = []
+  let core: BrokerCore
+  let server: SocketServer
+  let stopAutoAttach: () => void
+
+  const tmp = (prefix: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    dirs.push(dir)
+    return dir
+  }
+  let home: string
+  const underHome = (name: string): string => {
+    const dir = path.join(home, '.profiles', name)
+    fs.mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  beforeEach(() => {
+    home = tmp('ac-relaunch-home-')
+    // A worker thread's HOME is its own copy, so the config dir check reads os.homedir() past it.
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const bus = tmp('ac-relaunch-bus-')
+    process.env.AGENT_CHAT_HOME = bus
+    core = new BrokerCore(() => undefined, {
+      events: new EventLog(path.join(bus, 'events.db')),
+      registry: new Registry<Conn>(),
+    })
+    stopAutoAttach = autoAttach(core)
+    const liveChild = () => ({ pid: 4242, unref: () => undefined, once: () => undefined })
+    server = new SocketServer(core, { surface: { platform: 'linux', spawn: liveChild } })
+  })
+
+  afterEach(() => {
+    stopAutoAttach()
+    server.close()
+    vi.restoreAllMocks()
+    delete process.env.AGENT_CHAT_HOME
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** An unregistered connection per request, as the watchdog's `agent-chat` CLI has. */
+  const cliClient = (): BrokerClient => {
+    const request = async (frame: ClientMessage, expected: ServerMessage['t']) => {
+      const replies: ServerMessage[] = []
+      const write = (chunk: string) => {
+        for (const line of chunk.split('\n').filter(Boolean)) replies.push(JSON.parse(line) as ServerMessage)
+        return true
+      }
+      server.handleMessage({ write, end: () => undefined } as unknown as Conn, frame)
+      return vi.waitFor(() => {
+        const found = replies.find(r => r.t === expected)
+        if (found === undefined) throw new Error(`no ${expected} yet`)
+        return found
+      })
+    }
+    return { request } as unknown as BrokerClient
+  }
+
+  /** The seat's earlier generation: a coordinator's spawn two links deep, on another account, now exited. */
+  const previousSeat = (configDir: string): string => {
+    const { msgId } = core.append({
+      kind: 'agent_spawned',
+      actor: 'seat-lead',
+      target: SEAT_NAME,
+      body: 'a seat',
+      meta: {
+        name: SEAT_NAME,
+        profile: 'explorer',
+        surface: 'headless',
+        isolation: 'none',
+        cwd: tmp('ac-relaunch-ws-'),
+        session_id: 'sess-1',
+        config_dir: configDir,
+        parent: 'lead-1',
+        depth: '2',
+        role: 'coordinator',
+        coordinator_depth: '2',
+      },
+    })
+    core.append({ kind: 'agent_exited', actor: SEAT_NAME, ref: msgId, meta: { code: '0' } })
+    return msgId
+  }
+
+  const spawnRow = (agentId: string) =>
+    core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.msgId === agentId)
+
+  it("carries launched_by, the reason, and the seat's previous depth and coordinator depth", async () => {
+    const previous = previousSeat(underHome('pool-b'))
+    const account = { configDir: underHome('pool-a'), poolDir: underHome('pool-a') }
+    const client = cliClient()
+    const { agents } = (await client.request({ t: 'agents' }, 'agents_result')) as {
+      agents: AgentIdentity[]
+    }
+    const target = seatTarget(agents, SEAT_NAME, account)
+    if (target.kind === 'resume-by-name') throw new Error('the seat should need a relaunch')
+
+    const out = await respawnSeat(
+      client,
+      SEAT_NAME,
+      { target, account, message: RESUME_MESSAGE, fresh: 'HANDOFF', reason: REASON },
+      { surface: 'headless', from: 'seat file' },
+    )
+
+    const relaunched = core.agents.byName(SEAT_NAME)
+    expect(out.detail).toContain('the previous conversation is lost')
+    expect(out).toMatchObject({ ok: true })
+    expect(relaunched).toMatchObject({ spawnedBy: 'human', launchedBy: 'seat-watchdog' })
+    const [before, after] = [spawnRow(previous)?.meta, spawnRow(String(relaunched?.agentId))?.meta]
+    expect(after).toMatchObject({ launched_by: 'seat-watchdog', launch_reason: REASON })
+    expect([after?.depth, after?.coordinator_depth]).toEqual([before?.depth, before?.coordinator_depth])
   })
 })
 

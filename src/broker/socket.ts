@@ -7,7 +7,10 @@ import {
   HUMAN,
   isAnswerChannel,
   isAgentTeleportReason,
+  LAUNCH_REASON_MAX,
+  launcherOf,
   SURFACE_NAMES,
+  type Launcher,
   type ClientMessage,
   type Correlated,
   type DeliveredMessage,
@@ -95,6 +98,17 @@ const spawnedAsOf = (msg: {
   const claimed = msg.spawnedAs === 'burndown' || msg.spawnedAs === 'shepherd' ? msg.spawnedAs : undefined
   const spawnedAs = claimed ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
   return spawnedAs === undefined ? {} : { spawnedAs }
+}
+
+/** CC-1466: an allow-listed launcher and its reason, cut to one bounded line; a reason alone is dropped. */
+export const launchFieldsOf = (msg: {
+  launchedBy?: unknown
+  launchReason?: unknown
+}): { launchedBy?: Launcher; launchReason?: string } => {
+  const launchedBy = launcherOf(msg.launchedBy)
+  if (launchedBy === undefined) return {}
+  const reason = typeof msg.launchReason === 'string' ? msg.launchReason.replace(/\s+/g, ' ').trim() : ''
+  return { launchedBy, ...(reason === '' ? {} : { launchReason: reason.slice(0, LAUNCH_REASON_MAX) }) }
 }
 
 /**
@@ -506,6 +520,8 @@ export class SocketServer {
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
       ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
+      ...(requestedBy === HUMAN ? launchFieldsOf(msg) : {}),
+      ...(typeof msg.lineageFrom === 'string' ? { lineageFrom: msg.lineageFrom } : {}),
       // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
@@ -1011,6 +1027,7 @@ export class SocketServer {
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(requester === undefined ? launchFieldsOf(msg) : {}),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }

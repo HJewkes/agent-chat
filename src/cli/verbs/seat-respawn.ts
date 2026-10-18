@@ -127,8 +127,16 @@ function spawnFrame(
     ...(resumed === undefined ? {} : { resumeSession: resumed.sessionId }),
     // CC-883: a seat runs with Remote Control; a headless launch has no pane to control.
     ...(surface === 'headless' ? {} : { remoteControl: true }),
+    // CC-1466: the row still names the human as spawner; these say it was the watchdog, why, and where the seat sat.
+    launchedBy: 'seat-watchdog',
+    launchReason: plan.reason,
+    ...(target.spawned?.agentId === undefined ? {} : { lineageFrom: target.spawned.agentId }),
   }
 }
+
+/** CC-1466: a fresh launch starts a new conversation on the handoff, so the seat's own is not carried over. */
+const conversationNote = (how: string): string =>
+  how.startsWith('fresh') ? '; the previous conversation is lost, the seat starts on its handoff' : ''
 
 interface Spawned {
   res: Reply<'spawn_result'>
@@ -192,7 +200,11 @@ export async function respawnSeat(
   const { res, how, surface, from } = launched
   if (!res.ok) return refusedAfter(retired, as, `spawn refused: ${res.reason ?? 'no reason'}`)
   const note = await resumeNote(client, seat, plan, launched)
-  return { ok: true, detail: `relaunched ${how} on ${plan.account.configDir}, ${surface} (${from})${note}` }
+  const lost = conversationNote(how)
+  return {
+    ok: true,
+    detail: `relaunched ${how} on ${plan.account.configDir}, ${surface} (${from})${lost}${note}`,
+  }
 }
 
 /**
