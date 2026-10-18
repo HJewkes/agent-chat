@@ -1,3 +1,4 @@
+import { afterAll, afterEach } from 'vitest'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -83,3 +84,16 @@ await new Promise(resolve => closed.close(resolve))
  */
 const root = process.env.TEST_HOME_ROOT ?? os.tmpdir()
 process.env.AGENT_CHAT_HOME = fs.mkdtempSync(path.join(root, 'agent-chat-test-home-'))
+
+/**
+ * Many specs `delete process.env.AGENT_CHAT_HOME` in a hook to return to "unset". Unset, `home()`
+ * falls back to the developer's real ~/.agent-chat, and a late async write (a reviewer park after
+ * an exit, logEvent) lands in the live broker.log (CC-1461). Root hooks run after every spec hook,
+ * so the per-file dir is put back before anything can log again.
+ */
+const isolatedHome = process.env.AGENT_CHAT_HOME
+const restoreIsolatedHome = (): void => {
+  process.env.AGENT_CHAT_HOME ??= isolatedHome
+}
+afterEach(restoreIsolatedHome)
+afterAll(restoreIsolatedHome)
