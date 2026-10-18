@@ -428,6 +428,8 @@ export interface TeleportHost {
   surfaceBlocker(surface: SurfaceName): string | undefined
   /** CC-951: the broker's OS, which picks a local successor's default surface. */
   surfacePlatform(): NodeJS.Platform
+  /** CC-1203: a profile loaded through the drift check, which a teleport never takes as a new baseline. */
+  loadProfile(name: string, by: string): AgentProfile | { error: string }
   relaunch(input: RelaunchInput): Promise<void>
   /** CC-951: stop tracking a predecessor that is about to be ended. */
   standDown(agentId: string): void
@@ -647,6 +649,8 @@ export class Teleport {
       requested: req.surface,
       seatSurface: seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), route.host),
       platform: this.platformAt(route, req.hostPlatform),
+      // Who asked, as resume records its requester: the human on an account move, else the session itself.
+      loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
     if ('error' in config) return refused(subject, 'config', config.error)
     const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
