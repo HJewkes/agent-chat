@@ -400,14 +400,18 @@ describe('resume host:mac through the host launcher', () => {
 
     const cli = await resume({ host: 42 as unknown as string })
 
-    expect(result(cli)).toEqual({ t: 'spawn_result', ok: false, reason: 'resume host must be a machine name' })
+    expect(result(cli)).toEqual({
+      t: 'spawn_result',
+      ok: false,
+      reason: 'resume host must be a machine name',
+    })
     expect(frame(launcher, 'host_probe')).toBeUndefined()
     expect(rows('agent_resumed')).toEqual([])
   })
 })
 
 describe('a host resume once the launcher has started it', () => {
-  // Mutation caught: an attach that leaves the RemoteSpawns ceiling armed, closing a running agent as never started.
+  // Mutation caught: an attach row not reaching RemoteSpawns, whose ceiling then closes a running agent as never started.
   it('attaches the resumed agent as live on the Mac, and the ceiling no longer closes it', async () => {
     const launcher = macLauncher()
     stoppedAgent()
