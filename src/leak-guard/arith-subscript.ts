@@ -3,9 +3,9 @@
  * `declare -i` operand and an array subscript the shell evaluates a variable's value as arithmetic,
  * and some shells run a `$(...)` that value holds, so a substitution can arrive through a variable
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
- * guard's question.
+ * guard's question. It also finds a substitution written into the arithmetic itself, quoted.
  */
-import { LIVE, NAME, type SimpleCommand } from './shell-words.js'
+import { LIVE, NAME, unmark, type SimpleCommand } from './shell-words.js'
 
 const INTEGER_DECLARERS = new Set(['declare', 'typeset', 'local', 'integer'])
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
@@ -59,4 +59,32 @@ export function arithSubscriptNames(cmd: SimpleCommand): string[] {
     [...text.replace(SUBSTITUTION, ' ').matchAll(ARITH_NAME)].map(match => match[1] ?? match[2] ?? ''),
   )
   return [...new Set(names)]
+}
+
+// bash evaluates both operands of these as arithmetic in `[[ ]]`; `[ ]` and `test` are held to the same rule.
+const ARITH_TESTS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge'])
+// A `$(...)`, backtick or funsub; an arithmetic body has each one the splitter read blanked, and `$'...'` is not decoded.
+const BODY_SUBSTITUTION = /\$\(|`|\$\{[\s|]|\$'/
+const QUOTED_SUBSTITUTION = new RegExp(`(?<!${LIVE})(?:\\$\\(|\`|\\$\\{[\\s|])`)
+
+/** `word` with each substitution the splitter read taken out, so a quote inside one is not mistaken for the word's. */
+function withoutLiveSubstitutions(word: string, cmd: SimpleCommand): string {
+  return cmd.substitutions.reduce((text, sub) => text.replaceAll(`${LIVE}${sub.raw}`, ' '), word)
+}
+
+/** The operands beside each arithmetic comparison, wherever a `[[ ]]` the splitter broke at `&&` or `(` left it. */
+function comparisonOperands(cmd: SimpleCommand): string[] {
+  return cmd.marked.flatMap((word, i) =>
+    ARITH_TESTS.has(unmark(word)) ? [cmd.marked[i - 1] ?? '', cmd.marked[i + 1] ?? ''] : [],
+  )
+}
+
+/**
+ * Whether arithmetic in `cmd` holds a substitution the splitter read as plain text (CC-1473). Evaluating
+ * an array subscript runs a `$(...)` in it even from a quoted `'a[$(cmd)]'`, and a `(( ))` body runs one
+ * with no subscript at all, so a command can hide there that the guard never checks.
+ */
+export function hidesArithSubstitution(cmd: SimpleCommand): boolean {
+  if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(body))) return true
+  return comparisonOperands(cmd).some(word => QUOTED_SUBSTITUTION.test(withoutLiveSubstitutions(word, cmd)))
 }

@@ -395,6 +395,7 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
 | `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
 | `git -c` or `--config-env` on `safe.directory` or `init.templateDir`, a `git config` write or section rename to either, `git init` or `clone --template=<dir>` (any prefix), or `git --exec-path=<dir>` (below)                                 | `git init --template=/t r` copies an unread hook or alias   |
+| a quoted or escaped `$(...)`, backtick or funsub in `(( ))`, `$(( ))`, `$[ ]` or an `-eq`, `-ne`, `-lt`, `-le`, `-gt` or `-ge` operand of `[[ ]]`, `[ ]` or `test`, and a `$'...'` in arithmetic (CC-1473)                                      | `[[ 1 -eq 'a[$(cmd)]' ]]` runs `cmd` unseen                 |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`
