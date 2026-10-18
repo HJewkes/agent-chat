@@ -1,14 +1,13 @@
 import { execFile } from 'node:child_process'
 import type { DatabaseSync } from 'node:sqlite'
 import { promisify } from 'node:util'
-import { SqliteExecutionLedger } from '@titan-design/agent-lifecycle'
 import type { ExecutionRecord } from '@titan-design/agent-protocol'
 import type { LifecycleHealth, LifecycleReport } from '../../api-contract.js'
 import { logEvent } from '../../broker/log.js'
 import type { EventStore } from '../../broker/event-store.js'
 import { AgentLog } from '../identity.js'
 import { heldByRuntimeState } from '../isolation/sweep.js'
-import { ledgerDbOver } from './db-shim.js'
+import { listRecoverableIndexed } from './recoverable.js'
 import {
   BACKFILL_KEY_PREFIX,
   classify,
@@ -64,8 +63,6 @@ const toRow = (record: ExecutionRecord): LedgerRow => ({
 /** Undefined when the ledger tables were never created, which is a home the flag has never been on in. */
 export function readLedger(db: DatabaseSync): LedgerReading | undefined {
   if (!hasLedger(db)) return undefined
-  // The package types `db` as better-sqlite3's Database; the shim serves only the calls it makes.
-  const ledger = new SqliteExecutionLedger(ledgerDbOver(db) as never)
   const terminal = db
     .prepare(
       `SELECT json_extract(record, '$.agent.agentId') AS agent, phase FROM agent_execution
@@ -76,7 +73,7 @@ export function readLedger(db: DatabaseSync): LedgerReading | undefined {
     .prepare('SELECT min(prepared_at) AS at FROM agent_execution WHERE request_key NOT LIKE ?')
     .get(`${BACKFILL_KEY_PREFIX}%`) as { at: string | null }
   return {
-    active: ledger.listRecoverable(RECOVERABLE_LIMIT).map(toRow),
+    active: listRecoverableIndexed(db, RECOVERABLE_LIMIT).map(toRow),
     terminalByAgent: new Map(terminal.map(row => [row.agent, row.phase])),
     ...(first.at === null ? {} : { firstWriteAt: Date.parse(first.at) }),
   }

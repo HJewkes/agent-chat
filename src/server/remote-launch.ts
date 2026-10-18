@@ -28,6 +28,9 @@ const AGENT_ID = /^[0-9a-f]{8}$/
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CONTROL = /[\u0000-\u001f\u007f]/
 
+/** A session id names a transcript file, so only a uuid may reach a path. */
+export const isSessionId = (id: string): boolean => SESSION_ID.test(id)
+
 /** A name becomes a pane title and a registry key; it must never steer a path. */
 const badName = (name: string): boolean =>
   name === '' || name.length > 128 || /[/\\]/.test(name) || name.includes('..') || CONTROL.test(name)
@@ -47,7 +50,7 @@ function flagWords(profile: RemoteLaunch['profile']): string[] {
 export function checkLaunch(spec: RemoteLaunch): string | undefined {
   if (!AGENT_ID.test(spec.agentId))
     return `the successor id ${JSON.stringify(spec.agentId)} is not an agent id`
-  if (!SESSION_ID.test(spec.sessionId)) return 'the successor session id is not a uuid'
+  if (!isSessionId(spec.sessionId)) return 'the successor session id is not a uuid'
   if (badName(spec.name)) return `the name ${JSON.stringify(spec.name)} is not a valid session name`
   const profileName = profileNameRefusal(spec.profile.name)
   if (profileName !== undefined) return profileName
@@ -119,6 +122,7 @@ export function buildLaunch(
     surface: spec.surface,
     preamble: spec.preamble,
     adopted: spec.adopted === true,
+    ...(spec.resume === true ? { resume: true } : {}),
     mcpConfigPath: mcpConfigPath(spec.agentId),
     hookSettingsPath: hookSettingsPath(spec.agentId),
     ...(spec.tags?.length ? { tags: spec.tags } : {}),

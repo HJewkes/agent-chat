@@ -149,7 +149,8 @@
                 "seat_blocked",
                 "seat_unblocked",
                 "seat_activity",
-                "seat_ask_denied"
+                "seat_ask_denied",
+                "inbox_shown"
               ]
             },
             "from": {

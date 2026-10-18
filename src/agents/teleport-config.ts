@@ -1,5 +1,4 @@
 import { isInteractiveSurface, SURFACE_NAMES, type AgentIdentity, type SurfaceName } from '../protocol.js'
-import { loadProfile } from './profiles.js'
 import { chooseSurface } from './surface-resolution.js'
 import type { TeleportSubject } from './teleport.js'
 import { observedModel } from './transcript.js'
@@ -69,6 +68,8 @@ export interface TeleportConfigInput {
   seatSurface?: SurfaceName | undefined
   /** The destination's OS; undefined only for a remote caller too old to report it. */
   platform: NodeJS.Platform | undefined
+  /** CC-1203: the drift-checked load; required, so no caller falls back to an unchecked `loadProfile`. */
+  loadProfile: (name: string) => AgentProfile | { error: string }
 }
 
 export interface TeleportConfig {
@@ -104,7 +105,7 @@ export function teleportConfig(input: TeleportConfigInput): TeleportConfig | { e
 function baseConfig(
   input: TeleportConfigInput,
 ): { profile: AgentProfile; recorded: SurfaceName | undefined } | { error: string } {
-  const { identity, subject, model } = input
+  const { identity, subject, model, loadProfile } = input
   if (identity.origin === 'adopted') {
     // The transcript is under the session's OWN config dir, which for a session
     // on a dedicated account is not the broker's: without it the model could not

@@ -13,6 +13,7 @@ import {
   type AgentIdentity,
   type ExperimentArm,
   type IsolationName,
+  type Launcher,
   type RemoteLaunch,
   type Subscription,
   type SurfaceName,
@@ -91,6 +92,17 @@ import {
   type RemoteSpawnRecord,
   type SpawnSite,
 } from './remote-spawn.js'
+import {
+  HOST_RESUME_TIMEOUT_MS,
+  localCopyWarning,
+  probeTranscript,
+  remoteResumeRefusal,
+  resumeLaunchFor,
+  resumeRouteFor,
+  type LauncherRoute,
+  type RemoteResumeSite,
+  type ResumeRoute,
+} from './remote-resume.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import {
   REVIEWER_TREE_CHANGED,
@@ -117,6 +129,7 @@ import {
   createdWorktreeFor,
   type CreatedWorktree,
   goneWorktree,
+  identityBlocker,
   identityTranscript,
   missingAgent,
   RESUMED_BRIEF,
@@ -527,6 +540,8 @@ function remoteSpawnMeta(
     coordinator_depth: String(lineage.coordinatorDepth),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+    ...callerAgentMeta(req),
+    ...launchMeta(req),
     // The worktree half of provenance reads git on this host, which holds no copy of that cwd.
     ...assignmentMeta(req, profile.name),
     host: draft.site.host,
@@ -643,6 +658,8 @@ export interface SpawnRequest {
   tier?: number
   /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
   spawnedAs?: 'burndown' | 'shepherd'
+  /** CC-1206: an agent the broker found behind an unregistered CLI spawn; such a spawn is not the human's. */
+  callerAgent?: string
   /** CC-915: the task id this agent runs; required for a burndown spawn. */
   task?: string
   /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
@@ -674,6 +691,30 @@ export interface SpawnRequest {
   host?: string
   /** CC-1059: the requester's home, which a cwd on its host must sit under. */
   callerHome?: string
+  /** CC-1466: the automation behind a human-requested spawn; written to the row, read by no gate. */
+  launchedBy?: Launcher
+  launchReason?: string
+  /** CC-1466: an earlier identity of this name whose depth and coordinator depth the spawn keeps. */
+  lineageFrom?: string
+}
+
+/** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
+/** CC-1206: the agent found behind a CLI spawn the row would otherwise credit to the human. */
+const callerAgentMeta = (req: { callerAgent?: string }): Record<string, string> =>
+  req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }
+
+const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
+  req.launchedBy === undefined
+    ? {}
+    : {
+        launched_by: req.launchedBy,
+        ...(req.launchReason === undefined ? {} : { launch_reason: req.launchReason }),
+      }
+
+/** A recorded depth that only raises `computed`, so naming an earlier identity never lifts a cap. */
+function raised(computed: number, recorded: string | undefined): number {
+  const value = Number.parseInt(recorded ?? '', 10)
+  return Number.isFinite(value) ? Math.max(computed, value) : computed
 }
 
 export type SpawnRefusalCode =
@@ -772,6 +813,11 @@ export interface ResumeRequest {
   remoteControl?: boolean
   /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
   cause?: typeof BACKGROUND_RESUME
+  /** CC-1466: as on {@link SpawnRequest}. */
+  launchedBy?: Launcher
+  launchReason?: string
+  /** CC-1472: resume on this machine, through its host launcher; never falls back to resuming here. */
+  host?: string
 }
 
 interface Live {
@@ -894,8 +940,12 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   return { tokens, usd_est, usage, models, price_table }
 }
 
-/** Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`. */
-const isHumanSpawn = (req: SpawnRequest): boolean => req.requestedBy === HUMAN && req.spawnedAs === undefined
+/**
+ * Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`.
+ * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
+ */
+const isHumanSpawn = (req: SpawnRequest): boolean =>
+  req.requestedBy === HUMAN && req.spawnedAs === undefined && req.callerAgent === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1907,6 +1957,19 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-1466: a seat relaunch keeps where its earlier identity sat. Only an identity of the same name
+   * counts, and each depth only rises, so the carry can tighten the coordinator cap but never loosen it.
+   */
+  private lineageOf(req: SpawnRequest, computed: Lineage): Lineage {
+    const row = req.lineageFrom === undefined ? undefined : this.spawnEventOf(req.lineageFrom)
+    if (row === undefined || row.target !== req.name) return computed
+    return {
+      depth: raised(computed.depth, row.meta.depth),
+      coordinatorDepth: raised(computed.coordinatorDepth, row.meta.coordinator_depth ?? row.meta.depth),
+    }
+  }
+
+  /**
    * The requester's role and coordinator depth, read from its own spawn row so
    * both survive its spawner. No parent is a human-started root; a parent with
    * no row resolves to a worker, because a cap that opens on missing data is not one.
@@ -1941,7 +2004,9 @@ export class Supervisor implements TeleportHost {
     const refused = !human && this.profileDriftMode === 'refuse'
     logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
     if (refused)
-      return { error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it` }
+      return {
+        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code`,
+      }
     if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
     return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
@@ -2147,10 +2212,10 @@ export class Supervisor implements TeleportHost {
 
     const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
-    const lineage: Lineage = {
+    const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
-    }
+    })
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
@@ -2664,6 +2729,8 @@ export class Supervisor implements TeleportHost {
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
         // CC-802: stored so the retire row names the same spawner as the dispatched one.
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+        ...callerAgentMeta(req),
+        ...launchMeta(req),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
         // CC-1059: where it launched, so a later reader can tell a remote agent from a local one.
@@ -3733,10 +3800,24 @@ export class Supervisor implements TeleportHost {
    */
   private resumingRefusal(identity: AgentIdentity): string | undefined {
     const since = this.resuming.get(identity.agentId)
-    if (since === undefined) return this.sessionLaunchRefusal(identity.sessionId)
+    if (since === undefined)
+      return this.remoteLaunchRefusal(identity) ?? this.sessionLaunchRefusal(identity.sessionId)
     return (
       `${identity.name} is already resuming (since ${new Date(since).toISOString()}); ` +
       'wait for that resume to answer, then check agent_list before resuming again'
+    )
+  }
+
+  /**
+   * CC-1472: a host resume releases its hold once the launcher accepts the launch, before the
+   * agent registers; until it does, or the attach ceiling passes, a second launch would run a
+   * second process on the same session.
+   */
+  private remoteLaunchRefusal(identity: AgentIdentity): string | undefined {
+    if (!this.remoteSpawns.has(identity.agentId)) return undefined
+    return (
+      `${identity.name} is already resuming on ${identity.host ?? 'another machine'} and has not registered yet; ` +
+      'check agent_list before resuming again'
     )
   }
 
@@ -3779,6 +3860,11 @@ export class Supervisor implements TeleportHost {
       if (stale) return { ok: false, reason: stale }
       identity = this.core.agents.get(identity.agentId) ?? identity
     }
+    if (req.host !== undefined) {
+      const route = this.resumeRoute(req.host)
+      if ('refusal' in route) return { ok: false, reason: route.refusal }
+      if (route.site === 'launcher') return this.resumeOnHost(identity, req, route)
+    }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
@@ -3816,6 +3902,124 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** CC-1472: where a resume naming `host` runs; the broker's own host is today's local resume. */
+  private resumeRoute(host: string): ResumeRoute {
+    return resumeRouteFor({
+      host,
+      brokerHost: brokerHost(),
+      launchers: this.hosts?.launchers() ?? [],
+      aliases: resolveMachines(),
+    })
+  }
+
+  /**
+   * CC-1472: resume on another machine through its launcher, which holds the transcript. Every
+   * refusal returns from here: a host request never falls through to the local resume, since that
+   * would answer about a transcript the requester did not ask for.
+   */
+  private async resumeOnHost(
+    identity: AgentIdentity,
+    checked: ResumeRequest,
+    route: LauncherRoute,
+  ): Promise<SpawnOutcome> {
+    const hosts = this.hosts
+    if (hosts?.spawn === undefined) return { ok: false, reason: `no launcher connected on ${route.host}` }
+    const warnings: string[] = []
+    const req = this.resumeRemoteControl(identity, checked, warnings)
+    const surface = req.surface ?? 'headless'
+    const refused =
+      identityBlocker(identity) ?? remoteResumeRefusal(identity, surface, this.resumeSite(route))
+    if (refused !== undefined) return { ok: false, reason: refused }
+    const profile = this.resumeProfile(identity, req.requestedBy)
+    if ('error' in profile)
+      return { ok: false, reason: `cannot reload profile "${identity.profile}": ${profile.error}` }
+    const probed = await probeTranscript(hosts.probe.bind(hosts), identity, surface, route.host)
+    if ('refusal' in probed) return { ok: false, reason: probed.refusal, ...probed.verdict }
+    const { transcript } = probed
+    warnings.push(...localCopyWarning(identityTranscript(identity), brokerHost(), route.host))
+    const launch = resumeLaunchFor(identity, profile, { ...req, surface })
+    const launched = await this.launchOnLauncher(identity, req, launch, transcript, {
+      host: route.host,
+      spawn: hosts.spawn.bind(hosts),
+    })
+    if (launched !== undefined) return { ok: false, reason: launched, transcript }
+    if (req.message !== undefined && surface !== 'headless')
+      warnings.push(
+        'a visible resume opens on the conversation as it was left; the message was not delivered',
+      )
+    return {
+      ok: true,
+      agentId: identity.agentId,
+      name: identity.name,
+      host: route.host,
+      transcript,
+      ...(warnings.length ? { warnings } : {}),
+    }
+  }
+
+  private resumeSite(route: LauncherRoute): RemoteResumeSite {
+    return {
+      host: route.host,
+      platform: route.platform,
+      brokerHost: brokerHost(),
+      brokerPlatform: process.platform,
+      user: os.userInfo().username,
+      brokerHome: os.homedir(),
+      surfaces: this.hosts?.surfacesOn(route.host) ?? [],
+    }
+  }
+
+  /**
+   * Records the resume and hands it to the launcher's spawn executor. No slot is taken: the process
+   * runs on another machine, and an attach adopts one as for any agent this broker did not launch.
+   * Lost before it registers, the resume is closed as never started and the identity is kept.
+   */
+  private async launchOnLauncher(
+    agent: AgentIdentity,
+    req: ResumeRequest,
+    launch: RemoteLaunch,
+    transcript: TranscriptVerdict,
+    { host, spawn }: { host: string; spawn: NonNullable<LauncherSite['spawn']> },
+  ): Promise<string | undefined> {
+    const executionId = this.shadow.resume(agent.agentId, agent.configDir ?? configDir(), agent.sessionId)
+    this.remoteSpawns.open({
+      agentId: agent.agentId,
+      name: agent.name,
+      host,
+      announce: () => undefined,
+      onLost: reason => this.hostResumeLost(agent, executionId, reason),
+    })
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: req.requestedBy ?? HUMAN,
+      target: agent.name,
+      ref: agent.agentId,
+      body: 'resumed',
+      meta: {
+        session_id: agent.sessionId,
+        surface: launch.surface,
+        from_surface: agent.surface,
+        transcript: transcript.path,
+        host,
+        ...(req.source === undefined ? {} : { source: req.source }),
+        ...(req.cause === undefined ? {} : { cause: req.cause }),
+        ...launchMeta(req),
+      },
+    })
+    const answer = await spawn(host, launch, HOST_RESUME_TIMEOUT_MS)
+    this.remoteSpawns.ready(
+      agent.agentId,
+      answer.ok ? { ok: true } : { ok: false, reason: answer.reason ?? '' },
+    )
+    return answer.ok ? undefined : `refused on ${host}: ${answer.reason ?? 'no reason given'}`
+  }
+
+  /** CC-1492: a host resume's execution closes as a local one's does when its launch fails. */
+  private hostResumeLost(agent: AgentIdentity, executionId: string | undefined, reason: string): void {
+    this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
+    this.resumeNeverStarted(agent, new Error(reason))
   }
 
   /** CC-1453: a hand-started session's teleport successor runs on what it inherited, which no profile file holds. */
@@ -3977,6 +4181,7 @@ export class Supervisor implements TeleportHost {
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
+        ...launchMeta(req),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },
@@ -4213,6 +4418,11 @@ export class Supervisor implements TeleportHost {
     return this.surfaceOptions?.platform ?? process.platform
   }
 
+  /** CC-1203: a teleport is an agent launch, so a drifted profile is flagged or refused and never re-baselined. */
+  loadProfile(name: string, by: string): AgentProfile | { error: string } {
+    return this.loadCheckedProfile(name, by, false)
+  }
+
   /**
    * Launch a descendant into a name and an isolation that already exist.
    *
@@ -4357,9 +4567,9 @@ export class Supervisor implements TeleportHost {
    * registers into an identity the broker already holds, but its files and surface are the
    * caller's to make: this host can neither write that host's disk nor open its terminal.
    */
-  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch {
+  prepareRemoteRelaunch(input: RelaunchInput, launcherHost?: string): RemoteLaunch {
     const sessionId = Teleport.newSessionId()
-    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none')
+    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none', launcherHost)
     this.remoteSessions.set(input.agentId, sessionId)
     const { env: _env, mcpServers: _servers, warnings: _warnings, ...profile } = input.profile
     return {
@@ -4437,6 +4647,7 @@ export class Supervisor implements TeleportHost {
     sessionId: string,
     allocation: Allocation,
     isolation: IsolationName,
+    host?: string,
   ): void {
     this.core.append({
       kind: 'agent_spawned',
@@ -4459,6 +4670,8 @@ export class Supervisor implements TeleportHost {
         // account as the session it continues (CC-100).
         ...(input.configDir ? { config_dir: input.configDir } : {}),
         ...(input.configDirUnset ? { config_dir_unset: 'true' } : {}),
+        // CC-1492: where it runs, so liveness and retire never probe this host for it.
+        ...(host === undefined ? {} : { host }),
         ...input.meta,
       },
     })

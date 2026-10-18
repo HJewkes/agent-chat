@@ -105,6 +105,18 @@ const idOf = (caller: Wire) => core.registry.entryFor(caller.conn as unknown as 
 const stateOf = (agentId: string) => core.agents.get(agentId)?.state
 const failedNotices = () => core.events.humanQueue().filter(item => item.text.includes('failed to start'))
 
+const spawnedRow = (agentId: string) =>
+  core.events.agentEvents().find(row => row.kind === 'agent_spawned' && row.msgId === agentId)
+
+describe('the successor handed to the caller’s own host', () => {
+  // Mutation caught: finishRemote dropping the subject's host, so liveness is probed on the broker's host.
+  it('records the successor’s agent_spawned row with the caller’s host', async () => {
+    const { successor } = await armedLanding()
+
+    expect(spawnedRow(successor)?.meta?.host).toBe(REMOTE)
+  })
+})
+
 describe('reporting an armed teleport successor unplaced', () => {
   it('keeps the predecessor only when it reports from its own connection, and never marks it superseded', async () => {
     const { successor, token, predecessor } = await armedLanding()

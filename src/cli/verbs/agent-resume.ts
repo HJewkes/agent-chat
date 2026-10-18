@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
-import { SURFACE_NAMES, type ServerMessage } from '../../protocol.js'
+import { LAUNCHERS, SURFACE_NAMES, type ServerMessage } from '../../protocol.js'
 import { describeResume } from '../../agents/resume-session.js'
 import { defineVerb, Report } from '../command.js'
 
@@ -29,6 +29,9 @@ export const agentResume = defineVerb({
     messageStdin: z.boolean().optional(),
     surface: z.enum(SURFACE_NAMES).optional(),
     remoteControl: z.boolean().optional(),
+    launchedBy: z.enum(LAUNCHERS).optional(),
+    launchReason: z.string().optional(),
+    host: z.string().optional(),
   }),
   result: Report,
   cli: {
@@ -41,9 +44,21 @@ export const agentResume = defineVerb({
         long: '--remote-control',
         description: 'run with Remote Control (coordinator profiles only; ignored headless)',
       },
+      launchedBy: {
+        long: '--launched-by',
+        description: `${LAUNCHERS.join(' or ')}: the automation running this resume as you; grants nothing`,
+      },
+      launchReason: { long: '--launch-reason', description: 'why it resumed, recorded with --launched-by' },
+      host: {
+        long: '--host',
+        description: "the machine to resume on, through its host launcher (default: the broker's)",
+      },
     },
   },
-  async run({ name, message: messageArg, messageStdin, surface, remoteControl }, ctx) {
+  async run(
+    { name, message: messageArg, messageStdin, surface, remoteControl, launchedBy, launchReason, host },
+    ctx,
+  ) {
     const message = await resumeMessage(messageArg, messageStdin)
     const res = (await ctx.withBroker(b =>
       b.request(
@@ -53,6 +68,9 @@ export const agentResume = defineVerb({
           ...(message === undefined ? {} : { message }),
           ...(surface === undefined ? {} : { surface }),
           ...(remoteControl === true ? { remoteControl: true } : {}),
+          ...(launchedBy === undefined ? {} : { launchedBy }),
+          ...(launchReason === undefined ? {} : { launchReason }),
+          ...(host === undefined ? {} : { host }),
         },
         'spawn_result',
       ),

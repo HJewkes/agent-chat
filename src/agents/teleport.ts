@@ -351,6 +351,8 @@ const launchPathsBlocker = (cwd: string, configDir: string | undefined): string 
 export interface LauncherAnswer {
   ok: boolean
   reason?: string
+  /** CC-1472: a probe's verdict on the session it was asked to resume. */
+  transcript?: { path: string; found: boolean }
 }
 
 /** CC-951: the host launchers connected to this broker, as teleport uses them. */
@@ -360,6 +362,8 @@ export interface LauncherSite {
   surfacesOn(host: string): readonly SurfaceName[]
   probe(host: string, probe: HostProbe): Promise<LauncherAnswer>
   launch(host: string, launch: RemoteLaunch): Promise<LauncherAnswer>
+  /** CC-1472: through the launcher's spawn executor, which a host resume needs for `--resume`; teleport never calls it. */
+  spawn?(host: string, launch: RemoteLaunch, timeoutMs?: number): Promise<LauncherAnswer>
 }
 
 const NO_LAUNCHERS: LauncherSite = {
@@ -424,6 +428,8 @@ export interface TeleportHost {
   surfaceBlocker(surface: SurfaceName): string | undefined
   /** CC-951: the broker's OS, which picks a local successor's default surface. */
   surfacePlatform(): NodeJS.Platform
+  /** CC-1203: a profile loaded through the drift check, which a teleport never takes as a new baseline. */
+  loadProfile(name: string, by: string): AgentProfile | { error: string }
   relaunch(input: RelaunchInput): Promise<void>
   /** CC-951: stop tracking a predecessor that is about to be ended. */
   standDown(agentId: string): void
@@ -433,8 +439,8 @@ export interface TeleportHost {
   successorRunning(agentId: string): Promise<boolean>
   /** CC-951: neither the predecessor nor its successor is running, so the human is told how to start it. */
   noticeLostTeleport(input: RelaunchInput, reason: string): void
-  /** CC-881: record the successor and build its launch for another host, launching nothing here. */
-  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
+  /** CC-881: record the successor and build its launch for another host, launching nothing here; CC-1492: `launcherHost` lands on its row. */
+  prepareRemoteRelaunch(input: RelaunchInput, launcherHost?: string): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
   confirmRemoteRelaunch(input: RelaunchInput): void
   /** CC-881: the other host did not launch it, so the successor's row is retired unused; `where` names that host. */
@@ -643,6 +649,8 @@ export class Teleport {
       requested: req.surface,
       seatSurface: seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), route.host),
       platform: this.platformAt(route, req.hostPlatform),
+      // Who asked, as resume records its requester: the human on an account move, else the session itself.
+      loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
     if ('error' in config) return refused(subject, 'config', config.error)
     const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
@@ -1025,7 +1033,7 @@ export class Teleport {
     const badPath = launchPathsBlocker(input.cwd, input.configDir)
     if (badPath !== undefined) throw new Error(`not handed to the launcher on ${host}: ${badPath}`)
     const launch: RemoteLaunch = {
-      ...this.host.prepareRemoteRelaunch(input),
+      ...this.host.prepareRemoteRelaunch(input, host),
       cwd: input.cwd,
       ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
     }
@@ -1326,7 +1334,7 @@ export class Teleport {
     try {
       input = this.relaunchFor(entry, false, await this.briefFor(entry))
       launch = {
-        ...this.host.prepareRemoteRelaunch(input),
+        ...this.host.prepareRemoteRelaunch(input, subject.host),
         landToken: randomUUID(),
         // CC-951: an asked-for surface from a caller that ends itself; otherwise the helper lands after the exit (CC-913).
         ...(entry.successorFirst ? { successorFirst: true as const } : {}),

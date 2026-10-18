@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stub titan-factory: `shepherd prs --json <repo>` prints $FIX/prs.json, or exits with the code in $FIX/prs.rc
+# (69 is serve down). Every call is logged to $FIX/tf.calls, apart from the fake gh's $FIX/calls.
+echo "$*" >> "$FIX/tf.calls"
+[ "${1:-} ${2:-} ${3:-}" = "shepherd prs --json" ] || { echo "stub titan-factory: unsupported: $*" >&2; exit 2; }
+[ -f "$FIX/prs.rc" ] && { echo "stub titan-factory: failing" >&2; exit "$(cat "$FIX/prs.rc")"; }
+cat "$FIX/prs.json"

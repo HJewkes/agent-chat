@@ -456,9 +456,17 @@ export class BrokerCore<C = Conn> {
     return true
   }
 
-  /** CC-1455: a push a print-mode host never shows is logged as not delivered, whatever the socket write did. */
-  private routeDelivered(name: string, live: boolean): { delivered: boolean; reason?: string } {
-    return live && this.registry.isPrintHost(name)
+  /**
+   * CC-1455: a push a print-mode host has not shown is logged as not delivered, whatever the socket
+   * write did. One whose server spools it is `queued` for its inbox hook; one without never sees it.
+   */
+  private routeDelivered(
+    name: string,
+    live: boolean,
+  ): { delivered: boolean; reason?: string; queued?: string[] } {
+    const verdict = live ? this.registry.printVerdict(name) : undefined
+    if (verdict === 'queued') return { delivered: false, queued: [name] }
+    return verdict === 'headless_no_channel'
       ? { delivered: false, reason: 'headless_no_channel' }
       : { delivered: live }
   }

@@ -5,6 +5,8 @@ BIN=${BIN_OVERRIDE:-$(cd "$(dirname "$0")" && pwd)}
 W=${TMPDIR:-/tmp}/seat-test-ci-wait/$$
 rm -rf "$W"; mkdir -p "$W"
 pass=0 failn=0
+unset AGENT_CHAT_NAME
+export TITAN_FACTORY=$BIN/testdata/ci-wait/stubs/titan-factory
 
 cat > "$W/gh" <<'FAKE'
 #!/bin/bash
@@ -317,5 +319,46 @@ fresh; run 1 "$(cr build completed success)"; stat_at 1 ""; go --base release/1.
 grep -q 'rules/branches/release/1.x$' "$FIX/calls" && ! grep -q default_branch "$FIX/calls" \
   && { echo "PASS --base skips the default branch lookup"; pass=$((pass+1)); } || { echo "FAIL --base"; failn=$((failn+1)); }
 out=$("$BIN/ci-wait" o/r abc1234567890abcdef1234567890abcdef12345 --base 'a b' 2>&1); rc=$?;  check "unsafe base exits 64" 64 '^usage:'
+
+# CC-1175: a spawned agent on a PR Shepherd registered at this head gets exit 3 and no gh call.
+FULL=abc1234567890abcdef1234567890abcdef12345
+prs_row() { printf '{"repo":"o/r","number":%s,"headSha":"%s","registered":%s,"runId":"r1","phase":"ci","ci":{"state":"pending"}}' "$1" "$2" "$3"; }
+polled() { grep -q 'commits/.*/check-runs' "$FIX/calls" 2>/dev/null; }
+ok_ci() { run 1 "$(cr build completed success)"; stat_at 1 ""; }
+
+fresh; ok_ci; echo "[$(prs_row 5 $FULL true)]" > "$FIX/prs.json"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "agent on a registered PR at this head exits 3" 3 "^SHEPHERD o/r $FULL: run r1 owns CI \\(phase ci, ci pending\\)\$"
+[ ! -s "$FIX/calls" ] && { echo "PASS no gh call for a registered PR"; pass=$((pass+1)); } || { echo "FAIL gh called: $(cat "$FIX/calls")"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo "[$(prs_row 5 $FULL true)]" > "$FIX/prs.json"
+out=$("$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "no AGENT_CHAT_NAME polls as today" 0 "^GREEN o/r $FULL\$"
+polled && [ ! -e "$FIX/tf.calls" ] && { echo "PASS seat path polls and never asks Shepherd"; pass=$((pass+1)); } || { echo "FAIL seat path"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo "[$(prs_row 5 $FULL false)]" > "$FIX/prs.json"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "unregistered PR polls" 0 "^GREEN o/r $FULL\$"
+polled && { echo "PASS unregistered PR polled"; pass=$((pass+1)); } || { echo "FAIL unregistered poll"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo "[$(prs_row 5 1111111111111111111111111111111111111111 true)]" > "$FIX/prs.json"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "registered PR at a different head polls" 0 "^GREEN o/r $FULL\$"
+polled && { echo "PASS different head polled"; pass=$((pass+1)); } || { echo "FAIL different head poll"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo 69 > "$FIX/prs.rc"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "serve down (exit 69) polls" 0 "^GREEN o/r $FULL\$"
+polled && { echo "PASS serve down polled"; pass=$((pass+1)); } || { echo "FAIL serve down poll"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo 'not json' > "$FIX/prs.json"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "$FULL" --interval 0 2>&1); rc=$?
+check "unparsable titan-factory output polls" 0 "^GREEN o/r $FULL\$"
+polled && { echo "PASS unparsable output polled"; pass=$((pass+1)); } || { echo "FAIL unparsable poll"; failn=$((failn+1)); }
+
+fresh; ok_ci; echo "[$(prs_row 5 "${FULL:0:10}aaaa" true),$(prs_row 6 "${FULL:0:10}bbbb" true)]" > "$FIX/prs.json"
+out=$(AGENT_CHAT_NAME=agent-x "$BIN/ci-wait" o/r "${FULL:0:8}" --interval 0 2>&1); rc=$?
+check "short sha matching two registered rows polls" 0 '^GREEN o/r '
+polled && { echo "PASS ambiguous prefix polled"; pass=$((pass+1)); } || { echo "FAIL ambiguous poll"; failn=$((failn+1)); }
 
 echo "$pass passed, $failn failed"; rm -rf "$W"; [ "$failn" = 0 ]

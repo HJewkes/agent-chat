@@ -87,6 +87,8 @@ export class ToolHandler {
     readoptedName?: string,
     /** The session's one `ContextHinter.hint`, so a pull and a push share one once-per-crossing state. */
     private readonly contextHint?: () => string | undefined,
+    /** CC-1455: the spool this server writes for a print-mode host, if it spools. */
+    private readonly inboxSpool?: string,
   ) {
     this.registeredName = spawnedName ?? readoptedName ?? null
     this.nameIsFixed = spawnedName !== undefined
@@ -104,6 +106,7 @@ export class ToolHandler {
       broker: this.broker,
       registeredName: this.registeredName,
       ...(this.contextHint ? { contextHint: this.contextHint } : {}),
+      ...(this.inboxSpool === undefined ? {} : { inboxSpool: this.inboxSpool }),
       session: {
         name: () => this.registeredName,
         fixed: this.nameIsFixed,

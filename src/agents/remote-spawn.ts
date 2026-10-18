@@ -130,6 +130,8 @@ export interface RemoteSpawnRecord {
   host: string
   /** Runs once, when the agent registers: the hooks, journal and dispatch row a local spawn writes. */
   announce: () => void
+  /** CC-1472: runs instead of `retire` when set; a lost resume keeps the identity it did not create. */
+  onLost?: (reason: string) => void
 }
 
 export interface RemoteSpawnDeps {
@@ -166,6 +168,8 @@ export class RemoteSpawns {
   constructor(private readonly deps: RemoteSpawnDeps) {}
 
   open(record: RemoteSpawnRecord): void {
+    // A replaced entry's timer would otherwise fire later and fail the launch that replaced it.
+    clearTimeout(this.pending.get(record.agentId)?.timer)
     const entry: Pending = { record, phase: 'launching' }
     this.pending.set(record.agentId, entry)
     this.arm(
@@ -253,12 +257,13 @@ export class RemoteSpawns {
   private fail(entry: Pending, reason: string): void {
     this.forget(entry)
     entry.waiter?.({ kind: 'failed', reason })
-    this.deps.retire(entry.record, reason)
+    if (entry.record.onLost === undefined) this.deps.retire(entry.record, reason)
+    else entry.record.onLost(reason)
   }
 
   private forget(entry: Pending): void {
     clearTimeout(entry.timer)
-    this.pending.delete(entry.record.agentId)
+    if (this.pending.get(entry.record.agentId) === entry) this.pending.delete(entry.record.agentId)
   }
 }
 

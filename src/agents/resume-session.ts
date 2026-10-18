@@ -132,15 +132,22 @@ export function retiredWorktree(
   return owner === undefined ? undefined : goneWorktree(rows, owner.agentId)
 }
 
+/** CC-1472: why an identity cannot be resumed on any host, from its record alone. */
+export function identityBlocker(agent: AgentIdentity): string | undefined {
+  if (agent.state === 'live') return `${agent.name} is already live; message it instead`
+  if (agent.sessionId === '')
+    return `${agent.name} has no recorded session id, so there is no conversation to resume`
+  return undefined
+}
+
 /** Why an identity cannot be resumed, or undefined when it can. `reattach` says its gone worktree can come back. */
 export function resumeBlocker(
   agent: AgentIdentity,
   transcript: TranscriptVerdict,
   reattach?: WorktreeRecord,
 ): string | undefined {
-  if (agent.state === 'live') return `${agent.name} is already live; message it instead`
-  if (agent.sessionId === '')
-    return `${agent.name} has no recorded session id, so there is no conversation to resume`
+  const blocked = identityBlocker(agent)
+  if (blocked !== undefined) return blocked
   if (!transcript.found)
     return `${agent.name}'s transcript is gone, so it would come back with no conversation`
   if (reattach === undefined && !fs.existsSync(agent.cwd))
@@ -210,6 +217,8 @@ export function describeResume(
     transcript?: TranscriptVerdict
     warnings?: string[]
     deduped?: boolean
+    /** CC-1472: the machine a host resume launched on. */
+    host?: string
   },
 ): { ok: boolean; lines: string[] } {
   const verdict = [res.transcript === undefined ? 'transcript: not looked up' : verdictLine(res.transcript)]
@@ -220,7 +229,8 @@ export function describeResume(
     ok: true,
     lines: [
       ...deduped,
-      `Resumed ${name} on its existing conversation, keeping its name. Reach it with chat_send.`,
+      `Resumed ${name}${res.host === undefined ? '' : ` on ${res.host}`} on its existing conversation, ` +
+        'keeping its name. Reach it with chat_send.',
       ...verdict,
       ...(res.warnings ?? []).map(w => `warning: ${w}`),
     ],

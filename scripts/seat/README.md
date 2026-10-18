@@ -113,7 +113,8 @@ override the sibling scripts, for tests.
 ## Retirement list
 
 - `ci-wait`: retires when TP-1539 and TP-1587 land and the charter stops naming it. Factory
-  `waitForCi` and Shepherd own CI waits.
+  `waitForCi` and Shepherd own CI waits. Until then, a spawned agent (`AGENT_CHAT_NAME` set) on a
+  PR Shepherd has registered at that head gets exit 3 (Shepherd owns CI) without any `gh` call.
 - `merge` + `premerge`: retire together when break-glass `seat-merge` retires (CC-599, Shepherd
   as the normal merge path; TP-1626 decides whether premerge grows or Shepherd absorbs the
   case). `seat-merge` retires with them.
