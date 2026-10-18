@@ -1557,6 +1557,7 @@ export interface AgentIdentity {
   /** CC-1466: the automation that ran the spawn as `spawnedBy`; display only. */
   launchedBy?: Launcher
   spawnedAt: number
+  /** CC-1484: the broker reads it off its own fold; an `agents` reply leaves it out. */
   brief: string
   cwd: string
   isolation: string
