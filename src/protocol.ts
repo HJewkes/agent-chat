@@ -40,6 +40,8 @@ export interface RemoteLaunch {
   configDir?: string
   /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
   configDirUnset?: true
+  /** CC-1472: continue `sessionId` with `--resume` rather than mint it; set only by a host resume. */
+  resume?: true
 }
 
 /** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
@@ -47,6 +49,8 @@ export interface HostProbe {
   cwd: string
   configDir?: string
   surface: PackageSurfaceName
+  /** CC-1472: the launcher also checks this session's transcript under `configDir` and `cwd`. */
+  resumeSession?: string
 }
 
 /** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
@@ -1293,7 +1297,14 @@ export type ClientMessage =
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
   /** CC-951: a launcher's answer to `host_probe`, `host_launch` or `host_spawn`, paired by `id`. */
-  | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
+  | {
+      t: 'host_probe_result'
+      id: string
+      ok: boolean
+      reason?: string
+      /** CC-1472: the launcher's verdict on a probe's `resumeSession`; absent from a launcher older than it. */
+      transcript?: { path: string; found: boolean }
+    }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
   | { t: 'hosts' }
