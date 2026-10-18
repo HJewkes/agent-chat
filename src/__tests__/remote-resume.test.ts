@@ -17,6 +17,7 @@ import {
   resumeRouteFor,
   type RemoteResumeSite,
 } from '../agents/remote-resume.js'
+import { RemoteSpawns } from '../agents/remote-spawn.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentIdentity, ClientMessage, ServerMessage } from '../protocol.js'
 
@@ -158,6 +159,7 @@ describe('resume host:mac through the host launcher', () => {
   it('launches the same identity on the Mac, while a local resume still refuses as today', async () => {
     const launcher = macLauncher()
     stoppedAgent()
+    expect(result(await resume({}))).toMatchObject({ ok: false, reason: GONE })
 
     const cli = await resume({ host: 'mac', launchedBy: 'shepherd', launchReason: 'follow-up' })
     expect(frame(launcher, 'host_probe')?.probe).toEqual({
@@ -193,7 +195,7 @@ describe('resume host:mac through the host launcher', () => {
     ])
 
     const local = await resume({})
-    expect(result(local)).toMatchObject({ ok: false, reason: GONE })
+    expect(result(local)?.reason).toMatch(new RegExp(`^agent-x is already resuming on ${MAC}`))
     expect(rows('agent_resumed')).toHaveLength(1)
   })
 
@@ -313,6 +315,24 @@ describe('resume host:mac through the host launcher', () => {
     expect(rows('agent_retired')).toEqual([])
   })
 
+  // Mutation caught: resumingRefusal ignoring a remote launch the launcher accepted but that has not attached.
+  it('refuses a second resume while the first is launched on the Mac but not yet registered', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+    await resume({ host: 'mac' })
+    answerProbe(launcher, { ok: true, transcript: FOUND })
+    await settle()
+    answerSpawn(launcher, true)
+    await settle()
+
+    const again = await resume({ host: 'mac' })
+
+    expect(result(again)?.ok).toBe(false)
+    expect(result(again)?.reason).toMatch(new RegExp(`^agent-x is already resuming on ${MAC}`))
+    expect(launcher.frames.filter(f => f.t === 'host_probe' || f.t === 'host_spawn')).toHaveLength(2)
+    expect(rows('agent_resumed')).toHaveLength(1)
+  })
+
   it('refuses a worktree agent before probing', async () => {
     const launcher = macLauncher()
     stoppedAgent({ isolation: 'worktree' })
@@ -402,5 +422,35 @@ describe('the broker-side checks of a host resume', () => {
       host: MAC,
       platform: 'darwin',
     })
+  })
+})
+
+describe('a pending remote launch replaced for the same agent', () => {
+  // Mutation caught: open overwriting an entry without clearing its timer, or forget deleting by id alone.
+  it('lets the replaced timer lapse without failing or forgetting the launch that replaced it', async () => {
+    const lost: string[] = []
+    const spawns = new RemoteSpawns({
+      reportMs: 1_000,
+      attachMs: 1_000,
+      ceilingMs: 5_000,
+      retire: () => undefined,
+    })
+    const record = (tag: string) => ({
+      agentId: AGENT,
+      name: 'agent-x',
+      host: MAC,
+      announce: () => undefined,
+      onLost: () => lost.push(tag),
+    })
+    spawns.open(record('first'))
+    await vi.advanceTimersByTimeAsync(500)
+    spawns.open(record('second'))
+    spawns.ready(AGENT, { ok: true })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(lost).toEqual([])
+    expect(spawns.has(AGENT)).toBe(true)
+    spawns.close()
   })
 })

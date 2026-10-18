@@ -3786,10 +3786,24 @@ export class Supervisor implements TeleportHost {
    */
   private resumingRefusal(identity: AgentIdentity): string | undefined {
     const since = this.resuming.get(identity.agentId)
-    if (since === undefined) return this.sessionLaunchRefusal(identity.sessionId)
+    if (since === undefined)
+      return this.remoteLaunchRefusal(identity) ?? this.sessionLaunchRefusal(identity.sessionId)
     return (
       `${identity.name} is already resuming (since ${new Date(since).toISOString()}); ` +
       'wait for that resume to answer, then check agent_list before resuming again'
+    )
+  }
+
+  /**
+   * CC-1472: a host resume releases its hold once the launcher accepts the launch, before the
+   * agent registers; until it does, or the attach ceiling passes, a second launch would run a
+   * second process on the same session.
+   */
+  private remoteLaunchRefusal(identity: AgentIdentity): string | undefined {
+    if (!this.remoteSpawns.has(identity.agentId)) return undefined
+    return (
+      `${identity.name} is already resuming on ${identity.host ?? 'another machine'} and has not registered yet; ` +
+      'check agent_list before resuming again'
     )
   }
 

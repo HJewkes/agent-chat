@@ -168,6 +168,8 @@ export class RemoteSpawns {
   constructor(private readonly deps: RemoteSpawnDeps) {}
 
   open(record: RemoteSpawnRecord): void {
+    // A replaced entry's timer would otherwise fire later and fail the launch that replaced it.
+    clearTimeout(this.pending.get(record.agentId)?.timer)
     const entry: Pending = { record, phase: 'launching' }
     this.pending.set(record.agentId, entry)
     this.arm(
@@ -261,7 +263,7 @@ export class RemoteSpawns {
 
   private forget(entry: Pending): void {
     clearTimeout(entry.timer)
-    this.pending.delete(entry.record.agentId)
+    if (this.pending.get(entry.record.agentId) === entry) this.pending.delete(entry.record.agentId)
   }
 }
 
