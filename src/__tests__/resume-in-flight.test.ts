@@ -72,7 +72,10 @@ beforeEach(() => {
   core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
   stopAutoAttach = autoAttach(core)
   sup = new Supervisor(core, {
-    surface: { platform: 'linux', spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }) },
+    surface: {
+      platform: 'linux',
+      spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+    },
   })
 })
 
