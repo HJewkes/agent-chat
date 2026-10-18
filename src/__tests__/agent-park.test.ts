@@ -933,16 +933,15 @@ describe('refusing to park a running or shared agent', () => {
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
-  it('refuses a resume that arrives while the park is in flight, and resume works once it finishes', async () => {
+  it('holds a resume that arrives while the park is in flight until it finishes, then re-creates the tree', async () => {
     const agent = await finishedIn('worker-a', makeRepo())
 
     const parking = sup.park('worker-a')
     const during = await sup.resume('worker-a')
     const parked = await parking
 
-    expect(during).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
     expect(parked.ok).toBe(true)
-    expect((await sup.resume('worker-a')).ok).toBe(true)
+    expect(during.ok).toBe(true)
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
