@@ -5,7 +5,7 @@ import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protoco
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { heldBranches, memoizeOpenPr, openPrHold } from './open-pr-hold.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
-import { shepherdSkip, type ShepherdSkipPort } from './shepherd-skip.js'
+import { shepherdSkip, type ShepherdRun, type ShepherdSkipPort } from './shepherd-skip.js'
 import { isLive } from './sweep.js'
 
 /**
@@ -128,10 +128,12 @@ async function planFinished(
 const staleExit = (agent: AgentIdentity, nowMs: number): boolean =>
   agent.state === 'exited' && agent.exitedAt !== undefined && nowMs - agent.exitedAt >= STALE_AFTER_MS
 
-/** One `gh` read per repo and branch for the whole plan, shared by the CC-904 and CC-1325 rules. */
+/** One Shepherd read for the whole plan, and one `gh` read per repo and branch, shared by the CC-904 and CC-1325 rules. */
 function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
+  let runs: Promise<ShepherdRun[]> | undefined
   return {
-    activeRuns: () => skip.activeRuns(),
+    // CC-1491: each read spawns `shepherd status`; one per candidate crashed its server on a large drain.
+    activeRuns: () => (runs ??= skip.activeRuns()),
     hasOpenPr: memoizeOpenPr((root, b) => skip.hasOpenPr(root, b)),
   }
 }
