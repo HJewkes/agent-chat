@@ -144,6 +144,8 @@ interface Entry {
    * have changed — a session that switched surface is a different process.
    */
   channels?: ChannelStatus
+  /** A print-mode host whose server spools pushes for its inbox hook, so they are queued, not lost (CC-1455). */
+  inboxSpool?: true
   /**
    * The name was derived from the session's directory, not chosen by it (CC-82).
    * Presence data like everything around it: a rename clears it, and it is a
@@ -436,6 +438,7 @@ export class Registry<C> {
       hostPid?: number
       host?: string
       provisional?: boolean
+      inboxSpool?: true
       termSessionId?: string
       tags?: string[]
       subscriptions?: Subscription[]
@@ -478,6 +481,7 @@ export class Registry<C> {
       // registration instead of one per recipient per message, and the answer
       // cannot change without the host process changing, which is a re-register.
       channels: this.channelStatus(input.hostPid),
+      ...(input.inboxSpool === true ? { inboxSpool: true as const } : {}),
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       // A re-register re-declares both, which is how a resumed agent gets its
       // subscriptions back without anything having persisted them.
@@ -542,9 +546,11 @@ export class Registry<C> {
     return this.findByName(name)?.[1].dnd ?? false
   }
 
-  /** CC-1455: whether a push to `name` lands on a print-mode host, which never shows it. */
-  isPrintHost(name: string): boolean {
-    return this.findByName(name)?.[1].channels === 'print'
+  /** CC-1455: what a push to a print-mode host becomes, or undefined when `name` is not one. */
+  printVerdict(name: string): 'headless_no_channel' | 'queued' | undefined {
+    const entry = this.findByName(name)?.[1]
+    if (entry?.channels !== 'print') return undefined
+    return entry.inboxSpool === true ? 'queued' : 'headless_no_channel'
   }
 
   list(): SessionInfo[] {
@@ -1000,6 +1006,11 @@ export class Registry<C> {
         reason:
           `"${entry.name}" was started without agent-chat on its --channels flag, so it is not woken by ` +
           'pushes. The message is in its inbox and it will see it on its next chat_inbox.',
+      }
+    if (entry.channels === 'print' && entry.inboxSpool === true)
+      return {
+        status: 'queued',
+        reason: `"${entry.name}" is a print-mode (claude -p) session; it is shown this at its next tool call, prompt or turn end.`,
       }
     if (entry.channels === 'print')
       return {

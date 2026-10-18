@@ -6,7 +6,8 @@ import { agentDir } from '../paths.js'
 /**
  * CC-1455: a `claude -p` host drops every channel push, so its MCP server also
  * writes each push into a local spool that a hook drains into the next tool
- * result. This module only WRITES; nothing reads the spool until the hook ships.
+ * result. This module WRITES the spool; the hook drains it (`inbox-spool/drain.ts`),
+ * and chat_inbox clears what it already returned.
  *
  * Each record is written to a dot-prefixed temp file and renamed into place, so
  * a reader globbing `*.json` never sees a partial record. The name leads with
@@ -35,6 +36,8 @@ let seq = 0
 
 const SAFE_ID = /[^A-Za-z0-9_-]/g
 
+const spoolId = (msgId: string): string => msgId.replace(SAFE_ID, '_')
+
 /** The spool of one spawned agent, beside its launch files and with their modes. */
 export const inboxSpoolDir = (agentId: string): string => path.join(agentDir(agentId), 'inbox')
 
@@ -59,7 +62,7 @@ export function spoolRecord(dir: string, record: SpoolRecord, deps: SpoolDeps = 
   const fs = deps.fs ?? nodeFs
   seq += 1
   const at = String((deps.now ?? Date.now)()).padStart(13, '0')
-  const id = record.msgId?.replace(SAFE_ID, '_') ?? 'system'
+  const id = record.msgId === undefined ? 'system' : spoolId(record.msgId)
   const name = `${at}-${String(seq).padStart(9, '0')}-${id}.json`
   const temp = path.join(dir, `.${name}.${process.pid}.tmp`)
   try {
@@ -69,5 +72,25 @@ export function spoolRecord(dir: string, record: SpoolRecord, deps: SpoolDeps = 
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Delete the spooled records of messages chat_inbox just returned, so the hook does
+ * not show them a second time. A record a hook already claimed is left to that hook.
+ */
+export function clearSpooled(
+  dir: string,
+  msgIds: string[],
+  fs: Pick<typeof nodeFs, 'readdirSync' | 'rmSync'> = nodeFs,
+): void {
+  const suffixes = msgIds.map(id => `-${spoolId(id)}.json`)
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('.') || !suffixes.some(suffix => name.endsWith(suffix))) continue
+      fs.rmSync(path.join(dir, name), { force: true })
+    }
+  } catch {
+    // No spool yet: nothing was waiting.
   }
 }

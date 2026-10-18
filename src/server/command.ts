@@ -30,6 +30,8 @@ export interface ToolContext extends BaseContext {
   session: SessionName
   /** The `[budget]` advisory if this session's context newly crossed its mark; the push path draws from the same source. */
   contextHint?: () => string | undefined
+  /** CC-1455: this print-mode session's inbox spool, which chat_inbox clears of what it returned. */
+  inboxSpool?: string
 }
 
 /** A tool answers with the text the model reads; a refusal is returned, only a failure throws. */

@@ -3,6 +3,7 @@ import { clampLimit, positiveLimit } from '../../args.js'
 import type { DeliveredMessage, ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 import { withHint } from '../context-hint.js'
+import { clearSpooled } from '../inbox-spool.js'
 
 /** Upper bound on a replay request, so one tool call cannot flood a session's context. */
 const INBOX_MAX = 50
@@ -53,6 +54,12 @@ export const chatInbox = defineTool({
       'inbox_result',
     )) as Extract<ServerMessage, { t: 'inbox_result' }>
     if (res.error) throw new Error(res.error)
+    // CC-1455: what the model just read here, its inbox hook must not show it again.
+    if (ctx.inboxSpool !== undefined)
+      clearSpooled(
+        ctx.inboxSpool,
+        res.messages.map(m => m.msgId),
+      )
     const text = formatInbox(res.messages, after)
     const last = res.messages.at(-1)
     const body =

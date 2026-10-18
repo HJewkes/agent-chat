@@ -375,6 +375,8 @@ export const EVENT_KINDS = [
   'seat_activity',
   // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
   'seat_ask_denied',
+  // CC-1455: a print-mode session's inbox hook showed these spooled msgIds. Written by the hook, never by the broker.
+  'inbox_shown',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -620,9 +622,19 @@ export interface DeliveredMessage {
  * `headless_no_channel` is the same for a print-mode (`claude -p`) host, which
  * drops every push even with the flag (CC-1455): logged, never seen unless it
  * calls chat_inbox.
+ *
+ * `queued` is a print-mode host whose server spools pushes for its inbox hook:
+ * not seen yet, but shown at its next tool call, prompt or turn end.
  */
 export type RecipientStatus =
-  'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel' | 'headless_no_channel'
+  | 'delivered'
+  | 'held'
+  | 'no_such_session'
+  | 'self'
+  | 'refused'
+  | 'no_channel'
+  | 'headless_no_channel'
+  | 'queued'
 
 /**
  * A delivered message carrying the log id that ordered it, so a reader can say
@@ -789,7 +801,7 @@ export type ClientMessage =
        * declaring an identity for the first time.
        */
       provisional?: boolean
-      /** This print-mode host's server spools every push for a hook to drain (CC-1455); the broker ignores it for now. */
+      /** This print-mode host's server spools every push for a hook to drain, so a send reads `queued` (CC-1455). */
       inboxSpool?: true
       /**
        * Which BUILD this client is running, so a mismatch with the broker's own
