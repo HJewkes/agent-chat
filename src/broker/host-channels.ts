@@ -18,10 +18,24 @@ import { EFFORT_LEVELS, type EffortLevel } from '../agents/types.js'
  * available, and it is a READ: nothing here signals the host.
  */
 
-/** `unknown` is not a failure — it means we could not look, so callers must not treat it as "no". */
-export type ChannelStatus = 'yes' | 'no' | 'unknown'
+/**
+ * `unknown` is not a failure — it means we could not look, so callers must not treat it as "no".
+ * `print` is a `claude -p` host: it drops every push whatever its `--channels` says (CC-1455).
+ */
+export type ChannelStatus = 'yes' | 'no' | 'unknown' | 'print'
 
 const CHANNEL_FLAGS = ['--channels', '--dangerously-load-development-channels']
+
+const PRINT_FLAGS = ['-p', '--print']
+
+/** Whether an argv runs Claude Code in print mode; stops at `--`, so a prompt holding `-p` is not one. */
+export function printModeFromArgv(argv: readonly string[]): boolean {
+  for (const token of argv) {
+    if (token === '--') return false
+    if (PRINT_FLAGS.includes(token)) return true
+  }
+  return false
+}
 
 /**
  * True when `token` names this server.
@@ -45,6 +59,7 @@ function namesAgentChat(token: string, server: string): boolean {
  * scanning for the flag rather than a substring match on the whole line.
  */
 export function channelStatusFromArgv(argv: readonly string[], server = 'agent-chat'): ChannelStatus {
+  if (printModeFromArgv(argv)) return 'print'
   for (let i = 0; i < argv.length; i++) {
     // Everything past a bare `--` is an operand, so a `--channels` there is part
     // of the prompt and grants nothing. Checked before the flag test so a prompt

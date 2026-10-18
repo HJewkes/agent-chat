@@ -456,6 +456,13 @@ export class BrokerCore<C = Conn> {
     return true
   }
 
+  /** CC-1455: a push a print-mode host never shows is logged as not delivered, whatever the socket write did. */
+  private routeDelivered(name: string, live: boolean): { delivered: boolean; reason?: string } {
+    return live && this.registry.isPrintHost(name)
+      ? { delivered: false, reason: 'headless_no_channel' }
+      : { delivered: live }
+  }
+
   /**
    * Push one routed peer message (CC-321). A worker's report to the session that
    * spawned it waits out the batch window; everything else goes at once. The
@@ -606,7 +613,7 @@ export class BrokerCore<C = Conn> {
       body: text,
       meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
     })
-    this.deliverTo(steward, {
+    const live = this.deliverTo(steward, {
       msgId,
       from,
       text,
@@ -614,7 +621,14 @@ export class BrokerCore<C = Conn> {
       ...(inReplyTo === undefined ? {} : { inReplyTo }),
       ...(source === undefined ? {} : { wakeSource: source }),
     })
-    logEvent('route', { kind: 'message', msgId, from, to: steward, delivered: true, forwardedFor: to })
+    logEvent('route', {
+      kind: 'message',
+      msgId,
+      from,
+      to: steward,
+      ...this.routeDelivered(steward, live),
+      forwardedFor: to,
+    })
     return { steward, msgId, held: false }
   }
 
@@ -685,7 +699,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       from: HUMAN,
       to: author,
-      delivered: live,
+      ...this.routeDelivered(author, live),
       ref: msgId,
     })
     return { ok: true, ...(live ? {} : { reason: `${author} is offline; queued in its inbox` }) }
@@ -729,7 +743,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       from: decider,
       to: question.from,
-      delivered: live,
+      ...this.routeDelivered(question.from, live),
       provenance: 'decided',
       ref: msgId,
     })
@@ -793,7 +807,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       from: request.composer,
       to: request.recipient,
-      delivered: live,
+      ...this.routeDelivered(request.recipient, live),
       provenance: 'human-endorsed',
       ref: msgId,
     })

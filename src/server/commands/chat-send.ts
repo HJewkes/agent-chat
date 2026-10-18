@@ -92,6 +92,11 @@ const MISS_REASON: Record<string, string> = {
   refused: 'refused by the broker',
 }
 
+/** CC-1455: a print-mode recipient has the message logged, but no push ever reaches its model. */
+const notSeen = (names: string[], msgId: string | undefined): string =>
+  `NOT SEEN: ${names.join(', ')} — a print-mode (claude -p) session takes no pushes, so the message ` +
+  `(msg_id ${msgId}) is only in its inbox and it sees it only if it calls chat_inbox. Do not wait on a reply`
+
 /**
  * A multicast reports per recipient, because "ok" over a list of names hides the
  * one that failed — and the sender's next move (chase that peer, or not) depends
@@ -102,10 +107,14 @@ function formatFanout(results: RecipientResult[], msgId: string | undefined, rea
   // is in that session's inbox — but it is called out separately below, because
   // a sender that reads only the first clause would wait for a reply that
   // nothing is going to prompt (CC-73).
-  const took = results.filter(r => ['delivered', 'held', 'no_channel'].includes(r.status))
+  const took = results.filter(r =>
+    ['delivered', 'held', 'no_channel', 'headless_no_channel'].includes(r.status),
+  )
   const missed = results.filter(r => !took.includes(r))
+  const unseen = took.filter(r => r.status === 'headless_no_channel')
+  const reached = took.filter(r => !unseen.includes(r))
   const parts: string[] = []
-  if (took.length > 0) parts.push(`Delivered to ${took.map(r => r.name).join(', ')} (msg_id ${msgId})`)
+  if (reached.length > 0) parts.push(`Delivered to ${reached.map(r => r.name).join(', ')} (msg_id ${msgId})`)
   const held = took.filter(r => r.status === 'held')
   if (held.length > 0) parts.push(`held in the inbox of ${held.map(r => r.name).join(', ')}`)
   const unwoken = took.filter(r => r.status === 'no_channel')
@@ -113,6 +122,13 @@ function formatFanout(results: RecipientResult[], msgId: string | undefined, rea
     parts.push(
       `NOT WOKEN: ${unwoken.map(r => r.name).join(', ')} — started without agent-chat on --channels, so the ` +
         'message sits in the inbox unread until that session next looks. Do not wait on a reply',
+    )
+  if (unseen.length > 0)
+    parts.push(
+      notSeen(
+        unseen.map(r => r.name),
+        msgId,
+      ),
     )
   if (missed.length > 0) {
     const each = missed.map(r => `${r.name} (${MISS_REASON[r.status] ?? r.status})`)
@@ -130,6 +146,7 @@ function describeSend(res: SendResult, { to, toTag }: Target): string {
   if (toTag !== undefined) return `Tag "${toTag}" — ${formatFanout(res.results ?? [], res.msgId, res.reason)}`
   if (Array.isArray(to)) return formatFanout(res.results ?? [], res.msgId, res.reason)
   if (res.held) return `Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`
+  if (res.results?.[0]?.status === 'headless_no_channel') return `${notSeen([`"${to}"`], res.msgId)}.`
   return `Delivered to "${to}" (msg_id ${res.msgId}).`
 }
 
