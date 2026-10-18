@@ -26,14 +26,18 @@ describe('stale session guard', () => {
   it('blocks the prompts of an identity a teleport superseded', () => {
     markSuperseded('old-agent')
     staleSessionGuard('old-agent')
-    expect(JSON.parse(written)).toMatchObject({ decision: 'block' })
+    const out = JSON.parse(written) as { decision: string; reason: string }
+    expect(out.decision).toBe('block')
+    expect(out.reason).toContain('old-agent')
+    expect(out.reason).toContain('agent-chat agent ls --prefix')
+    expect(out.reason).not.toContain('Close it.')
   })
 
   it('lets the seat’s own identity through when it is resumed after a predecessor was marked', () => {
     markSuperseded('old-agent')
     staleSessionGuard('current-agent')
     expect(written).toBe('')
-    expect(staleGuardOutput(false)).toBe('')
+    expect(staleGuardOutput('current-agent')).toBe('')
   })
 
   it('installs the guard on a UserPromptSubmit hook only when an agent id is known', () => {
