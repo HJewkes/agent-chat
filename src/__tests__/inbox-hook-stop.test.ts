@@ -111,6 +111,13 @@ describe('the installed Stop inbox hook', () => {
     expect(shownRows()).toEqual([])
   })
 
+  it('fails open: a record it cannot render never blocks the turn end', () => {
+    fs.mkdirSync(inboxSpoolDir(AGENT), { recursive: true })
+    fs.writeFileSync(path.join(inboxSpoolDir(AGENT), '0001.json'), '{"kind":"message"}')
+    fs.writeFileSync(path.join(inboxSpoolDir(AGENT), '0002.json'), 'not json')
+    expect(stop(false)).toBe('')
+  })
+
   it('claims and receipts a block drain, so the next drain shows nothing', () => {
     // Arrange
     spoolRecord(inboxSpoolDir(AGENT), direct('m-1'))
