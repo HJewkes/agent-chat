@@ -36,6 +36,7 @@ import {
 } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
+import { viewRoster } from '../agents/roster-filter.js'
 import {
   Supervisor,
   type SpawnOutcome,
@@ -1980,7 +1981,9 @@ export class SocketServer {
       case 'agents':
         return reply(conn, {
           t: 'agents_result',
-          agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }),
+          ...(msg.view === undefined
+            ? { agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }) }
+            : viewRoster(core.agents.roster({ includeRetired: true }), msg.view)),
           slots: this.supervisor.slotUsage(),
         })
       case 'teleport':

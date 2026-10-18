@@ -196,14 +196,14 @@ describe('agent_list tool filters', () => {
     }) as never
 
   it("mine lists only the session's own spawns", async () => {
-    const out = await agentList.run({ mine: true }, ctx('boss'))
+    const out = await agentList.run({ mine: true, include_finished: true }, ctx('boss'))
     expect(out).toContain('- cc-a ')
     expect(out).not.toContain('- y-e ')
     expect(out.match(/^- /gm)).toHaveLength(3)
   })
 
   it('prefix lists only matching names', async () => {
-    const out = await agentList.run({ prefix: 'z-' }, ctx('boss'))
+    const out = await agentList.run({ prefix: 'z-', include_finished: true }, ctx('boss'))
     expect(out.match(/^- /gm)).toHaveLength(2)
   })
 
