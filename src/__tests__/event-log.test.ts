@@ -433,17 +433,17 @@ describe('agent rows cached between reads (CC-1459)', () => {
     return reads
   }
 
-  const spawn = (log: EventLog, name: string) =>
+  const appendSpawn = (log: EventLog, name: string) =>
     log.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: `id-${name}`, body: name })
   const roster = (rows: AgentEventRow[]) => [...groupByAgent(rows).values()].map(foldAgent)
 
   it('reads only rows past the highest id it has already seen', () => {
     const { log } = logAt()
-    spawn(log, 'scout')
+    appendSpawn(log, 'scout')
     log.append({ kind: 'message', actor: 'human', target: 'scout', body: 'hello' })
     log.agentEvents()
     const seen = log.latestId()
-    spawn(log, 'agent-x')
+    appendSpawn(log, 'agent-x')
 
     const reads = tailReadsBy(log, () => log.agentEvents())
 
@@ -453,10 +453,10 @@ describe('agent rows cached between reads (CC-1459)', () => {
 
   it('sees a row another connection appended', () => {
     const { file, log } = logAt()
-    spawn(log, 'scout')
+    appendSpawn(log, 'scout')
     log.agentEvents()
     const other = new EventLog(file)
-    spawn(other, 'seat-x')
+    appendSpawn(other, 'seat-x')
     other.close()
 
     const rows = log.agentEvents()
@@ -466,11 +466,11 @@ describe('agent rows cached between reads (CC-1459)', () => {
 
   it('starts from a full read after close and reopen', () => {
     const { file, log } = logAt()
-    spawn(log, 'scout')
+    appendSpawn(log, 'scout')
     log.agentEvents()
     log.close()
     const reopened = new EventLog(file)
-    spawn(reopened, 'agent-x')
+    appendSpawn(reopened, 'agent-x')
 
     const reads = tailReadsBy(reopened, () => reopened.agentEvents())
 
@@ -479,14 +479,14 @@ describe('agent rows cached between reads (CC-1459)', () => {
 
   it('folds the cached rows to the same roster as a full scan', () => {
     const { file, log } = logAt()
-    const scout = spawn(log, 'scout').msgId
+    const scout = appendSpawn(log, 'scout').msgId
     log.agentEvents()
     log.append({ kind: 'agent_attached', actor: 'scout', ref: scout })
-    spawn(log, 'agent-x')
+    appendSpawn(log, 'agent-x')
     log.agentEvents()
     const other = new EventLog(file)
     other.append({ kind: 'agent_exited', actor: 'scout', ref: scout })
-    spawn(other, 'seat-x')
+    appendSpawn(other, 'seat-x')
     other.close()
 
     const cached = roster(log.agentEvents())
@@ -497,14 +497,14 @@ describe('agent rows cached between reads (CC-1459)', () => {
 
   it('keeps no row read inside a transaction that then rolls back', () => {
     const { log } = logAt()
-    spawn(log, 'scout')
+    appendSpawn(log, 'scout')
     log.agentEvents()
     const db = log.ledgerHandle()
     db.exec('BEGIN IMMEDIATE')
-    spawn(log, 'rolled-back')
+    appendSpawn(log, 'rolled-back')
     expect(log.agentEvents().map(r => r.body)).toEqual(['scout', 'rolled-back'])
     db.exec('ROLLBACK')
-    spawn(log, 'agent-x')
+    appendSpawn(log, 'agent-x')
 
     const rows = log.agentEvents()
 
@@ -513,7 +513,7 @@ describe('agent rows cached between reads (CC-1459)', () => {
 
   it('hands each caller its own array of rows no caller can change', () => {
     const { log } = logAt()
-    spawn(log, 'scout')
+    appendSpawn(log, 'scout')
     const first = log.agentEvents()
 
     first.pop()
