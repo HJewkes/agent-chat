@@ -3695,8 +3695,9 @@ export class Supervisor implements TeleportHost {
 
   /**
    * CC-1456, CC-1457: holds the agent and its session from before the first await
-   * until the launch answers, so resume, surface switch and `resume_session`
-   * spawn refuse each other. Callers check the refusals first.
+   * until the launch answers, so resume, surface switch, `resume_session` spawn
+   * and an account-move relaunch (CC-1462) refuse each other. Callers check the
+   * refusals first.
    */
   private async holdingLaunch<T>(
     hold: { agentId?: string; name: string; sessionId?: string },
@@ -4164,8 +4165,20 @@ export class Supervisor implements TeleportHost {
    * of another. What it does NOT skip is rebuilding the launch plan and the MCP
    * config: that is what makes the descendant exec the current `dist/cli.js` and
    * read the current instructions, which is the entire payoff of the feature.
+   *
+   * CC-1462: an account move resumes the predecessor's session, so it holds that session
+   * as a `resume_session` spawn does, and refuses, before any side effect, a session
+   * another launch already holds. A fresh-session relaunch has nothing to hold.
    */
   async relaunch(input: RelaunchInput): Promise<void> {
+    const session = input.resumeSession
+    if (session === undefined) return this.relaunchUnguarded(input)
+    const inFlight = this.sessionLaunchRefusal(session)
+    if (inFlight) throw new Error(inFlight)
+    return this.holdingLaunch({ name: input.name, sessionId: session }, () => this.relaunchUnguarded(input))
+  }
+
+  private async relaunchUnguarded(input: RelaunchInput): Promise<void> {
     // The descendant occupies exactly what the predecessor did, so the budget
     // sees one agent throughout rather than two for the length of a launch.
     if (input.inheritedFrom !== undefined) this.semaphore.release(input.inheritedFrom)
