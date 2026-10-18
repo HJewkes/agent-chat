@@ -1665,19 +1665,7 @@ export class SocketServer {
       if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
-      const { msgId } = core.append({
-        kind: 'route_failed',
-        actor: HUMAN,
-        target: to,
-        body: 'no active session',
-      })
-      logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
-      return reply(conn, {
-        t: 'send_result',
-        ok: false,
-        recipients: [],
-        reason: `no active session named "${to}"`,
-      })
+      return this.failHumanSend(conn, to, held?.reason)
     }
     const { msgId } = core.append({
       kind: 'message',
@@ -1698,6 +1686,31 @@ export class SocketServer {
     })
     logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: true, recipients: [to] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
+  }
+
+  /**
+   * CC-1452: a refused hold's reason reaches the row and the sender. The text stays out of the
+   * row: the hold refused to keep it, so storing it here would be a hold with no bound.
+   */
+  private failHumanSend(conn: Conn, to: string, holdRefusal?: string): void {
+    const reason = holdRefusal ?? `no active session named "${to}"`
+    const { msgId } = this.core.append({
+      kind: 'route_failed',
+      actor: HUMAN,
+      target: to,
+      body: holdRefusal ?? 'no active session',
+      ...(holdRefusal === undefined ? {} : { meta: { held: 'refused' } }),
+    })
+    logEvent('route', {
+      kind: 'message',
+      msgId,
+      from: HUMAN,
+      to,
+      delivered: false,
+      recipients: [],
+      ...(holdRefusal === undefined ? {} : { held: 'refused' }),
+    })
+    reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
   }
 
   /**
