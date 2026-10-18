@@ -1,10 +1,12 @@
 import { z } from 'zod'
-import type { AgentIdentity, ServerMessage } from '../../protocol.js'
+import type { AgentIdentity, RosterHidden, RosterView, ServerMessage } from '../../protocol.js'
 import { accountReader, accountUsageLines, budgetSegment, readBudget } from '../../agents/budget.js'
 import { transcriptLine } from '../../agents/transcript.js'
 import { accountName } from '../../agents/config-dir.js'
-import { callerName, filterRoster } from '../../agents/roster-filter.js'
-import { defineTool } from '../command.js'
+import { callerName, viewRoster } from '../../agents/roster-filter.js'
+import { defineTool, type ToolContext } from '../command.js'
+
+type AgentsResult = Extract<ServerMessage, { t: 'agents_result' }>
 
 /** CC-126: a retired agent's name is gone, so its row names the session a spawn can continue. */
 const resumeHint = (agent: AgentIdentity): string =>
@@ -19,36 +21,63 @@ const resumeHint = (agent: AgentIdentity): string =>
 const stateSegment = (agent: AgentIdentity, registered: ReadonlySet<string>): string =>
   agent.state === 'live' && !registered.has(agent.name) ? 'live, attached-unregistered' : agent.state
 
+const DEFAULT_LIMIT = 50
+/** A page past this overflows a coordinator's tool-result limit again. */
+const MAX_LIMIT = 500
+
+/** CC-1464: the footer that says the page is not the whole roster. */
+const hiddenFooter = (hidden: RosterHidden, limit: number): string =>
+  `${hidden.finished} finished, ${hidden.retired} retired not shown` +
+  (hidden.overLimit > 0 ? `; ${hidden.overLimit} more past limit ${limit}` : '')
+
+/**
+ * CC-1464: the broker cuts the roster to `view` before sending it. An older broker
+ * ignores `view`, so the same view runs here too; `includeRetired: true` makes that
+ * broker send retired rows, so they are counted rather than silently missing.
+ */
+async function rosterPage(
+  ctx: ToolContext,
+  view: RosterView,
+): Promise<{ agents: AgentIdentity[]; hidden: RosterHidden; slots: AgentsResult['slots'] }> {
+  const res = (await ctx.broker.request(
+    { t: 'agents', includeRetired: true, view },
+    'agents_result',
+  )) as AgentsResult
+  const page = viewRoster(res.agents, view)
+  return { agents: page.agents, hidden: res.hidden ?? page.hidden, slots: res.slots }
+}
+
 export const agentList = defineTool({
   name: 'agent_list',
   description:
-    'List durable agents with their lifecycle state and whether a process is currently attached. ' +
-    'An agent can exist without being connected — identity outlives presence.',
+    'List durable agents and whether a process is attached. Default: spawning, live, detached, newest first.',
   args: z.object({
+    include_finished: z.boolean().describe('Also list exited agents.').optional(),
     include_retired: z
       .boolean()
-      .describe('Also list retired agents, with the session id agent_spawn resume_session needs.')
+      .describe('Also list retired agents, with the id resume_session needs.')
       .optional(),
-    mine: z.boolean().describe('Only agents this session spawned.').optional(),
-    prefix: z.string().describe('Only agents whose name starts with this.').optional(),
+    limit: z.number().describe(`Max rows (default ${DEFAULT_LIMIT}, cap ${MAX_LIMIT}).`).optional(),
+    mine: z.boolean().describe('Only agents you spawned.').optional(),
+    prefix: z.string().describe('Only names starting with this.').optional(),
   }),
   result: z.string(),
-  async run({ include_retired, mine, prefix }, ctx) {
-    const includeRetired = include_retired === true
-    const res = (await ctx.broker.request(
-      { t: 'agents', ...(includeRetired ? { includeRetired } : {}) },
-      'agents_result',
-    )) as Extract<ServerMessage, { t: 'agents_result' }>
+  async run({ include_finished, include_retired, limit: asked = DEFAULT_LIMIT, mine, prefix }, ctx) {
+    const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(asked)))
+    const { agents, hidden, slots } = await rosterPage(ctx, {
+      ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
+      ...(prefix === undefined ? {} : { prefix }),
+      includeFinished: include_finished === true,
+      includeRetired: include_retired === true,
+      limit,
+    })
+    const footer = hiddenFooter(hidden, limit)
+    if (agents.length === 0) return `No agents.\n${footer}`
     const { sessions } = (await ctx.broker.request({ t: 'list' }, 'list_result')) as Extract<
       ServerMessage,
       { t: 'list_result' }
     >
     const registered = new Set(sessions.map(s => s.name))
-    const agents = filterRoster(res.agents, {
-      ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
-      ...(prefix === undefined ? {} : { prefix }),
-    })
-    if (agents.length === 0) return 'No agents.'
     // A budget reading is only ever meaningful for a live/attached process — a
     // spawning, detached, exited or retired identity has none to find, and on a
     // machine with a long agent history nearly every row is one of those. Reading
@@ -85,6 +114,6 @@ export const agentList = defineTool({
         `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
       )
     })
-    return `Durable agents:\n${accountUsageLines(accounts, res.slots)}\n${rows.join('\n')}`
+    return `Durable agents:\n${accountUsageLines(accounts, slots)}\n${rows.join('\n')}\n${footer}`
   },
 })

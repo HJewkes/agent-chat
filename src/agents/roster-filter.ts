@@ -1,4 +1,4 @@
-import type { AgentIdentity } from '../protocol.js'
+import type { AgentIdentity, RosterHidden, RosterView } from '../protocol.js'
 
 export interface RosterFilter {
   /** Keeps only agents spawned by this name; a successor sharing the name counts. */
@@ -12,6 +12,27 @@ export function filterRoster(agents: AgentIdentity[], filter: RosterFilter): Age
       (filter.spawner === undefined || a.spawnedBy === filter.spawner) &&
       (filter.prefix === undefined || a.name.startsWith(filter.prefix)),
   )
+}
+
+/**
+ * CC-1464: the agent_list page. Broker and client both run it, so a new client
+ * against an old broker, which ignores `view` and sends everything, shows the
+ * same rows. Run on its own output it changes nothing.
+ */
+export function viewRoster(
+  agents: AgentIdentity[],
+  view: RosterView,
+): { agents: AgentIdentity[]; hidden: RosterHidden } {
+  const hidden: RosterHidden = { finished: 0, retired: 0, overLimit: 0 }
+  const kept = filterRoster(agents, view).filter(a => {
+    if (a.state === 'retired' && view.includeRetired !== true) hidden.retired++
+    else if (a.state === 'exited' && view.includeFinished !== true) hidden.finished++
+    else return true
+    return false
+  })
+  const limit = view.limit ?? kept.length
+  hidden.overLimit = Math.max(0, kept.length - limit)
+  return { agents: kept.slice(0, limit), hidden }
 }
 
 /**

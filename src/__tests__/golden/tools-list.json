@@ -766,21 +766,29 @@
     },
     {
       "name": "agent_list",
-      "description": "List durable agents with their lifecycle state and whether a process is currently attached. An agent can exist without being connected — identity outlives presence.",
+      "description": "List durable agents and whether a process is attached. Default: spawning, live, detached, newest first.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "include_finished": {
+            "type": "boolean",
+            "description": "Also list exited agents."
+          },
           "include_retired": {
             "type": "boolean",
-            "description": "Also list retired agents, with the session id agent_spawn resume_session needs."
+            "description": "Also list retired agents, with the id resume_session needs."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max rows (default 50, cap 500)."
           },
           "mine": {
             "type": "boolean",
-            "description": "Only agents this session spawned."
+            "description": "Only agents you spawned."
           },
           "prefix": {
             "type": "string",
-            "description": "Only agents whose name starts with this."
+            "description": "Only names starting with this."
           }
         }
       }
