@@ -24,7 +24,18 @@ const SYNTHETIC_HOME_NAMES = ['alice', 'someone']
 // Real coordinator seats are named `<word>-coord`, so the shape bans them here and in CI without listing
 // any. A word of one or two letters is an abbreviation, and these words are placeholders.
 const COORD_SEAT = /(?<![A-Za-z0-9])([A-Za-z0-9]+)-coord(?![A-Za-z0-9])/gi
-const SYNTHETIC_SEAT_WORDS = ['alpha', 'beta', 'gamma', 'delta', 'zeta', 'demo', 'sample', 'example', 'other', 'seat']
+const SYNTHETIC_SEAT_WORDS = [
+  'alpha',
+  'beta',
+  'gamma',
+  'delta',
+  'zeta',
+  'demo',
+  'sample',
+  'example',
+  'other',
+  'seat',
+]
 // The temp-dir prefix tests pass to mkdtemp; the one `<word>-coord` that is not a seat name.
 const TMP_DIR_PREFIX = /agent-chat-coord-/gi
 // Other banned names, as SHA-256 digests of their lowercase form, so the list names no one.
