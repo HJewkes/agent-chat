@@ -18,6 +18,8 @@ import {
   type WakeSource,
   wakeSource,
 } from '../protocol.js'
+import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
+import { dedupeKey, nonceRefusal, RequestDedupe } from './request-dedupe.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
@@ -99,11 +101,37 @@ const spawnedAsOf = (msg: {
  * the reply sites echoes its id without threading it through each handler. Only a
  * reply to the requesting connection carries it; a frame to another one does not.
  */
-const requestScope = new AsyncLocalStorage<{ conn: Conn; rid: number }>()
+const requestScope = new AsyncLocalStorage<{
+  conn: Conn
+  rid?: number
+  /** CC-1454: a keyed request's nonce, and the hook that keeps its reply for a retry. */
+  nonce?: string
+  record?: (message: ServerMessage) => void
+}>()
 
 const reply = (conn: Conn, message: ServerMessage): void => {
   const scope = requestScope.getStore()
-  conn.write(encode(scope?.conn === conn ? { ...message, rid: scope.rid } : message))
+  if (scope?.conn !== conn) return void conn.write(encode(message))
+  conn.write(encode(scope.rid === undefined ? message : { ...message, rid: scope.rid }))
+  scope.record?.(message)
+}
+
+type KeyedReply = Extract<ServerMessage, { t: 'send_result' | 'spawn_result' }>
+interface KeyedJoiner {
+  conn: Conn
+  rid?: number
+}
+const KEYED_REPLY = { send: 'send_result', resume: 'spawn_result' } as const
+
+const keyedRefusal = (verb: KeyedFrame['t'], reason: string): KeyedReply =>
+  verb === 'send'
+    ? { t: 'send_result', ok: false, recipients: [], reason }
+    : { t: 'spawn_result', ok: false, reason }
+
+/** A retry gets the first request's reply under its own rid, marked so it is not read as a second action. */
+const answerKeyed = (joiner: KeyedJoiner, message: KeyedReply): void => {
+  const deduped = { ...message, deduped: true }
+  joiner.conn.write(encode(joiner.rid === undefined ? deduped : { ...deduped, rid: joiner.rid }))
 }
 
 /** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
@@ -341,6 +369,8 @@ export class SocketServer {
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
   private readonly remoteSpawners = new Map<string, Conn>()
+  /** CC-1454: keyed sends and resumes by requester and nonce. Memory only: a restart forgets them. */
+  private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
   /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
   private jobKick: JobKick | undefined
 
@@ -1062,11 +1092,13 @@ export class SocketServer {
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
+    const nonce = requestScope.getStore()?.nonce
     logEvent('route', {
       kind,
       msgId: result.msgId,
       from,
       to,
+      ...(nonce === undefined ? {} : { nonce }),
       ...routeDelivery(result),
       recipients: result.recipients,
     })
@@ -1859,55 +1891,8 @@ export class SocketServer {
         return reply(conn, { t: 'subscribe_result', ...core.registry.subscribe(conn, msg.subscriptions) })
       case 'unsubscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
-      case 'send': {
-        const refusal = sendMetaRefusal(msg)
-        if (refusal !== undefined)
-          return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: refusal })
-        const meta = sendMeta(msg)
-        // Tag addressing resolves to a set of names and then goes down the very
-        // same multicast path, so there is exactly one fanout implementation to
-        // keep budgeted. A tag matching nobody comes back ok:false from there.
-        if (msg.toTag !== undefined) {
-          return this.handleRoute(
-            conn,
-            core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
-            'message',
-            `tag ${msg.toTag}`,
-            { tag: msg.toTag, meta },
-          )
-        }
-        if (msg.to === undefined) {
-          return reply(conn, {
-            t: 'send_result',
-            ok: false,
-            recipients: [],
-            reason: 'name a recipient in `to`, or a tag in `toTag`',
-          })
-        }
-        if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
-        if (!Array.isArray(msg.to))
-          return this.handleSend(conn, msg.to, msg.text, { inReplyTo: msg.inReplyTo, meta })
-        // The human is a queue, not a session, and a multicast is a fan-out to
-        // sessions. Splitting one call across both write paths is where the bugs
-        // would live, so the whole call is refused rather than half-honoured.
-        if (msg.to.includes(HUMAN)) {
-          return reply(conn, {
-            t: 'send_result',
-            ok: false,
-            recipients: [],
-            reason:
-              `"${HUMAN}" cannot be one of several recipients — the human is a queue, not a session. ` +
-              'Send to the peers in one call and use chat_notify or chat_ask for the human.',
-          })
-        }
-        return this.handleRoute(
-          conn,
-          core.registry.multicast(conn, msg.to, msg.text, msg.inReplyTo),
-          'message',
-          msg.to.join(', '),
-          { meta },
-        )
-      }
+      case 'send':
+        return this.keyed(conn, msg, () => this.routeSend(conn, msg))
       case 'broadcast':
         return this.handleRoute(conn, core.registry.broadcast(conn, msg.text), 'broadcast', '*')
       case 'ask':
@@ -2040,8 +2025,7 @@ export class SocketServer {
         void this.handleBackground(conn)
         return
       case 'resume':
-        void this.handleResume(conn, msg)
-        return
+        return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {
         const requester = this.core.registry.entryFor(conn)
         void this.supervisor
@@ -2093,6 +2077,102 @@ export class SocketServer {
         return
       }
     }
+  }
+
+  private routeSend(conn: Conn, msg: Extract<ClientMessage, { t: 'send' }>): void {
+    const { core } = this
+    const refusal = sendMetaRefusal(msg)
+    if (refusal !== undefined)
+      return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: refusal })
+    const meta = sendMeta(msg)
+    // Tag addressing resolves to a set of names and then goes down the very
+    // same multicast path, so there is exactly one fanout implementation to
+    // keep budgeted. A tag matching nobody comes back ok:false from there.
+    if (msg.toTag !== undefined) {
+      return this.handleRoute(
+        conn,
+        core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
+        'message',
+        `tag ${msg.toTag}`,
+        { tag: msg.toTag, meta },
+      )
+    }
+    if (msg.to === undefined) {
+      return reply(conn, {
+        t: 'send_result',
+        ok: false,
+        recipients: [],
+        reason: 'name a recipient in `to`, or a tag in `toTag`',
+      })
+    }
+    if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
+    if (!Array.isArray(msg.to))
+      return this.handleSend(conn, msg.to, msg.text, { inReplyTo: msg.inReplyTo, meta })
+    // The human is a queue, not a session, and a multicast is a fan-out to
+    // sessions. Splitting one call across both write paths is where the bugs
+    // would live, so the whole call is refused rather than half-honoured.
+    if (msg.to.includes(HUMAN)) {
+      return reply(conn, {
+        t: 'send_result',
+        ok: false,
+        recipients: [],
+        reason:
+          `"${HUMAN}" cannot be one of several recipients — the human is a queue, not a session. ` +
+          'Send to the peers in one call and use chat_notify or chat_ask for the human.',
+      })
+    }
+    return this.handleRoute(
+      conn,
+      core.registry.multicast(conn, msg.to, msg.text, msg.inReplyTo),
+      'message',
+      msg.to.join(', '),
+      { meta },
+    )
+  }
+
+  /** CC-1454: a frame with a nonce runs once per requester and key; a retry joins or replays it. */
+  private keyed(conn: Conn, msg: KeyedFrame, run: () => void | Promise<void>): void {
+    if (msg.nonce === undefined) return void run()
+    const refusal = nonceRefusal(msg.nonce)
+    if (refusal !== undefined) return reply(conn, keyedRefusal(msg.t, refusal))
+    const requester = this.core.registry.entryFor(conn)
+    const key = dedupeKey(msg.t, requester?.agentId ?? requester?.name ?? HUMAN, msg.nonce)
+    const outer = requestScope.getStore()
+    const joiner: KeyedJoiner =
+      outer?.conn === conn && outer.rid !== undefined ? { conn, rid: outer.rid } : { conn }
+    const begun = this.dedupe.begin(key, requestFingerprint(msg), joiner)
+    if (begun.kind !== 'run') logEvent('dedupe', { verb: msg.t, nonce: msg.nonce, outcome: begun.kind })
+    if (begun.kind === 'replay') return answerKeyed(joiner, begun.reply)
+    if (begun.kind === 'mismatch') {
+      const reason = `idempotency key ${msg.nonce} was already used for a different request`
+      return reply(conn, keyedRefusal(msg.t, reason))
+    }
+    if (begun.kind === 'run')
+      this.runKeyed({ ...outer, conn, nonce: msg.nonce }, key, KEYED_REPLY[msg.t], run)
+  }
+
+  /** Runs the first keyed request, keeping its first reply of `replyType` for the retries. */
+  private runKeyed(
+    scope: { conn: Conn; rid?: number; nonce: string },
+    key: string,
+    replyType: KeyedReply['t'],
+    run: () => void | Promise<void>,
+  ): void {
+    let settled = false
+    const record = (message: ServerMessage): void => {
+      if (settled || message.t !== replyType) return
+      settled = true
+      for (const joiner of this.dedupe.settle(key, message as KeyedReply))
+        answerKeyed(joiner, message as KeyedReply)
+    }
+    const done = (): void => {
+      if (!settled) this.dedupe.abandon(key)
+    }
+    requestScope.run({ ...scope, record }, () => {
+      const result = run()
+      if (result instanceof Promise) void result.finally(done)
+      else done()
+    })
   }
 
   /** CC-1059: a closed requester reports nothing more; its pending spawns expire on their own timers. */

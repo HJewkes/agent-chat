@@ -95,6 +95,8 @@ export interface SpawnResultFields {
   transcript?: { path: string; found: boolean }
   /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
   base?: { ref: string; sha: string }
+  /** CC-1454: a keyed retry answered from the first resume's outcome; it did not launch again. */
+  deduped?: boolean
   /** CC-1059: recorded, not launched: the requester launches this on `host`, then reports `spawn_launched`. */
   launch?: RemoteLaunch
   /** CC-1059: the host the agent launches on, when that is not the broker's. */
@@ -867,6 +869,8 @@ export type ClientMessage =
       experiment?: ExperimentArm
       /** CC-168: recorded on every message row the send writes. */
       followupKind?: FollowupKind
+      /** CC-1454: an idempotency key; a retry with the same key is answered from the broker's cache. */
+      nonce?: string
     }
   /**
    * Add or remove tags, on yourself or on a peer (CC-13).
@@ -1141,6 +1145,8 @@ export type ClientMessage =
       source?: WakeSource
       /** CC-883: run with `--remote-control` if the agent is a coordinator; a worker resumes without it. */
       remoteControl?: boolean
+      /** CC-1454: an idempotency key; a retry with the same key joins or replays the first resume. */
+      nonce?: string
     }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
@@ -1302,6 +1308,8 @@ export type ServerMessage =
       results?: RecipientResult[]
       reason?: string
       held?: boolean
+      /** CC-1454: a keyed retry answered from the cache; the broker did not send it again. */
+      deduped?: boolean
     }
   /** `tags` is the subject's full set after the change, so a caller sees the result. */
   | { t: 'tag_result'; ok: boolean; reason?: string; subject?: string; tags: SessionTag[] }
