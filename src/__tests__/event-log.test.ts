@@ -3,6 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventLog, isTerminalReport, reportKindOf } from '../broker/event-log.js'
+import type { AgentEventRow } from '../broker/event-store.js'
+import { foldAgent, groupByAgent } from '../agents/identity.js'
 
 const dirs: string[] = []
 
@@ -300,7 +302,7 @@ describe("which reports are the sender's last word (CC-321, CC-337)", () => {
 })
 
 describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)', () => {
-  function sqlRunBy(log: EventLog, read: () => void): string {
+  function sqlsRunBy(log: EventLog, read: () => void): string[] {
     const db = log.ledgerHandle()
     const prepare = db.prepare.bind(db)
     const seen: string[] = []
@@ -313,9 +315,17 @@ describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)',
     } finally {
       db.prepare = prepare
     }
+    return seen
+  }
+
+  function sqlRunBy(log: EventLog, read: () => void): string {
+    const seen = sqlsRunBy(log, read)
     expect(seen).toHaveLength(1)
     return seen[0]!
   }
+
+  const agentScanOf = (log: EventLog): string =>
+    sqlsRunBy(log, () => log.agentEvents()).find(sql => sql.includes('kind IN'))!
 
   function planOf(log: EventLog, sql: string, ...params: string[]): string[] {
     const rows = log
@@ -334,17 +344,14 @@ describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)',
     }
   }
 
-  it('scans the table in rowid order with no temp B-tree sort', () => {
+  it('reads a rowid range in rowid order with no temp B-tree sort', () => {
     const log = freshLog()
     seedInterleaved(log)
 
-    const plan = planOf(
-      log,
-      sqlRunBy(log, () => log.agentEvents()),
-    )
+    const plan = planOf(log, agentScanOf(log), '0')
 
     expect(plan.join('\n')).not.toContain('TEMP B-TREE')
-    expect(plan.some(d => d.startsWith('SCAN events'))).toBe(true)
+    expect(plan).toEqual([expect.stringMatching(/^SEARCH events USING INTEGER PRIMARY KEY \(rowid>\?\)/)])
   })
 
   it('returns agent rows in append order across kinds, without other kinds', () => {
@@ -391,5 +398,129 @@ describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)',
     expect(plan).toContain('events_msg_id')
     expect(plan).toContain('events_ref')
     expect(plan).not.toContain('SCAN events')
+  })
+})
+
+describe('agent rows cached between reads (CC-1459)', () => {
+  function logAt(): { file: string; log: EventLog } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'events.db')
+    return { file, log: new EventLog(file) }
+  }
+
+  /** The id bound into, and the rows returned by, each agent-row read `read` runs. */
+  function tailReadsBy(log: EventLog, read: () => void): { after: unknown; rows: number }[] {
+    const db = log.ledgerHandle()
+    const prepare = db.prepare.bind(db)
+    const reads: { after: unknown; rows: number }[] = []
+    db.prepare = (sql: string) => {
+      const stmt = prepare(sql)
+      if (!sql.includes('kind IN')) return stmt
+      const all = stmt.all.bind(stmt)
+      stmt.all = (...params: never[]) => {
+        const rows = all(...params)
+        reads.push({ after: params[0], rows: rows.length })
+        return rows
+      }
+      return stmt
+    }
+    try {
+      read()
+    } finally {
+      db.prepare = prepare
+    }
+    return reads
+  }
+
+  const appendSpawn = (log: EventLog, name: string) =>
+    log.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: `id-${name}`, body: name })
+  const roster = (rows: AgentEventRow[]) => [...groupByAgent(rows).values()].map(foldAgent)
+
+  it('reads only rows past the highest id it has already seen', () => {
+    const { log } = logAt()
+    appendSpawn(log, 'scout')
+    log.append({ kind: 'message', actor: 'human', target: 'scout', body: 'hello' })
+    log.agentEvents()
+    const seen = log.latestId()
+    appendSpawn(log, 'agent-x')
+
+    const reads = tailReadsBy(log, () => log.agentEvents())
+
+    expect(reads).toEqual([{ after: seen, rows: 1 }])
+    expect(log.agentEvents().map(r => r.body)).toEqual(['scout', 'agent-x'])
+  })
+
+  it('sees a row another connection appended', () => {
+    const { file, log } = logAt()
+    appendSpawn(log, 'scout')
+    log.agentEvents()
+    const other = new EventLog(file)
+    appendSpawn(other, 'seat-x')
+    other.close()
+
+    const rows = log.agentEvents()
+
+    expect(rows.map(r => r.body)).toEqual(['scout', 'seat-x'])
+  })
+
+  it('starts from a full read after close and reopen', () => {
+    const { file, log } = logAt()
+    appendSpawn(log, 'scout')
+    log.agentEvents()
+    log.close()
+    const reopened = new EventLog(file)
+    appendSpawn(reopened, 'agent-x')
+
+    const reads = tailReadsBy(reopened, () => reopened.agentEvents())
+
+    expect(reads).toEqual([{ after: 0, rows: 2 }])
+  })
+
+  it('folds the cached rows to the same roster as a full scan', () => {
+    const { file, log } = logAt()
+    const scout = appendSpawn(log, 'scout').msgId
+    log.agentEvents()
+    log.append({ kind: 'agent_attached', actor: 'scout', ref: scout })
+    appendSpawn(log, 'agent-x')
+    log.agentEvents()
+    const other = new EventLog(file)
+    other.append({ kind: 'agent_exited', actor: 'scout', ref: scout })
+    appendSpawn(other, 'seat-x')
+    other.close()
+
+    const cached = roster(log.agentEvents())
+
+    expect(cached).toEqual(roster(new EventLog(file).agentEvents()))
+    expect(cached).toHaveLength(3)
+  })
+
+  it('keeps no row read inside a transaction that then rolls back', () => {
+    const { log } = logAt()
+    appendSpawn(log, 'scout')
+    log.agentEvents()
+    const db = log.ledgerHandle()
+    db.exec('BEGIN IMMEDIATE')
+    appendSpawn(log, 'rolled-back')
+    expect(log.agentEvents().map(r => r.body)).toEqual(['scout', 'rolled-back'])
+    db.exec('ROLLBACK')
+    appendSpawn(log, 'agent-x')
+
+    const rows = log.agentEvents()
+
+    expect(rows.map(r => r.body)).toEqual(['scout', 'agent-x'])
+  })
+
+  it('hands each caller its own array of rows no caller can change', () => {
+    const { log } = logAt()
+    appendSpawn(log, 'scout')
+    const first = log.agentEvents()
+
+    first.pop()
+
+    expect(log.agentEvents()).toHaveLength(1)
+    expect(() => {
+      log.agentEvents()[0]!.meta.extra = 'x'
+    }).toThrow(TypeError)
   })
 })
