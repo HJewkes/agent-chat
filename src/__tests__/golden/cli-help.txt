@@ -1291,6 +1291,9 @@ Options:
   --surface <surface>     where it runs, overriding the profile's surface: headless, iterm-pane,
                           iterm-tab, iterm-window, tmux-window
   --spawned-as <who>      shepherd or burndown: the automation this spawn is on behalf of
+  --launched-by <who>     seat-watchdog or shepherd: the automation running this spawn as you; shown
+                          on the roster, grants nothing
+  --launch-reason <text>  why it launched, recorded with --launched-by
   --remote-control        run with Remote Control (coordinator profiles only)
   --host <machine>        the machine to launch on, a configured alias or a hostname (default: this
                           one)
@@ -1323,11 +1326,15 @@ Usage: agent-chat agent resume [options] <name>
 bring a stopped agent back on its own conversation (headless by default)
 
 Options:
-  --message <value>  the turn it resumes on
-  --message-stdin    read the turn from stdin, not argv
-  --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window, tmux-window
-  --remote-control   run with Remote Control (coordinator profiles only; ignored headless)
-  -h, --help         display help for command
+  --message <value>        the turn it resumes on
+  --message-stdin          read the turn from stdin, not argv
+  --surface <value>        where it comes back: headless, iterm-pane, iterm-tab, iterm-window,
+                           tmux-window
+  --remote-control         run with Remote Control (coordinator profiles only; ignored headless)
+  --launched-by <value>    seat-watchdog or shepherd: the automation running this resume as you;
+                           grants nothing
+  --launch-reason <value>  why it resumed, recorded with --launched-by
+  -h, --help               display help for command
 
 === agent-chat agent worktrees
 Usage: agent-chat agent worktrees [options]
