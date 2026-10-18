@@ -1334,7 +1334,7 @@ export class Teleport {
     try {
       input = this.relaunchFor(entry, false, await this.briefFor(entry))
       launch = {
-        ...this.host.prepareRemoteRelaunch(input),
+        ...this.host.prepareRemoteRelaunch(input, subject.host),
         landToken: randomUUID(),
         // CC-951: an asked-for surface from a caller that ends itself; otherwise the helper lands after the exit (CC-913).
         ...(entry.successorFirst ? { successorFirst: true as const } : {}),
