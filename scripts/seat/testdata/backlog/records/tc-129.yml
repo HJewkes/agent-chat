@@ -1,5 +1,5 @@
 id: tc-129
-seat: titan-coord
+seat: seat-a
 initiative: claude-channels
 task: CC-760
 decision: Decide what Defer means for a backlog question.

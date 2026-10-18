@@ -1,5 +1,5 @@
 id: tc-130.2
-seat: titan-coord
+seat: seat-a
 initiative: claude-channels
 task: CC-760
 decision: Pick the round size for the daily owner review.

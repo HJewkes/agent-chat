@@ -20,7 +20,7 @@ let workspace: string
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-spawn-remote-')))
   homeDir = path.join(root, 'home')
-  workspace = path.join(homeDir, 'projects', 'fantasy-football')
+  workspace = path.join(homeDir, 'projects', 'proj-a')
   fs.mkdirSync(workspace, { recursive: true })
   process.env.AGENT_CHAT_HOME = path.join(root, 'agent-chat')
 })

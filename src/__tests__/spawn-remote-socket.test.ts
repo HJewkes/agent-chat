@@ -17,7 +17,7 @@ import type { ClientMessage, ServerMessage } from '../protocol.js'
  */
 
 const REMOTE = 'mac-test-host.invalid'
-const MAC_CWD = `/Users/${os.userInfo().username}/projects/fantasy-football`
+const MAC_CWD = `/Users/${os.userInfo().username}/projects/proj-a`
 const tmpDirs: string[] = []
 let core: BrokerCore
 let server: SocketServer | undefined

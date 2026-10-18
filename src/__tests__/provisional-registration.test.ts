@@ -28,7 +28,7 @@ describe('deriving a name for a session that never chose one', () => {
   it('names the three sessions that were actually invisible', () => {
     const base = '/Users/x/Library/Application Support/active-work'
     expect(provisionalName({ cwd: `${base}/relay` })).toBe('relay')
-    expect(provisionalName({ cwd: `${base}/logan` })).toBe('logan')
+    expect(provisionalName({ cwd: `${base}/user-a` })).toBe('user-a')
     expect(provisionalName({ cwd: `${base}/claude-channels` })).toBe('claude-channels')
   })
 

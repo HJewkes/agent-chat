@@ -33,19 +33,19 @@ short.
 
 ## Results
 
-| day        | seat          | generations | mean boot turns | mean USD (10 turns) | used `seats boot` | unmentioned post-handoff ids |
-| ---------- | ------------- | ----------- | --------------- | ------------------- | ----------------- | ---------------------------- |
-| 2026-09-29 | titan-coord   | 17          | 4.41            | 0.798               | 0%                | -                            |
-| 2026-09-29 | voltras-coord | 17          | 4.29            | 0.815               | 0%                | -                            |
-| 2026-09-29 | total         | 34          | 4.35            | 0.807               | 0%                | -                            |
-| 2026-09-30 | titan-coord   | 13          | 4.92            | 0.925               | 7.7%              | -                            |
-| 2026-09-30 | voltras-coord | 2           | 3.00            | 0.753               | 0%                | -                            |
-| 2026-09-30 | total         | 15          | 4.67            | 0.902               | 6.7%              | -                            |
-| 2026-10-03 | titan-coord   | 13          | 4.54            | 0.783               | 100%              | f870a039, 37ba7da1, 9821a087 |
-| 2026-10-03 | voltras-coord | 4           | 4.50            | 0.770               | 100%              | -                            |
-| 2026-10-03 | total         | 17          | 4.53            | 0.780               | 100%              | f870a039, 37ba7da1, 9821a087 |
-| 2026-10-09 | titan-coord   | 4           | 4.75            | 0.766               | 100%              | -                            |
-| 2026-10-09 | total         | 4           | 4.75            | 0.766               | 100%              | -                            |
+| day        | seat   | generations | mean boot turns | mean USD (10 turns) | used `seats boot` | unmentioned post-handoff ids |
+| ---------- | ------ | ----------- | --------------- | ------------------- | ----------------- | ---------------------------- |
+| 2026-09-29 | seat-a | 17          | 4.41            | 0.798               | 0%                | -                            |
+| 2026-09-29 | seat-b | 17          | 4.29            | 0.815               | 0%                | -                            |
+| 2026-09-29 | total  | 34          | 4.35            | 0.807               | 0%                | -                            |
+| 2026-09-30 | seat-a | 13          | 4.92            | 0.925               | 7.7%              | -                            |
+| 2026-09-30 | seat-b | 2           | 3.00            | 0.753               | 0%                | -                            |
+| 2026-09-30 | total  | 15          | 4.67            | 0.902               | 6.7%              | -                            |
+| 2026-10-03 | seat-a | 13          | 4.54            | 0.783               | 100%              | f870a039, 37ba7da1, 9821a087 |
+| 2026-10-03 | seat-b | 4           | 4.50            | 0.770               | 100%              | -                            |
+| 2026-10-03 | total  | 17          | 4.53            | 0.780               | 100%              | f870a039, 37ba7da1, 9821a087 |
+| 2026-10-09 | seat-a | 4           | 4.75            | 0.766               | 100%              | -                            |
+| 2026-10-09 | total  | 4           | 4.75            | 0.766               | 100%              | -                            |
 
 Pooled over generations:
 
@@ -55,7 +55,7 @@ Pooled over generations:
 | after (10-03/10-09)  | 21          | 4.57            | 0.777               |
 | change               |             | +2.7% (a rise)  | -7.0%               |
 
-Per seat, titan-coord went from 4.63 (30 generations) to 4.59 (17), and voltras-coord from 4.16 (19)
+Per seat, seat-a went from 4.63 (30 generations) to 4.59 (17), and seat-b from 4.16 (19)
 to 4.50 (4). No seat fell by anything close to 50%.
 
 Which boot-state calls fill the window (mean turns per generation that make at least one such call; a
@@ -86,7 +86,7 @@ generation, unchanged)** and `chat_register` (1 turn, unchanged). Together they 
 turns. A further cut needs those, for example loading agent-chat's deferred tool schemas without a
 `ToolSearch` turn, or folding registration into the boot command.
 
-The amended check (0 unhandled post-handoff messages) is also not met: on 10-03 one titan-coord
+The amended check (0 unhandled post-handoff messages) is also not met: on 10-03 one seat-a
 generation was shown three post-handoff ids (f870a039, 37ba7da1, 9821a087) that it never mentioned again.
 "Unmentioned" means the id string never reappears in a later turn, so a message handled without quoting
 its id also counts here.
@@ -98,9 +98,9 @@ its id also counts here.
   the undetected transcripts on all four days for seat-style first prompts found one missed seat:
   `tp-ram-1003`, an owner-attended ad-hoc titan-platform seat with 4 generations on 10-03, whose prompt
   (`You are tp-ram-1003, the owner-attended seat …`) matches no `SEAT_PATTERNS` form. It is not a
-  charter coordinator seat, so it is left out rather than patched in. No titan-coord or voltras-coord
+  charter coordinator seat, so it is left out rather than patched in. No seat-a or seat-b
   prompt was missed.
-- **Small after sample.** 10-09 has only 4 titan-coord generations and no voltras-coord generation on
+- **Small after sample.** 10-09 has only 4 seat-a generations and no seat-b generation on
   this machine. The verdict does not hinge on it: 10-03 alone (17 generations, 4.53) is also above the
   before mean.
 - **Not like for like.** The charter text and handoff prompts changed between the periods, beyond the

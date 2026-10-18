@@ -42,7 +42,7 @@ const sanitize = (raw: string): string =>
  * A session bootstrapped on an initiative has that initiative's directory as its
  * cwd from the moment it starts — before any command runs, which is what makes
  * it usable at MCP startup. It is also the name a human would have picked: the
- * three unregistered sessions measured would have become `relay`, `logan` and
+ * three unregistered sessions measured would have become `relay`, `user-a` and
  * `claude-channels`, which is exactly what they were.
  */
 export function activeWorkSlug(cwd: string): string | undefined {
