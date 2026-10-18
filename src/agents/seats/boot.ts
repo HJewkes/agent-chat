@@ -244,40 +244,49 @@ const size = (lines: string[]): number => lines.join('\n').length
 
 type Block = 'seat' | 'queue' | 'inFlight' | 'next' | 'status'
 
-/** Over the cap, the oldest inbox lines go first, then the log section's tail, then whatever the queue, seat and status still overrun by. */
+const wholeBlocks = (boot: SeatBoot, homeDir: string): Record<Block, string[]> => ({
+  seat: seatLines(boot),
+  queue: queueLines(boot),
+  inFlight: inFlightLines(boot.inFlight, homeDir),
+  next: nextLines(boot),
+  status: statusLines(boot),
+})
+
+/** CC-1471: the newest inbox messages a capped boot keeps until every other section is cut as far as it goes. */
+export const INBOX_KEEP = 5
+
+/**
+ * Over the cap, the oldest inbox lines go first down to the newest INBOX_KEEP, then the log
+ * section's tail, then whatever the queue, in-flight, next, seat and status still overrun by,
+ * and only then the kept messages, oldest first.
+ */
 export function renderBoot(boot: SeatBoot, cap = BOOT_CAP, homeDir = ''): string[] {
-  const render = (log: LogSection, omitted: number, cut: Partial<Record<Block, string[]>> = {}): string[] => [
-    ...(cut.seat ?? seatLines(boot)),
-    ...(cut.inFlight ?? inFlightLines(boot.inFlight, homeDir)),
-    ...(cut.next ?? nextLines(boot)),
-    ...(cut.queue ?? queueLines(boot)),
+  const whole = wholeBlocks(boot, homeDir)
+  const cut: Partial<Record<Block, string[]>> = {}
+  let log = boot.log
+  let omitted = 0
+  const render = (): string[] => [
+    ...(cut.seat ?? whole.seat),
+    ...(cut.inFlight ?? whole.inFlight),
+    ...(cut.next ?? whole.next),
+    ...(cut.queue ?? whole.queue),
     ...logLines(log),
     ...inboxLines(boot.inbox, omitted),
-    ...(cut.status ?? statusLines(boot)),
+    ...(cut.status ?? whole.status),
   ]
-  let omitted = 0
-  let lines = render(boot.log, omitted)
-  while (size(lines) > cap && omitted < boot.inbox.messages.length) lines = render(boot.log, ++omitted)
-  let log = boot.log
-  const section = boot.log.section
-  if (size(lines) > cap && section !== null) {
-    log = { ...log, section: capText(section, Math.max(0, section.length - (size(lines) - cap))) }
-    lines = render(log, omitted)
+  const over = (): number => size(render()) - cap
+  const dropOldest = (upTo: number): void => {
+    while (over() > 0 && omitted < upTo) omitted++
   }
-  const cut: Partial<Record<Block, string[]>> = {}
-  const whole: Record<Block, string[]> = {
-    seat: seatLines(boot),
-    queue: queueLines(boot),
-    inFlight: inFlightLines(boot.inFlight, homeDir),
-    next: nextLines(boot),
-    status: statusLines(boot),
-  }
+  dropOldest(boot.inbox.messages.length - INBOX_KEEP)
+  const section = log.section
+  if (over() > 0 && section !== null)
+    log = { ...log, section: capText(section, Math.max(0, section.length - over())) }
   for (const block of ['queue', 'inFlight', 'next', 'seat', 'status'] as const) {
-    const over = size(lines) - cap
-    if (over <= 0) break
+    if (over() <= 0) break
     const text = whole[block].join('\n')
-    cut[block] = capText(text, Math.max(0, text.length - over)).split('\n')
-    lines = render(log, omitted, cut)
+    cut[block] = capText(text, Math.max(0, text.length - over())).split('\n')
   }
-  return lines
+  dropOldest(boot.inbox.messages.length)
+  return render()
 }
