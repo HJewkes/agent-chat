@@ -146,7 +146,7 @@ import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-ski
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
-import { stoppedAt } from './identity.js'
+import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
 import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -3164,7 +3164,8 @@ export class Supervisor implements TeleportHost {
     release: ReleaseOptions = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
-    if (identity?.origin !== 'spawned' || identity.state === 'retired')
+    // CC-1453: a hand-started seat's teleport successor leases the name, so the seat watchdog retires it by id.
+    if (identity === undefined || !launchedByBroker(identity) || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
     return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
   }

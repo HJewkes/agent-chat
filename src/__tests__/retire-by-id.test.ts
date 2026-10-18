@@ -351,6 +351,37 @@ describe('resuming a seat whose chain began as a hand-started session (CC-1453)'
     expect(res).toMatchObject({ ok: true, agentId: 'g2' })
   })
 
+  // Review of #1083: the watchdog retires lease holders by id, and retireById refused every adopted row.
+  it('retires the successor and the old spawned row by id, so a fresh spawn under the name goes through', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const retiredRows = [await sup.retireStale('g2', 'seat-x'), await sup.retireStale('old', 'seat-x')]
+    stopAutoAttach = autoAttach(core)
+    const out = await sup.spawn({
+      name: 'seat-x',
+      profile: 'explorer',
+      brief: 'work',
+      requestedBy: 'human',
+      cwd: cwd(),
+      isolation: 'none',
+      surface: 'headless',
+      spawnerConfigDir: tmp('by-id-account-'),
+    })
+
+    expect(retiredRows).toMatchObject([{ ok: true }, { ok: true }])
+    expect([stateOf('g2'), stateOf('old')]).toEqual(['retired', 'retired'])
+    expect(out.reason ?? '').not.toMatch(/is held by/)
+  })
+
+  it('refuses a terminal switch of the successor as a session it cannot relaunch, not on its profile', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const out = await sup.switchSurface({ name: 'seat-x', to: 'interactive', requestedBy: 'human' })
+
+    expect(out.ok).toBe(false)
+    expect(out.reason).toMatch(/did not launch, so there is no launch plan/)
+  })
+
   it('refuses clearly when the successor has no transcript to resume', async () => {
     await adoptedChain(cwd(), tmp('by-id-account-'))
 
