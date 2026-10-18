@@ -18,7 +18,17 @@ import { isLive } from './sweep.js'
 export interface RetireScope {
   spawner?: string
   prefix?: string
+  /**
+   * CC-1465: exited over STALE_AFTER_MS ago with no worktree left on disk, machine-wide unless the
+   * other fields narrow it; at most STALE_RETIRE_CAP retires a call. The age and cap are the broker's.
+   */
+  stale?: boolean
 }
+
+export const STALE_AFTER_MS = 24 * 60 * 60 * 1000
+
+/** One call's retires, so a backlog drains over passes instead of one long burst under the write lock. */
+export const STALE_RETIRE_CAP = 200
 
 /** CC-408: who holds a name's live connection, relative to one row. */
 export type NamePresence = 'self' | 'other' | 'none'
@@ -38,6 +48,8 @@ export interface FinishedRetirePort {
   git?: GitRunner
   /** CC-904: the open-PR and Shepherd reads; the broker always passes them. */
   skip?: ShepherdSkipPort
+  /** Epoch ms the stale scope measures exit age against; defaults to the wall clock. */
+  now?: () => number
 }
 
 export interface FinishedRetireOutcome {
@@ -62,8 +74,7 @@ export async function retireFinished(
 ): Promise<FinishedRetireOutcome> {
   const malformed = malformedRequest(req)
   if (malformed) return { ok: false, reason: malformed, plan: [], results: [] }
-  if (!req.spawner?.trim() && !req.prefix?.trim())
-    return { ok: false, reason: SCOPE_REQUIRED, plan: [], results: [] }
+  if (!hasScope(req)) return { ok: false, reason: SCOPE_REQUIRED, plan: [], results: [] }
   const planned = await planFinished(port, req)
   const plan = planned.map(p => p.entry)
   if (req.dryRun === true) return { ok: true, plan, results: [] }
@@ -79,9 +90,14 @@ function malformedRequest(req: RetireScope & { dryRun?: unknown }): string | und
   if (!field(req.spawner, 'string')) return 'spawner must be a string'
   if (!field(req.prefix, 'string')) return 'prefix must be a string'
   if (!field(req.dryRun, 'boolean')) return 'dryRun must be a boolean'
+  if (!field(req.stale, 'boolean')) return 'stale must be a boolean'
   return undefined
 }
 
+const hasScope = (scope: RetireScope): boolean =>
+  scope.stale === true || Boolean(scope.spawner?.trim()) || Boolean(scope.prefix?.trim())
+
+/** The stale scope stops planning at the cap, so the rest wait for the next call rather than a longer one. */
 async function planFinished(
   port: FinishedRetirePort,
   scope: RetireScope & { caller?: string },
@@ -90,18 +106,27 @@ async function planFinished(
   const events = port.events()
   const planPort = port.skip ? { ...port, skip: memoizedSkip(port.skip) } : port
   const callers = new Set([scope.caller, scope.spawner].filter((n): n is string => Boolean(n?.trim())))
+  const nowMs = (port.now ?? Date.now)()
+  const cap = scope.stale === true ? STALE_RETIRE_CAP : Number.POSITIVE_INFINITY
   const planned: Planned[] = []
-  for (const agent of roster.filter(a => inScope(a, scope))) {
+  let retires = 0
+  for (const agent of roster.filter(a => inScope(a, scope) && (!scope.stale || staleExit(a, nowMs)))) {
+    if (retires >= cap) break
     const reason = callers.has(agent.name)
       ? `${agent.name} is the caller itself, not an agent it spawned`
-      : await finishedBlocker(planPort, agent, roster, events)
+      : await finishedBlocker(planPort, agent, roster, events, scope.stale === true)
     const base: Omit<RetirePlanEntry, 'action'> = { name: agent.name, ...duplicateOf(agent, roster) }
     const entry: RetirePlanEntry =
       reason === undefined ? { ...base, action: 'retire' } : { ...base, action: 'skip', reason }
+    if (reason === undefined) retires++
     planned.push({ agentId: agent.agentId, entry })
   }
   return planned
 }
+
+/** Only `exited`: a detached agent may be resumed in place, and a row with no exit time has no age. */
+const staleExit = (agent: AgentIdentity, nowMs: number): boolean =>
+  agent.state === 'exited' && agent.exitedAt !== undefined && nowMs - agent.exitedAt >= STALE_AFTER_MS
 
 /** One `gh` read per repo and branch for the whole plan, shared by the CC-904 and CC-1325 rules. */
 function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
@@ -125,12 +150,15 @@ async function finishedBlocker(
   agent: AgentIdentity,
   roster: readonly AgentIdentity[],
   events: readonly AgentEventRow[],
+  stale: boolean,
 ): Promise<string | undefined> {
   const byState = liveBlocker(agent, port.tracked(agent.agentId)) ?? connectedBlocker(port, agent)
   if (byState) return byState
   if (agent.origin !== 'spawned') return 'not spawned by agent-chat; retire it by name'
   if (port.parking(agent.agentId)) return 'being parked'
   const target = allocatedWorktree(events, agent.agentId)
+  if (stale && target !== undefined && existsSync(target.worktree))
+    return `still holds ${target.worktree}; park it first`
   const byAdopter = adopterBlocker(agent, target, roster)
   if (byAdopter) return byAdopter
   const byShepherd = port.skip && (await shepherdSkip(port.skip, agent, target))
@@ -158,9 +186,9 @@ async function retireOne(port: FinishedRetirePort, agentId: string, name: string
   }
 }
 
-/** A scope with neither field would sweep every agent on the machine, so it matches nothing. */
+/** A scope with no field would sweep every agent on the machine, so it matches nothing; `stale` narrows by age instead. */
 export function inScope(agent: AgentIdentity, scope: RetireScope): boolean {
-  if (!scope.spawner?.trim() && !scope.prefix?.trim()) return false
+  if (!hasScope(scope)) return false
   if (scope.spawner !== undefined && agent.spawnedBy !== scope.spawner) return false
   return scope.prefix === undefined || agent.name.startsWith(scope.prefix)
 }
