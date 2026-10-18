@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -22,8 +23,19 @@ const HOME_SLUG = /(?<![A-Za-z0-9])-(?:Users|home)-([A-Za-z0-9_]+)-/gi
 const SYNTHETIC_HOME_NAMES = ['alice', 'someone']
 // Real coordinator seats are named `<word>-coord`, so the shape bans them here and in CI without listing
 // any. A word of one or two letters is an abbreviation, and these words are placeholders.
-const COORD_SEAT = /(?<![A-Za-z0-9])([A-Za-z0-9]+)-coord(?![\w-])/gi
-const SYNTHETIC_SEAT_WORDS = ['alpha', 'beta', 'gamma', 'delta', 'zeta', 'demo', 'sample', 'example', 'other']
+const COORD_SEAT = /(?<![A-Za-z0-9])([A-Za-z0-9]+)-coord(?![A-Za-z0-9])/gi
+const SYNTHETIC_SEAT_WORDS = ['alpha', 'beta', 'gamma', 'delta', 'zeta', 'demo', 'sample', 'example', 'other', 'seat']
+// The temp-dir prefix tests pass to mkdtemp; the one `<word>-coord` that is not a seat name.
+const TMP_DIR_PREFIX = /agent-chat-coord-/gi
+// Other banned names, as SHA-256 digests of their lowercase form, so the list names no one.
+const BANNED_NAME_DIGESTS = [
+  'e2b7e4a1e7ac8caecf6025e3e6b359f939e2d744b65b9a92309ddb8f756f266a',
+  'b8ee68c040d5dcb4a7b910f8fda2f819c97edb08eb5bcecfd1a1a9f199fc00a0',
+  'b2fa26a6fa176f8cdf4082550c9ebd549c68318ecd4806f99f1e3bc20a95f6cb',
+]
+// A name of up to three hyphen- or underscore-joined segments, matched anywhere inside a longer token.
+const NAME_TOKEN = /[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*/g
+const MAX_NAME_SEGMENTS = 3
 const SCANNED_EXTENSIONS = ['.ts', '.tsx', '.json', '.snap', '.txt']
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
 // RFC 2606 and 6761 names reach no one, so an address there is synthetic.
@@ -101,12 +113,18 @@ function sourceLeaks(docs: Doc[], env?: NodeJS.ProcessEnv): string[] {
   return [...local, ...names]
 }
 
-/** The first seat-task or home-slug token in `text`, in its original case so the report can be grepped for. */
-function leakedPattern(text: string): string | undefined {
+/**
+ * The first leaked token in `text`. A seat-task, coordinator or home-slug token keeps its original
+ * case so the report can be grepped for; a digest match is reported by number, never by its text.
+ */
+function leakedPattern(text: string, digests: readonly string[] = BANNED_NAME_DIGESTS): string | undefined {
   return (
     text.match(SEAT_TASK_NAME)?.[0] ??
     coordSeat(text) ??
-    [...text.matchAll(HOME_SLUG)].find(m => !SYNTHETIC_HOME_NAMES.includes((m[1] ?? '').toLowerCase()))?.[0]
+    [...text.matchAll(HOME_SLUG)].find(
+      m => !SYNTHETIC_HOME_NAMES.includes((m[1] ?? '').toLowerCase()),
+    )?.[0] ??
+    bannedName(text, digests)
   )
 }
 
@@ -115,18 +133,43 @@ function isSyntheticSeatWord(word: string): boolean {
 }
 
 function coordSeat(text: string): string | undefined {
-  return [...text.matchAll(COORD_SEAT)].find(m => !isSyntheticSeatWord(m[1] ?? ''))?.[0]
+  const seats = text.replace(TMP_DIR_PREFIX, ' ').matchAll(COORD_SEAT)
+  return [...seats].find(m => !isSyntheticSeatWord(m[1] ?? ''))?.[0]
 }
 
-/** Coordinator seat names in any tracked file, docs and scripts included. */
-function trackedSeatLeaks(): string[] {
+/** `banned name #<n>` when any run of segments in a token hashes to the n-th digest. */
+function bannedName(text: string, digests: readonly string[]): string | undefined {
+  const seen = new Set<string>()
+  for (const [token] of text.matchAll(NAME_TOKEN)) {
+    const segments = token.toLowerCase().split(/[-_]/)
+    for (const name of segmentRuns(segments)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      const at = digests.indexOf(createHash('sha256').update(name).digest('hex'))
+      if (at !== -1) return `banned name #${at + 1}`
+    }
+  }
+  return undefined
+}
+
+function segmentRuns(segments: string[]): string[] {
+  return segments.flatMap((_, start) =>
+    Array.from({ length: Math.min(MAX_NAME_SEGMENTS, segments.length - start) }, (_, n) =>
+      segments.slice(start, start + n + 1).join('-'),
+    ),
+  )
+}
+
+/** Coordinator seat and banned names in any tracked file or its path, docs and scripts included. */
+function trackedNameLeaks(): string[] {
   const ls = spawnSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
   if (ls.status !== 0) throw new Error(`git ls-files failed: ${ls.stderr}`)
   return ls.stdout
     .split('\0')
     .filter(file => file !== '' && fs.statSync(path.join(ROOT, file), { throwIfNoEntry: false })?.isFile())
     .flatMap(file => {
-      const name = coordSeat(fs.readFileSync(path.join(ROOT, file), 'utf8'))
+      const text = `${file}\n${fs.readFileSync(path.join(ROOT, file), 'utf8')}`
+      const name = coordSeat(text) ?? bannedName(text, BANNED_NAME_DIGESTS)
       return name === undefined ? [] : [`${file}: ${name}`]
     })
 }
@@ -267,13 +310,50 @@ describe('test source privacy guard', () => {
   it.each([
     ['a placeholder coordinator seat', "const seat = 'alpha-coord'"],
     ['an abbreviated coordinator seat', "const seat = 'tc-coord'"],
+    ['an abbreviated coordinator seat with a suffix', "const seat = 'tc-coord-2'"],
     ['a temp dir prefix ending in coord', "tmp('agent-chat-coord-')"],
   ])('passes %s', (_name, text) => {
     expect(sourceLeaks(doc(text))).toEqual([])
   })
 
-  it('finds no coordinator seat name in any tracked file', () => {
-    const found = trackedSeatLeaks().filter(hit => !hit.startsWith(`${path.relative(ROOT, self)}: `))
+  it.each([
+    ['a numeric suffix', "const seat = 'harbor-coord-2'", 'harbor-coord'],
+    ['a word suffix', "const dir = 'harbor-coord-archive'", 'harbor-coord'],
+    ['an underscore suffix', "const file = 'harbor-coord_notes.md'", 'harbor-coord'],
+    ['a prefix', "const seat = 'old-harbor-coord'", 'harbor-coord'],
+  ])('flags a coordinator seat name with %s', (_name, text, name) => {
+    expect(leakedPattern(text)).toBe(name)
+  })
+
+  describe('banned-name digests', () => {
+    const digest = (name: string) => createHash('sha256').update(name).digest('hex')
+    const digests = ['seat-zz', 'quill-ledger-yy'].map(digest)
+
+    it.each([
+      ['the bare name', "const seat = 'seat-zz'", 1],
+      ['the name in another case', 'Seat-ZZ', 1],
+      ['the name joined by underscores', 'seat_zz_notes.md', 1],
+      ['the name inside a longer token', 'dir/old-seat-zz-2/x', 1],
+      ['a three-segment name', '"quill-ledger-yy"', 2],
+    ])('flags %s by number, never by text', (_name, text, n) => {
+      expect(leakedPattern(text, digests)).toBe(`banned name #${n}`)
+    })
+
+    it.each([
+      ['a name sharing one segment', 'seat-zy'],
+      ['the segments apart', 'seat x zz'],
+      ['a longer word holding the name', 'seatzz'],
+    ])('passes %s', (_name, text) => {
+      expect(leakedPattern(text, digests)).toBeUndefined()
+    })
+
+    it('holds only SHA-256 digests', () => {
+      expect(BANNED_NAME_DIGESTS.every(d => /^[0-9a-f]{64}$/.test(d))).toBe(true)
+    })
+  })
+
+  it('finds no coordinator seat or banned name in any tracked file or path', () => {
+    const found = trackedNameLeaks().filter(hit => !hit.startsWith(`${path.relative(ROOT, self)}: `))
     expect(found, leakMessage(found)).toEqual([])
   })
 
