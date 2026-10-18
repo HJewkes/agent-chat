@@ -36,6 +36,8 @@ export interface SeatRelaunchPlan {
   message: string
   /** The brief a fresh launch starts on, when the session cannot come back. */
   fresh: string
+  /** CC-1466: why the watchdog launches the seat, recorded on the spawn row. */
+  reason: string
 }
 
 const newestFirst = (a: SeatAgent, b: SeatAgent): number =>

@@ -13,6 +13,7 @@ import {
   type AgentIdentity,
   type ExperimentArm,
   type IsolationName,
+  type Launcher,
   type RemoteLaunch,
   type Subscription,
   type SurfaceName,
@@ -527,6 +528,7 @@ function remoteSpawnMeta(
     coordinator_depth: String(lineage.coordinatorDepth),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+    ...launchMeta(req),
     // The worktree half of provenance reads git on this host, which holds no copy of that cwd.
     ...assignmentMeta(req, profile.name),
     host: draft.site.host,
@@ -674,6 +676,26 @@ export interface SpawnRequest {
   host?: string
   /** CC-1059: the requester's home, which a cwd on its host must sit under. */
   callerHome?: string
+  /** CC-1466: the automation behind a human-requested spawn; written to the row, read by no gate. */
+  launchedBy?: Launcher
+  launchReason?: string
+  /** CC-1466: an earlier identity of this name whose depth and coordinator depth the spawn keeps. */
+  lineageFrom?: string
+}
+
+/** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
+const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
+  req.launchedBy === undefined
+    ? {}
+    : {
+        launched_by: req.launchedBy,
+        ...(req.launchReason === undefined ? {} : { launch_reason: req.launchReason }),
+      }
+
+/** A recorded depth that only raises `computed`, so naming an earlier identity never lifts a cap. */
+function raised(computed: number, recorded: string | undefined): number {
+  const value = Number.parseInt(recorded ?? '', 10)
+  return Number.isFinite(value) ? Math.max(computed, value) : computed
 }
 
 export type SpawnRefusalCode =
@@ -772,6 +794,9 @@ export interface ResumeRequest {
   remoteControl?: boolean
   /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
   cause?: typeof BACKGROUND_RESUME
+  /** CC-1466: as on {@link SpawnRequest}. */
+  launchedBy?: Launcher
+  launchReason?: string
 }
 
 interface Live {
@@ -1907,6 +1932,19 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-1466: a seat relaunch keeps where its earlier identity sat. Only an identity of the same name
+   * counts, and each depth only rises, so the carry can tighten the coordinator cap but never loosen it.
+   */
+  private lineageOf(req: SpawnRequest, computed: Lineage): Lineage {
+    const row = req.lineageFrom === undefined ? undefined : this.spawnEventOf(req.lineageFrom)
+    if (row === undefined || row.target !== req.name) return computed
+    return {
+      depth: raised(computed.depth, row.meta.depth),
+      coordinatorDepth: raised(computed.coordinatorDepth, row.meta.coordinator_depth ?? row.meta.depth),
+    }
+  }
+
+  /**
    * The requester's role and coordinator depth, read from its own spawn row so
    * both survive its spawner. No parent is a human-started root; a parent with
    * no row resolves to a worker, because a cap that opens on missing data is not one.
@@ -2147,10 +2185,10 @@ export class Supervisor implements TeleportHost {
 
     const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
-    const lineage: Lineage = {
+    const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
-    }
+    })
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
@@ -2664,6 +2702,7 @@ export class Supervisor implements TeleportHost {
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
         // CC-802: stored so the retire row names the same spawner as the dispatched one.
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+        ...launchMeta(req),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
         // CC-1059: where it launched, so a later reader can tell a remote agent from a local one.
@@ -3977,6 +4016,7 @@ export class Supervisor implements TeleportHost {
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
+        ...launchMeta(req),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },

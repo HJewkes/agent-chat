@@ -710,6 +710,20 @@ export type WakeSource = (typeof WAKE_SOURCES)[number]
 export const wakeSource = (value: unknown): WakeSource | undefined =>
   WAKE_SOURCES.find(source => source === value)
 
+export const LAUNCHERS = ['seat-watchdog', 'shepherd'] as const
+
+/**
+ * CC-1466: the automation that ran a CLI spawn or resume as the human. Display and audit only: the row's
+ * actor stays the human, and no gate reads it.
+ */
+export type Launcher = (typeof LAUNCHERS)[number]
+
+/** A frame's `launchedBy` is untrusted wire input, so anything off the allow-list is dropped. */
+export const launcherOf = (value: unknown): Launcher | undefined => LAUNCHERS.find(known => known === value)
+
+/** CC-1466: a launch reason is one line of at most this many characters. */
+export const LAUNCH_REASON_MAX = 200
+
 /** Session -> broker. */
 export type ClientMessage =
   /**
@@ -1123,6 +1137,12 @@ export type ClientMessage =
       callerHost?: string
       /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
       callerHome?: string
+      /** CC-1466: the automation behind a CLI spawn, read only from an unregistered connection. */
+      launchedBy?: Launcher
+      /** CC-1466: why it launched; recorded only with `launchedBy`. */
+      launchReason?: string
+      /** CC-1466: an earlier identity of the same name whose depth and coordinator depth this spawn keeps. */
+      lineageFrom?: string
     }
   /**
    * CC-1464: `view` asks the broker to filter and cap the roster before sending it,
@@ -1152,6 +1172,9 @@ export type ClientMessage =
       remoteControl?: boolean
       /** CC-1454: an idempotency key; a retry with the same key joins or replays the first resume. */
       nonce?: string
+      /** CC-1466: as on `spawn`. */
+      launchedBy?: Launcher
+      launchReason?: string
     }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
@@ -1531,6 +1554,8 @@ export interface AgentIdentity {
   /** Whether the name and brief are broker-assigned or self-reported. */
   origin: AgentOrigin
   spawnedBy: string
+  /** CC-1466: the automation that ran the spawn as `spawnedBy`; display only. */
+  launchedBy?: Launcher
   spawnedAt: number
   brief: string
   cwd: string
