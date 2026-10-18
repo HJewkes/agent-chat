@@ -81,6 +81,42 @@ describe('a quoted substitution in an arithmetic body', () => {
   })
 })
 
+describe('a quoted substitution in other text the shell evaluates as arithmetic', () => {
+  it.each([
+    "let 'a[$(git push --no-verify)]'",
+    "declare -i n='a[$(git push --no-verify)]'",
+    "typeset -i n='a[$(git push --no-verify)]'",
+    "local -i n='a[$(git push --no-verify)]'",
+    "a['$(git push --no-verify)']=1",
+    "a['$(git push --no-verify)']+=1",
+    "declare -a 'a[$(git push --no-verify)]=1'",
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each([
+    'let a[$(git push --no-verify)]',
+    'declare -i n=a[$(git push --no-verify)]',
+    'a[$(git push --no-verify)]=1',
+  ])('still checks the unquoted form as a command: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+  })
+})
+
+// zsh drops a continuation when it re-reads a subscript, so `$`, backslash-newline, `(` is `$(` there.
+describe('an opener split by a backslash or a line continuation', () => {
+  it.each([
+    "[[ 1 -eq 'a[$\\\n(git push --no-verify)]' ]]",
+    "[[ 1 -eq 'a[$\\\n{ git push --no-verify;}]' ]]",
+    "[[ 1 -eq 'a[$\\(git push --no-verify)]' ]]",
+    "(( 'a[$\\\n(git push --no-verify)]' ))",
+    "let 'a[$\\\n(git push --no-verify)]'",
+    "a['$\\\n(git push --no-verify)']=1",
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+})
+
 describe('arithmetic the guard reads', () => {
   it.each([
     '[[ $n -eq 3 ]]',
@@ -100,6 +136,14 @@ describe('arithmetic the guard reads', () => {
     'for ((i=0;i<3;i++)); do :; done',
     '(( $((n + 1)) > 2 ))',
     'echo $[ n + 1 ]',
+    'let n=$(wc -l < f)',
+    "let 'n=1+2'",
+    'declare -i n=$(wc -l < f)',
+    'a[$(wc -l < f)]=1',
+    'a[1]=x',
+    'declare -a arr',
+    'export PATH=/usr/bin',
+    '[[ $(echo "x\'s") -eq 1 ]]',
   ])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })

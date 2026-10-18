@@ -45,16 +45,16 @@ const hasIntegerFlag = (words: string[]): boolean =>
   words[0] === 'integer' || words.some(word => /^-[A-Za-z]*i/.test(word))
 
 /** The operands `let` evaluates, and the values a `declare -i`, `typeset -i`, `local -i` or `integer` assigns. */
-function integerOperands(cmd: SimpleCommand): string[] {
-  const [head = '', ...rest] = cmd.words
+function integerOperands(words: string[]): string[] {
+  const [head = '', ...rest] = words
   if (head === 'let') return rest
-  if (!INTEGER_DECLARERS.has(head) || !hasIntegerFlag(cmd.words)) return []
+  if (!INTEGER_DECLARERS.has(head) || !hasIntegerFlag(words)) return []
   return rest.filter(word => word.includes('=')).map(word => word.slice(word.indexOf('=') + 1))
 }
 
 /** Every name whose value `cmd` evaluates as arithmetic, each once, in the order first met. */
 export function arithSubscriptNames(cmd: SimpleCommand): string[] {
-  const texts = [...cmd.arithBodies, ...integerOperands(cmd), ...cmd.marked.flatMap(subscripts)]
+  const texts = [...cmd.arithBodies, ...integerOperands(cmd.words), ...cmd.marked.flatMap(subscripts)]
   const names = texts.flatMap(text =>
     [...text.replace(SUBSTITUTION, ' ').matchAll(ARITH_NAME)].map(match => match[1] ?? match[2] ?? ''),
   )
@@ -73,11 +73,39 @@ function withoutLiveSubstitutions(word: string, cmd: SimpleCommand): string {
 }
 
 /** The operands beside each arithmetic comparison, wherever a `[[ ]]` the splitter broke at `&&` or `(` left it. */
-function comparisonOperands(cmd: SimpleCommand): string[] {
-  return cmd.marked.flatMap((word, i) =>
-    ARITH_TESTS.has(unmark(word)) ? [cmd.marked[i - 1] ?? '', cmd.marked[i + 1] ?? ''] : [],
+function comparisonOperands(marked: string[]): string[] {
+  return marked.flatMap((word, i) =>
+    ARITH_TESTS.has(unmark(word)) ? [marked[i - 1] ?? '', marked[i + 1] ?? ''] : [],
   )
 }
+
+const SUBSCRIPT_DECLARERS = new Set([...INTEGER_DECLARERS, 'readonly', 'export'])
+const NAME_SUBSCRIPT = new RegExp(`^${NAME}\\[`)
+
+/** A `declare 'a[...]=1'` operand, whose subscript is evaluated even when the whole word is quoted. */
+function declaredSubscripts(words: string[]): string[] {
+  return SUBSCRIPT_DECLARERS.has(words[0] ?? '')
+    ? words.slice(1).filter(word => NAME_SUBSCRIPT.test(word))
+    : []
+}
+
+/**
+ * Every text `cmd` hands the shell as arithmetic outside a body, with the substitutions the splitter read
+ * taken out first and then unmarked, since a live `$` before an escaped `\(` is `$(` after quote removal.
+ */
+function arithTexts(cmd: SimpleCommand): string[] {
+  const marked = cmd.marked.map(word => withoutLiveSubstitutions(word, cmd))
+  const words = marked.map(unmark)
+  return [
+    ...integerOperands(words),
+    ...declaredSubscripts(words),
+    ...marked.flatMap(subscripts),
+    ...comparisonOperands(marked).map(unmark),
+  ]
+}
+
+// Line continuation and the arithmetic re-read drop a backslash, so `$\<newline>(` and `$\(` both become `$(`.
+const asEvaluated = (text: string): string => text.replaceAll('\\\n', '').replaceAll('\\', '')
 
 /**
  * Whether arithmetic in `cmd` holds a substitution the splitter read as plain text (CC-1473). Evaluating
@@ -85,7 +113,6 @@ function comparisonOperands(cmd: SimpleCommand): string[] {
  * with no subscript at all, so a command can hide there that the guard never checks.
  */
 export function hidesArithSubstitution(cmd: SimpleCommand): boolean {
-  if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(body))) return true
-  // A live `$` before an escaped `\(` is still `$(` once quotes are removed, so the opener is looked for unmarked.
-  return comparisonOperands(cmd).some(word => OPENER.test(unmark(withoutLiveSubstitutions(word, cmd))))
+  if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(asEvaluated(body)))) return true
+  return arithTexts(cmd).some(text => OPENER.test(asEvaluated(text)))
 }
