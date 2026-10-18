@@ -141,7 +141,10 @@ describe('profile drift at teleport (CC-1203)', () => {
     const worker = await spawn('worker-t', 'seat-a')
     writeProfile('bd-implementer', 'rewritten')
 
-    const result = await sup.teleport({ subject: subject(worker.agentId as string, 'worker-t'), handoff: 'h' })
+    const result = await sup.teleport({
+      subject: subject(worker.agentId as string, 'worker-t'),
+      handoff: 'h',
+    })
 
     expect(result.ok).toBe(false)
     expect(result.reason).toContain(profileFile('bd-implementer'))
@@ -153,7 +156,10 @@ describe('profile drift at teleport (CC-1203)', () => {
     const worker = await spawn('worker-t', 'seat-a')
     writeProfile('bd-implementer', 'rewritten')
 
-    const result = await sup.teleport({ subject: subject(worker.agentId as string, 'worker-t'), handoff: 'h' })
+    const result = await sup.teleport({
+      subject: subject(worker.agentId as string, 'worker-t'),
+      handoff: 'h',
+    })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
     const after = await spawn('worker-u', 'seat-a')
 
