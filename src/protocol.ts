@@ -1162,8 +1162,11 @@ export type ClientMessage =
   | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
-  /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
-  | { t: 'retire_finished'; spawner?: string; prefix?: string; dryRun?: boolean }
+  /**
+   * CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`.
+   * CC-1465: `stale` scopes it to agents exited over 24 h with no worktree left, capped per call.
+   */
+  | { t: 'retire_finished'; spawner?: string; prefix?: string; stale?: boolean; dryRun?: boolean }
   /**
    * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
    * resolved by the broker from the requesting connection, the same discipline

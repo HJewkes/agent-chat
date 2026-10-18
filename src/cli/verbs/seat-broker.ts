@@ -1,3 +1,4 @@
+import type { RetireFinishedReply } from '../../agents/burndown/daily-retire.js'
 import type { WakeResult } from '../../agents/seats/run.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import type { ServerMessage } from '../../protocol.js'
@@ -14,6 +15,18 @@ export async function sendAsOwner(client: BrokerClient, seat: string, message: s
   return res.ok
     ? { ok: true, detail: `message ${res.msgId}` }
     : { ok: false, detail: res.reason ?? 'send refused' }
+}
+
+/** CC-1465: the broker picks the age and the cap; the frame only asks for the stale scope. */
+export async function retireStale(client: BrokerClient): Promise<RetireFinishedReply> {
+  const frame = { t: 'retire_finished' as const, stale: true }
+  const res = (await client.request(frame, 'retire_finished_result')) as Reply<'retire_finished_result'>
+  return {
+    ok: res.ok,
+    plan: res.plan,
+    results: res.results,
+    ...(res.reason === undefined ? {} : { reason: res.reason }),
+  }
 }
 
 /** Never autostarts: a seat verb that brought up a broker would own it, and the broker serves every session. */
