@@ -62,7 +62,7 @@ import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
-import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
@@ -340,6 +340,35 @@ const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlat
 const nonBlank = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 
+/** CC-1206: a real agent name or id is far shorter; the cap keeps a claim from bloating the row. */
+export const CALLER_AGENT_MAX = 64
+
+/** CC-1206: a claimed caller with control and format characters stripped, trimmed and capped; blank is none. */
+export const sanitizeCallerAgent = (value: unknown): string | undefined =>
+  nonBlank(typeof value === 'string' ? value.replace(/[\p{Cc}\p{Cf}]/gu, '') : undefined)?.slice(
+    0,
+    CALLER_AGENT_MAX,
+  )
+
+/**
+ * CC-1206: the agent behind an unregistered spawn, from the CLI's env claim, else from a Claude
+ * Code ancestor of the socket peer. It only ever lowers trust, so its absence proves no human:
+ * `env -u AGENT_CHAT_NAME` drops the claim, and a caller detached from its own tree (`setsid`,
+ * `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from such a process has
+ * no Claude Code ancestor. Off Linux and through a forwarded socket there is no peer pid, so only
+ * the claim applies. Positive proof of a human is CC-1246.
+ */
+const callerAgentOf = (
+  conn: Conn,
+  msg: { callerAgent?: unknown },
+  peer: PeerPorts,
+): { callerAgent?: string } => {
+  const claimed = sanitizeCallerAgent(msg.callerAgent)
+  if (claimed !== undefined) return { callerAgent: claimed }
+  const pid = claudeCodeAncestor(conn, peer)
+  return pid === undefined ? {} : { callerAgent: `claude-code:${pid}` }
+}
+
 /** CC-1472: a launcher's transcript verdict, kept only when well formed, so a garbled one reads as none. */
 const transcriptVerdictOf = (msg: object): { transcript?: { path: string; found: boolean } } => {
   const verdict = (msg as { transcript?: { path?: unknown; found?: unknown } | null }).transcript
@@ -530,8 +559,7 @@ export class SocketServer {
       ...(msg.experiment === undefined ? {} : { experiment: msg.experiment }),
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
-      ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
-      ...(requestedBy === HUMAN ? launchFieldsOf(msg) : {}),
+      ...this.humanClaims(conn, msg, requestedBy),
       ...(typeof msg.lineageFrom === 'string' ? { lineageFrom: msg.lineageFrom } : {}),
       // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
@@ -579,6 +607,22 @@ export class SocketServer {
    * CC-1059: the host a spawn's requester runs on. A session's comes from its registration, never
    * its frame; only the CLI, which holds no registration, names its own.
    */
+  /**
+   * What only an unregistered (HUMAN) connection's frame may set; a registered one's are ignored.
+   * The caller lookup skips a `spawnedAs` spawn, which is never human, so burndown and Shepherd
+   * spawns never pay its synchronous `ss` read.
+   */
+  private humanClaims(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'spawn' }>,
+    requestedBy: string,
+  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'launchedBy' | 'launchReason'> {
+    if (requestedBy !== HUMAN) return {}
+    const spawnedAs = spawnedAsOf(msg)
+    const caller = spawnedAs.spawnedAs === undefined ? callerAgentOf(conn, msg, this.peer) : {}
+    return { ...spawnedAs, ...caller, ...launchFieldsOf(msg) }
+  }
+
   private callerHostOf(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn' }>): string | undefined {
     const entry = this.core.registry.entryFor(conn)
     return entry === undefined ? nonBlank(msg.callerHost) : this.hostOf(conn, entry)
