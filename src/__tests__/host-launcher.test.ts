@@ -546,6 +546,20 @@ describe('a host resume (CC-1472)', () => {
     expect(cleared).toEqual(['abcd1234'])
   })
 
+  it.each([
+    ['an agent id that is not one', { agentId: '../../../etc/x' }],
+    ['a name that would steer a path', { name: 'a/b' }],
+  ])('leaves the superseded mark alone for a resume refused for %s', async (_case, over) => {
+    writeTranscript(configDir)
+    const { deps, cleared, spawned } = fakeDeps()
+
+    const answer = await answerSpawn(resumeSpec(over), LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(cleared).toEqual([])
+    expect(spawned.launched).toEqual([])
+  })
+
   it('relays the transcript verdict on host_probe_result', async () => {
     const file = writeTranscript(configDir)
     const { deps } = fakeDeps()

@@ -249,10 +249,11 @@ export async function answerSpawn(
 ): Promise<HostAnswer> {
   const reason = spawnReason(spec, identity, deps.homeDir)
   if (reason !== undefined) return refused(reason)
-  // CC-1472: a resume reuses the agent's permanent id, which an earlier timed-out resume here marked.
-  if (spec.resume === true) deps.clearSuperseded(spec.agentId)
   const prepared = prepareRemoteSpawn(spec, deps.spawnHost)
   if (!prepared.ok) return refused(prepared.reason)
+  // CC-1472: a resume reuses the agent's permanent id, which an earlier timed-out resume here marked.
+  // Cleared only once the spec passed every check and its plan is written, so a refusal grants nothing.
+  if (spec.resume === true) deps.clearSuperseded(spec.agentId)
   const failed = await within(placeRemoteSpawn(spec, prepared.plan, deps.spawnHost), budgetMs)
   if (failed === timedOut) {
     deps.markSuperseded(spec.agentId)
