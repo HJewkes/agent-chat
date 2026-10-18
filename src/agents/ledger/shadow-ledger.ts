@@ -17,6 +17,7 @@ import { logEvent } from '../../broker/log.js'
 import { resolveLedgerShadow } from '../../config.js'
 import { home } from '../../paths.js'
 import { ledgerDbOver } from './db-shim.js'
+import { listRecoverableIndexed } from './recoverable.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const LEASE_MS = 30 * DAY_MS
@@ -187,7 +188,12 @@ export function openShadowLedger(db: DatabaseSync, options: ShadowLedgerOptions)
   const clock = options.now ?? Date.now
   // The package types `db` as better-sqlite3's Database; the shim serves only the calls it makes.
   const ledger = new SqliteExecutionLedger(ledgerDb as never, { now: () => new Date(clock()).toISOString() })
-  return new ShadowLedger(ledger, options)
+  const port: ExecutionLedgerPort = {
+    get: id => ledger.get(id),
+    apply: transition => ledger.apply(transition),
+    listRecoverable: limit => listRecoverableIndexed(db, limit ?? RECOVERABLE_LIMIT),
+  }
+  return new ShadowLedger(port, options)
 }
 
 /** The static fence owner; the offline backfill must write rows this broker can later finish. */
