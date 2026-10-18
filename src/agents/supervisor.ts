@@ -4418,6 +4418,11 @@ export class Supervisor implements TeleportHost {
     return this.surfaceOptions?.platform ?? process.platform
   }
 
+  /** CC-1203: a teleport is an agent launch, so a drifted profile is flagged or refused and never re-baselined. */
+  loadProfile(name: string, by: string): AgentProfile | { error: string } {
+    return this.loadCheckedProfile(name, by, false)
+  }
+
   /**
    * Launch a descendant into a name and an isolation that already exist.
    *
