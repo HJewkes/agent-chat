@@ -44,6 +44,8 @@ export interface SeatAgent {
   configDir?: string
   /** CC-959: a hand-started session still under the name its cwd derived, which may be the seat's pane carrying on. */
   provisionalName?: true
+  /** CC-1453: the row this one teleported from; set on every successor the broker launched. */
+  teleportFrom?: string
 }
 
 /** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */

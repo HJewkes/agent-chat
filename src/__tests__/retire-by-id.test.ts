@@ -8,6 +8,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
+import { seatTarget } from '../agents/seats/seat-target.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -332,6 +333,22 @@ describe('resuming a seat whose chain began as a hand-started session (CC-1453)'
     expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe('sess-g2')
     expect(plan.args[plan.args.indexOf('--model') + 1]).toBe('opus')
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe(account)
+  })
+
+  // Review of #1083: the watchdog sent a session spawn under the name, which the successor's lease refused.
+  it('wakes the seat through the watchdog target without a name-lease refusal', async () => {
+    const dir = cwd()
+    const account = tmp('by-id-account-')
+    await adoptedChain(dir, account)
+    const file = transcriptPath(dir, 'sess-g2', account)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+
+    const target = seatTarget(core.agents.roster(), 'seat-x', { configDir: account })
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(target).toEqual({ kind: 'resume-by-name' })
+    expect(res).toMatchObject({ ok: true, agentId: 'g2' })
   })
 
   it('refuses clearly when the successor has no transcript to resume', async () => {

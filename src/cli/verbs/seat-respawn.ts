@@ -1,6 +1,6 @@
 import type { RelaunchSeatResult } from '../../agents/seats/run.js'
 import { accountRefusal } from '../../agents/seats/seat-account.js'
-import { type SeatRelaunchPlan, withoutLineage } from '../../agents/seats/seat-target.js'
+import { leasesName, type SeatRelaunchPlan, withoutLineage } from '../../agents/seats/seat-target.js'
 import type { SeatAgent } from '../../agents/seats/watchdog.js'
 import type { BrokerClient } from '../../client/broker-client.js'
 import type { ClientMessage, SurfaceName } from '../../protocol.js'
@@ -70,8 +70,7 @@ const sessionRefused = (res: Reply<'spawn_result'>): boolean => /resume_session/
 /** CC-959: every unretired spawned row leases the name, the latest too when it ran on another account. */
 function leaseHolders({ target }: SeatRelaunchPlan): string[] {
   const { latest } = target
-  if (target.kind !== 'fresh' || latest.origin === 'adopted' || latest.agentId === undefined)
-    return target.stale
+  if (target.kind !== 'fresh' || !leasesName(latest) || latest.agentId === undefined) return target.stale
   return [...target.stale, latest.agentId]
 }
 
