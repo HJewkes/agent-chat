@@ -351,6 +351,8 @@ const launchPathsBlocker = (cwd: string, configDir: string | undefined): string 
 export interface LauncherAnswer {
   ok: boolean
   reason?: string
+  /** CC-1472: a probe's verdict on the session it was asked to resume. */
+  transcript?: { path: string; found: boolean }
 }
 
 /** CC-951: the host launchers connected to this broker, as teleport uses them. */
@@ -360,6 +362,8 @@ export interface LauncherSite {
   surfacesOn(host: string): readonly SurfaceName[]
   probe(host: string, probe: HostProbe): Promise<LauncherAnswer>
   launch(host: string, launch: RemoteLaunch): Promise<LauncherAnswer>
+  /** CC-1472: through the launcher's spawn executor, which a host resume needs for `--resume`; teleport never calls it. */
+  spawn?(host: string, launch: RemoteLaunch, timeoutMs?: number): Promise<LauncherAnswer>
 }
 
 const NO_LAUNCHERS: LauncherSite = {

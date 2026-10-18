@@ -1191,6 +1191,8 @@ export type ClientMessage =
       /** CC-1466: as on `spawn`. */
       launchedBy?: Launcher
       launchReason?: string
+      /** CC-1472: the machine to resume on, a config `machines` alias or a hostname; absent resumes here. */
+      host?: string
     }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { DEDUPE_TTL_MS, RequestDedupe, dedupeKey, nonceRefusal } from '../broker/request-dedupe.js'
 import { requestFingerprint } from '../protocol-fingerprint.js'
@@ -135,5 +136,20 @@ describe('the request fingerprint', () => {
     const base = { t: 'resume', name: 'seat-x' } as const
 
     expect(requestFingerprint({ ...base, message: 'go on' })).not.toBe(requestFingerprint(base))
+  })
+
+  // CC-1472. Mutation caught: host left out of the fingerprint, so a retry naming another machine replays the first.
+  it('changes with the host a resume names, and keeps its old value without one', () => {
+    const base = { t: 'resume', name: 'seat-x' } as const
+    const unhosted = createHash('sha256')
+      .update(JSON.stringify(['resume', 'seat-x', undefined, undefined, undefined, undefined]))
+      .digest('hex')
+      .slice(0, 32)
+
+    expect(requestFingerprint({ ...base, host: 'mac' })).not.toBe(
+      requestFingerprint({ ...base, host: 'box' }),
+    )
+    expect(requestFingerprint({ ...base, host: 'mac' })).not.toBe(requestFingerprint(base))
+    expect(requestFingerprint(base)).toBe(unhosted)
   })
 })

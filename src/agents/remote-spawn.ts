@@ -130,6 +130,8 @@ export interface RemoteSpawnRecord {
   host: string
   /** Runs once, when the agent registers: the hooks, journal and dispatch row a local spawn writes. */
   announce: () => void
+  /** CC-1472: runs instead of `retire` when set; a lost resume keeps the identity it did not create. */
+  onLost?: (reason: string) => void
 }
 
 export interface RemoteSpawnDeps {
@@ -253,7 +255,8 @@ export class RemoteSpawns {
   private fail(entry: Pending, reason: string): void {
     this.forget(entry)
     entry.waiter?.({ kind: 'failed', reason })
-    this.deps.retire(entry.record, reason)
+    if (entry.record.onLost === undefined) this.deps.retire(entry.record, reason)
+    else entry.record.onLost(reason)
   }
 
   private forget(entry: Pending): void {
