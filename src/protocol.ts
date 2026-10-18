@@ -773,6 +773,8 @@ export type ClientMessage =
        * declaring an identity for the first time.
        */
       provisional?: boolean
+      /** This print-mode host's server spools every push for a hook to drain (CC-1455); the broker ignores it for now. */
+      inboxSpool?: true
       /**
        * Which BUILD this client is running, so a mismatch with the broker's own
        * is reported rather than inferred (CC-36).
