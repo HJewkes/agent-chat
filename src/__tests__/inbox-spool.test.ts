@@ -143,7 +143,7 @@ describe('channelDelivery with a spool', () => {
     const batch = [
       { from: 'scout', msgId: 'msg-1' },
       { from: 'seat-x', msgId: 'msg-2' },
-    ] as DeliveredMessage['batch']
+    ] as NonNullable<DeliveredMessage['batch']>
 
     // Act
     deliver(message('batch-1', 'two reports', { from: 'agent-chat', batch }))
