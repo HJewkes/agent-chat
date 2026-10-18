@@ -9,6 +9,18 @@ export interface Count {
   count: number
 }
 
+export interface Reading {
+  at: string
+  remaining: number
+}
+
+/** The window's lowest and newest `remaining` seen on calls that carried a resource. */
+export interface ResourceRemaining {
+  resource: string
+  min: Reading
+  latest: Reading
+}
+
 export interface CallsSummary {
   since: string
   total: number
@@ -17,6 +29,8 @@ export interface CallsSummary {
   refused: { secondary: number; primary: number; unknown: number }
   /** The newest `caller: "rate-limit"` reading in the window. */
   rateLimit: { at: string; limits: Record<string, number> } | null
+  /** Per-call readings: GET rate_limit rows record no `remaining`, so the shim's per-call headers are the source. */
+  remaining: ResourceRemaining[]
 }
 
 const isLine = (value: unknown): value is GhCallLine =>
@@ -56,6 +70,23 @@ function topCounts(keys: string[], top: number): Count[] {
     .slice(0, top)
 }
 
+function remainingByResource(calls: GhCallLine[]): ResourceRemaining[] {
+  const byResource = new Map<string, ResourceRemaining>()
+  for (const { at, resource, remaining } of calls) {
+    if (resource === null || typeof remaining !== 'number') continue
+    const reading = { at, remaining }
+    const seen = byResource.get(resource)
+    if (seen === undefined) byResource.set(resource, { resource, min: reading, latest: reading })
+    else
+      byResource.set(resource, {
+        resource,
+        min: remaining < seen.min.remaining ? reading : seen.min,
+        latest: reading,
+      })
+  }
+  return [...byResource.values()].sort((a, b) => a.resource.localeCompare(b.resource))
+}
+
 export function summarize(lines: GhCallLine[], since: Date, top: number): CallsSummary {
   const calls = lines.filter(line => line.caller !== RATE_LIMIT_CALLER)
   const refused = { secondary: 0, primary: 0, unknown: 0 }
@@ -77,13 +108,14 @@ export function summarize(lines: GhCallLine[], since: Date, top: number): CallsS
     ),
     refused,
     rateLimit: reading?.limits ? { at: reading.at, limits: reading.limits } : null,
+    remaining: remainingByResource(calls),
   }
 }
 
 const countLines = (counts: Count[]): string[] => counts.map(({ name, count }) => `  ${count}  ${name}`)
 
 export function renderSummary(summary: CallsSummary): string[] {
-  const { refused, rateLimit } = summary
+  const { refused, rateLimit, remaining } = summary
   const limits = rateLimit
     ? Object.entries(rateLimit.limits)
         .map(([resource, remaining]) => `${resource} ${remaining}`)
@@ -96,6 +128,11 @@ export function renderSummary(summary: CallsSummary): string[] {
     'top routes:',
     ...countLines(summary.routes),
     `403/429: ${refused.secondary} secondary, ${refused.primary} primary, ${refused.unknown} unknown`,
-    rateLimit ? `rate_limit at ${rateLimit.at}: ${limits}` : 'rate_limit: no reading in window',
+    ...(rateLimit ? [`rate_limit at ${rateLimit.at}: ${limits}`] : []),
+    ...remaining.map(
+      ({ resource, min, latest }) =>
+        `remaining ${resource}: min ${min.remaining} at ${min.at}, latest ${latest.remaining} at ${latest.at}`,
+    ),
+    ...(rateLimit || remaining.length > 0 ? [] : ['rate_limit: no reading in window']),
   ]
 }
