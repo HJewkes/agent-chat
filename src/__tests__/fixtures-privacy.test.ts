@@ -53,7 +53,9 @@ function egressHits(docs: Doc[], env: NodeJS.ProcessEnv = process.env): string[]
 function dataLeaks(docs: Doc[], env?: NodeJS.ProcessEnv): string[] {
   const local = docs.flatMap(doc =>
     doc.text.split('\n').flatMap((line, i) => {
-      const token = (line.includes('@') ? line.match(EMAIL) : null)?.find(e => !RESERVED_DOMAIN.test(e)) ?? leakedPattern(line)
+      const token =
+        (line.includes('@') ? line.match(EMAIL) : null)?.find(e => !RESERVED_DOMAIN.test(e)) ??
+        leakedPattern(line)
       return token === undefined ? [] : [`${doc.name} line ${i + 1}: ${token}`]
     }),
   )
