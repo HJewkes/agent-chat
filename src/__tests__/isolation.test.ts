@@ -21,6 +21,7 @@ import {
   reattachWorktree,
   RECLAIM_GRACE_MS,
   WorktreeBudgetExhaustedError,
+  treeHoldersOf,
   WorktreeInUseError,
   worktreeStrategy,
 } from '../agents/isolation/worktree.js'
@@ -303,6 +304,42 @@ describe('worktree budget', () => {
     await expect(strategy.allocate(ctx)).rejects.toBeInstanceOf(WorktreeBudgetExhaustedError)
   })
 
+  it('names who holds the full pool, largest holder first (CC-1469)', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 3 })
+    for (const agentName of ['agent-a', 'agent-b', 'agent-c'])
+      await strategy.allocate(ctxFor(repo, { agentName, agentId: `ag-${agentName}` }))
+    const holders = new Map([
+      ['agent-a', 'seat-b'],
+      ['agent-b', 'seat-b'],
+    ])
+    const ctx = ctxFor(repo, { agentName: 'agent-d', agentId: 'ag-4', treeHolders: () => holders })
+
+    const reason = refusalsIn(await strategy.check(ctx))[0]
+    const refused = (await strategy.allocate(ctx).catch((err: unknown) => err)) as Error
+
+    expect(reason).toContain(
+      '(budget exhausted: 3/3, worktreeBudget) under .worktrees; held by seat-b 2, unknown 1',
+    )
+    expect(refused.message).toBe(
+      'implementer worktree pool exhausted: 3/3 allocated (budget exhausted: 3/3, worktreeBudget); ' +
+        'held by seat-b 2, unknown 1',
+    )
+  })
+
+  it('charges a reused name to its newest spawner', () => {
+    const holders = treeHoldersOf([
+      { name: 'agent-x', spawnedBy: 'seat-new' },
+      { name: 'agent-x', spawnedBy: 'seat-old' },
+      { name: 'agent/y', spawnedBy: '' },
+    ])
+
+    expect([...holders]).toEqual([
+      ['agent-x', 'seat-new'],
+      ['agent-y', 'unknown'],
+    ])
+  })
+
   it('reads the budget from config.json on every spawn when none is passed in', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-budget-'))
     tmpdirs.push(home)
@@ -379,6 +416,19 @@ describe('reviewer worktree pool (CC-1040)', () => {
     await expect(strategy.allocate(reviewer(repo, 1))).resolves.toBeDefined()
   })
 
+  it('counts an adversarial review tree in the reviewer pool and a preview tree as an implementer', async () => {
+    const repo = makeRepo()
+    const strategy = createWorktreeStrategy({ budget: 1, reviewerBudget: 1 })
+    await strategy.allocate(ctxFor(repo, { agentName: 'seat-1-adv-review' }))
+    await strategy.allocate(ctxFor(repo, { agentName: 'preview-x', agentId: 'ag-2' }))
+
+    const reviewerRefusal = refusalsIn(await strategy.check(reviewer(repo, 1)))[0]
+    const implementerRefusal = refusalsIn(await strategy.check(ctxFor(repo, { agentId: 'ag-3' })))[0]
+
+    expect(reviewerRefusal).toMatch(/reviewer worktree pool exhausted: 1\/1/)
+    expect(implementerRefusal).toMatch(/implementer worktree pool exhausted: 1\/1/)
+  })
+
   it('reads reviewerWorktreeBudget from config.json on every spawn', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-budget-'))
     tmpdirs.push(home)
@@ -400,13 +450,19 @@ describe('reviewer worktree pool (CC-1040)', () => {
 })
 
 describe('isReviewerTreeName', () => {
-  it.each(['rv-o-r-4-1', 'impl-task-1-reviewer', 'RV-x'])('classifies %s as a reviewer tree', name => {
-    expect(isReviewerTreeName(name)).toBe(true)
-  })
+  it.each(['rv-o-r-4-1', 'impl-task-1-reviewer', 'RV-x', 'seat-1-adv-review'])(
+    'classifies %s as a reviewer tree',
+    name => {
+      expect(isReviewerTreeName(name)).toBe(true)
+    },
+  )
 
-  it.each(['previewer-x', 'bd-cc-1-a-r0', 'driver', 'a-rv'])('classifies %s as an implementer tree', name => {
-    expect(isReviewerTreeName(name)).toBe(false)
-  })
+  it.each(['previewer-x', 'preview-x', 'reviewed-x', 'bd-cc-1-a-r0', 'driver', 'a-rv'])(
+    'classifies %s as an implementer tree',
+    name => {
+      expect(isReviewerTreeName(name)).toBe(false)
+    },
+  )
 })
 
 describe('worktree re-allocation after a crash', () => {

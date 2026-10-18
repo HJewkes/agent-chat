@@ -106,6 +106,7 @@ describe('which spawns are reviewers', () => {
     ['rv-readonly', 'x-1'],
     ['relay-reviewer', 'x-1'],
     ['anything', 'rv-owner-repo-9-2'],
+    ['adv-review', 'seat-x-1'],
   ])('treats profile %s with agent %s as a reviewer', (profile, name) => {
     expect(isReviewerSpawn(profile, name)).toBe(true)
   })
@@ -114,6 +115,7 @@ describe('which spawns are reviewers', () => {
     ['implementer', 'worker-a'],
     ['bd-implementer', 'previewer-1'],
     ['peer', 'rvx-1'],
+    ['preview', 'agent-x'],
   ])('leaves profile %s with agent %s alone', (profile, name) => {
     expect(isReviewerSpawn(profile, name)).toBe(false)
   })

@@ -54,13 +54,46 @@ const poolExhausted = (pool: WorktreePool, allocated: number, budget: number): s
   `${pool} worktree pool exhausted: ${allocated}/${budget} allocated ` +
   `(budget exhausted: ${allocated}/${budget}, ${POOL_BUDGET_KEY[pool]})`
 
+/** Tree directory name to the name of whoever spawned the agent in it. */
+export type TreeHolders = () => ReadonlyMap<string, string>
+
+const UNKNOWN_HOLDER = 'unknown'
+
+/**
+ * CC-1469: a refused coordinator needs to know whether its own trees or another seat's fill the
+ * pool. Each tree is charged to its agent's direct spawner, largest holder first.
+ */
+export function heldBy(trees: readonly string[], holders: ReadonlyMap<string, string>): string {
+  const counts = new Map<string, number>()
+  for (const tree of trees) {
+    const holder = holders.get(tree) ?? UNKNOWN_HOLDER
+    counts.set(holder, (counts.get(holder) ?? 0) + 1)
+  }
+  const ranked = [...counts].sort(([a, m], [b, n]) => n - m || a.localeCompare(b))
+  return ranked.length === 0 ? '' : `; held by ${ranked.map(([who, n]) => `${who} ${n}`).join(', ')}`
+}
+
+/** Newest identity first, so a reused name charges its tree to the latest spawner. */
+export function treeHoldersOf(
+  agents: readonly { name: string; spawnedBy: string }[],
+): ReadonlyMap<string, string> {
+  const holders = new Map<string, string>()
+  for (const { name, spawnedBy } of agents)
+    if (!holders.has(slug(name))) holders.set(slug(name), spawnedBy || UNKNOWN_HOLDER)
+  return holders
+}
+
+const holdingsOf = (use: PoolUse, holders: TreeHolders | undefined): string =>
+  heldBy(use.trees, holders?.() ?? new Map())
+
 export class WorktreeBudgetExhaustedError extends Error {
   constructor(
     readonly allocated: number,
     readonly budget: number,
     readonly pool: WorktreePool = 'implementer',
+    holdings = '',
   ) {
-    super(poolExhausted(pool, allocated, budget))
+    super(poolExhausted(pool, allocated, budget) + holdings)
     this.name = 'WorktreeBudgetExhaustedError'
   }
 }
@@ -79,6 +112,8 @@ export interface WorktreeOptions {
   runWorktreeAdd?: GitRunner
   /** Runs the repository's declared setup step; tests inject one so no real install runs. */
   runSetup?: SetupRunner
+  /** CC-1469: read only when a pool refuses, to say who holds its trees. */
+  treeHolders?: TreeHolders
 }
 
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>
@@ -123,6 +158,8 @@ export interface PoolUse {
   pool: WorktreePool
   allocated: number
   budget: number
+  /** Directory names of the pool's trees. */
+  trees: string[]
 }
 
 const poolOf = (name: string): WorktreePool => (isReviewerTreeName(name) ? 'reviewer' : 'implementer')
@@ -135,14 +172,14 @@ async function poolUse(
   opts: WorktreeOptions,
 ): Promise<PoolUse> {
   const pool = poolOf(agentName)
-  const allocated = (await allocatedPaths(gitRoot, basePath)).filter(
-    dir => poolOf(path.basename(dir)) === pool,
-  )
+  const trees = (await allocatedPaths(gitRoot, basePath))
+    .map(dir => path.basename(dir))
+    .filter(name => poolOf(name) === pool)
   const budget =
     pool === 'reviewer'
       ? (opts.reviewerBudget ?? resolveReviewerWorktreeBudget(DEFAULT_REVIEWER_WORKTREE_BUDGET))
       : (opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET))
-  return { pool, allocated: allocated.length, budget }
+  return { pool, allocated: trees.length, budget, trees }
 }
 
 async function claimPoolSlot(
@@ -152,7 +189,9 @@ async function claimPoolSlot(
   opts: WorktreeOptions,
 ): Promise<void> {
   const use = await poolUse(gitRoot, basePath, agentName, opts)
-  if (use.allocated >= use.budget) throw new WorktreeBudgetExhaustedError(use.allocated, use.budget, use.pool)
+  if (use.allocated < use.budget) return
+  const holdings = holdingsOf(use, opts.treeHolders)
+  throw new WorktreeBudgetExhaustedError(use.allocated, use.budget, use.pool, holdings)
 }
 
 /**
@@ -987,6 +1026,9 @@ async function releaseParked(alloc: Allocation, gitRoot: string, worktreePath: s
   return true
 }
 
+const withHolders = (opts: WorktreeOptions, treeHolders: TreeHolders | undefined): WorktreeOptions =>
+  treeHolders === undefined ? opts : { ...opts, treeHolders }
+
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
   return {
@@ -1000,7 +1042,10 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       const use = await poolUse(gitRoot, basePath, slug(ctx.agentName), opts)
       const reasons: string[] = []
       if (use.allocated >= use.budget)
-        reasons.push(`${poolExhausted(use.pool, use.allocated, use.budget)} under ${basePath}`)
+        reasons.push(
+          `${poolExhausted(use.pool, use.allocated, use.budget)} under ${basePath}` +
+            holdingsOf(use, ctx.treeHolders),
+        )
       if ((await gitOrNull(['rev-parse', '--verify', branchFor(ctx.agentName)], gitRoot)) !== null) {
         reasons.push(
           warn(
@@ -1033,7 +1078,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       }
 
       await pruneStaleWorktrees(gitRoot)
-      await claimPoolSlot(gitRoot, basePath, slug(ctx.agentName), opts)
+      await claimPoolSlot(gitRoot, basePath, slug(ctx.agentName), withHolders(opts, ctx.treeHolders))
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))

@@ -124,7 +124,7 @@ import {
   retiredWorktree,
   type TranscriptVerdict,
 } from './resume-session.js'
-import { recreateWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { recreateWorktree, treeHoldersOf, type WorktreeRecord } from './isolation/worktree.js'
 import {
   allocatedWorktree,
   lsofCwds,
@@ -2204,6 +2204,7 @@ export class Supervisor implements TeleportHost {
       },
       ...(req.forceReset ? { forceReset: true } : {}),
       ...(req.baseRef === undefined ? {} : { baseRef: req.baseRef }),
+      treeHolders: this.treeHolders,
     }
 
     const floor = floorWarning(isolationName, profile.isolation)
@@ -2534,7 +2535,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
     const allocated = resumed?.reattach
-      ? await recreateWorktree(resumed.reattach)
+      ? await recreateWorktree(resumed.reattach, { treeHolders: this.treeHolders })
       : await resolveIsolation([isolationName]).allocate(ctx)
     const allocation = withLinkedDirs(allocated, activeWorkRoot())
     warnings.push(...(allocation.warnings ?? []))
@@ -2726,6 +2727,10 @@ export class Supervisor implements TeleportHost {
   private predecessorFor(name: string, req: SpawnRequest): PredecessorResult {
     return resolvePredecessor(this.core.agents, this.core.events, name, req.requestedBy)
   }
+
+  /** CC-1469: one fold of the agent log, paid only when a worktree pool refuses. */
+  private readonly treeHolders = (): ReadonlyMap<string, string> =>
+    treeHoldersOf(this.core.agents.roster({ includeRetired: true }).filter(launchedByBroker))
 
   /** CC-283: an assigned worktree, with the record that re-creates it when it has been removed. */
   private assignment(worktree: string): Pick<IsolationContext, 'assignedWorktree' | 'assignedRecord'> {
@@ -3857,7 +3862,7 @@ export class Supervisor implements TeleportHost {
     gone: WorktreeRecord,
     req: ResumeRequest,
   ): Promise<Allocation> {
-    const allocation = await recreateWorktree(gone)
+    const allocation = await recreateWorktree(gone, { treeHolders: this.treeHolders })
     this.core.append({
       kind: 'isolation_allocated',
       actor: req.requestedBy ?? HUMAN,

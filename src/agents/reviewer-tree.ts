@@ -12,8 +12,9 @@ import { canonicalPath } from './spawn-cwd.js'
  * Reviewer-ness is read from names rather than a profile field, because Shepherd's reviewer
  * profile is operator-configured (`rv-readonly`) and a profile written before this existed
  * has no flag to carry. Tokens are matched whole so `reviewer-lite` counts and `previewer` does not.
+ * CC-1469: `review` counts too, so an adversarial `seat-1-adv-review` is a reviewer and `preview` is not.
  */
-const REVIEWER_TOKENS = new Set(['reviewer', 'rv'])
+const REVIEWER_TOKENS = new Set(['reviewer', 'review', 'rv'])
 
 const tokensOf = (name: string): string[] => name.toLowerCase().split(/[^a-z0-9]+/)
 
@@ -27,7 +28,7 @@ export function isReviewerSpawn(profileName: string, agentName: string): boolean
  */
 export function isReviewerTreeName(name: string): boolean {
   const tokens = tokensOf(name)
-  return tokens[0] === 'rv' || tokens.includes('reviewer')
+  return tokens[0] === 'rv' || tokens.some(t => t === 'reviewer' || t === 'review')
 }
 
 /**
