@@ -27,7 +27,7 @@ export interface RunResult {
 }
 
 /** Runs one command with no shell. Injected so tests record every call and need no network. */
-export type Run = (cmd: string, args: string[], cwd: string) => Promise<RunResult>
+export type Run = (cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) => Promise<RunResult>
 
 /** Calls `onSignal` with the exit code on SIGINT or SIGTERM; returns the function that removes the handlers. */
 export type Trap = (onSignal: (exitCode: number) => void) => () => void
@@ -151,12 +151,33 @@ async function abortRebase(run: Run, cwd: string, gitDir: string): Promise<strin
   return `git rebase --abort failed (${lastLine(abort.output)}); a rebase is still in progress, abort it by hand`
 }
 
-export async function rebaseStep(run: Run, cwd: string, base: string, gitDir: string): Promise<StepOutcome> {
+/**
+ * The rebase rewrites every commit, and git stamps the committer from the global config. Reusing
+ * the HEAD commit's identity keeps a noreply branch noreply. Undefined when HEAD's identity is unreadable.
+ */
+async function headIdentityEnv(run: Run, cwd: string): Promise<NodeJS.ProcessEnv | undefined> {
+  const log = await run('git', ['log', '-1', '--format=%cn%n%ce%n%an%n%ae'], cwd)
+  const [committerName, committerEmail, authorName, authorEmail] = log.output.split('\n').map(l => l.trim())
+  const name = committerName || authorName
+  const email = committerEmail || authorEmail
+  if (log.code !== 0 || !name || !email) return undefined
+  return { GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+}
+
+export async function rebaseStep(
+  run: Run,
+  cwd: string,
+  base: string,
+  gitDir: string,
+  warn: (line: string) => void = () => {},
+): Promise<StepOutcome> {
   const branch = base.slice(REMOTE_PREFIX.length)
   const fetch = await run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${base}`], cwd)
   if (fetch.code !== 0)
     return { ok: false, reason: `git fetch of ${branch} failed: ${lastLine(fetch.output)}` }
-  const rebase = await run('git', ['rebase', base], cwd)
+  const identity = await headIdentityEnv(run, cwd)
+  if (!identity) warn("warning: could not read HEAD's identity; the rebase uses the configured committer")
+  const rebase = await run('git', ['rebase', base], cwd, identity)
   if (rebase.code === 0) return { ok: true }
   if (!rebaseInProgress(gitDir)) return { ok: false, reason: `git rebase failed: ${lastLine(rebase.output)}` }
   const unmerged = await run('git', ['diff', '-z', '--name-only', '--diff-filter=U'], cwd)
@@ -184,7 +205,7 @@ async function trappedRebaseStep(deps: PrReadyDeps, base: string): Promise<StepO
     deps.out(`PR-READY FAIL exit=${exitCode}`)
   })
   try {
-    return await rebaseStep(deps.run, deps.cwd, base, gitDir)
+    return await rebaseStep(deps.run, deps.cwd, base, gitDir, deps.err)
   } finally {
     release()
   }
@@ -446,9 +467,13 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   return 0
 }
 
-export const spawnRun: Run = (cmd, args, cwd) =>
+export const spawnRun: Run = (cmd, args, cwd, env) =>
   new Promise(resolve => {
-    const child = spawn(cmd, args, { cwd, env: withPinnedGitProtocols(), stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(cmd, args, {
+      cwd,
+      env: withPinnedGitProtocols({ ...process.env, ...env }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     const chunks: Buffer[] = []
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk))
