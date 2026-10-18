@@ -45,7 +45,7 @@ const record = (agent: string, ts: string): DispatchRecord =>
 const state = (over: Partial<SeatState> = {}): SeatState => ({
   ...emptySeatState(),
   generation: 2,
-  holds: [{ target: 'platform-coord', reason: 'restart window' }],
+  holds: [{ target: 'seat-b', reason: 'restart window' }],
   background: [{ id: 'ci-watch', command: 'gh run watch 42', cwd: '/Users/me/projects/agent-chat' }],
   ...over,
 })
@@ -77,7 +77,7 @@ describe('renderSeatState', () => {
     expect(lines.join('\n')).toContain(AUTHORED)
     expect(lines.filter(l => l.startsWith('pr '))).toHaveLength(3)
     expect(lines).toContain('claim /w/tc-x-a | owner tc-x-a | src/**')
-    expect(lines).toContain('hold platform-coord: restart window')
+    expect(lines).toContain('hold seat-b: restart window')
     expect(lines).toContain('background ci-watch | cd /Users/me/projects/agent-chat && gh run watch 42')
     expect(lines).toContain('pool personal | 4 pts behind pace | 5h 41% | reading 30 min old')
   })
@@ -147,7 +147,7 @@ describe('renderSeatState', () => {
     const lines = renderSeatState(input({ authored: long }), 1_000).join('\n')
 
     expect(lines).toContain(long.trim())
-    expect(lines).toContain('hold platform-coord: restart window')
+    expect(lines).toContain('hold seat-b: restart window')
     expect(lines).toContain('background ci-watch')
   })
 })

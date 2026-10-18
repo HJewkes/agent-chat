@@ -16,7 +16,7 @@ import type { ProcessProbe } from '../agents/detached-reap.js'
  */
 
 const CALLER = 'mac-test-host'
-const MAC_CWD = `/Users/${os.userInfo().username}/projects/fantasy-football`
+const MAC_CWD = `/Users/${os.userInfo().username}/projects/proj-a`
 const SETTLE_MS = 40
 const tmpDirs: string[] = []
 let core: BrokerCore

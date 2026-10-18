@@ -1,5 +1,5 @@
 id: tc-131
-seat: titan-coord
+seat: seat-a
 initiative: claude-channels
 task: CC-760
 decision: Approve the backlog plan so its slices can dispatch.

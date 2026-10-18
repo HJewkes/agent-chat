@@ -6,7 +6,7 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/seat-test-backlog.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 B="$here/backlog"
 R="$here/testdata/backlog/records"
-S="$scratch/root/backlog/titan-coord"
+S="$scratch/root/backlog/seat-a"
 LOG="$scratch/calls.log"
 pass=0 failn=0
 
@@ -56,27 +56,27 @@ t_lint() {
 t_add() {
   store; cp -R "$R/tc-131" "$scratch/"; sed '/^opened_at:/d' "$R/tc-131.yml" > "$scratch/tc-131.yml"
   name="add stores the record, its captures, status open and opened_at"
-  BACKLOG_NOW=2026-10-11T09:00:00Z run "$name" 0 add titan-coord "$scratch/tc-131.yml" || return
+  BACKLOG_NOW=2026-10-11T09:00:00Z run "$name" 0 add seat-a "$scratch/tc-131.yml" || return
   [ -f "$S/tc-131/img/after.png" ] || { report "$name" "capture not copied"; return; }
   [ "$(field tc-131 status)" = open ] && [ "$(field tc-131 opened_at)" = 2026-10-11T09:00:00.000Z ] &&
     report "$name" ok || report "$name" "status $(field tc-131 status), opened_at $(field tc-131 opened_at)"
-  run "add refuses an existing record" 1 add titan-coord "$R/tc-131.yml" && says "add refuses an existing record" "$err" exists &&
+  run "add refuses an existing record" 1 add seat-a "$R/tc-131.yml" && says "add refuses an existing record" "$err" exists &&
     report "add refuses an existing record" ok
-  run "add refuses a record for another seat" 1 add design-coord "$R/tc-130.2.yml" &&
-    says "add refuses a record for another seat" "$err" "is not 'design-coord'" && report "add refuses a record for another seat" ok
+  run "add refuses a record for another seat" 1 add seat-b "$R/tc-130.2.yml" &&
+    says "add refuses a record for another seat" "$err" "is not 'seat-b'" && report "add refuses a record for another seat" ok
 }
 # draft <dir>: a tc-131 draft with its captures in <dir>, for the symlink cases
 draft() { rm -rf "$1"; mkdir -p "$1"; cp -R "$R/tc-131" "$R/tc-131.yml" "$1/"; }
 # refuses <name> <needle> <draft dir>: add exits 1 with needle, writes no record and nothing outside the store
 refuses() {
-  run "$1" 1 add titan-coord "$3/tc-131.yml" && says "$1" "$err" "$2" || return
+  run "$1" 1 add seat-a "$3/tc-131.yml" && says "$1" "$err" "$2" || return
   [ ! -f "$S/tc-131.yml" ] && [ ! -e "$scratch/outside/after.png" ] && report "$1" ok || report "$1" "wrote through"
 }
 t_add_escape() {
   store; mkdir -p "$scratch/outside"
   sed 's|file: tc-131/img/after.png|file: tc-131/img/../../escaped.png|' "$R/tc-131.yml" > "$scratch/esc.yml"
   name="add refuses a .. capture and writes nothing outside the record"
-  run "$name" 1 add titan-coord "$scratch/esc.yml" && [ ! -e "$S/escaped.png" ] && [ ! -e "$scratch/root/escaped.png" ] &&
+  run "$name" 1 add seat-a "$scratch/esc.yml" && [ ! -e "$S/escaped.png" ] && [ ! -e "$scratch/root/escaped.png" ] &&
     report "$name" ok
   store; mkdir -p "$S/tc-131"; ln -s "$scratch/outside" "$S/tc-131/img"; draft "$scratch/d1"
   refuses "add refuses a store img dir that is a symlink" "is a symlink" "$scratch/d1"
@@ -91,7 +91,7 @@ t_add_escape() {
 }
 t_list() {
   store tc-131 tc-130.2 tc-129; name="list --status filters the store"
-  run "$name" 0 list titan-coord --status deferred || return
+  run "$name" 0 list seat-a --status deferred || return
   [ "$(printf '%s\n' "$out" | cut -f1)" = tc-129 ] && report "$name" ok || report "$name" "out: $out"
 }
 t_due() {
@@ -132,7 +132,7 @@ t_close() {
   store tc-131; name="close moves the record to closed/ and runs queue done"
   run "$name" 0 close tc-131 || return
   [ ! -f "$S/tc-131.yml" ] && grep -q '^status: closed' "$S/closed/tc-131.yml" || { report "$name" "file not moved"; return; }
-  says "$name" "$(cat "$LOG")" "queue titan-coord done tc-131" && report "$name" ok
+  says "$name" "$(cat "$LOG")" "queue seat-a done tc-131" && report "$name" ok
   run "close of a closed record fails" 1 close tc-131 && says "close of a closed record fails" "$err" "no open record" && report "close of a closed record fails" ok
 }
 t_roots() {
@@ -141,8 +141,8 @@ t_roots() {
   [ "$rc" -eq 2 ] && says "$name" "$out" "AUTONOMY_ROOT and ACTIVE_ROOT unset" && report "$name" ok ||
     { [ "$rc" -eq 2 ] || report "$name" "exit $rc: $out"; }
   name="ACTIVE_ROOT alone finds the autonomy store"
-  mkdir -p "$scratch/active/claude-channels/sources/autonomy/backlog/titan-coord"
-  cp "$R/tc-129.yml" "$scratch/active/claude-channels/sources/autonomy/backlog/titan-coord/"
+  mkdir -p "$scratch/active/claude-channels/sources/autonomy/backlog/seat-a"
+  cp "$R/tc-129.yml" "$scratch/active/claude-channels/sources/autonomy/backlog/seat-a/"
   out=$(env -u AUTONOMY_ROOT ACTIVE_ROOT="$scratch/active" "$B" list 2>&1)
   says "$name" "$out" "tc-129" && report "$name" ok
 }

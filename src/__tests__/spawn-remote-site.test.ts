@@ -16,7 +16,7 @@ import { agentDir } from '../paths.js'
  */
 
 const CALLER = 'mac-test-host'
-const MAC_CWD = `/Users/${os.userInfo().username}/projects/fantasy-football`
+const MAC_CWD = `/Users/${os.userInfo().username}/projects/proj-a`
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor

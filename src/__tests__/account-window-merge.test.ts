@@ -42,7 +42,7 @@ const reading = () => readReadings(['server'], NOW_MS, () => dir).get('server')
 describe('account budget window merge', () => {
   it('reads both windows when a newer status line has only seven_day and the poller has both', () => {
     status('usage-poller', 120, { five_hour: fiveHour(20), seven_day: sevenDay(40) })
-    status('design-coord', 10, { seven_day: sevenDay(41) })
+    status('seat-a', 10, { seven_day: sevenDay(41) })
 
     const got = reading()
 
@@ -67,7 +67,7 @@ describe('account budget window merge', () => {
 
   it('closes as today when every file is stale', () => {
     status('usage-poller', 3_600, { five_hour: fiveHour(20), seven_day: sevenDay(40) })
-    status('design-coord', 1_800, { seven_day: sevenDay(41) })
+    status('seat-a', 1_800, { seven_day: sevenDay(41) })
 
     const gate = gateAccount('server', rule, reading(), { now: new Date(NOW_MS) })
 
@@ -76,7 +76,7 @@ describe('account budget window merge', () => {
 
   it('borrows no window from a stale file', () => {
     status('usage-poller', 1_800, { five_hour: fiveHour(20), seven_day: sevenDay(40) })
-    status('design-coord', 10, { seven_day: sevenDay(41) })
+    status('seat-a', 10, { seven_day: sevenDay(41) })
 
     const got = reading()
 
@@ -88,19 +88,19 @@ describe('account budget window merge', () => {
 
   it('borrows no window whose reset has passed', () => {
     status('usage-poller', 120, { five_hour: fiveHour(80, NOW_S - 60), seven_day: sevenDay(40) })
-    status('design-coord', 10, { seven_day: sevenDay(41) })
+    status('seat-a', 10, { seven_day: sevenDay(41) })
 
     expect(reading()?.fiveHour).toBeUndefined()
   })
 
   it('keeps the newest file whole, path and all', () => {
     status('usage-poller', 120, { five_hour: fiveHour(20), seven_day: sevenDay(40) })
-    status('design-coord', 10, { seven_day: sevenDay(41) })
+    status('seat-a', 10, { seven_day: sevenDay(41) })
 
     const read = readAccountBudget(dir, NOW_MS)
 
-    expect(read.found && path.basename(read.path)).toBe('design-coord.json')
-    expect(read.found && read.budget.session_id).toBe('design-coord')
+    expect(read.found && path.basename(read.path)).toBe('seat-a.json')
+    expect(read.found && read.budget.session_id).toBe('seat-a')
   })
 
   it("a newer status line repeating a lower seven_day does not lower the poller's", () => {

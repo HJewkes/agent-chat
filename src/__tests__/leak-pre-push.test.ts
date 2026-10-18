@@ -27,8 +27,8 @@ const HELP = `usage: titan-egress-scan <command>
 files git calls binary are scanned as text; a commit or tree over 128 MiB of patch text exits 2
 exit: 0 clean, 1 findings, 2 usage or configuration error`
 
-// Every fixture is synthetic: a made-up home and a made-up marker term.
-const HOME = '/Users/zq7-probe-home'
+// Every fixture is synthetic: a placeholder home egress-scan exempts and a made-up marker term.
+const HOME = '/Users/example'
 const LEAK = 'zq7leakterm'
 
 /**

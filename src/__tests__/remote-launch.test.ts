@@ -23,7 +23,7 @@ let account: string
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-remote-launch-')))
   homeDir = path.join(root, 'home')
-  workspace = path.join(homeDir, 'projects', 'fantasy-football')
+  workspace = path.join(homeDir, 'projects', 'proj-a')
   account = path.join(homeDir, '.claude-profiles', 'ff')
   fs.mkdirSync(workspace, { recursive: true })
   fs.mkdirSync(account, { recursive: true })

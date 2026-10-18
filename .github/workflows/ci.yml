@@ -68,7 +68,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: npx --yes @titan-design/egress-scan@0.1.0 range "$BASE_SHA" "$HEAD_SHA"
+        run: npx --yes @titan-design/egress-scan@0.6.1 range "$BASE_SHA" "$HEAD_SHA"
 
   # The ruleset requires the context `check`, so the aggregator carries that name
   # and no other job may. all-green also fails if a job here is missing from needs.
