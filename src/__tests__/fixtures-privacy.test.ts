@@ -25,6 +25,8 @@ const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9
 const RESERVED_DOMAIN = /[@.](example\.(com|org|net)|invalid|test|localhost)$/i
 const NAME_RULES = ['private-term', 'credential-token']
 const EGRESS_FINDING = /^(\d+):\d+ (\S+)/
+const REPORT_TOTAL = /^egress-scan: (\d+) findings? \(/m
+const TERMS_LOADED = /^private term list: loaded$/m
 const LEAK_ADVICE = 'use synthetic names such as seat-a; real names live in the egress-scan private term list'
 
 interface Doc {
@@ -33,20 +35,42 @@ interface Doc {
 }
 
 /** Egress-scan rule hits per doc and line, from one `titan-egress-scan text` run over all docs. */
-function egressHits(docs: Doc[], env: NodeJS.ProcessEnv = process.env): string[] {
+function egressHits(docs: Doc[], env: NodeJS.ProcessEnv = process.env, scanner = SCANNER): string[] {
   const split = docs.map(d => d.text.replace(/\r\n?/g, '\n').split('\n'))
   const starts = split.map((_, i) => split.slice(0, i).reduce((sum, lines) => sum + lines.length, 0))
   const input = split.map(lines => lines.join('\n')).join('\n')
-  const run = spawnSync(process.execPath, [SCANNER, 'text'], { input, encoding: 'utf8', env })
-  if (run.status === 0) return []
-  if (run.status !== 1) throw new Error(`egress-scan exited ${run.status}: ${run.stderr}`)
-  return run.stdout.split('\n').flatMap(row => {
+  return findingRows(input, env, scanner).flatMap(row => {
     const m = EGRESS_FINDING.exec(row)
-    if (m === null) return []
-    const at = Number(m[1]) - 1
+    const at = Number(m?.[1]) - 1
     const doc = starts.findLastIndex(start => start <= at)
-    return [`${docs[doc]?.name} line ${at - (starts[doc] ?? 0) + 1}: ${m[2]}`]
+    return [`${docs[doc]?.name} line ${at - (starts[doc] ?? 0) + 1}: ${m?.[2]}`]
   })
+}
+
+/**
+ * The scanner's finding rows. Anything short of a complete report throws, so a scan that could not
+ * run never reads as clean: outside CI the term list is required, and the footer must agree with
+ * the exit code and the rows.
+ */
+function findingRows(input: string, env: NodeJS.ProcessEnv, scanner: string): string[] {
+  const ci = isCi(env)
+  const scanEnv = ci ? env : { ...env, TITAN_EGRESS_REQUIRE_TERMS: '1' }
+  const run = spawnSync(process.execPath, [scanner, 'text'], { input, encoding: 'utf8', env: scanEnv })
+  const report = run.stdout ?? ''
+  const rows = report.split('\n').filter(row => EGRESS_FINDING.test(row))
+  const total = REPORT_TOTAL.exec(report)?.[1]
+  const complete =
+    (run.status === 0 || run.status === 1) &&
+    Number(total) === rows.length &&
+    (run.status === 1) === rows.length > 0 &&
+    (ci || TERMS_LOADED.test(report))
+  if (!complete) throw new Error(`egress-scan gave no complete report (exit ${run.status}): ${run.stderr}`)
+  return rows
+}
+
+/** The scanner's own reading of `CI`: set, and not empty, `false` or `0`. */
+function isCi(env: NodeJS.ProcessEnv): boolean {
+  return !['', 'false', '0'].includes((env.CI ?? '').toLowerCase())
 }
 
 /** Findings for files that must be clean of every rule: fixtures and seat-script test data. */
@@ -84,7 +108,6 @@ function readDocs(dir: string, keep: (file: string) => boolean): Doc[] {
   return walk(dir)
     .filter(keep)
     .map(f => ({ name: path.relative(dir, f), text: fs.readFileSync(f, 'utf8') }))
-    .filter(doc => !doc.text.includes('\0'))
 }
 
 function leakMessage(found: string[]): string {
@@ -129,6 +152,35 @@ describe('fixture privacy guard', () => {
   it('flags a private term from the egress-scan term list, naming the rule and not the term', () => {
     const found = withTerm('seat-zz', env => dataLeaks(doc('ok\n{"actor":"Seat-ZZ"}', 'f.json'), env))
     expect(found).toEqual(['f.json line 2: private-term'])
+  })
+
+  it('flags a name in a file holding a NUL byte rather than skipping the file', () => {
+    expect(dataLeaks(doc('bin\0ary\nname: hs-cc-123-foo', 'f.bin'))).toEqual(['f.bin line 2: hs-cc-123'])
+  })
+
+  it('fails rather than passing name-blind when the term list is missing outside CI', () => {
+    const missing = path.join(os.tmpdir(), 'privacy-terms-missing', 'terms')
+    const env = { ...process.env, CI: '', TITAN_EGRESS_TERMS: missing, TITAN_EGRESS_REQUIRE_TERMS: '0' }
+    expect(() => dataLeaks(doc('ok', 'f.txt'), env)).toThrow(/no complete report \(exit 2\)/)
+  })
+
+  it.each([
+    ['exits 1 with no report', 'process.exit(1)'],
+    ['exits 0 with no report', 'process.exit(0)'],
+    [
+      'exits 1 with a clean footer',
+      'console.log("egress-scan: 0 findings (x)\\nprivate term list: loaded"); process.exit(1)',
+    ],
+  ])('fails when the scanner %s', (_name, body) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'privacy-scanner-'))
+    try {
+      fs.writeFileSync(path.join(tmp, 'bin.mjs'), body)
+      expect(() => egressHits(doc('ok'), process.env, path.join(tmp, 'bin.mjs'))).toThrow(
+        /no complete report/,
+      )
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it.each([
