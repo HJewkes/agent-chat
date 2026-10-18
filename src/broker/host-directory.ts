@@ -34,7 +34,9 @@ export interface HostAnswer {
 
 /** A frame the broker asks a launcher to act on; `id` pairs it with the answer. */
 export type HostRequest =
-  { t: 'host_probe'; id: string; probe: HostProbe } | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  | { t: 'host_probe'; id: string; probe: HostProbe }
+  | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  | { t: 'host_spawn'; id: string; launch: RemoteLaunch }
 
 export const PROBE_TIMEOUT_MS = 10_000
 export const LAUNCH_TIMEOUT_MS = 60_000
@@ -135,6 +137,11 @@ export class HostDirectory<K = unknown> {
 
   launch(host: string, launch: RemoteLaunch, timeoutMs = LAUNCH_TIMEOUT_MS): Promise<HostAnswer> {
     return this.ask(host, id => ({ t: 'host_launch', id, launch }), timeoutMs)
+  }
+
+  /** CC-1472: run `launch` through the launcher's spawn executor (CC-1062); a host resume uses it. */
+  spawn(host: string, launch: RemoteLaunch, timeoutMs = LAUNCH_TIMEOUT_MS): Promise<HostAnswer> {
+    return this.ask(host, id => ({ t: 'host_spawn', id, launch }), timeoutMs)
   }
 
   /** Only the connection that was asked may answer, so another one cannot settle its request. */

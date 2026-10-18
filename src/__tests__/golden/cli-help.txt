@@ -1336,6 +1336,8 @@ Options:
   --launched-by <value>    seat-watchdog or shepherd: the automation running this resume as you;
                            grants nothing
   --launch-reason <value>  why it resumed, recorded with --launched-by
+  --host <value>           the machine to resume on, through its host launcher (default: the
+                           broker's)
   -h, --help               display help for command
 
 === agent-chat agent worktrees

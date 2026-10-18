@@ -218,6 +218,9 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // omits the field and leaves this alone.
     if (row.kind === 'agent_resumed' && row.meta.surface) agent.surface = row.meta.surface
     if (row.kind === 'agent_resumed') applyResumeProvenance(agent, row)
+    // CC-1472: a resume relaunches on one machine, so the agent is wherever the newest one put it.
+    if (row.kind === 'agent_resumed' && row.meta.host) agent.host = row.meta.host
+    else if (row.kind === 'agent_resumed') delete agent.host
     if (row.kind === 'agent_exited') {
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts

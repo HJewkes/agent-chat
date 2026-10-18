@@ -340,6 +340,13 @@ const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlat
 const nonBlank = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 
+/** CC-1472: a launcher's transcript verdict, kept only when well formed, so a garbled one reads as none. */
+const transcriptVerdictOf = (msg: object): { transcript?: { path: string; found: boolean } } => {
+  const verdict = (msg as { transcript?: { path?: unknown; found?: unknown } | null }).transcript
+  if (typeof verdict?.path !== 'string' || typeof verdict.found !== 'boolean') return {}
+  return { transcript: { path: verdict.path, found: verdict.found } }
+}
+
 /** CC-1059: the spawn frame's launch-site fields, each dropped unless well formed. */
 const spawnSiteFields = (
   msg: Extract<ClientMessage, { t: 'spawn' }>,
@@ -1023,7 +1030,9 @@ export class SocketServer {
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
     const source = wakeSource(msg.source)
+    const host = nonBlank(msg.host)
     const outcome = await this.supervisor.resume(msg.name, {
+      ...(host === undefined ? {} : { host }),
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
@@ -2036,6 +2045,7 @@ export class SocketServer {
         this.hosts.answer(conn, msg.id, {
           ok: msg.ok === true,
           ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
+          ...transcriptVerdictOf(msg),
         })
         return
       case 'hosts':

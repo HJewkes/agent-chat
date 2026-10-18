@@ -354,6 +354,23 @@ stale-session guard blocks its prompts, and the broker refuses the retired
 identity's registration, so it never holds the name. Its window stays open for
 the human to close.
 
+**Resuming on a launcher's machine (CC-1472).** `agent_resume host:<m>` and
+`agent-chat agent resume <name> --host <m>` resume a stopped agent on the
+machine its transcript is on, for example one spawned on the Mac. `<m>` resolves
+as `to` does, with the broker's host as the caller, so the broker's own machine
+is today's local resume. For a launcher, the broker refuses before asking
+anything an isolation other than `none` or `toolset-limited` (a worktree is local
+to the broker's host), an identity that records no account, a surface the
+launcher did not announce, and a cwd or config dir outside that machine's home.
+It then probes with `resumeSession`; the launcher checks the transcript on its
+own disk under the agent's account and answers with the path. A launcher that
+answers ok without that verdict predates CC-1472 and is refused. The broker
+writes `agent_resumed` with `meta.host` and sends `host_spawn` with `resume:
+true`, and the launcher relaunches the same identity with `--resume`. A refused
+or lost launch writes `agent_exited` marked `never_started` and keeps the
+identity. No refusal on this path falls back to a local resume. Without `host`,
+resume behaves exactly as before.
+
 **`agent-chat teleport request <name> [--surface <s>] [--to <m>]` (CC-951 c).**
 The owner's way to move a seat, and a request, not a force: the broker resolves a
 teleport's subject from the caller's own connection, so the CLI sends no

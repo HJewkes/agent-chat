@@ -133,6 +133,25 @@ describe('agent_resume', () => {
       "Not resumed: scout's transcript is gone\nno transcript found at /c/p/s.jsonl",
     )
   })
+
+  // CC-1472: a blank host is no host, so it resumes here rather than being refused as an unknown machine.
+  it('names the machine on the frame and in the reply, and drops a blank one', async () => {
+    const { broker, sent } = answering({
+      ok: true,
+      host: 'mac',
+      transcript: { path: '/m/s.jsonl', found: true },
+    })
+    const tools = new ToolHandler(broker, undefined, 'me')
+
+    const reply = await tools.handle('agent_resume', { name: 'scout', host: 'mac' })
+    await tools.handle('agent_resume', { name: 'scout', host: '  ' })
+
+    expect(sent).toEqual([
+      { t: 'resume', name: 'scout', host: 'mac' },
+      { t: 'resume', name: 'scout' },
+    ])
+    expect(reply.content[0]?.text).toContain('Resumed scout on mac on its existing conversation')
+  })
 })
 
 /** CC-106 S2: `name` must reject before any frame, not fall through as `undefined` on the wire. */

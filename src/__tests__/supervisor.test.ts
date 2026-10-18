@@ -3483,6 +3483,7 @@ describe('resuming an agent on its own conversation', () => {
     const result = await sup.resume('scout')
 
     expect(result.ok).toBe(false)
+    expect(result.reason).toBe("scout's transcript is gone, so it would come back with no conversation")
     expect(result.transcript).toEqual({
       path: transcriptPath(agent.cwd, agent.sessionId, agent.configDir),
       found: false,

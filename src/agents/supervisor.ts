@@ -92,6 +92,17 @@ import {
   type RemoteSpawnRecord,
   type SpawnSite,
 } from './remote-spawn.js'
+import {
+  HOST_RESUME_TIMEOUT_MS,
+  localCopyWarning,
+  probeTranscript,
+  remoteResumeRefusal,
+  resumeLaunchFor,
+  resumeRouteFor,
+  type LauncherRoute,
+  type RemoteResumeSite,
+  type ResumeRoute,
+} from './remote-resume.js'
 import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import {
   REVIEWER_TREE_CHANGED,
@@ -118,6 +129,7 @@ import {
   createdWorktreeFor,
   type CreatedWorktree,
   goneWorktree,
+  identityBlocker,
   identityTranscript,
   missingAgent,
   RESUMED_BRIEF,
@@ -797,6 +809,8 @@ export interface ResumeRequest {
   /** CC-1466: as on {@link SpawnRequest}. */
   launchedBy?: Launcher
   launchReason?: string
+  /** CC-1472: resume on this machine, through its host launcher; never falls back to resuming here. */
+  host?: string
 }
 
 interface Live {
@@ -3772,10 +3786,24 @@ export class Supervisor implements TeleportHost {
    */
   private resumingRefusal(identity: AgentIdentity): string | undefined {
     const since = this.resuming.get(identity.agentId)
-    if (since === undefined) return this.sessionLaunchRefusal(identity.sessionId)
+    if (since === undefined)
+      return this.remoteLaunchRefusal(identity) ?? this.sessionLaunchRefusal(identity.sessionId)
     return (
       `${identity.name} is already resuming (since ${new Date(since).toISOString()}); ` +
       'wait for that resume to answer, then check agent_list before resuming again'
+    )
+  }
+
+  /**
+   * CC-1472: a host resume releases its hold once the launcher accepts the launch, before the
+   * agent registers; until it does, or the attach ceiling passes, a second launch would run a
+   * second process on the same session.
+   */
+  private remoteLaunchRefusal(identity: AgentIdentity): string | undefined {
+    if (!this.remoteSpawns.has(identity.agentId)) return undefined
+    return (
+      `${identity.name} is already resuming on ${identity.host ?? 'another machine'} and has not registered yet; ` +
+      'check agent_list before resuming again'
     )
   }
 
@@ -3818,6 +3846,11 @@ export class Supervisor implements TeleportHost {
       if (stale) return { ok: false, reason: stale }
       identity = this.core.agents.get(identity.agentId) ?? identity
     }
+    if (req.host !== undefined) {
+      const route = this.resumeRoute(req.host)
+      if ('refusal' in route) return { ok: false, reason: route.refusal }
+      if (route.site === 'launcher') return this.resumeOnHost(identity, req, route)
+    }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
@@ -3855,6 +3888,117 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** CC-1472: where a resume naming `host` runs; the broker's own host is today's local resume. */
+  private resumeRoute(host: string): ResumeRoute {
+    return resumeRouteFor({
+      host,
+      brokerHost: brokerHost(),
+      launchers: this.hosts?.launchers() ?? [],
+      aliases: resolveMachines(),
+    })
+  }
+
+  /**
+   * CC-1472: resume on another machine through its launcher, which holds the transcript. Every
+   * refusal returns from here: a host request never falls through to the local resume, since that
+   * would answer about a transcript the requester did not ask for.
+   */
+  private async resumeOnHost(
+    identity: AgentIdentity,
+    checked: ResumeRequest,
+    route: LauncherRoute,
+  ): Promise<SpawnOutcome> {
+    const hosts = this.hosts
+    if (hosts?.spawn === undefined) return { ok: false, reason: `no launcher connected on ${route.host}` }
+    const warnings: string[] = []
+    const req = this.resumeRemoteControl(identity, checked, warnings)
+    const surface = req.surface ?? 'headless'
+    const refused =
+      identityBlocker(identity) ?? remoteResumeRefusal(identity, surface, this.resumeSite(route))
+    if (refused !== undefined) return { ok: false, reason: refused }
+    const profile = this.resumeProfile(identity, req.requestedBy)
+    if ('error' in profile)
+      return { ok: false, reason: `cannot reload profile "${identity.profile}": ${profile.error}` }
+    const probed = await probeTranscript(hosts.probe.bind(hosts), identity, surface, route.host)
+    if ('refusal' in probed) return { ok: false, reason: probed.refusal, ...probed.verdict }
+    const { transcript } = probed
+    warnings.push(...localCopyWarning(identityTranscript(identity), brokerHost(), route.host))
+    const launch = resumeLaunchFor(identity, profile, { ...req, surface })
+    const launched = await this.launchOnLauncher(identity, req, launch, transcript, {
+      host: route.host,
+      spawn: hosts.spawn.bind(hosts),
+    })
+    if (launched !== undefined) return { ok: false, reason: launched, transcript }
+    if (req.message !== undefined && surface !== 'headless')
+      warnings.push(
+        'a visible resume opens on the conversation as it was left; the message was not delivered',
+      )
+    return {
+      ok: true,
+      agentId: identity.agentId,
+      name: identity.name,
+      host: route.host,
+      transcript,
+      ...(warnings.length ? { warnings } : {}),
+    }
+  }
+
+  private resumeSite(route: LauncherRoute): RemoteResumeSite {
+    return {
+      host: route.host,
+      platform: route.platform,
+      brokerHost: brokerHost(),
+      brokerPlatform: process.platform,
+      user: os.userInfo().username,
+      brokerHome: os.homedir(),
+      surfaces: this.hosts?.surfacesOn(route.host) ?? [],
+    }
+  }
+
+  /**
+   * Records the resume and hands it to the launcher's spawn executor. No slot is taken: the process
+   * runs on another machine, and an attach adopts one as for any agent this broker did not launch.
+   * Lost before it registers, the resume is closed as never started and the identity is kept.
+   */
+  private async launchOnLauncher(
+    agent: AgentIdentity,
+    req: ResumeRequest,
+    launch: RemoteLaunch,
+    transcript: TranscriptVerdict,
+    { host, spawn }: { host: string; spawn: NonNullable<LauncherSite['spawn']> },
+  ): Promise<string | undefined> {
+    this.remoteSpawns.open({
+      agentId: agent.agentId,
+      name: agent.name,
+      host,
+      announce: () => undefined,
+      onLost: reason => this.resumeNeverStarted(agent, new Error(reason)),
+    })
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: req.requestedBy ?? HUMAN,
+      target: agent.name,
+      ref: agent.agentId,
+      body: 'resumed',
+      meta: {
+        session_id: agent.sessionId,
+        surface: launch.surface,
+        from_surface: agent.surface,
+        transcript: transcript.path,
+        host,
+        ...(req.source === undefined ? {} : { source: req.source }),
+        ...(req.cause === undefined ? {} : { cause: req.cause }),
+        ...launchMeta(req),
+      },
+    })
+    const answer = await spawn(host, launch, HOST_RESUME_TIMEOUT_MS)
+    this.remoteSpawns.ready(
+      agent.agentId,
+      answer.ok ? { ok: true } : { ok: false, reason: answer.reason ?? '' },
+    )
+    return answer.ok ? undefined : `refused on ${host}: ${answer.reason ?? 'no reason given'}`
   }
 
   /** CC-1453: a hand-started session's teleport successor runs on what it inherited, which no profile file holds. */

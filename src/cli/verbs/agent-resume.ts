@@ -31,6 +31,7 @@ export const agentResume = defineVerb({
     remoteControl: z.boolean().optional(),
     launchedBy: z.enum(LAUNCHERS).optional(),
     launchReason: z.string().optional(),
+    host: z.string().optional(),
   }),
   result: Report,
   cli: {
@@ -48,10 +49,14 @@ export const agentResume = defineVerb({
         description: `${LAUNCHERS.join(' or ')}: the automation running this resume as you; grants nothing`,
       },
       launchReason: { long: '--launch-reason', description: 'why it resumed, recorded with --launched-by' },
+      host: {
+        long: '--host',
+        description: "the machine to resume on, through its host launcher (default: the broker's)",
+      },
     },
   },
   async run(
-    { name, message: messageArg, messageStdin, surface, remoteControl, launchedBy, launchReason },
+    { name, message: messageArg, messageStdin, surface, remoteControl, launchedBy, launchReason, host },
     ctx,
   ) {
     const message = await resumeMessage(messageArg, messageStdin)
@@ -65,6 +70,7 @@ export const agentResume = defineVerb({
           ...(remoteControl === true ? { remoteControl: true } : {}),
           ...(launchedBy === undefined ? {} : { launchedBy }),
           ...(launchReason === undefined ? {} : { launchReason }),
+          ...(host === undefined ? {} : { host }),
         },
         'spawn_result',
       ),
