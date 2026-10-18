@@ -42,7 +42,9 @@ async function exitedSeat(): Promise<void> {
   const meta = { cwd, profile: 'explorer', isolation: 'none', surface: 'headless', session_id: SEAT_SESSION }
   core.append({ kind: 'agent_spawned', actor: 'scout', target: 'seat-x', msgId: 'agent', body: 'work', meta })
   await vi.waitFor(() => expect(stateOf('agent')).toBe('live'))
-  await recordExit()
+  // A row, not `recordExit`: the supervisor never launched this seat, so `recordExit` would find no entry and write nothing.
+  core.append({ kind: 'agent_exited', actor: 'seat-x', ref: 'agent', meta: { code: '0' } })
+  expect(stateOf('agent')).toBe('exited')
   writeTranscript(cwd, SEAT_SESSION)
 }
 
