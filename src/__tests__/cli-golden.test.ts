@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LifecycleReport } from '../api-contract.js'
+import { nativeDoctorLifecycleGolden } from './ledger-native-golden-fixture.js'
 import type { Check } from '../broker/doctor.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
@@ -280,10 +281,7 @@ describe('doctor lifecycle golden', () => {
   }
 
   it('prints one line per divergence and exits 1 on an unclassified one', async () => {
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(report), { status: 200 }))
-
-    const rendered = await invoke({ argv: ['doctor', 'lifecycle'], reply: retired({}) })
-    vi.unstubAllGlobals()
+    const rendered = nativeDoctorLifecycleGolden(report)
 
     await expect(rendered).toMatchFileSnapshot('./golden/calls-doctor-lifecycle.txt')
   })

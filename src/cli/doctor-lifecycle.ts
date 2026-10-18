@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { Command } from 'commander'
 import { TOKEN_HEADER, type ErrorResponse, type LifecycleReport } from '../api-contract.js'
 import { gather, reportFrom } from '../agents/ledger/verifier.js'
 import { EventLog } from '../broker/event-log.js'
@@ -16,14 +15,7 @@ const FETCH_TIMEOUT_MS = 10_000
  * than `doctor --lifecycle` because it has an option of its own (`--offline`) and
  * an exit rule of its own, neither of which means anything to the preflight.
  */
-export function doctorLifecycleCommand(): Command {
-  return new Command('lifecycle')
-    .description('compare the shadow lifecycle ledger with the supervisor, the event log and git')
-    .option('--offline', 'skip the broker: compare the ledger, the event log, runtime.json and git only')
-    .action(doctorLifecycle)
-}
-
-async function doctorLifecycle(options: { offline?: boolean }): Promise<void> {
+export async function doctorLifecycle(options: { offline?: boolean }): Promise<void> {
   const outcome = options.offline ? await offlineReport() : await brokerReport()
   if (typeof outcome === 'string') {
     console.error(outcome)

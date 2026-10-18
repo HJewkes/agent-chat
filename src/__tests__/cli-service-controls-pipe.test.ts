@@ -14,6 +14,8 @@ let root: string
 let originalIndex: string
 let candidateIndex: Buffer
 let sourceHash: string
+const originalModuleClosure = new Map<string, string>()
+const originalModuleHashes: Record<string, { source: string; emitted: string }> = {}
 const dirs = new Map<string, string>()
 beforeAll(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'service-controls-pipe-'))
@@ -30,6 +32,24 @@ beforeAll(() => {
   }).outputText
   expect(originalIndex).toContain('.action(service.start)')
   expect(originalIndex).not.toContain('serviceStartVerb')
+  for (const name of ['doctor-lifecycle', 'lifecycle']) {
+    const original = execFileSync('git', ['show', base + ':src/cli/' + name + '.ts'], { encoding: 'utf8' })
+    const emitted = ts.transpileModule(original, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2023,
+        module: ts.ModuleKind.ESNext,
+        verbatimModuleSyntax: true,
+      },
+      fileName: name + '.ts',
+    }).outputText
+    expect(emitted).toContain(
+      name === 'lifecycle'
+        ? 'export function addLifecycleCommands'
+        : 'export function doctorLifecycleCommand',
+    )
+    originalModuleClosure.set('dist/cli/' + name + '.js', emitted)
+    originalModuleHashes[name] = { source: hash(original), emitted: hash(emitted) }
+  }
   candidateIndex = fs.readFileSync('dist/cli/index.js')
   expect(candidateIndex.toString()).toContain('serviceStartVerb')
   for (const phase of ['original', 'candidate']) {
@@ -41,7 +61,13 @@ beforeAll(() => {
       expect(fs.readFileSync(path.join(dir, name)).equals(fs.readFileSync(name))).toBe(true)
     fs.copyFileSync('package.json', path.join(dir, 'package.json'))
     fs.symlinkSync(path.resolve('node_modules'), path.join(dir, 'node_modules'), 'dir')
-    if (phase === 'original') fs.writeFileSync(path.join(dir, 'dist/cli/index.js'), originalIndex)
+    if (phase === 'original') {
+      fs.writeFileSync(path.join(dir, 'dist/cli/index.js'), originalIndex)
+      for (const [relative, emitted] of originalModuleClosure) {
+        fs.writeFileSync(path.join(dir, relative), emitted)
+        expect(fs.readFileSync(path.join(dir, relative)).equals(Buffer.from(emitted))).toBe(true)
+      }
+    }
     expect(
       fs
         .readFileSync(path.join(dir, 'dist/cli/index.js'))
@@ -165,6 +191,7 @@ it('drains each original and registered service natural return through backpress
         base,
         sourceHash,
         originalEmittedHash: hash(originalIndex),
+        originalModuleHashes,
         candidateEmittedHash: hash(candidateIndex),
         results,
       }),

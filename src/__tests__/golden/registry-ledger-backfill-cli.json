@@ -1,0 +1,1003 @@
+[
+  {
+    "name": "omitted options",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "help",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--help"
+    ],
+    "options": {},
+    "code": 0,
+    "stdoutHex": "55736167653a206167656e742d63686174206c6966656379636c65206261636b66696c6c205b6f7074696f6e735d0a0a77726974652061206c656467657220726f7720666f72206576657279206e6f6e2d7265746972656420737061776e6564206167656e74207468617420686173206e6f6e653b20726566757365730a7768696c6520612062726f6b65722072756e730a0a4f7074696f6e733a0a20202d2d6472792d72756e202020202020207072696e74206f6e65206c696e6520706572206167656e74207468617420776f756c6420676574206120726f772c20616e642077726974650a2020202020202020202020202020202020206e6f7468696e670a20202d2d73696e6365203c646179733e20206f6e6c79206167656e7473207769746820616e206576656e7420696e20746865206c617374203c646179733e20646179730a20202d682c202d2d68656c70202020202020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--unknown"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20756e6b6e6f776e206f7074696f6e20272d2d756e6b6e6f776e270a0a55736167653a206167656e742d63686174206c6966656379636c65206261636b66696c6c205b6f7074696f6e735d0a0a77726974652061206c656467657220726f7720666f72206576657279206e6f6e2d7265746972656420737061776e6564206167656e74207468617420686173206e6f6e653b20726566757365730a7768696c6520612062726f6b65722072756e730a0a4f7074696f6e733a0a20202d2d6472792d72756e202020202020207072696e74206f6e65206c696e6520706572206167656e74207468617420776f756c6420676574206120726f772c20616e642077726974650a2020202020202020202020202020202020206e6f7468696e670a20202d2d73696e6365203c646179733e20206f6e6c79206167656e7473207769746820616e206576656e7420696e20746865206c617374203c646179733e20646179730a20202d682c202d2d68656c70202020202020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "extra argument",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "extra"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20746f6f206d616e7920617267756d656e747320666f7220276261636b66696c6c272e204578706563746564203020617267756d656e74732062757420676f7420313a2065787472612e0a0a55736167653a206167656e742d63686174206c6966656379636c65206261636b66696c6c205b6f7074696f6e735d0a0a77726974652061206c656467657220726f7720666f72206576657279206e6f6e2d7265746972656420737061776e6564206167656e74207468617420686173206e6f6e653b20726566757365730a7768696c6520612062726f6b65722072756e730a0a4f7074696f6e733a0a20202d2d6472792d72756e202020202020207072696e74206f6e65206c696e6520706572206167656e74207468617420776f756c6420676574206120726f772c20616e642077726974650a2020202020202020202020202020202020206e6f7468696e670a20202d2d73696e6365203c646179733e20206f6e6c79206167656e7473207769746820616e206576656e7420696e20746865206c617374203c646179733e20646179730a20202d682c202d2d68656c70202020202020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "awaited",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        "late",
+        "awaited",
+        "completed"
+      ]
+    }
+  },
+  {
+    "name": "assigned one natural",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "assigned zero natural",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 0,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "immediate two",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 2,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 2
+        }
+      ]
+    }
+  },
+  {
+    "name": "immediate one",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected error",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e746865746963206c6564676572206661696c7572650a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected code69",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e74686574696320756e617661696c61626c650a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected object",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "7b20636f64653a2036392c206d6573736167653a202773796e746865746963206f626a656374272c206974656d733a205b20312c2032205d207d0a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected array",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "5b202773796e746865746963272c2032205d0a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected string",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e7468657469632072656a656374696f6e0a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected number",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "36390a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected null",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "6e756c6c0a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "rejected undefined",
+    "argv": [
+      "lifecycle",
+      "backfill"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "756e646566696e65640a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": []
+        },
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "dry run",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--dry-run"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "dryRun",
+              true
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "repeated dry run",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--dry-run",
+      "--dry-run"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "dryRun",
+              true
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid Number \"1\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "1"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "since",
+              1
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid Number \"0.5\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "0.5"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "since",
+              0.5
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid Number \"1e2\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "1e2"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "since",
+              100
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid Number \"0x10\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "0x10"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "since",
+              16
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid Number \" 2 \"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      " 2 "
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "since",
+              2
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      ""
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2020286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \" \"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      " "
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a202020286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"0\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "0"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a203020286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"-0\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "-0"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a202d3020286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"-1\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "-1"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a202d3120286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"NaN\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "NaN"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a204e614e20286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"Infinity\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "Infinity"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a20496e66696e69747920286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid Number \"1junk\"",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "1junk"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a20316a756e6b20286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "valid repeats",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "1",
+      "--since",
+      "2",
+      "--dry-run"
+    ],
+    "options": {},
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "action": "backfill",
+          "options": [
+            [
+              "dryRun",
+              true
+            ],
+            [
+              "since",
+              2
+            ]
+          ]
+        },
+        "completed",
+        "late"
+      ]
+    }
+  },
+  {
+    "name": "valid then invalid",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "1",
+      "--since",
+      "bad"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid then valid",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "bad",
+      "--since",
+      "1"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid then unknown",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "bad",
+      "--unknown"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown then invalid",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--unknown",
+      "--since",
+      "bad"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid then excess",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "bad",
+      "extra"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "excess then invalid",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "extra",
+      "--since",
+      "bad"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a2062616420286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing value",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a206f7074696f6e20272d2d73696e6365203c646179733e2720617267756d656e74206d697373696e670a0a55736167653a206167656e742d63686174206c6966656379636c65206261636b66696c6c205b6f7074696f6e735d0a0a77726974652061206c656467657220726f7720666f72206576657279206e6f6e2d7265746972656420737061776e6564206167656e74207468617420686173206e6f6e653b20726566757365730a7768696c6520612062726f6b65722072756e730a0a4f7074696f6e733a0a20202d2d6472792d72756e202020202020207072696e74206f6e65206c696e6520706572206167656e74207468617420776f756c6420676574206120726f772c20616e642077726974650a2020202020202020202020202020202020206e6f7468696e670a20202d2d73696e6365203c646179733e20206f6e6c79206167656e7473207769746820616e206576656e7420696e20746865206c617374203c646179733e20646179730a20202d682c202d2d68656c70202020202020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing before unknown",
+    "argv": [
+      "lifecycle",
+      "backfill",
+      "--since",
+      "--unknown"
+    ],
+    "options": {},
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "626164202d2d73696e63653a202d2d756e6b6e6f776e20286120706f736974697665206e756d626572206f662064617973290a",
+    "proof": {
+      "events": [
+        "before-cli-import",
+        "after-cli-import",
+        {
+          "immediateExit": 1
+        }
+      ]
+    }
+  }
+]

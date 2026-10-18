@@ -50,7 +50,7 @@ import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import { teleportRequestVerb } from './verbs/teleport-request.js'
 import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
-import { doctorLifecycleCommand } from './doctor-lifecycle.js'
+import { doctorLifecycleVerb, lifecycleBackfillVerb } from './verbs/ledger-commands.js'
 import { answerVerb } from './verbs/answer.js'
 import { seatHookVerb, leakPretoolVerb } from './verbs/hook-declarations.js'
 import { serviceLogsVerb } from './verbs/service-logs.js'
@@ -59,7 +59,7 @@ import { serviceStatusVerb } from './verbs/service-status.js'
 import { staleSessionGuardVerb } from './verbs/stale-session-guard-command.js'
 import { holdSeconds, parsePort } from './service-options.js'
 import { serviceStartVerb, serviceStopVerb, serviceRestartVerb } from './verbs/service-controls.js'
-import { addLifecycleCommands } from './lifecycle.js'
+import { days } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
 import { watchVerb } from './verbs/watch-command.js'
@@ -297,8 +297,13 @@ export function buildProgram(): Command {
   addMachineCommands(program)
   addHostCommands(program)
   addDebugCommands(program)
-  addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
-  addLifecycleCommands(program)
+  const doctor = addVerb(program, doctorVerb)
+  addVerb(doctor, doctorLifecycleVerb, { usageExit: 1, exitOnSuccess: false }).showHelpAfterError(false)
+  const lifecycle = program
+    .command('lifecycle')
+    .description('offline maintenance of the agent lifecycle ledger')
+  const backfill = addVerb(lifecycle, lifecycleBackfillVerb, { usageExit: 1, exitOnSuccess: false })
+  for (const option of backfill.options) if (option.long === '--since') option.argParser(days)
   addAgentCommands(program)
   addServiceAskCommands(program)
   addHiddenCommands(program)

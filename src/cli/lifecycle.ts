@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Command } from 'commander'
 import { planFromSource, runBackfill, type BackfillSource } from '../agents/ledger/backfill-run.js'
 import type { PlannedRow } from '../agents/ledger/backfill.js'
 import { shadowSupervisorId } from '../agents/ledger/shadow-ledger.js'
@@ -13,29 +12,15 @@ interface BackfillOptions {
   since?: number
 }
 
-const days = (value: string): number => {
+export const days = (value: string): number => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0)
     throw new Error(`bad --since: ${value} (a positive number of days)`)
   return parsed
 }
 
-export function addLifecycleCommands(program: Command): void {
-  const lifecycle = program
-    .command('lifecycle')
-    .description('offline maintenance of the agent lifecycle ledger')
-  lifecycle
-    .command('backfill')
-    .description(
-      'write a ledger row for every non-retired spawned agent that has none; refuses while a broker runs',
-    )
-    .option('--dry-run', 'print one line per agent that would get a row, and write nothing')
-    .option('--since <days>', 'only agents with an event in the last <days> days', days)
-    .action(backfill)
-}
-
 /** Offline only: the broker's own boot hook covers the online case, and two writers would race. */
-async function backfill(opts: BackfillOptions): Promise<void> {
+export async function backfill(opts: BackfillOptions): Promise<void> {
   const file = path.join(home(), 'events.db')
   if (await probeSocket())
     fail('a broker holds the socket; stop it first (agent-chat service stop --hold 300)')
