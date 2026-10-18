@@ -6,10 +6,13 @@
 # Without any, every check-run and status must pass and at least one check-run must exist.
 # A cancelled run whose workflow has a newer run on the base branch was superseded by its concurrency group
 # (CC-719, the CC-739 rule in merge): it counts as green and is named in a "(superseded: ...)" note.
-# exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 64 bad arguments or a commit GitHub does not have
+# A spawned agent (AGENT_CHAT_NAME set) on a PR Shepherd has registered at this head does not poll: Shepherd owns CI
+# (CC-1175). It gets exit 3 and no gh call; any doubt (no row, other head, serve down, bad output) polls as above.
+# exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 3 Shepherd owns CI (agent on a registered PR), 64 bad arguments or a commit GitHub does not have
 set -u
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin:$PATH
 GH=${GH:-gh}
+TITAN_FACTORY=${TITAN_FACTORY:-titan-factory}
 usage() { echo "usage: ci-wait <owner/repo> <sha> [--timeout <seconds>] [--interval <seconds>] [--base <branch>]" >&2; exit 64; }
 
 timeout=540 interval=30 base="" pos=()
@@ -185,6 +188,17 @@ judge_cancelled() {
   pending="superseded check"
 }
 
+# Exits 3 when exactly one registered Shepherd row has a head starting with $sha; returns otherwise.
+shepherd_owns() {
+  local rows
+  [ -n "${AGENT_CHAT_NAME:-}" ] || return 0
+  rows=$("$TITAN_FACTORY" shepherd prs --json "$repo" 2>/dev/null) || return 0
+  jq -re --arg r "$repo" --arg s "$sha" '[.[] | select(.registered == true and ((.headSha // "") | ascii_downcase | startswith($s)))]
+    | if length == 1 then .[0] | "SHEPHERD \($r) \($s): run \(.runId) owns CI (phase \(.phase // "unknown"), ci \(.ci.state // "unread"))"
+      else error("no single row") end' <<<"$rows" 2>/dev/null && exit 3
+}
+
+shepherd_owns
 rules="" branch="" start=$SECONDS pending="(no successful poll)"
 while :; do
   [ "$resolved" = 1 ] || resolve
