@@ -45,8 +45,8 @@ const contextOf = (out: string): string =>
     .additionalContext
 
 /** Run a hook the way `inboxHook` does: print, then delete what it claimed. */
-const runHook = (phase: string, raw = POST, deps = {}): string => {
-  const { out, claimed } = inboxHookOutput(AGENT, phase, raw, deps)
+const runHook = (phase: string, raw = POST, deps = {}, stopBlocks = true): string => {
+  const { out, claimed } = inboxHookOutput(AGENT, phase, raw, deps, stopBlocks)
   releaseClaims(claimed)
   return out
 }
@@ -197,5 +197,12 @@ describe('inbox-hook guards', () => {
 
   it('prints nothing at a turn end with an empty spool', () => {
     expect(runHook('stop', '{}')).toBe('')
+  })
+
+  // Mutation: dropping the stopBlocks gate blocks every turn end before S6 turns it on.
+  it('claims nothing at a turn end while blocking is off, so the next prompt shows it', () => {
+    const dir = spool(direct('m-1'))
+    expect(runHook('stop', '{"stop_hook_active":false}', {}, false)).toBe('')
+    expect(spooled(dir)).toHaveLength(1)
   })
 })
