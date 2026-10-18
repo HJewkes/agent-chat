@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LOG_CAP, latestTeleportState } from '../agents/seats/boot-read.js'
-import { BOOT_CAP, renderBoot, seatBoot, type BootDeps } from '../agents/seats/boot.js'
+import { BOOT_CAP, INBOX_KEEP, renderBoot, seatBoot, type BootDeps } from '../agents/seats/boot.js'
 import type { SeatStatus } from '../agents/seats/status.js'
 import { EventLog } from '../broker/event-log.js'
 import { bootReport } from '../cli/verbs/seats.js'
@@ -390,8 +390,8 @@ describe('the 6,000-character cap', () => {
     expect(inbox.at(-1)).toMatch(/^\[m40\]/)
   })
 
-  it('cuts the log section after the inbox is gone, never the queue', async () => {
-    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(280)}`
+  it('cuts the log section before the newest five messages, never the queue', async () => {
+    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(200)}`
     write(`queues/${SEAT}.md`, `${bigQueue}\n`)
     writeLog(`## State at teleport 1\n${'state line\n'.repeat(140)}`)
     sendMessages(10, 240)
@@ -401,15 +401,54 @@ describe('the 6,000-character cap', () => {
     const text = lines.join('\n')
     expect(text.length).toBeLessThanOrEqual(BOOT_CAP)
     expect(text).toContain(bigQueue.trimEnd())
-    expect(inboxLines(lines)[0]).toBe('10 earlier messages omitted')
+    expect(inboxLines(lines)[0]).toBe('5 earlier messages omitted')
     expect(text).toMatch(/\[cut at \d+ of \d+ chars\]/)
     expect(lines.at(-1)).toBe('inbox 4 unread since 2026-09-30T09:00:00.000Z')
   })
 })
 
+describe('the newest inbox messages under the cap (CC-1471)', () => {
+  const ids = (lines: string[]): string[] =>
+    inboxLines(lines).flatMap(line => line.match(/^\[(m\d+)\]/)?.slice(1) ?? [])
+
+  it('keeps the newest five messages when the other blocks alone exceed the cap', async () => {
+    write(`queues/${SEAT}.md`, `${NEXT}\n${'- next row\n'.repeat(1_000)}\n`)
+    writeLog(`## State at teleport 1\n${'state line\n'.repeat(140)}`)
+    sendMessages(10, 240)
+
+    const lines = await boot('m0')
+
+    expect(lines.join('\n').length).toBeLessThanOrEqual(BOOT_CAP)
+    expect(inboxLines(lines)[0]).toBe('5 earlier messages omitted')
+    expect(ids(lines)).toEqual(['m6', 'm7', 'm8', 'm9', 'm10'])
+    expect(lines).toContain('== status')
+  })
+
+  it('keeps every message when there are fewer than five', async () => {
+    write(`queues/${SEAT}.md`, `${NEXT}\n${'- next row\n'.repeat(1_000)}\n`)
+    sendMessages(3, 240)
+
+    const lines = await boot('m0')
+
+    expect(ids(lines)).toEqual(['m1', 'm2', 'm3'])
+    expect(lines.join('\n')).not.toContain('omitted')
+  })
+
+  it('prints a boot that fits unchanged', async () => {
+    sendMessages(8, 40)
+    const report = await seatBoot(deps(), SEAT, 'm0')
+
+    const capped = renderBoot(report)
+
+    expect(capped).toEqual(renderBoot(report, Number.MAX_SAFE_INTEGER))
+    expect(ids(capped)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8'])
+    expect(capped.join('\n')).not.toMatch(/omitted|\[cut at/)
+  })
+})
+
 describe('the inbox omission note', () => {
   it('uses the singular for exactly one omitted message', async () => {
-    sendMessages(3, 240)
+    sendMessages(INBOX_KEEP + 1, 240)
     const boot = await seatBoot(deps(), SEAT, 'm0')
     const full = renderBoot(boot, 100_000)
     const one = renderBoot(boot, full.join('\n').length - 1)
