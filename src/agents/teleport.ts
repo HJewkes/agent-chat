@@ -428,7 +428,7 @@ export interface TeleportHost {
   /** CC-951: stop tracking a predecessor that is about to be ended. */
   standDown(agentId: string): void
   /** CC-951: a successor-first successor never attached, so its predecessor keeps what it had. */
-  keepPredecessor(input: RelaunchInput, reason: string): void
+  keepPredecessor(predecessorId: string, input: RelaunchInput, reason: string): void
   /** CC-1451: whether the successor's run-agent is running on this machine; false when it cannot be told. */
   successorRunning(agentId: string): Promise<boolean>
   /** CC-951: neither the predecessor nor its successor is running, so the human is told how to start it. */
@@ -1112,7 +1112,7 @@ export class Teleport {
         ref: descendantId,
         body: `teleport successor did not start: ${reason}`,
       })
-    if (input !== undefined) this.host.keepPredecessor(input, reason)
+    if (input !== undefined) this.host.keepPredecessor(subject.agentId, input, reason)
     entry.remote?.answer({ ok: false, reason })
     this.tell(subject.name, `Your teleport did not happen: ${reason}. You are still live, on the old build.`)
     logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason, kept: true })
