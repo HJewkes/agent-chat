@@ -7,6 +7,8 @@ import { BrokerCore, readoptRegistration, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
+import { readLaunchPlan } from '../agents/launch-files.js'
+import { seatTarget } from '../agents/seats/seat-target.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -270,6 +272,141 @@ describe('the watchdog resume', () => {
     expect(res.ok).toBe(false)
     expect(res.reason).toMatch(/sess-own is stale: a newer adopted seat-x/)
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
+  })
+})
+
+describe('resuming a seat whose chain began as a hand-started session (CC-1453)', () => {
+  const cwd = (): string => tmp('by-id-cwd-')
+
+  /** An old spawned seat-x, a hand restart, its exited successor g2, and g2's successor that never started. */
+  async function adoptedChain(dir: string, account: string): Promise<void> {
+    spawnRow('old', 'seat-x', 'seat-x', {
+      cwd: dir,
+      profile: 'explorer',
+      isolation: 'none',
+      session_id: 'sess-old',
+    })
+    await exitRow('old', 'seat-x')
+    spawnRow('hand', 'seat-x', 'human', { origin: 'adopted', cwd: dir, session_id: 'sess-hand' })
+    core.append({ kind: 'agent_attached', actor: 'seat-x', ref: 'hand' })
+    const successor = {
+      origin: 'adopted',
+      profile: 'inherited',
+      model: 'opus',
+      cwd: dir,
+      config_dir: account,
+    }
+    spawnRow('g2', 'seat-x', 'seat-x', {
+      ...successor,
+      session_id: 'sess-g2',
+      teleport_from: 'hand',
+      generation: '2',
+    })
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'seat-x', ref: 'hand' })
+    await exitRow('g2', 'seat-x')
+    stopAutoAttach()
+    spawnRow('g3', 'seat-x', 'seat-x', {
+      ...successor,
+      session_id: 'sess-g3',
+      teleport_from: 'g2',
+      generation: '3',
+    })
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'seat-x', ref: 'g3' })
+  }
+
+  // Fails on main: byName skipped every adopted row and fell back to the old spawned one, then refused it as stale.
+  it('resumes the newest successor on its own session, account and inherited model', async () => {
+    const dir = cwd()
+    const account = tmp('by-id-account-')
+    await adoptedChain(dir, account)
+    const file = transcriptPath(dir, 'sess-g2', account)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res.reason).toBeUndefined()
+    expect(res).toMatchObject({ ok: true, agentId: 'g2', transcript: { path: file, found: true } })
+    const resumed = core.events.agentEvents().filter(r => r.kind === 'agent_resumed')
+    expect(resumed.map(r => [r.ref, r.meta.session_id])).toEqual([['g2', 'sess-g2']])
+    const plan = readLaunchPlan('g2')
+    expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe('sess-g2')
+    expect(plan.args[plan.args.indexOf('--model') + 1]).toBe('opus')
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe(account)
+  })
+
+  // Review of #1083: the watchdog sent a session spawn under the name, which the successor's lease refused.
+  it('wakes the seat through the watchdog target without a name-lease refusal', async () => {
+    const dir = cwd()
+    const account = tmp('by-id-account-')
+    await adoptedChain(dir, account)
+    const file = transcriptPath(dir, 'sess-g2', account)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+
+    const target = seatTarget(core.agents.roster(), 'seat-x', { configDir: account })
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(target).toEqual({ kind: 'resume-by-name' })
+    expect(res).toMatchObject({ ok: true, agentId: 'g2' })
+  })
+
+  // Review of #1083: the watchdog retires lease holders by id, and retireById refused every adopted row.
+  it('retires the successor and the old spawned row by id, so a fresh spawn under the name goes through', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const retiredRows = [await sup.retireStale('g2', 'seat-x'), await sup.retireStale('old', 'seat-x')]
+    stopAutoAttach = autoAttach(core)
+    const out = await sup.spawn({
+      name: 'seat-x',
+      profile: 'explorer',
+      brief: 'work',
+      requestedBy: 'human',
+      cwd: cwd(),
+      isolation: 'none',
+      surface: 'headless',
+      spawnerConfigDir: tmp('by-id-account-'),
+    })
+
+    expect(retiredRows).toMatchObject([{ ok: true }, { ok: true }])
+    expect([stateOf('g2'), stateOf('old')]).toEqual(['retired', 'retired'])
+    expect(out.reason ?? '').not.toMatch(/is held by/)
+  })
+
+  it('refuses a terminal switch of the successor as a session it cannot relaunch, not on its profile', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const out = await sup.switchSurface({ name: 'seat-x', to: 'interactive', requestedBy: 'human' })
+
+    expect(out.ok).toBe(false)
+    expect(out.reason).toMatch(/did not launch, so there is no launch plan/)
+  })
+
+  it('refuses clearly when the successor has no transcript to resume', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res).toMatchObject({ ok: false, transcript: { found: false } })
+    expect(res.reason).not.toMatch(/stale/)
+    expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
+  })
+
+  it('names the exited holder when a spawn reuses the name', async () => {
+    await adoptedChain(cwd(), tmp('by-id-account-'))
+
+    const out = await sup.spawn({
+      name: 'seat-x',
+      profile: 'explorer',
+      brief: 'work',
+      requestedBy: 'human',
+      cwd: cwd(),
+      isolation: 'none',
+      surface: 'headless',
+    })
+
+    expect(out.ok).toBe(false)
+    expect(out.reason).toMatch(/the name "seat-x" is held by g2 \(exited since \S+, spawned by seat-x\)/)
   })
 })
 

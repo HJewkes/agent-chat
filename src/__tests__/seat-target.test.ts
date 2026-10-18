@@ -77,6 +77,26 @@ describe('seatTarget (CC-959)', () => {
     expect(seatTarget(agents, 'lead-seat', { configDir: PERSONAL }).kind).toBe('fresh')
   })
 
+  // CC-1453: a hand-started seat's teleport successor is recorded adopted but holds the name lease.
+  it('resumes by name a newest adopted row the broker launched as a teleport successor', () => {
+    const agents = [
+      row('g1', { origin: 'spawned', configDir: SERVER, spawnedAt: HOUR }),
+      row('hand', { origin: 'adopted', state: 'retired', spawnedAt: 2 * HOUR }),
+      row('g3', { origin: 'adopted', teleportFrom: 'hand', configDir: PERSONAL, spawnedAt: 3 * HOUR }),
+    ]
+
+    expect(seatTarget(agents, 'lead-seat', { configDir: PERSONAL })).toEqual({ kind: 'resume-by-name' })
+  })
+
+  it('lists an older teleport successor among the rows that still hold the name', () => {
+    const agents = [
+      row('g2', { origin: 'adopted', teleportFrom: 'hand', configDir: SERVER, spawnedAt: HOUR }),
+      row('a3', { origin: 'adopted', spawnedAt: 2 * HOUR }),
+    ]
+
+    expect(seatTarget(agents, 'lead-seat', { configDir: PERSONAL })).toMatchObject({ stale: ['g2'] })
+  })
+
   it('leaves a seat with no row to the broker, which has nothing to resume either', () => {
     expect(seatTarget([], 'lead-seat', { configDir: PERSONAL })).toEqual({ kind: 'resume-by-name' })
   })

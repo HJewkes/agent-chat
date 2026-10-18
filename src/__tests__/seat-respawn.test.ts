@@ -217,6 +217,20 @@ describe('respawnSeat', () => {
     })
   })
 
+  // CC-1453: a hand-started seat's teleport successor leases the name, so a fresh spawn behind it was refused.
+  it('retires a latest teleport successor on another account before the fresh spawn', async () => {
+    const successor: SeatAgent = { ...handStarted, agentId: 'g6', teleportFrom: 'g5', configDir: '/x/server' }
+    const plan: SeatRelaunchPlan = {
+      ...incident,
+      target: { kind: 'fresh', latest: successor, stale: [], spawned: onServer },
+    }
+    const b = broker([retired('g6'), spawned])
+
+    await respawnSeat(b.client, 'seat-x', plan, HEADLESS)
+
+    expect(b.frames.map(f => f.agentId ?? f.t)).toEqual(['g6', 'spawn'])
+  })
+
   // Catches: the profile or cwd read from the seat file again; the unregistered spawn skips the broker's escalation and cwd rules.
   it('ignores a profile and cwd the seat file names, on the resume and on the fresh fallback', async () => {
     const refused = { t: 'spawn_result', ok: false, reason: 'no transcript for resume_session 7016a7ee' }

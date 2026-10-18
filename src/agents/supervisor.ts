@@ -146,7 +146,8 @@ import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-ski
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
-import { stoppedAt } from './identity.js'
+import { launchedByBroker, stoppedAt } from './identity.js'
+import { inheritedProfile } from './teleport-config.js'
 import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
@@ -339,6 +340,12 @@ interface RetryRefusal {
 }
 
 const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/** CC-1453: who holds a name lease and in what state, so a refusal never calls an exited row live. */
+const describeHolder = (holder: AgentIdentity): string => {
+  const since = new Date(stoppedAt(holder) ?? holder.lastEventAt).toISOString()
+  return `${holder.agentId} (${holder.state} since ${since}, spawned by ${holder.spawnedBy})`
+}
 
 /**
  * A mode switch, resolved by the socket layer before it reaches here.
@@ -1601,8 +1608,9 @@ export class Supervisor implements TeleportHost {
   private preflight(req: SpawnRequest, requester: Requester): string | undefined {
     if (RESERVED_NAMES.has(req.name.toLowerCase()))
       return `"${req.name}" is reserved and cannot be used as an agent name`
-    if (this.core.agents.nameIsClaimed(req.name))
-      return `the name "${req.name}" is held by a live agent; retire it or choose another`
+    const holder = this.core.agents.nameHolder(req.name)
+    if (holder !== undefined)
+      return `the name "${req.name}" is held by ${describeHolder(holder)}; retire it or choose another`
     if (this.core.registry.connFor(req.name) !== undefined)
       return `a session is already registered as "${req.name}"`
     if (req.requestedBy !== HUMAN && requester.role === 'worker')
@@ -3158,7 +3166,8 @@ export class Supervisor implements TeleportHost {
     release: ReleaseOptions = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
-    if (identity?.origin !== 'spawned' || identity.state === 'retired')
+    // CC-1453: a hand-started seat's teleport successor leases the name, so the seat watchdog retires it by id.
+    if (identity === undefined || !launchedByBroker(identity) || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
     return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
   }
@@ -3681,7 +3690,7 @@ export class Supervisor implements TeleportHost {
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
     if (blocked) return { ok: false, reason: blocked, transcript }
-    const profile = this.loadCheckedProfile(identity.profile, req.requestedBy, false)
+    const profile = this.resumeProfile(identity, req.requestedBy)
     if ('error' in profile)
       return {
         ok: false,
@@ -3714,6 +3723,13 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** CC-1453: a hand-started session's teleport successor runs on what it inherited, which no profile file holds. */
+  private resumeProfile(identity: AgentIdentity, by: string | undefined): AgentProfile | { error: string } {
+    if (identity.origin === 'adopted')
+      return inheritedProfile(this.core.agents.spawnMeta(identity.agentId).model)
+    return this.loadCheckedProfile(identity.profile, by, false)
   }
 
   /** CC-883: the watchdog asks for Remote Control without knowing the role, so a worker's resume drops it rather than fails. */
