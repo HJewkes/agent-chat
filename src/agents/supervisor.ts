@@ -1023,6 +1023,8 @@ export class Supervisor implements TeleportHost {
   private readonly cwdLister: CwdLister
   /** CC-282: agents mid-park, to the canonical tree being removed. */
   private readonly parking = new Map<string, string>()
+  /** CC-1456: agents with a resume in flight, to when it started. */
+  private readonly resuming = new Map<string, number>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
   private readonly drainState = new DrainState()
@@ -3636,13 +3638,40 @@ export class Supervisor implements TeleportHost {
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const drained = this.drainRefusal()
     if (drained) return { ok: false, ...drained }
-    let identity = this.core.agents.byName(name)
+    const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
     const refused =
       this.checkResumer(identity, req) ??
       this.supersededRefusal(identity) ??
-      this.parkingRefusal(identity.cwd)
+      this.parkingRefusal(identity.cwd) ??
+      this.resumingRefusal(identity)
     if (refused) return { ok: false, reason: refused }
+    this.resuming.set(identity.agentId, Date.now())
+    try {
+      return await this.resumeUnguarded(identity, req)
+    } finally {
+      this.resuming.delete(identity.agentId)
+    }
+  }
+
+  /**
+   * CC-1456: a second resume while one is in flight would see the old state and
+   * launch a second process on the same session. Refused rather than joined: the
+   * second request may carry its own message, surface or requester, and handing
+   * it the first launch's result would answer a request nobody made.
+   */
+  private resumingRefusal(identity: AgentIdentity): string | undefined {
+    const since = this.resuming.get(identity.agentId)
+    if (since === undefined) return undefined
+    return (
+      `${identity.name} is already resuming (since ${new Date(since).toISOString()}); ` +
+      'wait for that resume to answer, then check agent_list before resuming again'
+    )
+  }
+
+  private async resumeUnguarded(checked: AgentIdentity, req: ResumeRequest): Promise<SpawnOutcome> {
+    let identity = checked
+    const { name } = identity
     if (identity.state === 'live') {
       const stale = await this.staleLiveRefusal(identity)
       if (stale) return { ok: false, reason: stale }
