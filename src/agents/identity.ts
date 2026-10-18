@@ -53,7 +53,25 @@ const generationOf = (row: AgentEventRow): number => {
   return Number.isFinite(value) && value > 0 ? value : 1
 }
 
-const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
+/** Where an identity's spawn row is kept for its `brief` getter: not enumerable, so no frame or spread carries it. */
+const SPAWN_ROW = Symbol('spawnRow')
+
+/** One getter for every identity, so they share V8 hidden classes; a closure apiece gave each its own. */
+const BRIEF: PropertyDescriptor = {
+  get(this: { [SPAWN_ROW]: AgentEventRow }) {
+    return this[SPAWN_ROW].body ?? ''
+  },
+  enumerable: true,
+}
+
+/** CC-1463: `brief` reads the spawn row's body when asked, so a fold held between reads holds no briefs. */
+function spawnedFrom(row: AgentEventRow, id: string): AgentIdentity {
+  const agent = spawnedFields(row, id)
+  Object.defineProperty(agent, SPAWN_ROW, { value: row })
+  return Object.defineProperty(agent, 'brief', BRIEF) as AgentIdentity
+}
+
+const spawnedFields = (row: AgentEventRow, id: string): Omit<AgentIdentity, 'brief'> => ({
   agentId: id,
   name: row.target ?? row.meta.name ?? '',
   profile: row.meta.profile ?? '',
@@ -61,7 +79,6 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   origin: originOf(row),
   spawnedBy: row.actor,
   spawnedAt: row.ts,
-  brief: row.body ?? '',
   cwd: row.meta.cwd ?? '',
   isolation: row.meta.isolation ?? '',
   surface: row.meta.surface ?? '',
@@ -323,22 +340,46 @@ export function pairPresence(agent: AgentIdentity, presence: PresenceInput): Ros
 export const launchedByBroker = (agent: AgentIdentity): boolean =>
   agent.origin === 'spawned' || agent.teleportFrom !== undefined
 
+/** Every identity the rows establish, frozen because a reused fold hands the same ones to every caller. */
+function foldAll(rows: readonly AgentEventRow[]): readonly AgentIdentity[] {
+  const agents: AgentIdentity[] = []
+  for (const group of groupByAgent(rows).values()) {
+    const agent = foldAgent(group)
+    if (agent) agents.push(deepFreeze(agent))
+  }
+  // Newest first: a roster is read top-down and the agent just spawned is the
+  // one being looked for.
+  return agents.sort((a, b) => b.spawnedAt - a.spawnedAt)
+}
+
+/** Walks descriptors, not values, so the `brief` getter is not read. */
+function deepFreeze<T extends object>(value: T): T {
+  for (const { value: field } of Object.values(Object.getOwnPropertyDescriptors(value)))
+    if (typeof field === 'object' && field !== null) deepFreeze(field as object)
+  return Object.freeze(value)
+}
+
 /**
- * Query surface over the identity rows. Holds no state: every call re-reads and
- * re-folds, so it can never drift from the log the way a cached aggregate would.
+ * Query surface over the identity rows. Every call re-reads the rows, so it can
+ * never drift from the log the way a cached aggregate would.
+ *
+ * CC-1463: the fold is reused while the read returns the same rows. The log only
+ * appends, so the same count ending in the same row object is the same list; a
+ * store that builds fresh rows per read (a fake, a tail read inside a transaction)
+ * just refolds.
  */
 export class AgentLog {
+  private folded:
+    { count: number; last: AgentEventRow | undefined; agents: readonly AgentIdentity[] } | undefined
+
   constructor(private readonly events: EventStore) {}
 
   private all(): AgentIdentity[] {
-    const agents: AgentIdentity[] = []
-    for (const rows of groupByAgent(this.events.agentEvents()).values()) {
-      const agent = foldAgent(rows)
-      if (agent) agents.push(agent)
-    }
-    // Newest first: a roster is read top-down and the agent just spawned is the
-    // one being looked for.
-    return agents.sort((a, b) => b.spawnedAt - a.spawnedAt)
+    const rows = this.events.agentEvents()
+    const last = rows.at(-1)
+    if (this.folded?.count !== rows.length || this.folded.last !== last)
+      this.folded = { count: rows.length, last, agents: foldAll(rows) }
+    return this.folded.agents.slice()
   }
 
   roster(opts: { includeRetired?: boolean } = {}): AgentIdentity[] {
