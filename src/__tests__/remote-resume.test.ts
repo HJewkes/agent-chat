@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
@@ -17,6 +18,7 @@ import {
   resumeRouteFor,
   type RemoteResumeSite,
 } from '../agents/remote-resume.js'
+import { openShadowLedger } from '../agents/ledger/shadow-ledger.js'
 import { RemoteSpawns } from '../agents/remote-spawn.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentIdentity, ClientMessage, ServerMessage } from '../protocol.js'
@@ -44,6 +46,7 @@ interface Wire {
 }
 
 let home: string
+let events: EventLog
 let core: BrokerCore
 let server: SocketServer
 
@@ -53,11 +56,10 @@ beforeEach(() => {
   // The broker's home and the Mac's coincide, so the lexical check holds on a Linux and a macOS runner alike.
   vi.spyOn(os, 'homedir').mockReturnValue(MAC_HOME)
   process.env.AGENT_CHAT_HOME = home
-  core = new BrokerCore(() => undefined, {
-    events: new EventLog(path.join(home, 'events.db')),
-    registry: new Registry<Conn>(),
-  })
+  events = new EventLog(path.join(home, 'events.db'))
+  core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
   server = new SocketServer(core, {
+    ledger: openShadowLedger(events.ledgerHandle(), { supervisorId: 'agent-chat@test' }),
     attachCeilingMs: CEILING_MS,
     launcherRunning: async () => false,
     surface: {
@@ -153,6 +155,34 @@ function answerSpawn(launcher: Wire, ok: boolean, reason?: string): void {
 const FOUND = { found: true, path: `${MAC_ACCOUNT}/projects/proj-a/${SESSION}.jsonl` }
 const rows = (kind: string) => core.events.agentEvents().filter(row => row.kind === kind && row.ref === AGENT)
 const result = (cli: Wire) => frame(cli, 'spawn_result')
+
+interface Execution {
+  requestKey: string
+  target: unknown
+  phase: string
+}
+
+/** The shadow ledger as written, read over a second connection because the supervisor's is write-only. */
+async function executions(): Promise<Execution[]> {
+  for (let i = 0; i < 50; i++) await Promise.resolve()
+  const db = new DatabaseSync(path.join(home, 'events.db'), { readOnly: true })
+  try {
+    const rows = db.prepare('SELECT record FROM agent_execution ORDER BY prepared_at').all()
+    return rows.map(row => JSON.parse(String(row.record)) as Execution)
+  } finally {
+    db.close()
+  }
+}
+
+/** Probed, found and launched on the Mac; nothing has registered yet. */
+async function launchedOnMac(launcher: Wire): Promise<Wire> {
+  const cli = await resume({ host: 'mac' })
+  answerProbe(launcher, { ok: true, transcript: FOUND })
+  await settle()
+  answerSpawn(launcher, true)
+  await settle()
+  return cli
+}
 
 describe('resume host:mac through the host launcher', () => {
   // Mutation caught: resumeUnguarded ignoring req.host (no probe is sent), or a local fallback.
@@ -361,6 +391,84 @@ describe('resume host:mac through the host launcher', () => {
     expect(result(cli)?.host).toBeUndefined()
     expect(frame(launcher, 'host_probe')).toBeUndefined()
     expect(rows('agent_resumed')[0]?.meta.host).toBeUndefined()
+  })
+
+  // Mutation caught: the socket dropping a non-string host, which resumes locally and refuses on the transcript.
+  it('refuses a host that is not a string rather than resume locally', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+
+    const cli = await resume({ host: 42 as unknown as string })
+
+    expect(result(cli)).toEqual({
+      t: 'spawn_result',
+      ok: false,
+      reason: 'resume host must be a machine name',
+    })
+    expect(frame(launcher, 'host_probe')).toBeUndefined()
+    expect(rows('agent_resumed')).toEqual([])
+  })
+})
+
+describe('a host resume once the launcher has started it', () => {
+  // Mutation caught: an attach row not reaching RemoteSpawns, whose ceiling then closes a running agent as never started.
+  it('attaches the resumed agent as live on the Mac, and the ceiling no longer closes it', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+    expect(result(await launchedOnMac(launcher))?.ok).toBe(true)
+
+    const agent = wire()
+    agent.send({ t: 'register', name: 'agent-x', workingOn: 'w', cwd: MAC_CWD, pid: 7, agentId: AGENT })
+    await settle()
+    await vi.advanceTimersByTimeAsync(CEILING_MS)
+
+    expect(frame(agent, 'register_result')?.ok).toBe(true)
+    expect(rows('agent_attached')).toHaveLength(1)
+    expect(rows('agent_exited')).toHaveLength(1)
+    expect(core.agents.get(AGENT)).toMatchObject({ state: 'live', host: MAC, sessionId: SESSION })
+  })
+
+  // Mutation caught: resumeOnHost writing no shadow-ledger execution, as before CC-1492.
+  it('opens a resume execution on the recorded conversation, as a local resume does', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+
+    await launchedOnMac(launcher)
+
+    expect(await executions()).toEqual([
+      expect.objectContaining({
+        requestKey: expect.stringMatching(new RegExp(`^resume:${AGENT}:`)),
+        target: {
+          kind: 'resume',
+          conversation: { harness: 'claude-code', namespace: MAC_ACCOUNT, nativeId: SESSION },
+        },
+        phase: 'dispatching',
+      }),
+    ])
+  })
+
+  it('closes the execution as failed when the launcher refuses the launch', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+
+    await resume({ host: 'mac' })
+    answerProbe(launcher, { ok: true, transcript: FOUND })
+    await settle()
+    answerSpawn(launcher, false, 'the headless surface did not open')
+    await settle()
+
+    expect((await executions()).map(row => row.phase)).toEqual(['failed'])
+  })
+
+  it('writes no execution for a resume refused before the launch', async () => {
+    const launcher = macLauncher()
+    stoppedAgent()
+
+    await resume({ host: 'mac' })
+    answerProbe(launcher, { ok: true })
+    await settle()
+
+    expect(await executions()).toEqual([])
   })
 })
 

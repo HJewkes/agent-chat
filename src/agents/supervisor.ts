@@ -3983,12 +3983,13 @@ export class Supervisor implements TeleportHost {
     transcript: TranscriptVerdict,
     { host, spawn }: { host: string; spawn: NonNullable<LauncherSite['spawn']> },
   ): Promise<string | undefined> {
+    const executionId = this.shadow.resume(agent.agentId, agent.configDir ?? configDir(), agent.sessionId)
     this.remoteSpawns.open({
       agentId: agent.agentId,
       name: agent.name,
       host,
       announce: () => undefined,
-      onLost: reason => this.resumeNeverStarted(agent, new Error(reason)),
+      onLost: reason => this.hostResumeLost(agent, executionId, reason),
     })
     this.core.append({
       kind: 'agent_resumed',
@@ -4013,6 +4014,12 @@ export class Supervisor implements TeleportHost {
       answer.ok ? { ok: true } : { ok: false, reason: answer.reason ?? '' },
     )
     return answer.ok ? undefined : `refused on ${host}: ${answer.reason ?? 'no reason given'}`
+  }
+
+  /** CC-1492: a host resume's execution closes as a local one's does when its launch fails. */
+  private hostResumeLost(agent: AgentIdentity, executionId: string | undefined, reason: string): void {
+    this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
+    this.resumeNeverStarted(agent, new Error(reason))
   }
 
   /** CC-1453: a hand-started session's teleport successor runs on what it inherited, which no profile file holds. */
@@ -4555,9 +4562,9 @@ export class Supervisor implements TeleportHost {
    * registers into an identity the broker already holds, but its files and surface are the
    * caller's to make: this host can neither write that host's disk nor open its terminal.
    */
-  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch {
+  prepareRemoteRelaunch(input: RelaunchInput, launcherHost?: string): RemoteLaunch {
     const sessionId = Teleport.newSessionId()
-    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none')
+    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none', launcherHost)
     this.remoteSessions.set(input.agentId, sessionId)
     const { env: _env, mcpServers: _servers, warnings: _warnings, ...profile } = input.profile
     return {
@@ -4635,6 +4642,7 @@ export class Supervisor implements TeleportHost {
     sessionId: string,
     allocation: Allocation,
     isolation: IsolationName,
+    host?: string,
   ): void {
     this.core.append({
       kind: 'agent_spawned',
@@ -4657,6 +4665,8 @@ export class Supervisor implements TeleportHost {
         // account as the session it continues (CC-100).
         ...(input.configDir ? { config_dir: input.configDir } : {}),
         ...(input.configDirUnset ? { config_dir_unset: 'true' } : {}),
+        // CC-1492: where it runs, so liveness and retire never probe this host for it.
+        ...(host === undefined ? {} : { host }),
         ...input.meta,
       },
     })
