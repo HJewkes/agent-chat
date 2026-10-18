@@ -7,7 +7,7 @@ import { brokerCwd } from '../agents/stable-cwd.js'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
-import { SURFACE_NAMES } from '../protocol.js'
+import { LAUNCHERS, SURFACE_NAMES } from '../protocol.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
@@ -214,6 +214,12 @@ function addAgentCommands(program: Command): void {
       'shepherd or burndown: the automation this spawn is on behalf of',
       agents.parseSpawnedAs,
     )
+    .option(
+      '--launched-by <who>',
+      `${LAUNCHERS.join(' or ')}: the automation running this spawn as you; shown on the roster, grants nothing`,
+      agents.parseLauncher,
+    )
+    .option('--launch-reason <text>', 'why it launched, recorded with --launched-by')
     .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
     .option(
       '--host <machine>',

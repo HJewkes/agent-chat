@@ -293,6 +293,19 @@ describe('an account move that goes through', () => {
     expect(plan.args).not.toContain('--')
   })
 
+  it('records a local successor’s spawn row with no host', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    writeSourceTranscript()
+
+    const result = await humanMove()
+    await successorPlan(result.agentId as string)
+
+    const row = spawnRowFor(result.agentId as string)
+    expect(row).toBeDefined()
+    expect(row?.meta).not.toHaveProperty('host')
+  })
+
   it('still moves with an open question the handoff does not name', async () => {
     startServer(fakeAccounts())
     registerSubject()

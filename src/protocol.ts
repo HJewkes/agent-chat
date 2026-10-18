@@ -40,6 +40,8 @@ export interface RemoteLaunch {
   configDir?: string
   /** CC-1059: a spawn on the default account, so the launching host runs it with CLAUDE_CONFIG_DIR unset. */
   configDirUnset?: true
+  /** CC-1472: continue `sessionId` with `--resume` rather than mint it; set only by a host resume. */
+  resume?: true
 }
 
 /** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
@@ -47,6 +49,8 @@ export interface HostProbe {
   cwd: string
   configDir?: string
   surface: PackageSurfaceName
+  /** CC-1472: the launcher also checks this session's transcript under `configDir` and `cwd`. */
+  resumeSession?: string
 }
 
 /** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
@@ -375,6 +379,8 @@ export const EVENT_KINDS = [
   'seat_activity',
   // CC-1092: a seat's AskUserQuestion denied by its pre hook, so no block ever opened.
   'seat_ask_denied',
+  // CC-1455: a print-mode session's inbox hook showed these spooled msgIds. Written by the hook, never by the broker.
+  'inbox_shown',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -620,9 +626,19 @@ export interface DeliveredMessage {
  * `headless_no_channel` is the same for a print-mode (`claude -p`) host, which
  * drops every push even with the flag (CC-1455): logged, never seen unless it
  * calls chat_inbox.
+ *
+ * `queued` is a print-mode host whose server spools pushes for its inbox hook:
+ * not seen yet, but shown at its next tool call, prompt or turn end.
  */
 export type RecipientStatus =
-  'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel' | 'headless_no_channel'
+  | 'delivered'
+  | 'held'
+  | 'no_such_session'
+  | 'self'
+  | 'refused'
+  | 'no_channel'
+  | 'headless_no_channel'
+  | 'queued'
 
 /**
  * A delivered message carrying the log id that ordered it, so a reader can say
@@ -710,6 +726,20 @@ export type WakeSource = (typeof WAKE_SOURCES)[number]
 export const wakeSource = (value: unknown): WakeSource | undefined =>
   WAKE_SOURCES.find(source => source === value)
 
+export const LAUNCHERS = ['seat-watchdog', 'shepherd'] as const
+
+/**
+ * CC-1466: the automation that ran a CLI spawn or resume as the human. Display and audit only: the row's
+ * actor stays the human, and no gate reads it.
+ */
+export type Launcher = (typeof LAUNCHERS)[number]
+
+/** A frame's `launchedBy` is untrusted wire input, so anything off the allow-list is dropped. */
+export const launcherOf = (value: unknown): Launcher | undefined => LAUNCHERS.find(known => known === value)
+
+/** CC-1466: a launch reason is one line of at most this many characters. */
+export const LAUNCH_REASON_MAX = 200
+
 /** Session -> broker. */
 export type ClientMessage =
   /**
@@ -775,7 +805,7 @@ export type ClientMessage =
        * declaring an identity for the first time.
        */
       provisional?: boolean
-      /** This print-mode host's server spools every push for a hook to drain (CC-1455); the broker ignores it for now. */
+      /** This print-mode host's server spools every push for a hook to drain, so a send reads `queued` (CC-1455). */
       inboxSpool?: true
       /**
        * Which BUILD this client is running, so a mismatch with the broker's own
@@ -1123,6 +1153,12 @@ export type ClientMessage =
       callerHost?: string
       /** CC-1059: the requester's home, which the broker's lexical cwd check holds a remote cwd under. */
       callerHome?: string
+      /** CC-1466: the automation behind a CLI spawn, read only from an unregistered connection. */
+      launchedBy?: Launcher
+      /** CC-1466: why it launched; recorded only with `launchedBy`. */
+      launchReason?: string
+      /** CC-1466: an earlier identity of the same name whose depth and coordinator depth this spawn keeps. */
+      lineageFrom?: string
     }
   /**
    * CC-1464: `view` asks the broker to filter and cap the roster before sending it,
@@ -1152,6 +1188,11 @@ export type ClientMessage =
       remoteControl?: boolean
       /** CC-1454: an idempotency key; a retry with the same key joins or replays the first resume. */
       nonce?: string
+      /** CC-1466: as on `spawn`. */
+      launchedBy?: Launcher
+      launchReason?: string
+      /** CC-1472: the machine to resume on, a config `machines` alias or a hostname; absent resumes here. */
+      host?: string
     }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
@@ -1165,8 +1206,11 @@ export type ClientMessage =
    * The reply then echoes it, so a caller can tell a broker that ignored it and retired by name.
    */
   | { t: 'retire'; name: string; force?: boolean; caller?: string; agentId?: string }
-  /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
-  | { t: 'park'; name: string }
+  /**
+   * CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`.
+   * CC-1470: `noFixRoundCheck` skips the Shepherd fix-round check, for Shepherd's own parks.
+   */
+  | { t: 'park'; name: string; noFixRoundCheck?: boolean }
   /**
    * CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`.
    * CC-1465: `stale` scopes it to agents exited over 24 h with no worktree left, capped per call.
@@ -1255,7 +1299,14 @@ export type ClientMessage =
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
   /** CC-951: a launcher's answer to `host_probe`, `host_launch` or `host_spawn`, paired by `id`. */
-  | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
+  | {
+      t: 'host_probe_result'
+      id: string
+      ok: boolean
+      reason?: string
+      /** CC-1472: the launcher's verdict on a probe's `resumeSession`; absent from a launcher older than it. */
+      transcript?: { path: string; found: boolean }
+    }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
   | { t: 'hosts' }
@@ -1528,7 +1579,10 @@ export interface AgentIdentity {
   /** Whether the name and brief are broker-assigned or self-reported. */
   origin: AgentOrigin
   spawnedBy: string
+  /** CC-1466: the automation that ran the spawn as `spawnedBy`; display only. */
+  launchedBy?: Launcher
   spawnedAt: number
+  /** CC-1484: the broker reads it off its own fold; an `agents` reply leaves it out. */
   brief: string
   cwd: string
   isolation: string

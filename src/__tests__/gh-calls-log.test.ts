@@ -12,7 +12,7 @@ import {
   routeTemplate,
   type CallInput,
 } from '../gh-calls/log.js'
-import { readCalls, summarize } from '../gh-calls/summary.js'
+import { readCalls, renderSummary, summarize } from '../gh-calls/summary.js'
 
 const rest = (over: Partial<CallInput> = {}): CallInput => ({
   caller: 'shim',
@@ -130,6 +130,28 @@ describe('reading the log', () => {
 
     expect(summary.total).toBe(1)
     expect(summary.rateLimit?.limits).toEqual({ core: 4100, graphql: 5000, search: 30 })
+  })
+
+  it('reports min and latest remaining per resource when only per-call rows carry it', () => {
+    const write = (iso: string, over: Partial<CallInput>) =>
+      appendCall(callLine(rest(over), at(iso)), fs, dir)
+    write('2026-10-12T01:00:00Z', { caller: 'agent-x', resource: 'core', remaining: 4000 })
+    write('2026-10-12T02:00:00Z', { caller: 'agent-x', resource: 'core', remaining: 2900 })
+    write('2026-10-12T03:00:00Z', { caller: 'agent-x', resource: 'core', remaining: 4500 })
+    write('2026-10-12T03:30:00Z', { caller: 'agent-x', resource: 'graphql', remaining: 4999 })
+    write('2026-10-12T04:00:00Z', { caller: 'agent-x', route: 'rate_limit' })
+
+    const summary = summarize(readCalls(at('2026-10-12T00:00:00Z'), fs, dir), at('2026-10-12T00:00:00Z'), 5)
+    const out = renderSummary(summary)
+
+    expect(summary.rateLimit).toBeNull()
+    expect(out).toContain(
+      'remaining core: min 2900 at 2026-10-12T02:00:00.000Z, latest 4500 at 2026-10-12T03:00:00.000Z',
+    )
+    expect(out).toContain(
+      'remaining graphql: min 4999 at 2026-10-12T03:30:00.000Z, latest 4999 at 2026-10-12T03:30:00.000Z',
+    )
+    expect(out).not.toContain('rate_limit: no reading in window')
   })
 
   it('gh-calls --top 2 --json ranks callers by count and splits 403s', async () => {

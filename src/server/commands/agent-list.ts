@@ -106,7 +106,7 @@ export const agentList = defineTool({
         // name is self-reported — so it says what it is rather than rendering
         // two empty fields and reading like an agent someone spawned.
         `- ${a.name} [${stateSegment(a, registered)}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
-        ` spawned by ${a.spawnedBy}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}` +
+        ` spawned by ${a.spawnedBy}${a.launchedBy ? ` (${a.launchedBy})` : ''}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}` +
         // CC-1059: the machine it launched on, so a row on another host reads as such.
         `${a.host ? `, host: ${a.host}` : ''}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read

@@ -199,8 +199,8 @@ describe('inbox-hook guards', () => {
     expect(runHook('stop', '{}')).toBe('')
   })
 
-  // Mutation: dropping the stopBlocks gate blocks every turn end before S6 turns it on.
-  it('claims nothing at a turn end while blocking is off, so the next prompt shows it', () => {
+  // Mutation: dropping the stopBlocks gate blocks a turn end run without --block.
+  it('claims nothing at a turn end without --block, so the next prompt shows it', () => {
     const dir = spool(direct('m-1'))
     expect(runHook('stop', '{"stop_hook_active":false}', {}, false)).toBe('')
     expect(spooled(dir)).toHaveLength(1)

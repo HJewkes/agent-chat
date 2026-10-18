@@ -160,6 +160,16 @@ describe('the lifecycle fold', () => {
     expect(foldAgent([spawned(), exited, refused])?.exitedAt).toBe(exited.ts)
     expect(foldAgent([spawned(), exited, row('agent_resumed')])?.exitedAt).toBeUndefined()
   })
+
+  // CC-1472. Mutation caught: the fold reading host only from the spawn row.
+  it('puts the agent on the host its newest resume launched on', () => {
+    const onMac = row('agent_resumed', { meta: { host: 'mac' } })
+
+    expect(foldAgent([spawned(), row('agent_exited'), onMac])?.host).toBe('mac')
+    expect(foldAgent([spawned(), onMac, row('agent_exited'), row('agent_resumed')])?.host).toBeUndefined()
+    const remoteSpawn = spawned({ meta: { ...spawned().meta, host: 'mac' } })
+    expect(foldAgent([remoteSpawn, row('agent_exited'), row('agent_resumed')])?.host).toBeUndefined()
+  })
 })
 
 describe('when an agent stopped', () => {

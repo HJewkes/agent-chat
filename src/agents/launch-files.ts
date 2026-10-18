@@ -123,17 +123,16 @@ const seatHookEntry = (entry: string, phase: 'pre' | 'post' | 'end', matcher?: s
 
 const INBOX_HOOK_TIMEOUT_S = 10
 
-/** CC-1455 S6 turns this on; until then a turn end shows nothing and claims nothing. */
-const INBOX_STOP_BLOCKS = false
-
 /**
  * CC-1455: a print-mode session drops channel pushes, so its MCP server spools them and
  * this hook shows them. It runs on every tool call, so the guard uses only shell builtins
  * and execs node only when a record is waiting. The glob stays outside the quotes.
+ * At Stop it blocks the turn end once (S6), since a print run otherwise exits with the
+ * message unseen; only a print host's server spools, so an interactive Stop never blocks.
  */
 export function inboxHookCommand(entry: string, agentId: string, phase: 'post' | 'prompt' | 'stop'): string {
   const verb = `${shellQuote(process.execPath)} ${shellQuote(entry)} inbox-hook ${shellQuote(agentId)} ${phase}`
-  const block = phase === 'stop' && INBOX_STOP_BLOCKS ? ' --block' : ''
+  const block = phase === 'stop' ? ' --block' : ''
   return `for f in ${shellQuote(inboxSpoolDir(agentId))}/*.json; do [ -e "$f" ] && exec ${verb}${block}; break; done`
 }
 

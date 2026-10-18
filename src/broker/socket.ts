@@ -7,7 +7,10 @@ import {
   HUMAN,
   isAnswerChannel,
   isAgentTeleportReason,
+  LAUNCH_REASON_MAX,
+  launcherOf,
   SURFACE_NAMES,
+  type Launcher,
   type ClientMessage,
   type Correlated,
   type DeliveredMessage,
@@ -59,7 +62,7 @@ import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
-import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
@@ -95,6 +98,17 @@ const spawnedAsOf = (msg: {
   const claimed = msg.spawnedAs === 'burndown' || msg.spawnedAs === 'shepherd' ? msg.spawnedAs : undefined
   const spawnedAs = claimed ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
   return spawnedAs === undefined ? {} : { spawnedAs }
+}
+
+/** CC-1466: an allow-listed launcher and its reason, cut to one bounded line; a reason alone is dropped. */
+export const launchFieldsOf = (msg: {
+  launchedBy?: unknown
+  launchReason?: unknown
+}): { launchedBy?: Launcher; launchReason?: string } => {
+  const launchedBy = launcherOf(msg.launchedBy)
+  if (launchedBy === undefined) return {}
+  const reason = typeof msg.launchReason === 'string' ? msg.launchReason.replace(/\s+/g, ' ').trim() : ''
+  return { launchedBy, ...(reason === '' ? {} : { launchReason: reason.slice(0, LAUNCH_REASON_MAX) }) }
 }
 
 /**
@@ -153,17 +167,21 @@ const replyHeld = (conn: Conn, to: string, msgId: string): void => {
 
 /**
  * CC-1455: the route row's `delivered` says whether any recipient will see the push, not just that
- * one was resolved. A print-mode host takes the row but never shows it, so it counts for nothing.
+ * one was resolved. A print-mode host takes the row but never shows it, so it counts for nothing;
+ * one that spools it for its inbox hook is named in `queued`, still not delivered yet.
  */
 const routeDelivery = (
   result: RouteResult<Conn>,
-): { delivered: boolean; reason?: string; unwoken?: string[] } => {
-  const unwoken = result.results.filter(r => r.status === 'headless_no_channel').map(r => r.name)
-  const delivered = result.ok && result.recipients.length > unwoken.length
-  if (unwoken.length === 0) return { delivered }
+): { delivered: boolean; reason?: string; unwoken?: string[]; queued?: string[] } => {
+  const named = (status: string): string[] => result.results.filter(r => r.status === status).map(r => r.name)
+  const unwoken = named('headless_no_channel')
+  const queued = named('queued')
+  const delivered = result.ok && result.recipients.length > unwoken.length + queued.length
+  const spooled = queued.length === 0 ? {} : { queued }
+  if (unwoken.length === 0) return { delivered, ...spooled }
   return result.recipients.length === 1
     ? { delivered, reason: 'headless_no_channel' }
-    : { delivered, unwoken }
+    : { delivered, unwoken, ...spooled }
 }
 
 /** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
@@ -321,6 +339,42 @@ const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlat
 
 const nonBlank = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+
+/** CC-1206: a real agent name or id is far shorter; the cap keeps a claim from bloating the row. */
+export const CALLER_AGENT_MAX = 64
+
+/** CC-1206: a claimed caller with control and format characters stripped, trimmed and capped; blank is none. */
+export const sanitizeCallerAgent = (value: unknown): string | undefined =>
+  nonBlank(typeof value === 'string' ? value.replace(/[\p{Cc}\p{Cf}]/gu, '') : undefined)?.slice(
+    0,
+    CALLER_AGENT_MAX,
+  )
+
+/**
+ * CC-1206: the agent behind an unregistered spawn, from the CLI's env claim, else from a Claude
+ * Code ancestor of the socket peer. It only ever lowers trust, so its absence proves no human:
+ * `env -u AGENT_CHAT_NAME` drops the claim, and a caller detached from its own tree (`setsid`,
+ * `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from such a process has
+ * no Claude Code ancestor. Off Linux and through a forwarded socket there is no peer pid, so only
+ * the claim applies. Positive proof of a human is CC-1246.
+ */
+const callerAgentOf = (
+  conn: Conn,
+  msg: { callerAgent?: unknown },
+  peer: PeerPorts,
+): { callerAgent?: string } => {
+  const claimed = sanitizeCallerAgent(msg.callerAgent)
+  if (claimed !== undefined) return { callerAgent: claimed }
+  const pid = claudeCodeAncestor(conn, peer)
+  return pid === undefined ? {} : { callerAgent: `claude-code:${pid}` }
+}
+
+/** CC-1472: a launcher's transcript verdict, kept only when well formed, so a garbled one reads as none. */
+const transcriptVerdictOf = (msg: object): { transcript?: { path: string; found: boolean } } => {
+  const verdict = (msg as { transcript?: { path?: unknown; found?: unknown } | null }).transcript
+  if (typeof verdict?.path !== 'string' || typeof verdict.found !== 'boolean') return {}
+  return { transcript: { path: verdict.path, found: verdict.found } }
+}
 
 /** CC-1059: the spawn frame's launch-site fields, each dropped unless well formed. */
 const spawnSiteFields = (
@@ -505,7 +559,8 @@ export class SocketServer {
       ...(msg.experiment === undefined ? {} : { experiment: msg.experiment }),
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
-      ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
+      ...this.humanClaims(conn, msg, requestedBy),
+      ...(typeof msg.lineageFrom === 'string' ? { lineageFrom: msg.lineageFrom } : {}),
       // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
@@ -552,6 +607,22 @@ export class SocketServer {
    * CC-1059: the host a spawn's requester runs on. A session's comes from its registration, never
    * its frame; only the CLI, which holds no registration, names its own.
    */
+  /**
+   * What only an unregistered (HUMAN) connection's frame may set; a registered one's are ignored.
+   * The caller lookup skips a `spawnedAs` spawn, which is never human, so burndown and Shepherd
+   * spawns never pay its synchronous `ss` read.
+   */
+  private humanClaims(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'spawn' }>,
+    requestedBy: string,
+  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'launchedBy' | 'launchReason'> {
+    if (requestedBy !== HUMAN) return {}
+    const spawnedAs = spawnedAsOf(msg)
+    const caller = spawnedAs.spawnedAs === undefined ? callerAgentOf(conn, msg, this.peer) : {}
+    return { ...spawnedAs, ...caller, ...launchFieldsOf(msg) }
+  }
+
   private callerHostOf(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn' }>): string | undefined {
     const entry = this.core.registry.entryFor(conn)
     return entry === undefined ? nonBlank(msg.callerHost) : this.hostOf(conn, entry)
@@ -1000,10 +1071,15 @@ export class SocketServer {
    */
   /** CC-126. Answered on `spawn_result`, carrying the transcript verdict whatever the outcome. */
   private async handleResume(conn: Conn, msg: Extract<ClientMessage, { t: 'resume' }>): Promise<void> {
+    // CC-1492: dropped, a garbled host would resume locally, against a transcript nobody asked about.
+    if (msg.host !== undefined && typeof msg.host !== 'string')
+      return reply(conn, { t: 'spawn_result', ok: false, reason: 'resume host must be a machine name' })
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
     const source = wakeSource(msg.source)
+    const host = nonBlank(msg.host)
     const outcome = await this.supervisor.resume(msg.name, {
+      ...(host === undefined ? {} : { host }),
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
@@ -1011,6 +1087,7 @@ export class SocketServer {
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(requester === undefined ? launchFieldsOf(msg) : {}),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -2015,6 +2092,7 @@ export class SocketServer {
         this.hosts.answer(conn, msg.id, {
           ok: msg.ok === true,
           ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
+          ...transcriptVerdictOf(msg),
         })
         return
       case 'hosts':
@@ -2035,6 +2113,7 @@ export class SocketServer {
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
             ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+            ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>
             reply(conn, {

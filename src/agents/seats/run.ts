@@ -910,16 +910,16 @@ type Launch = (seat: string, message: string) => Promise<WakeResult>
 function relaunchLaunch(
   pass: Pass,
   stale: StaleSeat,
-  activityAt: number | undefined,
+  judged: { activityAt: number | undefined; reason: string },
   onRefused: (why: string) => void,
 ): Launch | undefined {
   const { account, target } = stale
   const relaunchSeat = pass.deps.relaunchSeat
   if (account === undefined || relaunchSeat === undefined) return undefined
-  const quiet = quietMinutes(pass.now.getTime(), activityAt)
+  const quiet = quietMinutes(pass.now.getTime(), judged.activityAt)
   return async (seat, message) => {
     const fresh = pass.deps.relaunchHandoff?.(seat, quiet, pass.now) ?? message
-    const res = await relaunchSeat(seat, { target, account, message, fresh })
+    const res = await relaunchSeat(seat, { target, account, message, fresh, reason: judged.reason })
     if (res.refused === true) onRefused(res.detail)
     return res
   }
@@ -931,11 +931,18 @@ function relaunchLaunch(
  */
 function launchGate(pass: Pass, name: string, judged: Judgement) {
   const { stale } = judged
-  return async (verb: string, run: (launch: Launch) => Promise<string | string[]>): Promise<string[]> => {
+  return async (
+    verb: string,
+    why: string,
+    run: (launch: Launch) => Promise<string | string[]>,
+  ): Promise<string[]> => {
     if (stale === undefined)
       return [await run((seat, message) => pass.deps.wake(seat, message, false))].flat()
     let refusal: string | undefined
-    const launch = relaunchLaunch(pass, stale, judged.log.activityAt, why => (refusal = why))
+    const reason = `${verb}: ${why}`
+    const launch = relaunchLaunch(pass, stale, { activityAt: judged.log.activityAt, reason }, refused => {
+      refusal = refused
+    })
     if (launch === undefined) return refuseStale(pass, name, verb, stale)
     const lines = [await run(launch)].flat()
     if (refusal === undefined) return lines
@@ -949,16 +956,18 @@ async function seatAction(pass: Pass, name: string, judged: Judgement): Promise<
   const { liveness, relaunch, decision, journalFault } = judged
   if (judged.paneOverCap !== undefined) return paneOverCap(pass, name, judged.paneOverCap)
   const gated = launchGate(pass, name, judged)
-  if (liveness.resume) return gated('resume', launch => resumeDark(pass, name, liveness, launch))
+  if (liveness.resume)
+    return gated('resume', liveness.reason, launch => resumeDark(pass, name, liveness, launch))
   if (liveness.refused) return [`${name}: Watchdog: ${liveness.reason}`]
   if (relaunch?.successor !== undefined) return failedTeleport(pass, name, relaunch.successor)
   const handoff = pass.deps.relaunchHandoff
   if (relaunch?.verdict.relaunch && handoff !== undefined) {
     const message = handoff(name, quietMinutes(pass.now.getTime(), judged.log.activityAt), pass.now)
-    return gated('relaunch', launch => relaunchDark(pass, name, relaunch.verdict, message, launch))
+    const { verdict } = relaunch
+    return gated('relaunch', verdict.reason, launch => relaunchDark(pass, name, verdict, message, launch))
   }
   if (relaunch?.verdict.refused) return [`${name}: Watchdog: ${relaunch.verdict.reason}`]
-  if (decision.fire) return gated('wake', launch => act(pass, name, decision, launch))
+  if (decision.fire) return gated('wake', decision.reason, launch => act(pass, name, decision, launch))
   if (journalFault !== undefined) return [`${name}: Watchdog: held: ${journalFault}`]
   return []
 }

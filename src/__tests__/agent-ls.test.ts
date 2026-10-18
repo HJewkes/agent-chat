@@ -88,6 +88,18 @@ describe('agent ls --json', () => {
     expect(rows[0]?.transcriptPath).toContain(`${SESSION_ID}.jsonl`)
   })
 
+  // CC-1466, catches: the launcher dropped from the JSON, so a watchdog relaunch reads as the human's own.
+  it('emits launchedBy beside spawnedBy, and null when no automation launched it', async () => {
+    roster.agents = [{ ...liveAgent(), spawnedBy: 'human', launchedBy: 'seat-watchdog' }, liveAgent()]
+
+    const rows = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+
+    expect(rows.map(row => [row.spawnedBy, row.launchedBy])).toEqual([
+      ['human', 'seat-watchdog'],
+      ['boss', null],
+    ])
+  })
+
   it('reports a disconnected live agent as detached and an empty roster as []', async () => {
     roster.sessions = []
     const [row] = JSON.parse(await lsOutput('--json')) as { presence: string }[]
