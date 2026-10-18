@@ -20,6 +20,7 @@ import {
 } from '../agents/teleport.js'
 import { planPath, readRuntimeState, supersededMarkerPath } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
+import { staleGuardOutput } from '../cli/verbs/stale-session-guard.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { MachineLimits, MemoryReading } from '../agents/machine-guard.js'
@@ -2405,6 +2406,22 @@ describe('successor-first ordering (CC-951)', () => {
     expect(core.registry.connFor('scout')).toBe(predecessor)
     expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(false)
     expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(true)
+  })
+
+  it('lets a kept predecessor reattached after a broker restart take prompts again (CC-1450)', async () => {
+    const agentId = await spawnAgent()
+    supervisor.close()
+    makeSupervisor()
+    expect(supervisor.liveIds()).not.toContain(agentId)
+    connectAs('scout', agentId)
+    stopAutoAttach()
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(readBrokerLog()).toMatch(/"event":"teleport_failed".*"kept":true/)
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(false)
+    expect(staleGuardOutput(agentId)).toBe('')
   })
 
   /** The predecessor's own exit, as its headless child reports it. */

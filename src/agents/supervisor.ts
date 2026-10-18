@@ -4143,9 +4143,11 @@ export class Supervisor implements TeleportHost {
    * CC-951: a successor-first teleport whose successor never attached, while its
    * predecessor still runs. The predecessor gets back what `relaunch` moved to it: its
    * slot, and prompts its stale-session guard would now block. The successor is stopped,
-   * headless or in a surface the broker opened, since its row retires.
+   * headless or in a surface the broker opened, since its row retires. CC-1450: the marker
+   * is cleared by the predecessor's own id, since one reattached after a restart is not in
+   * `live` and so carries no `inheritedFrom`.
    */
-  keepPredecessor(input: RelaunchInput, reason: string): void {
+  keepPredecessor(predecessorId: string, input: RelaunchInput, reason: string): void {
     const successor = this.live.get(input.agentId)
     if (successor !== undefined) {
       if (successor.settle) clearTimeout(successor.settle)
@@ -4154,11 +4156,11 @@ export class Supervisor implements TeleportHost {
       this.stopSuccessor(successor)
     }
     this.semaphore.release(input.agentId)
+    clearSuperseded(predecessorId)
     if (input.inheritedFrom === undefined) return
     const predecessor = this.live.get(input.inheritedFrom)
     if (predecessor !== undefined) delete predecessor.teleporting
     if (input.inherited?.slot) this.semaphore.acquire(input.inheritedFrom)
-    clearSuperseded(input.inheritedFrom)
   }
 
   /** CC-951: the predecessor ended and its successor did not start, so only the human can act. */
