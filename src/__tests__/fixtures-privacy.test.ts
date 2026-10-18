@@ -7,8 +7,9 @@ import { describe, expect, it } from 'vitest'
 
 /**
  * CC-235: this repo is public, so committed fixtures must hold no home-directory paths, email
- * addresses or real seat names. CC-1474: real names are never listed here; they are private terms
- * that `titan-egress-scan` loads from the owner's term list, which it skips when `CI` is set.
+ * addresses or real seat names. CC-1474: real names are never listed here. Coordinator seats are
+ * banned by shape everywhere; other private names are terms that `titan-egress-scan` loads from the
+ * owner's term list, which it skips when `CI` is set.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -19,6 +20,10 @@ const SCANNER = path.join(ROOT, 'node_modules', '@titan-design', 'egress-scan', 
 const SEAT_TASK_NAME = /\b(hs|tc|vc|si)-(cc|tp|vw|r)-[0-9]+/i
 const HOME_SLUG = /(?<![A-Za-z0-9])-(?:Users|home)-([A-Za-z0-9_]+)-/gi
 const SYNTHETIC_HOME_NAMES = ['alice', 'someone']
+// Real coordinator seats are named `<word>-coord`, so the shape bans them here and in CI without listing
+// any. A word of one or two letters is an abbreviation, and these words are placeholders.
+const COORD_SEAT = /(?<![A-Za-z0-9])([A-Za-z0-9]+)-coord(?![\w-])/gi
+const SYNTHETIC_SEAT_WORDS = ['alpha', 'beta', 'gamma', 'delta', 'zeta', 'demo', 'sample', 'example', 'other']
 const SCANNED_EXTENSIONS = ['.ts', '.tsx', '.json', '.snap', '.txt']
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
 // RFC 2606 and 6761 names reach no one, so an address there is synthetic.
@@ -100,8 +105,30 @@ function sourceLeaks(docs: Doc[], env?: NodeJS.ProcessEnv): string[] {
 function leakedPattern(text: string): string | undefined {
   return (
     text.match(SEAT_TASK_NAME)?.[0] ??
+    coordSeat(text) ??
     [...text.matchAll(HOME_SLUG)].find(m => !SYNTHETIC_HOME_NAMES.includes((m[1] ?? '').toLowerCase()))?.[0]
   )
+}
+
+function isSyntheticSeatWord(word: string): boolean {
+  return word.length <= 2 || SYNTHETIC_SEAT_WORDS.includes(word.toLowerCase())
+}
+
+function coordSeat(text: string): string | undefined {
+  return [...text.matchAll(COORD_SEAT)].find(m => !isSyntheticSeatWord(m[1] ?? ''))?.[0]
+}
+
+/** Coordinator seat names in any tracked file, docs and scripts included. */
+function trackedSeatLeaks(): string[] {
+  const ls = spawnSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+  if (ls.status !== 0) throw new Error(`git ls-files failed: ${ls.stderr}`)
+  return ls.stdout
+    .split('\0')
+    .filter(file => file !== '' && fs.statSync(path.join(ROOT, file), { throwIfNoEntry: false })?.isFile())
+    .flatMap(file => {
+      const name = coordSeat(fs.readFileSync(path.join(ROOT, file), 'utf8'))
+      return name === undefined ? [] : [`${file}: ${name}`]
+    })
 }
 
 function readDocs(dir: string, keep: (file: string) => boolean): Doc[] {
@@ -143,6 +170,8 @@ describe('fixture privacy guard', () => {
     ['an email address', 'author: someone@users.noreply.github.com', 'someone@users.noreply.github.com'],
     ['a seat-prefixed task-ID name', 'name: hs-cc-123-foo', 'hs-cc-123'],
     ['a mixed-case seat-prefixed task-ID name', 'name: Hs-CC-123-foo', 'Hs-CC-123'],
+    ['a coordinator seat name', '{"actor":"harbor-coord"}', 'harbor-coord'],
+    ['a mixed-case coordinator seat name in a path', 'seats/Harbor-Coord.md', 'Harbor-Coord'],
     ['a home path in slug form', 'dir: ~/.claude/projects/-Users-bob-projects-x', '-Users-bob-'],
     ['a linux home path in slug form', 'dir: -home-bob-projects-x', '-home-bob-'],
   ])('flags %s, naming the line', (_name, text, token) => {
@@ -221,6 +250,7 @@ describe('test source privacy guard', () => {
       'tc-tp-2',
     ],
     ['a real home segment in slug form', 'planted.snap', '-Users-bob-projects-x', '-Users-bob-'],
+    ['a coordinator seat name', 'planted.ts', "const actor = 'harbor-coord'", 'harbor-coord'],
   ])('fails on %s, naming the file and the name', (_name, file, text, name) => {
     expect(sourceLeaks(doc(text, file))).toEqual([`${file}: ${name}`])
   })
@@ -232,6 +262,19 @@ describe('test source privacy guard', () => {
 
   it('passes a planted file holding only synthetic names and a placeholder home', () => {
     expect(sourceLeaks(doc("const seats = ['seat-a', 'bd-cc-900']\nconst cwd = '/Users/x/p'"))).toEqual([])
+  })
+
+  it.each([
+    ['a placeholder coordinator seat', "const seat = 'alpha-coord'"],
+    ['an abbreviated coordinator seat', "const seat = 'tc-coord'"],
+    ['a temp dir prefix ending in coord', "tmp('agent-chat-coord-')"],
+  ])('passes %s', (_name, text) => {
+    expect(sourceLeaks(doc(text))).toEqual([])
+  })
+
+  it('finds no coordinator seat name in any tracked file', () => {
+    const found = trackedSeatLeaks().filter(hit => !hit.startsWith(`${path.relative(ROOT, self)}: `))
+    expect(found, leakMessage(found)).toEqual([])
   })
 
   it('reports leaks behind a stable privacy leak marker', () => {
