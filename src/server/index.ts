@@ -23,6 +23,7 @@ import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
 import { ParkAdvisor, readParkBudget } from './park-advisor.js'
+import { resolveInboxSpool, spoolRecord, type SpoolDeps } from './inbox-spool.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -131,6 +132,8 @@ export interface SpawnedIdentity {
   workingOn: string
   tags?: string[]
   subscriptions?: Subscription[]
+  /** Set when this server spools pushes for a print-mode host (CC-1455). */
+  inboxSpool?: true
 }
 
 /**
@@ -223,6 +226,7 @@ async function registerSpawned(broker: BrokerClient, spawned: SpawnedIdentity): 
         ...(await observedRegistration()),
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
+        ...(spawned.inboxSpool ? { inboxSpool: true as const } : {}),
         ...terminalAnchor(),
         build: cliEntry(),
       },
@@ -412,6 +416,52 @@ export function senderMeta(message: DeliveredMessage): Record<string, string> {
     : { from: message.from, msg_id: message.msgId }
 }
 
+export type ChannelParams = {
+  content: string
+  meta: Record<string, string>
+}
+
+/**
+ * The two push callbacks the broker client drives. With a `spoolDir` (a print-mode
+ * host, CC-1455) each push is also spooled as the exact content and attributes it
+ * was pushed with; the push itself is sent either way.
+ */
+export function channelDelivery(
+  notify: (params: ChannelParams) => void,
+  hint: () => string | undefined,
+  spoolDir?: string,
+  deps?: SpoolDeps,
+): { deliver: (message: DeliveredMessage) => void; deliverSystemEvents: (events: SystemEvent[]) => void } {
+  const send = (params: ChannelParams, msgId?: string): void => {
+    notify(params)
+    if (spoolDir === undefined) return
+    const kind = msgId === undefined ? 'system' : 'message'
+    spoolRecord(
+      spoolDir,
+      { kind, ...(msgId ? { msgId } : {}), meta: params.meta, text: params.content },
+      deps,
+    )
+  }
+  return {
+    // The context hint rides this frame rather than being pushed on a timer:
+    // fanout cost is payload x recipients, so telling every session its own
+    // figure on a schedule is the one shape the broadcast budget exists to
+    // prevent. Silent unless the threshold was newly crossed — see `context-hint.ts`.
+    deliver: message =>
+      send({ content: withHint(message.text, hint()), meta: channelMeta(message) }, message.msgId),
+    // `from: agent-chat` and no `msg_id`, so a lifecycle event can never be read
+    // as a peer speaking. Nothing here is addressed BY anyone — the broker is
+    // reporting what the log recorded, and there is no one to reply to.
+    deliverSystemEvents: events => {
+      const lines = events.map(e => `${e.subject} ${e.kind}${e.detail ? ` — ${e.detail}` : ''}`)
+      send({
+        content: `Lifecycle: ${lines.join('; ')}`,
+        meta: { from: 'agent-chat', system: 'true', count: String(events.length) },
+      })
+    },
+  }
+}
+
 /** CC-135: one `[park]` notice before a waiting session's warm cache expires. Advisory only. */
 function startParkAdvisor(mcp: Server, broker: BrokerClient, handler: ToolHandler): void {
   const { sessionId } = hostIdentity()
@@ -459,33 +509,23 @@ export async function startMcpServer(): Promise<void> {
     resolveContextHintPolicy(process.env.AGENT_CHAT_PROFILE),
   )
 
-  const deliver = (message: DeliveredMessage): void => {
-    const meta = channelMeta(message)
-    // The context hint rides this frame rather than being pushed on a timer:
-    // fanout cost is payload x recipients, so telling every session its own
-    // figure on a schedule is the one shape the broadcast budget exists to
-    // prevent. Silent unless the threshold was newly crossed — see `context-hint.ts`.
-    void mcp.notification({
-      method: 'notifications/claude/channel',
-      params: { content: withHint(message.text, hinter.hint()), meta },
-    })
-  }
-
-  /**
-   * `from: agent-chat` and no `msg_id`, so a lifecycle event can never be read
-   * as a peer speaking. Nothing here is addressed BY anyone — the broker is
-   * reporting what the log recorded, and there is no one to reply to.
-   */
-  const deliverSystemEvents = (events: SystemEvent[]): void => {
-    const lines = events.map(e => `${e.subject} ${e.kind}${e.detail ? ` — ${e.detail}` : ''}`)
-    void mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: `Lifecycle: ${lines.join('; ')}`,
-        meta: { from: 'agent-chat', system: 'true', count: String(events.length) },
-      },
-    })
-  }
+  // A superseded session has nothing left to do: a newer process holds its
+  // identity, and Claude Code will see the pipe close. Exiting is the honest
+  // outcome, and the only one that does not leave two processes on one name.
+  // CC-951: a tick later, so an `endSelf` read just ahead of the fatal frame ends Claude Code first.
+  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
+  const launched = isLaunchedProcess() ? spawnedIdentity() : undefined
+  const spoolDir = resolveInboxSpool({
+    agentId: launched?.agentId,
+    env: process.env,
+    hostPid: hostIdentity().hostPid,
+  })
+  const spawned = launched && spoolDir ? { ...launched, inboxSpool: true as const } : launched
+  const { deliver, deliverSystemEvents } = channelDelivery(
+    params => void mcp.notification({ method: 'notifications/claude/channel', params }),
+    () => hinter.hint(),
+    spoolDir,
+  )
 
   /**
    * Hand the host the human's verdict on a prompt this session relayed (CC-96).
@@ -502,12 +542,6 @@ export async function startMcpServer(): Promise<void> {
     })
   }
 
-  // A superseded session has nothing left to do: a newer process holds its
-  // identity, and Claude Code will see the pipe close. Exiting is the honest
-  // outcome, and the only one that does not leave two processes on one name.
-  // CC-951: a tick later, so an `endSelf` read just ahead of the fatal frame ends Claude Code first.
-  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
-  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
   const onEndSelf = endSelfHandler({
     ownAgentId: spawned?.agentId,
     hostPid: hostIdentity().hostPid,
