@@ -13,13 +13,24 @@ function tooOld(err: unknown): never {
 export const agentPark = defineVerb({
   name: 'agent.park',
   description: "remove an exited agent's clean, pushed worktree and keep its branch",
-  args: z.object({ name: requiredString('name') }),
+  args: z.object({ name: requiredString('name'), noFixRoundCheck: z.boolean().optional() }),
   result: Report,
-  cli: { positional: ['name'] },
-  async run({ name }, ctx) {
-    const res = (await ctx
-      .withBroker(b => b.request({ t: 'park', name }, 'spawn_result'))
-      .catch(tooOld)) as Extract<ServerMessage, { t: 'spawn_result' }>
+  cli: {
+    positional: ['name'],
+    options: {
+      noFixRoundCheck: {
+        long: '--no-fix-round-check',
+        description:
+          "skip asking Shepherd whether the agent's run is in a fix round (for Shepherd's own parks)",
+      },
+    },
+  },
+  async run({ name, noFixRoundCheck }, ctx) {
+    const frame = { t: 'park' as const, name, ...(noFixRoundCheck === true ? { noFixRoundCheck: true } : {}) }
+    const res = (await ctx.withBroker(b => b.request(frame, 'spawn_result')).catch(tooOld)) as Extract<
+      ServerMessage,
+      { t: 'spawn_result' }
+    >
     if (!res.ok) return { ok: false, lines: [`Not parked: ${res.reason ?? 'no reason given'}`] }
     return {
       ok: true,

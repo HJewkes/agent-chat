@@ -303,6 +303,13 @@ const KILL_GRACE_MS = 3000
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
 
+/**
+ * CC-1468: how long a resume waits on a park of its tree before refusing. A resume answers on
+ * `spawn_result`, whose client ceiling is 60s, and the launch after the wait can take the 30s
+ * attach window, so this leaves the launch its time inside that ceiling.
+ */
+const PARK_WAIT_MS = 20_000
+
 /** CC-402: the pause before a teleport successor's one relaunch retry, so a surface that just failed can come back. */
 export const RELAUNCH_RETRY_MS = 10_000
 
@@ -746,6 +753,8 @@ export interface SpawnOutcome {
 export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
   /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
   checkProcesses?: boolean
+  /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
+  noFixRoundCheck?: boolean
 }
 
 export interface ResumeRequest {
@@ -800,6 +809,8 @@ export interface SupervisorOptions {
   attachCeilingMs?: number
   /** CC-1059: how long a remote spawn's ready report may take. Shortened in tests. */
   remoteReportMs?: number
+  /** CC-1468: how long a resume waits on a park of its tree. Shortened in tests. */
+  parkWaitMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
    * reaches the real AppleScript and opens a real window on any machine that
@@ -1028,8 +1039,9 @@ export class Supervisor implements TeleportHost {
   /** CC-881: a remote successor's session id, held between its plan and its host's report. */
   private readonly remoteSessions = new Map<string, string>()
   private readonly cwdLister: CwdLister
-  /** CC-282: agents mid-park, to the canonical tree being removed. */
-  private readonly parking = new Map<string, string>()
+  /** CC-282: agents mid-park, to the canonical tree being removed; CC-1468: and the park's end, for a resume to wait on. */
+  private readonly parking = new Map<string, { tree: string; done: Promise<void> }>()
+  private readonly parkWaitMs: number
   /** CC-1456: agents with a resume in flight, to when it started. */
   private readonly resuming = new Map<string, number>()
   /** CC-1457: session ids with a launch in flight, to the name launching it and when it started. */
@@ -1084,6 +1096,7 @@ export class Supervisor implements TeleportHost {
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
     this.attachCeilingMs = options.attachCeilingMs ?? ATTACH_CEILING_MS
+    this.parkWaitMs = options.parkWaitMs ?? PARK_WAIT_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
@@ -3293,23 +3306,43 @@ export class Supervisor implements TeleportHost {
     const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
     const blocked = this.parkBlockerFor(identity.agentId, target)
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
-    this.parking.set(identity.agentId, canonicalPath(target.worktree))
+    let settle = (): void => undefined
+    const done = new Promise<void>(resolve => (settle = resolve))
+    this.parking.set(identity.agentId, { tree: canonicalPath(target.worktree), done })
     try {
-      const fixRound = this.shepherdSkip && (await fixRoundBlocker(this.shepherdSkip, identity, target))
-      if (fixRound) return { ok: false, reason: fixRound }
-      const parked = await parkWorktree(
-        target,
-        () => this.parkBlockerFor(identity.agentId, target),
-        identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
-      )
-      if (!parked.ok) return parked
-      this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
-      return {
-        ok: true,
-        reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
-      }
+      return await this.parkTree(name, identity, target, req)
     } finally {
       this.parking.delete(identity.agentId)
+      settle()
+    }
+  }
+
+  /**
+   * The entry is set before the fix-round check, not after: a spawn into the tree registers as
+   * its tenant only after several awaits, so the occupancy re-check before removal cannot see
+   * one that got past `parkingRefusal`. CC-1468: it is dropped once the removal answers, and the
+   * row is written in the same turn, so a resume woken by `done` reads it.
+   */
+  private async parkTree(
+    name: string,
+    identity: AgentIdentity,
+    target: ParkTarget,
+    req: ParkRequest,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
+    const fixRound = check && (await fixRoundBlocker(check, identity, target))
+    if (fixRound) return { ok: false, reason: fixRound }
+    const parked = await parkWorktree(
+      target,
+      () => this.parkBlockerFor(identity.agentId, target),
+      identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
+    )
+    this.parking.delete(identity.agentId)
+    if (!parked.ok) return parked
+    this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
+    return {
+      ok: true,
+      reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
     }
   }
 
@@ -3438,7 +3471,7 @@ export class Supervisor implements TeleportHost {
   private parkingRefusal(dir: string | undefined): string | undefined {
     if (dir === undefined) return undefined
     const at = canonicalPath(dir)
-    for (const tree of this.parking.values())
+    for (const { tree } of this.parking.values())
       if (isAtOrUnder(at, tree)) return `${tree} is being parked; try again once the park finishes`
     return undefined
   }
@@ -3661,6 +3694,7 @@ export class Supervisor implements TeleportHost {
    * outcome carries the verdict either way so the caller never has to guess.
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
+    await this.parkSettled(this.core.agents.byName(name)?.cwd)
     const drained = this.drainRefusal()
     if (drained) return { ok: false, ...drained }
     const identity = this.core.agents.byName(name)
@@ -3672,6 +3706,23 @@ export class Supervisor implements TeleportHost {
       this.resumingRefusal(identity)
     if (refused) return { ok: false, reason: refused }
     return this.holdingLaunch(identity, () => this.resumeUnguarded(identity, req))
+  }
+
+  /**
+   * CC-1468: a resume into a tree mid-park waits for that park, then runs every check afresh:
+   * a park that removed the tree has written its `isolation_parked` row, so the tree is
+   * re-created, and a refused one left it in place. The wait takes no launch hold, and park
+   * never waits on one, so the two cannot deadlock; past `parkWaitMs`, `parkingRefusal` answers.
+   */
+  private async parkSettled(dir: string | undefined): Promise<void> {
+    if (!dir) return
+    const at = canonicalPath(dir)
+    const pending = [...this.parking.values()].filter(p => isAtOrUnder(at, p.tree)).map(p => p.done)
+    if (pending.length === 0) return
+    let timer: NodeJS.Timeout | undefined
+    const bound = new Promise<void>(resolve => (timer = setTimeout(resolve, this.parkWaitMs)))
+    await Promise.race([Promise.all(pending), bound])
+    clearTimeout(timer)
   }
 
   /**
