@@ -1,0 +1,805 @@
+[
+  {
+    "name": "missing argv",
+    "argv": [
+      "gh-write"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a206d697373696e6720726571756972656420617267756d656e74202767682d61726773270a0a55736167653a206167656e742d636861742067682d7772697465205b6f7074696f6e735d203c67682d617267732e2e2e3e0a0a6f6e65206768207772697465206166746572202d2d2c20737061636564206d616368696e652d7769646520616e642072657472696564206f6e20746865207365636f6e6461727920726174650a6c696d69740a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a0a4576657279207469746c6520616e6420626f6479206973206c65616b2d7363616e6e6564206265666f7265206768207374617274732e20506f7374206120626f647920696e206f6e652063616c6c2066726f6d20612071756f7465642068657265646f633a0a20206167656e742d636861742067682d7772697465202d2d20707220637265617465202d52203c6f776e65723e2f3c7265706f3e202d74203c7469746c653e202d2d626f64792d66696c65202d203c3c27454f46270a20202e2e2e0a2020454f460a2d2d626f64792d66696c65203c706174683e20776f726b7320746f6f2c20666f7220707220616e64206973737565206372656174652c206564697420616e6420636f6d6d656e742e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "empty delimiter",
+    "argv": [
+      "gh-write",
+      "--"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a206d697373696e6720726571756972656420617267756d656e74202767682d61726773270a0a55736167653a206167656e742d636861742067682d7772697465205b6f7074696f6e735d203c67682d617267732e2e2e3e0a0a6f6e65206768207772697465206166746572202d2d2c20737061636564206d616368696e652d7769646520616e642072657472696564206f6e20746865207365636f6e6461727920726174650a6c696d69740a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a0a4576657279207469746c6520616e6420626f6479206973206c65616b2d7363616e6e6564206265666f7265206768207374617274732e20506f7374206120626f647920696e206f6e652063616c6c2066726f6d20612071756f7465642068657265646f633a0a20206167656e742d636861742067682d7772697465202d2d20707220637265617465202d52203c6f776e65723e2f3c7265706f3e202d74203c7469746c653e202d2d626f64792d66696c65202d203c3c27454f46270a20202e2e2e0a2020454f460a2d2d626f64792d66696c65203c706174683e20776f726b7320746f6f2c20666f7220707220616e64206973737565206372656174652c206564697420616e6420636f6d6d656e742e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "one value",
+    "argv": [
+      "gh-write",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "empty value",
+    "argv": [
+      "gh-write",
+      ""
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          ""
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw words",
+    "argv": [
+      "gh-write",
+      "one",
+      " two ",
+      "",
+      "\t",
+      "λ"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "one",
+          " two ",
+          "",
+          "\t",
+          "λ"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw flags after delimiter",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin",
+      "--opaque",
+      "-x",
+      "--",
+      "tail"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin",
+          "--opaque",
+          "-x",
+          "--",
+          "tail"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "literal help after delimiter",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin",
+      "--help"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin",
+          "--help"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeated raw values",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin",
+      "same",
+      "same",
+      "--flag",
+      "first",
+      "--flag",
+      "second"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin",
+          "same",
+          "same",
+          "--flag",
+          "first",
+          "--flag",
+          "second"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "gh-write",
+      "--help"
+    ],
+    "code": 0,
+    "stdoutHex": "55736167653a206167656e742d636861742067682d7772697465205b6f7074696f6e735d203c67682d617267732e2e2e3e0a0a6f6e65206768207772697465206166746572202d2d2c20737061636564206d616368696e652d7769646520616e642072657472696564206f6e20746865207365636f6e6461727920726174650a6c696d69740a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a0a4576657279207469746c6520616e6420626f6479206973206c65616b2d7363616e6e6564206265666f7265206768207374617274732e20506f7374206120626f647920696e206f6e652063616c6c2066726f6d20612071756f7465642068657265646f633a0a20206167656e742d636861742067682d7772697465202d2d20707220637265617465202d52203c6f776e65723e2f3c7265706f3e202d74203c7469746c653e202d2d626f64792d66696c65202d203c3c27454f46270a20202e2e2e0a2020454f460a2d2d626f64792d66696c65203c706174683e20776f726b7320746f6f2c20666f7220707220616e64206973737565206372656174652c206564697420616e6420636f6d6d656e742e0a",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "gh-write",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20756e6b6e6f776e206f7074696f6e20272d2d756e6b6e6f776e270a0a55736167653a206167656e742d636861742067682d7772697465205b6f7074696f6e735d203c67682d617267732e2e2e3e0a0a6f6e65206768207772697465206166746572202d2d2c20737061636564206d616368696e652d7769646520616e642072657472696564206f6e20746865207365636f6e6461727920726174650a6c696d69740a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a0a4576657279207469746c6520616e6420626f6479206973206c65616b2d7363616e6e6564206265666f7265206768207374617274732e20506f7374206120626f647920696e206f6e652063616c6c2066726f6d20612071756f7465642068657265646f633a0a20206167656e742d636861742067682d7772697465202d2d20707220637265617465202d52203c6f776e65723e2f3c7265706f3e202d74203c7469746c653e202d2d626f64792d66696c65202d203c3c27454f46270a20202e2e2e0a2020454f460a2d2d626f64792d66696c65203c706174683e20776f726b7320746f6f2c20666f7220707220616e64206973737565206372656174652c206564697420616e6420636f6d6d656e742e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown after value without delimiter",
+    "argv": [
+      "gh-write",
+      "synthetic-bin",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20756e6b6e6f776e206f7074696f6e20272d2d756e6b6e6f776e270a0a55736167653a206167656e742d636861742067682d7772697465205b6f7074696f6e735d203c67682d617267732e2e2e3e0a0a6f6e65206768207772697465206166746572202d2d2c20737061636564206d616368696e652d7769646520616e642072657472696564206f6e20746865207365636f6e6461727920726174650a6c696d69740a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a0a4576657279207469746c6520616e6420626f6479206973206c65616b2d7363616e6e6564206265666f7265206768207374617274732e20506f7374206120626f647920696e206f6e652063616c6c2066726f6d20612071756f7465642068657265646f633a0a20206167656e742d636861742067682d7772697465202d2d20707220637265617465202d52203c6f776e65723e2f3c7265706f3e202d74203c7469746c653e202d2d626f64792d66696c65202d203c3c27454f46270a20202e2e2e0a2020454f460a2d2d626f64792d66696c65203c706174683e20776f726b7320746f6f2c20666f7220707220616e64206973737565206372656174652c206564697420616e6420636f6d6d656e742e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "binary stdout",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "00ffc0800d0a41",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "binary stderr",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "00ffc0800d0a41",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "binary both",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "00ffc0800d0a41",
+    "stderrHex": "420d0a00fe",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "no final newline",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "4142",
+    "stderrHex": "4344",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "awaited",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "410a",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "late",
+      "awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "assigned 0",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 0,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 1",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 69",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 69,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 127",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 127,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "immediate success",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 0,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "immediate failure",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected error",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e7468657469632077726170706572206661696c7572650a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected code69",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e74686574696320756e617661696c61626c650a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected object",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "7b20636f64653a2036392c206d6573736167653a202773796e746865746963206f626a656374272c206974656d733a205b20312c2032205d207d0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected array",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "5b202773796e746865746963272c2032205d0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected string",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e7468657469632072656a656374696f6e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected number",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "36390a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected null",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "6e756c6c0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected undefined",
+    "argv": [
+      "gh-write",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "756e646566696e65640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "import": "gh-write"
+      },
+      {
+        "effect": "gh-write",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]

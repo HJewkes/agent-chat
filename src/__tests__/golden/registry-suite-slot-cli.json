@@ -1,0 +1,730 @@
+[
+  {
+    "name": "missing argv",
+    "argv": [
+      "suite-slot"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a206d697373696e6720726571756972656420617267756d656e742027636f6d6d616e64270a0a55736167653a206167656e742d636861742073756974652d736c6f74205b6f7074696f6e735d203c636f6d6d616e642e2e2e3e0a0a72756e20612066756c6c2074657374207375697465206166746572202d2d2c20686f6c64696e67206f6e65206f6620746865206d616368696e652d776964652066756c6c2d737569746520736c6f74730a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "empty delimiter",
+    "argv": [
+      "suite-slot",
+      "--"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a206d697373696e6720726571756972656420617267756d656e742027636f6d6d616e64270a0a55736167653a206167656e742d636861742073756974652d736c6f74205b6f7074696f6e735d203c636f6d6d616e642e2e2e3e0a0a72756e20612066756c6c2074657374207375697465206166746572202d2d2c20686f6c64696e67206f6e65206f6620746865206d616368696e652d776964652066756c6c2d737569746520736c6f74730a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "one value",
+    "argv": [
+      "suite-slot",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "empty value",
+    "argv": [
+      "suite-slot",
+      ""
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          ""
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw words",
+    "argv": [
+      "suite-slot",
+      "one",
+      " two ",
+      "",
+      "\t",
+      "λ"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "one",
+          " two ",
+          "",
+          "\t",
+          "λ"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw flags after delimiter",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin",
+      "--opaque",
+      "-x",
+      "--",
+      "tail"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin",
+          "--opaque",
+          "-x",
+          "--",
+          "tail"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "literal help after delimiter",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin",
+      "--help"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin",
+          "--help"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeated raw values",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin",
+      "same",
+      "same",
+      "--flag",
+      "first",
+      "--flag",
+      "second"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin",
+          "same",
+          "same",
+          "--flag",
+          "first",
+          "--flag",
+          "second"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "suite-slot",
+      "--help"
+    ],
+    "code": 0,
+    "stdoutHex": "55736167653a206167656e742d636861742073756974652d736c6f74205b6f7074696f6e735d203c636f6d6d616e642e2e2e3e0a0a72756e20612066756c6c2074657374207375697465206166746572202d2d2c20686f6c64696e67206f6e65206f6620746865206d616368696e652d776964652066756c6c2d737569746520736c6f74730a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "suite-slot",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20756e6b6e6f776e206f7074696f6e20272d2d756e6b6e6f776e270a0a55736167653a206167656e742d636861742073756974652d736c6f74205b6f7074696f6e735d203c636f6d6d616e642e2e2e3e0a0a72756e20612066756c6c2074657374207375697465206166746572202d2d2c20686f6c64696e67206f6e65206f6620746865206d616368696e652d776964652066756c6c2d737569746520736c6f74730a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown after value without delimiter",
+    "argv": [
+      "suite-slot",
+      "synthetic-bin",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "6572726f723a20756e6b6e6f776e206f7074696f6e20272d2d756e6b6e6f776e270a0a55736167653a206167656e742d636861742073756974652d736c6f74205b6f7074696f6e735d203c636f6d6d616e642e2e2e3e0a0a72756e20612066756c6c2074657374207375697465206166746572202d2d2c20686f6c64696e67206f6e65206f6620746865206d616368696e652d776964652066756c6c2d737569746520736c6f74730a0a4f7074696f6e733a0a20202d682c202d2d68656c702020646973706c61792068656c7020666f7220636f6d6d616e640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "binary stdout",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "00ffc0800d0a41",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "binary stderr",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "",
+    "stderrHex": "00ffc0800d0a41",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "binary both",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "00ffc0800d0a41",
+    "stderrHex": "420d0a00fe",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "no final newline",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "4142",
+    "stderrHex": "4344",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "awaited",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 7,
+    "stdoutHex": "410a",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "late",
+      "awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "assigned 0",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 0,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 1",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 69",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 69,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "assigned 127",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 127,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "immediate success",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 0,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "immediate failure",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "",
+    "stderrHex": "",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected error",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e7468657469632077726170706572206661696c7572650a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected code69",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e74686574696320756e617661696c61626c650a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected object",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "7b20636f64653a2036392c206d6573736167653a202773796e746865746963206f626a656374272c206974656d733a205b20312c2032205d207d0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected array",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "5b202773796e746865746963272c2032205d0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected string",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "73796e7468657469632072656a656374696f6e0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected number",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "36390a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected null",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "6e756c6c0a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected undefined",
+    "argv": [
+      "suite-slot",
+      "--",
+      "synthetic-bin"
+    ],
+    "code": 1,
+    "stdoutHex": "7061727469616c00ff",
+    "stderrHex": "756e646566696e65640a",
+    "events": [
+      {
+        "import": "suite-slot"
+      },
+      {
+        "effect": "suite-slot",
+        "argv": [
+          "synthetic-bin"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]

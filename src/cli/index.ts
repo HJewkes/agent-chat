@@ -14,6 +14,7 @@ import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentLsVerb } from './verbs/agent-ls.js'
 import { agentSpawnVerb } from './verbs/agent-spawn-command.js'
+import { ghWriteVerb, suiteSlotVerb } from './verbs/command-wrappers.js'
 import { leakScanVerb } from './verbs/leak-scan-command.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
@@ -150,34 +151,19 @@ function addAgentCommands(program: Command): void {
   addVerb(program, ghCallsVerb, { helpGroup: AGENTS })
   addVerb(program, countsVerb, { helpGroup: AGENTS })
 
-  program
-    .command('gh-write <gh-args...>')
-    .description('one gh write after --, spaced machine-wide and retried on the secondary rate limit')
-    .helpGroup(AGENTS)
-    .addHelpText(
-      'after',
-      [
-        '',
-        'Every title and body is leak-scanned before gh starts. Post a body in one call from a quoted heredoc:',
-        "  agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
-        '  ...',
-        '  EOF',
-        '--body-file <path> works too, for pr and issue create, edit and comment.',
-      ].join('\n'),
-    )
-    .action(async (args: string[]) => {
-      const { ghWriteCommand } = await import('./gh-write.js')
-      await ghWriteCommand(args)
-    })
+  addVerb(program, ghWriteVerb, { helpGroup: AGENTS, usageExit: 1, exitOnSuccess: false }).addHelpText(
+    'after',
+    [
+      '',
+      'Every title and body is leak-scanned before gh starts. Post a body in one call from a quoted heredoc:',
+      "  agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
+      '  ...',
+      '  EOF',
+      '--body-file <path> works too, for pr and issue create, edit and comment.',
+    ].join('\n'),
+  )
 
-  program
-    .command('suite-slot <command...>')
-    .description('run a full test suite after --, holding one of the machine-wide full-suite slots')
-    .helpGroup(AGENTS)
-    .action(async (command: string[]) => {
-      const { suiteSlotCommand } = await import('./suite-slot.js')
-      await suiteSlotCommand(command)
-    })
+  addVerb(program, suiteSlotVerb, { helpGroup: AGENTS, usageExit: 1, exitOnSuccess: false })
 
   addVerb(program, leakScanVerb, { helpGroup: AGENTS, usageExit: 2, reportExit: 'set-code' })
 
