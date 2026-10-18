@@ -90,12 +90,13 @@ describe('a resume retried while the first is still launching', () => {
 
     const first = sup.resume('seat-x')
     await vi.waitFor(() => expect(launcher.launches()).toBe(1))
-    const retry = await sup.resume('seat-x')
+    const retried = sup.resume('seat-x')
     launcher.open()
+    const [retry, resumed] = await Promise.all([retried, first])
 
     expect(retry).toMatchObject({ ok: false })
     expect(retry.reason).toMatch(/^seat-x is already resuming \(since \d{4}-\d\d-\d\dT[\d:.]+Z\)/)
-    expect(await first).toMatchObject({ ok: true, agentId: 'agent' })
+    expect(resumed).toMatchObject({ ok: true, agentId: 'agent' })
     expect(launcher.launches()).toBe(1)
   })
 
