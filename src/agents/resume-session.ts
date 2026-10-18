@@ -204,13 +204,22 @@ export function checkResumeSession(input: ResumeSessionInput): { path: string } 
 /** The reply to a resume, shared by the MCP tool and the CLI so both say the same thing. */
 export function describeResume(
   name: string,
-  res: { ok: boolean; reason?: string; transcript?: TranscriptVerdict; warnings?: string[] },
+  res: {
+    ok: boolean
+    reason?: string
+    transcript?: TranscriptVerdict
+    warnings?: string[]
+    deduped?: boolean
+  },
 ): { ok: boolean; lines: string[] } {
   const verdict = [res.transcript === undefined ? 'transcript: not looked up' : verdictLine(res.transcript)]
   if (!res.ok) return { ok: false, lines: [`Not resumed: ${res.reason}`, ...verdict] }
+  // CC-1454: a retry the broker answered from the first resume's outcome, so nothing launched twice.
+  const deduped = res.deduped ? ['This resume already ran; this retry was not launched again.'] : []
   return {
     ok: true,
     lines: [
+      ...deduped,
       `Resumed ${name} on its existing conversation, keeping its name. Reach it with chat_send.`,
       ...verdict,
       ...(res.warnings ?? []).map(w => `warning: ${w}`),

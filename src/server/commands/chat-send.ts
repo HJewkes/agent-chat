@@ -138,7 +138,15 @@ function formatFanout(results: RecipientResult[], msgId: string | undefined, rea
   return `${parts.join('; ')}. ${took.length} of ${results.length}.${tail}`
 }
 
-function describeSend(res: SendResult, { to, toTag }: Target): string {
+/** CC-1454: a retry the broker answered from its cache; the message went out once, under the first msg_id. */
+const DEDUPED = 'This retry was answered from the first send and not sent again: '
+
+function describeSend(res: SendResult, target: Target): string {
+  const text = describeFirstSend(res, target)
+  return res.ok && res.deduped ? `${DEDUPED}${text}` : text
+}
+
+function describeFirstSend(res: SendResult, { to, toTag }: Target): string {
   if (!res.ok) return `Not delivered: ${res.reason}`
   // A tag reports per recipient for the same reason a multicast does, and more
   // so: the sender never named these sessions and cannot otherwise tell who the
