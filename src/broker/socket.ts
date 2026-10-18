@@ -358,7 +358,11 @@ export const sanitizeCallerAgent = (value: unknown): string | undefined =>
  * no Claude Code ancestor. Off Linux and through a forwarded socket there is no peer pid, so only
  * the claim applies. Positive proof of a human is CC-1246.
  */
-const callerAgentOf = (conn: Conn, msg: { callerAgent?: unknown }, peer: PeerPorts): { callerAgent?: string } => {
+const callerAgentOf = (
+  conn: Conn,
+  msg: { callerAgent?: unknown },
+  peer: PeerPorts,
+): { callerAgent?: string } => {
   const claimed = sanitizeCallerAgent(msg.callerAgent)
   if (claimed !== undefined) return { callerAgent: claimed }
   const pid = claudeCodeAncestor(conn, peer)

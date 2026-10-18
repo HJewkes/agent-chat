@@ -32,7 +32,13 @@ const tmp = (prefix: string): string => {
 const profileFile = (name: string): string => path.join(home, 'profiles', `${name}.json`)
 
 function writeProfile(name: string, description = name): void {
-  const profile = { description, model: 'sonnet', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+  const profile = {
+    description,
+    model: 'sonnet',
+    allowedTools: ['Read'],
+    isolation: 'none',
+    surface: 'headless',
+  }
   fs.writeFileSync(profileFile(name), JSON.stringify(profile))
 }
 
@@ -42,8 +48,14 @@ const tree = (procs: Record<number, [number, string]>, peer: number | undefined)
   argv: pid => (procs[pid] === undefined ? undefined : `/usr/bin/${procs[pid]![1]} --flag`),
   process: pid => (procs[pid] === undefined ? undefined : { ppid: procs[pid]![0], comm: procs[pid]![1] }),
 })
-const UNDER_CLAUDE = { 700: [650, 'bash'], 650: [500, 'claude'], 500: [1, 'zsh'] } as Record<number, [number, string]>
-const PLAIN_TERMINAL = { 700: [650, 'zsh'], 650: [600, 'tmux'], 600: [1, 'systemd'] } as Record<number, [number, string]>
+const UNDER_CLAUDE = { 700: [650, 'bash'], 650: [500, 'claude'], 500: [1, 'zsh'] } as Record<
+  number,
+  [number, string]
+>
+const PLAIN_TERMINAL = { 700: [650, 'zsh'], 650: [600, 'tmux'], 600: [1, 'systemd'] } as Record<
+  number,
+  [number, string]
+>
 
 function start(mode: ProfileDriftMode, ports: PeerPorts): (msg: ClientMessage) => Promise<SpawnResult> {
   server?.close()
@@ -53,7 +65,10 @@ function start(mode: ProfileDriftMode, ports: PeerPorts): (msg: ClientMessage) =
       cwdLister: async () => [],
       profileBaseline: new ProfileBaseline(path.join(home, 'profiles')),
       profileDriftMode: mode,
-      surface: { platform: 'darwin', spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }) },
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+      },
     },
     undefined,
     ports,
@@ -68,7 +83,9 @@ function start(mode: ProfileDriftMode, ports: PeerPorts): (msg: ClientMessage) =
     const before = frames.length
     emitter.emit('data', JSON.stringify(msg) + '\n')
     const reply = await vi.waitFor(() => {
-      const found = frames.slice(before).find(frame => frame.t === 'spawn_result' || frame.t === 'register_result')
+      const found = frames
+        .slice(before)
+        .find(frame => frame.t === 'spawn_result' || frame.t === 'register_result')
       if (found === undefined) throw new Error('no reply yet')
       return found
     })
@@ -76,7 +93,10 @@ function start(mode: ProfileDriftMode, ports: PeerPorts): (msg: ClientMessage) =
   }
 }
 
-const spawnFrame = (name: string, over: Partial<Extract<ClientMessage, { t: 'spawn' }>> = {}): ClientMessage => ({
+const spawnFrame = (
+  name: string,
+  over: Partial<Extract<ClientMessage, { t: 'spawn' }>> = {},
+): ClientMessage => ({
   t: 'spawn',
   name,
   profile: 'bd-implementer',
@@ -177,7 +197,11 @@ describe('an unregistered spawn with an agent behind it (CC-1206 c)', () => {
     const send = start('flag', ports)
 
     const result = await send(
-      spawnFrame('impl-a', { spawnedAs: 'burndown', task: 'claude-channels/CC-1206', callerAgent: 'coord-a' }),
+      spawnFrame('impl-a', {
+        spawnedAs: 'burndown',
+        task: 'claude-channels/CC-1206',
+        callerAgent: 'coord-a',
+      }),
     )
 
     expect(result.ok).toBe(true)
