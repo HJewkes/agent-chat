@@ -11,7 +11,7 @@ const BASE_SCRIPT = path.join(ROOT, 'scripts/ci/egress-base.mjs')
 
 interface Workflow {
   concurrency: { group: string; 'cancel-in-progress': string }
-  jobs: Record<string, { steps?: Array<{ id?: string; env?: Record<string, string> }> }>
+  jobs: Record<string, { steps?: Array<{ id?: string; env?: Record<string, string>; run?: string }> }>
 }
 
 const workflow = parse(readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8')) as Workflow
@@ -156,5 +156,17 @@ describe('egress-base.mjs', () => {
     for (const payload of [null, {}, 'garbage']) {
       expect(() => pick(head, payload)).toThrow()
     }
+  })
+})
+
+describe('the egress-scan CI job', () => {
+  // CC-1475: a CI pin that lags the devDependency scans with rules the pre-push hook has outgrown.
+  it('runs the egress-scan version package.json installs', () => {
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>
+    }
+    const runs = (workflow.jobs['egress-scan']?.steps ?? []).map(step => step.run ?? '').join('\n')
+    const pinned = /@titan-design\/egress-scan@(\S+)/.exec(runs)?.[1]
+    expect(pinned).toBe(pkg.dependencies['@titan-design/egress-scan'])
   })
 })
