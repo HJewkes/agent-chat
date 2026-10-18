@@ -1365,6 +1365,33 @@ describe('a git alias already in config', () => {
     })
 
     it.each([
+      'a=x; [ "$a" = x ]',
+      'read a; [ "$a" = x ]',
+      'a=x; [[ "$a" = x ]]',
+      'a=x; [ "$a" = x ] && git status',
+    ])('allows a bare [ or [[ test of a variable the line assigns (CC-1467): %s', line => {
+      expect(checkCommand(line, inAliased())).toBeUndefined()
+    })
+
+    it.each([
+      'a=git; $a push --no-verify',
+      'a=$(echo git); [ 1 ] && $a push --no-verify',
+      '[ "$(git push --no-verify)" = x ]',
+      '[[ "$(git push --no-verify)" = x ]]',
+    ])('denies a push that skips the hook beside a bare [ or [[ test (CC-1467): %s', line => {
+      expect(checkCommand(line, inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it.each([
+      'a=$(echo git); [ "$a" = x ] && $a pnv',
+      'b=git; a=${b}; [ "$a" = x ] && $a pnv',
+      'a="g""it"; [ "$a" = x ] && $a pnv',
+      'read a; [ "$a" = x ] && $a pnv',
+    ])('denies a command word the line ties to git after a bare [ test (CC-1467): %s', line => {
+      expect(checkCommand(line, inAliased())).toBe(REASONS.aliasHidden)
+    })
+
+    it.each([
       'source .venv/bin/activate && $PYTHON -m pytest && git status',
       'source x; $PAGER README; git log',
       'source .venv/bin/activate && ${PYTHON:-python3} -m pytest && git status',
