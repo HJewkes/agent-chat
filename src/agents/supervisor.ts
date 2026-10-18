@@ -1032,6 +1032,8 @@ export class Supervisor implements TeleportHost {
   private readonly parking = new Map<string, string>()
   /** CC-1456: agents with a resume in flight, to when it started. */
   private readonly resuming = new Map<string, number>()
+  /** CC-1457: session ids with a launch in flight, to the name launching it and when it started. */
+  private readonly launchingSessions = new Map<string, { name: string; since: number }>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
   private readonly drainState = new DrainState()
@@ -2111,6 +2113,14 @@ export class Supervisor implements TeleportHost {
   }
 
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
+    const session = req.resumeSession
+    if (session === undefined) return this.spawnUnguarded(req)
+    const inFlight = this.sessionLaunchRefusal(session)
+    if (inFlight) return this.refuse(req, inFlight)
+    return this.holdingLaunch({ name: req.name, sessionId: session }, () => this.spawnUnguarded(req))
+  }
+
+  private async spawnUnguarded(req: SpawnRequest): Promise<SpawnOutcome> {
     const requester = this.requesterOf(req.parentAgentId)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
@@ -3655,12 +3665,7 @@ export class Supervisor implements TeleportHost {
       this.parkingRefusal(identity.cwd) ??
       this.resumingRefusal(identity)
     if (refused) return { ok: false, reason: refused }
-    this.resuming.set(identity.agentId, Date.now())
-    try {
-      return await this.resumeUnguarded(identity, req)
-    } finally {
-      this.resuming.delete(identity.agentId)
-    }
+    return this.holdingLaunch(identity, () => this.resumeUnguarded(identity, req))
   }
 
   /**
@@ -3671,11 +3676,41 @@ export class Supervisor implements TeleportHost {
    */
   private resumingRefusal(identity: AgentIdentity): string | undefined {
     const since = this.resuming.get(identity.agentId)
-    if (since === undefined) return undefined
+    if (since === undefined) return this.sessionLaunchRefusal(identity.sessionId)
     return (
       `${identity.name} is already resuming (since ${new Date(since).toISOString()}); ` +
       'wait for that resume to answer, then check agent_list before resuming again'
     )
+  }
+
+  /** CC-1457: a `resume_session` spawn mints a new agent id, so only the session id shows it shares a conversation. */
+  private sessionLaunchRefusal(sessionId: string | undefined): string | undefined {
+    const held = sessionId ? this.launchingSessions.get(sessionId) : undefined
+    if (held === undefined) return undefined
+    return (
+      `session ${sessionId} is already launching for ${held.name} (since ${new Date(held.since).toISOString()}); ` +
+      'wait for that launch to answer, then check agent_list before launching it again'
+    )
+  }
+
+  /**
+   * CC-1456, CC-1457: holds the agent and its session from before the first await
+   * until the launch answers, so resume, surface switch and `resume_session`
+   * spawn refuse each other. Callers check the refusals first.
+   */
+  private async holdingLaunch<T>(
+    hold: { agentId?: string; name: string; sessionId?: string },
+    launch: () => Promise<T>,
+  ): Promise<T> {
+    const since = Date.now()
+    if (hold.agentId !== undefined) this.resuming.set(hold.agentId, since)
+    if (hold.sessionId) this.launchingSessions.set(hold.sessionId, { name: hold.name, since })
+    try {
+      return await launch()
+    } finally {
+      if (hold.agentId !== undefined) this.resuming.delete(hold.agentId)
+      if (hold.sessionId) this.launchingSessions.delete(hold.sessionId)
+    }
   }
 
   private async resumeUnguarded(checked: AgentIdentity, req: ResumeRequest): Promise<SpawnOutcome> {
@@ -3929,11 +3964,16 @@ export class Supervisor implements TeleportHost {
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
     if (agent.sessionId === '')
       return { ok: false, reason: `${req.name} has no recorded session id, so it cannot be resumed` }
+    // CC-1457: refused before the stop, so a switch that cannot relaunch never ends the running process.
+    const inFlight = this.resumingRefusal(agent)
+    if (inFlight) return { ok: false, reason: inFlight }
 
-    const stopped = this.stopFor(req, agent)
-    if (!stopped.ok) return { ok: false, reason: stopped.reason as string }
-    await this.waitForNameFree(req.name)
-    return this.resumeOnto(req, agent, profile)
+    return this.holdingLaunch(agent, async () => {
+      const stopped = this.stopFor(req, agent)
+      if (!stopped.ok) return { ok: false, reason: stopped.reason as string }
+      await this.waitForNameFree(req.name)
+      return this.resumeOnto(req, agent, profile)
+    })
   }
 
   /**
