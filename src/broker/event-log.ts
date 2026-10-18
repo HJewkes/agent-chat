@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
+import type { DatabaseSync as DatabaseSyncType, StatementSync } from 'node:sqlite'
 import { home } from '../paths.js'
 import type {
   DecidedItem,
@@ -70,6 +70,11 @@ interface Row {
   meta: string | null
 }
 
+/**
+ * CC-1463: `events_actor` serves `lastMessageFrom` and `lastStatusReport`, which run as an
+ * agent spawns or exits. Through `events_kind` they walked back over every message row,
+ * about 90 MB of reads each on a large log, when the sender had nothing since `since`.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +91,7 @@ CREATE INDEX IF NOT EXISTS events_target ON events(target, id);
 CREATE INDEX IF NOT EXISTS events_msg_id ON events(msg_id);
 CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind, id);
+CREATE INDEX IF NOT EXISTS events_actor ON events(actor, kind, id);
 `
 
 /** Kinds that a recipient should see in their inbox. */
@@ -273,12 +279,32 @@ function restrictToOwner(file: string): void {
   fs.chmodSync(path.dirname(file), 0o700)
 }
 
-/** Frozen because the cache hands the same row to every caller; a mutation would leak into later folds. */
-const toCachedAgentRow = (row: Row): AgentEventRow => {
-  const agentRow = toAgentEventRow(row)
-  Object.freeze(agentRow.meta)
-  return Object.freeze(agentRow)
-}
+/**
+ * CC-1463: a cached agent row holds a body of at most this many bytes. A longer one, almost
+ * always a spawn's brief, is read back by id when asked for; briefs were most of the cache's heap.
+ */
+const INLINE_BODY_MAX = 512
+
+/** `octet_length` is answered from the record header, so a deferred body's pages are never read. */
+const AGENT_TAIL_SQL = `SELECT id, ts, kind, actor, target, msg_id, ref, meta,
+    CASE WHEN octet_length(body) > ${INLINE_BODY_MAX} THEN NULL ELSE body END AS body,
+    octet_length(body) > ${INLINE_BODY_MAX} AS deferred
+  FROM events NOT INDEXED WHERE id > ? AND kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`
+
+type AgentTailRow = Row & { deferred: number | null }
+
+/** A third of agent rows carry no meta; they share this one. */
+const NO_META: Record<string, string> = Object.freeze({})
+
+/** Where a deferred body's row id is kept: not enumerable, so a spread or `toEqual` never sees it. */
+const ROW_ID = Symbol('rowId')
+
+const deferredBodyOf = (read: (id: number) => string | null): PropertyDescriptor => ({
+  get(this: { [ROW_ID]: number }) {
+    return read(this[ROW_ID])
+  },
+  enumerable: true,
+})
 
 const toLogged = (row: Row): LoggedEventRow => ({
   id: row.id,
@@ -299,6 +325,13 @@ export class EventLog implements EventStore {
   private readonly opened: { id: number; at: number }
   /** CC-1459: the agent rows read so far, and the log's highest id when they were read. */
   private agentCache: { rows: AgentEventRow[]; throughId: number } = { rows: [], throughId: 0 }
+  private bodyById: StatementSync | undefined
+  private strings = new Map<string, string>()
+  /**
+   * One getter for every deferred body, so those rows share V8 hidden classes: a closure per
+   * row gave each its own, about 1 KB apiece.
+   */
+  private readonly deferredBody = deferredBodyOf(id => this.bodyOf(id))
 
   constructor(dbPath?: string, options: { noticeTtlMs?: () => number } = {}) {
     this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
@@ -873,19 +906,61 @@ export class EventLog implements EventStore {
    * The range comes from the db, not from `append`, so rows other processes wrote are seen.
    * `high` is read first: ids follow commit order, so nothing at or below it can commit
    * after it. Inside an open transaction the tail may yet roll back, so it is not kept.
+   * CC-1463: a long body stays in the db and is read by id from a getter (`INLINE_BODY_MAX`).
    */
   agentEvents(): AgentEventRow[] {
     const high = this.latestId()
-    const raw = this.db
-      .prepare(
-        `SELECT * FROM events NOT INDEXED WHERE id > ? AND kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`,
-      )
-      .all(this.agentCache.throughId) as unknown as Row[]
-    const tail = raw.map(toCachedAgentRow)
-    if (this.db.isTransaction) return this.agentCache.rows.concat(tail)
+    const raw = this.db.prepare(AGENT_TAIL_SQL).all(this.agentCache.throughId) as unknown as AgentTailRow[]
+    const kept = !this.db.isTransaction
+    const tail = raw.map(row => this.toCachedAgentRow(row, kept))
+    if (!kept) return this.agentCache.rows.concat(tail)
     for (const row of tail) this.agentCache.rows.push(row)
     this.agentCache.throughId = Math.max(high, this.agentCache.throughId, raw.at(-1)?.id ?? 0)
     return this.agentCache.rows.slice()
+  }
+
+  /**
+   * Frozen because the cache hands the same row to every caller; a mutation would leak into
+   * later folds. A row that is not kept reads its body now: after a rollback there is none to read.
+   */
+  private toCachedAgentRow(row: AgentTailRow, kept: boolean): AgentEventRow {
+    const fields = {
+      kind: row.kind as EventKind,
+      ts: row.ts,
+      actor: this.intern(row.actor),
+      target: row.target === null ? null : this.intern(row.target),
+      msgId: row.msg_id === null ? null : this.intern(row.msg_id),
+      ref: row.ref === null ? null : this.intern(row.ref),
+      meta: this.internedMeta(row.meta),
+    }
+    const agentRow = fields as AgentEventRow
+    if (row.deferred && kept) {
+      Object.defineProperty(agentRow, ROW_ID, { value: row.id })
+      Object.defineProperty(agentRow, 'body', this.deferredBody)
+    } else agentRow.body = row.deferred ? this.bodyOf(row.id) : row.body
+    return Object.freeze(agentRow)
+  }
+
+  /** CC-1463: one copy of each repeated string; an agent id, a name or a tool list recurs across many rows. */
+  private intern(value: string): string {
+    const seen = this.strings.get(value)
+    if (seen !== undefined) return seen
+    this.strings.set(value, value)
+    return value
+  }
+
+  private internedMeta(raw: string | null): Record<string, string> {
+    const meta = (raw ? JSON.parse(raw) : {}) as Record<string, string>
+    const entries = Object.entries(meta)
+    if (entries.length === 0) return NO_META
+    for (const [key, value] of entries) meta[key] = this.intern(value)
+    return Object.freeze(meta)
+  }
+
+  private bodyOf(id: number): string | null {
+    this.bodyById ??= this.db.prepare('SELECT body FROM events WHERE id = ?')
+    const row = this.bodyById.get(id) as { body: string | null } | undefined
+    return row?.body ?? null
   }
 
   /** CC-476: one agent's rows, by the same id rule as `groupByAgent`, so a lookup skips the full fold. */
@@ -939,6 +1014,8 @@ export class EventLog implements EventStore {
 
   close(): void {
     this.agentCache = { rows: [], throughId: 0 }
+    this.bodyById = undefined
+    this.strings = new Map()
     this.db.close()
   }
 }

@@ -2415,6 +2415,18 @@ function shellUnknown(
 /** Reasons unwrap gives for a wrapper it cannot read, which deny only on a line that may reach git or gh. */
 const GATED_REASONS: ReadonlySet<string> = new Set([REASONS.jobOption, REASONS.wrapperValue])
 
+// A bare `[` has no closing bracket to glob with and `[[` is a reserved word, so both run the test builtin (CC-1467).
+const TEST_WORDS: ReadonlyMap<string, readonly [string, string]> = new Map([
+  [`${LIVE}[`, ['[', ']']],
+  [`${LIVE}[${LIVE}[`, ['[[', ']]']],
+])
+
+/** `[` or `[[` when the line's first closing bracket ends the command; zsh runs words after `]]` (`if [[ x ]] cmd`). */
+function testHead(words: readonly string[]): string | undefined {
+  const [name, close] = TEST_WORDS.get(words[0] ?? '') ?? []
+  return close !== undefined && words.indexOf(close, 1) === words.length - 1 ? name : undefined
+}
+
 function checkSimple(
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -2439,7 +2451,7 @@ function checkSimple(
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
   const marked = words.slice(1)
-  const head = resolveWord(words[0] ?? '', cmd, ctx, at)
+  const head = testHead(words) ?? resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand

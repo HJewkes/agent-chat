@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventLog, isTerminalReport, reportKindOf } from '../broker/event-log.js'
 import type { AgentEventRow } from '../broker/event-store.js'
-import { foldAgent, groupByAgent } from '../agents/identity.js'
+import { AgentLog, foldAgent, groupByAgent } from '../agents/identity.js'
 
 const dirs: string[] = []
 
@@ -399,6 +399,19 @@ describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)',
     expect(plan).toContain('events_ref')
     expect(plan).not.toContain('SCAN events')
   })
+
+  it("finds a sender's last message by its own rows, not by walking every message", () => {
+    const log = freshLog()
+    seedInterleaved(log)
+
+    const last = sqlRunBy(log, () => log.lastMessageFrom('a3', { since: 0 }))
+    const report = sqlRunBy(log, () => log.lastStatusReport('a3', ['human'], 0))
+
+    expect(planOf(log, last, 'a3', '0', 'human', 'human').join('\n')).toContain(
+      'events_actor (actor=? AND kind=?)',
+    )
+    expect(planOf(log, report, 'a3', '0', 'human').join('\n')).toContain('events_actor (actor=? AND kind=?)')
+  })
 })
 
 describe('agent rows cached between reads (CC-1459)', () => {
@@ -522,5 +535,86 @@ describe('agent rows cached between reads (CC-1459)', () => {
     expect(() => {
       log.agentEvents()[0]!.meta.extra = 'x'
     }).toThrow(TypeError)
+  })
+})
+
+describe('long agent-row bodies read on demand (CC-1463)', () => {
+  const brief = `do the task\n${'x'.repeat(2000)}`
+
+  function logAt(): { file: string; log: EventLog } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'events.db')
+    return { file, log: new EventLog(file) }
+  }
+
+  const logSpawn = (log: EventLog, name: string, body: string) =>
+    log.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: `id-${name}`, body }).msgId
+
+  it('gives every reader of a cached row its full body', () => {
+    const { log } = logAt()
+    logSpawn(log, 'scout', brief)
+    logSpawn(log, 'agent-x', 'short')
+    log.agentEvents()
+
+    const [long, short] = log.agentEvents()
+
+    expect([long!.body, short!.body]).toEqual([brief, 'short'])
+    expect({ ...long }.body).toBe(brief)
+    expect(JSON.parse(JSON.stringify(long))).toEqual({ ...long, meta: {} })
+    expect(Object.keys(long!)).not.toContain('id')
+  })
+
+  it('keeps the body of a row read inside a transaction that then rolls back', () => {
+    const { log } = logAt()
+    const db = log.ledgerHandle()
+    db.exec('BEGIN IMMEDIATE')
+    logSpawn(log, 'rolled-back', brief)
+    const [row] = log.agentEvents()
+    db.exec('ROLLBACK')
+
+    expect(row!.body).toBe(brief)
+  })
+
+  it('gives the roster each brief, in a frame too', () => {
+    const { log } = logAt()
+    logSpawn(log, 'scout', brief)
+
+    const [agent] = new AgentLog(log).roster()
+
+    expect(agent!.brief).toBe(brief)
+    expect(JSON.parse(JSON.stringify(agent)).brief).toBe(brief)
+  })
+
+  it('reuses the fold until an agent row lands, then folds the new one in', () => {
+    const { file, log } = logAt()
+    const agents = new AgentLog(log)
+    const scout = logSpawn(log, 'scout', brief)
+    const [first] = agents.roster()
+    log.append({ kind: 'message', actor: 'human', target: 'scout', body: 'hello' })
+
+    expect(agents.roster()[0]).toBe(first)
+
+    const other = new EventLog(file)
+    other.append({ kind: 'agent_attached', actor: 'scout', ref: scout })
+    logSpawn(other, 'agent-x', 'short')
+    other.close()
+    const roster = agents.roster()
+
+    expect(Object.fromEntries(roster.map(a => [a.name, a.state]))).toEqual({
+      'agent-x': 'spawning',
+      scout: 'live',
+    })
+  })
+
+  it('hands out identities no caller can change for the next one', () => {
+    const { log } = logAt()
+    logSpawn(log, 'scout', brief)
+    const agents = new AgentLog(log)
+
+    expect(() => {
+      agents.roster()[0]!.state = 'retired'
+    }).toThrow(TypeError)
+    expect(agents.roster()[0]!.state).toBe('spawning')
   })
 })
