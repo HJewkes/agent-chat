@@ -104,6 +104,7 @@ import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 import {
   notifyAsWatchdog,
+  retireStale,
   sendAsOwner,
   sendAsWatchdog,
   withRunningBroker,
@@ -336,6 +337,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     openBlocks: readOpenBlocks,
     page: sendAsWatchdog,
     seatState: seat => readLedger(burndownLedgerPath()).seats?.[seat],
+    retireStale: () => retireStale(client),
   }
 }
 

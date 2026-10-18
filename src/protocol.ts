@@ -1170,8 +1170,11 @@ export type ClientMessage =
    * CC-1470: `noFixRoundCheck` skips the Shepherd fix-round check, for Shepherd's own parks.
    */
   | { t: 'park'; name: string; noFixRoundCheck?: boolean }
-  /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
-  | { t: 'retire_finished'; spawner?: string; prefix?: string; dryRun?: boolean }
+  /**
+   * CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`.
+   * CC-1465: `stale` scopes it to agents exited over 24 h with no worktree left, capped per call.
+   */
+  | { t: 'retire_finished'; spawner?: string; prefix?: string; stale?: boolean; dryRun?: boolean }
   /**
    * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
    * resolved by the broker from the requesting connection, the same discipline

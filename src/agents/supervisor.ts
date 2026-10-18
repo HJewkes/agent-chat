@@ -3353,6 +3353,7 @@ export class Supervisor implements TeleportHost {
       current: (agentId: string) => this.core.agents.get(agentId),
       presence: (agent: AgentIdentity) => this.namePresence(agent),
       retire: (agentId: string) => this.retireById(agentId),
+      now: () => Date.now(),
       ...(this.shepherdSkip === undefined ? {} : { skip: this.shepherdSkip }),
     }
     return retireFinished(port, req)

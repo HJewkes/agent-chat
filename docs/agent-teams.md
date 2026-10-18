@@ -1514,6 +1514,13 @@ the same retire as `agent retire <name>`, so its
 refusals still apply; the liveness check is repeated just before each one. A failed retire
 is reported and the rest continue.
 
+The seat watchdog (CC-1465) runs the same bulk retire on every pass, burndown paused or not,
+over a broker-side stale scope: machine-wide, but only agents that exited over 24 hours ago and
+whose allocated worktree is no longer on disk. A detached agent is never in it, and one whose
+tree is still there is skipped with `still holds <tree>; park it first`. Every rule above still
+applies. One call retires at most 200, so a backlog drains over several passes; the pass prints a
+line only when it retired or failed to.
+
 `agent park` (CC-282) removes a finished agent's tree and keeps its branch. It takes an exited
 agent, or a detached one this broker no longer tracks (the state after a broker restart), and
 refuses a live or still-tracked one. For a detached agent it also lists process working

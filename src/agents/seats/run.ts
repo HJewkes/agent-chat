@@ -1,6 +1,7 @@
 import { accountGroups, accountIdentity, type AccountGroups } from '../account-identity.js'
 import type { BudgetRead } from '../budget.js'
 import { MAX_READING_AGE_SECONDS, dayStart, type AccountReading } from '../burndown/budget-gate.js'
+import type { RetireFinishedReply } from '../burndown/daily-retire.js'
 import type { SeatState } from '../burndown/ledger.js'
 import { seatSpend } from '../burndown/spend-meter.js'
 import {
@@ -28,6 +29,7 @@ import { checkAttended } from './attended.js'
 import { blockLive, blockPageChange } from './block-page.js'
 import type { OpenBlock } from '../../seat-blocks.js'
 import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
+import { staleRetirePass } from './stale-retire.js'
 import { seatAccount, type SeatAccount } from './seat-account.js'
 import {
   PANE_HOLD_CAP_MS,
@@ -142,6 +144,8 @@ export interface WatchdogDeps {
   page?: (to: string, text: string) => Promise<WakeResult>
   /** CC-1099: the seat's burndown ledger state, whose samples count spend before the meters do; absent, the meters alone. */
   seatState?: (seat: string) => SeatState | undefined
+  /** CC-1465: the broker's stale-scope `retire_finished`, every pass, burndown paused or not; absent, the pass retires nothing. */
+  retireStale?: () => Promise<RetireFinishedReply>
 }
 
 export interface WatchdogOptions {
@@ -1059,6 +1063,12 @@ async function blockPages(pass: Pass): Promise<string[]> {
   return lines
 }
 
+function staleRetire(pass: Pass): Promise<string[]> {
+  const { retireStale, logEvent } = pass.deps
+  if (pass.dryRun || retireStale === undefined) return Promise.resolve([])
+  return staleRetirePass({ retireStale, ...(logEvent === undefined ? {} : { log: logEvent }) })
+}
+
 async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<[Pass, string]> {
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
@@ -1118,6 +1128,7 @@ function passHead(pass: Pass, charter: string): string[] {
 async function passTail(pass: Pass): Promise<string[]> {
   const lines = pass.dryRun ? [] : await serviceChange(pass)
   lines.push(...(await blockPages(pass)))
+  lines.push(...(await staleRetire(pass)))
   const paceFault = pass.dryRun ? undefined : publishPoolPace(pass)
   if (paceFault !== undefined) lines.push(paceFault)
   lines.push(...pass.probeFaults)
