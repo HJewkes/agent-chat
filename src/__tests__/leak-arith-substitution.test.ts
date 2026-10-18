@@ -42,6 +42,7 @@ describe('a quoted substitution in an arithmetic test operand', () => {
   it.each([
     "[[ 1 = 1 && 1 -eq 'a[$(git push --no-verify)]' ]]",
     "[[ 1 = 2 || 1 -lt 'a[$(git push --no-verify)]' ]]",
+    "[[ 1 = 1 &&\n1 -eq 'a[$(git push --no-verify)]' ]]",
     "[[ ! 1 -eq 'a[$(git push --no-verify)]' ]]",
     "[[ ( 1 -eq 'a[$(git push --no-verify)]' ) ]]",
     "[ 1 = 1 -a 1 -eq 'a[$(git push --no-verify)]' ]",
@@ -54,9 +55,12 @@ describe('a quoted substitution in an arithmetic test operand', () => {
     expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
   })
 
-  it('fails closed on an escaped substitution, which bash leaves literal but the guard cannot tell apart', () => {
-    expect(checkCommand('[[ 1 -eq "a[\\$(git push --no-verify)]" ]]', ctx)).toBe(REASONS.arithSubstitution)
-  })
+  it.each(['[[ 1 -eq "a[\\$(git push --no-verify)]" ]]', '[[ 1 -eq a[$\\(git push --no-verify\\)] ]]'])(
+    'fails closed on an escaped substitution, which bash leaves literal but the guard cannot tell apart: %s',
+    line => {
+      expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+    },
+  )
 })
 
 describe('a quoted substitution in an arithmetic body', () => {
@@ -69,6 +73,9 @@ describe('a quoted substitution in an arithmetic body', () => {
     "echo $[ 'a[$(git push --no-verify)]' ]",
     "for (( i='a[$(git push --no-verify)]'; 0; )); do :; done",
     "(( $'a[\\x24(git push --no-verify)]' ))",
+    "(\\\n( 'a[$(git push --no-verify)]' ))",
+    "((\\\n 'a[$(git push --no-verify)]' ))",
+    "(( 'a[$(git push --no-verify)]' )\\\n)",
   ])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
   })

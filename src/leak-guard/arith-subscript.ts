@@ -65,7 +65,7 @@ export function arithSubscriptNames(cmd: SimpleCommand): string[] {
 const ARITH_TESTS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge'])
 // A `$(...)`, backtick or funsub; an arithmetic body has each one the splitter read blanked, and `$'...'` is not decoded.
 const BODY_SUBSTITUTION = /\$\(|`|\$\{[\s|]|\$'/
-const QUOTED_SUBSTITUTION = new RegExp(`(?<!${LIVE})(?:\\$\\(|\`|\\$\\{[\\s|])`)
+const OPENER = /\$\(|`|\$\{[\s|]/
 
 /** `word` with each substitution the splitter read taken out, so a quote inside one is not mistaken for the word's. */
 function withoutLiveSubstitutions(word: string, cmd: SimpleCommand): string {
@@ -86,5 +86,6 @@ function comparisonOperands(cmd: SimpleCommand): string[] {
  */
 export function hidesArithSubstitution(cmd: SimpleCommand): boolean {
   if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(body))) return true
-  return comparisonOperands(cmd).some(word => QUOTED_SUBSTITUTION.test(withoutLiveSubstitutions(word, cmd)))
+  // A live `$` before an escaped `\(` is still `$(` once quotes are removed, so the opener is looked for unmarked.
+  return comparisonOperands(cmd).some(word => OPENER.test(unmark(withoutLiveSubstitutions(word, cmd))))
 }
