@@ -576,14 +576,14 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
     expect(row!.body).toBe(brief)
   })
 
-  it('gives the roster each brief, in a frame too', () => {
+  it('gives the roster each brief, and keeps it out of a frame (CC-1484)', () => {
     const { log } = logAt()
     logSpawn(log, 'scout', brief)
 
     const [agent] = new AgentLog(log).roster()
 
     expect(agent!.brief).toBe(brief)
-    expect(JSON.parse(JSON.stringify(agent)).brief).toBe(brief)
+    expect(JSON.parse(JSON.stringify(agent))).not.toHaveProperty('brief')
   })
 
   it('reuses the fold until an agent row lands, then folds the new one in', () => {

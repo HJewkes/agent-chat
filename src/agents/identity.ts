@@ -62,12 +62,16 @@ const generationOf = (row: AgentEventRow): number => {
 /** Where an identity's spawn row is kept for its `brief` getter: not enumerable, so no frame or spread carries it. */
 const SPAWN_ROW = Symbol('spawnRow')
 
-/** One getter for every identity, so they share V8 hidden classes; a closure apiece gave each its own. */
+/**
+ * One getter for every identity, so they share V8 hidden classes; a closure apiece gave each its own.
+ * CC-1484: not enumerable, because a long brief is a db read and every `agents` reply is stringified.
+ * Its readers run in the broker, on the identity itself.
+ */
 const BRIEF: PropertyDescriptor = {
   get(this: { [SPAWN_ROW]: AgentEventRow }) {
     return this[SPAWN_ROW].body ?? ''
   },
-  enumerable: true,
+  enumerable: false,
 }
 
 /** CC-1463: `brief` reads the spawn row's body when asked, so a fold held between reads holds no briefs. */
