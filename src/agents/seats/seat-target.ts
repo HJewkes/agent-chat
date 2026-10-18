@@ -49,16 +49,23 @@ function onAccount(agent: SeatAgent, account: SeatAccount | undefined): boolean 
   return account !== undefined && sameDir(agent.configDir, account.configDir)
 }
 
-/** A row the roster carries is not retired, so every spawned one but the newest still holds the name. */
+/**
+ * CC-1453: a row the broker launched leases the seat's name and resumes by name: a spawn, or a teleport
+ * successor, which a hand-started session's successor is though it is recorded adopted.
+ */
+export const leasesName = (agent: SeatAgent): boolean =>
+  agent.origin !== 'adopted' || agent.teleportFrom !== undefined
+
+/** A row the roster carries is not retired, so every leasing row but the newest still holds the name. */
 export function seatTarget(agents: SeatAgent[], seat: string, account: SeatAccount | undefined): SeatTarget {
   const [latest, ...older] = agents.filter(agent => agent.name === seat).sort(newestFirst)
   // No row: the broker has nothing to resume by name either, so nothing stale can wake.
   if (latest === undefined) return { kind: 'resume-by-name' }
   const stale = older.flatMap(agent =>
-    agent.origin !== 'adopted' && agent.agentId !== undefined ? [agent.agentId] : [],
+    leasesName(agent) && agent.agentId !== undefined ? [agent.agentId] : [],
   )
   const here = onAccount(latest, account)
-  if (latest.origin !== 'adopted' && here === true) return { kind: 'resume-by-name' }
+  if (leasesName(latest) && here === true) return { kind: 'resume-by-name' }
   const spawned = [latest, ...older].find(agent => agent.origin !== 'adopted')
   const launched = spawned === undefined ? {} : { spawned }
   if (latest.origin === 'adopted' && here !== false && latest.sessionId !== undefined)

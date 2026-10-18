@@ -364,18 +364,18 @@ describe('AgentLog over a real event log', () => {
     expect(new AgentLog(log).byName('scout')).toBeUndefined()
   })
 
-  describe('which identity supersedes a spawned one (CC-959)', () => {
-    afterEach(() => void vi.useRealTimers())
+  afterEach(() => void vi.useRealTimers())
 
-    /** Appends each step a second after the last, so spawn order is unambiguous. */
-    function inOrder(...steps: Array<() => unknown>): void {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      for (const step of steps) {
-        vi.setSystemTime(Date.now() + 1_000)
-        step()
-      }
+  /** Appends each step a second after the last, so spawn order is unambiguous. */
+  function inOrder(...steps: Array<() => unknown>): void {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    for (const step of steps) {
+      vi.setSystemTime(Date.now() + 1_000)
+      step()
     }
+  }
 
+  describe('which identity supersedes a spawned one (CC-959)', () => {
     it('names the newest hand-started session under the name, across accounts', () => {
       const log = freshLog()
       inOrder(
@@ -468,6 +468,82 @@ describe('AgentLog over a real event log', () => {
       const agents = new AgentLog(log)
 
       expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('opened-here')
+    })
+  })
+
+  describe('a teleport chain that began as a hand-started session (CC-1453)', () => {
+    /** A broker-launched successor of `from`, recorded adopted as the teleport host writes it. */
+    const succeed = (log: EventLog, id: string, from: string, generation: number) =>
+      log.append({
+        kind: 'agent_spawned',
+        actor: 'seat',
+        target: 'seat',
+        msgId: id,
+        meta: {
+          origin: 'adopted',
+          profile: 'inherited',
+          teleport_from: from,
+          generation: String(generation),
+        },
+      })
+    const attach = (log: EventLog, id: string) =>
+      log.append({ kind: 'agent_attached', actor: 'seat', ref: id })
+    const retire = (log: EventLog, id: string, body: string) =>
+      log.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'seat', ref: id, body })
+
+    it('resolves the name to the newest successor, two teleports on', () => {
+      const log = freshLog()
+      inOrder(
+        () => adopt(log, 'a', 'seat', 'sess-a'),
+        () => attach(log, 'a'),
+        () => succeed(log, 'b', 'a', 2),
+        () => retire(log, 'a', 'superseded by teleport'),
+        () => attach(log, 'b'),
+        () => succeed(log, 'c', 'b', 3),
+        () => retire(log, 'b', 'superseded by teleport'),
+        () => attach(log, 'c'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.byName('seat')?.agentId).toBe('c')
+      expect(agents.nameHolder('seat')?.agentId).toBe('c')
+    })
+
+    // The incident: an old spawned row, a hand restart, an exited successor, then its successor that never started.
+    it('resolves an exited successor over an older spawned row, past a successor that never started', () => {
+      const log = freshLog()
+      inOrder(
+        () => spawn(log, 'old', 'seat'),
+        () => log.append({ kind: 'agent_exited', actor: 'seat', ref: 'old' }),
+        () => adopt(log, 'hand', 'seat', 'sess-h'),
+        () => attach(log, 'hand'),
+        () => succeed(log, 'g2', 'hand', 2),
+        () => retire(log, 'hand', 'superseded by teleport'),
+        () => attach(log, 'g2'),
+        () => succeed(log, 'g3', 'g2', 3),
+        () => retire(log, 'g3', 'teleport successor did not start: no register'),
+        () => log.append({ kind: 'agent_exited', actor: 'seat', ref: 'g2' }),
+      )
+      const agents = new AgentLog(log)
+
+      const current = agents.byName('seat')
+      expect(current?.agentId).toBe('g2')
+      expect(agents.supersededBy(current!)).toBeUndefined()
+    })
+
+    it('still lets a successor that ran supersede its predecessor', () => {
+      const log = freshLog()
+      inOrder(
+        () => adopt(log, 'hand', 'seat', 'sess-h'),
+        () => succeed(log, 'g2', 'hand', 2),
+        () => attach(log, 'g2'),
+        () => succeed(log, 'g3', 'g2', 3),
+        () => attach(log, 'g3'),
+        () => retire(log, 'g3', 'retired by hand'),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('g3')
     })
   })
 

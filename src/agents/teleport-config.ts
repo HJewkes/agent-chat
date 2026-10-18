@@ -37,7 +37,7 @@ const isSurfaceName = (value: string): value is SurfaceName =>
  * session's configuration, it would invent one and call it continuity. Its
  * `surface` is a placeholder; `teleportConfig` chooses the real one.
  */
-const inheritedProfile = (model: string | undefined): AgentProfile => ({
+export const inheritedProfile = (model: string | undefined): AgentProfile => ({
   name: 'inherited',
   description: 'the configuration the predecessor session was already running under',
   model: model ?? '',
