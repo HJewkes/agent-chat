@@ -542,6 +542,11 @@ export class Registry<C> {
     return this.findByName(name)?.[1].dnd ?? false
   }
 
+  /** CC-1455: whether a push to `name` lands on a print-mode host, which never shows it. */
+  isPrintHost(name: string): boolean {
+    return this.findByName(name)?.[1].channels === 'print'
+  }
+
   list(): SessionInfo[] {
     return [...this.entries.values()].map(e => ({
       name: e.name,
@@ -995,6 +1000,13 @@ export class Registry<C> {
         reason:
           `"${entry.name}" was started without agent-chat on its --channels flag, so it is not woken by ` +
           'pushes. The message is in its inbox and it will see it on its next chat_inbox.',
+      }
+    if (entry.channels === 'print')
+      return {
+        status: 'headless_no_channel',
+        reason:
+          `"${entry.name}" is a print-mode (claude -p) session, which takes no pushes. ` +
+          'It sees this only if it calls chat_inbox.',
       }
     return { status: 'delivered' }
   }

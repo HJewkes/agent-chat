@@ -614,8 +614,13 @@ export interface DeliveredMessage {
  * inbox but is never WOKEN by it. Before CC-73 this reported `delivered`, which
  * is why sessions sat for hours accumulating hundreds of messages while every
  * sender believed they had got through.
+ *
+ * `headless_no_channel` is the same for a print-mode (`claude -p`) host, which
+ * drops every push even with the flag (CC-1455): logged, never seen unless it
+ * calls chat_inbox.
  */
-export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel'
+export type RecipientStatus =
+  'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel' | 'headless_no_channel'
 
 /**
  * A delivered message carrying the log id that ordered it, so a reader can say

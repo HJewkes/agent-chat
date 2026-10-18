@@ -68,6 +68,17 @@ describe('channelStatusFromArgv', () => {
     expect(channelStatusFromArgv(['claude', '--channels', 'plugin:agent-chat-extra@mk'])).toBe('no')
     expect(channelStatusFromArgv(['claude', '--channels', 'not-agent-chat'])).toBe('no')
   })
+
+  it('reads a print-mode host as print even when it names agent-chat (CC-1455)', () => {
+    expect(channelStatusFromArgv(['claude', '--print', '--channels', 'plugin:agent-chat@local'])).toBe(
+      'print',
+    )
+    expect(channelStatusFromArgv(['claude', '--channels', 'plugin:agent-chat@local', '-p'])).toBe('print')
+  })
+
+  it('does not read a -p in the prompt past -- as print mode', () => {
+    expect(channelStatusFromArgv(['claude', '--channels', 'plugin:agent-chat@local', '--', '-p'])).toBe('yes')
+  })
 })
 
 describe('hostChannelStatus', () => {

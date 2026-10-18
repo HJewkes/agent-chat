@@ -122,6 +122,21 @@ const replyHeld = (conn: Conn, to: string, msgId: string): void => {
   })
 }
 
+/**
+ * CC-1455: the route row's `delivered` says whether any recipient will see the push, not just that
+ * one was resolved. A print-mode host takes the row but never shows it, so it counts for nothing.
+ */
+const routeDelivery = (
+  result: RouteResult<Conn>,
+): { delivered: boolean; reason?: string; unwoken?: string[] } => {
+  const unwoken = result.results.filter(r => r.status === 'headless_no_channel').map(r => r.name)
+  const delivered = result.ok && result.recipients.length > unwoken.length
+  if (unwoken.length === 0) return { delivered }
+  return result.recipients.length === 1
+    ? { delivered, reason: 'headless_no_channel' }
+    : { delivered, unwoken }
+}
+
 /** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
 const replyForwarded = (conn: Conn, to: string, forwarded: SeatForwardResult): void => {
   const { steward, msgId } = forwarded
@@ -1052,7 +1067,7 @@ export class SocketServer {
       msgId: result.msgId,
       from,
       to,
-      delivered: result.ok,
+      ...routeDelivery(result),
       recipients: result.recipients,
     })
 
