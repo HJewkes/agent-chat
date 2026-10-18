@@ -40,9 +40,11 @@ const direct = (msgId: string): SpoolRecord => ({
 })
 
 function installed(event: 'Stop' | 'PostToolUse'): string {
-  const hooks = (buildHookSettings(CLI, undefined, undefined, AGENT) as { hooks: Record<string, HookEntry[]> })
-    .hooks
-  return hooks[event]!.flatMap(entry => entry.hooks).find(hook => hook.command.includes(' inbox-hook '))!.command
+  const hooks = (
+    buildHookSettings(CLI, undefined, undefined, AGENT) as { hooks: Record<string, HookEntry[]> }
+  ).hooks
+  return hooks[event]!.flatMap(entry => entry.hooks).find(hook => hook.command.includes(' inbox-hook '))!
+    .command
 }
 
 function runInstalled(event: 'Stop' | 'PostToolUse', payload: Record<string, unknown>): string {
