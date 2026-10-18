@@ -9,11 +9,11 @@ import { Command } from 'commander'
 import { brokerCwd } from '../agents/stable-cwd.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
-import { SURFACE_NAMES } from '../protocol.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentLsVerb } from './verbs/agent-ls.js'
+import { agentSpawnVerb } from './verbs/agent-spawn-command.js'
 import { leakScanVerb } from './verbs/leak-scan-command.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
@@ -127,33 +127,11 @@ function addAgentCommands(program: Command): void {
   const agent = program.command('agent').description('durable agents').helpGroup(AGENTS)
 
   addVerb(agent, agentLsVerb, { isDefault: true, usageExit: 1, exitOnSuccess: false })
-  agent
-    // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
-    // way to supply it; `resolveBrief` still refuses a spawn with neither, so
-    // the usage error moved rather than disappeared.
-    .command('spawn <name> <profile> [brief...]')
-    .description('start a new agent')
-    .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
-    .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
-    .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
-    .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
-    .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
-    .option(
-      '--surface <surface>',
-      `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
-      agents.parseSurface,
-    )
-    .option(
-      '--spawned-as <who>',
-      'shepherd or burndown: the automation this spawn is on behalf of',
-      agents.parseSpawnedAs,
-    )
-    .option('--remote-control', 'run with Remote Control (coordinator profiles only)')
-    .option(
-      '--host <machine>',
-      'the machine to launch on, a configured alias or a hostname (default: this one)',
-    )
-    .action(agents.agentSpawn)
+  const spawn = addVerb(agent, agentSpawnVerb, { usageExit: 1, exitOnSuccess: false })
+  for (const option of spawn.options) {
+    if (option.long === '--surface') option.argParser(agents.parseSurface)
+    if (option.long === '--spawned-as') option.argParser(agents.parseSpawnedAs)
+  }
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
   addVerb(agent, agentResume)

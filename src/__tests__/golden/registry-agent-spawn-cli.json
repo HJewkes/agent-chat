@@ -1,0 +1,1301 @@
+[
+  {
+    "name": "absent brief and options",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "one word",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "brief"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [
+          "brief"
+        ],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "words and spaces",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "one",
+      " two ",
+      "",
+      "\t"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [
+          "one",
+          " two ",
+          "",
+          "\t"
+        ],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw empty name and profile",
+    "argv": [
+      "agent",
+      "spawn",
+      "",
+      "",
+      "brief"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "",
+        "profile": "",
+        "words": [
+          "brief"
+        ],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw whitespace name and profile",
+    "argv": [
+      "agent",
+      "spawn",
+      " name ",
+      "\t",
+      "brief"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": " name ",
+        "profile": "\t",
+        "words": [
+          "brief"
+        ],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "dash brief after delimiter",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--",
+      "--literal",
+      "-x"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [
+          "--literal",
+          "-x"
+        ],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "brief stdin omitted brief",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--brief-stdin"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "briefStdin",
+            true
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "brief stdin with words",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "brief",
+      "--brief-stdin"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [
+          "brief"
+        ],
+        "options": [
+          [
+            "briefStdin",
+            true
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "remote control",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--remote-control"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "remoteControl",
+            true
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "all raw options",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "brief",
+      "--briefing",
+      "auto",
+      "--brief-stdin",
+      "--config-dir",
+      "/synthetic/account",
+      "--task",
+      "TP-synthetic",
+      "--role",
+      "reviewer",
+      "--surface",
+      "headless",
+      "--spawned-as",
+      "shepherd",
+      "--remote-control",
+      "--host",
+      "synthetic-host"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [
+          "brief"
+        ],
+        "options": [
+          [
+            "briefStdin",
+            true
+          ],
+          [
+            "briefing",
+            "auto"
+          ],
+          [
+            "configDir",
+            "/synthetic/account"
+          ],
+          [
+            "host",
+            "synthetic-host"
+          ],
+          [
+            "remoteControl",
+            true
+          ],
+          [
+            "role",
+            "reviewer"
+          ],
+          [
+            "spawnedAs",
+            "shepherd"
+          ],
+          [
+            "surface",
+            "headless"
+          ],
+          [
+            "task",
+            "TP-synthetic"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw briefing",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--briefing",
+      " slug "
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "briefing",
+            " slug "
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw config-dir",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--config-dir",
+      ""
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "configDir",
+            ""
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw task",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--task",
+      " task "
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "task",
+            " task "
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw role",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--role",
+      "other"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "role",
+            "other"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "raw host",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--host",
+      " host "
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "host",
+            " host "
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "surface iterm",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "iterm-pane"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "surface",
+            "iterm-pane"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "spawned as burndown",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--spawned-as",
+      "burndown"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "spawnedAs",
+            "burndown"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeated string",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--host",
+      "first",
+      "--host",
+      "second"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "host",
+            "second"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeated switches",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--brief-stdin",
+      "--brief-stdin",
+      "--remote-control",
+      "--remote-control"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "briefStdin",
+            true
+          ],
+          [
+            "remoteControl",
+            true
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "repeated parser valid",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "headless",
+      "--surface",
+      "iterm-pane",
+      "--spawned-as",
+      "shepherd",
+      "--spawned-as",
+      "burndown"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "spawnedAs",
+            "burndown"
+          ],
+          [
+            "surface",
+            "iterm-pane"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "surface invalid",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "synthetic-invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument 'synthetic-invalid' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "surface whitespace",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      " headless "
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument ' headless ' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "spawned as invalid",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--spawned-as",
+      "synthetic-invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--spawned-as <who>' argument 'synthetic-invalid' is invalid. one of: shepherd, burndown\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "surface invalid then unknown",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "bad",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument 'bad' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown then surface invalid",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--unknown",
+      "--surface",
+      "bad"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument 'bad' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "spawned as invalid then unknown",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--spawned-as",
+      "bad",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--spawned-as <who>' argument 'bad' is invalid. one of: shepherd, burndown\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown then spawned as invalid",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--unknown",
+      "--spawned-as",
+      "bad"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--spawned-as <who>' argument 'bad' is invalid. one of: shepherd, burndown\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "valid then invalid repeated parser",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "headless",
+      "--surface",
+      "bad"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument 'bad' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid then valid repeated parser",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface",
+      "bad",
+      "--surface",
+      "headless"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument 'bad' is invalid. one of: headless, iterm-pane, iterm-tab, iterm-window, tmux-window\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing required both",
+    "argv": [
+      "agent",
+      "spawn"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: missing required argument 'name'\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing profile",
+    "argv": [
+      "agent",
+      "spawn",
+      "name"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: missing required argument 'profile'\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "missing value before unknown",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--host",
+      "--unknown"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": [
+          [
+            "host",
+            "--unknown"
+          ]
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "missing parser value",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--surface"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: option '--surface <surface>' argument missing\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "agent",
+      "spawn",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat agent spawn [options] <name> <profile> [brief...]\n\nstart a new agent\n\nOptions:\n  --briefing <slug|auto>  prepend an active-work initiative's orientation to the\n                          brief\n  --brief-stdin           read the brief from stdin, keeping it out of\n                          world-readable argv\n  --config-dir <path>     the Claude config dir, and therefore the account, to\n                          run it on\n  --task <id>             the task id the agent works on, recorded on its agent\n                          record\n  --role <role>           implementer, reviewer, fix-round-<n>, shepherd-review,\n                          planner or other\n  --surface <surface>     where it runs, overriding the profile's surface:\n                          headless, iterm-pane, iterm-tab, iterm-window,\n                          tmux-window\n  --spawned-as <who>      shepherd or burndown: the automation this spawn is on\n                          behalf of\n  --remote-control        run with Remote Control (coordinator profiles only)\n  --host <machine>        the machine to launch on, a configured alias or a\n                          hostname (default: this one)\n  -h, --help              display help for command\n",
+    "events": [
+      "agents-import",
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "awaited",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 7,
+    "stdout": "owned output\n",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      "late",
+      "awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "assigned code",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 9,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "immediate success",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "immediate failure",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "natural stdout stderr",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 7,
+    "stdout": "owned output without newline",
+    "stderr": "synthetic spawn diagnostic\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "rejected error",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic spawn failure\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected code69",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected object",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected array",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected string",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected number",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "69\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected null",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "null\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "rejected undefined",
+    "argv": [
+      "agent",
+      "spawn",
+      "synthetic-name",
+      "synthetic-profile"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "undefined\n",
+    "events": [
+      "agents-import",
+      {
+        "effect": "agentSpawn",
+        "name": "synthetic-name",
+        "profile": "synthetic-profile",
+        "words": [],
+        "options": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]
