@@ -22,12 +22,20 @@ export function isReviewerSpawn(profileName: string, agentName: string): boolean
 }
 
 /**
+ * CC-1469: deliberately looser than `isReviewerSpawn`, because a tree name feeds only pool and
+ * state counting. A whole `review` token counts, so an adversarial `seat-1-adv-review` is a
+ * reviewer tree and `preview` is not; the spawn side leaves `review` out, since a reviewer spawn
+ * is forced into a worktree and parked at report.
+ */
+const REVIEWER_TREE_TOKENS = new Set(['reviewer', 'review'])
+
+/**
  * CC-1040: a tree on disk carries only its directory name, so the reviewer worktree pool is
  * decided from the agent name alone, the same way when allocating and when counting.
  */
 export function isReviewerTreeName(name: string): boolean {
   const tokens = tokensOf(name)
-  return tokens[0] === 'rv' || tokens.includes('reviewer')
+  return tokens[0] === 'rv' || tokens.some(t => REVIEWER_TREE_TOKENS.has(t))
 }
 
 /**

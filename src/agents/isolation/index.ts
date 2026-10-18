@@ -2,7 +2,7 @@ import { ISOLATION_NAMES, type IsolationName } from '../../protocol.js'
 import { fileOwnershipStrategy } from './file-ownership.js'
 import { noneStrategy } from './none.js'
 import { toolsetStrategy } from './toolset.js'
-import { worktreeStrategy, type WorktreeRecord } from './worktree.js'
+import { worktreeStrategy, type TreeHolders, type WorktreeRecord } from './worktree.js'
 
 /**
  * A peer an isolation strategy is allowed to reason about: an agent that is both
@@ -59,6 +59,8 @@ export interface IsolationContext {
    * it cannot be fetched, never quietly replaced by the default branch.
    */
   baseRef?: string
+  /** CC-1469: who holds each worktree, read only when the pool refuses this spawn. */
+  treeHolders?: TreeHolders
 }
 
 export interface Allocation {
