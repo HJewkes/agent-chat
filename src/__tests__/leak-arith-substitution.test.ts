@@ -86,7 +86,7 @@ describe('a quoted substitution in other text the shell evaluates as arithmetic'
     "let 'a[$(git push --no-verify)]'",
     "declare -i n='a[$(git push --no-verify)]'",
     "typeset -i n='a[$(git push --no-verify)]'",
-    "local -i n='a[$(git push --no-verify)]'",
+    "f() { local -i n='a[$(git push --no-verify)]'; }; f",
     "a['$(git push --no-verify)']=1",
     "a['$(git push --no-verify)']+=1",
     "declare -a 'a[$(git push --no-verify)]=1'",
@@ -100,6 +100,76 @@ describe('a quoted substitution in other text the shell evaluates as arithmetic'
     'a[$(git push --no-verify)]=1',
   ])('still checks the unquoted form as a command: %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+  })
+})
+
+// Each runs the substitution in bash 5.3, through an attribute, nameref or name operand set elsewhere.
+describe('a quoted subscript substitution in any word', () => {
+  it.each([
+    "declare -ai q=( '1+a[$(git push --no-verify)]' )",
+    "declare -i y; y='a[$(git push --no-verify)]'",
+    "declare -i y; y+='a[$(git push --no-verify)]'",
+    "declare -ai q; q+=( 'a[$(git push --no-verify)]' )",
+    "declare -ai q; q[0]='a[$(git push --no-verify)]'",
+    "declare -i y; export y='a[$(git push --no-verify)]'",
+    "declare -i y; declare y='a[$(git push --no-verify)]'",
+    "declare -i y; printf -v y %s 'a[$(git push --no-verify)]'",
+    "declare -i y; for y in 'a[$(git push --no-verify)]'; do :; done",
+    "RANDOM='a[$(git push --no-verify)]'",
+    "SRANDOM='a[$(git push --no-verify)]'",
+    "OPTIND='a[$(git push --no-verify)]'",
+    "HISTCMD='a[$(git push --no-verify)]'",
+    "[[ -v 'a[$(git push --no-verify)]' ]]",
+    "test -v 'a[$(git push --no-verify)]'",
+    "printf -v 'a[$(git push --no-verify)]' x",
+    "read 'a[$(git push --no-verify)]' <<< x",
+    "a=( ['$(git push --no-verify)']=1 )",
+    "declare -n r='a[$(git push --no-verify)]'; r=1",
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each([
+    "unset 'a[$(git push --no-verify)]'",
+    "mapfile 'a[$(git push --no-verify)]' < /dev/null",
+    "declare -A z; z=( ['$(git push --no-verify)']=1 )",
+    "[[ x == 'a[$(git status)]' ]]",
+    "grep 'a[$(x)]' notes.txt",
+  ])('fails closed where bash 5.3 leaves it literal or no subscript is read: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+})
+
+// The command past its wrappers, so `let` and `declare -i` are found behind any of them.
+describe('a wrapped let or integer declaration', () => {
+  it.each([
+    "builtin let 'a[$(git push --no-verify)]'",
+    "command let 'a[$(git push --no-verify)]'",
+    "command -p let 'a[$(git push --no-verify)]'",
+    "\\builtin let 'a[$(git push --no-verify)]'",
+    "x=1 let 'a[$(git push --no-verify)]'",
+    "PATH=$PATH let 'a[$(git push --no-verify)]'",
+    "time let 'a[$(git push --no-verify)]'",
+    "time -p let 'a[$(git push --no-verify)]'",
+    "! let 'a[$(git push --no-verify)]'",
+    "{ let 'a[$(git push --no-verify)]'; }",
+    "if let 'a[$(git push --no-verify)]'; then :; fi",
+    "while let 'a[$(git push --no-verify)]'; do break; done",
+    "until let 'a[$(git push --no-verify)]'; do break; done",
+    "for i in 1; do let 'a[$(git push --no-verify)]'; done",
+    "builtin declare -i n='a[$(git push --no-verify)]'",
+    "command typeset -i n='a[$(git push --no-verify)]'",
+    "f() { builtin local -i n='a[$(git push --no-verify)]'; }; f",
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each([
+    "builtin let '$(git push --no-verify)'",
+    "x=1 declare -i n='$(git push --no-verify)'",
+    "time -p let '1+$(git push --no-verify)'",
+  ])('fails closed on a bare operand behind a wrapper, which bash 5.3 rejects: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
   })
 })
 
@@ -130,7 +200,6 @@ describe('arithmetic the guard reads', () => {
     '[ "$(git status --porcelain | wc -l)" -eq 0 ]',
     '[[ $(git -C "$(pwd)" rev-list --count HEAD) -gt 0 ]]',
     '[[ 1 -eq a[$(git status)] ]]',
-    "[[ x == 'a[$(git status)]' ]]",
     "(( $(git rev-list --count 'a..b') > 0 ))",
     '(( "$(wc -l < f)" > 3 ))',
     'for ((i=0;i<3;i++)); do :; done',
@@ -144,6 +213,12 @@ describe('arithmetic the guard reads', () => {
     'declare -a arr',
     'export PATH=/usr/bin',
     '[[ $(echo "x\'s") -eq 1 ]]',
+    "awk '{ n[$1]++ } END { for (k in n) print k }' f",
+    "grep -E '^[a-z]+$' f",
+    "sed 's/[0-9]$//' f",
+    "jq '.items[0].name' f",
+    '[[ $x == [a-z]* ]]',
+    'a[$(git rev-parse --short HEAD)]=1',
   ])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })

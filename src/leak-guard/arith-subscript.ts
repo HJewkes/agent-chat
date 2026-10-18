@@ -79,40 +79,38 @@ function comparisonOperands(marked: string[]): string[] {
   )
 }
 
-const SUBSCRIPT_DECLARERS = new Set([...INTEGER_DECLARERS, 'readonly', 'export'])
-const NAME_SUBSCRIPT = new RegExp(`^${NAME}\\[`)
-
-/** A `declare 'a[...]=1'` operand, whose subscript is evaluated even when the whole word is quoted. */
-function declaredSubscripts(words: string[]): string[] {
-  return SUBSCRIPT_DECLARERS.has(words[0] ?? '')
-    ? words.slice(1).filter(word => NAME_SUBSCRIPT.test(word))
-    : []
-}
-
-/**
- * Every text `cmd` hands the shell as arithmetic outside a body, with the substitutions the splitter read
- * taken out first and then unmarked, since a live `$` before an escaped `\(` is `$(` after quote removal.
- */
-function arithTexts(cmd: SimpleCommand): string[] {
-  const marked = cmd.marked.map(word => withoutLiveSubstitutions(word, cmd))
-  const words = marked.map(unmark)
-  return [
-    ...integerOperands(words),
-    ...declaredSubscripts(words),
-    ...marked.flatMap(subscripts),
-    ...comparisonOperands(marked).map(unmark),
-  ]
-}
-
 // Line continuation and the arithmetic re-read drop a backslash, so `$\<newline>(` and `$\(` both become `$(`.
 const asEvaluated = (text: string): string => text.replaceAll('\\\n', '').replaceAll('\\', '')
 
+const OPENS_AT = /^(?:\$\(|`|\$\{[\s|])/
+
+/** A substitution opener inside a `[ ]`, nesting counted; an unclosed `[` runs to the end of the text. */
+function openerInBrackets(text: string): boolean {
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '[') depth++
+    else if (text[i] === ']' && depth > 0) depth--
+    else if (depth > 0 && OPENS_AT.test(text.slice(i, i + 3))) return true
+  }
+  return false
+}
+
 /**
- * Whether arithmetic in `cmd` holds a substitution the splitter read as plain text (CC-1473). Evaluating
+ * Whether arithmetic in `cmd` may run a substitution the splitter read as plain text (CC-1473). Evaluating
  * an array subscript runs a `$(...)` in it even from a quoted `'a[$(cmd)]'`, and a `(( ))` body runs one
  * with no subscript at all, so a command can hide there that the guard never checks.
+ *
+ * Which words the shell evaluates as subscripts turns on attributes set earlier, namerefs, builtins
+ * that take a variable name and the array literal syntax, so any word of any command with an opener
+ * inside a `[ ]` denies. `head` is the command past its wrappers, read for `let` and `declare -i`
+ * operands; undefined where the wrappers cannot be read, which scans every word.
  */
-export function hidesArithSubstitution(cmd: SimpleCommand): boolean {
+export function hidesArithSubstitution(cmd: SimpleCommand, head: readonly string[] | undefined): boolean {
   if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(asEvaluated(body)))) return true
-  return arithTexts(cmd).some(text => OPENER.test(asEvaluated(text)))
+  // Substitutions the splitter read are checked as commands; a live `$` before an escaped `\(` is `$(` unmarked.
+  const plain = (word: string): string => asEvaluated(unmark(withoutLiveSubstitutions(word, cmd)))
+  const words = cmd.marked.map(plain)
+  if (words.some(openerInBrackets)) return true
+  const operands = head === undefined ? words : integerOperands(head.map(plain))
+  return [...operands, ...comparisonOperands(cmd.marked).map(plain)].some(text => OPENER.test(text))
 }
