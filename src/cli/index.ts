@@ -51,6 +51,7 @@ import { teleportRequestVerb } from './verbs/teleport-request.js'
 import { debugSendVerb, sendVerb } from './verbs/debug-send.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import { answerVerb } from './verbs/answer.js'
+import { seatHookVerb, leakPretoolVerb } from './verbs/hook-declarations.js'
 import { serviceLogsVerb } from './verbs/service-logs.js'
 import { serviceOpenVerb } from './verbs/service-open.js'
 import { serviceStatusVerb } from './verbs/service-status.js'
@@ -277,21 +278,13 @@ function addHiddenCommands(program: Command): void {
   addVerb(program, staleSessionGuardVerb, { hidden: true, usageExit: 1, exitOnSuccess: false })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
-  program
+  const leakGuard = program
     .command('leak-guard', { hidden: true })
     .description('hooks Claude Code runs for the leak guard')
-    .command('pretool')
-    .description('deny a tool call that would bypass the leak scan or post a finding')
-    .action(async () => {
-      const { leakPretool } = await import('./verbs/leak-pretool.js')
-      await leakPretool()
-    })
+  addVerb(leakGuard, leakPretoolVerb, { usageExit: 1, exitOnSuccess: false })
 
   // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
-  program.command('seat-hook <phase>', { hidden: true }).action(async (phase: string) => {
-    const { seatHook } = await import('./verbs/seat-hook.js')
-    await seatHook(phase)
-  })
+  addVerb(program, seatHookVerb, { hidden: true, usageExit: 1, exitOnSuccess: false })
 
   addVerb(program, seatBlocksVerb, {
     hidden: true,

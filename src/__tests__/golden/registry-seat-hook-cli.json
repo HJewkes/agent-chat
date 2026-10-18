@@ -1,0 +1,731 @@
+[
+  {
+    "name": "zero output",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "exact deny JSON newline",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 7,
+    "stdout": "{\"synthetic\":\"deny\"}\n",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "awaited output",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 7,
+    "stdout": "{\"synthetic\":\"deny\"}\n",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "late",
+      "awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "assigned code",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 9,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "natural stderr",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "synthetic hook diagnostic\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "immediate effect exit",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "seat-hook",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat seat-hook [options] <phase>\n\nOptions:\n  -h, --help  display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "seat-hook",
+      "pre",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat seat-hook [options] <phase>\n\nOptions:\n  -h, --help  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess operand",
+    "argv": [
+      "seat-hook",
+      "pre",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'seat-hook'. Expected 1 argument but got 2: pre, extra.\n\nUsage: agent-chat seat-hook [options] <phase>\n\nOptions:\n  -h, --help  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect error",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic hook failure\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import error",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic hook failure\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect code69",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import code69",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect object",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import object",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect array",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import array",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect string",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import string",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect number",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "69\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import number",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "69\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect null",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "null\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import null",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "null\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect undefined",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import undefined",
+    "argv": [
+      "seat-hook",
+      "pre"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "phase \"pre\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "pre"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "pre"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"post\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "post"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "post"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"end\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "end"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "end"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"unknown\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "unknown"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "unknown"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      ""
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          ""
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \" pre \"",
+    "argv": [
+      "seat-hook",
+      "--",
+      " pre "
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          " pre "
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"\\t\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "\t"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "\t"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "phase \"--literal\"",
+    "argv": [
+      "seat-hook",
+      "--",
+      "--literal"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "seat-hook"
+      },
+      {
+        "effect": "seat-hook",
+        "args": [
+          "--literal"
+        ]
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "missing phase",
+    "argv": [
+      "seat-hook"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: missing required argument 'phase'\n\nUsage: agent-chat seat-hook [options] <phase>\n\nOptions:\n  -h, --help  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  }
+]

@@ -1,0 +1,527 @@
+[
+  {
+    "name": "zero output",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "exact deny JSON newline",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 7,
+    "stdout": "{\"synthetic\":\"deny\"}\n",
+    "stderr": "",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "awaited output",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 7,
+    "stdout": "{\"synthetic\":\"deny\"}\n",
+    "stderr": "",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      "late",
+      "awaited",
+      "completed"
+    ]
+  },
+  {
+    "name": "assigned code",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 9,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "natural stderr",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "synthetic hook diagnostic\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      "completed",
+      "late"
+    ]
+  },
+  {
+    "name": "immediate effect exit",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "help",
+    "argv": [
+      "leak-guard",
+      "pretool",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat leak-guard pretool [options]\n\ndeny a tool call that would bypass the leak scan or post a finding\n\nOptions:\n  -h, --help  display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "unknown option",
+    "argv": [
+      "leak-guard",
+      "pretool",
+      "--unknown"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: unknown option '--unknown'\n\nUsage: agent-chat leak-guard pretool [options]\n\ndeny a tool call that would bypass the leak scan or post a finding\n\nOptions:\n  -h, --help  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "excess operand",
+    "argv": [
+      "leak-guard",
+      "pretool",
+      "extra"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "error: too many arguments for 'pretool'. Expected 0 arguments but got 1: extra.\n\nUsage: agent-chat leak-guard pretool [options]\n\ndeny a tool call that would bypass the leak scan or post a finding\n\nOptions:\n  -h, --help  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect error",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic hook failure\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import error",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic hook failure\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect code69",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import code69",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic unavailable\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect object",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import object",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{ code: 69, message: 'synthetic object', items: [ 1, 2 ] }\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect array",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import array",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "[ 'synthetic', 2 ]\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect string",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import string",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "synthetic rejection\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect number",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "69\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import number",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "69\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect null",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "null\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import null",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "null\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "effect undefined",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "owned partial\n",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "effect": "leak-pretool",
+        "args": []
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "import undefined",
+    "argv": [
+      "leak-guard",
+      "pretool"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "undefined\n",
+    "events": [
+      {
+        "import": "leak-pretool"
+      },
+      {
+        "immediateExit": 1
+      }
+    ]
+  },
+  {
+    "name": "parent help",
+    "argv": [
+      "leak-guard",
+      "--help"
+    ],
+    "code": 0,
+    "stdout": "Usage: agent-chat leak-guard [options] [command]\n\nhooks Claude Code runs for the leak guard\n\nOptions:\n  -h, --help      display help for command\n\nCommands:\n  pretool         deny a tool call that would bypass the leak scan or post a\n                  finding\n  help [command]  display help for command\n",
+    "stderr": "",
+    "events": [
+      {
+        "immediateExit": 0
+      }
+    ]
+  },
+  {
+    "name": "parent only",
+    "argv": [
+      "leak-guard"
+    ],
+    "code": 7,
+    "stdout": "",
+    "stderr": "Usage: agent-chat leak-guard [options] [command]\n\nhooks Claude Code runs for the leak guard\n\nOptions:\n  -h, --help      display help for command\n\nCommands:\n  pretool         deny a tool call that would bypass the leak scan or post a\n                  finding\n  help [command]  display help for command\n",
+    "events": [
+      {
+        "immediateExit": 7
+      }
+    ]
+  }
+]

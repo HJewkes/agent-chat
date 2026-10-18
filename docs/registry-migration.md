@@ -414,3 +414,7 @@ parsers, including parse-stage error precedence and repeated-option behavior. Re
 delegation awaits each controller, keeps natural success and assigned exit codes, and
 preserves legacy immediate exit1 with Console-equivalent nonError formatting. Owned-copy
 fixtures replace the entire service module; no live daemon lifecycle is exercised.
+
+### Hook declarations checkpoint
+
+The hidden seat-hook and leak-guard pretool mounts now use product-local registry declarations. The existing hook effects remain unchanged and load only when their command runs; raw phase values, hidden help, import and effect failures, immediate failure exit, and natural success lifetime are preserved. Before conversion, the full copied CLI passed the same 61 small fake-hook cases twice and both hooks drained large backpressured stdout and stderr on natural return. These fixtures replace the entire hook modules and forbid real business IO, workers, child processes, and broker access. This checkpoint leaves 11 imperative CLI leaves; TP-617 remains open pending the remaining conversion and package release consumption.
