@@ -1,6 +1,7 @@
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
+import { inboxSpoolDir } from '../server/inbox-spool.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
 import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
@@ -138,6 +139,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_ROLE: roleOf(input.profile),
   // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
+  // A print-mode host's MCP server spools pushes here for the inbox hook to show (CC-1455).
+  AGENT_CHAT_INBOX_SPOOL: inboxSpoolDir(input.agentId),
   // Defaults chosen by whoever spawned it, applied on that first registration —
   // so an agent is already listening to the right things before its first turn,
   // rather than needing the model to remember to subscribe.
