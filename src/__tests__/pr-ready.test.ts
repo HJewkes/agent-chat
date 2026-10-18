@@ -321,6 +321,30 @@ describe('pr-ready rebase identity', () => {
     )
   })
 
+  it('uses the author identity when the HEAD committer was already tainted by an earlier rebase', async () => {
+    const work = fixtureRepo({}, { 'f.txt': 'f\n' })
+    writeFiles(work, { 'one.txt': 'one\n' })
+    git(work, 'add', '-A')
+    execFileSync('git', ['commit', '-q', '-m', 'one'], {
+      cwd: work,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'scout',
+        GIT_AUTHOR_EMAIL: 'scout@example.invalid',
+        GIT_COMMITTER_NAME: 'stale',
+        GIT_COMMITTER_EMAIL: 'stale@example.invalid',
+      },
+    })
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(git(work, 'log', '--format=%cn %ce', 'refs/remotes/origin/main..HEAD')).toBe(
+      'scout scout@example.invalid\nscout scout@example.invalid',
+    )
+  })
+
   it('warns and keeps the configured committer when HEAD identity cannot be read', async () => {
     const work = fixtureRepo({}, { 'f.txt': 'f\n' })
     advanceOrigin(work, { 'upstream.txt': 'u\n' })

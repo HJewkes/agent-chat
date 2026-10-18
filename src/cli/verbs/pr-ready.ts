@@ -153,13 +153,13 @@ async function abortRebase(run: Run, cwd: string, gitDir: string): Promise<strin
 
 /**
  * The rebase rewrites every commit, and git stamps the committer from the global config. Reusing
- * the HEAD commit's identity keeps a noreply branch noreply. Undefined when HEAD's identity is unreadable.
+ * the HEAD commit's author, which a tainted earlier rebase leaves alone, keeps a noreply branch noreply. Undefined when HEAD's identity is unreadable.
  */
 async function headIdentityEnv(run: Run, cwd: string): Promise<NodeJS.ProcessEnv | undefined> {
   const log = await run('git', ['log', '-1', '--format=%cn%n%ce%n%an%n%ae'], cwd)
   const [committerName, committerEmail, authorName, authorEmail] = log.output.split('\n').map(l => l.trim())
-  const name = committerName || authorName
-  const email = committerEmail || authorEmail
+  const name = authorName || committerName
+  const email = authorEmail || committerEmail
   if (log.code !== 0 || !name || !email) return undefined
   return { GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
 }
