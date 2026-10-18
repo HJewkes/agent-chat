@@ -548,13 +548,13 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
     return { file, log: new EventLog(file) }
   }
 
-  const spawn = (log: EventLog, name: string, body: string) =>
+  const logSpawn = (log: EventLog, name: string, body: string) =>
     log.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: `id-${name}`, body }).msgId
 
   it('gives every reader of a cached row its full body', () => {
     const { log } = logAt()
-    spawn(log, 'scout', brief)
-    spawn(log, 'agent-x', 'short')
+    logSpawn(log, 'scout', brief)
+    logSpawn(log, 'agent-x', 'short')
     log.agentEvents()
 
     const [long, short] = log.agentEvents()
@@ -569,7 +569,7 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
     const { log } = logAt()
     const db = log.ledgerHandle()
     db.exec('BEGIN IMMEDIATE')
-    spawn(log, 'rolled-back', brief)
+    logSpawn(log, 'rolled-back', brief)
     const [row] = log.agentEvents()
     db.exec('ROLLBACK')
 
@@ -578,7 +578,7 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
 
   it('gives the roster each brief, in a frame too', () => {
     const { log } = logAt()
-    spawn(log, 'scout', brief)
+    logSpawn(log, 'scout', brief)
 
     const [agent] = new AgentLog(log).roster()
 
@@ -589,7 +589,7 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
   it('reuses the fold until an agent row lands, then folds the new one in', () => {
     const { file, log } = logAt()
     const agents = new AgentLog(log)
-    const scout = spawn(log, 'scout', brief)
+    const scout = logSpawn(log, 'scout', brief)
     const [first] = agents.roster()
     log.append({ kind: 'message', actor: 'human', target: 'scout', body: 'hello' })
 
@@ -597,7 +597,7 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
 
     const other = new EventLog(file)
     other.append({ kind: 'agent_attached', actor: 'scout', ref: scout })
-    spawn(other, 'agent-x', 'short')
+    logSpawn(other, 'agent-x', 'short')
     other.close()
     const roster = agents.roster()
 
@@ -609,7 +609,7 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
 
   it('hands out identities no caller can change for the next one', () => {
     const { log } = logAt()
-    spawn(log, 'scout', brief)
+    logSpawn(log, 'scout', brief)
     const agents = new AgentLog(log)
 
     expect(() => {
