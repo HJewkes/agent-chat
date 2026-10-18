@@ -12,7 +12,8 @@ import { autoAttach } from './broker-harness.js'
 /**
  * CC-1457: a surface switch and a `resume_session` spawn relaunched a session
  * without the in-flight guard CC-1456 gave resume, so either could start a second
- * process on a session another launch was still starting.
+ * process on a session another launch was still starting. CC-1462: so could the
+ * relaunch of a teleport that moves an agent to another account.
  */
 
 type Launch = (...args: unknown[]) => Promise<unknown>
@@ -207,5 +208,81 @@ describe('two resume_session spawns on one session', () => {
     expect(refused.reason).toMatch(new RegExp(`^session ${SEAT_SESSION} is already launching for seat-x`))
     expect(resumed).toMatchObject({ ok: true })
     expect(launcher.launches()).toBe(1)
+  })
+})
+
+/** An account move's shape: the successor resumes the predecessor's session rather than minting one. */
+function accountMove(agentId: string, resumeSession?: string): Parameters<Supervisor['relaunch']>[0] {
+  return {
+    agentId,
+    name: 'scout',
+    profile: {
+      name: 'inherited',
+      description: '',
+      model: '',
+      allowedTools: [],
+      isolation: 'none',
+      surface: 'headless',
+      promptPrelude: '',
+    },
+    brief: 'carry on',
+    cwd: tmp('relaunch-move-cwd-'),
+    surface: 'headless',
+    preamble: 'you are the continuation',
+    meta: {},
+    ...(resumeSession === undefined ? {} : { resumeSession }),
+  }
+}
+
+describe('CC-1462: an account-move relaunch and a resume_session spawn on one session', () => {
+  it('refuses a resume_session spawn while the relaunch is launching, and launches once it has answered', async () => {
+    const spawnOn = sessionSpawner()
+    const launcher = slowLauncher()
+    const relaunching = sup.relaunch(accountMove('successor', SESSION))
+    await vi.waitFor(() => expect(launcher.launches()).toBe(1))
+
+    const spawning = spawnOn('seat-y', SESSION)
+    launcher.open()
+    const [refused] = await Promise.all([spawning, relaunching])
+    const later = await spawnOn('seat-z', SESSION)
+
+    expect(refused).toMatchObject({ ok: false })
+    expect(refused.reason).toMatch(
+      new RegExp(`^session ${SESSION} is already launching for scout \\(since ${ISO}\\)`),
+    )
+    expect(later).toMatchObject({ ok: true })
+    expect(launcher.launches()).toBe(2)
+  })
+
+  it('refuses the relaunch, before recording a successor, while a resume_session spawn is launching', async () => {
+    const spawnOn = sessionSpawner()
+    const launcher = slowLauncher()
+    const spawning = spawnOn('seat-x', SESSION)
+    await vi.waitFor(() => expect(launcher.launches()).toBe(1))
+
+    const relaunching = sup.relaunch(accountMove('successor', SESSION))
+    await expect(relaunching).rejects.toThrow(
+      new RegExp(`^session ${SESSION} is already launching for seat-x \\(since ${ISO}\\)`),
+    )
+    launcher.open()
+
+    expect(await spawning).toMatchObject({ ok: true })
+    expect(stateOf('successor')).toBeUndefined()
+    expect(launcher.launches()).toBe(1)
+  })
+
+  it('does not hold a fresh-session relaunch', async () => {
+    const spawnOn = sessionSpawner()
+    const launcher = slowLauncher()
+    const spawning = spawnOn('seat-x', SESSION)
+    await vi.waitFor(() => expect(launcher.launches()).toBe(1))
+
+    const relaunching = sup.relaunch(accountMove('successor'))
+    await vi.waitFor(() => expect(launcher.launches()).toBe(2))
+    launcher.open()
+
+    await expect(relaunching).resolves.toBeUndefined()
+    expect(await spawning).toMatchObject({ ok: true })
+    expect(stateOf('successor')).toBeDefined()
   })
 })
