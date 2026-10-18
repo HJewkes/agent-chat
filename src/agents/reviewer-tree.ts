@@ -12,9 +12,8 @@ import { canonicalPath } from './spawn-cwd.js'
  * Reviewer-ness is read from names rather than a profile field, because Shepherd's reviewer
  * profile is operator-configured (`rv-readonly`) and a profile written before this existed
  * has no flag to carry. Tokens are matched whole so `reviewer-lite` counts and `previewer` does not.
- * CC-1469: `review` counts too, so an adversarial `seat-1-adv-review` is a reviewer and `preview` is not.
  */
-const REVIEWER_TOKENS = new Set(['reviewer', 'review', 'rv'])
+const REVIEWER_TOKENS = new Set(['reviewer', 'rv'])
 
 const tokensOf = (name: string): string[] => name.toLowerCase().split(/[^a-z0-9]+/)
 
@@ -23,12 +22,20 @@ export function isReviewerSpawn(profileName: string, agentName: string): boolean
 }
 
 /**
+ * CC-1469: deliberately looser than `isReviewerSpawn`, because a tree name feeds only pool and
+ * state counting. A whole `review` token counts, so an adversarial `seat-1-adv-review` is a
+ * reviewer tree and `preview` is not; the spawn side leaves `review` out, since a reviewer spawn
+ * is forced into a worktree and parked at report.
+ */
+const REVIEWER_TREE_TOKENS = new Set(['reviewer', 'review'])
+
+/**
  * CC-1040: a tree on disk carries only its directory name, so the reviewer worktree pool is
  * decided from the agent name alone, the same way when allocating and when counting.
  */
 export function isReviewerTreeName(name: string): boolean {
   const tokens = tokensOf(name)
-  return tokens[0] === 'rv' || tokens.some(t => t === 'reviewer' || t === 'review')
+  return tokens[0] === 'rv' || tokens.some(t => REVIEWER_TREE_TOKENS.has(t))
 }
 
 /**

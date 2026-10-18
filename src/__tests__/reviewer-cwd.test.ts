@@ -7,7 +7,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
-import { isReviewerSpawn, primaryCheckoutOf } from '../agents/reviewer-tree.js'
+import { isReviewerSpawn, isReviewerTreeName, primaryCheckoutOf } from '../agents/reviewer-tree.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -106,7 +106,6 @@ describe('which spawns are reviewers', () => {
     ['rv-readonly', 'x-1'],
     ['relay-reviewer', 'x-1'],
     ['anything', 'rv-owner-repo-9-2'],
-    ['adv-review', 'seat-x-1'],
   ])('treats profile %s with agent %s as a reviewer', (profile, name) => {
     expect(isReviewerSpawn(profile, name)).toBe(true)
   })
@@ -118,6 +117,11 @@ describe('which spawns are reviewers', () => {
     ['preview', 'agent-x'],
   ])('leaves profile %s with agent %s alone', (profile, name) => {
     expect(isReviewerSpawn(profile, name)).toBe(false)
+  })
+
+  it('pools a review-token tree as a reviewer without making a review-token profile a reviewer spawn (CC-1469)', () => {
+    expect(isReviewerSpawn('review-packager', 'agent-x')).toBe(false)
+    expect(isReviewerTreeName('seat-1-adv-review')).toBe(true)
   })
 })
 
