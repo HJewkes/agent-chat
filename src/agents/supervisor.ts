@@ -4161,6 +4161,11 @@ export class Supervisor implements TeleportHost {
     clearSuperseded(input.inheritedFrom)
   }
 
+  /** CC-1451: an unreadable process table reads as not running, so the land window is not extended on a guess. */
+  async successorRunning(agentId: string): Promise<boolean> {
+    return (await this.launcherRunning(agentId)) === true
+  }
+
   /** CC-951: the predecessor ended and its successor did not start, so only the human can act. */
   noticeLostTeleport(input: RelaunchInput, reason: string): void {
     this.noticeDeadSuccessor(

@@ -118,6 +118,15 @@ export const REMOTE_LAUNCH_TIMEOUT_MS = 60_000
 /** CC-913: how long an armed successor's helper may report it unplaced; well past its pane wait and two launches. */
 export const LAND_WINDOW_MS = 5 * 60_000
 
+/** CC-1451: rows a running successor's hooks write under its session id, which show it is working. */
+const SUCCESSOR_ACTIVITY_KINDS = ['seat_activity', 'seat_blocked', 'seat_unblocked'] as const
+
+/** CC-951: a successor-first predecessor waiting on its successor's attach, under one timer at a time. */
+interface Arrival {
+  settle: (failure: string | undefined) => void
+  timer?: NodeJS.Timeout
+}
+
 export interface LandFailedReply {
   ok: boolean
   reason?: string
@@ -420,6 +429,8 @@ export interface TeleportHost {
   standDown(agentId: string): void
   /** CC-951: a successor-first successor never attached, so its predecessor keeps what it had. */
   keepPredecessor(input: RelaunchInput, reason: string): void
+  /** CC-1451: whether the successor's run-agent is running on this machine; false when it cannot be told. */
+  successorRunning(agentId: string): Promise<boolean>
   /** CC-951: neither the predecessor nor its successor is running, so the human is told how to start it. */
   noticeLostTeleport(input: RelaunchInput, reason: string): void
   /** CC-881: record the successor and build its launch for another host, launching nothing here. */
@@ -560,7 +571,7 @@ export class Teleport {
   /** CC-913: armed remote successors by id, each cleared when it registers or its window ends. */
   private readonly landings = new Map<string, Landing>()
   /** CC-951: local successors whose predecessor waits on their attach; each settles once, with a failure or none. */
-  private readonly arrivals = new Map<string, (failure: string | undefined) => void>()
+  private readonly arrivals = new Map<string, Arrival>()
   /** CC-951: requests past preflight and not yet pending or refused. */
   private readonly starting = new Set<string>()
   /** CC-892: what a moved session in a pane is told once it attaches, since a resumed pane gets no prompt. */
@@ -579,7 +590,7 @@ export class Teleport {
     this.unwatch = core.onAppend(row => {
       if (row.kind !== 'agent_attached' || row.ref === undefined) return
       this.closeLanding(row.ref)
-      this.arrivals.get(row.ref)?.(undefined)
+      this.arrivals.get(row.ref)?.settle(undefined)
       this.tellMoved(row.ref)
     })
   }
@@ -979,11 +990,16 @@ export class Teleport {
    * attaches is retired and the predecessor, never signalled, is told it is still live.
    */
   private async finishSuccessorFirst(entry: Pending): Promise<void> {
-    const arrival = this.awaitArrival(entry.descendantId)
+    const successorId = entry.descendantId
+    const arrival = this.awaitArrival(successorId)
+    // CC-1451: the launch keeps its own bound, so a slow launch does not eat the land window.
+    const launchBound = `its successor did not finish launching within ${LAND_WINDOW_MS / 1000}s`
+    this.armArrival(successorId, LAND_WINDOW_MS, () => this.successorFailed(successorId, launchBound))
     let input: RelaunchInput | undefined
     try {
       input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
       await this.launchSuccessor(entry, input)
+      this.openLandWindow(entry)
     } catch (err) {
       // A host that throws `SuccessorNotStarted` already settled the arrival through
       // `successorFailed`. A skipped retry no longer throws (CC-602): it tracks the successor.
@@ -1102,28 +1118,76 @@ export class Teleport {
     logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason, kept: true })
   }
 
-  /** CC-951: settles with a failure reason, or undefined once the successor's `agent_attached` row lands. */
+  /**
+   * CC-951: settles with a failure reason, or undefined once the successor's `agent_attached` row
+   * lands. It waits unbounded until the caller arms a timer with `armArrival`.
+   */
   private awaitArrival(agentId: string): Promise<string | undefined> {
     return new Promise(resolve => {
-      const timer = setTimeout(
-        () => settle(`its successor did not register within ${LAND_WINDOW_MS / 1000}s`),
-        LAND_WINDOW_MS,
-      )
-      timer.unref?.()
-      const settle = (failure: string | undefined): void => {
-        clearTimeout(timer)
-        this.arrivals.delete(agentId)
-        resolve(failure)
+      const arrival: Arrival = {
+        settle: failure => {
+          clearTimeout(arrival.timer)
+          this.arrivals.delete(agentId)
+          resolve(failure)
+        },
       }
-      this.arrivals.set(agentId, settle)
+      this.arrivals.set(agentId, arrival)
     })
+  }
+
+  /** CC-1451: replaces the arrival's timer; a no-op once it has settled. */
+  private armArrival(agentId: string, ms: number, expire: () => void): void {
+    const arrival = this.arrivals.get(agentId)
+    if (arrival === undefined) return
+    clearTimeout(arrival.timer)
+    arrival.timer = setTimeout(expire, ms)
+    arrival.timer.unref?.()
+  }
+
+  /** CC-1451: the land window runs from the end of the launch, never from before it. */
+  private openLandWindow(entry: Pending): void {
+    const opened = Date.now()
+    this.armArrival(entry.descendantId, LAND_WINDOW_MS, () => void this.landWindowEnded(entry, opened))
+  }
+
+  /**
+   * CC-1451: a successor whose register frame is late (a blocked broker loop drains it minutes
+   * after it was sent) is still running, so it gets one more window before it is stopped.
+   */
+  private async landWindowEnded(entry: Pending, opened: number): Promise<void> {
+    const successorId = entry.descendantId
+    const alive = await this.successorAlive(successorId, opened)
+    if (!this.arrivals.has(successorId)) return
+    if (!alive)
+      return void this.successorFailed(
+        successorId,
+        `its successor did not register within ${LAND_WINDOW_MS / 1000}s`,
+      )
+    logEvent('teleport_land_extended', {
+      name: entry.subject.name,
+      from: entry.subject.agentId,
+      to: successorId,
+    })
+    const failure = `its running successor did not register within ${(2 * LAND_WINDOW_MS) / 1000}s`
+    this.armArrival(successorId, LAND_WINDOW_MS, () => this.successorFailed(successorId, failure))
+  }
+
+  /** CC-1451: its run-agent is running, or its hooks wrote a row under its session id since `since`. */
+  private async successorAlive(agentId: string, since: number): Promise<boolean> {
+    const sessionId = this.core.agents.get(agentId)?.sessionId ?? ''
+    const active =
+      sessionId !== '' &&
+      SUCCESSOR_ACTIVITY_KINDS.some(
+        kind => (this.core.events.lastAgentEventAt(sessionId, kind) ?? 0) >= since,
+      )
+    return active || (await this.host.successorRunning(agentId))
   }
 
   /** CC-951: the host found a successor-first successor dead before it attached; false when nothing waits on it. */
   successorFailed(agentId: string, reason: string): boolean {
-    const settle = this.arrivals.get(agentId)
-    if (settle === undefined) return false
-    settle(reason)
+    const arrival = this.arrivals.get(agentId)
+    if (arrival === undefined) return false
+    arrival.settle(reason)
     return true
   }
 
@@ -1307,7 +1371,9 @@ export class Teleport {
    * for its next plan once its launch is accepted, and is told to end itself only on the attach.
    */
   private async awaitRemoteSuccessor(entry: Pending, input: RelaunchInput): Promise<void> {
-    const failure = await this.awaitArrival(entry.descendantId)
+    const arrival = this.awaitArrival(entry.descendantId)
+    this.openLandWindow(entry)
+    const failure = await arrival
     if (failure === undefined) return this.endPredecessor(entry)
     this.keepPredecessor(entry, input, failure)
   }
@@ -1612,6 +1678,7 @@ export class Teleport {
     for (const entry of this.pending.values()) if (entry.timer) clearTimeout(entry.timer)
     this.pending.clear()
     for (const agentId of [...this.landings.keys()]) this.closeLanding(agentId)
+    for (const arrival of this.arrivals.values()) clearTimeout(arrival.timer)
     this.arrivals.clear()
     this.moveNotes.clear()
     this.unwatch()

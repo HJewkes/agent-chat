@@ -2542,7 +2542,8 @@ describe('successor-first ordering (CC-951)', () => {
     await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS + 1_000)
     expect(supervisor.liveIds()).toContain(successorId)
 
-    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+    // CC-1451: its run-agent runs, so the land window is extended once before it is stopped.
+    await vi.advanceTimersByTimeAsync(2 * LAND_WINDOW_MS + 1_000)
 
     expect(supervisor.liveIds()).not.toContain(successorId)
     expect(supervisor.liveIds()).toContain(agentId)
@@ -2774,5 +2775,130 @@ describe('a remote predecessor asking for a new surface on its own host (CC-951)
 
     expect(plan.launch?.surface).toBe('iterm-window')
     expect(plan.launch).not.toHaveProperty('successorFirst')
+  })
+})
+
+/**
+ * CC-1451: a blocked broker loop can drain a running successor's register frame minutes late. The
+ * land window runs from the end of the launch, and a successor still running when it ends gets one
+ * more window before it is stopped.
+ */
+describe('a successor-first successor whose register frame is late (CC-1451)', () => {
+  const PREDECESSOR_PID = 9999
+  const LAUNCH_MS = 90_000
+
+  function supervisorWhoseRunAgent(running: boolean): void {
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      seatTeleport: isolatedSeatTeleport(),
+      launcherRunning: async () => running,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        runAppleScript: async script => (script.includes('is running') ? 'true' : 'fake-pane-uuid'),
+      },
+    })
+  }
+
+  async function teleportSuccessorFirst(): Promise<{
+    agentId: string
+    successorId: string
+    predecessor: Conn
+  }> {
+    const agentId = await spawnAgent()
+    const predecessor = fakeConn()
+    core.register(predecessor, {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      agentId,
+      hostPid: PREDECESSOR_PID,
+      host: os.hostname(),
+    })
+    stopAutoAttach()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    return { agentId, successorId: result.agentId as string, predecessor }
+  }
+
+  const registerSuccessor = (successorId: string) =>
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: successorId,
+    })
+
+  const extensions = () => readBrokerLog().match(/"event":"teleport_land_extended"/g)?.length ?? 0
+  const keptFailures = () => readBrokerLog().match(/"event":"teleport_failed".*"kept":true/g)?.length ?? 0
+
+  it('completes a teleport whose launch took 90s and whose successor attached 290s after it', async () => {
+    const relaunch = supervisor.relaunch.bind(supervisor)
+    vi.spyOn(supervisor, 'relaunch').mockImplementation(async input => {
+      await new Promise(resolve => setTimeout(resolve, LAUNCH_MS))
+      return relaunch(input)
+    })
+    const { successorId } = await teleportSuccessorFirst()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + LAUNCH_MS + 290_000)
+
+    expect(registerSuccessor(successorId).ok).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(killed.filter(k => k.pid === PREDECESSOR_PID)[0]).toEqual({
+      pid: PREDECESSOR_PID,
+      signal: 'SIGTERM',
+    })
+    expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(readBrokerLog()).toContain('"event":"teleport_completed"')
+    expect(keptFailures()).toBe(0)
+  })
+
+  it('extends a running successor that never attaches once, then keeps the predecessor', async () => {
+    supervisorWhoseRunAgent(true)
+    const { agentId, successorId } = await teleportSuccessorFirst()
+
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + LAND_WINDOW_MS + 1_000)
+    expect(extensions()).toBe(1)
+    expect(supervisor.liveIds()).toContain(successorId)
+    expect(keptFailures()).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
+
+    expect(extensions()).toBe(1)
+    expect(keptFailures()).toBe(1)
+    expect(supervisor.liveIds()).not.toContain(successorId)
+    expect(supervisor.liveIds()).toContain(agentId)
+    expect(rowsFor(successorId).map(r => r.kind)).toContain('agent_retired')
+    expect(killed.filter(k => k.pid === PREDECESSOR_PID)).toEqual([])
+  })
+
+  it('extends a successor whose hooks wrote activity under its session id inside the window', async () => {
+    const { successorId } = await teleportSuccessorFirst()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + 60_000)
+    const sessionId = core.agents.get(successorId)?.sessionId as string
+    core.append({ kind: 'seat_activity', actor: 'seat-x', ref: sessionId, meta: { tool: 'Bash' } })
+
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
+
+    expect(extensions()).toBe(1)
+    expect(supervisor.liveIds()).toContain(successorId)
+    expect(keptFailures()).toBe(0)
+  })
+
+  it('fails a dead successor that never attaches at the original window, with no extension', async () => {
+    const { agentId, successorId, predecessor } = await teleportSuccessorFirst()
+
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + LAND_WINDOW_MS + 1_000)
+
+    expect(extensions()).toBe(0)
+    expect(keptFailures()).toBe(1)
+    expect(readBrokerLog()).toContain(`did not register within ${LAND_WINDOW_MS / 1000}s`)
+    expect(rowsFor(successorId).map(r => r.kind)).toContain('agent_retired')
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(core.registry.connFor('scout')).toBe(predecessor)
   })
 })
