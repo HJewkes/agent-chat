@@ -70,6 +70,11 @@ interface Row {
   meta: string | null
 }
 
+/**
+ * CC-1463: `events_actor` serves `lastMessageFrom` and `lastStatusReport`, which run as an
+ * agent spawns or exits. Through `events_kind` they walked back over every message row,
+ * about 90 MB of reads each on a large log, when the sender had nothing since `since`.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +91,7 @@ CREATE INDEX IF NOT EXISTS events_target ON events(target, id);
 CREATE INDEX IF NOT EXISTS events_msg_id ON events(msg_id);
 CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind, id);
+CREATE INDEX IF NOT EXISTS events_actor ON events(actor, kind, id);
 `
 
 /** Kinds that a recipient should see in their inbox. */

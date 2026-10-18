@@ -399,6 +399,19 @@ describe('agent rows read in id order without a temp sort (TP-801 S1, CC-1313)',
     expect(plan).toContain('events_ref')
     expect(plan).not.toContain('SCAN events')
   })
+
+  it("finds a sender's last message by its own rows, not by walking every message", () => {
+    const log = freshLog()
+    seedInterleaved(log)
+
+    const last = sqlRunBy(log, () => log.lastMessageFrom('a3', { since: 0 }))
+    const report = sqlRunBy(log, () => log.lastStatusReport('a3', ['human'], 0))
+
+    expect(planOf(log, last, 'a3', '0', 'human', 'human').join('\n')).toContain(
+      'events_actor (actor=? AND kind=?)',
+    )
+    expect(planOf(log, report, 'a3', '0', 'human').join('\n')).toContain('events_actor (actor=? AND kind=?)')
+  })
 })
 
 describe('agent rows cached between reads (CC-1459)', () => {
@@ -588,10 +601,10 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
     other.close()
     const roster = agents.roster()
 
-    expect(roster.map(a => [a.name, a.state])).toEqual([
-      ['agent-x', 'spawning'],
-      ['scout', 'live'],
-    ])
+    expect(Object.fromEntries(roster.map(a => [a.name, a.state]))).toEqual({
+      'agent-x': 'spawning',
+      scout: 'live',
+    })
   })
 
   it('hands out identities no caller can change for the next one', () => {
