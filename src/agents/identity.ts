@@ -352,11 +352,11 @@ function foldAll(rows: readonly AgentEventRow[]): readonly AgentIdentity[] {
   return agents.sort((a, b) => b.spawnedAt - a.spawnedAt)
 }
 
-/** Walks descriptors, not values, so the `brief` getter is not read. */
-function deepFreeze<T extends object>(value: T): T {
-  for (const { value: field } of Object.values(Object.getOwnPropertyDescriptors(value)))
-    if (typeof field === 'object' && field !== null) deepFreeze(field as object)
-  return Object.freeze(value)
+/** `exit` and `base` are an identity's only nested objects. */
+function deepFreeze(agent: AgentIdentity): AgentIdentity {
+  if (agent.exit) Object.freeze(agent.exit)
+  if (agent.base) Object.freeze(agent.base)
+  return Object.freeze(agent)
 }
 
 /**
