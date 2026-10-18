@@ -1071,6 +1071,9 @@ export class SocketServer {
    */
   /** CC-126. Answered on `spawn_result`, carrying the transcript verdict whatever the outcome. */
   private async handleResume(conn: Conn, msg: Extract<ClientMessage, { t: 'resume' }>): Promise<void> {
+    // CC-1492: dropped, a garbled host would resume locally, against a transcript nobody asked about.
+    if (msg.host !== undefined && typeof msg.host !== 'string')
+      return reply(conn, { t: 'spawn_result', ok: false, reason: 'resume host must be a machine name' })
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
     const source = wakeSource(msg.source)

@@ -437,8 +437,8 @@ export interface TeleportHost {
   successorRunning(agentId: string): Promise<boolean>
   /** CC-951: neither the predecessor nor its successor is running, so the human is told how to start it. */
   noticeLostTeleport(input: RelaunchInput, reason: string): void
-  /** CC-881: record the successor and build its launch for another host, launching nothing here. */
-  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
+  /** CC-881: record the successor and build its launch for another host, launching nothing here; CC-1492: `launcherHost` lands on its row. */
+  prepareRemoteRelaunch(input: RelaunchInput, launcherHost?: string): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
   confirmRemoteRelaunch(input: RelaunchInput): void
   /** CC-881: the other host did not launch it, so the successor's row is retired unused; `where` names that host. */
@@ -1029,7 +1029,7 @@ export class Teleport {
     const badPath = launchPathsBlocker(input.cwd, input.configDir)
     if (badPath !== undefined) throw new Error(`not handed to the launcher on ${host}: ${badPath}`)
     const launch: RemoteLaunch = {
-      ...this.host.prepareRemoteRelaunch(input),
+      ...this.host.prepareRemoteRelaunch(input, host),
       cwd: input.cwd,
       ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
     }

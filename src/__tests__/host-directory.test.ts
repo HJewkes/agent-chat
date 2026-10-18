@@ -431,6 +431,21 @@ describe('teleporting a local session to a launcher’s machine', () => {
     expect(order.indexOf('agent_attached')).toBeLessThan(order.indexOf('agent_stood_down'))
   })
 
+  // Mutation caught: the successor's agent_spawned row dropping host, so its liveness is probed on the broker's host.
+  it('records the successor as running on the launcher’s machine', async () => {
+    const launcher = macLauncher()
+    await teleportToMac(localPredecessor())
+    answer(launcher, 'host_probe', true)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    answer(launcher, 'host_launch', true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    wire().send({ t: 'register', name: 'cc27', workingOn: 'w', cwd: home, pid: 2, agentId: successorOf() })
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(core.agents.get(successorOf())).toMatchObject({ state: 'live', host: MAC })
+  })
+
   it('refuses with the launcher’s reason when the cwd is missing there, writing no handoff', async () => {
     const launcher = macLauncher()
     const predecessor = localPredecessor()
