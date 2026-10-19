@@ -70,7 +70,7 @@ the install has no `scripts/seat/queue`.
 
 `backlog` keeps seat plan questions outside the 5,000-byte queue cap (CC-760, CC-765): one YAML
 record per question in `<autonomy>/backlog/<seat>/<id>.yml`, while the queue keeps a numbered
-one-line pointer such as `131. tc-131 (one-way): <decision>. backlog/titan-coord/tc-131.yml`.
+one-line pointer such as `131. tc-131 (one-way): <decision>. backlog/seat-a/tc-131.yml`.
 It needs `node` and the `yaml` package from this checkout's `node_modules`.
 
 | Field                        | Content                                                                                                                              |

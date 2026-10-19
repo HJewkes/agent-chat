@@ -200,9 +200,9 @@ describe('machine status from the live readers', () => {
   })
 
   it('lists owner stops without counting them as a machine stop, since each holds one seat', () => {
-    const stopped = status({ chat: [], watchdog: { stopped: { 'design-coord': 'parked, item 201' } } })
+    const stopped = status({ chat: [], watchdog: { stopped: { 'coord-b': 'parked, item 201' } } })
 
-    expect(stopped.ownerStops).toEqual([{ seat: 'design-coord', reason: 'parked, item 201' }])
+    expect(stopped.ownerStops).toEqual([{ seat: 'coord-b', reason: 'parked, item 201' }])
     expect(stopped.holds).toEqual([])
     expect(stopped.errors).toEqual([])
   })
@@ -253,12 +253,12 @@ describe('which sends may hold the machine', () => {
     ['an operator DM HOLD', ['tp-operator', 5, 'tp-operator: HOLD now', 'd2', ['coord-a']]],
     [
       "a coordinator's DM to its implementer",
-      ['design-coord', 5, 'please STOP work on #800 now, push nothing more, and exit', 'd3', ['impl']],
+      ['coord-b', 5, 'please STOP work on #800 now, push nothing more, and exit', 'd3', ['impl']],
     ],
     ['a coordinator fan-out', ['coord-v', 5, 'coord-v: STOP ALL, the full suite is hot']],
     ['a coordinator relay', ['coord-d', 5, 'coord-d: machine HOLD from tp-operator (memory trip)']],
-    ['a coordinator holding one link', ['design-coord', 5, 'please HOLD the b15 round-1 link']],
-    ['a coordinator holding its implementer', ['design-coord', 5, 'in HOLD until you push the fix']],
+    ['a coordinator holding one link', ['coord-b', 5, 'please HOLD the b15 round-1 link']],
+    ['a coordinator holding its implementer', ['coord-b', 5, 'in HOLD until you push the fix']],
   ])('does not open on %s', (_name, send) => {
     expect(holdsBy({ chat: [send] })).toEqual([])
   })
@@ -521,8 +521,8 @@ const LIVE: [actor: string, body: string, expected: 'open' | 'lift' | 'none', re
   ['tp-operator', 'tp-operator: LOAD STEP-BACK 22:29 (load 25.3/21.9/20.5; load5 >= 20)', 'open'],
   ['coord-p', 'coord-p ack, holding spawns and resumes until CLEAR', 'none'],
   ['tp-operator', 'tp-operator: LOAD CLEAR 22:34 (load5 13.5, two readings < 16)', 'lift'],
-  ['design-coord', 'please STOP work on #800 now, push nothing more, and exit', 'none', ['impl-800']],
-  ['design-coord', 'please HOLD the b15 round-1 link', 'none', ['impl-b15']],
+  ['coord-b', 'please STOP work on #800 now, push nothing more, and exit', 'none', ['impl-800']],
+  ['coord-b', 'please HOLD the b15 round-1 link', 'none', ['impl-b15']],
   [
     'tp-operator',
     'tp-operator, OWNER DIRECTION (item 195, verbatim): "Lets stop all work that isnt the factory"',
