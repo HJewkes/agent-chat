@@ -324,7 +324,10 @@ describe('open questions across a teleport', () => {
   /** Teleports `scout` with a handoff that names none of its questions, and returns the successor id. */
   async function teleportScout(): Promise<string> {
     const agentId = await spawnAgent()
-    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'mid-way through the slice' })
+    const result = await supervisor.teleport({
+      subject: subject(agentId),
+      handoff: 'mid-way through the slice',
+    })
     await vi.advanceTimersByTimeAsync(0)
     expect(result.ok).toBe(true)
     return result.agentId as string
@@ -333,7 +336,9 @@ describe('open questions across a teleport', () => {
   /** The successor's own connection, registered under the name it kept. */
   function successorConn(): { conn: Conn; frames: ServerMessage[] } {
     const frames: ServerMessage[] = []
-    const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
+    const conn = {
+      write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
+    } as unknown as Conn
     core.register(conn, { t: 'register', name: 'scout', workingOn: 'the slice', cwd: workspace(), pid: 1 })
     return { conn, frames }
   }
