@@ -53,8 +53,8 @@ export const chatSubscribe = defineTool({
   name: 'chat_subscribe',
   description:
     'Ask to be told when sessions and agents come and go. Scope it: "name" for one agent, "tag" for ' +
-    'everything carrying a tag, "spawned" for agents you yourself spawned (auto-applied on agent_spawn, ' +
-    'so you rarely need to set this by hand), or "all" — which is genuinely noisy on a busy bus and ' +
+    'everything carrying a tag, "spawned" for agents you yourself spawned (not applied on agent_spawn: ' +
+    'set it to be pushed their attach and exit), or "all" — which is genuinely noisy on a busy bus and ' +
     'worth avoiding unless you are coordinating. Events arrive batched and marked from agent-chat, and ' +
     'are LIFECYCLE ONLY: you learn who is here, never what anyone said. Re-subscribing with the same ' +
     'scope replaces that rule rather than adding a second one. Subscriptions last as long as this session.',

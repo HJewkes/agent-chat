@@ -57,15 +57,18 @@ work — the tool list is the permission lever, and it is the only one. There is
 moment it returns. You never have to match a later broadcast against your own spawn to work out
 which agent is which.
 
-That identity is genuinely yours the moment it returns, but the agent is still booting. You are
-auto-subscribed to `agent_attached` and `agent_exited` for whatever you spawn — no `chat_subscribe`
-call needed — so you learn the moment it actually attaches rather than polling `agent_list`.
+That identity is genuinely yours the moment it returns, but the agent is still booting. By default
+you are not pushed its `agent_attached` or `agent_exited` (CC-1500): most such pushes woke a
+coordinator for nothing, and the agent's own `Status:` report is the notice that matters. The roster
+(`agent_list`) still shows attach and exit state. To be pushed both for everything you spawn, call
+`chat_subscribe` with scope `spawned` and kinds `agent_attached` and `agent_exited` once; the rule
+follows every later spawn from that session.
 
 **One wake per finished agent (CC-321).** A push costs the recipient a turn over its whole
 context, so two rules cut the pushes a finished agent causes. Neither changes what the log
 records.
 
-- You get no `agent_exited` notice for an agent when all of these hold: the newest message it sent
+- If you subscribed to your spawns, you get no `agent_exited` notice for an agent when all of these hold: the newest message it sent
   you in its run is a closing report (`Status:` `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or
   `NEEDS_CONTEXT`, or a `Verdict:`); the broker wrote that report to the connection you are on now;
   the agent exited with code 0; the exit came within two minutes of the report; and you wrote

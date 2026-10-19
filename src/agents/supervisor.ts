@@ -3029,9 +3029,8 @@ export class Supervisor implements TeleportHost {
    * The surface goes because leaving it is how the evidence was collected in the
    * first place — a pane created for an agent that never existed, sitting on a
    * shell prompt with no owner and no way for anyone to know it was dead. The
-   * `agent_exited` row is what stops the roster reading `starting` forever; it
-   * also reaches the requester, whose spawn auto-subscribed it to exactly this
-   * kind for exactly this reason.
+   * `agent_exited` row is what stops the roster reading `starting` forever; the
+   * requester gets it pushed only if it subscribed to its spawns (CC-1500).
    */
   private async failSpawn(
     req: SpawnRequest,

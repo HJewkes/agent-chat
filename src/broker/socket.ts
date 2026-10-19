@@ -580,16 +580,11 @@ export class SocketServer {
       ...optionalCallerHost(this.callerHostOf(conn, msg)),
       ...spawnSiteFields(msg),
     })
-    // Auto-subscribe the requester to its own spawn's lifecycle, so it learns
-    // when the agent actually attaches without having to name it or poll
-    // agent_list. Provenance rather than naming: the selector stays correct as
-    // this connection spawns more agents later, with no rule to repoint.
-    if (outcome.ok && outcome.name !== undefined) {
-      this.core.registry.recordSpawn(conn, outcome.name)
-      this.core.registry.subscribe(conn, [
-        { selector: { spawnedBy: 'self' }, kinds: ['agent_attached', 'agent_exited'] },
-      ])
-    }
+    // Recorded so a `spawned` subscription can find this agent, but no longer
+    // subscribed by default (CC-1500): most attach and exit pushes woke a
+    // coordinator for nothing. The roster still shows both; a spawner that wants
+    // the pushes opts in with chat_subscribe scope "spawned".
+    if (outcome.ok && outcome.name !== undefined) this.core.registry.recordSpawn(conn, outcome.name)
     // Spawn is the moment staleness stops being cosmetic: argv is fixed here and
     // now, so an agent launched from an out-of-date broker carries the old
     // behaviour for its whole life, and a later restart cannot correct it. This
