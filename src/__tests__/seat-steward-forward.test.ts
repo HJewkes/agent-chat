@@ -10,8 +10,9 @@ import { SocketServer } from '../broker/socket.js'
 import type { DeliveredMessage, ServerMessage } from '../protocol.js'
 
 /**
- * CC-966: a message to a non-resident seat goes to the steward `seatStewards` names for it,
- * instead of waiting in a hold nobody reads. Every name, time and message here is synthetic.
+ * CC-966 and CC-1501: a peer's message to a non-resident seat (one `seatStewards` names) with no
+ * session goes to the owner queue, not to its steward; a human send keeps the seat's own hold. Every
+ * name, time and message here is synthetic.
  */
 
 const SEAT = 'seat-pc'
@@ -58,6 +59,13 @@ const pushed = (w: Wire): DeliveredMessage[] =>
 const messagesTo = (target: string) =>
   core.events.since(0, 1000).filter(row => row.kind === 'message' && row.target === target)
 
+/** Queue items held for a seat; the fixture's same-`workingOn` registration notices are left out. */
+const ownerQueue = () =>
+  core.events
+    .humanQueue()
+    .filter(item => item.meta.forwarded_for !== undefined)
+    .map(item => [item.from, item.text, item.meta.forwarded_for])
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(T0)
@@ -80,9 +88,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe('the seat steward forward', () => {
-  // Catches: holding for the dark seat before consulting its steward.
-  it('delivers a message for a dark mapped seat to its connected steward, marked as for the seat', () => {
+describe('mail for a non-resident seat', () => {
+  // Catches: forwarding a parked seat's mail to its steward, waking a seat that cannot act on it.
+  it("queues a peer's message for a dark mapped seat for the owner, not the steward, and says so", () => {
     goDark(SEAT)
     const steward = join(STEWARD)
     const sender = join('rev-one')
@@ -90,34 +98,42 @@ describe('the seat steward forward', () => {
 
     const result = send(sender, SEAT, 'Merged: #42')
 
-    expect(result).toMatchObject({ ok: true, recipients: [STEWARD] })
-    expect(result.held).toBeUndefined()
-    expect(pushed(steward).map(m => [m.from, m.text, m.msgId])).toEqual([
-      ['rev-one', `[for ${SEAT}] Merged: #42`, result.msgId],
-    ])
-    expect(messagesTo(STEWARD).map(row => row.meta)).toEqual([{ forwarded_for: SEAT }])
+    expect(result).toMatchObject({ ok: true, recipients: ['human'] })
+    expect(result.reason).toContain('owner queue')
+    expect(ownerQueue()).toEqual([['rev-one', `[for ${SEAT}] Merged: #42`, SEAT]])
+    expect(core.events.humanQueue().map(item => item.msgId)).toContain(result.msgId)
+    expect(pushed(steward)).toEqual([])
+    expect(messagesTo(STEWARD)).toEqual([])
     expect(messagesTo(SEAT)).toEqual([])
   })
 
-  // Catches: holding a forwarded message for the dark seat instead of for its steward.
-  it('holds the message for the steward when the steward is dark too, and pushes it when it registers', () => {
+  // Catches: a human send (Shepherd notice, watchdog wake, CLI) moved onto the owner's queue or the steward.
+  it.each([
+    ['no source', undefined],
+    ['the shepherd source', 'shepherd' as const],
+    ['the watchdog source', 'watchdog' as const],
+  ])("holds a human send with %s for a dark mapped seat in the seat's own hold", (_label, source) => {
     goDark(SEAT)
-    goDark(STEWARD)
-    const sender = join('rev-one')
+    const steward = join(STEWARD)
+    const human = wire()
     vi.setSystemTime(T0 + MINUTE)
 
-    const result = send(sender, SEAT, 'Merged: #42')
+    server.handleMessage(human.conn, {
+      t: 'human_send',
+      to: SEAT,
+      text: 'Shepherd digest',
+      ...(source === undefined ? {} : { source }),
+    })
 
-    expect(result).toMatchObject({ ok: true, held: true, recipients: [STEWARD] })
-    expect(messagesTo(SEAT)).toEqual([])
-    expect(messagesTo(STEWARD).map(row => row.meta.held)).toEqual([SEAT_HOLD_MARK])
+    expect(human.frames.at(-1)).toMatchObject({ t: 'send_result', ok: true, held: true, recipients: [SEAT] })
+    expect(ownerQueue()).toEqual([])
+    expect(pushed(steward)).toEqual([])
     vi.setSystemTime(T0 + 2 * MINUTE)
-    const back = join(STEWARD)
-    expect(pushed(back).map(m => m.text)).toEqual([`[for ${SEAT}] Merged: #42`])
+    expect(pushed(join(SEAT)).map(m => m.text)).toEqual(['Shepherd digest'])
   })
 
-  // Catches: forwarding whenever the map names the target, connected or not.
-  it('delivers to a mapped seat that has an active session, with no forward', () => {
+  // Catches: queueing whenever the map names the target, connected or not.
+  it('delivers to a mapped seat that has an active session', () => {
     const seat = join(SEAT)
     const steward = join(STEWARD)
     const sender = join('rev-one')
@@ -127,12 +143,12 @@ describe('the seat steward forward', () => {
     expect(result).toMatchObject({ ok: true, recipients: [SEAT] })
     expect(pushed(seat).map(m => m.text)).toEqual(['Merged: #42'])
     expect(pushed(steward)).toEqual([])
+    expect(ownerQueue()).toEqual([])
   })
 
-  // Catches: forwarding a seat the map does not name to some default steward.
+  // Catches: queueing a seat the map does not name for the owner.
   it('keeps the dark-seat hold for a seat the map does not name', () => {
     goDark(UNMAPPED)
-    const steward = join(STEWARD)
     const sender = join('rev-one')
     vi.setSystemTime(T0 + MINUTE)
 
@@ -140,54 +156,34 @@ describe('the seat steward forward', () => {
 
     expect(result).toMatchObject({ ok: true, held: true, recipients: [UNMAPPED] })
     expect(messagesTo(UNMAPPED).map(row => row.meta.held)).toEqual([SEAT_HOLD_MARK])
-    expect(pushed(steward)).toEqual([])
+    expect(ownerQueue()).toEqual([])
   })
 
-  // Catches: dropping the reply reference, so the steward's answer starts a new thread.
-  it('keeps the reply reference on a forwarded message', () => {
+  // Catches: dropping the reply reference on the queued message.
+  it('keeps the reply reference on a queued message', () => {
     goDark(SEAT)
-    const steward = join(STEWARD)
     const sender = join('rev-one')
     vi.setSystemTime(T0 + MINUTE)
 
     send(sender, SEAT, 'Merged: #42', 'msg-earlier')
 
-    expect(pushed(steward).map(m => m.inReplyTo)).toEqual(['msg-earlier'])
-    expect(messagesTo(STEWARD).map(row => row.ref)).toEqual(['msg-earlier'])
-  })
-
-  // Catches: a peer's forward pushed live past the steward's do-not-disturb.
-  it("logs a peer's forward to a steward in do-not-disturb without pushing it", () => {
-    goDark(SEAT)
-    const steward = join(STEWARD)
-    server.handleMessage(steward.conn, { t: 'status', status: 'working', dnd: true })
-    const sender = join('rev-one')
-    vi.setSystemTime(T0 + MINUTE)
-
-    const result = send(sender, SEAT, 'Merged: #42')
-
-    expect(result).toMatchObject({ ok: true, held: true, recipients: [STEWARD] })
-    expect(pushed(steward)).toEqual([])
-    expect(messagesTo(STEWARD).map(row => [row.body, row.meta.forwarded_for])).toEqual([
-      [`[for ${SEAT}] Merged: #42`, SEAT],
-    ])
+    expect(messagesTo('human').map(row => row.ref)).toEqual(['msg-earlier'])
   })
 
   // Catches: a bare string `seatStewards` read as a steward for every unrouted name.
   it('ignores and logs a seatStewards value that is not a map', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ seatStewards: STEWARD }))
-    const steward = join(STEWARD)
     const sender = join('rev-one')
 
     const result = send(sender, 'no-such-agent', 'Merged: #42')
 
     expect(result).toMatchObject({ ok: false })
-    expect(pushed(steward)).toEqual([])
+    expect(ownerQueue()).toEqual([])
     const log = fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')
     expect(log).toContain('"config_invalid","key":"seatStewards"')
   })
 
-  // Catches: the steward's own send to its dark seat handed back to the steward.
+  // Catches: the steward's own send to its dark seat queued for the owner.
   it("keeps the seat's hold for a message the steward sends to its own dark seat", () => {
     goDark(SEAT)
     const steward = join(STEWARD)
@@ -197,19 +193,6 @@ describe('the seat steward forward', () => {
 
     expect(result).toMatchObject({ ok: true, held: true, recipients: [SEAT] })
     expect(messagesTo(SEAT).map(row => row.meta.held)).toEqual([SEAT_HOLD_MARK])
-  })
-
-  // Catches: the human path (watchdog, CLI) skipping the steward and holding for the seat.
-  it('forwards a human send to a dark mapped seat to its steward', () => {
-    goDark(SEAT)
-    const steward = join(STEWARD)
-    const human = wire()
-    vi.setSystemTime(T0 + MINUTE)
-
-    server.handleMessage(human.conn, { t: 'human_send', to: SEAT, text: 'Check the queue' })
-
-    expect(human.frames.at(-1)).toMatchObject({ t: 'send_result', ok: true, recipients: [STEWARD] })
-    expect(pushed(steward).map(m => m.text)).toEqual([`[for ${SEAT}] Check the queue`])
-    expect(messagesTo(SEAT)).toEqual([])
+    expect(ownerQueue()).toEqual([])
   })
 })

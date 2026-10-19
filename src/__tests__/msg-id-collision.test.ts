@@ -123,21 +123,19 @@ describe('an explicit-id path whose first draw repeats an open human item', () =
     expect(log.mintMsgId()).toBe('dddddddd')
   })
 
-  // Mutation caught: pushForward drawing its own id again.
-  it('gives a message forwarded to a seat steward the second draw', () => {
+  // Mutation caught: queueForSeat drawing its own id instead of the logged row's.
+  it('gives a message queued for a non-resident seat the second draw', () => {
     fs.writeFileSync(
       path.join(dir, 'config.json'),
       JSON.stringify({ seatStewards: { 'seat-pc': 'seat-tc' } }),
     )
-    const { core, delivered } = makeCore()
-    join(core, 'seat-tc')
+    const { core } = makeCore()
     collideNext()
 
-    const forwarded = core.forwardForSeat(HUMAN, 'seat-pc', 'Merged: #42')
+    const queued = core.queueForSeat('rev-one', 'seat-pc', 'Merged: #42')
 
-    expect(forwarded?.msgId).toBe('bbbbbbbb')
-    expect(delivered.map(m => m.msgId)).toEqual(['bbbbbbbb'])
-    expect(openItems(core)).toContain(OPEN)
+    expect(queued).toBe('bbbbbbbb')
+    expect(openItems(core)).toEqual(expect.arrayContaining([OPEN, 'bbbbbbbb']))
   })
 
   // Mutation caught: the delivered answer built with its own draw, so it and the logged row diverge.

@@ -29,14 +29,7 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
-import {
-  BrokerCore,
-  readoptRegistration,
-  type Conn,
-  type EndorseApproval,
-  type SeatForwardResult,
-  forwardedText,
-} from './core.js'
+import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { viewRoster } from '../agents/roster-filter.js'
@@ -184,17 +177,15 @@ const routeDelivery = (
     : { delivered, unwoken, ...spooled }
 }
 
-/** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
-const replyForwarded = (conn: Conn, to: string, forwarded: SeatForwardResult): void => {
-  const { steward, msgId } = forwarded
-  if (forwarded.held) return replyHeld(conn, steward, msgId)
-  const reason = `"${to}" has no resident session; the message went to its steward "${steward}".`
+/** CC-1501: the sender learns the message for a non-resident seat went to the owner queue. */
+const replyQueuedForSeat = (conn: Conn, to: string, msgId: string): void => {
+  const reason = `"${to}" has no resident session; the message went to the owner queue.`
   reply(conn, {
     t: 'send_result',
     ok: true,
     msgId,
-    recipients: [steward],
-    results: [{ name: steward, status: 'delivered', reason }],
+    recipients: [HUMAN],
+    results: [{ name: HUMAN, status: 'delivered', reason }],
     reason,
   })
 }
@@ -244,7 +235,6 @@ interface SendExtras {
 /** What a routed send's rows carry beyond the message itself. */
 interface RouteExtras {
   tag?: string
-  forwardedFor?: string
   meta?: Record<string, string> | undefined
 }
 
@@ -1133,32 +1123,12 @@ export class SocketServer {
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
-    if (unrouted && this.forwardSend(conn, from, to, text, extras)) return
+    const queued = unrouted ? core.queueForSeat(from, to, text, { inReplyTo, sendMeta: meta }) : undefined
+    if (queued !== undefined) return replyQueuedForSeat(conn, to, queued)
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo, undefined, meta) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to, { meta })
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to, { meta })
     replyHeld(conn, to, held.msgId)
-  }
-
-  /**
-   * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
-   * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
-   */
-  private forwardSend(conn: Conn, from: string, to: string, text: string, extras: SendExtras): boolean {
-    const { core } = this
-    const { inReplyTo, meta } = extras
-    const steward = core.stewardFor(to, from)
-    if (steward === undefined) return false
-    const forwarded = forwardedText(to, text)
-    if (core.registry.connFor(steward) !== undefined) {
-      const result = core.registry.send(conn, steward, forwarded, inReplyTo)
-      this.handleRoute(conn, result, 'message', steward, { forwardedFor: to, meta })
-      return true
-    }
-    const held = core.holdForSteward(from, steward, forwarded, inReplyTo, undefined, meta)
-    if (held === undefined) return false
-    replyHeld(conn, steward, held.msgId)
-    return true
   }
 
   private handleRoute(
@@ -1166,7 +1136,7 @@ export class SocketServer {
     result: RouteResult<Conn>,
     kind: 'message' | 'broadcast',
     to: string,
-    { tag, forwardedFor, meta: sendMeta }: RouteExtras = {},
+    { tag, meta: sendMeta }: RouteExtras = {},
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -1190,7 +1160,6 @@ export class SocketServer {
         ...sendMeta,
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
-        ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
       }
       // One row per recipient so a session's inbox is a plain query on `target`.
       core.append({
@@ -1771,8 +1740,7 @@ export class SocketServer {
     const target = core.registry.connFor(to)
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
-      const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
-      if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
+      // CC-1501: every human send, mapped seat or not, keeps the seat's own hold; only peer mail is queued.
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       return this.failHumanSend(conn, to, held?.reason)
