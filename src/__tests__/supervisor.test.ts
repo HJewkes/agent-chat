@@ -3005,6 +3005,8 @@ describe('a visible spawn still starting at the attach window', () => {
     expect(result.ok).toBe(true)
     expect(result.warnings?.join(' ')).toMatch(/still starting 1s after launching into iterm-window/)
     expect(result.warnings?.join(' ')).toMatch(/pane was kept open/)
+    expect(result.warnings?.join(' ')).toMatch(/recorded as failed on agent_list/)
+    expect(result.warnings?.join(' ')).not.toMatch(/you will get its agent_exited/)
     expect(iterm.closes()).toBe(0)
     expect(kindsFor(result.agentId as string)).not.toContain('agent_exited')
   })
