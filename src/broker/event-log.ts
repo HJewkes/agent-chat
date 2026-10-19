@@ -724,10 +724,8 @@ export class EventLog implements EventStore {
   /**
    * The questions this session still has outstanding, not just how many.
    *
-   * Teleport refuses while any are open, and a refusal a model cannot act on is
-   * one it will retry against the same wall — so the reason has to name them,
-   * the way `send_result.reason` names a route failure rather than reporting
-   * "failed".
+   * Teleport carries them to the successor (CC-1503), whose first turn lists
+   * each id and its text, so the answer it later receives is one it expects.
    */
   openQuestions(actor: string): QueueItem[] {
     const rows = this.db
