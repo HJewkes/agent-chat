@@ -1740,9 +1740,7 @@ export class SocketServer {
     const target = core.registry.connFor(to)
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
-      // CC-1501: a watchdog wake is for the seat it is resuming, so it keeps the seat's own hold.
-      const queued = source === 'watchdog' ? undefined : core.queueForSeat(HUMAN, to, text, { source })
-      if (queued !== undefined) return replyQueuedForSeat(conn, to, queued)
+      // CC-1501: every human send, mapped seat or not, keeps the seat's own hold; only peer mail is queued.
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       return this.failHumanSend(conn, to, held?.reason)

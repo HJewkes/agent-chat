@@ -132,7 +132,7 @@ describe('an explicit-id path whose first draw repeats an open human item', () =
     const { core } = makeCore()
     collideNext()
 
-    const queued = core.queueForSeat(HUMAN, 'seat-pc', 'Merged: #42')
+    const queued = core.queueForSeat('rev-one', 'seat-pc', 'Merged: #42')
 
     expect(queued).toBe('bbbbbbbb')
     expect(openItems(core)).toEqual(expect.arrayContaining([OPEN, 'bbbbbbbb']))

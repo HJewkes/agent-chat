@@ -10,8 +10,8 @@ import { SocketServer } from '../broker/socket.js'
 import type { DeliveredMessage, ServerMessage } from '../protocol.js'
 
 /**
- * CC-966 and CC-1501: a message to a non-resident seat (one `seatStewards` names) with no session
- * goes to the owner queue, not to its steward, instead of waiting in a hold nobody reads. Every
+ * CC-966 and CC-1501: a peer's message to a non-resident seat (one `seatStewards` names) with no
+ * session goes to the owner queue, not to its steward; a human send keeps the seat's own hold. Every
  * name, time and message here is synthetic.
  */
 
@@ -107,33 +107,29 @@ describe('mail for a non-resident seat', () => {
     expect(messagesTo(SEAT)).toEqual([])
   })
 
-  // Catches: the human path (Shepherd notices sent as the human) still waking the steward.
-  it('queues a human send to a dark mapped seat for the owner, not the steward', () => {
+  // Catches: a human send (Shepherd notice, watchdog wake, CLI) moved onto the owner's queue or the steward.
+  it.each([
+    ['no source', undefined],
+    ['the shepherd source', 'shepherd' as const],
+    ['the watchdog source', 'watchdog' as const],
+  ])("holds a human send with %s for a dark mapped seat in the seat's own hold", (_label, source) => {
     goDark(SEAT)
     const steward = join(STEWARD)
     const human = wire()
     vi.setSystemTime(T0 + MINUTE)
 
-    server.handleMessage(human.conn, { t: 'human_send', to: SEAT, text: 'Shepherd digest' })
-
-    expect(human.frames.at(-1)).toMatchObject({ t: 'send_result', ok: true, recipients: ['human'] })
-    expect(ownerQueue()).toEqual([['human', `[for ${SEAT}] Shepherd digest`, SEAT]])
-    expect(pushed(steward)).toEqual([])
-    expect(messagesTo(SEAT)).toEqual([])
-  })
-
-  // Catches: a watchdog wake for a seat it is resuming diverted to the owner queue.
-  it("holds a watchdog wake for a dark mapped seat in the seat's own hold and pushes it on register", () => {
-    goDark(SEAT)
-    const human = wire()
-    vi.setSystemTime(T0 + MINUTE)
-
-    server.handleMessage(human.conn, { t: 'human_send', to: SEAT, text: 'Wake up', source: 'watchdog' })
+    server.handleMessage(human.conn, {
+      t: 'human_send',
+      to: SEAT,
+      text: 'Shepherd digest',
+      ...(source === undefined ? {} : { source }),
+    })
 
     expect(human.frames.at(-1)).toMatchObject({ t: 'send_result', ok: true, held: true, recipients: [SEAT] })
     expect(ownerQueue()).toEqual([])
+    expect(pushed(steward)).toEqual([])
     vi.setSystemTime(T0 + 2 * MINUTE)
-    expect(pushed(join(SEAT)).map(m => m.text)).toEqual(['Wake up'])
+    expect(pushed(join(SEAT)).map(m => m.text)).toEqual(['Shepherd digest'])
   })
 
   // Catches: queueing whenever the map names the target, connected or not.

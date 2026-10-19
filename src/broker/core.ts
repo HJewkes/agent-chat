@@ -579,20 +579,20 @@ export class BrokerCore<C = Conn> {
   }
 
   /**
-   * CC-1501: a message for a non-resident (parked or wrapped) seat goes to the owner queue, marked as
-   * for the seat, instead of waking its steward (CC-966) with mail it cannot act on. Undefined when
+   * CC-1501: a peer's message for a non-resident (parked or wrapped) seat goes to the owner queue, marked
+   * as for the seat, instead of waking its steward (CC-966) with mail it cannot act on. Undefined when
    * `to` has no steward, or when `from` is that steward, so the caller falls through to `to`'s own hold.
    */
   queueForSeat(from: string, to: string, text: string, extras: SeatQueueExtras = {}): string | undefined {
     if (this.stewardFor(to, from) === undefined) return undefined
-    const { inReplyTo, source, sendMeta } = extras
+    const { inReplyTo, sendMeta } = extras
     const { msgId } = this.append({
       kind: 'message',
       actor: from,
       target: HUMAN,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: forwardedText(to, text),
-      meta: { ...sendMeta, forwarded_for: to, ...(source === undefined ? {} : { source }) },
+      meta: { ...sendMeta, forwarded_for: to },
     })
     logEvent('route', { kind: 'message', msgId, from, to: HUMAN, delivered: true, forwardedFor: to })
     return msgId
@@ -874,7 +874,6 @@ export const forwardedText = (seat: string, text: string): string => `[for ${sea
 /** What a message queued for a non-resident seat carries beyond its text. */
 export interface SeatQueueExtras {
   inReplyTo?: string | undefined
-  source?: WakeSource | undefined
   sendMeta?: Record<string, string> | undefined
 }
 
