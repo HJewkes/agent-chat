@@ -250,7 +250,7 @@
     },
     {
       "name": "chat_ask",
-      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. Optional: header (<=80 chars); options as labels or {label, description}; default (a label); door (absent = one-way); category; initiative; blocking; reversible (how to undo); onNoAnswer.",
+      "description": "Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a channel message, so continue with other work meanwhile. Optional: header (<=80 chars); options as labels or {label, description}; default (a label); door (absent = one-way); category; initiative; blocking; reversible (how to undo); onNoAnswer.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -652,7 +652,7 @@
     },
     {
       "name": "agent_teleport",
-      "description": "End this session and start a successor on the CURRENT build, keeping your name, peers, tags, working directory and Claude account (CLAUDE_CONFIG_DIR); teleport cannot change the account, so ask your human to move you. Use it when your context is filling (a `[budget]` line), when you are parked waiting on the human (`reason: \"park\"`), or when your instructions or code have moved since you started. If you changed agent-chat's own code, run `npm run build` first; otherwise skip it. This is not a resume and not a subagent: your transcript does not come with you, the handoff below is all your successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. Answer each open question to the human or name its id in the handoff; teleport refuses otherwise.",
+      "description": "End this session and start a successor on the CURRENT build, keeping your name, peers, tags, working directory and Claude account (CLAUDE_CONFIG_DIR); teleport cannot change the account, so ask your human to move you. Use it when your context is filling (a `[budget]` line), when you are parked waiting on the human (`reason: \"park\"`), or when your instructions or code have moved since you started. If you changed agent-chat's own code, run `npm run build` first; otherwise skip it. This is not a resume and not a subagent: your transcript does not come with you, the handoff below is all your successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. Your open questions to the human move with your name: your successor is shown each id and its text, and their answers go to it.",
       "inputSchema": {
         "type": "object",
         "properties": {

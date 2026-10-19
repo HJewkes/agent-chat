@@ -42,6 +42,6 @@ frame: {"t":"ask","text":"what now?"}
 [
   {
     "type": "text",
-    "text": "Not queued: already have 3 unanswered questions"
+    "text": "Not queued: not registered"
   }
 ]

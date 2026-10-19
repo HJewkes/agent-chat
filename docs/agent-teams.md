@@ -1767,8 +1767,7 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   same report to the dashboard and to relay.
 - **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
   requester per window — 5 attempts per 60s by default — mirroring the
-  broadcast budget already in `registry.ts:63-64` and the
-  `MAX_OPEN_QUESTIONS = 3` budget at `broker/index.ts:18`. Checked in
+  broadcast budget already in `registry.ts:63-64`. Checked in
   `Supervisor.preflight`, exempting the human at the CLI for the same reason
   `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model

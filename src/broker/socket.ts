@@ -67,12 +67,12 @@ import { jobKickRequest, type JobKick } from './job-kick.js'
  */
 const WATCH_MAX_BATCH = 50
 
-const MAX_OPEN_QUESTIONS = 3
-
 /**
  * Endorsement requests one session may have waiting at once.
  *
- * Lower than the question budget on purpose: each one asks the human to read a
+ * Questions have no such budget (CC-1503): the human queue already holds every
+ * session's questions together, and a refused question is one the asker carries
+ * silently instead. An endorsement differs: each one asks the human to read a
  * whole message word for word and take responsibility for it, which is a more
  * expensive ask than answering a question — and a backlog of them is exactly the
  * condition under which they stop being read carefully and start being
@@ -1262,11 +1262,6 @@ export class SocketServer {
     const { core } = this
     const from = core.registry.nameOf(conn)
     if (!from) return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: 'not registered' })
-
-    if (kind === 'question' && core.events.openCount(from, 'question') >= MAX_OPEN_QUESTIONS) {
-      const reason = `you already have ${MAX_OPEN_QUESTIONS} unanswered questions; resolve one before asking again`
-      return reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
-    }
 
     const meta = shapeMeta(shape)
     const { msgId } = core.append({

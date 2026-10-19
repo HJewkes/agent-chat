@@ -28,6 +28,8 @@ import type { ArgvReader } from '../broker/host-channels.js'
 import type { JournalEntry } from '../agents/seats/journal-line.js'
 import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
 import type { ShepherdRow } from '../shepherd-client.js'
+import { SocketServer } from '../broker/socket.js'
+import type { DecisionCitation, DeliveredMessage, ServerMessage } from '../protocol.js'
 
 /**
  * CC-20 — teleport. What is being proved is that a session can end itself into a
@@ -52,7 +54,7 @@ let signalledAt: Map<number, number>
 /** CC-402: how long a signalled predecessor takes to exit; Infinity never exits. */
 let exitDelayMs: number
 /** Everything the broker pushed to a live session, so "was it told?" is answerable. */
-let delivered: Array<{ conn: Conn; text: string }>
+let delivered: Array<{ conn: Conn; text: string; message: DeliveredMessage }>
 
 const COUNTDOWN_MS = 1000
 
@@ -62,7 +64,7 @@ function makeCore(): BrokerCore {
   process.env.AGENT_CHAT_HOME = dir
   // The appendix reads seat files under the active-work root; this keeps it off the developer's own.
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(dir, 'active-work')
-  return new BrokerCore((conn, message) => delivered.push({ conn, text: message.text }), {
+  return new BrokerCore((conn, message) => delivered.push({ conn, text: message.text, message }), {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
   })
@@ -243,30 +245,6 @@ afterEach(() => {
 })
 
 describe('what teleport refuses before it commits to anything', () => {
-  /**
-   * The mechanical reason, not a policy one: `BrokerCore.answer` resolves the
-   * recipient with `authorOf` and delivers BY NAME. A question left open across
-   * a teleport would have its answer appended to the log and delivered to
-   * nothing. The refusal has to name the question, or it is one a model will
-   * retry against the same wall.
-   */
-  it('refuses while a question to the human is open, and says which', async () => {
-    const agentId = await spawnAgent()
-    const { msgId } = core.append({
-      kind: 'question',
-      actor: 'scout',
-      target: 'human',
-      body: 'which branch should this land on?',
-    })
-
-    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })
-
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain(msgId)
-    expect(result.reason).toContain('which branch should this land on?')
-    expect(kinds()).not.toContain('agent_handoff')
-  })
-
   it('lets the same session teleport once the question is answered', async () => {
     const agentId = await spawnAgent()
     const { msgId } = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'q' })
@@ -287,20 +265,6 @@ describe('what teleport refuses before it commits to anything', () => {
     expect(result.ok).toBe(true)
     const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
     expect(row?.meta.questions).toBe(`${first.msgId},${second.msgId}`)
-  })
-
-  it('refuses naming only the question id the handoff leaves out', async () => {
-    const agentId = await spawnAgent()
-    const named = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
-    const missing = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'tag v2?' })
-
-    const result = await supervisor.teleport({ subject: subject(agentId), handoff: `asked ${named.msgId}` })
-
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain(missing.msgId)
-    expect(result.reason).toContain('tag v2?')
-    expect(result.reason).not.toContain(named.msgId)
-    expect(kinds()).not.toContain('agent_handoff')
   })
 
   /** Truncation would drop the tail, and the tail is what was already tried. */
@@ -342,6 +306,92 @@ describe('what teleport refuses before it commits to anything', () => {
 
     expect(result.ok).toBe(true)
     expect(result.warnings?.[0]).toMatch(/1 message\(s\) arrived/)
+  })
+})
+
+/** CC-1503: open questions move with the name; teleport never refuses on one. */
+describe('open questions across a teleport', () => {
+  const CITATION: DecisionCitation = {
+    precedent: 'transcript session abc tool_use toolu_1: "Keep going while ready work exists" (2026-09-20)',
+    class: 'session_control',
+    basis: 'precedent',
+    reversible: 'the asker stops at its next boundary',
+  }
+
+  const ask = (body: string): string =>
+    core.append({ kind: 'question', actor: 'scout', target: 'human', body }).msgId
+
+  /** Teleports `scout` with a handoff that names none of its questions, and returns the successor id. */
+  async function teleportScout(): Promise<string> {
+    const agentId = await spawnAgent()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'mid-way through the slice' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(result.ok).toBe(true)
+    return result.agentId as string
+  }
+
+  /** The successor's own connection, registered under the name it kept. */
+  function successorConn(): { conn: Conn; frames: ServerMessage[] } {
+    const frames: ServerMessage[] = []
+    const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
+    core.register(conn, { t: 'register', name: 'scout', workingOn: 'the slice', cwd: workspace(), pid: 1 })
+    return { conn, frames }
+  }
+
+  it('teleports with two open questions the handoff does not name, and lists both for the successor', async () => {
+    const first = ask('keep going on slice two?')
+    const second = ask('which fixture name reads better?')
+
+    const successor = await teleportScout()
+
+    const stdin = planFor(successor).stdin ?? ''
+    expect(stdin).toContain('Open chat_ask questions (2); the answers come to you:')
+    expect(stdin).toContain(`- ${first}: keep going on slice two?`)
+    expect(stdin).toContain(`- ${second}: which fixture name reads better?`)
+    expect(refusals()).toEqual([])
+  })
+
+  it('delivers answers to pre-teleport questions to the successor, with their provenance', async () => {
+    const byHuman = ask('which fixture name reads better?')
+    const byDecider = ask('keep going on slice two?')
+    await teleportScout()
+    const { conn } = successorConn()
+
+    expect(core.answer(byHuman, 'the shorter one', 'cli')).toEqual({ ok: true })
+    expect(core.decide('decider', byDecider, 'yes, continue', CITATION)).toEqual({ ok: true })
+
+    const toSuccessor = delivered.filter(d => d.conn === conn).map(d => d.message)
+    expect(toSuccessor).toEqual([
+      expect.objectContaining({ from: 'human', inReplyTo: byHuman, text: 'the shorter one' }),
+      expect.objectContaining({ from: 'decider', inReplyTo: byDecider, provenance: 'decided' }),
+    ])
+    expect(toSuccessor[0]).not.toHaveProperty('provenance')
+  })
+
+  it('closes a pre-teleport question the successor withdraws itself exactly once', async () => {
+    const msgId = ask('keep going on slice two?')
+    await teleportScout()
+    const server = new SocketServer(core)
+    try {
+      const { conn, frames } = successorConn()
+
+      server.handleMessage(conn, { t: 'dismiss', msgId })
+      server.handleMessage(conn, { t: 'dismiss', msgId })
+
+      const results = frames.filter(f => f.t === 'answer_result')
+      expect(results).toEqual([
+        { t: 'answer_result', ok: true },
+        { t: 'answer_result', ok: false, reason: `${msgId} is not an open item` },
+      ])
+      expect(core.answer(msgId, 'too late', 'cli').ok).toBe(false)
+      const closing = core.events
+        .since(0, 10_000)
+        .filter(r => r.ref === msgId && (r.kind === 'resolution' || r.kind === 'answer'))
+      expect(closing).toHaveLength(1)
+      expect(core.events.openQuestions('scout')).toEqual([])
+    } finally {
+      server.close()
+    }
   })
 })
 
@@ -950,15 +1000,6 @@ describe('a visible predecessor', () => {
 
 /** CC-1358: one `teleport_refused` line per refusal, with the stage that turned the request away. */
 describe('every refusal is logged with its stage (CC-1358)', () => {
-  it('logs one questions line for an unnamed open question', async () => {
-    const agentId = await spawnAgent()
-    core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'which branch?' })
-
-    await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })
-
-    expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'questions' })])
-  })
-
   it('logs a preflight line for a session that reported no pid', async () => {
     const agentId = await spawnAgent()
     const { hostPid: _omitted, ...noPid } = subject(agentId)

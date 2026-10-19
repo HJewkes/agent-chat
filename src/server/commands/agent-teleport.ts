@@ -67,8 +67,8 @@ export const agentTeleport = defineTool({
     'otherwise skip it. This is not a resume and not a subagent: your transcript does not come ' +
     'with you, the handoff below is all your successor gets, and you will be shut down. If you are ' +
     'visible in a terminal, your human gets 30 seconds to stop it; if you are headless it happens ' +
-    'immediately. You cannot cancel it yourself. Answer each open question to the human or name ' +
-    'its id in the handoff; teleport refuses otherwise.',
+    'immediately. You cannot cancel it yourself. Your open questions to the human move with your ' +
+    'name: your successor is shown each id and its text, and their answers go to it.',
   args: z.object({
     handoff: requiredString('handoff').describe(
       'Everything your successor needs, written by you, stored verbatim, 8 KB max (refused, not ' +

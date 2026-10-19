@@ -22,7 +22,7 @@ export const chatAsk = defineTool({
   description:
     'Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no ' +
     'reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a ' +
-    'channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions. ' +
+    'channel message, so continue with other work meanwhile. ' +
     'Optional: header (<=80 chars); options as labels or {label, description}; default (a label); door ' +
     '(absent = one-way); category; initiative; blocking; reversible (how to undo); onNoAnswer.',
   args: z.object({
