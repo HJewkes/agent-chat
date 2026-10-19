@@ -579,65 +579,23 @@ export class BrokerCore<C = Conn> {
   }
 
   /**
-   * CC-966: the human's message for a non-resident seat, pushed to its steward and marked as for the
-   * seat; the human overrides do-not-disturb here as on any send. Undefined when `to` has no steward,
-   * or the steward is dark and cannot hold it either, so the caller falls through to `to`'s own hold.
+   * CC-1501: a message for a non-resident (parked or wrapped) seat goes to the owner queue, marked as
+   * for the seat, instead of waking its steward (CC-966) with mail it cannot act on. Undefined when
+   * `to` has no steward, or when `from` is that steward, so the caller falls through to `to`'s own hold.
    */
-  forwardForSeat(
-    from: string,
-    to: string,
-    text: string,
-    inReplyTo?: string,
-    source?: WakeSource,
-  ): SeatForwardResult | undefined {
-    const steward = this.stewardFor(to, from)
-    if (steward === undefined) return undefined
-    const forwarded = forwardedText(to, text)
-    if (this.registry.connFor(steward) !== undefined)
-      return this.pushForward({ from, to, steward, text: forwarded, inReplyTo, source })
-    return this.holdForSteward(from, steward, forwarded, inReplyTo, source)
-  }
-
-  /** CC-966: a dark steward keeps a forwarded message in its own hold, as it would its own. */
-  holdForSteward(
-    from: string,
-    steward: string,
-    text: string,
-    inReplyTo?: string,
-    source?: WakeSource,
-    sendMeta?: Record<string, string>,
-  ): SeatForwardResult | undefined {
-    const held = this.holdForSeat(from, steward, text, inReplyTo, source, sendMeta)
-    return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
-  }
-
-  private pushForward(forward: SeatForward): SeatForwardResult {
-    const { from, to, steward, text, inReplyTo, source } = forward
+  queueForSeat(from: string, to: string, text: string, extras: SeatQueueExtras = {}): string | undefined {
+    if (this.stewardFor(to, from) === undefined) return undefined
+    const { inReplyTo, source, sendMeta } = extras
     const { msgId } = this.append({
       kind: 'message',
       actor: from,
-      target: steward,
+      target: HUMAN,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
-      body: text,
-      meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
+      body: forwardedText(to, text),
+      meta: { ...sendMeta, forwarded_for: to, ...(source === undefined ? {} : { source }) },
     })
-    const live = this.deliverTo(steward, {
-      msgId,
-      from,
-      text,
-      at: Date.now(),
-      ...(inReplyTo === undefined ? {} : { inReplyTo }),
-      ...(source === undefined ? {} : { wakeSource: source }),
-    })
-    logEvent('route', {
-      kind: 'message',
-      msgId,
-      from,
-      to: steward,
-      ...this.routeDelivered(steward, live),
-      forwardedFor: to,
-    })
-    return { steward, msgId, held: false }
+    logEvent('route', { kind: 'message', msgId, from, to: HUMAN, delivered: true, forwardedFor: to })
+    return msgId
   }
 
   /**
@@ -910,23 +868,14 @@ export interface VerdictResult {
 
 export type SeatHoldResult = { ok: true; msgId: string } | { ok: false; reason: string }
 
-/** CC-966: how a forwarded message reads to the steward, naming the seat it was sent to. */
+/** CC-966: how a queued message reads to the owner, naming the seat it was sent to. */
 export const forwardedText = (seat: string, text: string): string => `[for ${seat}] ${text}`
 
-/** CC-966: a dark seat's message sent on to its steward; `held` when the steward was dark too. */
-export interface SeatForwardResult {
-  steward: string
-  msgId: string
-  held: boolean
-}
-
-interface SeatForward {
-  from: string
-  to: string
-  steward: string
-  text: string
-  inReplyTo: string | undefined
-  source: WakeSource | undefined
+/** What a message queued for a non-resident seat carries beyond its text. */
+export interface SeatQueueExtras {
+  inReplyTo?: string | undefined
+  source?: WakeSource | undefined
+  sendMeta?: Record<string, string> | undefined
 }
 
 export type DecideResult = { ok: true; reason?: string } | { ok: false; code: DecidedRefusal; reason: string }

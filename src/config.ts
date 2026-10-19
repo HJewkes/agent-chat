@@ -282,9 +282,10 @@ export function resolveSeatSpawnMode(): SeatSpawnMode {
 }
 
 /**
- * CC-966: the session that takes a non-resident seat's messages while the seat has no active session,
- * from `config.json`'s `seatStewards` (`{"<seat>": "<steward>"}`). Read per send; an invalid entry is
- * logged and read as no steward, so the seat keeps today's dark-seat hold.
+ * CC-966: the steward of a non-resident seat, from `config.json`'s `seatStewards` (`{"<seat>": "<steward>"}`).
+ * CC-1501: a mapped seat's mail goes to the owner queue while it has no active session, except the
+ * steward's own. Read per send; an invalid entry is logged and read as no steward, so the seat keeps
+ * today's dark-seat hold.
  */
 export function resolveSeatSteward(seat: string): string | undefined {
   const stewards = readConfig().seatStewards
