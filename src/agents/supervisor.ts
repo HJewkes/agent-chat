@@ -2943,7 +2943,8 @@ export class Supervisor implements TeleportHost {
       warning:
         `still starting ${window} after launching into ${handle.surface}; the pane was kept open and it will ` +
         `attach when it registers. ${diagnosis} If it has not registered within ${ceiling} of launch, the ` +
-        'spawn is recorded as failed and you will get its agent_exited.',
+        'spawn is recorded as failed on agent_list; its agent_exited is pushed only if you subscribed to your ' +
+        'spawns (chat_subscribe scope "spawned").',
     }
   }
 
@@ -3029,9 +3030,8 @@ export class Supervisor implements TeleportHost {
    * The surface goes because leaving it is how the evidence was collected in the
    * first place — a pane created for an agent that never existed, sitting on a
    * shell prompt with no owner and no way for anyone to know it was dead. The
-   * `agent_exited` row is what stops the roster reading `starting` forever; it
-   * also reaches the requester, whose spawn auto-subscribed it to exactly this
-   * kind for exactly this reason.
+   * `agent_exited` row is what stops the roster reading `starting` forever; the
+   * requester gets it pushed only if it subscribed to its spawns (CC-1500).
    */
   private async failSpawn(
     req: SpawnRequest,

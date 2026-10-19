@@ -920,8 +920,16 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
 describe('a headless agent exiting under the supervisor', () => {
   const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
+  /** Lifecycle pushes are opt-in (CC-1500), so the exit-notice tests below subscribe first. */
+  const optIntoSpawned = (coord: Wire): void =>
+    send(coord, {
+      t: 'subscribe',
+      subscriptions: [{ selector: { spawnedBy: 'self' }, kinds: ['agent_attached', 'agent_exited'] }],
+    })
+
   /** `coord` spawns `scout` over the socket; the scout then registers as a real agent does. */
-  async function spawnScout(coord: Wire): Promise<Wire> {
+  async function spawnScout(coord: Wire, { optIn = true } = {}): Promise<Wire> {
+    if (optIn) optIntoSpawned(coord)
     send(coord, {
       t: 'spawn',
       name: 'scout',
@@ -987,6 +995,31 @@ describe('a headless agent exiting under the supervisor', () => {
     expect(unreported(coord).map(m => m.text)).toEqual([
       'scout exited with no Status report; last action: unknown',
     ])
+    expect(exitsPushedTo(coord)).toEqual(['scout'])
+  })
+
+  // Mutation caught: the spawn subscribing its requester to the lifecycle again.
+  it('pushes its spawner no attach or exit notice by default, while the roster records both', async () => {
+    windowMs = 0
+    const coord = session('coord')
+    const scout = await spawnScout(coord, { optIn: false })
+    say(scout, 'coord', 'Status: DONE\nPR: example/repo#1')
+
+    await exitAndSettle(1)
+
+    expect(lifecycle(coord)).toEqual([])
+    const kinds = core.events.agentEvents().map(r => r.kind)
+    expect(kinds).toEqual(expect.arrayContaining(['agent_attached', 'agent_exited']))
+  })
+
+  it('pushes the exit to a spawner that subscribed to its spawns', async () => {
+    windowMs = 0
+    const coord = session('coord')
+    const scout = await spawnScout(coord)
+    say(scout, 'coord', 'Status: DONE\nPR: example/repo#1')
+
+    await exitAndSettle(1)
+
     expect(exitsPushedTo(coord)).toEqual(['scout'])
   })
 })
