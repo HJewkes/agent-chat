@@ -1269,6 +1269,12 @@ export type ClientMessage =
    */
   | { t: 'account_move'; name: string; to: string; force?: boolean }
   /**
+   * CC-1545: `agent-chat codex run` reached its `--wake-cap`. Names the Codex process by pid
+   * and machine, since a session without `--name` has a name only the broker knows. The
+   * broker refuses it from a REGISTERED connection; answered with `send_result`.
+   */
+  | { t: 'codex_wake_capped'; hostPid: number; host: string; cap: number }
+  /**
    * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
    * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
    */

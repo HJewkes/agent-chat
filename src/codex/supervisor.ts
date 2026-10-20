@@ -42,6 +42,8 @@ export interface DeliveryDeps {
   wakeCap?: number | undefined
   now?: () => number
   log?: ((line: string) => void) | undefined
+  /** Told once each time the cap trips (CC-1545). */
+  onWakeCapped?: ((cap: number) => void) | undefined
   drain?: (dir: string) => Drained
 }
 
@@ -137,7 +139,7 @@ export class DeliveryLoop {
     const since = this.now() - HOUR_MS
     this.wakes = this.wakes.filter(at => at > since)
     const over = this.wakes.length >= wakeCap
-    if (over && !this.capNoticed) this.log(`wake cap of ${wakeCap}/hour reached; records wait in the spool`)
+    if (over && !this.capNoticed) this.deps.onWakeCapped?.(wakeCap)
     this.capNoticed = over
     return over
   }
@@ -181,6 +183,9 @@ export function spoolFinder(
   }
 }
 
+/** The Codex pid a spool dir is keyed on: `codex-hosts/<pid>/inbox`. */
+export const spoolHostPid = (dir: string): number => Number(path.basename(path.dirname(dir)))
+
 export function exitCodeOf(exit: CodexProcessExit): number {
   if (exit.exitCode !== null) return exit.exitCode
   const signal = exit.signal === null ? undefined : os.constants.signals[exit.signal]
@@ -195,6 +200,8 @@ export interface SuperviseOptions {
   spoolDirs?: () => string[]
   rescanMs?: number
   log?: ((line: string) => void) | undefined
+  /** Told the Codex pids whose spools the cap is holding (CC-1545). */
+  onWakeCapped?: ((hostPids: number[], cap: number) => void) | undefined
 }
 
 /** Watch each spool dir once found; a debounced change, or the rescan, kicks a drain. */
@@ -238,7 +245,15 @@ export async function superviseCodex(options: SuperviseOptions): Promise<number>
       ? await server.threadStart(thread)
       : await server.threadResume(options.resume, thread)
   const spoolDirs = options.spoolDirs ?? spoolFinder(server.pid ?? -1)
-  const loop = new DeliveryLoop({ server, threadId, spoolDirs, wakeCap: options.wakeCap, log: options.log })
+  const onWakeCapped = (cap: number): void => options.onWakeCapped?.(spoolDirs().map(spoolHostPid), cap)
+  const loop = new DeliveryLoop({
+    server,
+    threadId,
+    spoolDirs,
+    wakeCap: options.wakeCap,
+    log: options.log,
+    onWakeCapped,
+  })
   const kick = (): void => void loop.kick()
   server.onEvent(event => {
     if (event.kind === 'exit' || event.threadId !== threadId) return

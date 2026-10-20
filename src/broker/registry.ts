@@ -604,6 +604,12 @@ export class Registry<C> {
     return this.findByName(name)?.[1].hostPid
   }
 
+  /** CC-1545: the name registered from that host process; both must match, as pids repeat across machines. */
+  nameOnHost(hostPid: number, host: string): string | undefined {
+    for (const entry of this.entries.values()) if (entry.hostPid === hostPid && entry.host === host) return entry.name
+    return undefined
+  }
+
   /** The machine that pid is on (CC-880). Undefined means unreported, never "local". */
   hostFor(name: string): string | undefined {
     return this.findByName(name)?.[1].host
