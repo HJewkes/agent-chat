@@ -78,6 +78,36 @@ describe('runaway victim selection (CC-495)', () => {
     expect(victimPids(rows)).toEqual([])
   })
 
+  it('a codex agent is a root and its tool child is a victim, not an unowned process', () => {
+    const codex = row(900, BROKER, '/opt/agent/.local/bin/codex --model gpt-x')
+    const viaNode = row(910, 1, 'node /opt/agent/.local/lib/node_modules/@openai/codex/bin/codex.js exec')
+    const rows = [init, broker, codex, viaNode, row(901, 900, 'cargo build', 9), row(911, 910, 'vitest', 9)]
+
+    expect(victimPids(rows)).toEqual([
+      [901, 900],
+      [911, 910],
+    ])
+  })
+
+  it('agent-chat codex run is a root, whether launched directly or through node', () => {
+    const direct = row(920, 1, '/opt/agent/.local/bin/agent-chat codex run --thread t1')
+    const viaNode = row(930, 1, 'node /opt/agent/projects/agent-chat/dist/cli.js codex run')
+    const rows = [init, broker, direct, viaNode, row(921, 920, 'vitest', 9), row(931, 930, 'vitest', 9)]
+
+    expect(victimPids(rows)).toEqual([
+      [921, 920],
+      [931, 930],
+    ])
+  })
+
+  it('other agent-chat subcommands and codex-named arguments are not roots', () => {
+    const status = row(940, 1, '/opt/agent/.local/bin/agent-chat status codex run')
+    const grep = row(950, 1, 'grep -i codex')
+    const rows = [init, broker, status, grep, row(941, 940, 'cat', 9), row(951, 950, 'cat', 9)]
+
+    expect(victimPids(rows)).toEqual([])
+  })
+
   it('a process of another uid is never a victim', () => {
     const rows = [init, broker, claude, row(400, 200, 'git gc', 9, 0)]
 
