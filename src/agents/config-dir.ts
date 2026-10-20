@@ -53,8 +53,8 @@ import path from 'node:path'
 const PROFILE_ROOT_ENV = 'CLAUDE_PROFILE_ROOT'
 const DEFAULT_PROFILE_ROOT = '.claude-profiles'
 
-/** `pool` is the broker's pool pick (CC-606), which replaces an unpinned seat spawn's own resolution. */
-export type ConfigDirSource = 'explicit' | 'spawner' | 'profile' | 'broker' | 'pool'
+/** `pool` is the broker's pool pick (CC-606), which replaces an unpinned seat spawn's own resolution; `rotation` is a worker spawn's most-headroom pick (CC-1546). */
+export type ConfigDirSource = 'explicit' | 'spawner' | 'profile' | 'broker' | 'pool' | 'rotation'
 
 export interface ConfigDirRequest {
   /** An absolute path the request named. Rejected rather than ignored when unusable. */

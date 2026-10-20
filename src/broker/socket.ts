@@ -394,6 +394,7 @@ const spawnResultFields = (outcome: SpawnOutcome, warnings: readonly string[] = 
   ...(outcome.base === undefined ? {} : { base: outcome.base }),
   ...(outcome.launch === undefined ? {} : { launch: outcome.launch }),
   ...(outcome.host === undefined ? {} : { host: outcome.host }),
+  ...(outcome.account === undefined ? {} : { account: outcome.account }),
 })
 
 /**
