@@ -31,7 +31,7 @@ import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
 import { ParkAdvisor, readParkBudget } from './park-advisor.js'
-import { resolveInboxSpool, spoolRecord, type SpoolDeps } from './inbox-spool.js'
+import { resolveInboxSpool, retireCodexHostOnExit, spoolRecord, type SpoolDeps } from './inbox-spool.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -559,8 +559,10 @@ export async function startMcpServer(): Promise<void> {
   const spoolDir = resolveInboxSpool({
     agentId: launched?.agentId,
     env: process.env,
-    hostPid: hostIdentity().hostPid,
+    hostPid: host.hostPid,
+    harness: host.harness,
   })
+  if (host.harness === 'codex' && host.hostPid !== undefined) retireCodexHostOnExit(host.hostPid)
   const spawned = launched && spoolDir ? { ...launched, inboxSpool: true as const } : launched
   const { deliver, deliverSystemEvents } = channelDelivery(
     params => void mcp.notification({ method: 'notifications/claude/channel', params }),
