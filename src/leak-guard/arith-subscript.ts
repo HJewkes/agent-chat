@@ -67,9 +67,41 @@ const ARITH_TESTS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge'])
 const BODY_SUBSTITUTION = /\$\(|`|\$\{[\s|]|\$'/
 const OPENER = /\$\(|`|\$\{[\s|]/
 
-/** `word` with each substitution the splitter read as a HOLE, so a quote inside one is not mistaken for the word's. */
+// A `$(` left here is an escaped `\(`, since each substitution the splitter read is a HOLE by now.
+const CLOSERS: Readonly<Record<string, string>> = { '{': '}', '[': ']' }
+const PARAMETER = new RegExp(`^(?:${NAME}|[0-9@*#?$!-])`)
+
+/** The index past the live expansion whose `$` is at `at`: `$x`, `$1`, `$@`, `${...}` or `$[...]`; undefined for a bare `$`. */
+function expansionEnd(text: string, at: number): number | undefined {
+  let i = at + 1
+  while (text[i] === LIVE) i++
+  const open = text[i] ?? ''
+  const close = CLOSERS[open]
+  if (close === undefined) {
+    const name = PARAMETER.exec(text.slice(i))
+    return name === null ? undefined : i + name[0].length
+  }
+  let depth = 0
+  for (; i < text.length; i++) {
+    if (text[i] === open) depth++
+    else if (text[i] === close && --depth === 0) return i + 1
+  }
+  return text.length
+}
+
+/**
+ * `word` with each live expansion as a HOLE, since bash may expand any of them to nothing: the substitutions the
+ * splitter read, so a quote inside one is not mistaken for the word's, then every parameter expansion left.
+ */
 function withHoles(word: string, cmd: SimpleCommand): string {
-  return cmd.substitutions.reduce((text, sub) => text.replaceAll(`${LIVE}${sub.raw}`, HOLE), word)
+  const text = cmd.substitutions.reduce((holed, sub) => holed.replaceAll(`${LIVE}${sub.raw}`, HOLE), word)
+  let out = ''
+  for (let i = 0; i < text.length;) {
+    const end = text.startsWith(`${LIVE}$`, i) ? expansionEnd(text, i + 1) : undefined
+    out += end === undefined ? text[i] : HOLE
+    i = end ?? i + 1
+  }
+  return out
 }
 
 const HOLES = new RegExp(`${HOLE}+`, 'g')

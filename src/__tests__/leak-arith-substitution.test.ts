@@ -209,7 +209,25 @@ describe('a substitution that joins or finishes an opener', () => {
     "let 'a['\"$(printf '%s' '`')\"'git push --no-verify`]'",
     `[[ 1 -eq 'a'"$(printf '[$(')"'git push --no-verify)]' ]]`,
     `let a[$(printf '$(')git\\ push\\ --no-verify\\)]`,
+    `[[ 1 -eq 'a[$'"\${x:-(}"'git push --no-verify)]' ]]`,
   ])('denies a substitution whose output could finish the opener: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each([
+    `[[ 1 -eq 'a[$'"\${x:+}"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'\${x:+}'(git push --no-verify)]' ]]`,
+    `let 'a[$'"\${x:+}"'(git push --no-verify)]'`,
+    `[[ 1 -eq 'a[$'"$x"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'"$x"'(gh pr comment 1 --body zq7privateseat)]' ]]`,
+    `declare -i n='a[$'"$x"'(git push --no-verify)]'`,
+    `[[ 1 -eq 'a[$'"$@"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'"$*"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'"$1"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'"\${a[0]}"'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a[$'$[0]'(git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a['"$x"'$(git push --no-verify)]' ]]`,
+  ])('denies a parameter expansion inside an opener: %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
   })
 
@@ -255,6 +273,10 @@ describe('arithmetic the guard reads', () => {
     'a[$(git rev-parse --short HEAD)]=1',
     '[[ $(git rev-list --count HEAD) -eq a[$(echo 0)] ]]',
     'echo "[$(date)] done"',
+    'echo "[$USER] done"',
+    'a[$i]=1',
+    'echo "${arr[1]}" $1 "$@"',
+    '[[ $1 -eq ${n:-0} ]]',
     'git commit -m "Bump $(git rev-parse --short HEAD) [docs]"',
   ])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()

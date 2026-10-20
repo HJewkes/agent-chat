@@ -408,12 +408,13 @@ after quote removal, backslashes and line continuations are taken out. It also d
 `(( ))`, `$(( ))` or `$[ ]` body, which bash runs with no subscript at all. A substitution the
 splitter reads as one (`a[$(cmd)]` unquoted) is checked as a command instead, as before.
 
-bash joins the text on either side of a substitution, so the guard takes each one out and joins
-the word the same way: `'a[$'"$(true)"'(cmd)]'` is read as `a[$(cmd)]` and denied. What a
-substitution prints can also finish an opener the line only half shows, as in
-`'a[$'"$(printf '(')"'cmd)]'`. So one inside or before a `[ ]` denies when a `$` or backtick sits
-right before it or anything but its closing `]` follows it; `a[$(cmd)]=1` and `"[$(date)] done"`
-are still allowed.
+bash joins the text on either side of an expansion, and any expansion may be empty, so the guard
+takes each one out and joins the word the same way. That covers a substitution, `$x`, `${...}`,
+`$1`, `$@`, `$*`, `$?` and `$[...]`: `'a[$'"$(true)"'(cmd)]'` and `'a[$'"${x:+}"'(cmd)]'` are read
+as `a[$(cmd)]` and denied. What an expansion yields can also finish an opener the line only half
+shows, as in `'a[$'"$(printf '(')"'cmd)]'` or `'a[$'"${x:-(}"'cmd)]'`. So one inside or before a
+`[ ]` denies when a `$` or backtick sits right before it or anything but its closing `]` follows
+it; `a[$(cmd)]=1`, `a[$i]=1` and `"[$USER] done"` are still allowed.
 
 The cost is that plain text in that shape is denied too: `grep 'a[$(x)]' notes.txt`,
 `[[ x == 'a[$(y)]' ]]`, `awk '{ c[$(NF-1)]++ }'`, `grep -E '[$(]'`, a commit message that
