@@ -380,11 +380,13 @@ function addHiddenCommands(program: Command): void {
 
   // Run by Claude Code as a spawned agent's tool, prompt and turn-end hook (CC-1455), never by a person.
   program
-    .command('inbox-hook <agentId> <phase>', { hidden: true })
+    .command('inbox-hook <agentId> [phase]', { hidden: true })
     .option('--block', 'at Stop, block the turn end to show what is waiting')
-    .action(async (agentId: string, phase: string, opts: { block?: boolean }) => {
-      const { inboxHook } = await import('./verbs/inbox-hook.js')
-      await inboxHook(agentId, phase, opts.block === true)
+    .option('--host <host>', 'codex: the first argument is the phase and the output a notice')
+    .action(async (agentId: string, phase: string | undefined, opts: { block?: boolean; host?: string }) => {
+      const { codexInboxHook, inboxHook } = await import('./verbs/inbox-hook.js')
+      if (opts.host === 'codex') await codexInboxHook(agentId)
+      else await inboxHook(agentId, phase ?? '', opts.block === true)
     })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
