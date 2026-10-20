@@ -74,7 +74,9 @@ inherited whatever dir the detached broker daemon happened to start with, and ag
 spawned from a session on a dedicated account quietly billed `~/.claude` until it hit its
 spend limit. A **worker** spawn without `config_dir` then moves to the account with the
 most fresh seven_day headroom (CC-1546): the lowest fresh `used_pct` across `~/.claude` and
-`~/.claude-profiles/*`, below the owner's `accountRotation.ceilingPct` (default 90). A stale
+`~/.claude-profiles/*`, with both seven_day and five_hour below the owner's
+`accountRotation.ceilingPct` (default 90), and only where the spawn's own gates (seat
+budget, reviewer account limit) would let it through. A stale
 or missing reading never beats a fresh one, a tie keeps your account, and with no fresh
 reading nothing moves. Coordinators, `resume_session`, `agent_resume`, `predecessor` and
 fix-round spawns keep their account, since a resumed transcript lives under it. The spawn

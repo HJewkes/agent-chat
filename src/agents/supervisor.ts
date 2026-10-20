@@ -1965,27 +1965,34 @@ export class Supervisor implements TeleportHost {
     if (route?.redirect !== undefined) return { account: poolAccount(route.redirect.configDir) }
     // A seat spawn's account belongs to its pool pick (CC-606), so only an unrouted one rotates.
     const billed =
-      rotates && !keepsAccount && route === undefined ? this.rotated(req, account, gate) : account
+      rotates && !keepsAccount && route === undefined ? this.rotated(req, profile, account, gate) : account
     const overBudget = gate(billed.dir)
     if (overBudget === undefined) return { account: billed }
     return { refusal: route?.refusal === undefined ? overBudget : `seat budget stop: ${route.refusal}` }
   }
 
   /**
-   * CC-1546: the account with the most fresh seven_day headroom, or `account` when none is fresher,
-   * the pick is over its seat budget, or the read fails. An explicit `config_dir` never rotates.
+   * CC-1546: the account with the most fresh seven_day headroom, or `account` when none is fresher
+   * or the read fails. An explicit `config_dir` never rotates. Every gate that would refuse this
+   * spawn on a candidate (the seat budget, the reviewer account gate) disqualifies it before the
+   * pick, so rotation never moves a spawn onto an account that then refuses it.
    */
-  private rotated(req: SpawnRequest, account: Account, gate: (dir: string) => string | undefined): Account {
+  private rotated(
+    req: SpawnRequest,
+    profile: SpawnProfile,
+    account: Account,
+    gate: (dir: string) => string | undefined,
+  ): Account {
     const readers = this.accountRotation
     if (readers === undefined || account.source === 'explicit') return account
     try {
       const config = readers.config()
       if (!config.enabled) return account
-      const { dir, record } = pickAccount(account.dir, readers.readings(), config)
-      const rotates = record.rotated && gate(dir) === undefined
-      const rotation = rotates ? record : { ...record, chosen: record.from, rotated: false }
+      const refuses = (dir: string): boolean =>
+        gate(dir) !== undefined || this.reviewerAccountRefusal(req, profile, dir) !== undefined
+      const { dir, record: rotation } = pickAccount(account.dir, readers.readings(), config, refuses)
       logEvent('account_rotation', { name: req.name, from: rotation.from, chosen: rotation.chosen })
-      return rotates ? { ...rotationAccount(dir), rotation } : { ...account, rotation }
+      return rotation.rotated ? { ...rotationAccount(dir), rotation } : { ...account, rotation }
     } catch (err) {
       logEvent('account_rotation_failed', {
         name: req.name,

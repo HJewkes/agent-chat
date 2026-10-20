@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import { Supervisor } from '../agents/supervisor.js'
+import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AccountUsage } from '../agents/account-budget.js'
@@ -49,8 +49,13 @@ const usage = (name: string, usedPct: number, stale = false): AccountUsage => ({
   auth_fail: false,
 })
 
-function supervisorWith(readings: () => AccountUsage[], config: RotationConfig = DEFAULT_ROTATION) {
+function supervisorWith(
+  readings: () => AccountUsage[],
+  config: RotationConfig = DEFAULT_ROTATION,
+  extra: Partial<SupervisorOptions> = {},
+) {
   return new Supervisor(core, {
+    ...extra,
     surface: { platform: 'linux', spawn: liveChild },
     accountRotation: {
       config: () => config,
@@ -184,5 +189,25 @@ describe('a worker spawn’s account rotation', () => {
     expect(outcome.reason).toBeUndefined()
     expect(childDir(outcome.agentId)).toBe(account('alpha'))
     expect(readingsRead).toBe(0)
+  })
+
+  it('keeps a reviewer on its spawner’s account when the lowest seven_day account is past five_hour', async () => {
+    const reviewerAccount = {
+      read: (configDir: string) => ({
+        configDir,
+        ceiling: 90,
+        window: { usedPct: configDir === account('beta') ? 98 : 20, ageSeconds: 30 },
+      }),
+    }
+    const sup = supervisorWith(() => [usage('alpha', 70), usage('beta', 10)], DEFAULT_ROTATION, {
+      reviewerAccount,
+    })
+
+    const outcome = await sup.spawn(spawnReq({ workRole: 'reviewer' }))
+    sup.close()
+
+    expect(outcome.reason).toBeUndefined()
+    expect(childDir(outcome.agentId)).toBe(account('alpha'))
+    expect(outcome.account).toBe('alpha (kept; seven_day alpha 70%, beta 10% refused)')
   })
 })

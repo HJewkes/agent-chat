@@ -75,7 +75,10 @@ the broker reads every account's seven_day reading (`~/.claude` and each dir und
 `~/.claude-profiles/`, the same readings `agent budget --accounts` shows) and moves the
 spawn to the account with the lowest fresh `used_pct`. A stale or missing reading never wins
 over a fresh one; with no fresh reading, or on a tie, the spawn keeps the resolved account. An
-account at or above the ceiling, one in `exclude`, or one whose login failed is never chosen.
+account is never chosen if either its seven_day or its five_hour window is at or above the
+ceiling, it is in `exclude`, its login failed, or a gate the spawn must pass (the seat budget,
+the reviewer account gate) would refuse it there. Those gates disqualify a candidate before
+the pick, so rotation never moves a spawn onto an account that then refuses it.
 Coordinators, `resume_session`, `agent_resume`, `predecessor` and fix-round spawns, forks, seat
 spawns the pool pick routes, and spawns launched on another host keep their account. The
 owner configures it with the `accountRotation` key in the broker's `config.json`:

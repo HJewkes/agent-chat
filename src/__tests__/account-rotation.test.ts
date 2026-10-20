@@ -78,4 +78,30 @@ describe('the account a worker spawn rotates to', () => {
       'beta (rotated from alpha; seven_day alpha 72%, beta 31%, gamma stale, delta no reading)',
     )
   })
+
+  it('never rotates to an account whose fresh five_hour is at the ceiling', () => {
+    const usages = [
+      usage('alpha', 70),
+      { ...usage('beta', 10), five_hour: { used_pct: 95 } },
+      usage('gamma', 40),
+    ]
+
+    expect(pickAccount(dirOf('alpha'), usages, DEFAULT_ROTATION).dir).toBe(dirOf('gamma'))
+  })
+
+  it('skips a candidate the spawn’s own gates refuse and takes the next lowest', () => {
+    const usages = [usage('alpha', 70), usage('beta', 10), usage('gamma', 40)]
+    const pick = pickAccount(dirOf('alpha'), usages, DEFAULT_ROTATION, dir => dir === dirOf('beta'))
+
+    expect(pick.dir).toBe(dirOf('gamma'))
+    expect(pick.record.readings.find(r => r.account === 'beta')?.state).toBe('refused')
+  })
+
+  it('keeps the resolved account when every lower candidate is refused', () => {
+    const usages = [usage('alpha', 70), usage('beta', 10)]
+
+    expect(pickAccount(dirOf('alpha'), usages, DEFAULT_ROTATION, dir => dir === dirOf('beta')).dir).toBe(
+      dirOf('alpha'),
+    )
+  })
 })

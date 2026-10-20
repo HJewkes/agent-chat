@@ -8,11 +8,15 @@ import { accountName } from './config-dir.js'
  * about the account now, so it never outranks a fresh one, and with no fresh reading at
  * all the spawn keeps the account CC-100 resolved. A tie keeps it too, so rotation moves
  * a spawn only for a strictly lower reading.
+ *
+ * Seven_day ranks the candidates, but a candidate must also pass every check that would refuse
+ * the spawn on it: a five_hour window at the ceiling, and the caller's own gates (the seat budget,
+ * the reviewer account gate). Each disqualifies the candidate before the pick, never after it.
  */
 
 export interface RotationConfig {
   enabled: boolean
-  /** An account at or above this seven_day used_pct is never rotated to. */
+  /** An account at or above this used_pct, in either window, is never rotated to. */
   ceilingPct: number
   /** Account names (`default` for `~/.claude`) or absolute config dirs never rotated to. */
   exclude: readonly string[]
@@ -20,7 +24,16 @@ export interface RotationConfig {
 
 export const DEFAULT_ROTATION: RotationConfig = { enabled: true, ceilingPct: 90, exclude: [] }
 
-export type ReadingState = 'fresh' | 'stale' | 'none' | 'excluded' | 'auth_fail' | 'over_ceiling'
+export type ReadingState =
+  | 'fresh'
+  | 'stale'
+  | 'none'
+  | 'excluded'
+  | 'auth_fail'
+  | 'over_ceiling'
+  | 'five_hour_full'
+  /** Fresh, but a gate the spawn must pass refuses it on this account. */
+  | 'refused'
 
 export interface RotationReading {
   account: string
@@ -52,7 +65,9 @@ function stateOf(usage: AccountUsage, config: RotationConfig): ReadingState {
   if (usage.auth_fail) return 'auth_fail'
   if (usage.seven_day === null) return 'none'
   if (usage.stale) return 'stale'
-  return usage.seven_day.used_pct >= config.ceilingPct ? 'over_ceiling' : 'fresh'
+  if (usage.seven_day.used_pct >= config.ceilingPct) return 'over_ceiling'
+  const fiveHour = usage.five_hour?.used_pct
+  return fiveHour !== undefined && fiveHour >= config.ceilingPct ? 'five_hour_full' : 'fresh'
 }
 
 export const readingOf = (usage: AccountUsage, config: RotationConfig): RotationReading => ({
@@ -62,13 +77,18 @@ export const readingOf = (usage: AccountUsage, config: RotationConfig): Rotation
   state: stateOf(usage, config),
 })
 
+/** A fresh candidate the spawn's own gates refuse is disqualified rather than chosen and then refused. */
+const gated = (r: RotationReading, refuses: (dir: string) => boolean): RotationReading =>
+  r.state === 'fresh' && refuses(r.config_dir) ? { ...r, state: 'refused' } : r
+
 /** The lowest fresh reading wins; the resolved account keeps the spawn unless another is strictly lower. */
 export function pickAccount(
   resolvedDir: string,
   usages: readonly AccountUsage[],
   config: RotationConfig,
+  refuses: (dir: string) => boolean = () => false,
 ): RotationPick {
-  const readings = usages.map(usage => readingOf(usage, config))
+  const readings = usages.map(usage => gated(readingOf(usage, config), refuses))
   const fresh = readings.filter(r => r.state === 'fresh')
   const current = readings.find(r => sameDir(r.config_dir, resolvedDir))
   const lowest = fresh.reduce<RotationReading | undefined>(
@@ -82,10 +102,18 @@ export function pickAccount(
   return { dir: lowest.config_dir, record: { from, chosen: lowest.account, rotated: true, readings } }
 }
 
-const readingText = (r: RotationReading): string =>
-  r.state === 'fresh' || r.state === 'over_ceiling'
-    ? `${r.account} ${Math.round(r.used_pct ?? 0)}%${r.state === 'over_ceiling' ? ' over ceiling' : ''}`
-    : `${r.account} ${r.state === 'none' ? 'no reading' : r.state.replace('_', ' ')}`
+const MEASURED_SUFFIX: Partial<Record<ReadingState, string>> = {
+  fresh: '',
+  over_ceiling: ' over ceiling',
+  five_hour_full: ' five_hour full',
+  refused: ' refused',
+}
+
+const readingText = (r: RotationReading): string => {
+  const suffix = MEASURED_SUFFIX[r.state]
+  if (suffix !== undefined) return `${r.account} ${Math.round(pct(r))}%${suffix}`
+  return `${r.account} ${r.state === 'none' ? 'no reading' : r.state.replace('_', ' ')}`
+}
 
 /** The spawn result's account line, e.g. `agents (rotated from default; seven_day default 72%, agents 31%)`. */
 export function rotationText(record: RotationRecord): string {
