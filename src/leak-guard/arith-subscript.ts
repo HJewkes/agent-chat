@@ -5,7 +5,7 @@
  * the guard reads as a plain string. This lists the names; whether their values are safe is the
  * guard's question. It also finds a substitution written into the arithmetic itself, quoted.
  */
-import { LIVE, NAME, unmark, type SimpleCommand } from './shell-words.js'
+import { HOLE, LIVE, NAME, unmark, type SimpleCommand } from './shell-words.js'
 
 const INTEGER_DECLARERS = new Set(['declare', 'typeset', 'local', 'integer'])
 // A name the arithmetic expands, as `$i`, `${i}` or a bare `i`; an array's element value is evaluated too.
@@ -67,9 +67,45 @@ const ARITH_TESTS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge'])
 const BODY_SUBSTITUTION = /\$\(|`|\$\{[\s|]|\$'/
 const OPENER = /\$\(|`|\$\{[\s|]/
 
-/** `word` with each substitution the splitter read taken out, so a quote inside one is not mistaken for the word's. */
-function withoutLiveSubstitutions(word: string, cmd: SimpleCommand): string {
-  return cmd.substitutions.reduce((text, sub) => text.replaceAll(`${LIVE}${sub.raw}`, ' '), word)
+/** `word` with each substitution the splitter read as a HOLE, so a quote inside one is not mistaken for the word's. */
+function withHoles(word: string, cmd: SimpleCommand): string {
+  return cmd.substitutions.reduce((text, sub) => text.replaceAll(`${LIVE}${sub.raw}`, HOLE), word)
+}
+
+const HOLES = new RegExp(`${HOLE}+`, 'g')
+const joined = (text: string): string => text.replaceAll(HOLE, '')
+
+/** The depth of `[ ]` nesting left open at the end of `text`. */
+function openDepth(text: string): number {
+  let depth = 0
+  for (const c of text) {
+    if (c === '[') depth++
+    else if (c === ']' && depth > 0) depth--
+  }
+  return depth
+}
+
+/** Whether `text` holds a `]` that closes a `[` opened before it. */
+function closesEarlier(text: string): boolean {
+  let depth = 0
+  for (const c of text) {
+    if (c === '[') depth++
+    else if (c === ']' && depth-- === 0) return true
+  }
+  return false
+}
+
+/**
+ * Whether what a substitution prints could finish an opener with the text beside it, as `'a[$'"$(printf '(')"'cmd)]'`
+ * does: one inside or before a `[ ]`, with a `$` or backtick before it or anything but its `]` after it.
+ */
+function holeMayFinishOpener(text: string): boolean {
+  return [...text.matchAll(HOLES)].some(match => {
+    const before = joined(text.slice(0, match.index))
+    const after = joined(text.slice(match.index + match[0].length))
+    const subscripted = openDepth(before) > 0 || closesEarlier(after)
+    return subscripted && (/[$`]$/.test(before) || !/^(?:\]|$)/.test(after))
+  })
 }
 
 /** The operands beside each arithmetic comparison, wherever a `[[ ]]` the splitter broke at `&&` or `(` left it. */
@@ -108,7 +144,10 @@ function openerInBrackets(text: string): boolean {
 export function hidesArithSubstitution(cmd: SimpleCommand, head: readonly string[] | undefined): boolean {
   if (cmd.arithBodies.some(body => BODY_SUBSTITUTION.test(asEvaluated(body)))) return true
   // Substitutions the splitter read are checked as commands; a live `$` before an escaped `\(` is `$(` unmarked.
-  const plain = (word: string): string => asEvaluated(unmark(withoutLiveSubstitutions(word, cmd)))
+  const holed = (word: string): string => asEvaluated(unmark(withHoles(word, cmd)))
+  // bash joins the text around a substitution, so `$` and `"$(true)"` and `(` read as `$(`.
+  const plain = (word: string): string => joined(holed(word))
+  if (cmd.marked.map(holed).some(holeMayFinishOpener)) return true
   const words = cmd.marked.map(plain)
   if (words.some(openerInBrackets)) return true
   const operands = head === undefined ? words : integerOperands(head.map(plain))

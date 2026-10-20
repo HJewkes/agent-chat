@@ -408,8 +408,17 @@ after quote removal, backslashes and line continuations are taken out. It also d
 `(( ))`, `$(( ))` or `$[ ]` body, which bash runs with no subscript at all. A substitution the
 splitter reads as one (`a[$(cmd)]` unquoted) is checked as a command instead, as before.
 
-The cost is that plain text in that shape is denied too: `grep 'a[$(x)]' notes.txt` and
-`[[ x == 'a[$(y)]' ]]` deny although nothing runs. Move such text into a file, or write the `$`
+bash joins the text on either side of a substitution, so the guard takes each one out and joins
+the word the same way: `'a[$'"$(true)"'(cmd)]'` is read as `a[$(cmd)]` and denied. What a
+substitution prints can also finish an opener the line only half shows, as in
+`'a[$'"$(printf '(')"'cmd)]'`. So one inside or before a `[ ]` denies when a `$` or backtick sits
+right before it or anything but its closing `]` follows it; `a[$(cmd)]=1` and `"[$(date)] done"`
+are still allowed.
+
+The cost is that plain text in that shape is denied too: `grep 'a[$(x)]' notes.txt`,
+`[[ x == 'a[$(y)]' ]]`, `awk '{ c[$(NF-1)]++ }'`, `grep -E '[$(]'`, a commit message that
+mentions `a[$(x)]`, a markdown body with inline code in link text (``[`a.ts`](u)``), and
+`a[$(x)+1]=1` all deny although nothing unseen runs. Move such text into a file, or write the `$`
 another way. Not covered: a value that reaches arithmetic as data rather than as text on the line,
 such as `read y` into an integer `y` from a here-string, pipe or file, a variable that already
 holds `a[$(cmd)]`, or the output of a substitution that prints one.

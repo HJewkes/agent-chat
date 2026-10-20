@@ -187,6 +187,40 @@ describe('an opener split by a backslash or a line continuation', () => {
   })
 })
 
+// bash joins the text beside a substitution, so what it prints can finish an opener the line does not show.
+describe('a substitution that joins or finishes an opener', () => {
+  it.each([
+    `[[ 1 -eq 'a[$'"$(true)"'(git push --no-verify)]' ]]`,
+    `let 'a[$'"$(true)"'(git push --no-verify)]'`,
+    `[[ 1 -eq 'a[$'"$(true)"'(gh pr comment 1 --body zq7privateseat)]' ]]`,
+    `let 'a[$'"$(true)"'(gh pr comment 1 --body zq7privateseat)]'`,
+    `declare -i n='a[$'"$(true)"'(git push --no-verify)]'`,
+    `a['$'"$(true)"'(git push --no-verify)']=1`,
+    `[[ 1 -eq 'a[$'"$(true)"'{ git push --no-verify;}]' ]]`,
+    `(( a['$'"$(true)"'(git push --no-verify)'] ))`,
+  ])('denies an empty substitution inside an opener: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each([
+    `[[ 1 -eq 'a[$'"$(printf '(')"'git push --no-verify)]' ]]`,
+    `[[ 1 -eq 'a['"$(printf '$(')"'git push --no-verify)]' ]]`,
+    `let 'a['"$(printf '$')"'(git push --no-verify)]'`,
+    "let 'a['\"$(printf '%s' '`')\"'git push --no-verify`]'",
+    `[[ 1 -eq 'a'"$(printf '[$(')"'git push --no-verify)]' ]]`,
+    `let a[$(printf '$(')git\\ push\\ --no-verify\\)]`,
+  ])('denies a substitution whose output could finish the opener: %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+  })
+
+  it.each(['a[$(wc -l < f)+1]=1', 'echo "$(date) ]"'])(
+    'fails closed on text after a substitution in a subscript, though bash runs nothing unseen: %s',
+    line => {
+      expect(checkCommand(line, ctx)).toBe(REASONS.arithSubstitution)
+    },
+  )
+})
+
 describe('arithmetic the guard reads', () => {
   it.each([
     '[[ $n -eq 3 ]]',
@@ -219,6 +253,9 @@ describe('arithmetic the guard reads', () => {
     "jq '.items[0].name' f",
     '[[ $x == [a-z]* ]]',
     'a[$(git rev-parse --short HEAD)]=1',
+    '[[ $(git rev-list --count HEAD) -eq a[$(echo 0)] ]]',
+    'echo "[$(date)] done"',
+    'git commit -m "Bump $(git rev-parse --short HEAD) [docs]"',
   ])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })
