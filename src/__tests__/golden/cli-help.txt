@@ -1182,7 +1182,8 @@ Usage: agent-chat debug send [options] <to> <text...>
 message a session as the human
 
 Options:
-  --source <source>  record the send as made by this source (watchdog, shepherd, console) in the event log
+  --source <source>  record the send as made by this source (watchdog, shepherd, console) in the
+                     event log
   -h, --help         display help for command
 
 === agent-chat doctor
