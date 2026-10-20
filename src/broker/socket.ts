@@ -1090,6 +1090,15 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
+  /** CC-1505: a switch that throws answers the caller; left unhandled, the rejection ended the broker. */
+  private answerSwitch(conn: Conn, switching: Promise<void>): void {
+    switching.catch((err: unknown) => {
+      const reason = err instanceof Error ? err.message : String(err)
+      logEvent('switch_failed', { reason })
+      replySwitch(conn, { ok: false, reason: `switch failed: ${reason}` })
+    })
+  }
+
   /** Go headless. The subject is the caller, resolved here and nowhere else. */
   private async handleBackground(conn: Conn): Promise<void> {
     const entry = this.core.registry.entryFor(conn)
@@ -2058,11 +2067,9 @@ export class SocketServer {
       case 'job_kick':
         return this.handleJobKick(conn, msg)
       case 'surface':
-        void this.handleSurface(conn, msg.name)
-        return
+        return this.answerSwitch(conn, this.handleSurface(conn, msg.name))
       case 'background':
-        void this.handleBackground(conn)
-        return
+        return this.answerSwitch(conn, this.handleBackground(conn))
       case 'resume':
         return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {

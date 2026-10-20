@@ -44,7 +44,7 @@ beforeEach(() => {
     registry: new Registry<Conn>(),
   })
   stopAutoAttach = autoAttach(core)
-  server = new SocketServer(core, { surface: { platform: 'linux', spawn: liveChild } })
+  server = new SocketServer(core, { surface: { platform: 'darwin', spawn: liveChild } })
   const supervisor = (server as unknown as { supervisor: Pick<Supervisor, 'kill'> }).supervisor
   kill = vi.spyOn(supervisor, 'kill').mockReturnValue({ ok: false, reason: STUBBED })
 })
