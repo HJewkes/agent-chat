@@ -291,17 +291,20 @@ function addAgentCommands(program: Command): void {
   program
     .command('pr-ready')
     .description(
-      'before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0 only when all pass',
+      'before gh pr create: clean tree, merge the base, checks, changeset, leak scan; exit 0 only when all pass',
     )
     .helpGroup(AGENTS)
     .option('--title <t>', "PR title, scanned with gh-write's leak scan")
     .option('--body-file <path>', "PR body file, scanned with gh-write's leak scan")
-    .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
+    .option('--rebase', 'rebase unpushed commits onto the base instead of merging it (rewrites their shas)')
+    .option('--no-rebase', 'check and report only; neither merge nor rebase the base')
     .option('--strict', 'fail, not just note, a pushed branch that is behind the default branch')
     .addHelpText(
       'after',
       [
         '',
+        'The update step merges the base into an unpushed branch, so existing commits keep their shas;',
+        'it rebases only under --rebase, and never touches a pushed branch or one with an open PR.',
         'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
         'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
