@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { LAUNCHER_PID_ENV } from '../agents/launcher.js'
 
 /**
@@ -35,6 +37,67 @@ export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = proces
     // and the handle would point at something that is not the session.
     ...(Number.isInteger(ppid) && ppid > 1 ? { hostPid: ppid } : {}),
   }
+}
+
+/** Which program launched this MCP server; only Claude Code renders a channel push (CC-1508). */
+export type Harness = 'claude-code' | 'codex'
+
+/**
+ * Codex sets no `CLAUDE_CODE_SESSION_ID` and passes no `CODEX_*` variables to MCP
+ * children, so its own process name is the only evidence it leaves. The
+ * environment override covers a wrapper sitting between the two.
+ */
+export function detectHarness(env: NodeJS.ProcessEnv, parentComm: string | undefined): Harness {
+  if (env.AGENT_CHAT_HOST === 'codex') return 'codex'
+  return parentComm !== undefined && path.basename(parentComm.trim()) === 'codex' ? 'codex' : 'claude-code'
+}
+
+export interface SessionHost extends HostIdentity {
+  harness: Harness
+}
+
+/**
+ * The identity a session registers and readopts under.
+ *
+ * Under Codex any `CLAUDE_CODE_SESSION_ID` was inherited from a Claude Code
+ * session that started it, so it is never this session's; the id is minted from
+ * the Codex process instead, which every MCP child and hook of it can compute.
+ */
+export function sessionHost(harness: Harness, identity: HostIdentity, machine: string): SessionHost {
+  if (harness === 'claude-code') return { harness, ...identity }
+  const { hostPid } = identity
+  return hostPid === undefined ? { harness } : { harness, hostPid, sessionId: `codex:${hostPid}@${machine}` }
+}
+
+/** `/proc` first, since it costs no process; `ps` for macOS. */
+export function commOf(pid: number): string | undefined {
+  try {
+    return fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim()
+  } catch {
+    return psComm(pid)
+  }
+}
+
+const psComm = (pid: number): string | undefined => {
+  for (const ps of PS_CANDIDATES) {
+    try {
+      const out = execFileSync(ps, ['-o', 'comm=', '-p', String(pid)], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: PS_TIMEOUT_MS,
+      }).trim()
+      if (out !== '') return out
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
+export function currentSessionHost(env: NodeJS.ProcessEnv = process.env, ppid = process.ppid): SessionHost {
+  const identity = hostIdentity(env, ppid)
+  const parentComm = identity.hostPid === undefined ? undefined : commOf(identity.hostPid)
+  return sessionHost(detectHarness(env, parentComm), identity, os.hostname())
 }
 
 /** The machine this process runs on, sent at registration so the broker never signals a pid from another one (CC-880). */
