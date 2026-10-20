@@ -19,6 +19,7 @@ import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
 import { askVerb, USAGE_EXIT } from './verbs/ask.js'
+import { addCodexCommands } from './verbs/codex-run.js'
 import { countsVerb } from './verbs/counts.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
@@ -463,6 +464,7 @@ export function buildProgram(): Command {
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
+  addCodexCommands(program, AGENTS)
   addServiceAskCommands(program)
   addHiddenCommands(program)
   return program
