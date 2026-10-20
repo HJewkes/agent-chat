@@ -76,8 +76,12 @@ function fixtureRepo(base: Record<string, string>, feature: Record<string, strin
 const advanceOrigin = (work: string, files: Record<string, string>): void =>
   commit(originOf(work), files, 'upstream')
 
-const rebaseInProgress = (work: string): boolean =>
-  ['rebase-merge', 'rebase-apply'].some(dir => fs.existsSync(path.join(work, '.git', dir)))
+const IN_PROGRESS = { merge: ['MERGE_HEAD'], rebase: ['rebase-merge', 'rebase-apply'] }
+
+const updateInProgress = (work: string, mode: 'merge' | 'rebase'): boolean =>
+  IN_PROGRESS[mode].some(marker => fs.existsSync(path.join(work, '.git', marker)))
+
+const MERGE = `git merge --no-edit ${BASE}`
 
 type Override = (line: string, args: string[], cwd: string) => Promise<RunResult> | RunResult | undefined
 
@@ -215,7 +219,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.out).toEqual([
       'ok clean-tree',
       `ok base: ${BASE}`,
-      'ok rebase',
+      'ok update',
       'ok checks',
       'ok changeset: not configured',
       'ok scan: skipped (no body file)',
@@ -250,7 +254,7 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
-  it('fails a dirty tree before any fetch, rebase or check', async () => {
+  it('fails a dirty tree before any fetch, merge or check', async () => {
     const work = repo()
     fs.writeFileSync(path.join(work, 'shared.txt'), 'edited\n')
     fs.writeFileSync(path.join(work, 'untracked.txt'), 'new\n')
@@ -265,18 +269,20 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.calls).toEqual(['git status --porcelain'])
   })
 
-  it('fetches and rebases onto an advanced origin before running the checks', async () => {
+  it('fetches and merges an advanced origin before running the checks', async () => {
     const work = repo()
+    const before = git(work, 'rev-parse', 'HEAD')
     advanceOrigin(work, { 'upstream.txt': 'u\n' })
 
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
-    expect(result.out).toContain('ok rebase')
-    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
+    expect(result.out).toContain('ok update')
+    expect(git(work, 'rev-parse', 'HEAD^1')).toBe(before)
+    expect(git(work, 'rev-parse', 'HEAD^2')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
   })
 
-  it('aborts a conflicting rebase, lists the files and runs no checks', async () => {
+  it('aborts a conflicting merge, lists the files and runs no checks', async () => {
     const work = repo()
     commit(work, { 'shared.txt': 'feature side\n' }, 'feature edit')
     advanceOrigin(work, { 'shared.txt': 'upstream side\n' })
@@ -285,63 +291,69 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     const result = await runPrReady(work)
 
     expect(result.code).toBe(1)
-    expect(result.out).toContain('FAIL rebase: conflict in shared.txt; rebase aborted')
+    expect(result.out).toContain('FAIL update: conflict in shared.txt; merge aborted')
     expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
-    expect(result.calls).toContain('git rebase --abort')
+    expect(result.calls).toContain('git merge --abort')
     expect(result.toolCalls).toEqual([])
-    expect(rebaseInProgress(work)).toBe(false)
+    expect(updateInProgress(work, 'merge')).toBe(false)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
   })
 })
 
-describe('pr-ready rebase identity', () => {
-  it('keeps the branch identity on rewritten commits when the configured identity differs', async () => {
+const SCOUT = {
+  GIT_AUTHOR_NAME: 'scout',
+  GIT_AUTHOR_EMAIL: 'scout@example.invalid',
+  GIT_COMMITTER_NAME: 'scout',
+  GIT_COMMITTER_EMAIL: 'scout@example.invalid',
+}
+
+function commitAs(work: string, name: string, env: Record<string, string>): void {
+  writeFiles(work, { [`${name}.txt`]: `${name}\n` })
+  git(work, 'add', '-A')
+  execFileSync('git', ['commit', '-q', '-m', name], { cwd: work, env: { ...process.env, ...env } })
+}
+
+describe('pr-ready update identity (CC-1458)', () => {
+  it('stamps the merge commit with the branch identity when the configured identity differs', async () => {
     const work = fixtureRepo({}, { 'f.txt': 'f\n' })
-    const scout = { GIT_COMMITTER_NAME: 'scout', GIT_COMMITTER_EMAIL: 'scout@example.invalid' }
-    for (const name of ['one', 'two']) {
-      writeFiles(work, { [`${name}.txt`]: `${name}\n` })
-      git(work, 'add', '-A')
-      execFileSync('git', ['commit', '-q', '-m', name], {
-        cwd: work,
-        env: {
-          ...process.env,
-          ...scout,
-          GIT_AUTHOR_NAME: 'scout',
-          GIT_AUTHOR_EMAIL: 'scout@example.invalid',
-        },
-      })
-    }
+    commitAs(work, 'one', SCOUT)
     advanceOrigin(work, { 'upstream.txt': 'u\n' })
 
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
-    expect(git(work, 'log', '--format=%cn %ce', 'refs/remotes/origin/main..HEAD')).toBe(
-      'scout scout@example.invalid\nscout scout@example.invalid\nscout scout@example.invalid',
+    expect(git(work, 'log', '-1', '--format=%an %ae|%cn %ce')).toBe(
+      'scout scout@example.invalid|scout scout@example.invalid',
     )
   })
 
   it('uses the author identity when the HEAD committer was already tainted by an earlier rebase', async () => {
     const work = fixtureRepo({}, { 'f.txt': 'f\n' })
-    writeFiles(work, { 'one.txt': 'one\n' })
-    git(work, 'add', '-A')
-    execFileSync('git', ['commit', '-q', '-m', 'one'], {
-      cwd: work,
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: 'scout',
-        GIT_AUTHOR_EMAIL: 'scout@example.invalid',
-        GIT_COMMITTER_NAME: 'stale',
-        GIT_COMMITTER_EMAIL: 'stale@example.invalid',
-      },
+    commitAs(work, 'one', {
+      ...SCOUT,
+      GIT_COMMITTER_NAME: 'stale',
+      GIT_COMMITTER_EMAIL: 'stale@example.invalid',
     })
     advanceOrigin(work, { 'upstream.txt': 'u\n' })
 
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
+    expect(git(work, 'log', '-1', '--format=%ae %ce')).toBe('scout@example.invalid scout@example.invalid')
+  })
+
+  it('keeps the branch identity on rewritten commits under --rebase', async () => {
+    const work = fixtureRepo({}, { 'f.txt': 'f\n' })
+    commitAs(work, 'one', SCOUT)
+    commitAs(work, 'two', SCOUT)
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+
+    const result = await runPrReady(work, [], { rebase: true })
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('ok update: rebased (--rebase)')
     expect(git(work, 'log', '--format=%cn %ce', 'refs/remotes/origin/main..HEAD')).toBe(
-      'scout scout@example.invalid\nscout scout@example.invalid',
+      'scout scout@example.invalid\nscout scout@example.invalid\nscout scout@example.invalid',
     )
   })
 
@@ -359,6 +371,43 @@ describe('pr-ready rebase identity', () => {
   })
 })
 
+describe('pr-ready keeps unpushed history (CC-1547)', () => {
+  /** Two unpushed commits; origin then gains one of their patches verbatim, as a catalog regen does, and moves on. */
+  const behindRepo = (): { work: string; commits: string[] } => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    commit(work, { 'catalog.json': '{"v":2}\n' }, 'regenerate catalog')
+    const commits = git(work, 'rev-list', '--reverse', 'refs/remotes/origin/main..HEAD').split('\n')
+    advanceOrigin(work, { 'catalog.json': '{"v":2}\n' })
+    advanceOrigin(work, { 'upstream.txt': 'u\n' })
+    return { work, commits }
+  }
+
+  it('merges the moved base and every unpushed commit keeps its sha', async () => {
+    const { work, commits } = behindRepo()
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(result.calls).toContain(MERGE)
+    expect(result.calls.filter(call => call.startsWith('git rebase'))).toEqual([])
+    expect(git(work, 'rev-list', '--reverse', '--first-parent', 'HEAD^1', `^${BASE}`).split('\n')).toEqual(
+      commits,
+    )
+    expect(git(work, 'rev-parse', 'HEAD^2')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
+  })
+
+  it('rewrites the commits, dropping the one the base holds, only under the --rebase opt-in', async () => {
+    const { work, commits } = behindRepo()
+
+    const result = await runPrReady(work, [], { rebase: true })
+
+    expect(result.code).toBe(0)
+    const rebased = git(work, 'rev-list', 'refs/remotes/origin/main..HEAD').split('\n')
+    expect(rebased).toHaveLength(1)
+    expect(rebased).not.toContain(commits[0])
+  })
+})
+
 describe('pr-ready in a fresh worktree with no node_modules', () => {
   const PNPM_INSTALL = 'pnpm install --frozen-lockfile --ignore-scripts'
   const NPM_INSTALL = 'npm ci --ignore-scripts'
@@ -369,13 +418,13 @@ describe('pr-ready in a fresh worktree with no node_modules', () => {
     return work
   }
 
-  it('installs with pnpm after the rebase and before any check', async () => {
+  it('installs with pnpm after the update and before any check', async () => {
     const result = await runPrReady(freshRepo(pnpmKind))
 
     expect(result.code).toBe(0)
     expect(result.out).toContain(`ok deps: installed with ${PNPM_INSTALL}`)
     expect(result.out.indexOf(`ok deps: installed with ${PNPM_INSTALL}`)).toBe(
-      result.out.indexOf('ok rebase') + 1,
+      result.out.indexOf('ok update') + 1,
     )
     expect(result.toolCalls).toEqual([PNPM_INSTALL, ...pnpmKind.checks])
   })
@@ -504,7 +553,12 @@ describe('pr-ready in a pnpm workspace', () => {
   })
 })
 
-describe('pr-ready rebase recovery', () => {
+const MODES = [
+  { mode: 'merge' as const, opts: {}, call: MERGE },
+  { mode: 'rebase' as const, opts: { rebase: true }, call: `git rebase ${BASE}` },
+]
+
+describe.each(MODES)('pr-ready $mode recovery', ({ mode, opts, call }) => {
   const conflictingRepo = (): string => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     commit(work, { 'shared.txt': 'feature side\n' }, 'feature edit')
@@ -512,45 +566,47 @@ describe('pr-ready rebase recovery', () => {
     return work
   }
 
-  it('reports a rebase still in progress when git rebase --abort fails', async () => {
+  it(`reports a ${mode} still in progress when git ${mode} --abort fails`, async () => {
     const work = conflictingRepo()
     const failAbort: Override = line =>
-      line === 'git rebase --abort'
+      line === `git ${mode} --abort`
         ? Promise.resolve({ code: 128, output: 'synthetic abort failure' })
         : undefined
 
-    const result = await runPrReady(work, [], {}, { override: failAbort })
+    const result = await runPrReady(work, [], opts, { override: failAbort })
 
     expect(result.code).toBe(1)
     expect(result.out).toContain(
-      'FAIL rebase: conflict in shared.txt; git rebase --abort failed (synthetic abort failure); ' +
-        'a rebase is still in progress, abort it by hand',
+      `FAIL update: conflict in shared.txt; git ${mode} --abort failed (synthetic abort failure); ` +
+        `a ${mode} is still in progress, abort it by hand`,
     )
-    expect(rebaseInProgress(work)).toBe(true)
+    expect(updateInProgress(work, mode)).toBe(true)
   })
 
-  it('aborts an in-progress rebase when a signal arrives mid-rebase', async () => {
+  it(`aborts an in-progress ${mode} when a signal arrives mid-${mode}`, async () => {
     const work = conflictingRepo()
     let onSignal: ((exitCode: number) => void) | undefined
     const trap: Trap = handler => ((onSignal = handler), () => (onSignal = undefined))
     let stateAfterSignal: boolean | undefined
-    const signalMidRebase: Override = (line, args, cwd) => {
-      if (line !== `git rebase ${BASE}`) return undefined
+    const signalMidUpdate: Override = (line, args, cwd) => {
+      if (line !== call) return undefined
       return spawnRun('git', args, cwd).then(result => {
         onSignal?.(130)
-        stateAfterSignal = rebaseInProgress(work)
+        stateAfterSignal = updateInProgress(work, mode)
         return result
       })
     }
 
-    const result = await runPrReady(work, [], {}, { override: signalMidRebase, trap })
+    const result = await runPrReady(work, [], opts, { override: signalMidUpdate, trap })
 
     expect(stateAfterSignal).toBe(false)
-    expect(result.out).toContain('FAIL rebase: interrupted; rebase aborted')
+    expect(result.out).toContain(`FAIL update: interrupted; ${mode} aborted`)
     expect(result.out).toContain('PR-READY FAIL exit=130')
     expect(onSignal).toBeUndefined()
   })
+})
 
+describe('pr-ready signal trap', () => {
   it('installs SIGINT and SIGTERM handlers that clean up, exit with the signal code and come off after', () => {
     const emitter = new EventEmitter()
     const exits: number[] = []
@@ -579,26 +635,26 @@ describe('pr-ready on a branch that is already pushed', () => {
     return work
   }
 
-  it('does not rebase a pushed branch that is behind, and leaves HEAD at the upstream', async () => {
+  it('does not update a pushed branch that is behind, and leaves HEAD at the upstream', async () => {
     const work = pushedBehindRepo()
     const head = git(work, 'rev-parse', 'HEAD')
 
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
-    expect(result.out).toContain('ok rebase: behind origin/main, branch already pushed; not rebasing')
-    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(result.out).toContain('ok update: behind origin/main, branch already pushed; not updating')
+    expect(result.calls).not.toContain(MERGE)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
     expect(git(work, 'rev-parse', 'origin/feature')).toBe(head)
   })
 
-  it('fails the rebase step under --strict', async () => {
+  it('fails the update step under --strict', async () => {
     const work = pushedBehindRepo()
 
     const result = await runPrReady(work, [], { strict: true })
 
     expect(result.code).toBe(1)
-    expect(result.out).toContain('FAIL rebase: behind origin/main, branch already pushed; not rebasing')
+    expect(result.out).toContain('FAIL update: behind origin/main, branch already pushed; not updating')
   })
 
   it('reports local unpushed commits and does not reset them', async () => {
@@ -609,13 +665,13 @@ describe('pr-ready on a branch that is already pushed', () => {
     const result = await runPrReady(work)
 
     expect(result.out).toContain(
-      'ok rebase: behind origin/main, branch already pushed; not rebasing; ' +
+      'ok update: behind origin/main, branch already pushed; not updating; ' +
         '1 local commit(s) not pushed to origin/feature',
     )
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 
-  it('does not rebase an unpushed-looking branch that has an open PR, and suggests a merge', async () => {
+  it('does not update an unpushed-looking branch that has an open PR, and suggests a merge', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     advanceOrigin(work, { 'b.txt': '2\n' })
     const head = git(work, 'rev-parse', 'HEAD')
@@ -625,20 +681,20 @@ describe('pr-ready on a branch that is already pushed', () => {
     const result = await runPrReady(work, [], {}, { override: openPr })
 
     expect(result.out).toContain(
-      'ok rebase: behind origin/main, branch already pushed; not rebasing; open PR: merge origin/main instead',
+      'ok update: behind origin/main, branch already pushed; not updating; open PR: merge origin/main instead',
     )
-    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(result.calls).not.toContain(MERGE)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 
-  it('still rebases a branch that tracks only the default branch', async () => {
+  it('still merges into a branch that tracks only the default branch', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     git(work, 'branch', '--set-upstream-to=origin/main')
     advanceOrigin(work, { 'b.txt': '2\n' })
 
     const result = await runPrReady(work)
 
-    expect(result.calls).toContain(`git rebase ${BASE}`)
+    expect(result.calls).toContain(MERGE)
   })
 })
 
@@ -669,7 +725,7 @@ describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () =>
     expect(tree(work)).not.toContain('m.txt')
   }
 
-  it('infers the parent from its open PR and rebases onto it with no main commit', async () => {
+  it('infers the parent from its open PR and merges it with no main commit', async () => {
     const work = stackedRepo()
 
     const result = await runPrReady(
@@ -681,8 +737,8 @@ describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () =>
 
     expect(result.code).toBe(0)
     expect(result.out).toContain(`ok base: ${PARENT} (stacked on origin/agent-chat/parent (PR #5))`)
-    expect(result.calls).toContain(`git rebase ${PARENT}`)
-    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(result.calls).toContain(`git merge --no-edit ${PARENT}`)
+    expect(result.calls).not.toContain(MERGE)
     noMainCommit(work)
   })
 
@@ -694,11 +750,11 @@ describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () =>
 
     expect(result.code).toBe(0)
     expect(result.out).toContain(`ok base: ${PARENT} (PR #9 base)`)
-    expect(result.out).toContain('ok rebase: not behind origin/agent-chat/parent')
+    expect(result.out).toContain('ok update: not behind origin/agent-chat/parent')
     noMainCommit(work)
   })
 
-  it('fails the base step without rebasing when the parent has no open PR', async () => {
+  it('fails the base step without updating when the parent has no open PR', async () => {
     const work = stackedRepo()
     const head = git(work, 'rev-parse', 'HEAD')
 
@@ -709,7 +765,7 @@ describe('pr-ready on a branch stacked on another agent branch (CC-1281)', () =>
       'FAIL base: HEAD contains commits of origin/agent-chat/parent not on origin/main; cannot tell the base: ' +
         'record it with git config branch.feature.agent-chat-base <name> (use main if the parent merged)',
     )
-    expect(result.calls.filter(call => call.startsWith('git rebase'))).toEqual([])
+    expect(result.calls.filter(call => /^git (rebase|merge) /.test(call))).toEqual([])
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 })
@@ -759,15 +815,13 @@ describe('pr-ready options and discovery', () => {
     expect(result.out.at(-1)).toBe('PR-READY FAIL exit=1')
   })
 
-  it('skips the fetch and rebase with --no-rebase', async () => {
+  it('skips the fetch and update with --no-rebase', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
 
     const result = await runPrReady(work, [], { rebase: false })
 
-    expect(result.out).toContain('ok rebase: skipped (--no-rebase)')
-    expect(result.calls.some(call => call.startsWith('git rebase') || call.startsWith('git fetch'))).toBe(
-      false,
-    )
+    expect(result.out).toContain('ok update: skipped (--no-rebase)')
+    expect(result.calls.some(call => /^git (rebase|merge|fetch) /.test(call))).toBe(false)
   })
 
   it('uses the full remote ref, so a local branch named origin/main cannot shadow it', async () => {
@@ -778,7 +832,7 @@ describe('pr-ready options and discovery', () => {
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
-    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
+    expect(git(work, 'rev-parse', 'HEAD^2')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
   })
 
   it('fails the base step when origin/HEAD is not set', async () => {
