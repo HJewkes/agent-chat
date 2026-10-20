@@ -1,7 +1,8 @@
 import nodeFs from 'node:fs'
 import path from 'node:path'
 import { hostChannelStatus, type ArgvReader } from '../broker/host-channels.js'
-import { agentDir } from '../paths.js'
+import { agentDir, codexHostDir } from '../paths.js'
+import type { Harness } from './host.js'
 
 /**
  * CC-1455: a `claude -p` host drops every channel push, so its MCP server also
@@ -41,23 +42,43 @@ const spoolId = (msgId: string): string => msgId.replace(SAFE_ID, '_')
 /** The spool of one spawned agent, beside its launch files and with their modes. */
 export const inboxSpoolDir = (agentId: string): string => path.join(agentDir(agentId), 'inbox')
 
+/** The spool of one Codex process, which renders no channel push at all (CC-1509). */
+export const codexInboxSpoolDir = (hostPid: number): string => path.join(codexHostDir(hostPid), 'inbox')
+
 /**
- * The spool dir to write, or `undefined` when this server must not spool: only a
- * spawned agent whose launch opted in and whose host is in print mode. The argv
- * reader is the broker's own, so the two never disagree on what "print" means.
+ * The spool dir to write, or `undefined` when this server must not spool: a Codex
+ * host always spools, since it drops every push; otherwise only a spawned agent
+ * whose launch opted in and whose host is in print mode. The argv reader is the
+ * broker's own, so the two never disagree on what "print" means.
  */
 export function resolveInboxSpool(opts: {
   agentId: string | undefined
   env: NodeJS.ProcessEnv
   hostPid: number | undefined
+  harness?: Harness
   read?: ArgvReader
 }): string | undefined {
+  if (opts.harness === 'codex')
+    return opts.hostPid === undefined ? undefined : codexInboxSpoolDir(opts.hostPid)
   if (opts.agentId === undefined || !opts.env.AGENT_CHAT_INBOX_SPOOL) return undefined
   if (hostChannelStatus(opts.hostPid, 'agent-chat', opts.read) !== 'print') return undefined
   return inboxSpoolDir(opts.agentId)
 }
 
-/** Write one record; `false` when the fs refused, which must never cost the push itself. */
+/**
+ * Remove a Codex host's state when this server exits, since the pid key outlives
+ * the process and a later Codex reusing it must not inherit stale records. `exit`
+ * covers every path out, the superseded and stdin-closed ones included.
+ */
+export function retireCodexHostOnExit(
+  hostPid: number,
+  proc: Pick<NodeJS.EventEmitter, 'once'> = process,
+  fs: Pick<typeof nodeFs, 'rmSync'> = nodeFs,
+): void {
+  proc.once('exit', () => fs.rmSync(codexHostDir(hostPid), { recursive: true, force: true }))
+}
+
+/** Write one record;`false` when the fs refused, which must never cost the push itself. */
 export function spoolRecord(dir: string, record: SpoolRecord, deps: SpoolDeps = {}): boolean {
   const fs = deps.fs ?? nodeFs
   seq += 1
