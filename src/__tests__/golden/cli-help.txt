@@ -1603,11 +1603,12 @@ Options:
   -h, --help  display help for command
 
 === agent-chat inbox-hook
-Usage: agent-chat inbox-hook [options] <agentId> <phase>
+Usage: agent-chat inbox-hook [options] <agentId> [phase]
 
 Options:
-  --block     at Stop, block the turn end to show what is waiting
-  -h, --help  display help for command
+  --block        at Stop, block the turn end to show what is waiting
+  --host <host>  codex: the first argument is the phase and the output a notice
+  -h, --help     display help for command
 
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]
