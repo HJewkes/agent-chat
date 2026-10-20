@@ -10,6 +10,8 @@ push. What has shipped:
   `<state>/codex-hosts/<hostPid>/inbox`. `chat_inbox` clears what it returns, and the
   directory goes when the server exits.
 - **S3.** A hook that tells the model what waits in that spool (below).
+- **S4.** `agent-chat codex run`, a supervisor that delivers that spool into the thread,
+  waking an idle session (below).
 
 ## S3: the inbox notice hook
 
@@ -60,3 +62,37 @@ Limits:
   its threads, so this spool key is ambiguous there. Use `chat_inbox` on such a host.
 - The pid key holds only if the hook command runs as a direct child of Codex. A wrapper
   script that forks instead of `exec`ing breaks it.
+
+## S4: `agent-chat codex run`
+
+`agent-chat codex run [--name <name>] [--resume <thread>] [--wake-cap <n>] [--codex <path>]
+[codexArgs...]` starts `codex app-server` and owns one thread on it. Arguments after the
+options go to `codex app-server`.
+
+- **Its own MCP server.** The supervisor passes `-c` overrides that run agent-chat's MCP
+  server under the app-server with `AGENT_CHAT_HOST=codex`, so that server spools (S2).
+  Nothing in `~/.codex/config.toml` needs to change for it.
+- **`--name`.** The name goes into that server's env as `AGENT_CHAT_NAME`, and the server
+  registers under it at startup, before any turn, so peers can address the session by
+  name. The name follows the agent-name rule (lowercase letters, digits, `-` and `_`). If
+  another session holds it, the server registers under a name derived from the directory,
+  as it does without `--name`.
+- **Delivery.** The supervisor watches the spool of its own Codex. Records go in as one
+  user-role text input per drain, in arrival order, under a header saying they come from a
+  peer and not the user. While a turn runs they go in as `turn/steer` on that turn. When
+  the session is idle they start a new turn. If the turn ended before the steer arrived,
+  they start a new turn instead. A record leaves the spool only after the RPC succeeded;
+  on any other error it goes back for the next drain.
+- **Idle wake is uncapped by default** (decision 511). Every record that arrives while the
+  session is idle starts a turn, and each such turn costs one model turn.
+- **`--wake-cap <n>`** allows at most `n` idle wakes per rolling hour. Over the cap,
+  records wait in the spool, and the next wake the cap allows carries them all. A busy
+  turn is still steered. When the cap trips, the broker posts one line from `agent-chat`
+  to the session's spawner: a message to the agent that spawned it, or a notice in the
+  human's queue for a session the human started. When no broker is running, or no
+  session is registered from that Codex, the line goes to stderr instead.
+- **Approval policy `never`.** The thread is started or resumed with
+  `approvalPolicy: "never"`. The supervisor declines every request the app-server sends
+  it, so an approval prompt would fail the tool call it gates.
+- **Exit.** The supervisor exits with the app-server's exit code, or 128 plus the signal
+  number when a signal ended it. SIGINT and SIGTERM are forwarded to the app-server.

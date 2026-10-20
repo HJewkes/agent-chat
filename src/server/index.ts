@@ -201,6 +201,18 @@ export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedId
   }
 }
 
+/**
+ * CC-1545: the name `agent-chat codex run --name` put in this Codex host's MCP env. Without an
+ * agent id it is a request, not a spawn; with one, `spawnedIdentity` owns it.
+ */
+export function requestedCodexName(
+  host: SessionHost,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (host.harness !== 'codex' || env.AGENT_CHAT_AGENT_ID) return undefined
+  return env.AGENT_CHAT_NAME || undefined
+}
+
 /** Tailed off so a broker that is down for a while is retried without a busy loop. */
 const REGISTRATION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000, 60_000]
 
@@ -344,6 +356,7 @@ async function readopt(broker: BrokerClient, host: SessionHost): Promise<string 
 export async function registerProvisionally(
   broker: Pick<BrokerClient, 'request'>,
   host: SessionHost,
+  requested?: string,
 ): Promise<string | undefined> {
   // Only a real Claude Code session gets a name it did not ask for, and
   // `CLAUDE_CODE_SESSION_ID` is what proves this is one — the same guard
@@ -361,22 +374,24 @@ export async function registerProvisionally(
   // already tracks for AGENT_CHAT_*, now with one more variable in it.
   //
   // A Codex host passes the guard on the id `sessionHost` minted from its pid (CC-1508).
+  //
+  // CC-1545: `codex run --name` asks for a name, so that one is tried first and is not
+  // provisional. Held by someone else, the session still comes up under a derived name.
   const { harness, ...identity } = host
   if (identity.sessionId === undefined) return undefined
 
   const observed = await observedRegistration()
   const derived = provisionalName({ cwd: process.cwd(), worktreePath: observed.observed?.worktreePath })
-  if (derived === undefined) return undefined
 
-  const attempt = async (name: string): Promise<boolean> => {
+  const attempt = async (name: string, provisional = true): Promise<boolean> => {
     const res = (await broker.request(
       {
         t: 'register',
         name,
-        workingOn: `unregistered session in ${process.cwd()}`,
+        workingOn: `${provisional ? 'unregistered' : harness} session in ${process.cwd()}`,
         cwd: process.cwd(),
         pid: process.pid,
-        provisional: true,
+        ...(provisional ? { provisional: true } : {}),
         ...identity,
         ...(harness === 'codex' ? { declared: { harness } } : {}),
         ...hostMarker(),
@@ -390,6 +405,8 @@ export async function registerProvisionally(
   }
 
   try {
+    if (requested !== undefined && (await attempt(requested, false))) return requested
+    if (derived === undefined) return undefined
     if (await attempt(derived)) return derived
     // Every Codex id on a machine ends in the same hostname, so its pid is the seed that differs.
     const seed = harness === 'codex' ? String(identity.hostPid) : identity.sessionId
@@ -617,7 +634,9 @@ export async function startMcpServer(): Promise<void> {
   // Nothing here is asked of the model: the session id comes from this process's
   // own environment, and the NAME comes from the broker's log. A session with
   // nothing to reclaim gets ok:false and the ordinary path is unaffected.
-  const readopted = spawned || !online ? undefined : await readopt(broker, host)
+  // A requested name wins over whatever a reused Codex pid once held.
+  const requested = requestedCodexName(host)
+  const readopted = spawned || requested || !online ? undefined : await readopt(broker, host)
 
   // CC-82. Neither path above covers a session starting for the FIRST time: it
   // has no launch plan to be named by, and nothing in the log to reclaim. Until
@@ -627,7 +646,8 @@ export async function startMcpServer(): Promise<void> {
   // none of them reachable. So the server names it from its own directory and
   // registers it, marked provisional. The model renaming itself later is the
   // ordinary path, not a correction.
-  const provisional = spawned || readopted || !online ? undefined : await registerProvisionally(broker, host)
+  const provisional =
+    spawned || readopted || !online ? undefined : await registerProvisionally(broker, host, requested)
 
   mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     await broker.send({

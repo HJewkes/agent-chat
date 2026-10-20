@@ -2,10 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mcpOverrides } from '../cli/verbs/codex-run.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mcpOverrides, parseName, reportWakeCapped } from '../cli/verbs/codex-run.js'
 import { startCodexAppServer, type CodexAppServer } from '../codex/app-server-client.js'
-import { DeliveryLoop, PEER_HEADER, spoolFinder, superviseCodex } from '../codex/supervisor.js'
+import { DeliveryLoop, PEER_HEADER, spoolFinder, spoolHostPid, superviseCodex } from '../codex/supervisor.js'
+import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { codexInboxSpoolDir, spoolRecord } from '../server/inbox-spool.js'
 
 /**
@@ -186,6 +187,63 @@ describe('codex run delivery', () => {
     expect(starts[1]?.params.input?.[0]?.text).toMatch(/second[\s\S]*third/)
     expect(waiting()).toEqual([])
   })
+
+  it('reports the cap once per trip, and again after it reopens and trips anew', async () => {
+    // Catches: a report on every held drain, or none at all (CC-1545).
+    const server = await fake()
+    let now = 1_000_000
+    const onWakeCapped = vi.fn()
+    const loop = loopFor(server, { wakeCap: 1, now: () => now, onWakeCapped })
+    for (const id of ['m-1', 'm-2', 'm-3']) {
+      spoolMessage(id, `note ${id}`)
+      await loop.kick()
+    }
+    expect(onWakeCapped.mock.calls).toEqual([[1]])
+
+    now += 3_600_001
+    await loop.kick()
+    spoolMessage('m-4', 'after the hour')
+    await loop.kick()
+    expect(onWakeCapped.mock.calls).toEqual([[1], [1]])
+  })
+
+  it('does not report a cap that was never set', async () => {
+    const server = await fake()
+    const onWakeCapped = vi.fn()
+    const loop = loopFor(server, { onWakeCapped })
+    for (const id of ['m-1', 'm-2']) {
+      spoolMessage(id, `note ${id}`)
+      await loop.kick()
+    }
+
+    expect(onWakeCapped).not.toHaveBeenCalled()
+  })
+})
+
+describe('reporting a wake cap', () => {
+  const ok: ServerMessage = { t: 'send_result', ok: true, recipients: ['coord'] }
+
+  it('sends one codex_wake_capped frame per held Codex pid, naming this machine', async () => {
+    const frames: ClientMessage[] = []
+
+    await reportWakeCapped([71_002], 4, fn => fn(async frame => (frames.push(frame), ok)))
+
+    expect(frames).toEqual([{ t: 'codex_wake_capped', hostPid: 71_002, host: os.hostname(), cap: 4 }])
+  })
+
+  it('falls back to stderr when the broker cannot place it', async () => {
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const refused: ServerMessage = { t: 'send_result', ok: false, recipients: [], reason: 'no session' }
+
+    await reportWakeCapped([71_002], 4, fn => fn(async () => refused))
+
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('wake cap of 4/hour reached'))
+    write.mockRestore()
+  })
+
+  it('keys the report on the pid in the spool path', () => {
+    expect(spoolHostPid(codexInboxSpoolDir(71_002))).toBe(71_002)
+  })
 })
 
 describe('superviseCodex', () => {
@@ -248,5 +306,18 @@ describe('mcpOverrides', () => {
     expect(args).toContain('mcp_servers.agent-chat.env={AGENT_CHAT_HOST="codex"}')
     expect(args).toContain('mcp_servers.agent-chat.args=["/opt/agent-chat/dist/cli.js","mcp"]')
     expect(args.filter(arg => arg === '-c')).toHaveLength(3)
+  })
+
+  it('puts --name in the MCP env as AGENT_CHAT_NAME', () => {
+    // Catches: a --name that never reaches the MCP server, which then registers a derived name.
+    const args = mcpOverrides('/opt/node', '/opt/agent-chat/dist/cli.js', 'scout')
+
+    expect(args).toContain('mcp_servers.agent-chat.env={AGENT_CHAT_HOST="codex",AGENT_CHAT_NAME="scout"}')
+  })
+
+  it('refuses a name no agent may hold, before Codex starts', () => {
+    expect(parseName('scout-2')).toBe('scout-2')
+    expect(parseName(undefined)).toBeUndefined()
+    expect(() => parseName('../Scout')).toThrow(/--name/)
   })
 })
