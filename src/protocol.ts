@@ -722,9 +722,9 @@ export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TE
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
-export const WAKE_SOURCES = ['watchdog', 'shepherd'] as const
+export const WAKE_SOURCES = ['watchdog', 'shepherd', 'console'] as const
 
-/** CC-203, CC-436: marks a send or resume the seat watchdog or Shepherd made, so its event row is not read as the human typing. */
+/** CC-203, CC-436, CC-1507: marks a send or resume the seat watchdog, Shepherd or titan-console made, so its event row is not read as the human typing. */
 export type WakeSource = (typeof WAKE_SOURCES)[number]
 
 /** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */

@@ -155,7 +155,7 @@ function addDebugCommands(program: Command): void {
     .description('message a session as the human')
     .option(
       '--source <source>',
-      'record the send as made by this source (watchdog, shepherd) in the event log',
+      'record the send as made by this source (watchdog, shepherd, console) in the event log',
     )
     .action(debug.send)
 }

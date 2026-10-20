@@ -112,6 +112,7 @@ describe('mail for a non-resident seat', () => {
     ['no source', undefined],
     ['the shepherd source', 'shepherd' as const],
     ['the watchdog source', 'watchdog' as const],
+    ['the console source', 'console' as const],
   ])("holds a human send with %s for a dark mapped seat in the seat's own hold", (_label, source) => {
     goDark(SEAT)
     const steward = join(STEWARD)
