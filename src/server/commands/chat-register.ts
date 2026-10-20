@@ -4,7 +4,7 @@ import { DECLARED_MAX_KEYS, DECLARED_MAX_VALUE_CHARS, type ServerMessage } from 
 import { observedRegistration } from '../../git.js'
 import { cliEntry } from '../../paths.js'
 import { terminalAnchor } from '../anchor.js'
-import { hostIdentity, hostMarker } from '../host.js'
+import { currentSessionHost, hostMarker } from '../host.js'
 import { declaredField, declaredLabels, defineTool } from '../command.js'
 
 export const chatRegister = defineTool({
@@ -29,7 +29,10 @@ export const chatRegister = defineTool({
   result: z.string(),
   async run(input, { broker, session }) {
     const { name } = input
-    const declared = declaredLabels(input.declared)
+    const { harness, ...identity } = currentSessionHost()
+    // Re-declared with the model's own labels, which replace the bag, so the marker provisional registration set survives (CC-1508).
+    const declared =
+      harness === 'codex' ? { ...declaredLabels(input.declared), harness } : declaredLabels(input.declared)
     // A spawned agent was named by whoever spawned it, and peers have already
     // been told that name. Letting the model rename itself mid-session would
     // strand every one of them, so the call is a no-op rather than a rename.
@@ -49,7 +52,7 @@ export const chatRegister = defineTool({
         // `workingOn` above came from the model; these came from the process,
         // which is what lets the broker mint an identity for an ordinary session
         // without that identity being self-asserted.
-        ...hostIdentity(),
+        ...identity,
         ...hostMarker(),
         ...terminalAnchor(),
         // CC-11. Derived from this process's directory, never asked of the model:
