@@ -68,7 +68,7 @@ async function reply<T extends ServerMessage['t']>(frames: ServerMessage[], t: T
   )
 }
 
-function startServer(surface: SupervisorOptions['surface']): void {
+function startServer(surface: NonNullable<SupervisorOptions['surface']>): void {
   const bus = tmp('agent-chat-bus-')
   process.env.AGENT_CHAT_HOME = bus
   core = new BrokerCore(() => undefined, {
