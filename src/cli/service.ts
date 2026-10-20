@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import type { HealthPayload } from '../api-contract.js'
+import { installCrashLog } from '../broker/crash-log.js'
 import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { exitWithWatchedPid } from '../broker/parent-watch.js'
@@ -84,6 +85,7 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     // Every auto-start lands here, so the broker's own children get a full PATH (CC-456).
     process.env.PATH = resolveBasePath({ env: process.env, stateDir: home() })
     exitWithWatchedPid(process.env)
+    installCrashLog()
     const { startBroker } = await import('../broker/index.js')
     const server = await startBroker()
     if (!server) console.error(refusedStart())

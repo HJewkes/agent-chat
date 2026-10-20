@@ -4230,12 +4230,16 @@ export class Supervisor implements TeleportHost {
     // CC-1457: refused before the stop, so a switch that cannot relaunch never ends the running process.
     const inFlight = this.resumingRefusal(agent)
     if (inFlight) return { ok: false, reason: inFlight }
+    // CC-1505: an iTerm surface on a Linux host threw from the launch after the stop, and the broker died.
+    const surface = req.to === 'headless' ? 'headless' : this.resolve(placementFor(req.anchor))
+    const unlaunchable = this.surfaceBlocker(surface)
+    if (unlaunchable) return { ok: false, reason: `cannot surface ${req.name}: ${unlaunchable}` }
 
     return this.holdingLaunch(agent, async () => {
       const stopped = this.stopFor(req, agent)
       if (!stopped.ok) return { ok: false, reason: stopped.reason as string }
       await this.waitForNameFree(req.name)
-      return this.resumeOnto(req, agent, profile)
+      return this.resumeOnto(req, agent, profile, surface)
     })
   }
 
@@ -4264,9 +4268,9 @@ export class Supervisor implements TeleportHost {
     req: SwitchRequest,
     agent: AgentIdentity,
     profile: AgentProfile,
+    surface: SurfaceName,
   ): Promise<SwitchOutcome> {
     const entry = this.live.get(agent.agentId)
-    const surface = req.to === 'headless' ? 'headless' : this.resolve(placementFor(req.anchor))
     const allocation = entry?.allocation ?? { cwd: agent.cwd }
     const isolation = entry?.isolation ?? (agent.isolation as IsolationName)
 
@@ -4311,7 +4315,14 @@ export class Supervisor implements TeleportHost {
     })
 
     const executionId = this.continueExecution(agent, entry)
-    const handle = await this.launchOn(surface, plan, req.anchor)
+    let handle: LaunchHandle
+    try {
+      handle = await this.launchOn(surface, plan, req.anchor)
+    } catch (err) {
+      this.resumeNeverStarted(agent, err)
+      const said = err instanceof Error ? err.message : String(err)
+      return { ok: false, reason: `${req.name} was stopped but did not relaunch: ${said}` }
+    }
     this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor, entry?.reviewerTree)
     this.bindExecution(agent.agentId, executionId)
     logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })
