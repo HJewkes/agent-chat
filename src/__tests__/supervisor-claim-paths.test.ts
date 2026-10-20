@@ -43,16 +43,22 @@ function makeRepo(): string {
 /** A headless child whose exit the test decides. */
 function exitingChild() {
   let onExit: ((code: number | null, signal: string | null) => void) | undefined
+  let markStarted: () => void = () => undefined
+  const started = new Promise<void>(resolve => {
+    markStarted = resolve
+  })
   const spawn = () => ({
     pid: 4243,
     unref: () => undefined,
     once: (event: string, listener: (code: number | null, signal: string | null) => void) => {
-      if (event === 'exit') onExit = listener
+      if (event !== 'exit') return
+      onExit = listener
+      markStarted()
     },
   })
   return {
     spawn: spawn as unknown as SurfaceSpawn,
-    started: () => onExit !== undefined,
+    started,
     exit: (code: number) => onExit?.(code, null),
   }
 }
@@ -104,8 +110,10 @@ describe('spawn with claimPaths', () => {
     const h = start({ spawn: child.spawn, attach: false })
 
     const pending = h.spawnAgent('worker-a', inRepo(makeRepo()))
-    await vi.waitFor(() => expect(child.started()).toBe(true))
-    expect(h.core.claims.list().map(c => c.owner)).toEqual(['worker-a'])
+    await child.started
+    // The supervisor installs the claim just after the launch call returns, so the child's
+    // start is seen a few microtasks before it.
+    await vi.waitFor(() => expect(h.core.claims.list().map(c => c.owner)).toEqual(['worker-a']))
     child.exit(1)
     const outcome = await pending
 
