@@ -38,7 +38,9 @@ const NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`)
 
 export function parseName(raw: string | undefined): string | undefined {
   if (raw === undefined || NAME.test(raw)) return raw
-  throw new Error(`--name wants lowercase letters, digits, - and _, starting with a letter or digit; got ${raw}`)
+  throw new Error(
+    `--name wants lowercase letters, digits, - and _, starting with a letter or digit; got ${raw}`,
+  )
 }
 
 type Request = (frame: ClientMessage) => Promise<ServerMessage>

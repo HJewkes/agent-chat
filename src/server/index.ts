@@ -205,7 +205,10 @@ export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedId
  * CC-1545: the name `agent-chat codex run --name` put in this Codex host's MCP env. Without an
  * agent id it is a request, not a spawn; with one, `spawnedIdentity` owns it.
  */
-export function requestedCodexName(host: SessionHost, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function requestedCodexName(
+  host: SessionHost,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   if (host.harness !== 'codex' || env.AGENT_CHAT_AGENT_ID) return undefined
   return env.AGENT_CHAT_NAME || undefined
 }

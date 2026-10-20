@@ -8,7 +8,13 @@ import {
   sessionHost,
   type SessionHost,
 } from '../server/host.js'
-import { CODEX_INSTRUCTIONS, INSTRUCTIONS, instructionsFor, registerProvisionally } from '../server/index.js'
+import {
+  CODEX_INSTRUCTIONS,
+  INSTRUCTIONS,
+  instructionsFor,
+  registerProvisionally,
+  requestedCodexName,
+} from '../server/index.js'
 import { ToolHandler } from '../server/tools.js'
 import { Registry } from '../broker/registry.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -123,6 +129,41 @@ describe('provisional registration', () => {
     expect(frames[0]).toMatchObject({ provisional: true, sessionId, hostPid: 4321 })
     expect(frames[0]).not.toHaveProperty('declared')
     expect(frames[0]).not.toHaveProperty('harness')
+  })
+})
+
+describe('a name codex run asked for (CC-1545)', () => {
+  const codex: SessionHost = { harness: 'codex', hostPid: 4321, sessionId: 'codex:4321@example-host' }
+
+  it('registers under the requested name first, not marked provisional', async () => {
+    // Catches: a --name that the server ignores, leaving the session under a derived name.
+    const { broker, frames } = recordingBroker()
+
+    const name = await registerProvisionally(broker, codex, 'scout')
+
+    expect(name).toBe('scout')
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({ name: 'scout', sessionId: 'codex:4321@example-host' })
+    expect(frames[0]).not.toHaveProperty('provisional')
+  })
+
+  it('still comes up under a derived name when the requested one is held', async () => {
+    const { broker, frames } = recordingBroker(frame => frame.name !== 'scout')
+
+    const name = await registerProvisionally(broker, codex, 'scout')
+
+    expect(name).toBeDefined()
+    expect(name).not.toBe('scout')
+    expect(frames[1]).toMatchObject({ provisional: true })
+  })
+
+  it('reads AGENT_CHAT_NAME only on a Codex host with no spawned agent id', () => {
+    expect(requestedCodexName(codex, { AGENT_CHAT_NAME: 'scout' })).toBe('scout')
+    expect(requestedCodexName(codex, { AGENT_CHAT_NAME: 'scout', AGENT_CHAT_AGENT_ID: 'a1' })).toBeUndefined()
+    expect(
+      requestedCodexName({ ...codex, harness: 'claude-code' }, { AGENT_CHAT_NAME: 'scout' }),
+    ).toBeUndefined()
+    expect(requestedCodexName(codex, {})).toBeUndefined()
   })
 })
 

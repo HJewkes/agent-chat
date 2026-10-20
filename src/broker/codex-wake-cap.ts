@@ -21,7 +21,12 @@ export const wakeCappedText = (name: string, cap: number): string =>
 export function noticeWakeCapped<C>(core: BrokerCore<C>, frame: WakeCapped): SendResult {
   const name = core.registry.nameOnHost(frame.hostPid, frame.host)
   if (name === undefined)
-    return { t: 'send_result', ok: false, recipients: [], reason: `no session registered from pid ${frame.hostPid}` }
+    return {
+      t: 'send_result',
+      ok: false,
+      recipients: [],
+      reason: `no session registered from pid ${frame.hostPid}`,
+    }
   const conn = core.registry.connFor(name)
   const agentId = conn === undefined ? undefined : core.registry.entryFor(conn)?.agentId
   const spawner = (agentId === undefined ? undefined : core.agents.get(agentId)?.spawnedBy) ?? HUMAN

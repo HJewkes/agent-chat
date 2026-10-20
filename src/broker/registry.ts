@@ -606,7 +606,8 @@ export class Registry<C> {
 
   /** CC-1545: the name registered from that host process; both must match, as pids repeat across machines. */
   nameOnHost(hostPid: number, host: string): string | undefined {
-    for (const entry of this.entries.values()) if (entry.hostPid === hostPid && entry.host === host) return entry.name
+    for (const entry of this.entries.values())
+      if (entry.hostPid === hostPid && entry.host === host) return entry.name
     return undefined
   }
 
