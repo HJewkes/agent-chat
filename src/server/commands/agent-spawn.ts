@@ -234,9 +234,10 @@ function describeSpawn(res: Extract<ServerMessage, { t: 'spawn_result' }>, forke
   const resumed = res.transcript === undefined ? '' : `\n  resumed session: ${verdictLine(res.transcript)}`
   const base = res.base === undefined ? '' : `\n  branched from ${res.base.ref} at ${res.base.sha}`
   const on = res.host === undefined ? '' : ` on ${res.host}`
+  const account = res.account === undefined ? '' : `\n  account: ${res.account}`
   return (
     `Spawned "${res.name}" (${res.agentId})${on}. It is a peer now — reach it with chat_send, ` +
-    `not by spawning again.${forked}${resumed}${base}${warnings}${denied}`
+    `not by spawning again.${forked}${resumed}${base}${account}${warnings}${denied}`
   )
 }
 

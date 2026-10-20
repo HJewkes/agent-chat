@@ -29,6 +29,7 @@ import {
   type ProcessGuardMode,
 } from './agents/process-guard.js'
 import { PROFILE_DRIFT_MODES, type ProfileDriftMode } from './agents/profile-baseline.js'
+import { DEFAULT_ROTATION, type RotationConfig } from './agents/account-rotation.js'
 
 export interface AgentChatConfig {
   /** Path to a coordinator document; its `state_dir` relocates the autonomy root. */
@@ -71,6 +72,7 @@ export interface AgentChatConfig {
   dispatchOverlapExempt?: unknown
   profileDrift?: unknown
   hostProof?: unknown
+  accountRotation?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -326,6 +328,37 @@ export function resolveAutoParkOnExit(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logInvalidOnce({ key: 'autoPark.onExit', value, fallback: true })
   return true
+}
+
+/**
+ * CC-1546: `accountRotation` (`enabled`, `ceilingPct`, `exclude`), read per spawn. Each field
+ * that is absent or invalid takes its default, an invalid one logged; a non-object is all defaults.
+ */
+export function resolveAccountRotation(): RotationConfig {
+  const value = readConfig().accountRotation
+  if (value === undefined) return DEFAULT_ROTATION
+  if (!isObject(value) || Array.isArray(value)) {
+    logInvalidOnce({ key: 'accountRotation', value, fallback: DEFAULT_ROTATION })
+    return DEFAULT_ROTATION
+  }
+  return {
+    enabled: rotationEnabled(value.enabled),
+    ceilingPct: numberFrom('accountRotation.ceilingPct', value.ceilingPct, DEFAULT_ROTATION.ceilingPct, 100),
+    exclude: rotationExclude(value.exclude),
+  }
+}
+
+function rotationEnabled(value: unknown): boolean {
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  logInvalidOnce({ key: 'accountRotation.enabled', value, fallback: DEFAULT_ROTATION.enabled })
+  return DEFAULT_ROTATION.enabled
+}
+
+function rotationExclude(value: unknown): readonly string[] {
+  if (value === undefined) return DEFAULT_ROTATION.exclude
+  if (Array.isArray(value) && value.every(entry => typeof entry === 'string')) return value as string[]
+  logInvalidOnce({ key: 'accountRotation.exclude', value, fallback: DEFAULT_ROTATION.exclude })
+  return DEFAULT_ROTATION.exclude
 }
 
 /**
