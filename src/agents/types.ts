@@ -45,6 +45,11 @@ export const AGENT_ROLES = ['coordinator', 'worker'] as const
 
 export type AgentRole = (typeof AGENT_ROLES)[number]
 
+/** CC-1516: the CLI a profile launches. Absent means `claude-code`, the only one with a launch plan today. */
+export const HARNESSES = ['claude-code', 'codex'] as const
+
+export type Harness = (typeof HARNESSES)[number]
+
 /** The settings files `--setting-sources` can name; `user` is the one holding the account's own allow rules. */
 export const SETTING_SOURCES = ['user', 'project', 'local'] as const
 
@@ -69,6 +74,8 @@ export type ReturnContract = (typeof RETURN_CONTRACTS)[number]
 export interface AgentProfile {
   name: string
   description: string
+  /** Absent means `claude-code`. A `codex` profile loads but refuses every launch until its launch plan exists (CC-1517). */
+  harness?: Harness
   model: string
   /**
    * Passed to --allowed-tools, and THE permission lever. Declare the narrowest

@@ -472,6 +472,8 @@ noun rather than six flags.
 export interface AgentProfile {
   name: string
   description: string
+  /** Absent means 'claude-code'. Any other value refuses at load. */
+  harness?: 'claude-code' | 'codex'
   model: 'opus' | 'sonnet' | 'haiku' | string
   /**
    * Passed to --allowed-tools. THE permission lever (§11.1) — there is no
@@ -489,6 +491,14 @@ export interface AgentProfile {
   mcpServers?: Record<string, unknown>
 }
 ```
+
+**`harness` names the CLI a profile launches (CC-1516).** Only `claude-code` has
+a launch plan. A `harness: "codex"` profile loads and `agent_profiles` lists it,
+but a spawn of it refuses with code `harness_unsupported` ("unsupported until the
+Codex launch plan (CC-1517)") before any process, worktree or slot exists. A
+resume, surface switch or teleport of it refuses the same way. A Codex profile
+whose `model` is a Claude name (`opus`, `sonnet`, `haiku`, `fable`, `claude-*`)
+refuses at load, so a Claude alias is never mapped to some other model.
 
 **There is deliberately no `permissionMode` field.** Not `bypassPermissions`,
 and not a milder alias for it. A profile widens a posture by naming tools, which

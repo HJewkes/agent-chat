@@ -83,6 +83,7 @@ export interface SpawnResultFields {
     | 'seat_spawn_unprefixed'
     | 'reviewer_account_limit'
     | 'broker_draining'
+    | 'harness_unsupported'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
   retryable?: boolean
   /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */

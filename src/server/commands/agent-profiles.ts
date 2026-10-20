@@ -22,7 +22,7 @@ export const agentProfiles = defineTool({
       const effort = profile.effort === undefined ? '' : `, effort ${profile.effort}`
       const warned = (profile.warnings ?? []).map(w => `\n    warning: ${w}`).join('')
       return (
-        `- ${name} [${roleOf(profile)}, ${profile.model}${effort}, ${profile.surface}, isolation ${profile.isolation}]\n` +
+        `- ${name} [${roleOf(profile)}, ${profile.model}${effort}, ${profile.surface}, isolation ${profile.isolation}, harness ${profile.harness ?? 'claude-code'}]\n` +
         `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}${warned}`
       )
     })
