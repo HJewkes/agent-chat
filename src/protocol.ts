@@ -303,6 +303,11 @@ export interface SessionInfo {
  * how other sessions read the `from` attribute.
  */
 export const HUMAN = 'human'
+/** A Codex host's synthetic session id, `codex:<hostPid>@<host>`, names no Claude transcript (CC-1508). */
+export const CODEX_SESSION_PREFIX = 'codex:'
+
+export const isCodexSessionId = (sessionId: string): boolean => sessionId.startsWith(CODEX_SESSION_PREFIX)
+
 export const RESERVED_NAMES = new Set([HUMAN, 'user', 'system', 'claude', 'all', 'everyone'])
 
 /**

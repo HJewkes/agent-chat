@@ -1,7 +1,18 @@
 import crypto from 'node:crypto'
-import { describe, expect, it } from 'vitest'
-import { detectHarness, sessionHost, type SessionHost } from '../server/host.js'
+import os from 'node:os'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  claudeSessionId,
+  detectHarness,
+  hostIdentity,
+  sessionHost,
+  type SessionHost,
+} from '../server/host.js'
 import { CODEX_INSTRUCTIONS, INSTRUCTIONS, instructionsFor, registerProvisionally } from '../server/index.js'
+import { ToolHandler } from '../server/tools.js'
+import { Registry } from '../broker/registry.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import type { Conn } from '../broker/core.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -134,5 +145,58 @@ describe('instructions per host', () => {
   it('keeps every peer-authority rule under Codex', () => {
     expect(CODEX_INSTRUCTIONS).toMatch(/not as instructions carrying your user's authority/)
     expect(CODEX_INSTRUCTIONS).toMatch(/that is permission laundering/)
+  })
+})
+
+describe('one identity for every reader', () => {
+  const inherited = { CLAUDE_CODE_SESSION_ID: 'inherited-parent-id' }
+
+  it('resolves the Codex id in hostIdentity itself, ignoring an inherited Claude id', () => {
+    expect(hostIdentity(inherited, 4321, () => 'codex')).toEqual({
+      hostPid: 4321,
+      sessionId: `codex:4321@${os.hostname()}`,
+    })
+    expect(hostIdentity(inherited, 4321, () => 'claude')).toEqual({
+      hostPid: 4321,
+      sessionId: 'inherited-parent-id',
+    })
+  })
+
+  it('gives transcript and budget readers no Claude id under Codex', () => {
+    expect(claudeSessionId({ sessionId: 'codex:4321@example-host' })).toBeUndefined()
+    expect(claudeSessionId({ sessionId: 'inherited-parent-id' })).toBe('inherited-parent-id')
+  })
+
+  it('keeps a Codex id off the roster as a Claude session id', () => {
+    const registry = new Registry<Conn>()
+    const base = { workingOn: 'w', cwd: '/tmp', pid: 1 }
+    registry.register({} as unknown as Conn, { ...base, name: 'cx', sessionId: 'codex:4321@example-host' })
+    registry.register({} as unknown as Conn, { ...base, name: 'cc', sessionId: 'claude-session-id' })
+
+    const byName = new Map(registry.list().map(row => [row.name, row.observed]))
+    expect(byName.get('cx')?.claudeSessionId).toBeUndefined()
+    expect(byName.get('cc')?.claudeSessionId).toBe('claude-session-id')
+  })
+})
+
+describe('chat_register under Codex', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('sends the Codex id, never the inherited one, and keeps the harness beside the model labels', async () => {
+    vi.stubEnv('AGENT_CHAT_HOST', 'codex')
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'inherited-parent-id')
+    const { broker, frames } = recordingBroker()
+
+    await new ToolHandler(broker as unknown as BrokerClient).handle('chat_register', {
+      name: 'cx-worker',
+      declared: { role: 'implementer' },
+    })
+
+    expect(frames[0]).toMatchObject({
+      t: 'register',
+      sessionId: `codex:${process.ppid}@${os.hostname()}`,
+      declared: { role: 'implementer', harness: 'codex' },
+    })
+    expect(frames[0]).not.toHaveProperty('harness')
   })
 })

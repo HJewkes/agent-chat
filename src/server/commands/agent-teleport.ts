@@ -3,7 +3,7 @@ import { present, requiredString } from '../../args.js'
 import { AGENT_TELEPORT_REASONS, SURFACE_NAMES, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
-import { hostIdentity } from '../host.js'
+import { claudeSessionId, hostIdentity } from '../host.js'
 import {
   hostCarriedFlags,
   hostRemoteControl,
@@ -134,7 +134,10 @@ export const agentTeleport = defineTool({
     const to = present(destination)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
-    const launchSeen = launchSeenWithModel(hostCarriedFlags(hostIdentity().hostPid), hostIdentity().sessionId)
+    const launchSeen = launchSeenWithModel(
+      hostCarriedFlags(hostIdentity().hostPid),
+      claudeSessionId(hostIdentity()),
+    )
     const res = (await ctx.broker.request(
       {
         t: 'teleport',

@@ -14,6 +14,7 @@ import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import {
+  claudeSessionId,
   currentSessionHost,
   hostIdentity,
   hostMarker,
@@ -503,7 +504,7 @@ export function channelDelivery(
 
 /** CC-135: one `[park]` notice before a waiting session's warm cache expires. Advisory only. */
 function startParkAdvisor(mcp: Server, broker: BrokerClient, handler: ToolHandler): void {
-  const { sessionId } = hostIdentity()
+  const sessionId = claudeSessionId(hostIdentity())
   const cwd = process.cwd()
   new ParkAdvisor({
     sessionId,
@@ -545,7 +546,7 @@ export async function startMcpServer(): Promise<void> {
   // the process IS the session. Reads the status-line cache lazily, so a machine
   // without the writer installed simply never hints. Advisory only: it never stops anything.
   const hinter = new ContextHinter(
-    hostIdentity().sessionId,
+    claudeSessionId(host),
     resolveContextHintPolicy(process.env.AGENT_CHAT_PROFILE),
   )
 

@@ -4,6 +4,7 @@ import {
   DECLARED_MAX_BYTES,
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
+  isCodexSessionId,
   MAX_MULTICAST_RECIPIENTS,
   RESERVED_NAMES,
   SELF_TAG,
@@ -62,10 +63,13 @@ const observedOf = (entry: {
   observed?: ObservedPresence
   sessionId?: string
 }): ObservedPresence | undefined => {
-  if (entry.observed === undefined && entry.sessionId === undefined) return undefined
+  // A Codex id names no transcript, so it must not read as a Claude session to a spawn or fork (CC-1508).
+  const claudeSessionId =
+    entry.sessionId === undefined || isCodexSessionId(entry.sessionId) ? undefined : entry.sessionId
+  if (entry.observed === undefined && claudeSessionId === undefined) return undefined
   return {
     ...entry.observed,
-    ...(entry.sessionId === undefined ? {} : { claudeSessionId: entry.sessionId }),
+    ...(claudeSessionId === undefined ? {} : { claudeSessionId }),
   }
 }
 
