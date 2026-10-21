@@ -240,7 +240,7 @@ export function readInbox(dbPath: string, seat: string): InboxReading {
 }
 
 /** The watchdog's ownership test: the seat's name prefix, or spawned by the seat. */
-const ownedBy = (agents: AgentIdentity[], seat: string, prefix: string | undefined): AgentIdentity[] =>
+export const ownedBy = (agents: AgentIdentity[], seat: string, prefix: string | undefined): AgentIdentity[] =>
   agents.filter(a => a.spawnedBy === seat || (prefix !== undefined && a.name.startsWith(`${prefix}-`)))
 
 /** In name order: the roster is newest first, which reorders the lists between two ticks. */
