@@ -3,7 +3,14 @@
   "level": "warn",
   "scan": {
     "include": ["**/*"],
-    "brief": ["**/CLAUDE.md", "**/AGENTS.md", "**/SKILL.md", "**/briefs/**", "**/*.brief.md", "profiles/*.json"]
+    "brief": [
+      "**/CLAUDE.md",
+      "**/AGENTS.md",
+      "**/SKILL.md",
+      "**/briefs/**",
+      "**/*.brief.md",
+      "profiles/*.json"
+    ]
   },
   "exclude": [
     "**/*.test.*",
