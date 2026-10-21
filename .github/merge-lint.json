@@ -1,0 +1,58 @@
+{
+  "$schema": "merge-lint/1",
+  "level": "warn",
+  "scan": {
+    "include": ["**/*"],
+    "brief": [
+      "**/CLAUDE.md",
+      "**/AGENTS.md",
+      "**/SKILL.md",
+      "**/briefs/**",
+      "**/*.brief.md",
+      "profiles/*.json"
+    ]
+  },
+  "exclude": [
+    "**/*.test.*",
+    "**/__tests__/**",
+    "**/fixtures/**",
+    "**/testdata/**",
+    "**/CHANGELOG.md",
+    ".changeset/**",
+    "site/**",
+    "docs/**",
+    "**/README.md",
+    ".github/merge-lint.json",
+    "scripts/seat/test-*.sh"
+  ],
+  "allow": [
+    {
+      "path": "scripts/seat/merge",
+      "kind": "wrapper",
+      "mergePath": "seat-merge",
+      "logs": false,
+      "reason": "the seat merge wrapper: one REST merge PUT through gh-write; logging lands in D-M3"
+    },
+    {
+      "path": "src/gh-write/**",
+      "kind": "detector",
+      "reason": "classifies gh write calls, merges included; never makes one"
+    },
+    {
+      "path": "src/cli/inflight-procs.ts",
+      "kind": "detector",
+      "reason": "matches in-flight merge processes to hold a restart; never merges"
+    },
+    {
+      "path": "scripts/restart-window.sh",
+      "kind": "detector",
+      "reason": "matches in-flight merge processes to hold a restart; never merges"
+    },
+    {
+      "path": "profiles/*.json",
+      "kind": "deny-list",
+      "text": "\"Bash(gh pr merge:*)\"",
+      "reason": "disallowedTools entries that forbid the call"
+    }
+  ]
+}
