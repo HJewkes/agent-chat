@@ -70,11 +70,25 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: npx --yes @titan-design/egress-scan@0.6.1 range "$BASE_SHA" "$HEAD_SHA"
 
+  # Flags a merge call outside the logged wrappers in .github/merge-lint.json.
+  # Warn level: it exits 0 whatever it finds until D-M3-03 sets level error.
+  merge-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - name: Lint for merge calls
+        run: npx --yes -p @titan-design/tool-guard@0.5.3 titan-merge-lint
+
   # The ruleset requires the context `check`, so the aggregator carries that name
   # and no other job may. all-green also fails if a job here is missing from needs.
   check:
     if: always()
-    needs: [std, egress-scan]
+    needs: [std, egress-scan, merge-lint]
     runs-on: ubuntu-latest
     steps:
       - uses: HJewkes/ci/actions/all-green@v1

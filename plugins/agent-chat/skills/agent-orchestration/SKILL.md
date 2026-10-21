@@ -270,6 +270,8 @@ Owner-written 2026-10-03 (source: titan-platform sources/automode-classifier-tun
 - After an auto mode denial of a granted action, re-run the identical command once. If it is denied again, queue the exact command for the owner and move on.
 - Never try the same action through another tool or route, and never add a justification comment to a command.
 - Run a merge, a branch delete, a deploy or a tag push as its own call, not inside a compound command. Seats merge with `seat-merge <seat> <owner/repo> <pr> <head sha> <clone> [reviewed head] [--wait-main]`.
+- **Agents never call merge; only logged paths merge** (I5). The logged paths are the lander, `seat-merge`, Shepherd's land loop and the version-packages write. A merge made any other way reads as the owner's own merge.
+- From the bot account (A21, M1a) until M3's walk over main moves exists, this rule and the merge-lint warning are the **only guard on R27**: no count of owner-intent moves can run before the walk (D-M3-11).
 - Never edit `.claude.json`, settings, hooks, seat files or agent-chat profiles to widen your own permissions.
 
 ## Budget: what you are spending, and how to find out

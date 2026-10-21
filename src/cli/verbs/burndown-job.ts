@@ -28,7 +28,7 @@ import type { Report } from '../command.js'
 const SIGN_OFF_CHECKLIST = [
   "Sign-off checklist (CC-slice4-plan.md section 7) — every item is yours to check, not the tick's:",
   '[ ] Settings allowlist covers git fetch/merge --ff-only/add/commit, git push -u origin agent-chat/*,' +
-    ' npm run format(:check)/typecheck/build, npx vitest run, gh pr create/view/checks (not gh pr merge).',
+    ' npm run format(:check)/typecheck/build, npx vitest run, gh pr create/view/checks (never merge).',
   '[ ] Decider deployed in a restart window, or explicitly waived.',
   '[ ] Lean bd-* profiles live after a broker restart; R3 bootstrap measurement read.',
   '[ ] Slot ceiling: burndown.config.json maxAgents set and below free broker slots.',
