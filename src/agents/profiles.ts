@@ -6,12 +6,14 @@ import { PROBE_SANDBOX_RULE } from './return-contract-blocks.js'
 import {
   AGENT_ROLES,
   EFFORT_LEVELS,
+  HARNESSES,
   RETURN_CONTRACTS,
   SETTING_SOURCES,
   SURFACE_LIFETIMES,
   type AgentProfile,
   type AgentRole,
   type EffortLevel,
+  type Harness,
   type ReturnContract,
   type SettingSource,
   type SurfaceLifetime,
@@ -247,6 +249,7 @@ const isStringRecord = (value: unknown): value is Record<string, string> =>
 const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   name: true,
   description: true,
+  harness: true,
   model: true,
   allowedTools: true,
   disallowedTools: true,
@@ -263,6 +266,35 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   settingSources: true,
   disableSlashCommands: true,
   env: true,
+}
+
+const isHarness = (value: unknown): value is Harness => HARNESSES.includes(value as never)
+
+/** CC-1516: a Claude model name means nothing to Codex, and a launch must never map it to some other model. */
+const CLAUDE_MODEL = /^(?:opus|sonnet|haiku|fable)\b|^claude-/i
+
+function harnessError(name: string, body: Record<string, unknown>): string | undefined {
+  if (body.harness === undefined) return undefined
+  if (!isHarness(body.harness)) return `${name}: "harness" must be one of ${HARNESSES.join(', ')}`
+  if (body.harness === 'codex' && CLAUDE_MODEL.test(body.model as string))
+    return `${name}: "model" ${JSON.stringify(body.model)} is a Claude model; a "harness": "codex" profile names a Codex model`
+  return undefined
+}
+
+/** CC-1516: the capability a harness waits on before it can launch, or undefined once it can. */
+const HARNESS_PENDING: Record<Harness, string | undefined> = {
+  'claude-code': undefined,
+  codex: 'the Codex launch plan (CC-1517)',
+}
+
+export const HARNESS_UNSUPPORTED = 'harness_unsupported'
+
+/** The refusal for launching this profile, before any process, worktree or slot exists; undefined when it can launch. */
+export function harnessRefusal(profile: AgentProfile): string | undefined {
+  const harness = profile.harness ?? 'claude-code'
+  const pending = HARNESS_PENDING[harness]
+  if (pending === undefined) return undefined
+  return `${HARNESS_UNSUPPORTED}: profile "${profile.name}" uses harness "${harness}", unsupported until ${pending}`
 }
 
 /** CC-558: a live profile listed tools under `denies`, which no field read, so the tools stayed reachable. */
@@ -336,6 +368,8 @@ export function parseProfile(
     if (field in body) return { error: `${name}: "${field}" is not allowed — ${why}` }
 
   if (typeof body.model !== 'string' || body.model === '') return { error: `${name}: "model" is required` }
+  const harness = harnessError(name, body)
+  if (harness !== undefined) return { error: harness }
   if (!isStringArray(body.allowedTools))
     return { error: `${name}: "allowedTools" must be an array of strings` }
   if (body.disallowedTools !== undefined && !isStringArray(body.disallowedTools))
@@ -373,6 +407,7 @@ export function parseProfile(
   return {
     name,
     description: typeof body.description === 'string' ? body.description : '',
+    ...(isHarness(body.harness) ? { harness: body.harness } : {}),
     model: body.model,
     allowedTools: body.allowedTools,
     ...(denies.denied === undefined ? {} : { disallowedTools: denies.denied }),

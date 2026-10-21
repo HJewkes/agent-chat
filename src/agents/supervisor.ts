@@ -53,7 +53,7 @@ import {
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
-import { loadProfileSource, recordedRole, roleOf } from './profiles.js'
+import { HARNESS_UNSUPPORTED, harnessRefusal, loadProfileSource, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -729,6 +729,7 @@ export type SpawnRefusalCode =
   | SeatHandReserveRefusalCode
   | SeatUnprefixedRefusalCode
   | typeof REVIEWER_ACCOUNT_LIMIT
+  | typeof HARNESS_UNSUPPORTED
 
 /** CC-1078: reads the five_hour window and ceiling of the account a reviewer spawn bills. Absent in tests, which own no account. */
 export interface ReviewerAccountReaders {
@@ -1659,6 +1660,7 @@ export class Supervisor implements TeleportHost {
         }
       | { code: 'broker_draining'; retryable: true; retryAfterMs: number }
       | { code: 'surface_refused' }
+      | { code: typeof HARNESS_UNSUPPORTED; retryable: false }
       | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
@@ -2075,6 +2077,14 @@ export class Supervisor implements TeleportHost {
     return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
   }
 
+  /** CC-1516: a resume, surface switch or teleport launches too, so a harness with no launch plan refuses there as well. */
+  private loadLaunchableProfile(name: string, by: string | undefined): AgentProfile | { error: string } {
+    const profile = this.loadCheckedProfile(name, by, false)
+    if ('error' in profile) return profile
+    const harness = harnessRefusal(profile)
+    return harness === undefined ? profile : { error: harness }
+  }
+
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
   private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
@@ -2275,6 +2285,8 @@ export class Supervisor implements TeleportHost {
 
     const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
     if ('error' in profile) return this.refuse(req, profile.error)
+    const harness = harnessRefusal(profile)
+    if (harness) return this.refuse(req, harness, { code: HARNESS_UNSUPPORTED, retryable: false })
     const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
@@ -4094,7 +4106,7 @@ export class Supervisor implements TeleportHost {
   private resumeProfile(identity: AgentIdentity, by: string | undefined): AgentProfile | { error: string } {
     if (identity.origin === 'adopted')
       return inheritedProfile(this.core.agents.spawnMeta(identity.agentId).model)
-    return this.loadCheckedProfile(identity.profile, by, false)
+    return this.loadLaunchableProfile(identity.profile, by)
   }
 
   /** CC-883: the watchdog asks for Remote Control without knowing the role, so a worker's resume drops it rather than fails. */
@@ -4290,7 +4302,7 @@ export class Supervisor implements TeleportHost {
     const agent = identity as AgentIdentity
     const refused = req.to === 'interactive' ? this.checkSurfacer(agent, req) : undefined
     if (refused) return { ok: false, reason: refused }
-    const profile = this.loadCheckedProfile(agent.profile, req.requestedBy, false)
+    const profile = this.loadLaunchableProfile(agent.profile, req.requestedBy)
     if ('error' in profile)
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
     if (agent.sessionId === '')
@@ -4499,7 +4511,7 @@ export class Supervisor implements TeleportHost {
 
   /** CC-1203: a teleport is an agent launch, so a drifted profile is flagged or refused and never re-baselined. */
   loadProfile(name: string, by: string): AgentProfile | { error: string } {
-    return this.loadCheckedProfile(name, by, false)
+    return this.loadLaunchableProfile(name, by)
   }
 
   /**
