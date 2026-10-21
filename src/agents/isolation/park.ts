@@ -1,8 +1,5 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { promisify } from 'node:util'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import { gitChildEnv } from '../../git.js'
@@ -10,7 +7,8 @@ import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import type { MergedPrReader } from './merged-pr.js'
 import { occupantOf } from './sweep.js'
-import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
+import { unsavedWork } from './unsaved-work.js'
+import { fetchDefaultTip, type WorktreeRecord } from '@titan-design/worktree'
 
 /**
  * CC-282: park a finished agent's worktree. The tree is removed and the branch
@@ -20,10 +18,6 @@ import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
  */
 
 const execFileAsync = promisify(execFile)
-
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
-  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncType
-}
 
 /** A process whose working directory is inside a tree. */
 export interface CwdProcess {
@@ -249,110 +243,6 @@ async function headBranch(target: ParkTarget, read: MergedPrReader | undefined):
   }
 }
 
-/** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
-const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo', '.api-extractor-temp']
-
-/** Tool caches that sit at any depth as single files. */
-const REGENERABLE_FILES = ['.eslintcache']
-
-/** `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything. */
-const isRegenerable = (entry: string): boolean => {
-  const segments = entry.split('/').filter(Boolean)
-  if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
-  if (!entry.endsWith('/') && REGENERABLE_FILES.includes(segments.at(-1) ?? '')) return true
-  return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
-}
-
-/** Codewatch writes its graph index at the git toplevel only, so a nested copy is not matched. */
-const CODEWATCH_INDEX = '.codewatch/graph.db'
-const CODEWATCH_INDEX_FILES = ['', '-wal', '-shm', '-journal'].map(suffix => CODEWATCH_INDEX + suffix)
-
-/** Tables re-indexing rebuilds: the code-graph index and store-sqlite's migration ledger. */
-const REBUILT_GRAPH_TABLES = [
-  '_migration',
-  'snapshot',
-  'node',
-  'edge',
-  'metric',
-  'id_alias',
-  'file_fingerprint',
-  'finding',
-]
-
-const tableNames = (db: DatabaseSyncType): string[] =>
-  (
-    db
-      .prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
-      )
-      .all() as { name: string }[]
-  ).map(row => row.name)
-
-const hasRows = (db: DatabaseSyncType, table: string): boolean =>
-  db.prepare(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`).get() !== undefined
-
-/**
- * CC-1163: re-indexing rebuilds the code-graph tables, but not paid output such as triage `verdict` rows or
- * LLM summaries in `blob_cache`. So only a code-graph db (it has a `snapshot` table) whose every other table is
- * empty counts; an unknown table with rows is kept. Any failure to read refuses.
- */
-function indexOnlyGraphDb(worktree: string): boolean {
-  let db: DatabaseSyncType | undefined
-  try {
-    db = new DatabaseSync(join(worktree, CODEWATCH_INDEX), { readOnly: true })
-    const open = db
-    const tables = tableNames(open)
-    if (!tables.includes('snapshot')) return false
-    return tables.every(table => REBUILT_GRAPH_TABLES.includes(table) || !hasRows(open, table))
-  } catch {
-    return false
-  } finally {
-    db?.close()
-  }
-}
-
-function withoutIndexOnlyGraphDb(worktree: string, entries: string[]): string[] {
-  if (!entries.some(entry => CODEWATCH_INDEX_FILES.includes(entry))) return entries
-  if (!indexOnlyGraphDb(worktree)) return entries
-  return entries.filter(entry => !CODEWATCH_INDEX_FILES.includes(entry))
-}
-
-/** `--directory` collapses a wholly ignored directory into one entry; list its files so a nested build output is judged alone. */
-async function expandDirectory(worktree: string, entry: string): Promise<string[]> {
-  if (!entry.endsWith('/')) return [entry]
-  const files = await gitOrNull(
-    ['ls-files', '--others', '--ignored', '--exclude-standard', '--', entry],
-    worktree,
-  )
-  return files === null ? [entry] : files.split('\n').filter(Boolean)
-}
-
-/** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file the removal would take. */
-async function unsaved(worktree: string): Promise<string | undefined> {
-  const status = await gitOrNull(['status', '--porcelain', '-uall'], worktree)
-  if (status === null) return `could not read git status in ${worktree}`
-  if (status !== '') return `uncommitted or untracked changes in ${worktree}`
-  const ignored = await gitOrNull(
-    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'],
-    worktree,
-  )
-  if (ignored === null) return `could not list ignored files in ${worktree}`
-  const entries = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
-  // `--directory` also lists every ignored ancestor of a nested ignored dir, so expansions overlap.
-  const kept = [
-    ...new Set((await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()),
-  ]
-  const unregenerable = withoutIndexOnlyGraphDb(
-    worktree,
-    kept.filter(entry => !isRegenerable(entry)),
-  )
-  if (unregenerable.length === 0) return undefined
-  return (
-    `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`
-  )
-}
-
 /** The local branch to keep, and the origin branch holding HEAD when that is another name, or why nothing parks. */
 async function keepable(
   target: ParkTarget,
@@ -363,8 +253,8 @@ async function keepable(
   if (occupied) return { reason: occupied }
   const head = await headBranch(target, read)
   if ('refusal' in head) return { reason: head.refusal }
-  const dirty = await unsaved(target.worktree)
-  if (dirty) return { reason: dirty }
+  const dirty = await unsavedWork(target.worktree, 'park')
+  if (dirty) return { reason: dirty.detail }
   if (head.containedIn !== undefined || head.mergedPr !== undefined) return head
   const pushed = await unpushed(target, head.branch, read)
   if ('refusal' in pushed) return { reason: pushed.refusal }
