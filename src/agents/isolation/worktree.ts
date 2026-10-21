@@ -2,29 +2,33 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   createWorktreeAllocator,
+  describeRefusal,
+  inspectForRelease as inspectWithPackage,
   runGit as gitOrNull,
   MissingAssignedWorktreeRecordError,
   pruneStaleWorktrees,
   reattachWorktree as platformReattach,
   recreateWorktree as platformRecreate,
+  type ReleaseCheck,
+  type ReleaseProof,
   type WorktreeAllocation,
   type WorktreeOptions as PlatformOptions,
   type WorktreeRecord,
+  type WorktreeReleaseSafety,
 } from '@titan-design/worktree'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
+import { unsavedWork } from './unsaved-work.js'
 import { setupWorktree, type SetupRunner } from './worktree-setup.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
-export { findGitRoot, pruneStaleWorktrees }
+export { describeRefusal, findGitRoot, pruneStaleWorktrees }
 export {
   DEFAULT_FETCH_TIMEOUT_MS,
-  describeRefusal,
   fetchDefaultTip,
-  inspectForRelease,
   OriginUnreachableError,
   resolveBranchBase,
   resolveRequestedBase,
@@ -300,6 +304,63 @@ async function productAllocationError(
   return new WorktreeBudgetExhaustedError(err.allocated, err.budget, err.pool, holdings)
 }
 
+const UNCOMMITTED = 'uncommitted changes in the worktree'
+
+/**
+ * Is it safe to destroy this worktree and its branch? Commits are judged by the package; the
+ * tree's files by agent-chat's own ignored-file policy, the one park uses, since the package's
+ * list misses this repo's build outputs (`*.tsbuildinfo`) and would hold every built tree.
+ */
+export async function inspectForRelease(
+  gitRoot: string,
+  worktreePath: string,
+  branch: string,
+  baseRef: string,
+  releaseProof: ReleaseProof = 'git',
+): Promise<WorktreeReleaseSafety> {
+  const safety = await inspectWithPackage(gitRoot, worktreePath, branch, baseRef, releaseProof)
+  const unsaved = existsSync(worktreePath) ? await unsavedWork(worktreePath, 'release') : undefined
+  const detail =
+    unsaved === undefined ? 'worktree clean' : unsaved.kind === 'changes' ? UNCOMMITTED : unsaved.detail
+  const dirty: ReleaseCheck = { name: 'dirty', ok: unsaved === undefined, detail }
+  const rest = safety.checked.filter(check => check.name !== 'dirty')
+  return { ...safety, dirty: unsaved !== undefined, checked: [dirty, ...rest] }
+}
+
+type TreeRef = { branch: string; worktree: string; gitRoot: string; base?: string }
+
+/** Without --force, so git itself still refuses a tree that gained untracked or modified files. */
+async function removeTree({ gitRoot, worktree, branch }: TreeRef): Promise<string | undefined> {
+  const removed = await gitOrNull(['worktree', 'remove', worktree], gitRoot)
+  if (removed === null && existsSync(worktree)) return `git would not remove ${worktree}`
+  await pruneStaleWorktrees(gitRoot)
+  await gitOrNull(['branch', '-D', branch], gitRoot)
+  return undefined
+}
+
+/** The unforced release, judged by product policy rather than the allocator's own inspection. */
+async function releaseInspected(stoppedAt: number | undefined, ref: TreeRef): Promise<string | undefined> {
+  if (stoppedAt !== undefined && Date.now() - stoppedAt < RECLAIM_GRACE_MS)
+    return `agent stopped less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
+  const base = ref.base ?? 'HEAD'
+  const safety = await inspectForRelease(ref.gitRoot, ref.worktree, ref.branch, base, 'git-or-merged-pr-tip')
+  if (safety.dirty || safety.unmerged) return describeRefusal(safety)
+  return removeTree(ref)
+}
+
+/** A tree this strategy cut and may remove; forced, parked, assigned and ref-less releases stay with the package. */
+function ownedTree(allocation: Allocation, opts: ReleaseOptions): TreeRef | undefined {
+  const ref = allocation.ref
+  if (opts.force === true || opts.keepBranch === true || ref?.assigned === 'true') return undefined
+  if (!ref?.branch || !ref.worktree || !ref.gitRoot) return undefined
+  return {
+    branch: ref.branch,
+    worktree: ref.worktree,
+    gitRoot: ref.gitRoot,
+    ...(ref.base ? { base: ref.base } : {}),
+  }
+}
+
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
   const allocator = createWorktreeAllocator(platformOptions(opts))
@@ -344,16 +405,18 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       opts: ReleaseOptions = {},
     ): Promise<boolean> {
       clearRefusal(allocation)
+      const owned = ownedTree(allocation, opts)
+      if (owned !== undefined) {
+        const refusal = await releaseInspected(ctx.stoppedAt, owned)
+        if (refusal !== undefined) recordRefusal(allocation, refusal)
+        return refusal === undefined
+      }
       const result = await allocator.release(
         ctx.stoppedAt === undefined ? {} : { exitedAt: ctx.stoppedAt },
         allocation,
         opts,
       )
-      if (!result.released)
-        recordRefusal(
-          allocation,
-          result.refusalCode === 'unsaved-changes' ? 'uncommitted changes in the worktree' : result.refusal,
-        )
+      if (!result.released) recordRefusal(allocation, result.refusal)
       return result.released
     },
   }

@@ -5,7 +5,9 @@ import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { Allocation } from '../agents/isolation/index.js'
 import { refusalOf } from '../agents/isolation/refusals.js'
-import { createWorktreeStrategy, inspectForRelease } from '../agents/isolation/worktree.js'
+import { sweepWorktrees } from '../agents/isolation/sweep.js'
+import { createWorktreeStrategy, inspectForRelease, RECLAIM_GRACE_MS } from '../agents/isolation/worktree.js'
+import { writeRuntimeState } from '../agents/launch-files.js'
 import { HOST_PATH } from './helpers/git-shim-fixture.js'
 
 /**
@@ -148,4 +150,43 @@ it('releases a clean tree when git answers every call', async () => {
   expect(await release(f)).toBe(true)
   expect(fs.existsSync(f.tree)).toBe(false)
   expect(git(f.repo, ['branch', '--list', branch])).toBe('')
+})
+
+/** `npm run verify` leaves these in every built tree; `tsc --incremental` rewrites them. */
+function buildInfo(f: Fixture): void {
+  fs.appendFileSync(path.join(f.repo, '.git', 'info', 'exclude'), '\n*.tsbuildinfo\n')
+  fs.writeFileSync(path.join(f.tree, 'tsconfig.tsbuildinfo'), '{}\n')
+  fs.writeFileSync(path.join(f.tree, 'tsconfig.test.tsbuildinfo'), '{}\n')
+}
+
+it('releases a built tree whose only ignored files are tsbuildinfo', async () => {
+  const f = fixture()
+  buildInfo(f)
+
+  const safety = await inspectForRelease(f.repo, f.tree, branch, f.base)
+  const released = await release(f)
+
+  expect(safety.dirty).toBe(false)
+  expect(released).toBe(true)
+  expect(fs.existsSync(f.tree)).toBe(false)
+})
+
+it('reports a built tree whose only ignored files are tsbuildinfo as reclaimable', async () => {
+  const f = fixture()
+  buildInfo(f)
+  vi.stubEnv('AGENT_CHAT_HOME', path.join(path.dirname(f.repo), 'home'))
+  writeRuntimeState('synthetic-release', {
+    handle: { surface: 'headless' },
+    isolation: 'worktree',
+    allocation: f.allocation,
+  })
+
+  const report = await sweepWorktrees([], {
+    roots: [f.repo],
+    list: async cwd => git(cwd, ['worktree', 'list', '--porcelain']),
+    now: () => RECLAIM_GRACE_MS + 1,
+  })
+
+  expect(report).toHaveLength(1)
+  expect(report[0]).toMatchObject({ worktree: f.tree, branch, status: 'reclaimable' })
 })
