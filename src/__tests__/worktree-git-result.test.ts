@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWorktreeStrategy } from '../agents/isolation/worktree.js'
+import { HOST_PATH } from './helpers/git-shim-fixture.js'
 
 const roots: string[] = []
 const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'"
@@ -18,7 +19,11 @@ function fixture(output: string, failed = false) {
   const bin = path.join(root, 'bin')
   fs.mkdirSync(repo)
   fs.mkdirSync(bin)
-  execFileSync('/usr/bin/git', ['init', '-q', '-b', 'main'], { cwd: repo, stdio: 'pipe' })
+  execFileSync('git', ['init', '-q', '-b', 'main'], {
+    cwd: repo,
+    stdio: 'pipe',
+    env: { ...process.env, PATH: HOST_PATH },
+  })
   const branchOutput = path.join(root, 'branch-output')
   const cwdLog = path.join(root, 'worktree-cwds')
   fs.writeFileSync(branchOutput, output)
@@ -26,6 +31,8 @@ function fixture(output: string, failed = false) {
     path.join(bin, 'git'),
     [
       '#!/bin/sh',
+      `PATH=$(printf '%s' "$PATH" | tr ':' '\\n' | grep -vxF ${quote(bin)} | paste -sd: -)`,
+      'export PATH',
       'if [ "$1" = rev-parse ] && [ "$3" = --git-common-dir ]; then',
       `  printf '  %s\\n' ${quote(path.join(repo, '.git'))}; exit 0`,
       'fi',
@@ -33,12 +40,12 @@ function fixture(output: string, failed = false) {
       failed ? '  exit 1' : `  cat ${quote(branchOutput)}; exit 0`,
       'fi',
       `if [ "$1" = worktree ]; then printf '%s\\n' "$PWD" >> ${quote(cwdLog)}; fi`,
-      'exec /usr/bin/git "$@"',
+      'exec git "$@"',
       '',
     ].join('\n'),
     { mode: 0o755 },
   )
-  vi.stubEnv('PATH', bin + path.delimiter + (process.env.PATH ?? ''))
+  vi.stubEnv('PATH', bin + path.delimiter + HOST_PATH)
   return { repo, cwdLog }
 }
 describe('worktree check Git result semantics', () => {
