@@ -6,8 +6,10 @@ import type { Claim } from '../agents/burndown/ledger.js'
 import type { BootDeps } from '../agents/seats/boot.js'
 import {
   claimsPort,
+  deriveInFlight,
   eventsVerdictsPort,
   parseShepherdFlights,
+  rowOfSeat,
   shepherdPort,
 } from '../agents/seats/in-flight-read.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -256,5 +258,38 @@ describe('the Shepherd port', () => {
 
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ pendingGate: 'approval', held: true })
+  })
+
+  it('shows the gate step of a run waiting on approve-merge, and when it opened', async () => {
+    const gate = { gateId: 'r1/approve-merge:2', stepId: 'approve-merge', since: '2026-10-10T09:00:00Z' }
+    const rows = [{ ...shepherdRows[0], phase: 'awaiting-approval', pendingGate: gate }]
+
+    const [flight] = parseShepherdFlights(JSON.stringify(rows))
+    const lines = await boot({ shepherd: async () => parseShepherdFlights(JSON.stringify(rows)) })
+
+    expect(flight).toMatchObject({ pendingGate: 'approve-merge', gateSince: '2026-10-10T09:00:00Z' })
+    expect(lines.join('\n')).toContain('| gate approve-merge')
+  })
+})
+
+describe('seat attribution of a Shepherd run', () => {
+  const crossSeat = parseShepherdFlights(
+    JSON.stringify([{ ...shepherdRows[0], pr: 77, branch: 'agent-chat/dc-x', implementer: 'tpo-td77-fix' }]),
+  )
+  const prsOf = (seat: string, prefix: string): string[] =>
+    deriveInFlight({ seat, prefix, roster: [], shepherd: crossSeat, verdicts: [], claims: [] }).prs.map(
+      p => p.pr,
+    )
+
+  it('files a fixer from another seat on a retired seat branch under the fixer seat', () => {
+    expect(prsOf('ops-seat', 'tpo')).toEqual(['acme/widgets#77'])
+    expect(prsOf('design-seat', 'dc')).toEqual([])
+  })
+
+  it('falls back to the branch when Shepherd names no implementer', () => {
+    const row = { branch: 'agent-chat/dc-x', implementer: null }
+
+    expect(rowOfSeat(row, 'dc')).toBe(true)
+    expect(rowOfSeat(row, 'tpo')).toBe(false)
   })
 })

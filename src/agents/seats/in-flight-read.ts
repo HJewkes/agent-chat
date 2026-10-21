@@ -29,6 +29,10 @@ export interface ShepherdFlight {
   headSha: string | null
   nextAction: string | null
   pendingGate: string | null
+  /** When the pending gate opened; null without one or on a Shepherd that does not date it. */
+  gateSince: string | null
+  /** The agent that pushes the run's fixes; null on an older Shepherd. */
+  implementer: string | null
   held: boolean
   stalled: boolean
 }
@@ -87,14 +91,21 @@ export interface InFlight {
   unavailable: Array<{ source: InFlightSource; reason: string }>
 }
 
+/** CC-1551: Shepherd's pendingGate is `{gateId, stepId, since}`, so its step names the gate; the rest are older shapes. */
+const TEXT_KEYS = ['stepId', 'gateId', 'reason', 'kind', 'name', 'action', 'gate']
+
 const text = (v: unknown): string | null => {
   if (typeof v === 'string') return v === '' || v === 'none' ? null : v
   if (v !== null && typeof v === 'object') {
     const o = v as Record<string, unknown>
-    for (const key of ['reason', 'kind', 'name', 'action', 'gate'])
-      if (typeof o[key] === 'string') return o[key]
+    for (const key of TEXT_KEYS) if (typeof o[key] === 'string') return o[key]
   }
   return null
+}
+
+const since = (v: unknown): string | null => {
+  const s = v !== null && typeof v === 'object' ? (v as Record<string, unknown>).since : undefined
+  return typeof s === 'string' ? s : null
 }
 
 /**
@@ -116,6 +127,8 @@ export function parseShepherdFlights(stdout: string): ShepherdFlight[] {
       headSha: r.headSha,
       nextAction: text(r.nextAction),
       pendingGate: text(r.pendingGate),
+      gateSince: since(r.pendingGate),
+      implementer: r.implementer ?? null,
       held: r.held !== null && r.held !== undefined,
       stalled: r.stalled !== null,
     }))
@@ -164,6 +177,15 @@ export function eventsVerdictsPort(dbPath: string): () => Promise<VerdictRecord[
 export const branchOfSeat = (branch: string | null, prefix: string): boolean =>
   branch !== null && branch.split('/').some(seg => seg.startsWith(`${prefix}-`))
 
+/**
+ * CC-1551: a run belongs to the seat that pushes its fixes, so the implementer decides when Shepherd
+ * names one; a fixer from another seat may push to a retired seat's branch. The branch decides otherwise.
+ */
+export const rowOfSeat = (row: Pick<ShepherdFlight, 'branch' | 'implementer'>, prefix: string): boolean =>
+  row.implementer !== null && row.implementer !== ''
+    ? row.implementer.startsWith(`${prefix}-`)
+    : branchOfSeat(row.branch, prefix)
+
 /** What Shepherd's phase says of CI; phases after `ci` are reached only past it. */
 function ciOf(phase: string | null): string {
   switch (phase) {
@@ -211,7 +233,7 @@ export function deriveInFlight(input: InFlightInput): Omit<InFlight, 'unavailabl
   const agents = (input.roster ?? []).filter(a => seatAgent(a, seat, prefix))
   const claimByAgent = new Map(claims.flatMap(c => (c.agentName === undefined ? [] : [[c.agentName, c]])))
   const rows = (input.shepherd ?? []).filter(
-    r => r.pr !== null && (prefix === undefined ? false : branchOfSeat(r.branch, prefix)),
+    r => r.pr !== null && (prefix === undefined ? false : rowOfSeat(r, prefix)),
   )
   const verdictFor = (pr: string, head: string | null): Pick<FlightPr, 'verdict' | 'verdictHead'> => {
     const mine = (input.verdicts ?? []).filter(v => prKey(v.pr) === prKey(pr))
@@ -277,9 +299,12 @@ export function deriveInFlight(input: InFlightInput): Omit<InFlight, 'unavailabl
   }
 }
 
-type Settled<T> = { ok: true; value: T } | { ok: false; reason: string }
+export type Settled<T> = { ok: true; value: T } | { ok: false; reason: string }
 
-async function settle<T>(read: () => Promise<T>, plain: (err: unknown) => string): Promise<Settled<T>> {
+export async function settle<T>(
+  read: () => Promise<T>,
+  plain: (err: unknown) => string,
+): Promise<Settled<T>> {
   try {
     return { ok: true, value: await read() }
   } catch (err) {
