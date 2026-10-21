@@ -48,6 +48,8 @@ const flight: ShepherdFlight = {
   headSha: 'abcdef0123456789',
   nextAction: null,
   pendingGate: null,
+  gateSince: null,
+  implementer: null,
   held: false,
   stalled: false,
 }
