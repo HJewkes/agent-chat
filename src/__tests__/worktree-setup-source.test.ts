@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWorktreeStrategy } from '../agents/isolation/worktree.js'
-import { SETUP_FILE, type SetupRunner } from '../agents/isolation/worktree-setup.js'
+import { SETUP_FILE, type SetupRunner } from '@titan-design/worktree'
 
 const dirs: string[] = []
 afterEach(() => {

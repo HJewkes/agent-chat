@@ -1018,6 +1018,41 @@ describe('parking a tree pushed under another branch name (CC-1039)', () => {
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
+  it('refuses when the PR branch was force-pushed away from HEAD, even with a stale tracking ref', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], agent.cwd)
+    git(['update-ref', 'refs/heads/agent-chat/pr-x', git(['rev-parse', 'main'], repo)], originOf(repo))
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses when the only origin branch holding HEAD has a tip whose object is not local', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const head = commitIn(agent.cwd, 'feature.ts')
+    const writer = tmp('park-writer-')
+    git(['clone', '-q', originOf(repo), writer], writer)
+    git(['config', 'user.email', 'test@example.com'], writer)
+    git(['config', 'user.name', 'Test'], writer)
+    git(['config', 'commit.gpgsign', 'false'], writer)
+    git(['fetch', '-q', repo, 'agent-chat/worker-a'], writer)
+    git(['checkout', '-q', '-b', 'descendant', head], writer)
+    commitIn(writer, 'server-only.ts')
+    git(['push', '-q', 'origin', 'HEAD:agent-chat/pr-x'], writer)
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
   it('keeps the local branch HEAD is on and resumes the tree on it', async () => {
     const repo = repoWithOrigin()
     const agent = await spawnIn('worker-a', repo)

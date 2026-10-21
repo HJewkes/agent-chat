@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
-import { runGit as gitOrNull } from '@titan-design/worktree'
+import { runGit as gitOrNull, type ParkIgnoredFilesPolicy } from '@titan-design/worktree'
 
 /**
  * What removing a tree would lose, under agent-chat's policy for ignored files. Park, release and
@@ -125,15 +125,28 @@ export async function unsavedWork(worktree: string, action: string): Promise<Uns
   if (ignored === null) return { kind: 'other', detail: `could not list ignored files in ${worktree}` }
   const unregenerable = await unregenerableIgnored(worktree, ignored)
   if (unregenerable.length === 0) return undefined
+  return { kind: 'other', detail: ignoredRefusal(worktree, unregenerable, action) }
+}
+
+function ignoredRefusal(worktree: string, kept: readonly string[], action: string): string {
   const regenerable = [
     ...REGENERABLE_DIRS,
     ...REGENERABLE_FILES,
     ...REGENERABLE_FILE_SUFFIXES.map(s => `*${s}`),
   ]
-  return {
-    kind: 'other',
-    detail:
-      `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-      `${action} removes only ignored ${regenerable.join(', ')}, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`,
-  }
+  return (
+    `ignored files in ${worktree} would be deleted (${kept.slice(0, 3).join(', ')}); ` +
+    `${action} removes only ignored ${regenerable.join(', ')}, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`
+  )
+}
+
+/** The same policy for the package's park, which observes status and ignored files itself and asks only what to keep. */
+export const parkIgnoredFiles: ParkIgnoredFilesPolicy = {
+  expandDirectories: true,
+  protectedEntries: ({ worktree, entries }) =>
+    withoutIndexOnlyGraphDb(
+      worktree,
+      entries.filter(entry => !isRegenerable(entry)),
+    ),
+  formatRefusal: ({ worktree, entries }) => ignoredRefusal(worktree, entries, 'park'),
 }

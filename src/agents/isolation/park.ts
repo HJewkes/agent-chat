@@ -2,13 +2,16 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { promisify } from 'node:util'
 import type { AgentEventRow } from '../../broker/event-store.js'
-import { gitChildEnv } from '../../git.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import type { MergedPrReader } from './merged-pr.js'
 import { occupantOf } from './sweep.js'
-import { unsavedWork } from './unsaved-work.js'
-import { fetchDefaultTip, type WorktreeRecord } from '@titan-design/worktree'
+import { parkIgnoredFiles } from './unsaved-work.js'
+import {
+  parkWorktree as parkTree,
+  type ParkLocalBackingReader,
+  type WorktreeRecord,
+} from '@titan-design/worktree'
 
 /**
  * CC-282: park a finished agent's worktree. The tree is removed and the branch
@@ -128,144 +131,30 @@ export function parkBlocker(
   return undefined
 }
 
-async function git(args: readonly string[], cwd: string, timeout = 0): Promise<string> {
-  const { stdout } = await execFileAsync('git', [...args], {
-    cwd,
-    encoding: 'utf8',
-    env: gitChildEnv(),
-    timeout,
-  })
-  return stdout.trim()
-}
-
-async function gitOrNull(args: readonly string[], cwd: string, timeout = 0): Promise<string | null> {
-  return git(args, cwd, timeout).catch(() => null)
-}
-
 const DEFAULT_FETCH_MS = 30_000
 
-/** A never-pushed branch whose HEAD is already in origin's default branch (a reviewer tree) holds nothing to lose. */
-async function headOnDefaultBranch(worktree: string): Promise<boolean> {
-  const tip = await fetchDefaultTip(worktree, DEFAULT_FETCH_MS)
-  if (typeof tip === 'string') return false
-  return (await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', tip.sha], worktree)) !== null
-}
+const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i
 
 /**
- * CC-1039: the first branch origin lists right now whose tip contains HEAD, so commits pushed under another
- * name (a PR head) count as pushed. It asks origin rather than reading tracking refs, so a branch deleted or
- * force-pushed on origin does not count; a tip whose object is not local fails closed.
+ * CC-1064: GitHub's merged PRs on the branch HEAD is on, offered as local backing for a squash merge
+ * whose head branch origin deleted. The package proves HEAD is in a candidate's local head commit and
+ * reports its ref, which is the PR number; a malformed sha is dropped so the rest still count.
  */
-async function containingRemoteHead(worktree: string): Promise<string | undefined> {
-  const listed = await gitOrNull(['ls-remote', '--heads', 'origin'], worktree, DEFAULT_FETCH_MS)
-  for (const line of (listed ?? '').split('\n')) {
-    const [sha, ref] = line.split('\t')
-    if (!sha || !ref?.startsWith('refs/heads/')) continue
-    if ((await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', sha], worktree)) !== null)
-      return ref.slice('refs/heads/'.length)
-  }
-  return undefined
-}
-
-/**
- * CC-1064: the merged PR on `branch` whose head commit contains HEAD, for a squash merge whose head branch
- * origin deleted. A reader rejection, an ancestry miss or a PR head object not local all fail closed.
- */
-async function mergedPrHolding(
-  target: ParkTarget,
-  branch: string,
-  read: MergedPrReader | undefined,
-): Promise<number | undefined> {
-  if (read === undefined) return undefined
-  const prs = await read(target.gitRoot, branch).catch(() => [])
-  for (const pr of prs) {
-    if ((await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', pr.headSha], target.worktree)) !== null)
-      return pr.number
-  }
-  return undefined
-}
-
-/** Why `origin/<branch>` does not hold HEAD, or undefined when it does. */
-async function behindTracked(worktree: string, branch: string): Promise<string | undefined> {
-  if ((await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${branch}`], worktree)) === null)
-    return (await headOnDefaultBranch(worktree)) ? undefined : `${branch} is not on origin; push it first`
-  const ahead = await gitOrNull(['rev-list', `origin/${branch}..HEAD`], worktree)
-  if (ahead === null) return `could not compare ${worktree} with origin/${branch}`
-  const count = ahead.split('\n').filter(Boolean).length
-  return count === 0 ? undefined : `${count} commit(s) in ${worktree} are not on origin/${branch}; push first`
-}
-
-type Pushed = { refusal: string } | { containedIn?: string; mergedPr?: number }
-
-/**
- * With an origin, HEAD must be on it, under its own name or any other, or in a merged PR's head; without
- * one, the kept local branch is the copy.
- */
-async function unpushed(
-  target: ParkTarget,
-  branch: string,
-  read: MergedPrReader | undefined,
-): Promise<Pushed> {
-  const { worktree } = target
-  if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return {}
-  const refusal = await behindTracked(worktree, branch)
-  if (refusal === undefined) return {}
-  const containedIn = await containingRemoteHead(worktree)
-  if (containedIn !== undefined) return { containedIn }
-  const mergedPr = await mergedPrHolding(target, branch, read)
-  return mergedPr === undefined ? { refusal } : { mergedPr }
-}
+const mergedPrBacking =
+  (read: MergedPrReader, gitRoot: string): ParkLocalBackingReader =>
+  async ({ branch }) =>
+    (await read(gitRoot, branch).catch(() => []))
+      .filter(pr => OBJECT_ID.test(pr.headSha))
+      .map(pr => ({ oid: pr.headSha, ref: String(pr.number) }))
 
 type Kept = { branch: string; containedIn?: string; mergedPr?: number }
 
-type HeadBranch = Kept | { refusal: string }
-
-/**
- * The branch the tree's commits live on, or the reason it has none to keep. A commit on a detached HEAD
- * would be unreachable once the tree is gone. A successor or adopted tree sits on the PR branch rather than
- * the allocated one; that local branch is kept too, so it parks when origin has it or has HEAD under another
- * name, and `unpushed` then holds it to nothing ahead.
- */
-async function headBranch(target: ParkTarget, read: MergedPrReader | undefined): Promise<HeadBranch> {
-  const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], target.worktree)
-  if (head === target.branch) return { branch: head }
-  const onOrigin =
-    head !== null &&
-    (await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${head}`], target.worktree)) !== null
-  if (head !== null && onOrigin) return { branch: head }
-  const containedIn = head === null ? undefined : await containingRemoteHead(target.worktree)
-  if (head !== null && containedIn !== undefined) return { branch: head, containedIn }
-  const mergedPr = head === null ? undefined : await mergedPrHolding(target, head, read)
-  if (head !== null && mergedPr !== undefined) return { branch: head, mergedPr }
-  const where = head === null ? 'detached' : `on ${head}`
-  return {
-    refusal: `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`,
-  }
-}
-
-/** The local branch to keep, and the origin branch holding HEAD when that is another name, or why nothing parks. */
-async function keepable(
-  target: ParkTarget,
-  listCwds: CwdLister | undefined,
-  read: MergedPrReader | undefined,
-): Promise<Kept | { reason: string }> {
-  const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
-  if (occupied) return { reason: occupied }
-  const head = await headBranch(target, read)
-  if ('refusal' in head) return { reason: head.refusal }
-  const dirty = await unsavedWork(target.worktree, 'park')
-  if (dirty) return { reason: dirty.detail }
-  if (head.containedIn !== undefined || head.mergedPr !== undefined) return head
-  const pushed = await unpushed(target, head.branch, read)
-  if ('refusal' in pushed) return { reason: pushed.refusal }
-  return { branch: head.branch, ...pushed }
-}
-
 /**
  * Refuse a tree that would lose anything; otherwise remove it without --force and keep the branch.
- * `recheck` runs after the git checks and right before the removal, so a spawn or resume that
- * started meanwhile is caught. Returns the parked head, `containedIn` when origin holds it only
- * under another branch name, and `mergedPr` when only a merged PR's head holds it.
+ * HEAD may sit on the allocated branch or another local one (a successor or adopted tree on the PR
+ * branch); origin must hold it under that name or any other, or a merged PR's head must, or with no
+ * origin the kept local branch is the copy. `recheck` runs right before the removal, so a spawn or
+ * resume that started meanwhile is caught.
  */
 export async function parkWorktree(
   target: ParkTarget,
@@ -275,16 +164,18 @@ export async function parkWorktree(
   /** Set by the broker: GitHub's merged PRs, for a squash-merged branch origin deleted. */
   mergedPr?: MergedPrReader,
 ): Promise<({ ok: true; head: string } & Kept) | { ok: false; reason: string }> {
-  const kept = await keepable(target, listCwds, mergedPr)
-  if ('reason' in kept) return { ok: false, reason: kept.reason }
-  const parkedHead = await git(['rev-parse', 'HEAD'], target.worktree)
-  const late = recheck()
-  if (late) return { ok: false, reason: late }
-  try {
-    await git(['worktree', 'remove', target.worktree], target.gitRoot)
-  } catch (err) {
-    const detail = String((err as { stderr?: unknown }).stderr || (err as Error).message).trim()
-    return { ok: false, reason: `git would not remove ${target.worktree}: ${detail.split('\n')[0]}` }
+  const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
+  if (occupied) return { ok: false, reason: occupied }
+  const options = {
+    allowOriginHeadAncestor: true as const,
+    allowDefaultBranchAncestor: true,
+    fetchTimeoutMs: DEFAULT_FETCH_MS,
+    ignoredFiles: parkIgnoredFiles,
   }
-  return { ok: true, head: parkedHead, ...kept }
+  if (mergedPr === undefined) return parkTree(target, recheck, options)
+  const backing = mergedPrBacking(mergedPr, target.gitRoot)
+  const result = await parkTree(target, recheck, { ...options, localBackingCandidates: backing })
+  if (!result.ok) return result
+  const { backingRef, ...parked } = result
+  return backingRef === undefined ? parked : { ...parked, mergedPr: Number(backingRef) }
 }
