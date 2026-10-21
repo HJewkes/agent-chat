@@ -40,6 +40,9 @@ Agent commands:
                              limit
   counts [options]           every count derived from live state, beside what each surface shows,
                              with a verdict per difference
+  operator-brief [options]   one read-only status block per coordinator seat: live and finished
+                             agents, Shepherd PRs and gates, unread count, plus pools, the machine
+                             stop, burndown and the owner queue. Never runs gh
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -1457,6 +1460,19 @@ Options:
   --seat <value>  only this seat's counts, plus the machine-wide ones
   --root <value>  autonomy directory holding charter.md and seats/
   -h, --help      display help for command
+
+=== agent-chat operator-brief
+Usage: agent-chat operator-brief [options]
+
+one read-only status block per coordinator seat: live and finished agents, Shepherd PRs and gates,
+unread count, plus pools, the machine stop, burndown and the owner queue. Never runs gh
+
+Options:
+  --seat <value>       only this seat (repeatable); a seat the charter omits still gets a block
+  --json               print the whole brief as one JSON object, never cut
+  --root <value>       autonomy directory holding charter.md and seats/
+  --max-lines <value>  cut the text to this many lines (default 60)
+  -h, --help           display help for command
 
 === agent-chat gh-write
 Usage: agent-chat gh-write [options] <gh-args...>

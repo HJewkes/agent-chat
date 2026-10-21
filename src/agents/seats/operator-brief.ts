@@ -100,7 +100,8 @@ export interface BriefHeader {
   machineStop: string | null
   paceAgeSeconds: number | null
   burndown: BurndownState | null
-  ownerQueue: number | null
+  /** Open questions in the human queue; its notices and endorse requests are not counted. */
+  ownerQuestions: number | null
   ownerGates: BriefGate[] | null
 }
 
@@ -231,7 +232,7 @@ function header(input: OperatorBriefInput): BriefHeader {
     machineStop: input.machineStop ?? null,
     paceAgeSeconds: input.paceAgeSeconds ?? null,
     burndown: input.burndown ?? null,
-    ownerQueue: input.queue?.length ?? null,
+    ownerQuestions: input.queue === undefined ? null : input.queue.filter(i => i.kind === 'question').length,
     ownerGates: input.waiting === undefined ? null : input.waiting.owner.map(briefGate),
   }
 }
@@ -284,7 +285,7 @@ function ownerLine(h: BriefHeader): string {
       ? '0 gates'
       : `${list.length} gates (oldest ${oldest.ageHours}h ${oldest.pr} ${oldest.stepId})`
   })
-  return `owner: ${or(h.ownerQueue, n => `${n} queued`)} · ${gates}`
+  return `owner: ${or(h.ownerQuestions, n => `${n} questions`)} · ${gates}`
 }
 
 function headerLines(brief: OperatorBrief): Line[] {
