@@ -1,7 +1,6 @@
 /**
  * §11.3: "a spawn budget per requester per window, mirroring the broadcast
- * budget already in registry.ts:63-64 and the MAX_OPEN_QUESTIONS = 3 budget at
- * broker/index.ts:18." This is that budget.
+ * budget already in registry.ts:63-64." This is that budget.
  *
  * The semaphore bounds the STANDING population (agents/semaphore.ts); this
  * bounds CHURN — a requester spawning, having agents exit, and spawning again

@@ -17,7 +17,10 @@ export interface Victim {
 }
 
 const INIT_PID = 1
+const AGENT_PROGRAMS = new Set(['claude', 'codex', 'titan-factory'])
 const FACTORY_SCRIPT_RE = /(^|\/)titan-factory$|\/factory\/dist\/bin\.js$/
+const CODEX_SCRIPT_RE = /(^|\/)codex(\.js)?$/
+const AGENT_CHAT_SCRIPT_RE = /(^|\/)agent-chat$|\/dist\/cli\.js$/
 
 function basename(path: string): string {
   return path.split('/').pop() ?? ''
@@ -29,10 +32,18 @@ function basename(path: string): string {
  */
 export function isRoot(row: ProcRow, brokerPid: number): boolean {
   if (row.pid === brokerPid) return true
-  const [argv0 = '', script = ''] = row.command.split(/\s+/)
+  const [argv0 = '', ...args] = row.command.split(/\s+/)
   const program = basename(argv0)
-  if (program === 'claude' || program === 'titan-factory') return true
-  return program === 'node' && FACTORY_SCRIPT_RE.test(script)
+  if (AGENT_PROGRAMS.has(program)) return true
+  if (program === 'agent-chat') return isCodexRun(args)
+  if (program !== 'node') return false
+  const [script = '', ...scriptArgs] = args
+  if (FACTORY_SCRIPT_RE.test(script) || CODEX_SCRIPT_RE.test(script)) return true
+  return AGENT_CHAT_SCRIPT_RE.test(script) && isCodexRun(scriptArgs)
+}
+
+function isCodexRun(args: string[]): boolean {
+  return args[0] === 'codex' && args[1] === 'run'
 }
 
 /** The nearest root above `row`, or undefined. A visited set bounds the walk on a ppid cycle. */

@@ -328,7 +328,7 @@ interface Destination {
 }
 
 /** CC-1358: where a teleport request was turned away, so a refusal that never reaches the human still leaves a log line. */
-export type RefusalStage = 'preflight' | 'questions' | 'route' | 'config' | 'blocker' | 'identity' | 'account'
+export type RefusalStage = 'preflight' | 'route' | 'config' | 'blocker' | 'identity' | 'account'
 
 export function refused(
   subject: Pick<TeleportSubject, 'name'>,
@@ -618,13 +618,12 @@ export class Teleport {
     const blocked = this.preflight(req)
     if (blocked) return refused(req.subject, 'preflight', blocked)
     // CC-892: a moved session keeps its whole transcript, the question included, and its name.
-    const asks = req.account === undefined ? this.restatedQuestions(req) : { restated: [] }
-    if ('reason' in asks) return refused(req.subject, 'questions', asks.reason)
+    const restated = req.account === undefined ? this.openQuestionIds(req.subject.name) : []
     // CC-951: held from preflight until the entry is pending or refused, across the launcher
     // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
     this.starting.add(req.subject.agentId)
     try {
-      return await this.begin(req, asks.restated)
+      return await this.begin(req, restated)
     } finally {
       this.starting.delete(req.subject.agentId)
     }
@@ -875,24 +874,14 @@ export class Teleport {
     return undefined
   }
 
-  /** The open question ids the handoff names, or why teleport refuses on the ones it does not. */
-  private restatedQuestions(req: TeleportRequest): { reason: string } | { restated: string[] } {
-    // CC-1089: an open question no longer strands its answer. The successor keeps the
-    // name, an answer landing while it is dark is held for it (CC-301), and the broker
-    // appendix lists what is still open (CC-524). What stays is that the successor must
-    // know the question exists, so each open id has to appear in the handoff.
-    const open = this.core.events.openQuestions(req.subject.name)
-    const unnamed = open.filter(q => !req.handoff.includes(q.msgId))
-    if (unnamed.length > 0) {
-      const listed = unnamed.map(q => `${q.msgId} (${q.text.slice(0, 60)})`).join('; ')
-      return {
-        reason:
-          `you have ${unnamed.length} unanswered question(s) with the human that the handoff does not name: ` +
-          `${listed}. Name each id in the handoff so your successor knows to expect the answer, or ` +
-          'answer it — teleport does not get to abandon a question by leaving.',
-      }
-    }
-    return { restated: open.map(q => q.msgId) }
+  /**
+   * CC-1503: every open question moves with the name, so teleport never refuses on one.
+   * Answers are addressed to the asker's name, which the successor keeps; one landing
+   * while it is dark is held for it (CC-301), and the broker appendix lists each id and
+   * its text in the successor's first turn (CC-524), so the handoff need not restate them.
+   */
+  private openQuestionIds(name: string): string[] {
+    return this.core.events.openQuestions(name).map(q => q.msgId)
   }
 
   /**

@@ -273,7 +273,7 @@ const CHAT_ASK_CASES: CallCase[] = [
     tool: 'chat_ask',
     registeredAs: 'me',
     args: { text: 'what now?' },
-    reply: sent({ ok: false, reason: 'already have 3 unanswered questions' }),
+    reply: sent({ ok: false, reason: 'not registered' }),
   },
 ]
 
@@ -721,7 +721,7 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
     tool: 'agent_teleport',
     registeredAs: 'me',
     args: { handoff: 'h' },
-    reply: { t: 'teleport_result', ok: false, reason: 'answer your open questions first' },
+    reply: { t: 'teleport_result', ok: false, reason: 'already teleporting' },
   },
   { label: 'handoff blank', tool: 'agent_teleport', registeredAs: 'me', args: { handoff: '  ' } },
   { label: 'handoff missing', tool: 'agent_teleport', registeredAs: 'me', args: {} },

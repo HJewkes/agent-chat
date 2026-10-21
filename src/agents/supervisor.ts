@@ -120,6 +120,8 @@ import { activeWorkRoot, resolveSpawnBriefing, type BriefingResult } from './act
 import { withLinkedDirs } from './linked-dirs.js'
 import { crossingBriefPaths } from './brief-paths.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
+import { pickAccount, rotationText, type RotationConfig, type RotationRecord } from './account-rotation.js'
+import type { AccountUsage } from './account-budget.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import { withReturnContract } from './return-contract.js'
@@ -429,7 +431,7 @@ interface Lineage {
 
 interface Resolved {
   /** CC-100: the account, already validated. Never absent — there is always an answer. */
-  account: Extract<ConfigDirResolution, { dir: string }>
+  account: Account
   briefing?: { text: string; slug: string }
   fork?: { path: string; sessionId: string }
   /** CC-126: an existing conversation to continue, its transcript already checked. */
@@ -754,16 +756,37 @@ export interface PoolPickReaders {
   mode: () => PoolPickMode
 }
 
-type Account = Extract<ConfigDirResolution, { dir: string }>
+/** CC-1546: the readings a worker spawn's account rotation compared, kept or rotated. */
+type Account = Extract<ConfigDirResolution, { dir: string }> & { rotation?: RotationRecord }
+
+/** CC-1546: the `accountRotation` config and every account's reading, both read per spawn. */
+export interface AccountRotationReaders {
+  config: () => RotationConfig
+  readings: () => AccountUsage[]
+}
 /** The profile facts the seat budget gate reads: its name for the inferred role, and its model. */
 type SpawnProfile = { name: string; model: string }
 
 /** The default account runs with the variable unset (CC-200), as a spawner on it would leave its child. */
-const poolAccount = (dir: string): Account => ({
-  dir,
-  source: 'pool',
-  ...(path.resolve(dir) === defaultConfigDir() ? { unset: true as const } : {}),
-})
+const pickedAccount =
+  (source: 'pool' | 'rotation') =>
+  (dir: string): Account => ({
+    dir,
+    source,
+    ...(path.resolve(dir) === defaultConfigDir() ? { unset: true as const } : {}),
+  })
+const poolAccount = pickedAccount('pool')
+const rotationAccount = pickedAccount('rotation')
+
+/**
+ * CC-1546: only a fresh worker spawn rotates. A coordinator keeps its spawner's account, and a
+ * predecessor's successor or a fix round continues work, and a resumable transcript, under its account.
+ */
+const rotatesAccount = (req: SpawnRequest, profile: AgentProfile): boolean =>
+  roleOf(profile) === 'worker' &&
+  req.predecessor === undefined &&
+  req.override !== 'fix-round' &&
+  !(req.workRole ?? '').startsWith('fix-round')
 
 export interface SpawnOutcome {
   ok: boolean
@@ -787,6 +810,8 @@ export interface SpawnOutcome {
   launch?: RemoteLaunch
   /** CC-1059: the host the agent launches on, when that is not the broker's. */
   host?: string
+  /** CC-1546: the account a worker spawn's rotation chose, and the readings it compared. */
+  account?: string
 }
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
@@ -910,6 +935,8 @@ export interface SupervisorOptions {
   seatOverlap?: SeatOverlapReaders
   /** CC-606: the pool pick's readers. Absent in tests, which own no autonomy root. */
   poolPick?: PoolPickReaders
+  /** CC-1546: account rotation's readers. Absent, no spawn rotates. */
+  accountRotation?: AccountRotationReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
   processProbe?: ProcessProbe
   /** CC-398: the brief lint's repo visibility read. Absent in tests, which must not call GitHub. */
@@ -1125,6 +1152,7 @@ export class Supervisor implements TeleportHost {
   private readonly reviewerAccount: ReviewerAccountReaders | undefined
   private readonly seatOverlap: SeatOverlapReaders | undefined
   private readonly poolPick: PoolPickReaders | undefined
+  private readonly accountRotation: AccountRotationReaders | undefined
   private readonly processProbe: ProcessProbe
   private readonly repoVisibility: ((cwd: string) => Promise<RepoVisibility>) | undefined
   private readonly reaper: DetachedReaper
@@ -1162,6 +1190,7 @@ export class Supervisor implements TeleportHost {
     this.reviewerAccount = options.reviewerAccount
     this.seatOverlap = options.seatOverlap
     this.poolPick = options.poolPick
+    this.accountRotation = options.accountRotation
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
@@ -1924,19 +1953,53 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     profile: SpawnProfile,
     account: Account,
-    site: { cwd: string; initiative?: string; keepsAccount: boolean },
+    site: { cwd: string; initiative?: string; keepsAccount: boolean; rotates: boolean },
   ): { account: Account } | { refusal: string } {
     const refusals = new Map<string, string | undefined>()
     const gate = (dir: string): string | undefined => {
       if (!refusals.has(dir)) refusals.set(dir, this.seatBudgetRefusal(req, profile, dir))
       return refusals.get(dir)
     }
-    const { keepsAccount, ...where } = site
+    const { keepsAccount, rotates, ...where } = site
     const route = keepsAccount ? undefined : this.poolRoute(req, { homeDir: account.dir, ...where }, gate)
     if (route?.redirect !== undefined) return { account: poolAccount(route.redirect.configDir) }
-    const overBudget = gate(account.dir)
-    if (overBudget === undefined) return { account }
+    // A seat spawn's account belongs to its pool pick (CC-606), so only an unrouted one rotates.
+    const billed =
+      rotates && !keepsAccount && route === undefined ? this.rotated(req, profile, account, gate) : account
+    const overBudget = gate(billed.dir)
+    if (overBudget === undefined) return { account: billed }
     return { refusal: route?.refusal === undefined ? overBudget : `seat budget stop: ${route.refusal}` }
+  }
+
+  /**
+   * CC-1546: the account with the most fresh seven_day headroom, or `account` when none is fresher
+   * or the read fails. An explicit `config_dir` never rotates. Every gate that would refuse this
+   * spawn on a candidate (the seat budget, the reviewer account gate) disqualifies it before the
+   * pick, so rotation never moves a spawn onto an account that then refuses it.
+   */
+  private rotated(
+    req: SpawnRequest,
+    profile: SpawnProfile,
+    account: Account,
+    gate: (dir: string) => string | undefined,
+  ): Account {
+    const readers = this.accountRotation
+    if (readers === undefined || account.source === 'explicit') return account
+    try {
+      const config = readers.config()
+      if (!config.enabled) return account
+      const refuses = (dir: string): boolean =>
+        gate(dir) !== undefined || this.reviewerAccountRefusal(req, profile, dir) !== undefined
+      const { dir, record: rotation } = pickAccount(account.dir, readers.readings(), config, refuses)
+      logEvent('account_rotation', { name: req.name, from: rotation.from, chosen: rotation.chosen })
+      return rotation.rotated ? { ...rotationAccount(dir), rotation } : { ...account, rotation }
+    } catch (err) {
+      logEvent('account_rotation_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return account
+    }
   }
 
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
@@ -2316,6 +2379,7 @@ export class Supervisor implements TeleportHost {
       cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: fork !== undefined || req.resumeSession !== undefined,
+      rotates: rotatesAccount(req, profile),
     })
     if ('refusal' in billed)
       return this.refuse(req, billed.refusal, { code: SEAT_BUDGET_STOP, retryable: true })
@@ -2470,6 +2534,8 @@ export class Supervisor implements TeleportHost {
       cwd: gated.cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: false,
+      // The readings are this host's, so a spawn launching on another host keeps its account.
+      rotates: false,
     })
     if ('refusal' in billed)
       return { refusal: billed.refusal, cause: { code: SEAT_BUDGET_STOP, retryable: true } }
@@ -2706,6 +2772,7 @@ export class Supervisor implements TeleportHost {
         config_dir: account.dir,
         config_dir_source: account.source,
         ...(account.unset ? { config_dir_unset: 'true' } : {}),
+        ...(account.rotation ? { account_rotation: JSON.stringify(account.rotation) } : {}),
         allowed_tools: profile.allowedTools.join(','),
         // Recorded for symmetry with the allowlist the escalation check reads:
         // the deny list is the half that actually confines (see `profiles.ts`),
@@ -2779,6 +2846,7 @@ export class Supervisor implements TeleportHost {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
+      ...(account.rotation ? { account: rotationText(account.rotation) } : {}),
       ...branchBaseOf(allocation),
     }
   }
@@ -2943,7 +3011,8 @@ export class Supervisor implements TeleportHost {
       warning:
         `still starting ${window} after launching into ${handle.surface}; the pane was kept open and it will ` +
         `attach when it registers. ${diagnosis} If it has not registered within ${ceiling} of launch, the ` +
-        'spawn is recorded as failed and you will get its agent_exited.',
+        'spawn is recorded as failed on agent_list; its agent_exited is pushed only if you subscribed to your ' +
+        'spawns (chat_subscribe scope "spawned").',
     }
   }
 
@@ -3029,9 +3098,8 @@ export class Supervisor implements TeleportHost {
    * The surface goes because leaving it is how the evidence was collected in the
    * first place — a pane created for an agent that never existed, sitting on a
    * shell prompt with no owner and no way for anyone to know it was dead. The
-   * `agent_exited` row is what stops the roster reading `starting` forever; it
-   * also reaches the requester, whose spawn auto-subscribed it to exactly this
-   * kind for exactly this reason.
+   * `agent_exited` row is what stops the roster reading `starting` forever; the
+   * requester gets it pushed only if it subscribed to its spawns (CC-1500).
    */
   private async failSpawn(
     req: SpawnRequest,
@@ -4230,12 +4298,16 @@ export class Supervisor implements TeleportHost {
     // CC-1457: refused before the stop, so a switch that cannot relaunch never ends the running process.
     const inFlight = this.resumingRefusal(agent)
     if (inFlight) return { ok: false, reason: inFlight }
+    // CC-1505: an iTerm surface on a Linux host threw from the launch after the stop, and the broker died.
+    const surface = req.to === 'headless' ? 'headless' : this.resolve(placementFor(req.anchor))
+    const unlaunchable = this.surfaceBlocker(surface)
+    if (unlaunchable) return { ok: false, reason: `cannot surface ${req.name}: ${unlaunchable}` }
 
     return this.holdingLaunch(agent, async () => {
       const stopped = this.stopFor(req, agent)
       if (!stopped.ok) return { ok: false, reason: stopped.reason as string }
       await this.waitForNameFree(req.name)
-      return this.resumeOnto(req, agent, profile)
+      return this.resumeOnto(req, agent, profile, surface)
     })
   }
 
@@ -4264,9 +4336,9 @@ export class Supervisor implements TeleportHost {
     req: SwitchRequest,
     agent: AgentIdentity,
     profile: AgentProfile,
+    surface: SurfaceName,
   ): Promise<SwitchOutcome> {
     const entry = this.live.get(agent.agentId)
-    const surface = req.to === 'headless' ? 'headless' : this.resolve(placementFor(req.anchor))
     const allocation = entry?.allocation ?? { cwd: agent.cwd }
     const isolation = entry?.isolation ?? (agent.isolation as IsolationName)
 
@@ -4311,7 +4383,14 @@ export class Supervisor implements TeleportHost {
     })
 
     const executionId = this.continueExecution(agent, entry)
-    const handle = await this.launchOn(surface, plan, req.anchor)
+    let handle: LaunchHandle
+    try {
+      handle = await this.launchOn(surface, plan, req.anchor)
+    } catch (err) {
+      this.resumeNeverStarted(agent, err)
+      const said = err instanceof Error ? err.message : String(err)
+      return { ok: false, reason: `${req.name} was stopped but did not relaunch: ${said}` }
+    }
     this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor, entry?.reviewerTree)
     this.bindExecution(agent.agentId, executionId)
     logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })

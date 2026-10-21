@@ -46,8 +46,9 @@ Agent commands:
                              full-suite slots
   leak-scan [options]        scan added lines for private data; exit 0 clean, 1 findings, 2 cannot
                              pass
-  pr-ready [options]         before gh pr create: clean tree, rebase, checks, changeset, leak scan;
-                             exit 0 only when all pass
+  pr-ready [options]         before gh pr create: clean tree, merge the base, checks, changeset,
+                             leak scan; exit 0 only when all pass
+  codex                      run Codex sessions on the agent-chat bus
 
 Service commands:
   ask [options] [text...]    put a question to the human under a service label and print its msg_id
@@ -1182,7 +1183,8 @@ Usage: agent-chat debug send [options] <to> <text...>
 message a session as the human
 
 Options:
-  --source <source>  record the send as made by this source (watchdog, shepherd) in the event log
+  --source <source>  record the send as made by this source (watchdog, shepherd, console) in the
+                     event log
   -h, --help         display help for command
 
 === agent-chat doctor
@@ -1486,14 +1488,44 @@ Options:
 === agent-chat pr-ready
 Usage: agent-chat pr-ready [options]
 
-before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0 only when all pass
+before gh pr create: clean tree, merge the base, checks, changeset, leak scan; exit 0 only when all
+pass
 
 Options:
   --title <t>         PR title, scanned with gh-write's leak scan
   --body-file <path>  PR body file, scanned with gh-write's leak scan
-  --no-rebase         check and report only; do not rebase onto the default branch
+  --rebase            rebase unpushed commits onto the base instead of merging it (rewrites their
+                      shas)
+  --no-rebase         check and report only; neither merge nor rebase the base
   --strict            fail, not just note, a pushed branch that is behind the default branch
   -h, --help          display help for command
+
+=== agent-chat codex
+Usage: agent-chat codex [options] [command]
+
+run Codex sessions on the agent-chat bus
+
+Options:
+  -h, --help                    display help for command
+
+Commands:
+  run [options] [codexArgs...]  run `codex app-server` and deliver agent-chat messages to its
+                                thread: a steer while a turn runs, a new turn when idle; exits with
+                                the app-server exit code (CC-1523)
+  help [command]                display help for command
+
+=== agent-chat codex run
+Usage: agent-chat codex run [options] [codexArgs...]
+
+run `codex app-server` and deliver agent-chat messages to its thread: a steer while a turn runs, a
+new turn when idle; exits with the app-server exit code (CC-1523)
+
+Options:
+  --name <name>      register the session under this name, so peers can address it
+  --resume <thread>  resume this Codex thread instead of starting one
+  --wake-cap <n>     at most n idle wakes per hour; uncapped by default
+  --codex <path>     the codex executable (default: "codex")
+  -h, --help         display help for command
 
 === agent-chat ask
 Usage: agent-chat ask [options] [text...]
@@ -1575,11 +1607,12 @@ Options:
   -h, --help  display help for command
 
 === agent-chat inbox-hook
-Usage: agent-chat inbox-hook [options] <agentId> <phase>
+Usage: agent-chat inbox-hook [options] <agentId> [phase]
 
 Options:
-  --block     at Stop, block the turn end to show what is waiting
-  -h, --help  display help for command
+  --block        at Stop, block the turn end to show what is waiting
+  --host <host>  codex: the first argument is the phase and the output a notice
+  -h, --help     display help for command
 
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]

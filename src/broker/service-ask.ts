@@ -4,9 +4,10 @@ import type { BrokerCore } from './core.js'
 import { logEvent } from './log.js'
 
 /**
- * Open questions one service label may hold. Higher than a session's budget
- * because a service such as the factory gate notifier has one question per open
- * gate, and several gates can be open at once.
+ * Open questions one service label may hold. A service connection is
+ * unregistered, so this bounds what any process on the machine can file; a
+ * service such as the factory gate notifier has one question per open gate, and
+ * several gates can be open at once.
  */
 export const MAX_OPEN_SERVICE_QUESTIONS = 20
 

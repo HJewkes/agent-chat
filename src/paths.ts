@@ -61,6 +61,9 @@ export const agentsDir = (): string => path.join(home(), 'agents')
 
 export const agentDir = (agentId: string): string => path.join(agentsDir(), agentId)
 
+/** Per-Codex-process state, keyed by the Codex pid that its MCP children and hooks share (CC-1509). */
+export const codexHostDir = (hostPid: number): string => path.join(home(), 'codex-hosts', String(hostPid))
+
 /** User-defined agent profiles, layered over the four builtins. */
 export const profilesDir = (): string => path.join(home(), 'profiles')
 

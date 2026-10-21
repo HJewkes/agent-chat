@@ -16,8 +16,10 @@ default is used. An invalid value is logged as `config_invalid` once per distinc
 
 ## Who counts as a victim
 
-A victim is **any** process that descends from the broker, from a `claude` process or from
-`titan-factory`. The roots themselves are never victims. Ownership is proved by live ancestry,
+A victim is **any** process that descends from the broker, from a `claude` or `codex` process,
+from `agent-chat codex run` or from `titan-factory`. Roots are matched on argv, so a Codex
+agent's tool children count as owned, like a Claude session's. The roots themselves are never
+victims. Ownership is proved by live ancestry,
 not by CC-898's launch identity, so the guard is wider than the orphan reaper. It covers:
 
 - owner-attached interactive sessions and everything they run,

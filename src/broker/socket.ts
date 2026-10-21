@@ -29,14 +29,7 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
-import {
-  BrokerCore,
-  readoptRegistration,
-  type Conn,
-  type EndorseApproval,
-  type SeatForwardResult,
-  forwardedText,
-} from './core.js'
+import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { viewRoster } from '../agents/roster-filter.js'
@@ -66,6 +59,7 @@ import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } fr
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
+import { noticeWakeCapped } from './codex-wake-cap.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -74,12 +68,12 @@ import { jobKickRequest, type JobKick } from './job-kick.js'
  */
 const WATCH_MAX_BATCH = 50
 
-const MAX_OPEN_QUESTIONS = 3
-
 /**
  * Endorsement requests one session may have waiting at once.
  *
- * Lower than the question budget on purpose: each one asks the human to read a
+ * Questions have no such budget (CC-1503): the human queue already holds every
+ * session's questions together, and a refused question is one the asker carries
+ * silently instead. An endorsement differs: each one asks the human to read a
  * whole message word for word and take responsibility for it, which is a more
  * expensive ask than answering a question — and a backlog of them is exactly the
  * condition under which they stop being read carefully and start being
@@ -184,17 +178,15 @@ const routeDelivery = (
     : { delivered, unwoken, ...spooled }
 }
 
-/** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
-const replyForwarded = (conn: Conn, to: string, forwarded: SeatForwardResult): void => {
-  const { steward, msgId } = forwarded
-  if (forwarded.held) return replyHeld(conn, steward, msgId)
-  const reason = `"${to}" has no resident session; the message went to its steward "${steward}".`
+/** CC-1501: the sender learns the message for a non-resident seat went to the owner queue. */
+const replyQueuedForSeat = (conn: Conn, to: string, msgId: string): void => {
+  const reason = `"${to}" has no resident session; the message went to the owner queue.`
   reply(conn, {
     t: 'send_result',
     ok: true,
     msgId,
-    recipients: [steward],
-    results: [{ name: steward, status: 'delivered', reason }],
+    recipients: [HUMAN],
+    results: [{ name: HUMAN, status: 'delivered', reason }],
     reason,
   })
 }
@@ -244,7 +236,6 @@ interface SendExtras {
 /** What a routed send's rows carry beyond the message itself. */
 interface RouteExtras {
   tag?: string
-  forwardedFor?: string
   meta?: Record<string, string> | undefined
 }
 
@@ -404,6 +395,7 @@ const spawnResultFields = (outcome: SpawnOutcome, warnings: readonly string[] = 
   ...(outcome.base === undefined ? {} : { base: outcome.base }),
   ...(outcome.launch === undefined ? {} : { launch: outcome.launch }),
   ...(outcome.host === undefined ? {} : { host: outcome.host }),
+  ...(outcome.account === undefined ? {} : { account: outcome.account }),
 })
 
 /**
@@ -580,16 +572,11 @@ export class SocketServer {
       ...optionalCallerHost(this.callerHostOf(conn, msg)),
       ...spawnSiteFields(msg),
     })
-    // Auto-subscribe the requester to its own spawn's lifecycle, so it learns
-    // when the agent actually attaches without having to name it or poll
-    // agent_list. Provenance rather than naming: the selector stays correct as
-    // this connection spawns more agents later, with no rule to repoint.
-    if (outcome.ok && outcome.name !== undefined) {
-      this.core.registry.recordSpawn(conn, outcome.name)
-      this.core.registry.subscribe(conn, [
-        { selector: { spawnedBy: 'self' }, kinds: ['agent_attached', 'agent_exited'] },
-      ])
-    }
+    // Recorded so a `spawned` subscription can find this agent, but no longer
+    // subscribed by default (CC-1500): most attach and exit pushes woke a
+    // coordinator for nothing. The roster still shows both; a spawner that wants
+    // the pushes opts in with chat_subscribe scope "spawned".
+    if (outcome.ok && outcome.name !== undefined) this.core.registry.recordSpawn(conn, outcome.name)
     // Spawn is the moment staleness stops being cosmetic: argv is fixed here and
     // now, so an agent launched from an out-of-date broker carries the old
     // behaviour for its whole life, and a later restart cannot correct it. This
@@ -900,6 +887,20 @@ export class SocketServer {
     })
   }
 
+  /** CC-1545: from the supervisor's CLI socket only, so no session can put words in another's spawner notice. */
+  private handleCodexWakeCapped(conn: Conn, msg: Extract<ClientMessage, { t: 'codex_wake_capped' }>): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'report a Codex wake cap')
+      return reply(conn, {
+        t: 'send_result',
+        ok: false,
+        recipients: [],
+        reason: 'a wake cap is reported by agent-chat codex run, not by a session',
+      })
+    }
+    reply(conn, noticeWakeCapped(this.core, msg))
+  }
+
   /** CC-881: like `teleport`, resolved from this connection's own registration and never from the frame. */
   private async handleTeleportPlanWait(conn: Conn): Promise<void> {
     const agentId = this.core.registry.entryFor(conn)?.agentId
@@ -1105,6 +1106,15 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
+  /** CC-1505: a switch that throws answers the caller; left unhandled, the rejection ended the broker. */
+  private answerSwitch(conn: Conn, switching: Promise<void>): void {
+    switching.catch((err: unknown) => {
+      const reason = err instanceof Error ? err.message : String(err)
+      logEvent('switch_failed', { reason })
+      replySwitch(conn, { ok: false, reason: `switch failed: ${reason}` })
+    })
+  }
+
   /** Go headless. The subject is the caller, resolved here and nowhere else. */
   private async handleBackground(conn: Conn): Promise<void> {
     const entry = this.core.registry.entryFor(conn)
@@ -1133,32 +1143,12 @@ export class SocketServer {
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
-    if (unrouted && this.forwardSend(conn, from, to, text, extras)) return
+    const queued = unrouted ? core.queueForSeat(from, to, text, { inReplyTo, sendMeta: meta }) : undefined
+    if (queued !== undefined) return replyQueuedForSeat(conn, to, queued)
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo, undefined, meta) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to, { meta })
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to, { meta })
     replyHeld(conn, to, held.msgId)
-  }
-
-  /**
-   * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
-   * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
-   */
-  private forwardSend(conn: Conn, from: string, to: string, text: string, extras: SendExtras): boolean {
-    const { core } = this
-    const { inReplyTo, meta } = extras
-    const steward = core.stewardFor(to, from)
-    if (steward === undefined) return false
-    const forwarded = forwardedText(to, text)
-    if (core.registry.connFor(steward) !== undefined) {
-      const result = core.registry.send(conn, steward, forwarded, inReplyTo)
-      this.handleRoute(conn, result, 'message', steward, { forwardedFor: to, meta })
-      return true
-    }
-    const held = core.holdForSteward(from, steward, forwarded, inReplyTo, undefined, meta)
-    if (held === undefined) return false
-    replyHeld(conn, steward, held.msgId)
-    return true
   }
 
   private handleRoute(
@@ -1166,7 +1156,7 @@ export class SocketServer {
     result: RouteResult<Conn>,
     kind: 'message' | 'broadcast',
     to: string,
-    { tag, forwardedFor, meta: sendMeta }: RouteExtras = {},
+    { tag, meta: sendMeta }: RouteExtras = {},
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -1190,7 +1180,6 @@ export class SocketServer {
         ...sendMeta,
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
-        ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
       }
       // One row per recipient so a session's inbox is a plain query on `target`.
       core.append({
@@ -1298,11 +1287,6 @@ export class SocketServer {
     const { core } = this
     const from = core.registry.nameOf(conn)
     if (!from) return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: 'not registered' })
-
-    if (kind === 'question' && core.events.openCount(from, 'question') >= MAX_OPEN_QUESTIONS) {
-      const reason = `you already have ${MAX_OPEN_QUESTIONS} unanswered questions; resolve one before asking again`
-      return reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
-    }
 
     const meta = shapeMeta(shape)
     const { msgId } = core.append({
@@ -1771,8 +1755,7 @@ export class SocketServer {
     const target = core.registry.connFor(to)
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
-      const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
-      if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
+      // CC-1501: every human send, mapped seat or not, keeps the seat's own hold; only peer mail is queued.
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       return this.failHumanSend(conn, to, held?.reason)
@@ -2071,6 +2054,8 @@ export class SocketServer {
       case 'account_move':
         void this.handleAccountMove(conn, msg)
         return
+      case 'codex_wake_capped':
+        return this.handleCodexWakeCapped(conn, msg)
       case 'teleport_plan_wait':
         void this.handleTeleportPlanWait(conn)
         return
@@ -2100,11 +2085,9 @@ export class SocketServer {
       case 'job_kick':
         return this.handleJobKick(conn, msg)
       case 'surface':
-        void this.handleSurface(conn, msg.name)
-        return
+        return this.answerSwitch(conn, this.handleSurface(conn, msg.name))
       case 'background':
-        void this.handleBackground(conn)
-        return
+        return this.answerSwitch(conn, this.handleBackground(conn))
       case 'resume':
         return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {

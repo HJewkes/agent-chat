@@ -15,7 +15,7 @@ import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 import type { IsolationContext } from '../agents/isolation/index.js'
 import { createWorktreeStrategy } from '../agents/isolation/worktree.js'
 import { PortSpawnFrame } from '../cli/verbs/port-agent.js'
-import type { SetupRunner } from '../agents/isolation/worktree-setup.js'
+import type { SetupRunner } from '@titan-design/worktree'
 
 /** CC-1158 slice b: a stacked slice is cut from, opens its PR on, and registers after its parent's branch. */
 

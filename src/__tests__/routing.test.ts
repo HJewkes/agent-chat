@@ -279,11 +279,14 @@ describe('human queue', () => {
     expect(stdout).toContain('0 needing an answer')
   })
 
-  it('budgets open questions per session', async () => {
-    for (let i = 0; i < 3; i++) await call(carol, 'chat_ask', { text: `question ${i}` })
-    const overflow = await call(carol, 'chat_ask', { text: 'one too many' })
+  /** CC-1503: no per-session cap on open questions. */
+  it('lets one session hold five open questions', async () => {
+    const replies: string[] = []
+    for (let i = 0; i < 5; i++) replies.push(await call(carol, 'chat_ask', { text: `budget question ${i}` }))
 
-    expect(overflow).toContain('unanswered questions')
+    expect(replies.every(r => !r.startsWith('Not queued'))).toBe(true)
+    const { stdout } = await cli(['queue', '--questions', '--json'])
+    for (let i = 0; i < 5; i++) expect(stdout).toContain(`budget question ${i}`)
   })
 
   it('refuses to answer an id that is not open', async () => {
