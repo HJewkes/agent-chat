@@ -214,6 +214,18 @@ describe('building a spawn on the host that launches it', () => {
     expect(JSON.stringify(written[0])).not.toContain('/evil')
   })
 
+  // Mutation caught: dropping cacheTtl from profileOf, or carrying it without the isCacheTtl check.
+  it("applies the spec's cache TTL, and drops one that is not 5m or 1h (CC-1553)", () => {
+    const valid = fakeHost()
+    const bogus = fakeHost()
+
+    prepareRemoteSpawn(spec({ profile: { ...spec().profile, cacheTtl: '5m' } }), valid.host)
+    prepareRemoteSpawn(spec({ profile: { ...spec().profile, cacheTtl: '-1' as never } }), bogus.host)
+
+    expect(valid.written[0]?.plan.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
+    expect(bogus.written[0]?.plan.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('3600')
+  })
+
   it("passes the spec's model, a teleport's carried one included, as --model (CC-1166)", () => {
     const carried = fakeHost()
     const inherited = fakeHost()

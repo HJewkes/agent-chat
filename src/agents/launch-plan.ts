@@ -128,6 +128,8 @@ const profileEnv = (profile: AgentProfile): Record<string, string> =>
 
 const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...profileEnv(input.profile),
+  // CC-1553: the typed field wins over a raw `env` entry, and the variable outranks Claude Code's own settings.
+  ...(input.profile.cacheTtl === undefined ? {} : { CLAUDE_CODE_PROMPT_CACHE_TTL: input.profile.cacheTtl }),
   // Read by the child's own MCP server, which registers from them before the
   // model takes a turn. This is what makes a spawned process a durable peer.
   AGENT_CHAT_AGENT_ID: input.agentId,
