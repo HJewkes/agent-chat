@@ -12,7 +12,7 @@ import type {
   QueueItem,
   ServiceAnswer,
 } from '../protocol.js'
-import { wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
+import { HUMAN, wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
@@ -529,6 +529,16 @@ export class EventLog implements EventStore {
       .prepare(`SELECT ts FROM events WHERE ref = ? AND kind = ? ORDER BY id DESC LIMIT 1`)
       .get(ref, kind) as { ts: number } | undefined
     return row?.ts
+  }
+
+  humanContactSince(name: string, since: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events WHERE target = ? AND ts >= ?
+         AND (kind IN ('answer', 'decided') OR (kind = 'message' AND actor = ?)) LIMIT 1`,
+      )
+      .get(name, since, HUMAN)
+    return row !== undefined
   }
 
   /** CC-1056: every block and unblock row up to `until`, oldest first, for pairing into intervals. */

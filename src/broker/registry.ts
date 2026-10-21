@@ -358,6 +358,8 @@ export class Registry<C> {
   private readonly fanoutSpend = new Map<string, { at: number; bytes: number }[]>()
   /** "from -> to" -> send times, pruned on read. Ordered, so each way is its own budget. */
   private readonly pairSends = new Map<string, number[]>()
+  /** CC-1552: why an agent's session takes no peer pushes; set by the core, which knows what an agent is. */
+  private pushHoldOf: (agentId: string) => string | undefined = () => undefined
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -548,6 +550,21 @@ export class Registry<C> {
 
   isDnd(name: string): boolean {
     return this.findByName(name)?.[1].dnd ?? false
+  }
+
+  /** CC-1552: a retired or parked agent keeps its socket but is pushed nothing a peer or the bus sends. */
+  holdPushesWhen(check: (agentId: string) => string | undefined): void {
+    this.pushHoldOf = check
+  }
+
+  /** Why `name`'s session is pushed no peer mail, if it is connected and held. */
+  pushHold(name: string): string | undefined {
+    const entry = this.findByName(name)?.[1]
+    return entry === undefined ? undefined : this.pushHoldFor(entry)
+  }
+
+  private pushHoldFor(entry: Entry): string | undefined {
+    return entry.agentId === undefined ? undefined : this.pushHoldOf(entry.agentId)
   }
 
   /** CC-1455: what a push to a print-mode host becomes, or undefined when `name` is not one. */
@@ -831,7 +848,8 @@ export class Registry<C> {
         if ('spawnedBy' in sub.selector) return entry.spawned.has(event.subject)
         return this.namesWithTag(sub.selector.tag).has(event.subject)
       })
-      if (wants) matched.push(conn)
+      // CC-1552: after `wants`, so only a subscriber pays the hold's log read.
+      if (wants && this.pushHoldFor(entry) === undefined) matched.push(conn)
     }
     return matched
   }
@@ -1011,6 +1029,14 @@ export class Registry<C> {
    */
   private deliveryVerdict(entry: Entry): { status: RecipientStatus; reason?: string } {
     if (entry.dnd) return { status: 'held' }
+    const hold = this.pushHoldFor(entry)
+    if (hold !== undefined)
+      return {
+        status: 'held',
+        reason:
+          `"${entry.name}" is ${hold}, so it is not woken by peer messages. The message is held in its ` +
+          'inbox; do not resend it.',
+      }
     if (entry.channels === 'no')
       return {
         status: 'no_channel',
@@ -1087,7 +1113,7 @@ export class Registry<C> {
     const deliveries: Delivery<C>[] = hits.map(([target, entry]) => ({
       conn: target,
       message,
-      live: !entry.dnd,
+      live: !entry.dnd && this.pushHoldFor(entry) === undefined,
     }))
 
     const overBudget = this.chargeFanout(sender.name, text, deliveries.length, opts.chargesFrom)
