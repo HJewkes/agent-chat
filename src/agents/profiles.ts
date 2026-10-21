@@ -5,11 +5,13 @@ import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
 import { PROBE_SANDBOX_RULE } from './return-contract-blocks.js'
 import {
   AGENT_ROLES,
+  CACHE_TTLS,
   EFFORT_LEVELS,
   HARNESSES,
   RETURN_CONTRACTS,
   SETTING_SOURCES,
   SURFACE_LIFETIMES,
+  isCacheTtl,
   type AgentProfile,
   type AgentRole,
   type EffortLevel,
@@ -135,7 +137,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
     // A reviewer finishes inside 5 minutes, so the 1 h cache write premium buys nothing.
-    env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' },
+    cacheTtl: '5m',
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
       'Do not fix what you find unless asked. ' +
@@ -260,6 +262,7 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   remoteControl: true,
   returnContract: true,
   effort: true,
+  cacheTtl: true,
   promptPrelude: true,
   mcpServers: true,
   strictMcpConfig: true,
@@ -394,6 +397,8 @@ export function parseProfile(
     return { error: `${name}: "returnContract" must be one of ${CONTRACT_CHOICES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
     return { error: `${name}: "effort" must be one of ${EFFORT_LEVELS.join(', ')}` }
+  if (body.cacheTtl !== undefined && !isCacheTtl(body.cacheTtl))
+    return { error: `${name}: "cacheTtl" must be one of ${CACHE_TTLS.join(', ')}` }
   if (body.env !== undefined && !isStringRecord(body.env))
     return { error: `${name}: "env" must be an object whose values are all strings` }
   if (body.settingSources !== undefined && !isSettingSources(body.settingSources))
@@ -420,6 +425,7 @@ export function parseProfile(
     ...(body.remoteControl === true ? { remoteControl: true } : {}),
     ...(isContractChoice(body.returnContract) ? { returnContract: body.returnContract } : {}),
     ...(body.effort === undefined ? {} : { effort: body.effort as EffortLevel }),
+    ...(isCacheTtl(body.cacheTtl) ? { cacheTtl: body.cacheTtl } : {}),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null
       ? { mcpServers: body.mcpServers as Record<string, unknown> }

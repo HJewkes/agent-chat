@@ -572,9 +572,13 @@ source is a peer model rather than a PM database.
 process's environment. A user profile in `~/.agent-chat/profiles/<name>.json`
 can set it too. Any non-string value fails the load with an error naming the
 profile. `env` sits beneath the spawner's own keys: `AGENT_CHAT_*` and
-`CLAUDE_CONFIG_DIR` in a profile are dropped. The built-in `reviewer` sets
-`CLAUDE_CODE_PROMPT_CACHE_TTL=5m`; other profiles keep the 1 h default because
-they wait over 5 minutes on CI.
+`CLAUDE_CONFIG_DIR` in a profile are dropped.
+
+**A profile may set `cacheTtl`** to `5m` or `1h` (CC-1553). The launch sets
+`CLAUDE_CODE_PROMPT_CACHE_TTL` to it, over any value `env` gives that variable, and
+Claude Code ranks the variable above its own `promptCacheTtl` setting. Any other
+value fails the load. Absent leaves the harness default. The built-in `reviewer`
+sets `5m`; other builtins keep the default because they wait over 5 minutes on CI.
 
 **A profile may set `returnContract`** to `implementer`, `reviewer` or `none` (CC-286). The
 broker appends that block to the brief of an agent a registered session spawns, with the

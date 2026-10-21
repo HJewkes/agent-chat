@@ -26,6 +26,13 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 export type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
+/** CC-1553: the values Claude Code's `CLAUDE_CODE_PROMPT_CACHE_TTL` accepts. */
+export const CACHE_TTLS = ['5m', '1h'] as const
+
+export type CacheTtl = (typeof CACHE_TTLS)[number]
+
+export const isCacheTtl = (value: unknown): value is CacheTtl => CACHE_TTLS.includes(value as never)
+
 /**
  * The default for a profile that does not say, and for every profile file
  * written before the field existed.
@@ -99,6 +106,8 @@ export interface AgentProfile {
   returnContract?: ReturnContract | 'none'
   /** Passed as --effort when set; unset leaves the harness default. */
   effort?: EffortLevel
+  /** Sets `CLAUDE_CODE_PROMPT_CACHE_TTL`, over any value in `env`; unset leaves the harness default. */
+  cacheTtl?: CacheTtl
   /** Appended via --append-system-prompt, after the standard peer preamble. */
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */
