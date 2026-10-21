@@ -23,6 +23,7 @@ import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 import { ClaimLedger } from './claims.js'
+import { pushHoldFor } from './push-hold.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 import { TELEPORT_GAP_MS, midTeleport } from './teleport-window.js'
 
@@ -126,6 +127,7 @@ export class BrokerCore<C = Conn> {
     this.registry = options.registry ?? new Registry<C>()
     this.hub = options.hub ?? new EventHub()
     this.agents = new AgentLog(this.events)
+    this.registry.holdPushesWhen(agentId => pushHoldFor(this.events, this.agents, agentId))
     this.startedAt = Date.now()
   }
 
