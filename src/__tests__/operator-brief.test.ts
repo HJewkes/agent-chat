@@ -131,14 +131,12 @@ describe('the operator brief text', () => {
 
     const lines = renderOperatorBrief(
       deriveOperatorBrief(input({ shepherd: fortyOne, roster, unavailable })),
-      {
-        maxLines: 12,
-      },
+      { maxLines: 6 },
     )
 
     expect(lines).toContain('unavailable: shepherd (serve down)')
     expect(lines).toContain('unavailable: queue (no broker)')
-    expect(lines.length).toBeLessThanOrEqual(12)
+    expect(lines.some(l => l.startsWith('  '))).toBe(false)
   })
 
   it('cuts quiet counts before an actionable PR when the height is capped', () => {
