@@ -68,7 +68,25 @@ is resolved in order: an explicit `config_dir` on `agent_spawn`, the spawning se
 dir (observed by its MCP server, forwarded on the spawn frame and re-read from its
 registration), the `briefing` initiative's declared `profile:`
 (`~/.claude-profiles/<profile>`, warn-and-continue if absent), then the broker's own env.
-A teleport successor keeps its predecessor's account the same way. The resolved dir is
+A teleport successor keeps its predecessor's account the same way.
+
+CC-1546 adds one step after that order for a worker-role spawn with no explicit `config_dir`:
+the broker reads every account's seven_day reading (`~/.claude` and each dir under
+`~/.claude-profiles/`, the same readings `agent budget --accounts` shows) and moves the
+spawn to the account with the lowest fresh `used_pct`. A stale or missing reading never wins
+over a fresh one; with no fresh reading, or on a tie, the spawn keeps the resolved account. An
+account is never chosen if either its seven_day or its five_hour window is at or above the
+ceiling, it is in `exclude`, its login failed, or a gate the spawn must pass (the seat budget,
+the reviewer account gate) would refuse it there. Those gates disqualify a candidate before
+the pick, so rotation never moves a spawn onto an account that then refuses it.
+Coordinators, `resume_session`, `agent_resume`, `predecessor` and fix-round spawns, forks, seat
+spawns the pool pick routes, and spawns launched on another host keep their account. The
+owner configures it with the `accountRotation` key in the broker's `config.json`:
+`{ "enabled": true, "ceilingPct": 90, "exclude": [] }` (those are the defaults). The readings
+compared are written to the spawn row as `account_rotation`, the row's `config_dir_source` is
+`rotation` when it moved, and the spawn result has an `account:` line.
+
+The resolved dir is
 recorded on the agent's `agent_spawned` row, which is what lets `agent ls`, `agent_list`
 and `session_budget` find a transcript or a status-cache reading that is not under the
 reader's own `CLAUDE_CONFIG_DIR`.

@@ -16,7 +16,7 @@ import {
   SETUP_LOG,
   type SetupResult,
   type SetupRunner,
-} from '../agents/isolation/worktree-setup.js'
+} from '@titan-design/worktree'
 import type { IsolationContext } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []

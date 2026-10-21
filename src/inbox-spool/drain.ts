@@ -152,3 +152,56 @@ export function drainInbox(dir: string, deps: DrainDeps = {}): Drained {
 export function releaseClaims(claimed: string[], fs: DrainFs = nodeFs): void {
   for (const file of claimed) fs.rmSync(file, { force: true })
 }
+
+export interface Peeked {
+  /** The sender of each record in the spool now, never its text. */
+  senders: string[]
+  /** How many of them this call claimed the notice for. */
+  fresh: number
+}
+
+export type PeekFs = DrainFs & Pick<typeof nodeFs, 'writeFileSync'>
+
+const NOTICED = '.noticed'
+
+/** One `wx` create per record: of concurrent hooks, exactly one wins the notice. */
+function claimNotice(dir: string, name: string, fs: PeekFs): boolean {
+  try {
+    fs.mkdirSync(path.join(dir, NOTICED), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(dir, NOTICED, name), '', { flag: 'wx', mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** A marker whose record chat_inbox cleared or a drain claimed has nothing left to guard. */
+function pruneNotices(dir: string, names: Set<string>, fs: PeekFs): void {
+  try {
+    for (const marker of fs.readdirSync(path.join(dir, NOTICED))) {
+      if (!names.has(marker)) fs.rmSync(path.join(dir, NOTICED, marker), { force: true })
+    }
+  } catch {
+    // No marker yet.
+  }
+}
+
+/**
+ * CC-1510: a count-only look at the spool for a host whose hook context outranks
+ * the user (Codex puts it in the developer role). Nothing is claimed or deleted,
+ * so chat_inbox still returns every body; only a per-record notice marker is taken.
+ */
+export function peekInbox(dir: string, fs: PeekFs = nodeFs): Peeked {
+  const peeked: Peeked = { senders: [], fresh: 0 }
+  try {
+    const candidates = readCandidates(dir, fs)
+    pruneNotices(dir, new Set(candidates.map(candidate => candidate.name)), fs)
+    for (const { name, record } of candidates) {
+      peeked.senders.push(record.meta.from ?? 'agent-chat')
+      if (claimNotice(dir, name, fs)) peeked.fresh += 1
+    }
+  } catch {
+    // No spool yet: nothing waits.
+  }
+  return peeked
+}

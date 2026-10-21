@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   DEFAULT_NOTICE_TTL_HOURS,
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
+  resolveAccountRotation,
   resolveAgentSlots,
   resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
@@ -568,3 +569,21 @@ function invalidLines(): string[] {
     .split('\n')
     .filter(line => line.includes('"config_invalid"'))
 }
+
+describe('resolveAccountRotation', () => {
+  it('is on with a 90% ceiling and no exclusions when config.json says nothing', () => {
+    expect(resolveAccountRotation()).toEqual({ enabled: true, ceilingPct: 90, exclude: [] })
+  })
+
+  it('honours each configured field', () => {
+    writeConfigJson({ accountRotation: { enabled: false, ceilingPct: 75, exclude: ['personal'] } })
+
+    expect(resolveAccountRotation()).toEqual({ enabled: false, ceilingPct: 75, exclude: ['personal'] })
+  })
+
+  it('defaults only the field that is invalid', () => {
+    writeConfigJson({ accountRotation: { enabled: 'no', ceilingPct: 140, exclude: ['personal'] } })
+
+    expect(resolveAccountRotation()).toEqual({ enabled: true, ceilingPct: 90, exclude: ['personal'] })
+  })
+})

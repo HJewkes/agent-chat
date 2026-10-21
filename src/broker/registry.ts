@@ -4,6 +4,7 @@ import {
   DECLARED_MAX_BYTES,
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
+  isCodexSessionId,
   MAX_MULTICAST_RECIPIENTS,
   RESERVED_NAMES,
   SELF_TAG,
@@ -62,10 +63,13 @@ const observedOf = (entry: {
   observed?: ObservedPresence
   sessionId?: string
 }): ObservedPresence | undefined => {
-  if (entry.observed === undefined && entry.sessionId === undefined) return undefined
+  // A Codex id names no transcript, so it must not read as a Claude session to a spawn or fork (CC-1508).
+  const claudeSessionId =
+    entry.sessionId === undefined || isCodexSessionId(entry.sessionId) ? undefined : entry.sessionId
+  if (entry.observed === undefined && claudeSessionId === undefined) return undefined
   return {
     ...entry.observed,
-    ...(entry.sessionId === undefined ? {} : { claudeSessionId: entry.sessionId }),
+    ...(claudeSessionId === undefined ? {} : { claudeSessionId }),
   }
 }
 
@@ -598,6 +602,13 @@ export class Registry<C> {
    */
   hostPidFor(name: string): number | undefined {
     return this.findByName(name)?.[1].hostPid
+  }
+
+  /** CC-1545: the name registered from that host process; both must match, as pids repeat across machines. */
+  nameOnHost(hostPid: number, host: string): string | undefined {
+    for (const entry of this.entries.values())
+      if (entry.hostPid === hostPid && entry.host === host) return entry.name
+    return undefined
   }
 
   /** The machine that pid is on (CC-880). Undefined means unreported, never "local". */

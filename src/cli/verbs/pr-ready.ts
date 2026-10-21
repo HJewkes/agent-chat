@@ -35,7 +35,7 @@ export type Trap = (onSignal: (exitCode: number) => void) => () => void
 export interface PrReadyOptions {
   title?: string
   bodyFile?: string
-  /** Commander sets this false for `--no-rebase`. */
+  /** `--rebase` sets true: rebase rather than merge the base. `--no-rebase` sets false: skip the update. */
   rebase?: boolean
   /** Fail, rather than note, a pushed branch that is behind the default branch. */
   strict?: boolean
@@ -76,7 +76,6 @@ interface CheckPlan {
 
 export const CHECK_SCRIPTS = ['format:check', 'lint', 'typecheck', 'type-check']
 const REMOTE_PREFIX = 'refs/remotes/origin/'
-const REBASE_DIRS = ['rebase-merge', 'rebase-apply']
 
 const lastLine = (text: string): string =>
   text
@@ -131,60 +130,83 @@ export async function defaultBaseRef(run: Run, cwd: string): Promise<string> {
   return ref
 }
 
-const rebaseInProgress = (gitDir: string): boolean =>
-  REBASE_DIRS.some(dir => fs.existsSync(path.join(gitDir, dir)))
+/** How the update step brings the branch up to date with its base; merge never rewrites a commit. */
+export type UpdateMode = 'merge' | 'rebase'
 
-/** Synchronous, for a signal handler. True when no rebase is left in progress. */
-export function abortRebaseSync(cwd: string, gitDir: string): boolean {
-  if (!rebaseInProgress(gitDir)) return true
+const IN_PROGRESS: Record<UpdateMode, string[]> = {
+  merge: ['MERGE_HEAD'],
+  rebase: ['rebase-merge', 'rebase-apply'],
+}
+
+const inProgress = (gitDir: string, mode: UpdateMode): boolean =>
+  IN_PROGRESS[mode].some(marker => fs.existsSync(path.join(gitDir, marker)))
+
+/** Synchronous, for a signal handler. True when no merge or rebase is left in progress. */
+export function abortUpdateSync(cwd: string, gitDir: string, mode: UpdateMode): boolean {
+  if (!inProgress(gitDir, mode)) return true
   try {
-    execFileSync('git', ['rebase', '--abort'], { cwd, stdio: 'ignore' })
+    execFileSync('git', [mode, '--abort'], { cwd, stdio: 'ignore' })
   } catch {
     // The state check below reports the outcome.
   }
-  return !rebaseInProgress(gitDir)
+  return !inProgress(gitDir, mode)
 }
 
-async function abortRebase(run: Run, cwd: string, gitDir: string): Promise<string> {
-  const abort = await run('git', ['rebase', '--abort'], cwd)
-  if (abort.code === 0 && !rebaseInProgress(gitDir)) return 'rebase aborted'
-  return `git rebase --abort failed (${lastLine(abort.output)}); a rebase is still in progress, abort it by hand`
+async function abortUpdate(run: Run, cwd: string, gitDir: string, mode: UpdateMode): Promise<string> {
+  const abort = await run('git', [mode, '--abort'], cwd)
+  if (abort.code === 0 && !inProgress(gitDir, mode)) return `${mode} aborted`
+  return `git ${mode} --abort failed (${lastLine(abort.output)}); a ${mode} is still in progress, abort it by hand`
 }
 
 /**
- * The rebase rewrites every commit, and git stamps the committer from the global config. Reusing
- * the HEAD commit's author, which a tainted earlier rebase leaves alone, keeps a noreply branch noreply. Undefined when HEAD's identity is unreadable.
+ * CC-1458: git stamps the committer, and a merge commit's author too, from the global config. Reusing
+ * the HEAD commit's author, which a tainted earlier rebase leaves alone, keeps a noreply branch noreply.
+ * A rebase keeps each commit's own author, so only a merge sets one. Undefined when HEAD's identity is unreadable.
  */
-async function headIdentityEnv(run: Run, cwd: string): Promise<NodeJS.ProcessEnv | undefined> {
+async function headIdentityEnv(
+  run: Run,
+  cwd: string,
+  mode: UpdateMode,
+): Promise<NodeJS.ProcessEnv | undefined> {
   const log = await run('git', ['log', '-1', '--format=%cn%n%ce%n%an%n%ae'], cwd)
   const [committerName, committerEmail, authorName, authorEmail] = log.output.split('\n').map(l => l.trim())
   const name = authorName || committerName
   const email = authorEmail || committerEmail
   if (log.code !== 0 || !name || !email) return undefined
-  return { GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+  const committer = { GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+  return mode === 'merge' ? { ...committer, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email } : committer
 }
 
-export async function rebaseStep(
+const updateArgs = (mode: UpdateMode, base: string): string[] =>
+  mode === 'merge' ? ['merge', '--no-edit', base] : ['rebase', base]
+
+/**
+ * CC-1547: by default the base is merged in, so every existing commit keeps its sha. A rebase, which
+ * rewrites every commit and drops any whose patch the base already holds, runs only under `--rebase`.
+ */
+export async function updateStep(
   run: Run,
   cwd: string,
   base: string,
   gitDir: string,
+  mode: UpdateMode,
   warn: (line: string) => void = () => {},
 ): Promise<StepOutcome> {
   const branch = base.slice(REMOTE_PREFIX.length)
   const fetch = await run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${base}`], cwd)
   if (fetch.code !== 0)
     return { ok: false, reason: `git fetch of ${branch} failed: ${lastLine(fetch.output)}` }
-  const identity = await headIdentityEnv(run, cwd)
-  if (!identity) warn("warning: could not read HEAD's identity; the rebase uses the configured committer")
-  const rebase = await run('git', ['rebase', base], cwd, identity)
-  if (rebase.code === 0) return { ok: true }
-  if (!rebaseInProgress(gitDir)) return { ok: false, reason: `git rebase failed: ${lastLine(rebase.output)}` }
+  const identity = await headIdentityEnv(run, cwd, mode)
+  if (!identity) warn(`warning: could not read HEAD's identity; the ${mode} uses the configured identity`)
+  const update = await run('git', updateArgs(mode, base), cwd, identity)
+  if (update.code === 0) return mode === 'rebase' ? { ok: true, reason: 'rebased (--rebase)' } : { ok: true }
+  if (!inProgress(gitDir, mode))
+    return { ok: false, reason: `git ${mode} failed: ${lastLine(update.output)}` }
   const unmerged = await run('git', ['diff', '-z', '--name-only', '--diff-filter=U'], cwd)
   const files = nulSeparated(unmerged.output)
-  const state = await abortRebase(run, cwd, gitDir)
+  const state = await abortUpdate(run, cwd, gitDir, mode)
   if (files.length === 0)
-    return { ok: false, reason: `git rebase failed: ${lastLine(rebase.output)}; ${state}` }
+    return { ok: false, reason: `git ${mode} failed: ${lastLine(update.output)}; ${state}` }
   return { ok: false, reason: `conflict in ${files.join(', ')}; ${state}` }
 }
 
@@ -194,18 +216,18 @@ async function gitDirOf(run: Run, cwd: string): Promise<string> {
   return result.output.trim()
 }
 
-/** A SIGINT or SIGTERM mid-rebase aborts the rebase before the process exits. */
-async function trappedRebaseStep(deps: PrReadyDeps, base: string): Promise<StepOutcome> {
+/** A SIGINT or SIGTERM mid-update aborts the merge or rebase before the process exits. */
+async function trappedUpdateStep(deps: PrReadyDeps, base: string, mode: UpdateMode): Promise<StepOutcome> {
   const gitDir = await gitDirOf(deps.run, deps.cwd)
   const release = deps.trap(exitCode => {
-    const state = abortRebaseSync(deps.cwd, gitDir)
-      ? 'rebase aborted'
-      : 'a rebase is still in progress, abort it by hand'
-    deps.out(`FAIL rebase: interrupted; ${state}`)
+    const state = abortUpdateSync(deps.cwd, gitDir, mode)
+      ? `${mode} aborted`
+      : `a ${mode} is still in progress, abort it by hand`
+    deps.out(`FAIL update: interrupted; ${state}`)
     deps.out(`PR-READY FAIL exit=${exitCode}`)
   })
   try {
-    return await rebaseStep(deps.run, deps.cwd, base, gitDir, deps.err)
+    return await updateStep(deps.run, deps.cwd, base, gitDir, mode, deps.err)
   } finally {
     release()
   }
@@ -430,9 +452,9 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 /**
  * Base: the open PR's base branch, else `branch.<b>.agent-chat-base`, else the stacked origin branch
  * with an open PR, else origin/HEAD (see pr-ready-base.ts).
- * Order: clean tree, base, rebase, deps (only when node_modules is missing), checks, typed-lint
- * (root lint:types only, always local), privacy (agent-chat only), changeset, scan. A dirty tree,
- * a failed rebase or a failed install stops the run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
+ * Order: clean tree, base, update (merge the base in; rebase only under `--rebase`), deps (only when
+ * node_modules is missing), checks, typed-lint (root lint:types only, always local), privacy
+ * (agent-chat only), changeset, scan. A dirty tree, a failed update or a failed install stops the run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
   const { run, cwd } = deps
@@ -445,14 +467,17 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     base = resolved.ref
     return { ok: true, reason: resolved.reason }
   }
-  const rebase = async (): Promise<StepOutcome> => {
+  const update = async (): Promise<StepOutcome> => {
     if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }
-    return (await pushedBranchStep(run, cwd, base, opts.strict === true)) ?? trappedRebaseStep(deps, base)
+    const mode = opts.rebase === true ? 'rebase' : 'merge'
+    return (
+      (await pushedBranchStep(run, cwd, base, opts.strict === true)) ?? trappedUpdateStep(deps, base, mode)
+    )
   }
   if (!(await step('clean-tree', () => cleanTreeStep(run, cwd, exemptBodyFile(cwd, opts.bodyFile)))))
     return fail()
   if (!(await step('base', resolveBase))) return fail()
-  if (!(await step('rebase', rebase))) return fail()
+  if (!(await step('update', update))) return fail()
   const install = await guarded(async () => (await depsStep(run, cwd)) ?? { ok: true })
   if (install.reason !== undefined && !report('deps', install)) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))

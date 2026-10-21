@@ -809,7 +809,24 @@ describe('closing the authorization gaps a same-uid session could reach on its o
       expect(sent.map(row => [row.body, row.meta.source])).toEqual([['wake', 'shepherd']])
     })
 
-    it('drops a source other than watchdog or shepherd, so a client cannot invent one', () => {
+    it('records a titan-console round notice with meta.source (CC-1507)', () => {
+      const { core, server, wire } = makeServer()
+      const human = wire()
+      const beta = wire()
+      register(server, beta.conn, 'beta')
+
+      server.handleMessage(human.conn, {
+        t: 'human_send',
+        to: 'beta',
+        text: 'round answered',
+        source: 'console',
+      })
+
+      const sent = core.events.since(0, 100).filter(row => row.kind === 'message')
+      expect(sent.map(row => [row.body, row.meta.source])).toEqual([['round answered', 'console']])
+    })
+
+    it('drops a source other than watchdog, shepherd or console, so a client cannot invent one', () => {
       const { core, server, wire } = makeServer()
       const human = wire()
       const beta = wire()
@@ -845,6 +862,15 @@ describe('closing the authorization gaps a same-uid session could reach on its o
 
       for (const message of [live, replayed]) {
         expect(channelMeta(message)).toMatchObject({ from: HUMAN, wake_source: 'shepherd' })
+        expect(channelMeta(message).provenance).toBeUndefined()
+      }
+    })
+
+    it('names console on the live push and on the inbox replay, with no human authority marker (CC-1507)', () => {
+      const { live, replayed } = sendAs('console')
+
+      for (const message of [live, replayed]) {
+        expect(channelMeta(message)).toMatchObject({ from: HUMAN, wake_source: 'console' })
         expect(channelMeta(message).provenance).toBeUndefined()
       }
     })

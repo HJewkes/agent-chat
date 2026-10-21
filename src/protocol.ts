@@ -98,6 +98,8 @@ export interface SpawnResultFields {
   disallowedTools?: string[]
   /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
   transcript?: { path: string; found: boolean }
+  /** CC-1546: the account a worker spawn's rotation chose, with the seven_day readings it compared. */
+  account?: string
   /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
   base?: { ref: string; sha: string }
   /** CC-1454: a keyed retry answered from the first resume's outcome; it did not launch again. */
@@ -304,6 +306,11 @@ export interface SessionInfo {
  * how other sessions read the `from` attribute.
  */
 export const HUMAN = 'human'
+/** A Codex host's synthetic session id, `codex:<hostPid>@<host>`, names no Claude transcript (CC-1508). */
+export const CODEX_SESSION_PREFIX = 'codex:'
+
+export const isCodexSessionId = (sessionId: string): boolean => sessionId.startsWith(CODEX_SESSION_PREFIX)
+
 export const RESERVED_NAMES = new Set([HUMAN, 'user', 'system', 'claude', 'all', 'everyone'])
 
 /**
@@ -718,9 +725,9 @@ export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TE
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
-export const WAKE_SOURCES = ['watchdog', 'shepherd'] as const
+export const WAKE_SOURCES = ['watchdog', 'shepherd', 'console'] as const
 
-/** CC-203, CC-436: marks a send or resume the seat watchdog or Shepherd made, so its event row is not read as the human typing. */
+/** CC-203, CC-436, CC-1507: marks a send or resume the seat watchdog, Shepherd or titan-console made, so its event row is not read as the human typing. */
 export type WakeSource = (typeof WAKE_SOURCES)[number]
 
 /** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */
@@ -1262,6 +1269,12 @@ export type ClientMessage =
    * `teleport_result`.
    */
   | { t: 'account_move'; name: string; to: string; force?: boolean }
+  /**
+   * CC-1545: `agent-chat codex run` reached its `--wake-cap`. Names the Codex process by pid
+   * and machine, since a session without `--name` has a name only the broker knows. The
+   * broker refuses it from a REGISTERED connection; answered with `send_result`.
+   */
+  | { t: 'codex_wake_capped'; hostPid: number; host: string; cap: number }
   /**
    * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
    * itself. Names no agent, like `teleport`: the subject is this connection's own registration.

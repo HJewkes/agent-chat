@@ -19,6 +19,7 @@ import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
 import { askVerb, USAGE_EXIT } from './verbs/ask.js'
+import { addCodexCommands } from './verbs/codex-run.js'
 import { countsVerb } from './verbs/counts.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
@@ -155,7 +156,7 @@ function addDebugCommands(program: Command): void {
     .description('message a session as the human')
     .option(
       '--source <source>',
-      'record the send as made by this source (watchdog, shepherd) in the event log',
+      'record the send as made by this source (watchdog, shepherd, console) in the event log',
     )
     .action(debug.send)
 }
@@ -290,17 +291,20 @@ function addAgentCommands(program: Command): void {
   program
     .command('pr-ready')
     .description(
-      'before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0 only when all pass',
+      'before gh pr create: clean tree, merge the base, checks, changeset, leak scan; exit 0 only when all pass',
     )
     .helpGroup(AGENTS)
     .option('--title <t>', "PR title, scanned with gh-write's leak scan")
     .option('--body-file <path>', "PR body file, scanned with gh-write's leak scan")
-    .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
+    .option('--rebase', 'rebase unpushed commits onto the base instead of merging it (rewrites their shas)')
+    .option('--no-rebase', 'check and report only; neither merge nor rebase the base')
     .option('--strict', 'fail, not just note, a pushed branch that is behind the default branch')
     .addHelpText(
       'after',
       [
         '',
+        'The update step merges the base into an unpushed branch, so existing commits keep their shas;',
+        'it rebases only under --rebase, and never touches a pushed branch or one with an open PR.',
         'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
         'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
@@ -380,11 +384,13 @@ function addHiddenCommands(program: Command): void {
 
   // Run by Claude Code as a spawned agent's tool, prompt and turn-end hook (CC-1455), never by a person.
   program
-    .command('inbox-hook <agentId> <phase>', { hidden: true })
+    .command('inbox-hook <agentId> [phase]', { hidden: true })
     .option('--block', 'at Stop, block the turn end to show what is waiting')
-    .action(async (agentId: string, phase: string, opts: { block?: boolean }) => {
-      const { inboxHook } = await import('./verbs/inbox-hook.js')
-      await inboxHook(agentId, phase, opts.block === true)
+    .option('--host <host>', 'codex: the first argument is the phase and the output a notice')
+    .action(async (agentId: string, phase: string | undefined, opts: { block?: boolean; host?: string }) => {
+      const { codexInboxHook, inboxHook } = await import('./verbs/inbox-hook.js')
+      if (opts.host === 'codex') await codexInboxHook(agentId)
+      else await inboxHook(agentId, phase ?? '', opts.block === true)
     })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
@@ -461,6 +467,7 @@ export function buildProgram(): Command {
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
+  addCodexCommands(program, AGENTS)
   addServiceAskCommands(program)
   addHiddenCommands(program)
   return program

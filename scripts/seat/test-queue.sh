@@ -179,12 +179,13 @@ t_blank() {
 }
 await_lock() { n=0; while [ ! -d "$lock" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done; }
 t_lock() {
-  reset; lock="$F.lock"
-  sh -c 'mkdir "$1"; sleep 7; rmdir "$1"' sh "$lock" & holder=$!
+  reset; lock="$F.lock" release="$scratch/release"
+  # held until the verb returns: a fixed hold races the verb's wait on a loaded runner
+  sh -c 'mkdir "$1"; while [ ! -e "$2" ]; do sleep 0.1; done; rmdir "$1"' sh "$lock" "$release" & holder=$!
   await_lock; before=$(cksum < "$F")
   expect_fail "a held lock makes the verb wait, then refuse" "locked" done AA-101
   [ "$before" = "$(cksum < "$F")" ] || report "a held lock leaves the file untouched" "file changed"
-  wait $holder
+  touch "$release"; wait $holder; rm -f "$release"
   reset; sh -c 'mkdir "$1"; sleep 1; rmdir "$1"' sh "$lock" & holder=$!
   await_lock
   run "a lock released within the wait lets the verb proceed" 0 done AA-101 || { wait $holder; return; }

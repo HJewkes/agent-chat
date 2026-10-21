@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
@@ -15,6 +16,7 @@ import {
   resolveProcessKillBytes,
   resolveAutoRetireOnReport,
   resolveAutoParkOnExit,
+  resolveAccountRotation,
 } from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
@@ -36,6 +38,7 @@ import {
 } from '../agents/seats/spawn-gate-read.js'
 import { readReviewerAccount } from '../agents/reviewer-account-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
+import { accountDirs, readAccountUsage } from '../agents/account-budget.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
 import { activeHold } from './hold.js'
@@ -270,6 +273,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
   // CC-316, CC-331, CC-288, CC-606, CC-1078: the same rule for the seat journal, dispatch log, spawn budget gate, reviewer account gate and pool pick, which read the real autonomy root.
+  // CC-1546: and for account rotation, which reads the real account dirs.
   // CC-316: one journal for the supervisor's lines and the ended writer's merged line, so both dedupe through one latch.
   const sharedJournal = seatJournal(defaultAutonomyRoot())
   const journal = ephemeral
@@ -311,6 +315,10 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
         poolPick: {
           read: (spawn: PoolPickRequest) => readPoolPick(defaultAutonomyRoot(), spawn),
           mode: resolvePoolPickMode,
+        },
+        accountRotation: {
+          config: resolveAccountRotation,
+          readings: () => accountDirs(os.homedir(), process.env).map(dir => readAccountUsage(dir)),
         },
       }
   const socketServer = new SocketServer(

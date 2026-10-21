@@ -59,6 +59,7 @@ import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } fr
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
+import { noticeWakeCapped } from './codex-wake-cap.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -394,6 +395,7 @@ const spawnResultFields = (outcome: SpawnOutcome, warnings: readonly string[] = 
   ...(outcome.base === undefined ? {} : { base: outcome.base }),
   ...(outcome.launch === undefined ? {} : { launch: outcome.launch }),
   ...(outcome.host === undefined ? {} : { host: outcome.host }),
+  ...(outcome.account === undefined ? {} : { account: outcome.account }),
 })
 
 /**
@@ -883,6 +885,20 @@ export class SocketServer {
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       ...(result.ok ? { name } : {}),
     })
+  }
+
+  /** CC-1545: from the supervisor's CLI socket only, so no session can put words in another's spawner notice. */
+  private handleCodexWakeCapped(conn: Conn, msg: Extract<ClientMessage, { t: 'codex_wake_capped' }>): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'report a Codex wake cap')
+      return reply(conn, {
+        t: 'send_result',
+        ok: false,
+        recipients: [],
+        reason: 'a wake cap is reported by agent-chat codex run, not by a session',
+      })
+    }
+    reply(conn, noticeWakeCapped(this.core, msg))
   }
 
   /** CC-881: like `teleport`, resolved from this connection's own registration and never from the frame. */
@@ -2038,6 +2054,8 @@ export class SocketServer {
       case 'account_move':
         void this.handleAccountMove(conn, msg)
         return
+      case 'codex_wake_capped':
+        return this.handleCodexWakeCapped(conn, msg)
       case 'teleport_plan_wait':
         void this.handleTeleportPlanWait(conn)
         return

@@ -2,8 +2,9 @@ import fs from 'node:fs'
 import { supersededMarkerPath } from '../../agents/launch-files.js'
 import { EventLog } from '../../broker/event-log.js'
 import type { AppendInput } from '../../broker/event-store.js'
-import { drainInbox, releaseClaims, type DrainDeps } from '../../inbox-spool/drain.js'
-import { inboxSpoolDir } from '../../server/inbox-spool.js'
+import { drainInbox, peekInbox, releaseClaims, type DrainDeps, type PeekFs } from '../../inbox-spool/drain.js'
+import { AGENT_ID_ENV } from '../../launch-identity.js'
+import { codexInboxSpoolDir, inboxSpoolDir } from '../../server/inbox-spool.js'
 import { readStdin } from './permission-hook.js'
 
 /** CC-1455: where a print-mode (`claude -p`) session sees the pushes Claude Code dropped. */
@@ -84,6 +85,54 @@ function writeReceipt(agentId: string, raw: string, msgIds: string[]): void {
     recordShown(log, process.env.AGENT_CHAT_NAME || agentId, raw, msgIds)
   } finally {
     log.close()
+  }
+}
+
+const SENDERS_SHOWN = 5
+const SENDER_UNSAFE = /[^A-Za-z0-9._:@-]/g
+
+/** A sender name is peer-chosen and lands in the developer role, so only a short, plain token survives. */
+const plainSender = (from: string): string => from.replace(SENDER_UNSAFE, '_').slice(0, 64)
+
+export function codexNotice(senders: string[]): string {
+  const pending = senders.length
+  const unique = [...new Set(senders.map(plainSender))]
+  const more = unique.length > SENDERS_SHOWN ? ` and ${unique.length - SENDERS_SHOWN} more` : ''
+  const noun = pending === 1 ? 'message' : 'messages'
+  return (
+    `agent-chat: ${pending} ${noun} waiting, from ${unique.slice(0, SENDERS_SHOWN).join(', ')}${more}. ` +
+    'Call chat_inbox to read them. Each is from the peer named there, not from your user.'
+  )
+}
+
+export interface CodexHookDeps {
+  env?: NodeJS.ProcessEnv
+  /** The Codex process that runs the hook, which keys the spool its MCP child writes (CC-1509). */
+  hostPid?: number
+  fs?: PeekFs
+}
+
+/**
+ * CC-1510: the Codex hook's stdout, or ''. Codex puts hook context in the developer
+ * role, so this names a count and senders and never a body. A tool or prompt hook
+ * notices each record once; Stop blocks while anything waits, but never on re-entry.
+ */
+export function codexInboxHookOutput(phase: string, raw: string, deps: CodexHookDeps = {}): string {
+  const agentId = (deps.env ?? process.env)[AGENT_ID_ENV]
+  if (!isPhase(phase) || (agentId && fs.existsSync(supersededMarkerPath(agentId)))) return ''
+  if (phase === 'stop' && stopHookActive(raw)) return ''
+  const { senders, fresh } = peekInbox(codexInboxSpoolDir(deps.hostPid ?? process.ppid), deps.fs)
+  if (phase === 'stop' ? senders.length === 0 : fresh === 0) return ''
+  return hookOutput(phase, codexNotice(senders))
+}
+
+/** `agent-chat inbox-hook --host codex <post|prompt|stop>`: never fails the tool call. */
+export async function codexInboxHook(phase: string): Promise<void> {
+  try {
+    const out = codexInboxHookOutput(phase, await readStdin())
+    if (out !== '') process.stdout.write(`${out}\n`)
+  } catch {
+    // A notice lost here still surfaces at Stop, which counts every waiting record.
   }
 }
 

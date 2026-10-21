@@ -1,11 +1,16 @@
 import fs from 'node:fs'
-import path from 'node:path'
-import { gitChildEnv } from '../../git.js'
+import {
+  agentWorktreesIn as platformAgentWorktreesIn,
+  listWorktreesPorcelain,
+  sweepWorktrees as platformSweepWorktrees,
+  type HeldWorktree,
+  type SweepOwner,
+} from '@titan-design/worktree'
 import { agentsDir } from '../../paths.js'
 import { stoppedAt } from '../identity.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
-import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
+import { BRANCH_PREFIX, describeRefusal, inspectForRelease, worktreeStrategy } from './worktree.js'
 import type { Allocation } from './index.js'
 import type { AgentIdentity } from '../../protocol.js'
 
@@ -88,24 +93,7 @@ export async function agentWorktreesIn(
   gitRoot: string,
   list: GitLister,
 ): Promise<{ worktree: string; branch: string }[]> {
-  const out = await list(gitRoot).catch(() => '')
-  return (
-    out
-      .split('\n\n')
-      .map(block => ({
-        worktree: block.match(/^worktree (.+)$/m)?.[1]?.trim(),
-        branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1]?.trim(),
-        locked: /^locked/m.test(block),
-      }))
-      .filter(
-        (entry): entry is { worktree: string; branch: string; locked: boolean } =>
-          entry.worktree !== undefined && entry.branch !== undefined,
-      )
-      // Locked is another tool's "do not touch"; honour it rather than reporting a
-      // reclaim we would then refuse to perform.
-      .filter(entry => !entry.locked && entry.branch.startsWith(BRANCH_PREFIX))
-      .map(({ worktree, branch }) => ({ worktree: path.resolve(worktree), branch }))
-  )
+  return platformAgentWorktreesIn(gitRoot, list, BRANCH_PREFIX)
 }
 
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
@@ -115,21 +103,6 @@ export const isLive = (state: string): boolean => state === 'live' || state === 
 export function occupantOf(worktree: string, roster: readonly AgentIdentity[]): AgentIdentity | undefined {
   const tree = canonicalPath(worktree)
   return roster.find(agent => isLive(agent.state) && agent.cwd && isAtOrUnder(canonicalPath(agent.cwd), tree))
-}
-
-function classifyByAgent(
-  agent: AgentIdentity | undefined,
-  now: number,
-): { status: SweepStatus; detail: string } | undefined {
-  if (agent === undefined) return undefined
-  if (isLive(agent.state)) return { status: 'held', detail: `${agent.name} is ${agent.state}` }
-  const since = now - (stoppedAt(agent) ?? agent.lastEventAt)
-  if (since < RECLAIM_GRACE_MS)
-    return {
-      status: 'in-grace',
-      detail: `${agent.name} stopped ${Math.round(since / 1000)}s ago; reclaimable after ${RECLAIM_GRACE_MS / 1000}s`,
-    }
-  return undefined
 }
 
 export interface SweepOptions {
@@ -143,12 +116,34 @@ export interface SweepOptions {
   now?: () => number
 }
 
-export const porcelain: GitLister = async gitRoot =>
-  (await import('node:child_process')).execFileSync('git', ['worktree', 'list', '--porcelain'], {
-    cwd: gitRoot,
-    encoding: 'utf8',
-    env: gitChildEnv(),
-  })
+export const porcelain: GitLister = listWorktreesPorcelain
+
+/** The owner of a found tree: a live agent standing in it wins over the agent its branch names (CC-277). */
+function ownerOf(
+  roster: readonly AgentIdentity[],
+): (found: { worktree: string; branch: string }) => SweepOwner | undefined {
+  const byBranch = new Map(roster.map(agent => [`${BRANCH_PREFIX}${agent.name}`, agent]))
+  return ({ worktree, branch }) => {
+    const agent = occupantOf(worktree, roster) ?? byBranch.get(branch)
+    if (agent === undefined) return undefined
+    const exitedAt = stoppedAt(agent)
+    return {
+      agentId: agent.agentId,
+      name: agent.name,
+      state: agent.state,
+      lastEventAt: agent.lastEventAt,
+      ...(exitedAt === undefined ? {} : { exitedAt }),
+    }
+  }
+}
+
+function heldWorktrees(held: ReturnType<typeof heldByRuntimeState>): HeldWorktree[] {
+  return [...held].map(([branch, { allocation }]) => ({
+    gitRoot: allocation.ref?.gitRoot as string,
+    branch,
+    ...(allocation.ref?.base === undefined ? {} : { base: allocation.ref.base }),
+  }))
+}
 
 /**
  * Every agent-chat worktree this machine is holding, classified.
@@ -161,59 +156,44 @@ export async function sweepWorktrees(
   roster: readonly AgentIdentity[],
   options: SweepOptions = {},
 ): Promise<SweptWorktree[]> {
-  const list = options.list ?? porcelain
+  // The clock is read before runtime state, so an allocation written after `now` is never judged by it.
   const now = (options.now ?? Date.now)()
   const held = heldByRuntimeState()
-  const byBranch = new Map(roster.map(agent => [`${BRANCH_PREFIX}${agent.name}`, agent]))
-
-  const roots = new Set<string>(options.roots ?? [])
-  for (const { allocation } of held.values()) roots.add(allocation.ref?.gitRoot as string)
-
-  const swept: SweptWorktree[] = []
-  for (const gitRoot of roots) {
-    for (const { worktree, branch } of await agentWorktreesIn(gitRoot, list)) {
-      const agent = occupantOf(worktree, roster) ?? byBranch.get(branch)
-      swept.push(await classify({ gitRoot, worktree, branch }, agent, held, now))
-    }
-  }
-  return swept
+  const swept = await platformSweepWorktrees({
+    ...(options.roots === undefined ? {} : { roots: options.roots }),
+    held: heldWorktrees(held),
+    branchPrefix: BRANCH_PREFIX,
+    list: options.list ?? porcelain,
+    now: () => now,
+    ownerOf: ownerOf(roster),
+  })
+  return Promise.all(swept.map(entry => judgeByProductPolicy(entry, held)))
 }
 
 /**
- * Ownership is joined on the branch, or on a live agent's cwd (CC-277), so `agent` is absent for a worktree whose
- * agent predates the log or was pruned from it. That is reported rather than
- * assumed either way: an unknown owner is not a reason to destroy commits, and
- * the dirty/unmerged check below is what actually decides.
+ * The package judges a tree's files by its own ignored-file list, which misses this repo's build
+ * outputs and paid data, so the lifecycle verdict is kept and the work verdict is re-made under
+ * agent-chat's policy (`unsaved-work.ts`). Ownership is joined on the branch, or on a live agent's
+ * cwd (CC-277); an unknown owner is not a reason to destroy commits.
  */
-async function classify(
-  found: { gitRoot: string; worktree: string; branch: string },
-  agent: AgentIdentity | undefined,
+async function judgeByProductPolicy(
+  entry: SweptWorktree,
   held: ReturnType<typeof heldByRuntimeState>,
-  now: number,
 ): Promise<SweptWorktree> {
-  const owner = agent && {
-    agentId: agent.agentId,
-    name: agent.name,
-    state: agent.state,
-    lastEventAt: agent.lastEventAt,
-  }
-  const byAgent = classifyByAgent(agent, now)
-  if (byAgent) return { ...found, ...byAgent, ...(owner ? { agent: owner } : {}) }
-
-  const base = held.get(found.branch)?.allocation.ref?.base ?? 'HEAD'
-  const safety = await inspectForRelease(found.gitRoot, found.worktree, found.branch, base)
+  if (entry.status === 'held' || entry.status === 'in-grace') return entry
+  const base = held.get(entry.branch)?.allocation.ref?.base ?? 'HEAD'
+  const safety = await inspectForRelease(entry.gitRoot, entry.worktree, entry.branch, base)
   const unsafe = safety.dirty || safety.unmerged
   return {
-    ...found,
-    ...(owner ? { agent: owner } : {}),
+    ...entry,
     status: unsafe ? 'holds-work' : 'reclaimable',
     detail: unsafe
       ? [safety.dirty && 'uncommitted changes', safety.unmerged && 'commits that exist nowhere else']
           .filter(Boolean)
           .join(' and ')
-      : agent === undefined
+      : entry.agent === undefined
         ? 'no agent in the log claims this branch, and it holds nothing'
-        : `${agent.name} is ${agent.state}, and it holds nothing`,
+        : `${entry.agent.name} is ${entry.agent.state}, and it holds nothing`,
   }
 }
 
@@ -221,7 +201,8 @@ async function classify(
  * Destroy one swept worktree and its branch, and forget the allocation.
  *
  * Refuses anything not `reclaimable` unless forced, so the classification above
- * is the guard rather than advice. Clearing the runtime state is what stops the
+ * is the guard rather than advice, and re-checks the work before acting on it
+ * (TP-640). Clearing the runtime state is what stops the
  * next sweep re-reporting an allocation that is already gone.
  */
 export async function reclaim(
@@ -236,10 +217,15 @@ export async function reclaim(
     cwd: entry.worktree,
     ref: { branch: entry.branch, worktree: entry.worktree, gitRoot: entry.gitRoot },
   }
-  // Forced at the strategy either way: the grace window and the dirty/unmerged
-  // check have already run, in `classify`, against the report the caller read.
-  // Letting release re-derive them would refuse a reclaim the human just saw
-  // offered, on a `stoppedAt` this call site does not have.
+  // The report may be stale: work written after `classify` ran is not in it.
+  if (options.force !== true) {
+    const base = allocation.ref?.base ?? 'HEAD'
+    const safety = await inspectForRelease(entry.gitRoot, entry.worktree, entry.branch, base)
+    if (safety.dirty || safety.unmerged)
+      return { ok: false, reason: `${entry.branch} gained work since the sweep — ${describeRefusal(safety)}` }
+  }
+  // Forced at the strategy: the grace window was judged in `classify`, on a
+  // `stoppedAt` this call site does not have, and the work check just re-ran.
   const released = await worktreeStrategy.release(
     { agentId: alloc?.agentId ?? '', agentName: entry.agent?.name ?? entry.branch, baseCwd: entry.gitRoot },
     allocation,

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { present } from '../../args.js'
 import type { ServerMessage } from '../../protocol.js'
-import { hostIdentity } from '../host.js'
+import { claudeSessionId, hostIdentity } from '../host.js'
 import { accountReader, budgetMiss, formatBudget, readBudget, type BudgetRead } from '../../agents/budget.js'
 import { newestByName } from '../../agents/roster-filter.js'
 import { defineTool } from '../command.js'
@@ -35,7 +35,7 @@ export const sessionBudget = defineTool({
     const name = present(rawName)
 
     if (name === undefined || name === ctx.registeredName) {
-      const { sessionId } = hostIdentity()
+      const sessionId = claudeSessionId(hostIdentity())
       if (sessionId === undefined)
         return (
           'No CLAUDE_CODE_SESSION_ID in this process, so there is no session to look a budget up for. ' +

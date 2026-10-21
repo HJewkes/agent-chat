@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { LAUNCHER_PID_ENV } from '../agents/launcher.js'
+import { CODEX_SESSION_PREFIX, isCodexSessionId } from '../protocol.js'
 
 /**
  * What this process knows about the Claude Code session it belongs to, without
@@ -27,7 +30,21 @@ export interface HostIdentity {
   hostPid?: number
 }
 
-export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = process.ppid): HostIdentity {
+/**
+ * The identity every register frame and session-id reader uses, resolved once
+ * here so a Codex host never presents two (CC-1508). `parentComm` is injectable
+ * because reading it touches `/proc` or `ps`.
+ */
+export function hostIdentity(
+  env: NodeJS.ProcessEnv = process.env,
+  ppid = process.ppid,
+  parentComm: (pid: number) => string | undefined = cachedCommOf,
+): HostIdentity {
+  const { harness: _harness, ...identity } = currentSessionHost(env, ppid, parentComm)
+  return identity
+}
+
+const environmentIdentity = (env: NodeJS.ProcessEnv, ppid: number): HostIdentity => {
   const sessionId = env.CLAUDE_CODE_SESSION_ID
   return {
     ...(sessionId ? { sessionId } : {}),
@@ -36,6 +53,85 @@ export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = proces
     ...(Number.isInteger(ppid) && ppid > 1 ? { hostPid: ppid } : {}),
   }
 }
+
+/** Which program launched this MCP server; only Claude Code renders a channel push (CC-1508). */
+export type Harness = 'claude-code' | 'codex'
+
+/**
+ * Codex sets no `CLAUDE_CODE_SESSION_ID` and passes no `CODEX_*` variables to MCP
+ * children, so its own process name is the only evidence it leaves. The
+ * environment override covers a wrapper sitting between the two.
+ */
+export function detectHarness(env: NodeJS.ProcessEnv, parentComm: string | undefined): Harness {
+  if (env.AGENT_CHAT_HOST === 'codex') return 'codex'
+  return parentComm !== undefined && path.basename(parentComm.trim()) === 'codex' ? 'codex' : 'claude-code'
+}
+
+export interface SessionHost extends HostIdentity {
+  harness: Harness
+}
+
+/**
+ * The identity a session registers and readopts under.
+ *
+ * Under Codex any `CLAUDE_CODE_SESSION_ID` was inherited from a Claude Code
+ * session that started it, so it is never this session's; the id is minted from
+ * the Codex process instead, which every MCP child and hook of it can compute.
+ */
+export function sessionHost(harness: Harness, identity: HostIdentity, machine: string): SessionHost {
+  if (harness === 'claude-code') return { harness, ...identity }
+  const { hostPid } = identity
+  return hostPid === undefined
+    ? { harness }
+    : { harness, hostPid, sessionId: `${CODEX_SESSION_PREFIX}${hostPid}@${machine}` }
+}
+
+/** `/proc` first, since it costs no process; `ps` for macOS. */
+export function commOf(pid: number): string | undefined {
+  try {
+    return fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim()
+  } catch {
+    return psComm(pid)
+  }
+}
+
+const psComm = (pid: number): string | undefined => {
+  for (const ps of PS_CANDIDATES) {
+    try {
+      const out = execFileSync(ps, ['-o', 'comm=', '-p', String(pid)], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: PS_TIMEOUT_MS,
+      }).trim()
+      if (out !== '') return out
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
+export function currentSessionHost(
+  env: NodeJS.ProcessEnv = process.env,
+  ppid = process.ppid,
+  parentComm: (pid: number) => string | undefined = cachedCommOf,
+): SessionHost {
+  const identity = environmentIdentity(env, ppid)
+  const comm = identity.hostPid === undefined ? undefined : parentComm(identity.hostPid)
+  return sessionHost(detectHarness(env, comm), identity, os.hostname())
+}
+
+/** The parent of a live process does not change its name, so one read per pid is enough. */
+const commCache = new Map<number, string | undefined>()
+
+const cachedCommOf = (pid: number): string | undefined => {
+  if (!commCache.has(pid)) commCache.set(pid, commOf(pid))
+  return commCache.get(pid)
+}
+
+/** A session id that names a Claude Code transcript, which a Codex id never does. */
+export const claudeSessionId = (identity: HostIdentity): string | undefined =>
+  identity.sessionId === undefined || isCodexSessionId(identity.sessionId) ? undefined : identity.sessionId
 
 /** The machine this process runs on, sent at registration so the broker never signals a pid from another one (CC-880). */
 export function hostMarker(): { host: string } {
