@@ -31,6 +31,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/burndown-watchdog-unusable.test.ts',
   'src/__tests__/burndown-daily-retire.test.ts',
   'src/__tests__/worktree-setup.test.ts',
+  'src/__tests__/worktree-setup-source.test.ts',
   'src/__tests__/worktree-git-result.test.ts',
   'src/__tests__/worktree-release-fail-closed.test.ts',
   'src/__tests__/restart-window.test.ts',
