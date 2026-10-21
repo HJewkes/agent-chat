@@ -88,6 +88,8 @@ type Log = (event: string, detail: Record<string, unknown>) => void
 export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
 /** TP-2516: the bare form leaves out done, failed and cancelled runs; these readers need them. */
 export const SHEPHERD_STATUS_ALL_ARGS = [...SHEPHERD_STATUS_ARGS, '--all']
+/** CC-1551: the owner and seat gates Shepherd holds open. */
+export const SHEPHERD_WAITING_ARGS = ['shepherd', 'waiting', '--json']
 
 /**
  * Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is
