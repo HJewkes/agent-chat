@@ -67,8 +67,10 @@ async function sweptReclaimable() {
   return { repo, tree, entry }
 }
 
-function writeLateWork(kind: 'untracked' | 'commit', repo: string, tree: string): string {
+function writeLateWork(kind: 'untracked' | 'ignored' | 'commit', repo: string, tree: string): string {
   const note = path.join(tree, 'late-owned-note.txt')
+  if (kind === 'ignored')
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'late-owned-note.txt\n')
   fs.writeFileSync(note, 'harmless owned note\n')
   if (kind === 'commit') {
     git(tree, ['add', 'late-owned-note.txt'])
@@ -78,7 +80,7 @@ function writeLateWork(kind: 'untracked' | 'commit', repo: string, tree: string)
   return note
 }
 
-it.each(['untracked', 'commit'] as const)(
+it.each(['untracked', 'ignored', 'commit'] as const)(
   'refuses to reclaim a tree that gained %s work after the sweep, and keeps it',
   async kind => {
     const { repo, tree, entry } = await sweptReclaimable()
