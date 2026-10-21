@@ -5,7 +5,13 @@ import { agentsDir } from '../../paths.js'
 import { stoppedAt } from '../identity.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
-import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
+import {
+  BRANCH_PREFIX,
+  describeRefusal,
+  inspectForRelease,
+  RECLAIM_GRACE_MS,
+  worktreeStrategy,
+} from './worktree.js'
 import type { Allocation } from './index.js'
 import type { AgentIdentity } from '../../protocol.js'
 
@@ -221,7 +227,8 @@ async function classify(
  * Destroy one swept worktree and its branch, and forget the allocation.
  *
  * Refuses anything not `reclaimable` unless forced, so the classification above
- * is the guard rather than advice. Clearing the runtime state is what stops the
+ * is the guard rather than advice, and re-checks the work before acting on it
+ * (TP-640). Clearing the runtime state is what stops the
  * next sweep re-reporting an allocation that is already gone.
  */
 export async function reclaim(
@@ -236,10 +243,15 @@ export async function reclaim(
     cwd: entry.worktree,
     ref: { branch: entry.branch, worktree: entry.worktree, gitRoot: entry.gitRoot },
   }
-  // Forced at the strategy either way: the grace window and the dirty/unmerged
-  // check have already run, in `classify`, against the report the caller read.
-  // Letting release re-derive them would refuse a reclaim the human just saw
-  // offered, on a `stoppedAt` this call site does not have.
+  // The report may be stale: work written after `classify` ran is not in it.
+  if (options.force !== true) {
+    const base = allocation.ref?.base ?? 'HEAD'
+    const safety = await inspectForRelease(entry.gitRoot, entry.worktree, entry.branch, base)
+    if (safety.dirty || safety.unmerged)
+      return { ok: false, reason: `${entry.branch} gained work since the sweep — ${describeRefusal(safety)}` }
+  }
+  // Forced at the strategy: the grace window was judged in `classify`, on a
+  // `stoppedAt` this call site does not have, and the work check just re-ran.
   const released = await worktreeStrategy.release(
     { agentId: alloc?.agentId ?? '', agentName: entry.agent?.name ?? entry.branch, baseCwd: entry.gitRoot },
     allocation,
