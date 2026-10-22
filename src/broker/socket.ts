@@ -2015,6 +2015,10 @@ export class SocketServer {
           }),
         })
       }
+      case 'message_by_id': {
+        const message = core.events.messageById(msg.msgId)
+        return reply(conn, { t: 'message_by_id_result', ...(message ? { message } : {}) })
+      }
       case 'activity': {
         // Deliberately no deliver() anywhere on this path: reading a peer must
         // cost that peer nothing, or observing and interrupting stay the same act.

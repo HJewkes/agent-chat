@@ -11,6 +11,7 @@ import type {
   Provenance,
   QueueItem,
   ServiceAnswer,
+  StoredMessage,
 } from '../protocol.js'
 import { HUMAN, wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
@@ -424,6 +425,25 @@ export class EventLog implements EventStore {
       )
       .all(name, afterId, limit) as unknown as Row[]
     return rows.map(row => ({ ...toMessage(row), id: row.id }))
+  }
+
+  /** The first message row carrying `msgId`, by events_msg_id; a broadcast's copies share one id. */
+  messageById(msgId: string): StoredMessage | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM events WHERE msg_id = ? AND kind IN (${INBOX_KINDS}) ORDER BY id ASC LIMIT 1`)
+      .get(msgId) as unknown as Row | undefined
+    if (!row) return undefined
+    const { from, text, at, wakeSource, provenance } = toMessage(row)
+    return {
+      msgId,
+      kind: row.kind,
+      from,
+      target: row.target ?? '',
+      text,
+      at,
+      ...(wakeSource === undefined ? {} : { wakeSource }),
+      ...(provenance === undefined ? {} : { provenance }),
+    }
   }
 
   rowIdOf(msgId: string): number | undefined {

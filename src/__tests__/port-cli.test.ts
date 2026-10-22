@@ -7,11 +7,16 @@ import { z } from 'zod'
 import { PortEnvelope } from '../cli/port.js'
 import { SpawnPortOutput } from '../cli/verbs/port-agent.js'
 import { QueuePortOutput } from '../cli/verbs/port-queue.js'
-import { FilesClaimsPortOutput, InboxSincePortOutput, RosterPortOutput } from '../cli/verbs/port-reads.js'
+import {
+  FilesClaimsPortOutput,
+  InboxSincePortOutput,
+  MessagePortOutput,
+  RosterPortOutput,
+} from '../cli/verbs/port-reads.js'
 import { SendPortOutput } from '../cli/verbs/port-send.js'
 
 const cli = path.resolve(import.meta.dirname, '../../dist/cli.js')
-const VERBS = ['roster', 'inbox-since', 'queue', 'files-claims', 'spawn', 'retire', 'resume', 'send']
+const VERBS = ['roster', 'inbox-since', 'message', 'queue', 'files-claims', 'spawn', 'retire', 'resume', 'send']
 
 let home: string
 beforeEach(() => {
@@ -29,7 +34,7 @@ function runCli(args: string[], input = '') {
 }
 
 describe('agent-chat port, run from dist', () => {
-  it('lists all eight verbs in port --help', () => {
+  it('lists all nine verbs in port --help', () => {
     const { stdout, status } = runCli(['port', '--help'])
 
     expect(status).toBe(0)
@@ -80,6 +85,7 @@ describe('port output schemas', () => {
     const schemas = {
       roster: RosterPortOutput,
       'inbox-since': InboxSincePortOutput,
+      message: MessagePortOutput,
       queue: QueuePortOutput,
       'files-claims': FilesClaimsPortOutput,
       spawn: SpawnPortOutput,

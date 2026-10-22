@@ -38,7 +38,7 @@ import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { addHostCommands } from './verbs/host.js'
 import { addMachineCommands } from './verbs/machine.js'
-import { portFilesClaimsVerb, portInboxSinceVerb, portRosterVerb } from './verbs/port-reads.js'
+import { portFilesClaimsVerb, portInboxSinceVerb, portMessageVerb, portRosterVerb } from './verbs/port-reads.js'
 import { portQueueVerb } from './verbs/port-queue.js'
 import { portSendVerb } from './verbs/port-send.js'
 import { portResumeVerb, portRetireVerb, portSpawnVerb } from './verbs/port-agent.js'
@@ -439,6 +439,7 @@ function addPortCommands(program: Command): void {
     .description('JSON envelope ports for the dispatch factory; none of them starts a broker')
   addVerb(port, portRosterVerb)
   addVerb(port, portInboxSinceVerb)
+  addVerb(port, portMessageVerb)
   addVerb(port, portQueueVerb)
   addVerb(port, portFilesClaimsVerb)
   addVerb(port, portSpawnVerb)

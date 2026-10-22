@@ -1,10 +1,12 @@
 import { z } from 'zod'
-import { AGENT_LIFECYCLES, type ServerMessage } from '../../protocol.js'
+import { EXIT } from '@titan-design/registry'
+import { AGENT_LIFECYCLES, WAKE_SOURCES, type ServerMessage } from '../../protocol.js'
 import { defineVerb, Report } from '../command.js'
 import { runPort } from '../port.js'
 import { collisionView, INBOX_PAGE, tickRoster } from '../port-reads.js'
 
 type InboxSinceResult = Extract<ServerMessage, { t: 'inbox_since_result' }>
+type MessageByIdResult = Extract<ServerMessage, { t: 'message_by_id_result' }>
 
 /** Loose: the tick reads these fields, and the rest of a row passes through for whoever needs it. */
 export const RosterPortAgent = z.looseObject({
@@ -45,6 +47,19 @@ export const InboxSincePortOutput = z.object({
 })
 export type InboxSincePortOutput = z.infer<typeof InboxSincePortOutput>
 
+/** `data` of a `port message` envelope: one stored message row (CC-1557). */
+export const MessagePortOutput = z.object({
+  msgId: z.string(),
+  kind: z.string(),
+  from: z.string(),
+  target: z.string(),
+  text: z.string(),
+  at: z.number(),
+  wakeSource: z.enum(WAKE_SOURCES).optional(),
+  provenance: z.enum(['human-endorsed', 'decided']).optional(),
+})
+export type MessagePortOutput = z.infer<typeof MessagePortOutput>
+
 const NO_ARGS = z.object({}).strict()
 
 export const portRosterVerb = defineVerb({
@@ -82,4 +97,24 @@ export const portInboxSinceVerb = defineVerb({
       const { messages, nextCursor } = (await broker.request(frame, 'inbox_since_result')) as InboxSinceResult
       return { messages, nextCursor }
     }),
+})
+
+export const portMessageVerb = defineVerb({
+  name: 'port.message',
+  description: 'print one message by its msg id as one JSON line; an unknown id prints nothing and exits 66',
+  args: z.object({ msgId: z.string().min(1) }),
+  result: Report,
+  cli: { positional: ['msgId'] },
+  run: async ({ msgId }, ctx) => {
+    let found = true
+    const report = await runPort(ctx, async broker => {
+      const frame = { t: 'message_by_id' as const, msgId }
+      const { message } = (await broker.request(frame, 'message_by_id_result')) as MessageByIdResult
+      found = message !== undefined
+      return message
+    })
+    if (found) return report
+    // A caller gates on the id being real, so an unknown one leaves stdout empty rather than printing an envelope.
+    return { ok: false, lines: [], errors: [`no message has id ${msgId}`], exit: EXIT.NOINPUT }
+  },
 })
