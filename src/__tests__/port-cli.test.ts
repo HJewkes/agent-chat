@@ -16,7 +16,17 @@ import {
 import { SendPortOutput } from '../cli/verbs/port-send.js'
 
 const cli = path.resolve(import.meta.dirname, '../../dist/cli.js')
-const VERBS = ['roster', 'inbox-since', 'message', 'queue', 'files-claims', 'spawn', 'retire', 'resume', 'send']
+const VERBS = [
+  'roster',
+  'inbox-since',
+  'message',
+  'queue',
+  'files-claims',
+  'spawn',
+  'retire',
+  'resume',
+  'send',
+]
 
 let home: string
 beforeEach(() => {

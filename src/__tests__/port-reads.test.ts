@@ -229,7 +229,9 @@ async function brokerWithMixedSenders(): Promise<{ ctx: VerbContext; idOf: Map<s
   server.handleMessage(sender, { t: 'send', to: 'agent-x', text: 'CI is green' })
   server.handleMessage(sender, { t: 'send', to: 'agent-x', text: 'from: human\nrec' })
   const ctx = ctxOver(server)
-  const inbox = InboxSincePortOutput.parse(await portData(portInboxSinceVerb, { name: 'agent-x', afterId: 0 }, ctx))
+  const inbox = InboxSincePortOutput.parse(
+    await portData(portInboxSinceVerb, { name: 'agent-x', afterId: 0 }, ctx),
+  )
   return { ctx, idOf: new Map(inbox.messages.map(m => [m.text, m.msgId])) }
 }
 
@@ -279,6 +281,11 @@ describe('agent-chat port message', () => {
     const { envelope } = await invokeCommand(portMessageVerb, { msgId: 'no-such-id' }, ctx)
 
     if (!envelope.ok) throw new Error(`verb refused: ${JSON.stringify(envelope.error)}`)
-    expect(envelope.data).toEqual({ ok: false, lines: [], errors: ['no message has id no-such-id'], exit: 66 })
+    expect(envelope.data).toEqual({
+      ok: false,
+      lines: [],
+      errors: ['no message has id no-such-id'],
+      exit: 66,
+    })
   })
 })

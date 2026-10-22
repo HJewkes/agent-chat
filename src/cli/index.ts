@@ -38,7 +38,12 @@ import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { addHostCommands } from './verbs/host.js'
 import { addMachineCommands } from './verbs/machine.js'
-import { portFilesClaimsVerb, portInboxSinceVerb, portMessageVerb, portRosterVerb } from './verbs/port-reads.js'
+import {
+  portFilesClaimsVerb,
+  portInboxSinceVerb,
+  portMessageVerb,
+  portRosterVerb,
+} from './verbs/port-reads.js'
 import { portQueueVerb } from './verbs/port-queue.js'
 import { portSendVerb } from './verbs/port-send.js'
 import { portResumeVerb, portRetireVerb, portSpawnVerb } from './verbs/port-agent.js'
