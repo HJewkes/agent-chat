@@ -154,6 +154,7 @@ export const POLL_TOOLS: ReadonlySet<string> = new Set([
   'chat_activity',
   'agent_list',
   'session_budget',
+  'operator_brief',
 ])
 
 /**
