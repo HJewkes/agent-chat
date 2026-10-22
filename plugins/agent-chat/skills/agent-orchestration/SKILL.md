@@ -353,6 +353,16 @@ its context as the scarce resource, not the agents' time.
   `git stash`, because refs/stash is shared by every worktree: read a file at a revision with
   `git show <rev>:<path>`, or copy files into the session scratchpad. Read a diff yourself only
   where the judgement is the point (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
+- After each action or wake, make one status read: `agent-chat operator-brief [--seat <name>]`
+  (MCP tool `operator_brief`, same text). It is read-only, never runs gh, and replaces the
+  separate reads it covers, so do not make them as well: `agent_list`/`agent list` and
+  `agent_logs` (live agents and those finished since your last send), `chat_list` (your
+  unread count), `titan-factory shepherd status` and `timeline` per PR (phase, head, held or
+  stalled, pending gate), active-work task reads for a PR's task (`taskStatus` in `--json`),
+  `gh pr view` per PR, pace.json and pool readings, `titan-factory shepherd waiting` (seat
+  and owner gates), the owner queue, and the burndown pause file and last tick. Read
+  `--json` when the text says `+N more`; an `unavailable: <source>` line is the cue to read
+  that one source directly. See `docs/working-as-a-team.md` §2a.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
