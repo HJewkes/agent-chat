@@ -1305,6 +1305,36 @@ describe('per-profile env (CC-259)', () => {
     expect('CLAUDE_CODE_PROMPT_CACHE_TTL' in implementer.env).toBe(false)
   })
 
+  it('reads each valid cache TTL from a profile file (CC-1553)', () => {
+    for (const cacheTtl of ['5m', '1h'])
+      expect(parseProfile('p', { ...base, cacheTtl })).toMatchObject({ cacheTtl })
+  })
+
+  it('leaves the cache TTL off a profile file that omits it, and the launch on the harness default', () => {
+    const parsed = parseProfile('p', base) as AgentProfile
+
+    expect(parsed).not.toHaveProperty('cacheTtl')
+    expect(buildLaunchPlan(input({ profile: parsed })).env).not.toHaveProperty('CLAUDE_CODE_PROMPT_CACHE_TTL')
+  })
+
+  it('makes a profile with an unknown cache TTL unreadable, naming the choices', () => {
+    for (const cacheTtl of ['30m', '5M', '300', '', 5, null]) {
+      const result = parseProfile('p', { ...base, cacheTtl })
+      expect((result as { error: string }).error).toMatch(/"cacheTtl" must be one of 5m, 1h/)
+    }
+  })
+
+  // Mutation caught: dropping the CLAUDE_CODE_PROMPT_CACHE_TTL line from envFor, or spreading profile.env after it.
+  it('launches with the profile cache TTL, over a raw env value, on spawn and resume', () => {
+    const ttl = profile({ cacheTtl: '5m', env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' } })
+
+    const spawned = buildLaunchPlan(input({ profile: ttl }))
+    const resumed = buildLaunchPlan(input({ profile: ttl, resume: true, surface: 'iterm-pane' }))
+
+    expect(spawned.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
+    expect(resumed.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
+  })
+
   it('rejects a non-string env value, naming the profile', () => {
     const parsed = parseProfile('cachey', { ...base, env: { TTL: 5 } })
 

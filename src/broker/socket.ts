@@ -1136,14 +1136,21 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
-  /** One named recipient. CC-320: a dark seat's message is held for it rather than failing to route. */
+  /**
+   * One named recipient. CC-320: a dark seat's message is held for it rather than failing to route.
+   * CC-1552: a retired or parked seat is as non-resident as a dark one, so its steward mapping applies.
+   */
   private handleSend(conn: Conn, to: string, text: string, extras: SendExtras): void {
     const { core } = this
     const { inReplyTo, meta } = extras
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
-    const queued = unrouted ? core.queueForSeat(from, to, text, { inReplyTo, sendMeta: meta }) : undefined
+    const nonResident = unrouted || (result.ok && core.registry.pushHold(to) !== undefined)
+    const queued =
+      from !== undefined && nonResident
+        ? core.queueForSeat(from, to, text, { inReplyTo, sendMeta: meta })
+        : undefined
     if (queued !== undefined) return replyQueuedForSeat(conn, to, queued)
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo, undefined, meta) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to, { meta })
@@ -1196,6 +1203,8 @@ export class SocketServer {
       // reasons to hold: the sender is over budget (whole route) or this one
       // recipient is in do-not-disturb.
       if (!result.suppressLive && delivery.live) core.pushRouted(conn, delivery.conn, delivery.message)
+      else if (!result.suppressLive && delivery.hold === 'parked')
+        core.holdWhileParked(delivery.conn, delivery.message)
     }
     if (!result.ok) {
       core.append({ kind: 'route_failed', actor: from, target: to, body: result.reason ?? 'unknown' })

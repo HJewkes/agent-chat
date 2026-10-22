@@ -119,6 +119,9 @@ export interface EventStore {
   /** When the newest `kind` row about agent `ref` was written, if any (CC-266). */
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined
 
+  /** Whether the human, or the decider for it, answered or wrote to `name` at or after `since` (CC-1552). */
+  humanContactSince(name: string, since: number): boolean
+
   /**
    * Where `name` went dark: its unanswered `deregistered` row or, if an older register was never
    * closed, the episode its first held row recorded, else the log's opening.
