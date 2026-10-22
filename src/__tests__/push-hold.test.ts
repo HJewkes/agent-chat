@@ -171,7 +171,7 @@ describe('pushes to a retired or parked agent', () => {
     send(sender, AGENT, 'Ready for review')
 
     expect(before).toMatchObject({ ok: true, held: true })
-    expect(pushed(successor).map(m => m.text)).toEqual(['Go ahead', 'Ready for review'])
+    expect(pushed(successor).map(m => m.text)).toEqual(['Any news?', 'Go ahead', 'Ready for review'])
   })
 
   // Catches: holding every teleport successor, not only one that parked.
@@ -214,5 +214,62 @@ describe('pushes to a retired or parked agent', () => {
     const subscribers = core.registry.subscribersFor({ kind: 'registered', subject: 'worker' })
 
     expect(subscribers).toEqual([watcher.conn])
+  })
+})
+
+describe('mail held while an agent was parked', () => {
+  const resume = (agentId: string, name: string): void =>
+    void core.append({ kind: 'agent_resumed', actor: 'human', target: name, ref: agentId, body: '' })
+
+  // Catches: append never flushing, or flushing twice: a second resume must not push the mail again.
+  it('pushes it in order, once, when the connected agent is resumed', () => {
+    const parked = joinAdopted(AGENT)
+    parkTree(parked, AGENT)
+    const sender = join('rev-one')
+    send(sender, AGENT, 'CI is green')
+    send(sender, AGENT, 'Review is in')
+
+    resume(agentIdOf(parked), AGENT)
+    resume(agentIdOf(parked), AGENT)
+
+    expect(pushed(parked).map(m => m.text)).toEqual(['CI is green', 'Review is in'])
+  })
+
+  // Catches: flushing only to the session that was parked, when a resume starts a new one.
+  it('pushes it to the session a resume starts once that session attaches', () => {
+    const parked = joinAdopted(AGENT)
+    const agentId = agentIdOf(parked)
+    parkTree(parked, AGENT)
+    send(join('rev-one'), AGENT, 'CI is green')
+    core.drop(parked.conn)
+    resume(agentId, AGENT)
+
+    const resumed = join(AGENT, { agentId })
+
+    expect(pushed(resumed).map(m => m.text)).toEqual(['CI is green'])
+  })
+
+  // Catches: pushing the held mail on any row about the agent, before it is unparked.
+  it('keeps holding it while the agent stays parked', () => {
+    const parked = joinAdopted(AGENT)
+    parkTree(parked, AGENT)
+    const sender = join('rev-one')
+    send(sender, AGENT, 'CI is green')
+
+    send(sender, AGENT, 'Still there?')
+
+    expect(pushed(parked)).toEqual([])
+  })
+
+  it('pushes nothing to a retired agent', () => {
+    const agent = joinAdopted(AGENT)
+    parkTree(agent, AGENT)
+    send(join('rev-one'), AGENT, 'CI is green')
+    retire(agent, AGENT)
+
+    server.handleMessage(wire().conn, { t: 'human_send', to: AGENT, text: 'Go ahead' })
+
+    expect(pushed(agent).map(m => m.text)).not.toContain('CI is green')
+    expect(inbox(AGENT)).toContain('CI is green')
   })
 })

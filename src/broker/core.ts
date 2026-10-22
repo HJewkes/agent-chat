@@ -117,6 +117,8 @@ export class BrokerCore<C = Conn> {
   /** CC-1140: the log id a non-seat name went dark at, read as it registers, until its missed answers are pushed. */
   private readonly missedSince = new Map<string, number>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
+  /** CC-1554: routed mail a parked agent was not pushed, by agent id, oldest first, until it is unparked. */
+  private readonly parkedMail = new Map<string, DeliveredMessage[]>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
     this.events = options.events ?? new EventLog(options.dbPath)
@@ -157,7 +159,40 @@ export class BrokerCore<C = Conn> {
         // A watcher must never be able to fail a write that already happened.
       }
     }
+    this.flushParkedMail(input)
     return written
+  }
+
+  /** CC-1554: keep a routed message held from a parked agent, for the push its unpark makes. */
+  holdWhileParked(target: C, message: DeliveredMessage): void {
+    const agentId = this.registry.entryFor(target)?.agentId
+    if (agentId === undefined) return
+    this.parkedMail.set(agentId, [...(this.parkedMail.get(agentId) ?? []), message])
+  }
+
+  /**
+   * CC-1554: a resume, a resumed session attaching, or the human's first word to a park
+   * teleport's successor can unpark an agent; its held mail is then pushed in order. A
+   * retired agent's is dropped, since it stays in the inbox and nothing will wake it.
+   */
+  private flushParkedMail(input: AppendInput): void {
+    const agentId = this.parkedMail.size === 0 ? undefined : this.agentOfRow(input)
+    const held = agentId === undefined ? undefined : this.parkedMail.get(agentId)
+    if (agentId === undefined || held === undefined) return
+    const hold = pushHoldFor(this.events, this.agents, agentId)
+    if (hold === 'retired') this.parkedMail.delete(agentId)
+    const conn = this.registry.connFor(this.agents.get(agentId)?.name ?? '')
+    if (hold !== undefined || conn === undefined || this.registry.entryFor(conn)?.agentId !== agentId) return
+    this.parkedMail.delete(agentId)
+    for (const message of held) this.reports.now(conn, message)
+    logEvent('parked_mail_delivered', { agentId, count: held.length })
+  }
+
+  /** The agent a row's resume or attach names, or else the one connected under its target. */
+  private agentOfRow(input: AppendInput): string | undefined {
+    if (input.kind === 'agent_resumed' || input.kind === 'agent_attached') return input.ref
+    const conn = input.target === undefined ? undefined : this.registry.connFor(input.target)
+    return conn === undefined ? undefined : this.registry.entryFor(conn)?.agentId
   }
 
   /** Observe every appended row. Returns its own unsubscribe. */
