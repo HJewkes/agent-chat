@@ -331,6 +331,18 @@ describe('reading activity for a stall check', () => {
     expect(stall).toEqual({ state: 'working' })
   })
 
+  it('does not count a session that only reads operator_brief as progress', () => {
+    const brief = callAt(
+      'toolu_b',
+      'mcp__plugin_agent-chat_agent-chat__operator_brief',
+      {},
+      '2026-07-30T11:02:00.000Z',
+    )
+    write([bashCall, bashResult, brief, resultAt('toolu_b', '2026-07-30T11:02:01.000Z')])
+
+    expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:01:00.000Z' })
+  })
+
   it('does not count a Bash sleep as progress', () => {
     const sleep = callAt('toolu_s', 'Bash', { command: 'sleep 60' }, '2026-07-30T11:02:00.000Z')
     write([bashCall, bashResult, sleep, resultAt('toolu_s', '2026-07-30T11:03:00.000Z')])
