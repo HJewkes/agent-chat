@@ -25,6 +25,7 @@ import { agentSpawn } from './agent-spawn.js'
 import { agentTeleport } from './agent-teleport.js'
 import { chatRegister } from './chat-register.js'
 import { chatStatus } from './chat-status.js'
+import { operatorBrief } from './operator-brief.js'
 
 /** Every MCP tool; ToolHandler routes each call by name through this registry. */
 export const TOOL_COMMANDS = createRegistry<ToolContext>()
@@ -54,3 +55,4 @@ TOOL_COMMANDS.register(agentSpawn)
 TOOL_COMMANDS.register(agentTeleport)
 TOOL_COMMANDS.register(chatRegister)
 TOOL_COMMANDS.register(chatStatus)
+TOOL_COMMANDS.register(operatorBrief)

@@ -25,6 +25,7 @@ import { chatTag } from './commands/chat-tag.js'
 import { chatSubscribe, chatUnsubscribe } from './commands/subscriptions.js'
 import { agentSpawn } from './commands/agent-spawn.js'
 import { agentTeleport } from './commands/agent-teleport.js'
+import { operatorBrief } from './commands/operator-brief.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 
 /**
@@ -60,6 +61,7 @@ export const TOOL_DEFINITIONS = [
   toolDefinition(agentLogs),
   toolDefinition(chatTranscript),
   toolDefinition(sessionBudget),
+  toolDefinition(operatorBrief),
 ] as const
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
