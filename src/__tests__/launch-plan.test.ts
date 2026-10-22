@@ -269,13 +269,13 @@ describe('remote control', () => {
     expect(pane()).not.toContain('--remote-control')
   })
 
-  it('sits directly before the brief separator, where nothing can be read as its optional name', () => {
+  it('carries the agent name directly before the brief separator, so claude.ai/code shows it', () => {
     const args = pane({ remoteControl: true })
-    expect(args.slice(-3)).toEqual(['--remote-control', '--', 'find every caller of foo()'])
+    expect(args.slice(-4)).toEqual(['--remote-control', 'scout', '--', 'find every caller of foo()'])
   })
 
-  it('ends the argv on a bare resume, which has no separator to sit before', () => {
-    expect(pane({ remoteControl: true, resume: true }).at(-1)).toBe('--remote-control')
+  it('ends the argv with the agent name on a bare resume, which has no separator to sit before', () => {
+    expect(pane({ remoteControl: true, resume: true }).slice(-2)).toEqual(['--remote-control', 'scout'])
   })
 
   it('is dropped wherever the run is print mode, which cannot host Remote Control', () => {

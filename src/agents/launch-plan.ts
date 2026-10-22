@@ -297,8 +297,9 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     //
     // `--remote-control [name]` takes an OPTIONAL name, so it goes last among the
     // options: directly before `--`, or at the very end, nothing can be read as its name.
+    // CC-1556: pass the agent's name, or claude.ai/code lists the session under a random one.
     if (input.permissionMode !== undefined) args.push('--permission-mode', input.permissionMode)
-    if (input.remoteControl === true && !print) args.push('--remote-control')
+    if (input.remoteControl === true && !print) args.push('--remote-control', input.name)
     if (input.resume !== true) args.push('--', input.brief)
     else if (input.resumeMessage) args.push('-p', '--', input.resumeMessage)
   }

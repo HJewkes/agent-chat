@@ -1999,11 +1999,15 @@ describe('remote control for a coordinator seat (CC-883)', () => {
 /** CC-924: a coordinator profile can carry remoteControl, which spawn and teleport honour. */
 describe('remote control from the profile (CC-924)', () => {
   const PLAIN = 'claude --channels plugin:agent-chat@agent-chat-local'
+  const remoteControlTail = (args: string[]) => {
+    const at = args.indexOf('--remote-control')
+    return args.slice(at, at + 3)
+  }
 
   it('spawns a coordinator profile with it when the request is silent', async () => {
     const profile = installCoordinatorProfile({ remoteControl: true })
     const agentId = await spawnAgent({ name: 'rc-prof', profile, surface: 'iterm-pane' })
-    expect(planFor(agentId).args).toContain('--remote-control')
+    expect(remoteControlTail(planFor(agentId).args)).toEqual(['--remote-control', 'rc-prof', '--'])
   })
 
   it('lets an explicit false override the profile', async () => {
@@ -2057,7 +2061,11 @@ describe('remote control from the profile (CC-924)', () => {
     const agentId = await spawnAgent({ name: 'rc-near', profile, surface: 'iterm-pane' })
     const result = await supervisor.teleport({ subject: subject(agentId, { name: 'rc-near' }), handoff: 'h' })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
-    expect(planFor(result.agentId as string).args).toContain('--remote-control')
+    expect(remoteControlTail(planFor(result.agentId as string).args)).toEqual([
+      '--remote-control',
+      'rc-near',
+      '--',
+    ])
   })
 
   it('still lets the teleport say false outright', async () => {
