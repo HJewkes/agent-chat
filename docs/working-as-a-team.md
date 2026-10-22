@@ -120,6 +120,62 @@ agent-chat never allocated refuses too, as it always has.
 
 ---
 
+## 2a. One status read after each action: `operator-brief` (CC-1551)
+
+A coordinator used to re-read the same state after every action or wake, one call per source.
+`agent-chat operator-brief` (MCP tool `operator_brief`, same text) is one read-only call that
+covers them all. It prints a header and one short block per coordinator seat:
+
+- **Header:** pool readings against their glide path, the machine stop, pace.json's age,
+  burndown paused or not with its last tick, the owner queue (chat questions and owner gates),
+  and an `unavailable: <source> (<reason>)` line for each source that could not be read.
+- **Each seat:** live agents, agents finished since the seat's last send, the seat's PRs with
+  Shepherd phase, short head and pending gate, the seat's pending seat gates, and its unread
+  count.
+
+It replaces these reads. Do not make them as well:
+
+| Read it replaces                                    | What the brief shows instead                       |
+| --------------------------------------------------- | -------------------------------------------------- |
+| `agent list` / `agent_list`, `agent_logs`           | live agents, and those finished since your send    |
+| `chat_list` for your unread count                   | `unread N` on the seat's first line                |
+| `titan-factory shepherd status` / `timeline` per PR | each PR's phase, head, held or stalled, gate       |
+| active-work task reads for a PR's task              | `taskStatus` on each PR in `--json`                |
+| `gh pr view` per PR                                 | Shepherd's head and phase; the brief never runs gh |
+| pace.json and pool readings                         | the `pools:` header line                           |
+| `titan-factory shepherd waiting`                    | seat gates per seat, owner gates in the header     |
+| `agent-chat human queue` (the owner queue)          | the `owner:` header line                           |
+| burndown pause file and tick log                    | the `burndown:` header line                        |
+
+Options: `--seat <name>` (repeatable) narrows to those seats, and a seat the charter does not
+list still gets a block. `--json` prints the whole model as one object and is never cut.
+`--max-lines` sets the text budget (default 60). A seat block holds at most 8 lines: a PR gets
+its own line only when someone must act on it (a pending gate, `fixing`, held, stalled, or an
+unknown phase), and the rest fold into one `quiet:` count line. A PR whose implementer and
+branch match no seat goes to the operator's block marked `(inherited)`, so runs left by a
+retired seat stay visible.
+
+A source that is down costs one `unavailable:` line and the brief still exits 0. Treat that
+line as the cue for a targeted read of that one source, not of all of them. When the text
+shows `+N more (--json)`, read `--json` for that seat rather than going back to the separate
+reads. The MCP tool reaches a session only once that session's MCP server has restarted on a
+build that has it; until then use the CLI verb.
+
+```
+operator-brief 2026-01-01T12:00Z
+pools: pool-a 71%/7d (on_pace) · pool-b 48%/7d (behind) · stop none · pace.json 4m
+burndown: running · last tick 01-01 11:55Z
+owner: 2 questions · 3 gates (oldest 30.1h example-org/widgets#12 approve-merge)
+== coord-a  impl 2/3 rev 1/2 · unread 3 · finished 1 since 11:50Z
+  live: ca-fix-8, ca-rev-12
+  finished: ca-fix-7
+  pr example-org/widgets#12 2c29121d awaiting-approval gate approve-merge 30.1h
+  pr example-org/widgets#15 89c60cc1 fixing (inherited)
+  quiet: 7 awaiting-approval
+```
+
+---
+
 ## 3. Choosing a surface
 
 Surface is not cosmetic. It decides **whether a human can answer the agent's permission
