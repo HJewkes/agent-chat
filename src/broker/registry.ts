@@ -1114,7 +1114,12 @@ export class Registry<C> {
     })
     const deliveries: Delivery<C>[] = hits.map(([target, entry]) => {
       const hold = this.pushHoldFor(entry)
-      return { conn: target, message, live: !entry.dnd && hold === undefined, ...(hold === undefined ? {} : { hold }) }
+      return {
+        conn: target,
+        message,
+        live: !entry.dnd && hold === undefined,
+        ...(hold === undefined ? {} : { hold }),
+      }
     })
 
     const overBudget = this.chargeFanout(sender.name, text, deliveries.length, opts.chargesFrom)

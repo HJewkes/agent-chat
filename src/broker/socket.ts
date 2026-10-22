@@ -1203,7 +1203,8 @@ export class SocketServer {
       // reasons to hold: the sender is over budget (whole route) or this one
       // recipient is in do-not-disturb.
       if (!result.suppressLive && delivery.live) core.pushRouted(conn, delivery.conn, delivery.message)
-      else if (!result.suppressLive && delivery.hold === 'parked') core.holdWhileParked(delivery.conn, delivery.message)
+      else if (!result.suppressLive && delivery.hold === 'parked')
+        core.holdWhileParked(delivery.conn, delivery.message)
     }
     if (!result.ok) {
       core.append({ kind: 'route_failed', actor: from, target: to, body: result.reason ?? 'unknown' })
