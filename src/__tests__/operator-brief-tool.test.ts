@@ -44,7 +44,13 @@ const run = {
 let tmp: string
 let events: EventLog
 
-const agent = { agentId: 'id', name: 'aa-impl', profile: 'implementer', state: 'running', spawnedBy: 'aa-coord' }
+const agent = {
+  agentId: 'id',
+  name: 'aa-impl',
+  profile: 'implementer',
+  state: 'running',
+  spawnedBy: 'aa-coord',
+}
 
 function system(): BriefSystem {
   return {
@@ -84,7 +90,9 @@ beforeEach(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-operator-brief-tool-')))
   const root = path.join(tmp, 'autonomy')
   fs.mkdirSync(path.join(root, 'seats'), { recursive: true })
-  const charter = fs.readFileSync(FIXTURE_CHARTER, 'utf8').replace(/^seats: .*$/m, `seats: [${SEATS.join(', ')}]`)
+  const charter = fs
+    .readFileSync(FIXTURE_CHARTER, 'utf8')
+    .replace(/^seats: .*$/m, `seats: [${SEATS.join(', ')}]`)
   fs.writeFileSync(path.join(root, 'charter.md'), charter)
   fs.writeFileSync(path.join(root, 'seats', 'aa-coord.md'), seatFile('aa-coord', 'aa'))
   fs.writeFileSync(path.join(root, 'seats', 'bb-coord.md'), seatFile('bb-coord', 'bb'))
@@ -111,7 +119,9 @@ describe('operator_brief tool', () => {
     const text = await toolText({ seat: ['bb-coord'] })
 
     expect(text).toBe(await cliText({ seat: ['bb-coord'] }))
-    expect(text.split('\n').filter(l => l.startsWith('== '))).toEqual([expect.stringMatching(/^== bb-coord /)])
+    expect(text.split('\n').filter(l => l.startsWith('== '))).toEqual([
+      expect.stringMatching(/^== bb-coord /),
+    ])
   })
 
   it('is in the published tool list', () => {

@@ -23,10 +23,10 @@ export function makeOperatorBrief(system: (ctx: ToolContext) => BriefSystem): To
   return defineTool({
     name: 'operator_brief',
     description:
-      'Read-only status per coordinator seat: live and finished agents, Shepherd PRs and gates, unread ' +
-      'count, plus pools, machine stop, burndown and owner queue. Same text as `agent-chat operator-brief`.',
+      'Read-only status per coordinator seat: agents, Shepherd PRs and gates, unread, pools, stop, ' +
+      'burndown, owner queue. Same text as `agent-chat operator-brief`.',
     args: z.object({
-      seat: z.array(z.string()).describe('Only these seats. Omit for every seat.').optional(),
+      seat: z.array(z.string()).describe('Only these seats.').optional(),
     }),
     result: z.string(),
     async run({ seat }, ctx) {

@@ -31,8 +31,9 @@ import { TOOL_COMMANDS } from './commands/index.js'
 /**
  * Ceiling on the JSON bytes of the listed tools, which every session pays for; 32.5 kB measured on 2026-10-05.
  * Raised 500 B on 2026-10-12 for chat_ask's routing meta (TP-695 a), which main left no room for.
+ * Raised 500 B on 2026-10-21 for operator_brief (CC-1551), which main left no room for.
  */
-export const TOOL_CATALOGUE_MAX_BYTES = 36_500
+export const TOOL_CATALOGUE_MAX_BYTES = 37_000
 
 export const TOOL_DEFINITIONS = [
   toolDefinition(chatRegister),
