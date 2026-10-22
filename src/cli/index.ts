@@ -32,6 +32,7 @@ import { endorseVerb } from './verbs/endorse.js'
 import { ghCallsVerb } from './verbs/gh-calls.js'
 import { handoffLastVerb } from './verbs/handoff-last.js'
 import { inboxVerb } from './verbs/inbox.js'
+import { operatorBriefVerb } from './verbs/operator-brief.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
@@ -244,6 +245,7 @@ function addAgentCommands(program: Command): void {
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
   addVerb(program, ghCallsVerb, { helpGroup: AGENTS })
   addVerb(program, countsVerb, { helpGroup: AGENTS })
+  addVerb(program, operatorBriefVerb, { helpGroup: AGENTS })
 
   program
     .command('gh-write <gh-args...>')

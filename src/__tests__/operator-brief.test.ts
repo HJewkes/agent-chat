@@ -7,7 +7,7 @@ import {
   type OperatorBriefInput,
 } from '../agents/seats/operator-brief.js'
 import { readWaiting } from '../agents/seats/shepherd-waiting.js'
-import type { AgentIdentity } from '../protocol.js'
+import type { AgentIdentity, QueueItem } from '../protocol.js'
 
 /** CC-1551: the pure operator brief. Every seat, repo, sha and agent is synthetic. */
 
@@ -150,6 +150,22 @@ describe('the operator brief text', () => {
     const lines = renderOperatorBrief(deriveOperatorBrief(input({ seats: [seat(OPERATOR, 'tpo', false)] })))
 
     expect(lines).toContain('== tp-operator  impl 0/n/a rev 0/n/a · unread ? · finished 0')
+  })
+
+  it('counts only open questions in the owner queue, not its notices', () => {
+    const item = (kind: QueueItem['kind'], msgId: string): QueueItem => ({
+      msgId,
+      kind,
+      from: 'aa-coord',
+      text: 't',
+      at: 0,
+      meta: {},
+    })
+    const queue = [item('question', 'q1'), item('notice', 'n1'), item('endorse_request', 'e1')]
+
+    const lines = renderOperatorBrief(deriveOperatorBrief(input({ queue })))
+
+    expect(lines).toContain('owner: 1 questions · 0 gates')
   })
 })
 

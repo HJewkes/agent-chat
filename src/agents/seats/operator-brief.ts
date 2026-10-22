@@ -39,17 +39,17 @@ export interface OperatorBriefInput {
   seats: BriefSeat[]
   /** The seats whose blocks are shown; all of them when absent. */
   show?: string[]
-  roster?: AgentIdentity[]
-  inbox?: Record<string, InboxReading>
-  shepherd?: ShepherdFlight[]
-  waiting?: ShepherdWaiting
-  queue?: QueueItem[]
-  pools?: AccountPace[]
-  machineStop?: string | null
-  paceAgeSeconds?: number | null
-  burndown?: BurndownState
+  roster?: AgentIdentity[] | undefined
+  inbox?: Record<string, InboxReading> | undefined
+  shepherd?: ShepherdFlight[] | undefined
+  waiting?: ShepherdWaiting | undefined
+  queue?: QueueItem[] | undefined
+  pools?: AccountPace[] | undefined
+  machineStop?: string | null | undefined
+  paceAgeSeconds?: number | null | undefined
+  burndown?: BurndownState | undefined
   /** Task status by the task id Shepherd names, such as `init/T-1`. */
-  taskStatus?: Record<string, string>
+  taskStatus?: Record<string, string> | undefined
   unavailable: BriefUnavailable[]
 }
 
@@ -100,7 +100,8 @@ export interface BriefHeader {
   machineStop: string | null
   paceAgeSeconds: number | null
   burndown: BurndownState | null
-  ownerQueue: number | null
+  /** Open questions in the human queue; its notices and endorse requests are not counted. */
+  ownerQuestions: number | null
   ownerGates: BriefGate[] | null
 }
 
@@ -231,7 +232,7 @@ function header(input: OperatorBriefInput): BriefHeader {
     machineStop: input.machineStop ?? null,
     paceAgeSeconds: input.paceAgeSeconds ?? null,
     burndown: input.burndown ?? null,
-    ownerQueue: input.queue?.length ?? null,
+    ownerQuestions: input.queue === undefined ? null : input.queue.filter(i => i.kind === 'question').length,
     ownerGates: input.waiting === undefined ? null : input.waiting.owner.map(briefGate),
   }
 }
@@ -260,6 +261,7 @@ const minute = (iso: string): string => `${iso.slice(0, 16)}Z`
 const stamp = (iso: string): string => `${iso.slice(5, 10)} ${iso.slice(11, 16)}Z`
 const clock = (iso: string): string => `${iso.slice(11, 16)}Z`
 const short = (sha: string | null): string => (sha === null ? '?' : sha.slice(0, 8))
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 const or = <T>(v: T | null, show: (v: T) => string): string => (v === null ? '?' : show(v))
 
 function poolsLine(h: BriefHeader): string {
@@ -283,7 +285,7 @@ function ownerLine(h: BriefHeader): string {
       ? '0 gates'
       : `${list.length} gates (oldest ${oldest.ageHours}h ${oldest.pr} ${oldest.stepId})`
   })
-  return `owner: ${or(h.ownerQueue, n => `${n} queued`)} · ${gates}`
+  return `owner: ${or(h.ownerQuestions, n => `${n} questions`)} · ${gates}`
 }
 
 function headerLines(brief: OperatorBrief): Line[] {
@@ -293,7 +295,7 @@ function headerLines(brief: OperatorBrief): Line[] {
     poolsLine(h),
     burndownLine(h.burndown),
     ownerLine(h),
-    ...brief.unavailable.map(u => `unavailable: ${u.source} (${u.reason})`),
+    ...brief.unavailable.map(u => `unavailable: ${u.source} (${oneLine(u.reason)})`),
   ].map(text => ({ text, kind: 'keep' }))
 }
 
