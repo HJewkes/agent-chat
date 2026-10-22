@@ -846,6 +846,22 @@
           }
         }
       }
+    },
+    {
+      "name": "operator_brief",
+      "description": "Read-only status per coordinator seat: agents, Shepherd PRs and gates, unread, pools, stop, burndown, owner queue. Same text as `agent-chat operator-brief`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "seat": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only these seats."
+          }
+        }
+      }
     }
   ]
 }

@@ -25,13 +25,15 @@ import { chatTag } from './commands/chat-tag.js'
 import { chatSubscribe, chatUnsubscribe } from './commands/subscriptions.js'
 import { agentSpawn } from './commands/agent-spawn.js'
 import { agentTeleport } from './commands/agent-teleport.js'
+import { operatorBrief } from './commands/operator-brief.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 
 /**
  * Ceiling on the JSON bytes of the listed tools, which every session pays for; 32.5 kB measured on 2026-10-05.
  * Raised 500 B on 2026-10-12 for chat_ask's routing meta (TP-695 a), which main left no room for.
+ * Raised 500 B on 2026-10-21 for operator_brief (CC-1551), which main left no room for.
  */
-export const TOOL_CATALOGUE_MAX_BYTES = 36_500
+export const TOOL_CATALOGUE_MAX_BYTES = 37_000
 
 export const TOOL_DEFINITIONS = [
   toolDefinition(chatRegister),
@@ -60,6 +62,7 @@ export const TOOL_DEFINITIONS = [
   toolDefinition(agentLogs),
   toolDefinition(chatTranscript),
   toolDefinition(sessionBudget),
+  toolDefinition(operatorBrief),
 ] as const
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
