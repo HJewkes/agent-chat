@@ -235,6 +235,8 @@ export interface Delivery<C> {
   conn: C
   message: DeliveredMessage
   live: boolean
+  /** CC-1554: why the recipient is pushed no peer mail, when that held it. */
+  hold?: string
 }
 
 export interface RouteResult<C> {
@@ -1110,11 +1112,15 @@ export class Registry<C> {
       // no audience: there is nobody else on it for a recipient to defer to.
       ...(opts.audience && names.length > 1 ? { audience: names } : {}),
     })
-    const deliveries: Delivery<C>[] = hits.map(([target, entry]) => ({
-      conn: target,
-      message,
-      live: !entry.dnd && this.pushHoldFor(entry) === undefined,
-    }))
+    const deliveries: Delivery<C>[] = hits.map(([target, entry]) => {
+      const hold = this.pushHoldFor(entry)
+      return {
+        conn: target,
+        message,
+        live: !entry.dnd && hold === undefined,
+        ...(hold === undefined ? {} : { hold }),
+      }
+    })
 
     const overBudget = this.chargeFanout(sender.name, text, deliveries.length, opts.chargesFrom)
     const held = deliveries.filter(d => !d.live).map(d => this.nameOf(d.conn) ?? '?')
