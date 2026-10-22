@@ -960,6 +960,8 @@ Commands:
                                           count as one JSON line
   inbox-since [options] <name> <afterId>  print a session's messages after a cursor as one JSON
                                           line; delivers nothing
+  message <msgId>                         print one message by its msg id as one JSON line; an
+                                          unknown id prints nothing and exits 66
   queue                                   print the human queue as one JSON envelope line; never
                                           starts a broker
   files-claims                            print live names, recently exited agents and every files
@@ -990,6 +992,14 @@ print a session's messages after a cursor as one JSON line; delivers nothing
 Options:
   --limit <value>  most messages to return (default 200)
   -h, --help       display help for command
+
+=== agent-chat port message
+Usage: agent-chat port message [options] <msgId>
+
+print one message by its msg id as one JSON line; an unknown id prints nothing and exits 66
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat port queue
 Usage: agent-chat port queue [options]

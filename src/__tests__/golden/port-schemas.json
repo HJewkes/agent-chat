@@ -106,6 +106,54 @@
     ],
     "additionalProperties": false
   },
+  "message": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "msgId": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "from": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      },
+      "at": {
+        "type": "number"
+      },
+      "wakeSource": {
+        "type": "string",
+        "enum": [
+          "watchdog",
+          "shepherd",
+          "console"
+        ]
+      },
+      "provenance": {
+        "type": "string",
+        "enum": [
+          "human-endorsed",
+          "decided"
+        ]
+      }
+    },
+    "required": [
+      "msgId",
+      "kind",
+      "from",
+      "target",
+      "text",
+      "at"
+    ],
+    "additionalProperties": false
+  },
   "queue": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

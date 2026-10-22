@@ -662,6 +662,21 @@ export interface CursoredMessage extends DeliveredMessage {
 }
 
 /**
+ * One message row read back by its msg_id (CC-1557). `from` and `provenance` are the
+ * stored row's, never anything parsed from `text`, so a caller can gate on `from`.
+ */
+export interface StoredMessage {
+  msgId: string
+  kind: string
+  from: string
+  target: string
+  text: string
+  at: number
+  wakeSource?: WakeSource
+  provenance?: Provenance
+}
+
+/**
  * What the human did with one service question (CC-169). `text` is the human's
  * words for an answer and the resolution body for a dismissal.
  */
@@ -980,6 +995,8 @@ export type ClientMessage =
    * session being read, so a watcher costs its own peer nothing.
    */
   | { t: 'inbox_since'; name: string; afterId: number; limit: number }
+  /** One message row by its msg_id (CC-1557). A pure read that delivers nothing. */
+  | { t: 'message_by_id'; msgId: string }
   /**
    * Answers and dismissals of the service questions filed under label `name`
    * (CC-169), oldest first, after the row whose msg_id is `after`, or from the
@@ -1404,6 +1421,8 @@ export type ServerMessage =
    * quiet inbox would re-scan the same rows on every poll forever.
    */
   | { t: 'inbox_since_result'; messages: CursoredMessage[]; nextCursor: number }
+  /** `message` is absent when no message row carries that msg_id. */
+  | { t: 'message_by_id_result'; message?: StoredMessage }
   /**
    * `next` is the msgId of the last answer returned, absent when none was. An
    * `after` the log does not hold gives `error` and no rows, never a replay.

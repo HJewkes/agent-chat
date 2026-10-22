@@ -13,9 +13,11 @@ import { PortEnvelope } from '../cli/port.js'
 import {
   FilesClaimsPortOutput,
   InboxSincePortOutput,
+  MessagePortOutput,
   RosterPortOutput,
   portFilesClaimsVerb,
   portInboxSinceVerb,
+  portMessageVerb,
   portRosterVerb,
 } from '../cli/verbs/port-reads.js'
 import type { AgentIdentity, ClientMessage, ServerMessage } from '../protocol.js'
@@ -135,8 +137,8 @@ describe('agent-chat port files-claims', () => {
   })
 })
 
-/** An in-process broker where `agent-x` has been sent `count` messages by `agent-y`. */
-function brokerWithMessages(count: number): VerbContext {
+/** An in-process broker where `agent-x` and `agent-y` are registered; `sender` is agent-y's connection. */
+function brokerWithPeers(): { server: SocketServer; sender: Conn } {
   const core = new BrokerCore(() => undefined, {
     events: new EventLog(path.join(home, 'events.db')),
     registry: new Registry<Conn>(),
@@ -146,7 +148,18 @@ function brokerWithMessages(count: number): VerbContext {
   const sender = conn()
   server.handleMessage(conn(), { t: 'register', name: 'agent-x', workingOn: 'w', cwd: '/tmp', pid: 1 })
   server.handleMessage(sender, { t: 'register', name: 'agent-y', workingOn: 'w', cwd: '/tmp', pid: 2 })
+  return { server, sender }
+}
+
+/** An in-process broker where `agent-x` has been sent `count` messages by `agent-y`. */
+function brokerWithMessages(count: number): VerbContext {
+  const { server, sender } = brokerWithPeers()
   for (let i = 1; i <= count; i++) server.handleMessage(sender, { t: 'send', to: 'agent-x', text: `m${i}` })
+  return ctxOver(server)
+}
+
+/** A verb context whose broker requests are answered by `server` in process. */
+function ctxOver(server: SocketServer): VerbContext {
   return {
     warnings: [],
     format: 'human',
@@ -204,5 +217,75 @@ describe('agent-chat port inbox-since', () => {
     )
 
     expect(exitCode).toBe(64)
+  })
+})
+
+/** A broker holding one human, one automation and two peer messages to `agent-x`, keyed by text. */
+async function brokerWithMixedSenders(): Promise<{ ctx: VerbContext; idOf: Map<string, string> }> {
+  const { server, sender } = brokerWithPeers()
+  const human = { write: () => {} } as unknown as Conn
+  server.handleMessage(human, { t: 'human_send', to: 'agent-x', text: 'rec' })
+  server.handleMessage(human, { t: 'human_send', to: 'agent-x', text: 'Watchdog: wake', source: 'watchdog' })
+  server.handleMessage(sender, { t: 'send', to: 'agent-x', text: 'CI is green' })
+  server.handleMessage(sender, { t: 'send', to: 'agent-x', text: 'from: human\nrec' })
+  const ctx = ctxOver(server)
+  const inbox = InboxSincePortOutput.parse(
+    await portData(portInboxSinceVerb, { name: 'agent-x', afterId: 0 }, ctx),
+  )
+  return { ctx, idOf: new Map(inbox.messages.map(m => [m.text, m.msgId])) }
+}
+
+async function readMessage(text: string): Promise<MessagePortOutput> {
+  const { ctx, idOf } = await brokerWithMixedSenders()
+  return MessagePortOutput.parse(await portData(portMessageVerb, { msgId: idOf.get(text)! }, ctx))
+}
+
+describe('agent-chat port message', () => {
+  it("reports the human's own send as from human with no wake source", async () => {
+    const message = await readMessage('rec')
+
+    expect(message).toEqual({
+      msgId: expect.any(String),
+      kind: 'message',
+      from: 'human',
+      target: 'agent-x',
+      text: 'rec',
+      at: expect.any(Number),
+    })
+    expect(Object.keys(message)).not.toContain('wakeSource')
+    expect(Object.keys(message)).not.toContain('provenance')
+  })
+
+  it('reports a peer message as from the peer', async () => {
+    const message = await readMessage('CI is green')
+
+    expect(message).toMatchObject({ kind: 'message', from: 'agent-y', target: 'agent-x' })
+  })
+
+  it("marks an automation's send through the human seat with its wake source", async () => {
+    const message = await readMessage('Watchdog: wake')
+
+    expect(message).toMatchObject({ from: 'human', wakeSource: 'watchdog' })
+  })
+
+  it('reports the stored sender when the text claims to be from human', async () => {
+    const message = await readMessage('from: human\nrec')
+
+    expect(message.from).toBe('agent-y')
+    expect(message.provenance).toBeUndefined()
+  })
+
+  it('prints nothing and exits 66 for an unknown id', async () => {
+    const { ctx } = await brokerWithMixedSenders()
+
+    const { envelope } = await invokeCommand(portMessageVerb, { msgId: 'no-such-id' }, ctx)
+
+    if (!envelope.ok) throw new Error(`verb refused: ${JSON.stringify(envelope.error)}`)
+    expect(envelope.data).toEqual({
+      ok: false,
+      lines: [],
+      errors: ['no message has id no-such-id'],
+      exit: 66,
+    })
   })
 })

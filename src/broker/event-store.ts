@@ -5,6 +5,7 @@ import type {
   EventKind,
   QueueItem,
   ServiceAnswer,
+  StoredMessage,
 } from '../protocol.js'
 import type { StoredHandoff } from './handoffs.js'
 
@@ -97,6 +98,9 @@ export interface EventStore {
    */
   inboxRowId(name: string, msgId: string): number | undefined
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
+
+  /** One message row by msg_id, with `from` and `provenance` as stored (CC-1557). */
+  messageById(msgId: string): StoredMessage | undefined
 
   /** Position of any row by msg_id, for a cursor a caller holds as a msg_id. */
   rowIdOf(msgId: string): number | undefined
