@@ -251,6 +251,7 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
+  implementerMerge: `leak-guard: an implementer session does not merge pull requests. Shepherd is the merge path: register the PR with titan-factory shepherd register and report it to your coordinator. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1558,6 +1559,33 @@ export function isMerge(args: readonly string[]): boolean {
   return args[0] === 'api' && endpoints.length === 1 && MERGE_ENDPOINT.test(endpoints[0] as string)
 }
 
+// Profiles carry no role field the hook can read, so the implementer profiles are named here.
+const IMPLEMENTER_PROFILES: ReadonlySet<string> = new Set(['bd-implementer', 'bd-implementer-lite'])
+const READ_METHODS = new Set(['GET', 'HEAD'])
+
+/** The method `gh api` sends: the last `-X`/`--method`, else POST when it carries fields or input, else GET. */
+function apiMethod(args: readonly string[]): string {
+  const methods = flagValues(args, ['-X', '--method'])
+  if (methods.length > 0) return (methods.at(-1) as string).toUpperCase()
+  const { inline, files } = apiSources(args)
+  return inline.length + files.length > 0 ? 'POST' : 'GET'
+}
+
+/** GitHub ignores a query string and a trailing slash on the merge endpoint, so a deny must too. */
+const bareEndpoints = (args: readonly string[]): string[] =>
+  args.map((arg, i) => (i === 0 ? arg : arg.replace(/[?#].*$/, '').replace(/\/+$/, '')))
+
+/** `gh pr merge`, or a `gh api` call to a pull's merge endpoint that is not a read. */
+function mergesPullRequest(args: readonly string[]): boolean {
+  if (args[0] === 'pr') return ghVerb(args.slice(1)) === 'merge'
+  return isMerge(bareEndpoints(args)) && !READ_METHODS.has(apiMethod(args))
+}
+
+const implementerMerge = (args: readonly (string | undefined)[], env: Env): string | undefined =>
+  IMPLEMENTER_PROFILES.has(env.AGENT_CHAT_PROFILE ?? '') && mergesPullRequest(args.map(a => a ?? UNRESOLVED))
+    ? REASONS.implementerMerge
+    : undefined
+
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
 export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): string[] {
   return texts.flatMap(({ label, text }) =>
@@ -1829,6 +1857,8 @@ function checkGh(
   if (kind === 'other') return undefined
   if (setsGhHome(assigns, ctx.env)) return REASONS.ghConfigHome
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const merge = kind === 'unknown' ? undefined : implementerMerge(args, ctx.env)
+  if (merge !== undefined) return merge
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
