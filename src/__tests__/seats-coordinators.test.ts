@@ -87,7 +87,12 @@ describe('liveCoordinators', () => {
     const steps = [
       [...predecessor, successor],
       [...predecessor, successor, row('agent_retired', 't1', 'seat-t')],
-      [...predecessor, successor, row('agent_retired', 't1', 'seat-t'), row('agent_attached', 't2', 'seat-t')],
+      [
+        ...predecessor,
+        successor,
+        row('agent_retired', 't1', 'seat-t'),
+        row('agent_attached', 't2', 'seat-t'),
+      ],
     ]
 
     expect(steps.map(liveCoordinators)).toEqual([['seat-t'], ['seat-t'], ['seat-t']])
@@ -136,7 +141,8 @@ describe('agent-chat seats coordinators', () => {
     const insert = sqlite.prepare(
       'INSERT INTO events (ts, kind, actor, target, msg_id, ref, body, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const r of rows) insert.run(r.ts, r.kind, r.actor, r.target, r.msgId, r.ref, r.body, JSON.stringify(r.meta))
+    for (const r of rows)
+      insert.run(r.ts, r.kind, r.actor, r.target, r.msgId, r.ref, r.body, JSON.stringify(r.meta))
     sqlite.close()
   }
 
