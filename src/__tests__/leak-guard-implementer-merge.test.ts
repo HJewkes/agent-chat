@@ -89,3 +89,57 @@ describe('the profile comes from the injected env', () => {
     expect(checkCommand('gh pr merge 5', ctx('reviewer'))).not.toBe(REASONS.implementerMerge)
   })
 })
+
+const files: Record<string, string> = {
+  '/work/merge.json':
+    '{"query":"mutation { mergePullRequest(input:{pullRequestId:\\"PR_x\\"}) { clientMutationId } }"}',
+  '/work/read.graphql': 'query { viewer { login } }',
+}
+const withFiles = (profile: string): GuardContext => ({ ...ctx(profile), readFile: file => files[file] })
+
+const GRAPHQL_MERGES = [
+  `gh api graphql -f query='mutation { mergePullRequest(input:{pullRequestId:"PR_x"}) { clientMutationId } }'`,
+  `gh api graphql -f query='mutation {\n  mergePullRequest(\n    input: { pullRequestId: "PR_x" }\n  ) { clientMutationId }\n}'`,
+  `gh api graphql -F query='mutation { enablePullRequestAutoMerge(input:{pullRequestId:"PR_x"}) { clientMutationId } }'`,
+  `gh api graphql --raw-field 'query=mutation { mergeBranch(input:{repositoryId:"R_x",base:"main",head:"f"}) { clientMutationId } }'`,
+  'gh api graphql --input merge.json',
+  'gh api /graphql --input /work/merge.json',
+  'agent-chat gh-write -- api graphql --input merge.json',
+]
+
+describe('an implementer session cannot merge through gh api graphql', () => {
+  it.each(GRAPHQL_MERGES)('%s is denied', command => {
+    expect(checkCommand(command, withFiles('bd-implementer'))).toBe(REASONS.implementerMerge)
+  })
+
+  it.each([
+    'gh api graphql --input missing.json',
+    'gh api graphql -F query=@missing.graphql',
+    'gh api graphql -f query="$Q"',
+  ])('%s has a query the guard cannot read, so it fails closed', command => {
+    const reason = checkCommand(command, withFiles('bd-implementer'))
+
+    expect(reason).toBe(REASONS.implementerMergeUnread)
+    expect(reason).toContain('fail closed')
+  })
+
+  it.each([
+    `gh api graphql -f query='query { repository(owner:"o",name:"r"){ id } }'`,
+    `gh api graphql -f query='mutation { MergePullRequest(input:{}) { clientMutationId } }'`,
+    'gh api graphql -F query=@read.graphql',
+  ])('%s does not merge, so the rule leaves it alone', command => {
+    const reason = checkCommand(command, withFiles('bd-implementer'))
+
+    expect(reason).not.toBe(REASONS.implementerMerge)
+    expect(reason).not.toBe(REASONS.implementerMergeUnread)
+  })
+
+  it.each(['reviewer', 'bd-reviewer'])('profile %s is not denied by this rule', profile => {
+    for (const command of GRAPHQL_MERGES) {
+      const reason = checkCommand(command, withFiles(profile))
+
+      expect(reason, command).not.toBe(REASONS.implementerMerge)
+      expect(reason, command).not.toBe(REASONS.implementerMergeUnread)
+    }
+  })
+})

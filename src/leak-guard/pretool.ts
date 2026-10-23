@@ -252,6 +252,7 @@ export const REASONS = {
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
   implementerMerge: `leak-guard: an implementer session does not merge pull requests. Shepherd is the merge path: register the PR with titan-factory shepherd register and report it to your coordinator. ${DOCS}`,
+  implementerMergeUnread: `leak-guard: an implementer session does not merge pull requests, and the guard could not read the query of this gh api graphql call, so it may be a merge and was not run (fail closed). Pass the query inline with -f query=..., or from a file the guard can read. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1581,10 +1582,60 @@ function mergesPullRequest(args: readonly string[]): boolean {
   return isMerge(bareEndpoints(args)) && !READ_METHODS.has(apiMethod(args))
 }
 
-const implementerMerge = (args: readonly (string | undefined)[], env: Env): string | undefined =>
-  IMPLEMENTER_PROFILES.has(env.AGENT_CHAT_PROFILE ?? '') && mergesPullRequest(args.map(a => a ?? UNRESOLVED))
-    ? REASONS.implementerMerge
-    : undefined
+// GraphQL field names are case-sensitive, so `MergePullRequest` is no mutation GitHub runs.
+const GRAPHQL_MERGE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/
+
+const isGraphql = (args: readonly string[]): boolean => {
+  const endpoints = apiEndpoints(bareEndpoints(args))
+  return args[0] === 'api' && endpoints.length === 1 && /^\/?graphql$/.test(endpoints[0] as string)
+}
+
+/** The query of a `gh api graphql` call: each `query=` field, read from its file for `-F query=@f`, and each `--input`. */
+function graphqlQuerySources(args: readonly string[]): Sources {
+  const queries = (names: readonly string[]): string[] =>
+    flagValues(args, names)
+      .filter(field => field.startsWith('query='))
+      .map(field => field.slice('query='.length))
+  const typed = queries(['-F', '--field'])
+  const texts = [...queries(['-f', '--raw-field']), ...typed.filter(q => !q.startsWith('@'))]
+  return {
+    inline: texts.map(text => ({ label: 'query', text })),
+    files: [
+      ...typed.filter(q => q.startsWith('@')).map(q => ({ label: 'query', file: q.slice(1) })),
+      ...flagValues(args, ['--input']).map(file => ({ label: 'input', file })),
+    ],
+  }
+}
+
+/** The deny for a graphql call that merges, or whose query the guard cannot read, so fails closed. */
+function graphqlMerge(
+  args: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!isGraphql(args)) return undefined
+  if (args.includes(UNRESOLVED)) return REASONS.implementerMergeUnread
+  const { inline, files } = graphqlQuerySources(args)
+  const texts = inline.map(({ text }) => text)
+  for (const { file } of files) {
+    const text = file === '-' && piped(cmd) ? undefined : readBody(file, cmd, ctx, scope)
+    if (text === undefined) return REASONS.implementerMergeUnread
+    texts.push(text)
+  }
+  return texts.some(text => GRAPHQL_MERGE.test(text)) ? REASONS.implementerMerge : undefined
+}
+
+function implementerMerge(
+  raw: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!IMPLEMENTER_PROFILES.has(ctx.env.AGENT_CHAT_PROFILE ?? '')) return undefined
+  const args = raw.map(a => a ?? UNRESOLVED)
+  return mergesPullRequest(args) ? REASONS.implementerMerge : graphqlMerge(args, cmd, ctx, scope)
+}
 
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
 export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): string[] {
@@ -1857,7 +1908,7 @@ function checkGh(
   if (kind === 'other') return undefined
   if (setsGhHome(assigns, ctx.env)) return REASONS.ghConfigHome
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  const merge = kind === 'unknown' ? undefined : implementerMerge(args, ctx.env)
+  const merge = kind === 'unknown' ? undefined : implementerMerge(args, cmd, ctx, scope)
   if (merge !== undefined) return merge
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
