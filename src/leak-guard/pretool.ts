@@ -2476,6 +2476,8 @@ function checkSimple(
   const marked = words.slice(1)
   const head = testHead(words) ?? resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {
+    // A hidden gh never reaches checkGh, so an implementer runs no command it cannot name (CC-1120 e).
+    if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return REASONS.implementerGhUnread
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)

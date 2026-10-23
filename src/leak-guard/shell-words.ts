@@ -326,6 +326,8 @@ class ShellLexer {
   private openGroups = 0
   /** The last text appended to the word is a live `{`. */
   private justOpened = false
+  /** How far the word has got toward `{owner},x}`, which bash expands since a group without a comma reads on (CC-1120). */
+  private afterPlaceholder: 'none' | 'open' | 'comma' = 'none'
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
   /*
@@ -883,7 +885,7 @@ class ShellLexer {
     }
     this.pos++
     const live = this.expands(c, next) || this.braceStructure(c)
-    this.splitting ||= live && (c === '$' || GLOB.includes(c))
+    this.splitting ||= this.closesPlaceholderGroup(c) || (live && (c === '$' || GLOB.includes(c)))
     this.append(c, live)
     if (c === '{' && live) {
       this.openGroups++
@@ -903,6 +905,17 @@ class ShellLexer {
     return !this.justOpened
   }
 
+  /**
+   * Whether an unquoted `}` closes a group a placeholder's `{` opened: bash reads past the placeholder's
+   * own `}`, which ends no group without a comma, so `{owner},-XPUT}` is the words `owner}` and `-XPUT`.
+   */
+  private closesPlaceholderGroup(c: string): boolean {
+    if (c === '{' && this.exemptPlaceholder()) this.afterPlaceholder = 'open'
+    else if (c === ',' && this.afterPlaceholder === 'open') this.afterPlaceholder = 'comma'
+    else if (c === '}' && this.afterPlaceholder === 'comma') return true
+    return false
+  }
+
   /** Appends an unquoted expansion, which the shell splits into words. */
   private split(text: string): void {
     this.splitting = true
@@ -917,9 +930,14 @@ class ShellLexer {
   private expands(c: string, next: string | undefined): boolean {
     const starts = this.word === null
     if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
-    const inGroup = !starts && this.openGroups > 0
-    if (!inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
+    if (this.exemptPlaceholder()) return false
     return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
+  }
+
+  /** gh's `{owner}` at the cursor, outside any live group, which is text unless a comma and `}` follow it. */
+  private exemptPlaceholder(): boolean {
+    const inGroup = this.word !== null && this.openGroups > 0
+    return !inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))
   }
 
   private braced(): string {
@@ -1058,6 +1076,7 @@ class ShellLexer {
     const quoteStart = this.quoteStart
     const splitting = this.splitting
     this.splitting = false
+    this.afterPlaceholder = 'none'
     this.word = null
     this.quoted = false
     this.quoteStart = Infinity
