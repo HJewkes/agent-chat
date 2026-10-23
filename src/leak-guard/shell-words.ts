@@ -104,6 +104,8 @@ interface Budget {
   limits: Limits
   /** Only finding where a substitution ends, so arithmetic is not looked for. */
   probe?: boolean
+  /** An operator `${...}` off SAFE_BRACED was met; see `expansionEvaluates`. */
+  evaluates?: boolean
 }
 
 /**
@@ -117,6 +119,15 @@ export type ExpansionRisk = 'operator' | 'unreadable'
 // The only `${...}` forms the splitter reads as the shell does.
 const PLAIN_BRACED = /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*|\d+)\}$/
 const UNREADABLE_BRACED = /^\$\{(?:\(|[\s\S]*\$)|['"`\\]/
+/**
+ * Operator forms that never evaluate a value as code: a length, or a default, assign, alternate, error,
+ * trim, replace or case operator on a plain name or a positional or special parameter. Left out: `@`
+ * transforms, `!` indirection, a subscript and a `:` offset, which bash may read as arithmetic and so run
+ * the `$(...)` in a value. A `:` before anything but `-`, `=`, `+` or `?` is an offset, so `${X: -1}` is one.
+ */
+const SAFE_NAME = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*|\d+|[@*?$])`
+const SAFE_OPERATOR = String.raw`(?::[-=+?]|[-=+?]|##?|%%?|\/[/#%]?|\^\^?|,,?)`
+const SAFE_BRACED = new RegExp(String.raw`^\$\{(?:#${SAFE_NAME}|${SAFE_NAME}(?:${SAFE_OPERATOR}[^}]*)?)\}$`)
 // Text that keeps one word whichever `}` closes the expansion.
 const SAME_WORD = /^[^\s'"`\\$#;&|<>()]*$/
 
@@ -954,6 +965,7 @@ class ShellLexer {
     const risk = bracedRisk(this.src, this.pos, text)
     if (risk === 'unreadable') this.budget.expansion = risk
     else if (risk !== undefined) this.budget.expansion ??= risk
+    if (risk === 'operator' && !SAFE_BRACED.test(text)) this.budget.evaluates = true
     return text
   }
 
@@ -1324,6 +1336,18 @@ export function expansionRisk(src: string): ExpansionRisk | undefined {
   const lexer = new ShellLexer(unmark(src))
   lexer.run()
   return lexer.expansion
+}
+
+/**
+ * Whether `src` holds an operator `${...}` off SAFE_BRACED, such as `${X@P}` or `${X:N}`, which may run
+ * the `$(...)` in a variable's value. A `$`, quote or backtick inside one already makes `expansionRisk`
+ * unreadable, so this only judges the operator and the name.
+ */
+export function expansionEvaluates(src: string): boolean {
+  if (src.includes(LIVE)) return true
+  const budget = newBudget()
+  new ShellLexer(unmark(src), 0, false, budget).run()
+  return budget.evaluates === true || budget.limits.capped
 }
 
 const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/

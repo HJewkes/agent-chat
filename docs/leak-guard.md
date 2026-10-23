@@ -675,12 +675,19 @@ unresolved when it rebinds a command name, so that a later word may run gh under
 `alias` with a definition (`alias g=gh`), `hash` with an operand or `-p` (zsh `hash g=/usr/bin/gh`,
 bash `hash -p /usr/bin/gh g`), and zsh's `enable` and `disable`. Listing or clearing (`alias`,
 `alias g`, `hash`, `hash -r`) stays allowed. An implementer line that holds an operator `${…}`
-expansion, such as `${X@P}`, which runs the `$(…)` in X's text, is denied as unresolved as well.
+expansion off a safe list is denied as unresolved as well, since it may run the `$(…)` in a
+variable's value: `${X@P}` and every other `@` transform, `!` indirection (`${!N}`), a subscript
+(`${A[N]}`) and a substring offset (`${X:N}`, `${X: -1}`, `${X:0:2}`), where bash reads N's value as
+arithmetic. The safe list is `${#NAME}` and `${NAME<op>word}`, where NAME is a plain name, a
+positional parameter or one of `@ * ? $`, and `<op>` is one of `:- - := = :+ + :? ? # ## % %% / // /#
+/% ^ ^^ , ,,`. A `:` before anything but `-`, `=`, `+` or `?` is read as an offset. A `$`, quote or
+backtick inside any `${…}` already makes the line unreadable for every profile (`UNREADABLE_BRACED`
+in `shell-words.ts`), so a nested `$(…)` in the word is denied, not parsed.
 These checks run wherever the guard parses shell code. So `gh api -X PUT repos/o/r/pulls/5/merge -X GET` is denied although gh sends GET, and
 `gh -R o/r api …` is denied as gh denies it. So is every implementer `alias`, `hash`, `enable` or
-`disable` line above, even one that binds no gh, and every operator expansion such as `${X:-x}`
-or `${#X}`. These are known over-denies. The rule claims parity with
-gh only on the rows its tests pin.
+`disable` line above, even one that binds no gh, and every expansion off the safe list, even one on
+a variable with a harmless value, such as `${X:0:2}`, `${!prefix*}`, `${#-}` or `${X~}`. These are
+known over-denies. The rule claims parity with gh only on the rows its tests pin.
 
 What the rule claims: in an implementer session, the guard lets a gh call through only when
 `gh-argv.ts` parses it to an allowlisted group and verb, or to a `gh api` call with one endpoint that
@@ -709,7 +716,10 @@ Not covered, each with its task:
   `PATH`; HTTP with the token (`curl` with `$(gh auth token)`, `gh auth status -t`); and a
   `git push` to the base branch (CC-1563);
 - an allowlisted write that is not a merge, such as
-  `gh api -X PATCH repos/o/r/pulls/5 -f state=closed` while `pr close` is denied (CC-1570).
+  `gh api -X PATCH repos/o/r/pulls/5 -f state=closed` while `pr close` is denied (CC-1570);
+- arithmetic outside `${…}` on a variable whose value holds `$(…)`, such as
+  `N='a[$(gh pr merge 5)]'` then `$((N))`, `(( N ))`, `$[N]`, `let N`, `[[ N -eq 1 ]]` or an
+  assignment to a `declare -i` name (found in CC-1120 e, no task filed yet).
 
 The return contract still names `gh api` reads that the profile denies (CC-1562). The implementer
 profiles are named in code, not read from a role field (CC-1564). The leak scan reads gh's argv

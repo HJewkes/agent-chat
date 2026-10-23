@@ -157,10 +157,34 @@ const REBIND_LINES = [
 ]
 
 /** `${X@P}` runs the `$(…)` in X's text, which the splitter never reads as a command (F1-c). */
-const OPERATOR_EXPANSIONS = [
+const AT_P_EXPANSIONS = [
   `X='$(g""h pr merge 5)'; : "\${X@P}"`,
   `X='$(agent-chat g""h-write -- pr merge 5)'; : "\${X@P}"`,
   `X='$(g""h pr merge 5)'; : \${X@P}`,
+]
+// bash reads N's value as arithmetic in an offset, an indirect subscript or a subscript, and so runs its `$(…)`.
+const ARITH_N = `N='a[$(g""h pr merge 5)]'`
+const OPERATOR_EXPANSIONS = [
+  ...AT_P_EXPANSIONS,
+  `X='$(g""h pr merge 5)'; : "\${X@E}"`,
+  `${ARITH_N}; : "\${!N}"`,
+  `${ARITH_N}; : "\${A[N]}"`,
+  `${ARITH_N}; : "\${X:N}"`,
+  `${ARITH_N}; : \${X:N:1}`,
+  'echo "${X: -1}"',
+  'echo ${X:0:2}',
+]
+
+/** Operator forms that never evaluate a value, from implementer transcripts (CC-1120 e). */
+const SAFE_EXPANSIONS = [
+  'echo "${TMPDIR:-/tmp}"',
+  'echo ${#X}',
+  'f=${P%.*}',
+  'echo ${X//a/b}',
+  'echo ${X:+set}',
+  'echo ${1:-x}',
+  'echo ${X^^}',
+  'echo "${X##*/}" ${X,,} ${X:=d} ${X:?m} ${@:-x} ${#@}',
 ]
 
 const singleQuoted = (text: string): string => `'${text.replaceAll("'", `'"'"'`)}'`
@@ -287,6 +311,7 @@ const ALLOWED = [
   'hash -r',
   "bash -c 'hash -r; alias'",
   `gh api "repos/o/r/commits/0123abc/check-runs" --paginate --jq '.check_runs[]|.name'`,
+  ...SAFE_EXPANSIONS.flatMap(plainAndBashC),
 ]
 
 describe('B: an implementer keeps the gh calls its work uses', () => {
@@ -307,10 +332,10 @@ describe('C: other sessions are not judged by the implementer allowlist', () => 
     },
   )
 
-  // d71fcde8 allowed each of these for both profiles; the rebinding and operator-expansion denies are implementer-only.
+  // d71fcde8 and 9893c0fc allowed each of these for both profiles; the rebinding and operator-expansion denies are implementer-only.
   it.each(
     [undefined, 'reviewer'].flatMap(profile =>
-      [...REBIND_LINES, ...OPERATOR_EXPANSIONS]
+      [...REBIND_LINES, ...OPERATOR_EXPANSIONS, ...SAFE_EXPANSIONS]
         .flatMap(plainAndBashC)
         .map((line): [string | undefined, string] => [profile, line]),
     ),

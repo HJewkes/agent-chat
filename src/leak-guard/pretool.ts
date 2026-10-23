@@ -97,6 +97,7 @@ import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } f
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
+  expansionEvaluates,
   expansionRisk,
   HOLE,
   LIVE,
@@ -3017,7 +3018,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
   // `${X@P}` and its kin may run text the splitter never reads as commands, so an implementer line holding one is unresolved.
-  if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE) && expansionRisk(command) === 'operator')
+  if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE) && expansionEvaluates(command))
     return REASONS.implementerGhUnread
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
