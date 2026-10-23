@@ -49,13 +49,7 @@ import {
   type TrustEnv,
 } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
-import {
-  isGraphqlEndpoint,
-  normalizeEndpoint,
-  queryMerges,
-  splitApiFlags,
-  writeMerges,
-} from './implementer-merge.js'
+import { implementerGh, isImplementerProfile } from './implementer-gh.js'
 import {
   ghAliasReader,
   ghAliasSet,
@@ -184,6 +178,8 @@ const UNSURE = Symbol('unsure')
 type Setting = string | undefined | typeof UNSURE
 
 const DOCS = 'See docs/leak-guard.md.'
+const IMPLEMENTER_GH =
+  'An implementer session runs only the gh commands on its allowlist (docs/leak-guard.md#implementer-gh-allowlist-cc-1120-e). Shepherd merges: register the PR with titan-factory shepherd register. To open or edit a PR, use `agent-chat gh-write -- pr create|edit|comment` or `api repos/<o>/<r>/pulls`. Ask your coordinator if you need another.'
 
 // The one-call form the guard reads as it stands, and gh-write scans again when it runs (CC-887).
 const HEREDOC_POST =
@@ -258,8 +254,8 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
-  implementerMerge: `leak-guard: an implementer session does not merge pull requests. Shepherd is the merge path: register the PR with titan-factory shepherd register and report it to your coordinator. ${DOCS}`,
-  implementerMergeUnread: `leak-guard: an implementer session does not merge pull requests, and the guard could not read the query of this gh api graphql call, or resolve its endpoint to one path, so it may be a merge and was not run (fail closed). Pass the query inline with -f query=..., or from a file the guard can read. ${DOCS}`,
+  implementerGh: `leak-guard: ${IMPLEMENTER_GH}`,
+  implementerGhUnread: `leak-guard: the guard could not resolve this call's command, flags or endpoint, so it was not run (fail closed). ${IMPLEMENTER_GH}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1567,101 +1563,6 @@ export function isMerge(args: readonly string[]): boolean {
   return args[0] === 'api' && endpoints.length === 1 && MERGE_ENDPOINT.test(endpoints[0] as string)
 }
 
-// Profiles carry no role field the hook can read, so the implementer profiles are named here.
-const IMPLEMENTER_PROFILES: ReadonlySet<string> = new Set(['bd-implementer', 'bd-implementer-lite'])
-const READ_METHODS = new Set(['GET', 'HEAD'])
-
-/** The method `gh api` sends: the last `-X`/`--method`, else POST when it carries fields or input, else GET. */
-function apiMethod(args: readonly string[]): string {
-  const methods = flagValues(args, ['-X', '--method'])
-  if (methods.length > 0) return (methods.at(-1) as string).toUpperCase()
-  const { inline, files } = apiSources(args)
-  return inline.length + files.length > 0 ? 'POST' : 'GET'
-}
-
-/** The query of a `gh api graphql` call: each `query=` field, read from its file for `-F query=@f`, and each `--input`. */
-function graphqlQuerySources(args: readonly string[]): Sources {
-  const queries = (names: readonly string[]): string[] =>
-    flagValues(args, names)
-      .filter(field => field.startsWith('query='))
-      .map(field => field.slice('query='.length))
-  const typed = queries(['-F', '--field'])
-  const texts = [...queries(['-f', '--raw-field']), ...typed.filter(q => !q.startsWith('@'))]
-  return {
-    inline: texts.map(text => ({ label: 'query', text })),
-    files: [
-      ...typed.filter(q => q.startsWith('@')).map(q => ({ label: 'query', file: q.slice(1) })),
-      ...flagValues(args, ['--input']).map(file => ({ label: 'input', file })),
-    ],
-  }
-}
-
-/** The deny for a graphql call that merges, or whose query the guard cannot read, so fails closed. */
-function graphqlMerge(
-  args: readonly string[],
-  cmd: SimpleCommand,
-  ctx: GuardContext,
-  scope: Scope,
-): string | undefined {
-  if (args.includes(UNRESOLVED)) return REASONS.implementerMergeUnread
-  const { inline, files } = graphqlQuerySources(args)
-  const merges = inline.some(({ text }) => queryMerges(text, false))
-  for (const { label, file } of files) {
-    const text = file === '-' && piped(cmd) ? undefined : readBody(file, cmd, ctx, scope)
-    if (text === undefined) return REASONS.implementerMergeUnread
-    if (queryMerges(text, label === 'input')) return REASONS.implementerMerge
-  }
-  return merges ? REASONS.implementerMerge : undefined
-}
-
-/**
- * A `gh api` call parsed as gh parses it. Fails closed on an endpoint that is not exactly one word,
- * or a write to one the guard cannot resolve.
- */
-function apiMerge(
-  args: readonly string[],
-  cmd: SimpleCommand,
-  ctx: GuardContext,
-  scope: Scope,
-): string | undefined {
-  const endpoints = apiEndpoints(args)
-  if (endpoints.length !== 1) return REASONS.implementerMergeUnread
-  const endpoint = normalizeEndpoint(endpoints[0] as string)
-  if (isGraphqlEndpoint(endpoint)) return graphqlMerge(args, cmd, ctx, scope)
-  if (READ_METHODS.has(apiMethod(args))) return undefined
-  if (endpoint.includes(UNRESOLVED)) return REASONS.implementerMergeUnread
-  return writeMerges(endpoint) ? REASONS.implementerMerge : undefined
-}
-
-/** `gh pr <verb>`, its verb found past any flag the way cobra finds it; fails closed on a hidden verb. */
-function prMerge(args: readonly (string | undefined)[]): string | undefined {
-  const [, verb] = ghCommandWords(args, 2)
-  if (verb === HIDDEN) return REASONS.implementerMergeUnread
-  return verb !== undefined && args[verb] === 'merge' ? REASONS.implementerMerge : undefined
-}
-
-/**
- * Every gh call an implementer makes, read before any other rule or deferral to gh-write. The group
- * is found the way cobra finds it, past root flags such as `-R o/r`, and a group, verb or endpoint
- * the guard cannot resolve is denied: only a call that resolves to a known non-merge passes.
- */
-function implementerMerge(
-  marked: readonly string[],
-  cmd: SimpleCommand,
-  ctx: GuardContext,
-  scope: Scope,
-): string | undefined {
-  if (!IMPLEMENTER_PROFILES.has(ctx.env.AGENT_CHAT_PROFILE ?? '')) return undefined
-  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  const [group] = ghCommandWords(args, 1)
-  if (group === HIDDEN) return REASONS.implementerMergeUnread
-  if (group === undefined) return undefined
-  if (args[group] === 'pr') return prMerge(args)
-  if (args[group] !== 'api') return undefined
-  const rest = args.filter((_, i) => i !== group).map(a => a ?? UNRESOLVED)
-  return apiMerge(splitApiFlags(['api', ...rest]), cmd, ctx, scope)
-}
-
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
 export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): string[] {
   return texts.flatMap(({ label, text }) =>
@@ -1921,6 +1822,22 @@ function unsureGh(
   return unread(cmd.substitutions.flatMap(sub => sub.commands))
 }
 
+/** An implementer's gh call, judged on gh-argv's parse before any other rule or the gh-write deferral (CC-1120 e). */
+function implementerGate(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return undefined
+  const args = marked.map(word =>
+    expandsToWords(word, cmd.splits) ? undefined : resolveWord(word, cmd, ctx, scope),
+  )
+  const verdict = implementerGh(args)
+  if (verdict === undefined) return undefined
+  return verdict === 'deny' ? REASONS.implementerGh : REASONS.implementerGhUnread
+}
+
 function checkGh(
   marked: readonly string[],
   assigns: readonly string[],
@@ -1929,8 +1846,8 @@ function checkGh(
   scope: Scope,
   defers = false,
 ): string | undefined {
-  const merge = implementerMerge(marked, cmd, ctx, scope)
-  if (merge !== undefined) return merge
+  const gate = implementerGate(marked, cmd, ctx, scope)
+  if (gate !== undefined) return gate
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   if (setsGhHome(assigns, ctx.env)) return REASONS.ghConfigHome

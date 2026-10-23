@@ -626,6 +626,54 @@ piped from another command, or a missing or unreadable term list while `MISSING_
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
 
+### Implementer gh allowlist (CC-1120 e)
+
+A session whose hook env has `AGENT_CHAT_PROFILE` set to `bd-implementer` or `bd-implementer-lite`
+runs only the gh calls on an allowlist. Shepherd merges its pull requests. The rule reads every
+`gh …` and `agent-chat gh-write -- …` call before any other gh rule and before the gh-write
+deferral. It reads the words through one parser, `src/leak-guard/gh-argv.ts`. That parser finds the
+group and verb the way cobra does, and parses `gh api`'s flags the way pflag does: a value flag takes
+the next word even when it starts with `-`, `-iXPUT` is `-i -X PUT`, and `--` ends flags.
+
+| group                       | verbs                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `pr`                        | `create` `view` `checks` `list` `diff` `status` `comment` `edit` `ready` `checkout` |
+| `issue`                     | `view` `list` `create` `comment` `edit`                                             |
+| `run`                       | `view` `list` `watch` `rerun` `download`                                            |
+| `workflow`                  | `view` `list`                                                                       |
+| `repo`                      | `view` `clone`                                                                      |
+| `search`, `help`            | any verb                                                                            |
+| `auth`                      | `status`                                                                            |
+| none (`gh`, `gh --version`) |                                                                                     |
+| `api`                       | see below                                                                           |
+
+Before the group or verb, only `-R`, `--repo`, `--repo=…`, `-h`, `--help` and `--version` may appear.
+A `gh api` call is allowed when it has exactly one endpoint, the endpoint does not contain `graphql`
+in any case, and either:
+
+- it reads: every `-X` or `--method` is `GET` or `HEAD`, no `-f`, `-F`, `--field`, `--raw-field`
+  or `--input` is among its flags, and no word anywhere, flag values included, looks like a write
+  (a method spelling with another value, a field or input spelling, or a word naming `method` or
+  `override`). The second check is deliberately over-broad, so a parser mistake costs a false deny;
+- or it writes to `repos/<o>/<r>/pulls`, `pulls/<n>`, `issues`, `issues/<n>` or
+  `issues/<n>/comments`, matched against the raw endpoint with no normalising. `<o>` and `<r>` are
+  `[A-Za-z0-9_.-]+` other than `.` and `..`, or `{owner}` and `{repo}`.
+
+Everything else is denied: a group or verb off the list, such as `pr merge`, `pr review`,
+`repo sync`, `alias set` or `workflow run`, and every other `gh api` write, whatever its URL
+spelling. A call fails closed with its own message when a flag is not in gh's table, when a word the
+guard cannot resolve stands where gh reads the group, verb or any `gh api` word, or when the call
+is graphql. So `gh api -X PUT repos/o/r/pulls/5/merge -X GET` is denied although gh sends GET, and
+`gh -R o/r api …` is denied as gh denies it. These are known over-denies. The rule claims parity with
+gh only on the rows its tests pin.
+
+Its scope is gh's argv in one Bash call. It does not see a merge sent with `curl`, wget or an HTTP
+client and `gh auth token`, a script run later, or a `git push` to the base branch (CC-1563). The
+return contract still names `gh api` reads that the profile denies (CC-1562). The implementer profiles
+are named in code, not read from a role field (CC-1564). The leak scan reads gh's argv with its own
+code until CC-1560 and CC-1561 move it onto `gh-argv.ts`, and tool-guard keeps a separate parser
+(TP-4073).
+
 ### Words xargs adds (CC-1117)
 
 `xargs [options] git|gh <words>` runs that command with more words the guard cannot read: the
