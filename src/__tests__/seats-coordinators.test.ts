@@ -51,13 +51,43 @@ const liveSeat = (id: string, name: string): AgentEventRow[] => [
 ]
 
 describe('liveCoordinators', () => {
-  it('omits a retired seat and an exited one', () => {
+  it('omits a retired seat', () => {
     const rows = [
       ...liveSeat('a1', 'seat-a'),
       ...liveSeat('r1', 'seat-retired'),
       row('agent_retired', 'r1', 'seat-retired'),
-      ...liveSeat('x1', 'seat-dead'),
-      row('agent_exited', 'x1', 'seat-dead'),
+    ]
+
+    expect(liveCoordinators(rows)).toEqual(['seat-a'])
+  })
+
+  it('keeps an exited spawned coordinator, since it may be awaiting a resume and an extra name fails safe', () => {
+    const rows = [
+      ...liveSeat('a1', 'seat-a'),
+      ...liveSeat('x1', 'seat-exited'),
+      row('agent_exited', 'x1', 'seat-exited'),
+    ]
+
+    expect(liveCoordinators(rows)).toEqual(['seat-a', 'seat-exited'])
+  })
+
+  it('omits an exited adopted session, though an adopted session counts as a coordinator', () => {
+    const rows = [
+      ...liveSeat('a1', 'seat-a'),
+      row('agent_spawned', 'h1', 'seat-hand', { origin: 'adopted', provisional: 'false' }),
+      row('agent_attached', 'h1', 'seat-hand', { provisional: 'false' }),
+      row('agent_exited', 'h1', 'seat-hand'),
+    ]
+
+    expect(liveCoordinators(rows)).toEqual(['seat-a'])
+  })
+
+  it('omits an exited spawned worker', () => {
+    const rows = [
+      ...liveSeat('a1', 'seat-a'),
+      row('agent_spawned', 'w1', 'seat-w', worker),
+      row('agent_attached', 'w1', 'seat-w'),
+      row('agent_exited', 'w1', 'seat-w'),
     ]
 
     expect(liveCoordinators(rows)).toEqual(['seat-a'])
@@ -163,7 +193,12 @@ describe('agent-chat seats coordinators', () => {
   })
 
   it('fails with no line when no coordinator is live', async () => {
-    writeEvents([...liveSeat('r1', 'seat-r'), row('agent_retired', 'r1', 'seat-r')])
+    writeEvents([
+      ...liveSeat('r1', 'seat-r'),
+      row('agent_retired', 'r1', 'seat-r'),
+      row('agent_spawned', 'h1', 'seat-hand', { origin: 'adopted', provisional: 'false' }),
+      row('agent_exited', 'h1', 'seat-hand'),
+    ])
 
     const report = await seatsCoordinatorsVerb.run({ db }, {} as never)
 

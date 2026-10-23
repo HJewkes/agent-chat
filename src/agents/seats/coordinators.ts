@@ -1,5 +1,5 @@
 import type { AgentEventRow } from '../../broker/event-store.js'
-import type { AgentLifecycle } from '../../protocol.js'
+import type { AgentIdentity, AgentLifecycle } from '../../protocol.js'
 import { foldAgent, groupByAgent } from '../identity.js'
 import { recordedRole } from '../profiles.js'
 import { BLOCK_PAGE_TO } from './block-page.js'
@@ -18,15 +18,23 @@ export const coordinatorSeats = (charter: string): string[] => {
 const RUNNING: ReadonlySet<AgentLifecycle> = new Set(['spawning', 'live', 'detached'])
 
 /**
+ * Premerge reads this list only to count a coordinator's non-MERGE verdict as a block, so an
+ * extra name fails safe and a missing one fails open. An exited spawned seat may be awaiting a
+ * watchdog resume, so it stays listed. Exited adopted sessions are human-started and stay out.
+ */
+const listed = (agent: AgentIdentity): boolean =>
+  RUNNING.has(agent.state) || (agent.state === 'exited' && agent.origin === 'spawned')
+
+/**
  * CC-1559: the coordinators a seat merge waits on, read from the agent event log rather than a list:
- * every name held by a running identity whose spawn row grants the coordinator role. Exited and
- * retired identities drop out, and so does an adopted session still on its directory-derived name.
+ * every name held by a running or exited-spawned identity whose spawn row grants the coordinator
+ * role. Retired identities drop out, and so does an adopted session still on its derived name.
  */
 export function liveCoordinators(rows: readonly AgentEventRow[]): string[] {
   const names = [...groupByAgent(rows).values()].flatMap(group => {
     const agent = foldAgent(group)
     const spawn = group.find(row => row.kind === 'agent_spawned')
-    if (agent === undefined || spawn === undefined || !RUNNING.has(agent.state)) return []
+    if (agent === undefined || spawn === undefined || !listed(agent)) return []
     if (agent.provisionalName === true || !isSeatName(agent.name)) return []
     return recordedRole(spawn.meta) === 'coordinator' ? [agent.name] : []
   })
