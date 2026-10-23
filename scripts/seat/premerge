@@ -156,11 +156,9 @@ check_merge_tree() {
 }
 
 # A repo skill path, any case and any depth: a .claude/skills segment pair, or .claude itself (a symlink swap).
-is_skill_path() {
-  local re='(^|/)\.claude(/skills(/|$)|$)' hit=1
-  shopt -s nocasematch; [[ $1 =~ $re ]] && hit=0; shopt -u nocasematch
-  return $hit
-}
+# Bracket classes fold case without nocasematch, which macOS bash 3.2 may not apply to =~.
+SKILL_PATH_RE='(^|/)\.[cC][lL][aA][uU][dD][eE](/[sS][kK][iI][lL][lL][sS](/|$)|$)'
+is_skill_path() { [[ $1 =~ $SKILL_PATH_RE ]]; }
 
 # A PR touching repo skills needs the owner's skill-diff review (CC-1120). --no-renames lists a rename's old path too.
 # -z keeps git from quoting unusual paths; a newline inside a name only splits it, which can add matches, never hide one.
