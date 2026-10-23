@@ -49,6 +49,7 @@ import {
   type TrustEnv,
 } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
+import { trapActions } from './deferred-scripts.js'
 import { implementerGh, isImplementerProfile } from './implementer-gh.js'
 import {
   ghAliasReader,
@@ -2273,6 +2274,19 @@ function checkEval(
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
+/** A trap action is shell code the shell runs later, so each is checked as eval's text is (CC-1567). */
+function checkTrap(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  return firstReason(trapActions(['trap', ...marked]), action =>
+    checkEval([action], cmd, ctx, { ...scope, deferrable: false }, depth),
+  )
+}
+
 /** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
 function commandHead(cmd: SimpleCommand): CommandHead | undefined {
   const body = functionBody(cmd.marked)
@@ -2489,6 +2503,7 @@ function checkSimple(
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
+  if (name === 'trap') return checkTrap(marked, cmd, ctx, at, depth)
   const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked, ctx, at, depth) : undefined
   if (sourced !== undefined) return sourced
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)

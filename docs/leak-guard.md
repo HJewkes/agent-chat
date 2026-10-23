@@ -603,7 +603,9 @@ second one for the work-tree top. The guard does not skip network verbs, and eac
 in a `!` body is looked up again.
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
-heredoc fed to a shell. It reads a backtick body as the shell does, skipping each backslash pair to
+heredoc fed to a shell. A `trap` action is checked as the text `eval` runs, for every profile, since
+the shell runs it later as code (CC-1567). When the action is a word the shell expands, every
+operand counts as a possible action. It reads a backtick body as the shell does, skipping each backslash pair to
 find the closing backtick and dropping the backslash before `$`, a backtick and `\`, so a nested
 `` \`...\` `` substitution is seen (CC-1350). `agent-chat gh-write -- <gh args>` is checked like `gh`. A gh called by
 path, such as `/opt/homebrew/bin/gh` or a `$GH` that expands to one, is denied outright: it skips the
@@ -671,12 +673,39 @@ because a hidden gh never reaches this one. So `gh api -X PUT repos/o/r/pulls/5/
 `gh -R o/r api …` is denied as gh denies it. These are known over-denies. The rule claims parity with
 gh only on the rows its tests pin.
 
-Its scope is gh's argv in one Bash call. It does not see a merge sent with `curl`, wget or an HTTP
-client and `gh auth token`, a script run later, or a `git push` to the base branch (CC-1563). The
-return contract still names `gh api` reads that the profile denies (CC-1562). The implementer profiles
-are named in code, not read from a role field (CC-1564). The leak scan reads gh's argv with its own
-code until CC-1560 and CC-1561 move it onto `gh-argv.ts`, and tool-guard keeps a separate parser
-(TP-4073).
+What the rule claims: in an implementer session, the guard lets a gh call through only when
+`gh-argv.ts` parses it to an allowlisted group and verb, or to a `gh api` call with one endpoint that
+is a read or a write to one of the five endpoint patterns above. Anything unresolved, unknown-flagged
+or graphql is denied. The guard sees a gh call when it resolves a command word to `gh` or
+`agent-chat gh-write` in one of these places:
+
+- written directly;
+- behind a wrapper the guard unwraps (listed above);
+- after `xargs`, `parallel` or `find -exec`;
+- inside shell code the guard parses: `sh`/`bash`/`zsh -c`, a here-doc, here-string or pipe into a
+  shell, `eval`, a `trap` action, `$(…)`, a subshell or a function body.
+
+In an implementer session, a command word the guard cannot resolve is denied. Every other program is
+outside the claim, even when it runs gh.
+
+Not covered, each with its task:
+
+- a program the guard does not unwrap that runs its argv: `watch [-x] gh …`, `strace -f gh …`,
+  `ltrace`, `busybox sh -c` (CC-1569 for the leak scan; CC-1568 for implementers);
+- inline interpreters and code-running text tools (`python3 -c`, `node -e`, `perl -e`,
+  `awk 'BEGIN{system()}'`, `sed '1e …'`, `tclsh`, `vim -c '!…'`), and scripts or build tools run
+  in or after the call (`node scripts/x.js`, `npm run x`, `make x`, background jobs): the
+  exec-time implementer gh gate in the gh shim, CC-1568, when they run `gh` by name;
+- the real gh by path from inside another program, a symlink or copy of it, or a rewritten
+  `PATH`; HTTP with the token (`curl` with `$(gh auth token)`, `gh auth status -t`); and a
+  `git push` to the base branch (CC-1563);
+- an allowlisted write that is not a merge, such as
+  `gh api -X PATCH repos/o/r/pulls/5 -f state=closed` while `pr close` is denied (CC-1570).
+
+The return contract still names `gh api` reads that the profile denies (CC-1562). The implementer
+profiles are named in code, not read from a role field (CC-1564). The leak scan reads gh's argv
+with its own code until CC-1560 and CC-1561 move it onto `gh-argv.ts`, and tool-guard keeps a
+separate parser (TP-4073).
 
 ### Words xargs adds (CC-1117)
 

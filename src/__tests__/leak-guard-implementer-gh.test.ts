@@ -2,11 +2,15 @@ import { parseTerms } from '@titan-design/egress-scan'
 import { afterEach, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
-// Synthetic only: a made-up term list and repo. scansGhWrite and PATH keep the gh-write deferral live.
+// Synthetic only: a made-up term list, repo and HOME. scansGhWrite and PATH keep the gh-write deferral live.
 const ctx = (profile?: string): GuardContext => ({
   terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
   cwd: '/work',
-  env: { ...(profile === undefined ? {} : { AGENT_CHAT_PROFILE: profile }), PATH: '/usr/bin' },
+  env: {
+    ...(profile === undefined ? {} : { AGENT_CHAT_PROFILE: profile }),
+    PATH: '/usr/bin',
+    HOME: '/srv/zq7',
+  },
   scansGhWrite: true,
   protectedPaths: [],
   readFile: () => undefined,
@@ -115,6 +119,18 @@ const DENIED = [
   ...PLACEHOLDER_GROUPS,
 ]
 
+/** A trap action is shell code the shell runs later, as eval's is; `G` is `gh` or the gh-write prefix. */
+const TRAPS = (G: string): string[] => [
+  `trap '${G} pr merge 5' EXIT`,
+  `trap -- '${G} pr merge 5' ERR`,
+  `trap "${G} pr merge 5" DEBUG`,
+  `trap '${G} pr merge 5' ZERR`,
+  `trap '${G} -R o/r api -X PUT ${MERGE}' EXIT`,
+  // `~` is live, so trapActions returns every operand; it resolves to HOME, so only the second denies.
+  `trap ~ '${G} pr merge 5' EXIT`,
+]
+const GH_PREFIXES = ['gh', 'agent-chat gh-write --']
+
 const ROOT_FLAGS = ['', '-R o/r ', '--repo o/r ', '--repo=o/r ']
 const SPELLINGS = (row: string): string[] =>
   ROOT_FLAGS.flatMap(flag => [`gh ${flag}${row}`, `agent-chat gh-write -- ${flag}${row}`])
@@ -176,6 +192,17 @@ describe('A: an implementer runs no gh call off the allowlist', () => {
       expect(checkCommand(command, ctx(profile))).toBe(REASONS.implementerGhUnread)
     },
   )
+
+  it.each(IMPLEMENTERS.flatMap(profile => GH_PREFIXES.flatMap(TRAPS).map(command => [profile, command])))(
+    '%s: the trap action in %s is denied',
+    (profile, command) => {
+      expect(IMPLEMENTER_REASONS).toContain(checkCommand(command, ctx(profile)))
+    },
+  )
+
+  it.each(IMPLEMENTERS)('%s: a trap action the guard cannot read fails closed', profile => {
+    expect(checkCommand('trap "$X" EXIT', ctx(profile))).toBe(REASONS.implementerGhUnread)
+  })
 
   it('names Shepherd as the merge path and gh-write as the way to open a PR', () => {
     expect(REASONS.implementerGh).toContain('Shepherd')
