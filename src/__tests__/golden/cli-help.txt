@@ -749,9 +749,10 @@ Commands:
                                   heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
                                   stretches, and each slot that got two deliveries (CC-391). Exits
                                   non-zero when it finds either
-  coordinators [options]          print the coordinator seats a seat merge waits on (CC-1348): the
-                                  charter's seats plus tp-operator, on one space-separated line.
-                                  Exits non-zero when the charter is unreadable or lists no seats
+  coordinators [options]          print the coordinator seats a seat merge waits on (CC-1559): every
+                                  coordinator-role agent the event log shows spawning, live or
+                                  detached, on one space-separated line. Exits non-zero when
+                                  events.db is unreadable or no coordinator is live
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -940,12 +941,13 @@ Options:
 === agent-chat seats coordinators
 Usage: agent-chat seats coordinators [options]
 
-print the coordinator seats a seat merge waits on (CC-1348): the charter's seats plus tp-operator,
-on one space-separated line. Exits non-zero when the charter is unreadable or lists no seats
+print the coordinator seats a seat merge waits on (CC-1559): every coordinator-role agent the event
+log shows spawning, live or detached, on one space-separated line. Exits non-zero when events.db is
+unreadable or no coordinator is live
 
 Options:
-  --root <value>  autonomy directory holding charter.md
-  -h, --help      display help for command
+  --db <value>  events.db to read (default: the broker home)
+  -h, --help    display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]
