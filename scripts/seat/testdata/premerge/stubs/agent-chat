@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stub agent-chat: records each gh-write call in $STUB_LOG and answers like a successful merge PUT.
 # An update-branch call runs $FIXDIR/on-update.sh when present, so a case can move the PR head.
-# `seats coordinators` prints $STUB_COORDINATORS, and fails like a missing charter when it is empty.
+# `seats coordinators` prints $STUB_COORDINATORS, and fails like an unreadable events.db when it is empty.
 if [ "$*" = "seats coordinators" ]; then
   [ -n "${STUB_COORDINATORS:-}" ] || { echo "stub agent-chat: no charter seats" >&2; exit 1; }
   echo "$STUB_COORDINATORS"; exit 0
