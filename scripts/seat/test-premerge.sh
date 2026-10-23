@@ -285,4 +285,27 @@ git -C "$W/origin.git" fetch -q "$WK" main:main
 chain regen "$(tip two)"; git -C "$WK" merge -q --no-edit "${B[7]}" >/dev/null 2>&1; echo regenerated > "$WK/g"; git -C "$WK" commit -qam regen >/dev/null 2>&1
 git -C "$W/clone" fetch -q "$WK" regen:refs/remotes/work/regen
 rv_case "$(tip regen)";   check "12 regenerated conflict resolution in a base merge" 1 "^FAIL .*reviewed $CLEAN conflicts with merged parent ${B[7]}"
+# 13: a PR whose diff touches a repo skill needs the owner's skill-diff review (CC-1120)
+git -C "$WK" checkout -q main; mkdir -p "$WK/.claude/skills/old"; seq 1 40 > "$WK/.claude/skills/old/SKILL.md"
+git -C "$WK" add .claude; git -C "$WK" commit -qm skill-base; git -C "$W/origin.git" fetch -q "$WK" main:main
+# skill_branch <name> <path>...: a branch off main that writes each path.
+skill_branch() {
+  local p; git -C "$WK" checkout -q -b "$1" main; shift
+  for p in "$@"; do mkdir -p "$WK/$(dirname "$p")"; echo s > "$WK/$p"; git -C "$WK" add "$p"; done
+  git -C "$WK" commit -qm skill
+}
+skill_branch sk-add .claude/skills/x/SKILL.md; skill_branch sk-free docs/skills/x.md src/x.ts
+skill_branch sk-nested pkg/a/.claude/skills/y/z.md; skill_branch sk-case .Claude/Skills/x
+skill_branch sk-settings .claude/settings.json; skill_branch sk-dotclaude vendor/.claude
+git -C "$WK" checkout -q -b sk-rename main; mkdir -p "$WK/docs"; git -C "$WK" mv .claude/skills/old/SKILL.md docs/old.md
+git -C "$WK" commit -qm rename
+git -C "$W/clone" fetch -q "$WK" 'refs/heads/sk-*:refs/remotes/work/sk-*'
+sk_case() { new_case "$(tip "$1")"; add_verdict seat-9-review msg0018 MERGE "$SHA"; run; }
+sk_case sk-add;      check "13 adds a skill" 1 "^FAIL .*touches repo skills (.claude/skills/x/SKILL.md): needs the owner's"
+sk_case sk-free;     check "13 skill-free head, docs/skills is not a skill" 0 "^OK "
+sk_case sk-rename;   check "13 renames out of .claude/skills" 1 "^FAIL .*touches repo skills (.claude/skills/old/SKILL.md)"
+sk_case sk-nested;   check "13 nested skill path" 1 "^FAIL .*touches repo skills (pkg/a/.claude/skills/y/z.md)"
+sk_case sk-case;     check "13 case-folded skill path" 1 "^FAIL .*touches repo skills (.Claude/Skills/x)"
+sk_case sk-settings; check "13 .claude/settings.json is not a skill" 0 "^OK "
+sk_case sk-dotclaude; check "13 a file named .claude swaps the directory" 1 "^FAIL .*touches repo skills (vendor/.claude)"
 finish

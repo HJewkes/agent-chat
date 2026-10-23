@@ -155,6 +155,24 @@ check_merge_tree() {
   git -C "$L" merge-tree --write-tree "origin/$base" "$S" >/dev/null 2>&1 || fail+=("merge-tree conflict vs origin/$base")
 }
 
+# A repo skill path, any case and any depth: a .claude/skills segment pair, or .claude itself (a symlink swap).
+is_skill_path() {
+  local re='(^|/)\.claude(/skills(/|$)|$)' hit=1
+  shopt -s nocasematch; [[ $1 =~ $re ]] && hit=0; shopt -u nocasematch
+  return $hit
+}
+
+# A PR touching repo skills needs the owner's skill-diff review (CC-1120). --no-renames lists a rename's old path too.
+# -z keeps git from quoting unusual paths; a newline inside a name only splits it, which can add matches, never hide one.
+check_skill_paths() {
+  local list p skills=()
+  list=$(git -C "$L" diff -z --name-only --no-renames "origin/$base...$S" 2>/dev/null | tr '\0' '\n'; exit "${PIPESTATUS[0]}") \
+    || { fail+=("cannot list changed paths vs origin/$base"); return; }
+  while IFS= read -r p; do is_skill_path "$p" && skills+=("$p"); done <<<"$list"
+  [ ${#skills[@]} = 0 ] && return
+  fail+=("touches repo skills ($(printf '%s\n' "${skills[@]}" | paste -sd, -)): needs the owner's skill-diff review; land through Shepherd's owner gate")
+}
+
 is_coordinator() { local c; for c in $COORDS; do [ "$c" = "$1" ] && return 0; done; return 1; }
 
 FENCE='```'
@@ -251,6 +269,7 @@ fetch_commits
 check_owner_hold
 check_reviewed_head
 check_merge_tree
+check_skill_paths
 check_verdict
 if [ ${#fail[@]} = 0 ]; then
   echo "OK $R#$N head=$S base=$base req=[$(paste -sd, - <<<"$req")] strict=$strict behind=$cmp actor=$actor msg=$msg"

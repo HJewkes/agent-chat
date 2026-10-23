@@ -42,6 +42,10 @@ This copy differs from the live one on purpose:
 - `premerge` reads a verdict whose body opens with a code fence (CC-842).
 - `premerge` refuses a PR whose Shepherd run carries an `owner-asked` hold, and fails closed
   unless `titan-factory` on PATH answers with a timeline or "not registered" (TP-2439).
+- `premerge` refuses a PR whose diff touches a repo skill (a `.claude/skills` path at any depth
+  and in any case, or a file named `.claude`) and names the paths, so the owner reviews the
+  skill diff at Shepherd's gate (CC-1120). It lists paths with `--no-renames`, so a rename out
+  of `.claude/skills` counts.
 - `merge` builds its squash message with `titan-squash-message`.
 - `queue` tries GNU `stat -c` before BSD `stat -f`, because GNU `stat -f` prints a filesystem
   report instead of failing, which broke the stale-lock age on Linux.
