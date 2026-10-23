@@ -1,27 +1,33 @@
 import path from 'node:path'
 import { z } from 'zod'
-import { coordinatorSeats } from '../../agents/seats/coordinators.js'
-import { defaultAutonomyRoot, readText } from '../../agents/seats/io.js'
+import { liveCoordinators } from '../../agents/seats/coordinators.js'
+import { readAgentEvents } from '../../agents/seats/io.js'
+import { home } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
 
 export const seatsCoordinatorsVerb = defineVerb({
   name: 'seats.coordinators',
   description:
-    "print the coordinator seats a seat merge waits on (CC-1348): the charter's seats plus tp-operator, " +
-    'on one space-separated line. Exits non-zero when the charter is unreadable or lists no seats',
-  args: z.object({ root: z.string().optional() }),
+    'print the coordinator seats a seat merge waits on (CC-1559): every coordinator-role agent the ' +
+    'event log shows spawning, live or detached, on one space-separated line. Exits non-zero when ' +
+    'events.db is unreadable or no coordinator is live',
+  args: z.object({ db: z.string().optional() }),
   result: Report,
   cli: {
     options: {
-      root: { long: '--root', description: 'autonomy directory holding charter.md' },
+      db: { long: '--db', description: 'events.db to read (default: the broker home)' },
     },
   },
-  async run({ root }) {
-    const charterPath = path.join(root ?? defaultAutonomyRoot(), 'charter.md')
-    const charter = readText(charterPath)
-    if (charter === undefined) return { ok: false, lines: [], errors: [`cannot read ${charterPath}`] }
-    const seats = coordinatorSeats(charter)
-    if (seats.length === 0) return { ok: false, lines: [], errors: [`${charterPath} lists no seats`] }
+  async run({ db }) {
+    const dbPath = db ?? path.join(home(), 'events.db')
+    let rows
+    try {
+      rows = readAgentEvents(dbPath, Number.MAX_SAFE_INTEGER)
+    } catch (err) {
+      return { ok: false, lines: [], errors: [`cannot read ${dbPath}: ${(err as Error).message}`] }
+    }
+    const seats = liveCoordinators(rows)
+    if (seats.length === 0) return { ok: false, lines: [], errors: [`${dbPath} shows no live coordinator`] }
     return { ok: true, lines: [seats.join(' ')] }
   },
 })
