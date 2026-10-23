@@ -18,7 +18,7 @@ const MERGES = [
   'gh pr merge 5 --squash --delete-branch',
   'gh pr merge --squash 5',
   'gh pr  merge   5',
-  "gh 'pr' \"merge\" 5",
+  'gh \'pr\' "merge" 5',
   'gh pr -R o/r merge 5',
   'gh pr merge --auto --squash',
   'gh pr merge "$N" --squash',
@@ -42,7 +42,8 @@ const MERGES = [
 
 describe('an implementer session cannot merge a pull request', () => {
   it.each(['bd-implementer', 'bd-implementer-lite'])('%s: every merge route is denied', profile => {
-    for (const command of MERGES) expect(checkCommand(command, ctx(profile)), command).toBe(REASONS.implementerMerge)
+    for (const command of MERGES)
+      expect(checkCommand(command, ctx(profile)), command).toBe(REASONS.implementerMerge)
   })
 
   it('names Shepherd as the merge path', () => {
@@ -67,7 +68,8 @@ describe('other sessions keep their merge routes', () => {
   it.each([undefined, 'reviewer', 'coordinator', 'bd-reviewer', 'bd-planner', 'implementer-ish'])(
     'profile %s is not denied by this rule',
     profile => {
-      for (const command of MERGES) expect(checkCommand(command, ctx(profile)), command).not.toBe(REASONS.implementerMerge)
+      for (const command of MERGES)
+        expect(checkCommand(command, ctx(profile)), command).not.toBe(REASONS.implementerMerge)
     },
   )
 })
