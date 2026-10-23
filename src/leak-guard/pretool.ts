@@ -50,6 +50,13 @@ import {
 } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import {
+  isGraphqlEndpoint,
+  normalizeEndpoint,
+  queryMerges,
+  splitApiFlags,
+  writeMerges,
+} from './implementer-merge.js'
+import {
   ghAliasReader,
   ghAliasSet,
   ghAliasesAt,
@@ -252,7 +259,7 @@ export const REASONS = {
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
   implementerMerge: `leak-guard: an implementer session does not merge pull requests. Shepherd is the merge path: register the PR with titan-factory shepherd register and report it to your coordinator. ${DOCS}`,
-  implementerMergeUnread: `leak-guard: an implementer session does not merge pull requests, and the guard could not read the query of this gh api graphql call, so it may be a merge and was not run (fail closed). Pass the query inline with -f query=..., or from a file the guard can read. ${DOCS}`,
+  implementerMergeUnread: `leak-guard: an implementer session does not merge pull requests, and the guard could not read the query of this gh api graphql call, or resolve its endpoint to one path, so it may be a merge and was not run (fail closed). Pass the query inline with -f query=..., or from a file the guard can read. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1572,24 +1579,6 @@ function apiMethod(args: readonly string[]): string {
   return inline.length + files.length > 0 ? 'POST' : 'GET'
 }
 
-/** GitHub ignores a query string and a trailing slash on the merge endpoint, so a deny must too. */
-const bareEndpoints = (args: readonly string[]): string[] =>
-  args.map((arg, i) => (i === 0 ? arg : arg.replace(/[?#].*$/, '').replace(/\/+$/, '')))
-
-/** `gh pr merge`, or a `gh api` call to a pull's merge endpoint that is not a read. */
-function mergesPullRequest(args: readonly string[]): boolean {
-  if (args[0] === 'pr') return ghVerb(args.slice(1)) === 'merge'
-  return isMerge(bareEndpoints(args)) && !READ_METHODS.has(apiMethod(args))
-}
-
-// GraphQL field names are case-sensitive, so `MergePullRequest` is no mutation GitHub runs.
-const GRAPHQL_MERGE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/
-
-const isGraphql = (args: readonly string[]): boolean => {
-  const endpoints = apiEndpoints(bareEndpoints(args))
-  return args[0] === 'api' && endpoints.length === 1 && /^\/?graphql$/.test(endpoints[0] as string)
-}
-
 /** The query of a `gh api graphql` call: each `query=` field, read from its file for `-F query=@f`, and each `--input`. */
 function graphqlQuerySources(args: readonly string[]): Sources {
   const queries = (names: readonly string[]): string[] =>
@@ -1614,16 +1603,34 @@ function graphqlMerge(
   ctx: GuardContext,
   scope: Scope,
 ): string | undefined {
-  if (!isGraphql(args)) return undefined
   if (args.includes(UNRESOLVED)) return REASONS.implementerMergeUnread
   const { inline, files } = graphqlQuerySources(args)
-  const texts = inline.map(({ text }) => text)
-  for (const { file } of files) {
+  const merges = inline.some(({ text }) => queryMerges(text, false))
+  for (const { label, file } of files) {
     const text = file === '-' && piped(cmd) ? undefined : readBody(file, cmd, ctx, scope)
     if (text === undefined) return REASONS.implementerMergeUnread
-    texts.push(text)
+    if (queryMerges(text, label === 'input')) return REASONS.implementerMerge
   }
-  return texts.some(text => GRAPHQL_MERGE.test(text)) ? REASONS.implementerMerge : undefined
+  return merges ? REASONS.implementerMerge : undefined
+}
+
+/**
+ * A `gh api` call parsed as gh parses it. Fails closed on an endpoint that is not exactly one word,
+ * or a write to one the guard cannot resolve.
+ */
+function apiMerge(
+  args: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  const endpoints = apiEndpoints(args)
+  if (endpoints.length !== 1) return REASONS.implementerMergeUnread
+  const endpoint = normalizeEndpoint(endpoints[0] as string)
+  if (isGraphqlEndpoint(endpoint)) return graphqlMerge(args, cmd, ctx, scope)
+  if (READ_METHODS.has(apiMethod(args))) return undefined
+  if (endpoint.includes(UNRESOLVED)) return REASONS.implementerMergeUnread
+  return writeMerges(endpoint) ? REASONS.implementerMerge : undefined
 }
 
 function implementerMerge(
@@ -1634,7 +1641,8 @@ function implementerMerge(
 ): string | undefined {
   if (!IMPLEMENTER_PROFILES.has(ctx.env.AGENT_CHAT_PROFILE ?? '')) return undefined
   const args = raw.map(a => a ?? UNRESOLVED)
-  return mergesPullRequest(args) ? REASONS.implementerMerge : graphqlMerge(args, cmd, ctx, scope)
+  if (args[0] === 'pr') return ghVerb(args.slice(1)) === 'merge' ? REASONS.implementerMerge : undefined
+  return args[0] === 'api' ? apiMerge(splitApiFlags(args), cmd, ctx, scope) : undefined
 }
 
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */

@@ -143,3 +143,62 @@ describe('an implementer session cannot merge through gh api graphql', () => {
     }
   })
 })
+
+const escaped: GuardContext = {
+  ...ctx('bd-implementer'),
+  readFile: file =>
+    file === '/work/m.json'
+      ? '{"query":"mutation { merge\\u0050ullRequest(input:{}) { clientMutationId } }"}'
+      : undefined,
+}
+
+describe('gh api spellings that gh and GitHub read as a merge', () => {
+  it.each([
+    'gh api -iX PUT repos/o/r/pulls/5/merge',
+    'gh api -iXPUT repos/o/r/pulls/5/merge',
+    'gh api repos/o/r/pulls/5/merge -if merge_method=squash',
+    `gh api graphql -if query='mutation { mergePullRequest(input:{}) { clientMutationId } }'`,
+    'gh api -X PUT https://api.github.com/repos/o/r/pulls/5/merge',
+    'gh api -X PUT https://ghe.example/api/v3/repos/o/r/pulls/5/merge',
+    `gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input:{}) { clientMutationId } }'`,
+    'gh api -X PUT repos//o/r/pulls/5/merge',
+    'gh api -X PUT repos/o/r/pulls/5/%6Derge',
+    'gh api repos/o/r/merges -f base=main -f head=feat',
+    'gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc123',
+    'gh api repos/o/r/git/refs -f ref=refs/heads/main -f sha=abc123',
+  ])('%s is denied', command => {
+    expect(checkCommand(command, ctx('bd-implementer'))).toBe(REASONS.implementerMerge)
+  })
+
+  it('decodes a JSON --input body, so an escape cannot hide the mutation', () => {
+    expect(checkCommand('gh api graphql --input m.json', escaped)).toBe(REASONS.implementerMerge)
+  })
+
+  it.each(['gh api repos/o/r/pulls/5/merge repos/o/r/merges -X PUT', 'gh api -X PUT "$EP"'])(
+    '%s does not name one endpoint the guard can read, so it fails closed',
+    command => {
+      expect(checkCommand(command, ctx('bd-implementer'))).toBe(REASONS.implementerMergeUnread)
+    },
+  )
+
+  it.each([
+    'gh api -i repos/o/r/pulls/5/merge',
+    'gh api repos/o/r/git/refs/heads/main',
+    'gh api https://api.github.com/repos/o/r/merges',
+    'gh api -iq .sha repos/o/r/git/refs/heads/main',
+  ])('%s is a read, so the rule leaves it alone', command => {
+    const reason = checkCommand(command, ctx('bd-implementer'))
+
+    expect(reason).not.toBe(REASONS.implementerMerge)
+    expect(reason).not.toBe(REASONS.implementerMergeUnread)
+  })
+
+  it('leaves these spellings to other profiles', () => {
+    expect(checkCommand('gh api -iX PUT repos/o/r/pulls/5/merge', ctx('reviewer'))).not.toBe(
+      REASONS.implementerMerge,
+    )
+    expect(checkCommand('gh api repos/o/r/merges -f base=main -f head=feat', ctx('reviewer'))).not.toBe(
+      REASONS.implementerMerge,
+    )
+  })
+})
