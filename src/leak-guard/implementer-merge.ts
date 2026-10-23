@@ -67,8 +67,10 @@ export const writeMerges = (endpoint: string): boolean => MERGE_WRITE.test(endpo
 
 export const isGraphqlEndpoint = (endpoint: string): boolean => endpoint.toLowerCase() === 'graphql'
 
-// GraphQL field names are case-sensitive, so `MergePullRequest` is no mutation GitHub runs.
-const GRAPHQL_MERGE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/
+// GraphQL field names are case-sensitive, so `MergePullRequest` is no mutation GitHub runs. The list
+// mirrors MERGE_WRITE: a merge, a queued or automatic merge, a branch merge, and a ref move.
+const GRAPHQL_MERGE =
+  /\b(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeBranch|updateRefs?)\b/
 
 /** Every string in a JSON value, keys included, as GitHub sees them once it decodes the body. */
 function jsonStrings(value: unknown): string[] {

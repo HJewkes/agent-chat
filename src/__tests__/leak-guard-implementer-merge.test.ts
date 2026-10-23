@@ -202,3 +202,74 @@ describe('gh api spellings that gh and GitHub read as a merge', () => {
     )
   })
 })
+
+describe('the gh group and verb are found the way cobra finds them', () => {
+  const ROOT_FLAGS = ['-R o/r', '--repo o/r', '--repo=o/r', '-X PUT']
+
+  it.each(ROOT_FLAGS)('a merge behind the root flag %s is denied', flag => {
+    expect(checkCommand(`gh ${flag} pr merge 5`, ctx('bd-implementer'))).toBe(REASONS.implementerMerge)
+  })
+
+  it('denies a gh api flag gh api does not take, since the guard cannot tell its endpoint', () => {
+    expect(checkCommand('gh -R o/r api -X PUT repos/o/r/pulls/5/merge', ctx('bd-implementer'))).toBe(
+      REASONS.implementerMergeUnread,
+    )
+  })
+
+  it.each([
+    'gh -X PUT api repos/o/r/pulls/5/merge',
+    'agent-chat gh-write -- -R o/r pr merge 5',
+    'agent-chat gh-write -- --repo=o/r pr merge 5',
+  ])('%s is denied', command => {
+    expect(checkCommand(command, ctx('bd-implementer'))).toBe(REASONS.implementerMerge)
+  })
+
+  it.each(['gh -R o/r pr view 5', 'gh -R o/r pr checks 5', 'gh --repo=o/r api repos/o/r/pulls/5'])(
+    '%s is not a merge, so the rule leaves it alone',
+    command => {
+      const reason = checkCommand(command, ctx('bd-implementer'))
+
+      expect(reason).not.toBe(REASONS.implementerMerge)
+      expect(reason).not.toBe(REASONS.implementerMergeUnread)
+    },
+  )
+})
+
+describe('a gh call whose group or verb the guard cannot resolve', () => {
+  const deferring = (profile: string): GuardContext => ({
+    ...ctx(profile),
+    env: { AGENT_CHAT_PROFILE: profile, PATH: '/usr/bin' },
+    scansGhWrite: true,
+  })
+  const HIDDEN_VERBS = [
+    'agent-chat gh-write -- pr "${V:-merge}" 5',
+    'agent-chat gh-write -- "$G" merge 5',
+    'gh pr "$V" 5',
+    'gh "$G" merge 5',
+    'gh -R o/r "$G" merge 5',
+  ]
+
+  it.each(HIDDEN_VERBS)('%s fails closed for an implementer, gh-write deferral included', command => {
+    expect(checkCommand(command, deferring('bd-implementer'))).toBe(REASONS.implementerMergeUnread)
+  })
+
+  it.each(['agent-chat gh-write -- pr "$V" 5', 'agent-chat gh-write -- "$G" merge 5'])(
+    '%s reaches the gh-write deferral for another profile, which passes it',
+    command => {
+      expect(checkCommand(command, deferring('reviewer'))).toBeUndefined()
+      expect(checkCommand(command, deferring('bd-implementer'))).toBe(REASONS.implementerMergeUnread)
+    },
+  )
+})
+
+describe('graphql mutations that merge later or move a ref', () => {
+  it.each([
+    'enqueuePullRequest(input:{pullRequestId:"PR_x"}) { clientMutationId }',
+    'updateRef(input:{refId:"REF_x",oid:"abc123"}) { clientMutationId }',
+    'updateRefs(input:{repositoryId:"R_x",refUpdates:[{name:"refs/heads/main",afterOid:"abc123"}]}) { clientMutationId }',
+  ])('mutation { %s } is denied', field => {
+    const command = `gh api graphql -f query='mutation { ${field} }'`
+
+    expect(checkCommand(command, ctx('bd-implementer'))).toBe(REASONS.implementerMerge)
+  })
+})

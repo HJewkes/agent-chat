@@ -1633,16 +1633,33 @@ function apiMerge(
   return writeMerges(endpoint) ? REASONS.implementerMerge : undefined
 }
 
+/** `gh pr <verb>`, its verb found past any flag the way cobra finds it; fails closed on a hidden verb. */
+function prMerge(args: readonly (string | undefined)[]): string | undefined {
+  const [, verb] = ghCommandWords(args, 2)
+  if (verb === HIDDEN) return REASONS.implementerMergeUnread
+  return verb !== undefined && args[verb] === 'merge' ? REASONS.implementerMerge : undefined
+}
+
+/**
+ * Every gh call an implementer makes, read before any other rule or deferral to gh-write. The group
+ * is found the way cobra finds it, past root flags such as `-R o/r`, and a group, verb or endpoint
+ * the guard cannot resolve is denied: only a call that resolves to a known non-merge passes.
+ */
 function implementerMerge(
-  raw: readonly (string | undefined)[],
+  marked: readonly string[],
   cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
 ): string | undefined {
   if (!IMPLEMENTER_PROFILES.has(ctx.env.AGENT_CHAT_PROFILE ?? '')) return undefined
-  const args = raw.map(a => a ?? UNRESOLVED)
-  if (args[0] === 'pr') return ghVerb(args.slice(1)) === 'merge' ? REASONS.implementerMerge : undefined
-  return args[0] === 'api' ? apiMerge(splitApiFlags(args), cmd, ctx, scope) : undefined
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  const [group] = ghCommandWords(args, 1)
+  if (group === HIDDEN) return REASONS.implementerMergeUnread
+  if (group === undefined) return undefined
+  if (args[group] === 'pr') return prMerge(args)
+  if (args[group] !== 'api') return undefined
+  const rest = args.filter((_, i) => i !== group).map(a => a ?? UNRESOLVED)
+  return apiMerge(splitApiFlags(['api', ...rest]), cmd, ctx, scope)
 }
 
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
@@ -1912,12 +1929,12 @@ function checkGh(
   scope: Scope,
   defers = false,
 ): string | undefined {
+  const merge = implementerMerge(marked, cmd, ctx, scope)
+  if (merge !== undefined) return merge
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   if (setsGhHome(assigns, ctx.env)) return REASONS.ghConfigHome
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  const merge = kind === 'unknown' ? undefined : implementerMerge(args, cmd, ctx, scope)
-  if (merge !== undefined) return merge
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
