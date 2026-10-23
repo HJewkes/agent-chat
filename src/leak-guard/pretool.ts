@@ -50,7 +50,7 @@ import {
 } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
 import { trapActions } from './deferred-scripts.js'
-import { implementerGh, isImplementerProfile } from './implementer-gh.js'
+import { implementerGh, isImplementerProfile, rebindsName } from './implementer-gh.js'
 import {
   ghAliasReader,
   ghAliasSet,
@@ -1839,6 +1839,21 @@ function implementerGate(
   return verdict === 'deny' ? REASONS.implementerGh : REASONS.implementerGhUnread
 }
 
+/** An implementer line that rebinds a command name, which would let a later word run gh unseen (CC-1120 e). */
+function implementerRebinds(
+  name: string,
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return undefined
+  const args = marked.map(word =>
+    expandsToWords(word, cmd.splits) ? undefined : resolveWord(word, cmd, ctx, scope),
+  )
+  return rebindsName(name, args) ? REASONS.implementerGhUnread : undefined
+}
+
 function checkGh(
   marked: readonly string[],
   assigns: readonly string[],
@@ -2498,6 +2513,8 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
+  const rebinds = implementerRebinds(name, marked, cmd, ctx, at)
+  if (rebinds !== undefined) return rebinds
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
@@ -2999,6 +3016,9 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
+  // `${X@P}` and its kin may run text the splitter never reads as commands, so an implementer line holding one is unresolved.
+  if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE) && expansionRisk(command) === 'operator')
+    return REASONS.implementerGhUnread
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 

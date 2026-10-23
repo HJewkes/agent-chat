@@ -36,6 +36,10 @@ const PLACEHOLDER_GROUPS = [
   `api ${MERGE} --cache {owner},-XPUT}`,
   `api ${MERGE} --hostname {repo},-XPUT}`,
   `api ${MERGE} -t {owner}x,-XPUT}`,
+  // A later placeholder must not reset the comma the first one met: bash gives `-t owner} -XPUT -t{repo}` (F1-a).
+  `api ${MERGE} -t {owner},-XPUT,-t{repo}}`,
+  `api ${MERGE} -t {owner},-XPUT,-t{branch}x}`,
+  `api ${MERGE} -t {owner},-XPUT`,
 ]
 
 /** A command word the guard cannot resolve, which may be gh behind a root flag (round 5, F1-b). */
@@ -131,6 +135,37 @@ const TRAPS = (G: string): string[] => [
 ]
 const GH_PREFIXES = ['gh', 'agent-chat gh-write --']
 
+/** A builtin that binds a new name to gh, so the later `g` is gh under a word the guard reads as another (F1-b). */
+const REBINDS = (G: string): string[] => [
+  `alias g='${G}'; eval 'g pr merge 5 --squash'`,
+  `eval "alias g='${G}'"; eval 'g pr merge 5'`,
+  `alias g='${G}'; trap 'g pr merge 5' EXIT`,
+  `alias g='${G}'; source /dev/stdin <<< 'g pr merge 5'`,
+  `alias -- g='${G}'; g pr merge 5`,
+  `command alias g='${G}'; g pr merge 5`,
+  `alias "$A"; g pr merge 5`,
+]
+const REBIND_LINES = [
+  ...GH_PREFIXES.flatMap(REBINDS),
+  'hash g=/usr/bin/gh; g pr merge 5 --squash',
+  'hash -p /usr/bin/gh g; g pr merge 5 --squash',
+  'hash g=/usr/bin/agent-chat; g gh-write -- pr merge 5',
+  'hash -p /usr/bin/agent-chat g; g gh-write -- pr merge 5',
+  'hash -dp /usr/bin/gh g; g pr merge 5',
+  'disable -r if; gh pr view 5',
+  'enable -n echo; gh pr view 5',
+]
+
+/** `${X@P}` runs the `$(…)` in X's text, which the splitter never reads as a command (F1-c). */
+const OPERATOR_EXPANSIONS = [
+  `X='$(g""h pr merge 5)'; : "\${X@P}"`,
+  `X='$(agent-chat g""h-write -- pr merge 5)'; : "\${X@P}"`,
+  `X='$(g""h pr merge 5)'; : \${X@P}`,
+]
+
+const singleQuoted = (text: string): string => `'${text.replaceAll("'", `'"'"'`)}'`
+const plainAndBashC = (line: string): string[] => [line, `bash -c ${singleQuoted(line)}`]
+
 const ROOT_FLAGS = ['', '-R o/r ', '--repo o/r ', '--repo=o/r ']
 const SPELLINGS = (row: string): string[] =>
   ROOT_FLAGS.flatMap(flag => [`gh ${flag}${row}`, `agent-chat gh-write -- ${flag}${row}`])
@@ -204,6 +239,19 @@ describe('A: an implementer runs no gh call off the allowlist', () => {
     expect(checkCommand('trap "$X" EXIT', ctx(profile))).toBe(REASONS.implementerGhUnread)
   })
 
+  it.each(IMPLEMENTERS.flatMap(profile => REBIND_LINES.flatMap(plainAndBashC).map(line => [profile, line])))(
+    '%s: %s rebinds a command name, so it fails closed',
+    (profile, line) => {
+      expect(checkCommand(line, ctx(profile))).toBe(REASONS.implementerGhUnread)
+    },
+  )
+
+  it.each(
+    IMPLEMENTERS.flatMap(profile => OPERATOR_EXPANSIONS.flatMap(plainAndBashC).map(line => [profile, line])),
+  )('%s: %s holds an operator expansion, so it fails closed', (profile, line) => {
+    expect(checkCommand(line, ctx(profile))).toBe(REASONS.implementerGhUnread)
+  })
+
   it('names Shepherd as the merge path and gh-write as the way to open a PR', () => {
     expect(REASONS.implementerGh).toContain('Shepherd')
     expect(REASONS.implementerGh).toContain('agent-chat gh-write -- pr create')
@@ -232,6 +280,12 @@ const ALLOWED = [
   'gh run download 1',
   'gh repo view --json visibility',
   'gh api repos/o/r --jq .visibility',
+  'alias',
+  'alias g',
+  'alias -p',
+  'hash',
+  'hash -r',
+  "bash -c 'hash -r; alias'",
   `gh api "repos/o/r/commits/0123abc/check-runs" --paginate --jq '.check_runs[]|.name'`,
 ]
 
@@ -252,6 +306,17 @@ describe('C: other sessions are not judged by the implementer allowlist', () => 
         expect(IMPLEMENTER_REASONS, command).not.toContain(checkCommand(command, ctx(profile)))
     },
   )
+
+  // d71fcde8 allowed each of these for both profiles; the rebinding and operator-expansion denies are implementer-only.
+  it.each(
+    [undefined, 'reviewer'].flatMap(profile =>
+      [...REBIND_LINES, ...OPERATOR_EXPANSIONS]
+        .flatMap(plainAndBashC)
+        .map((line): [string | undefined, string] => [profile, line]),
+    ),
+  )('profile %s still runs %s', (profile, line) => {
+    expect(checkCommand(line, ctx(profile))).toBeUndefined()
+  })
 
   it.each(HIDDEN_GH)('%s keeps the hidden-command rules for another profile', command => {
     expect(checkCommand(command, ctx('reviewer'))).toBe(checkCommand(command, ctx()))

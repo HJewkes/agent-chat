@@ -326,7 +326,7 @@ class ShellLexer {
   private openGroups = 0
   /** The last text appended to the word is a live `{`. */
   private justOpened = false
-  /** How far the word has got toward `{owner},x}`, which bash expands since a group without a comma reads on (CC-1120). */
+  /** How far the word has got toward `{owner},x`, which bash may expand since a group without a comma reads on (CC-1120). */
   private afterPlaceholder: 'none' | 'open' | 'comma' = 'none'
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
@@ -885,7 +885,8 @@ class ShellLexer {
     }
     this.pos++
     const live = this.expands(c, next) || this.braceStructure(c)
-    this.splitting ||= this.closesPlaceholderGroup(c) || (live && (c === '$' || GLOB.includes(c)))
+    this.notePlaceholderComma(c)
+    this.splitting ||= live && (c === '$' || GLOB.includes(c))
     this.append(c, live)
     if (c === '{' && live) {
       this.openGroups++
@@ -906,14 +907,14 @@ class ShellLexer {
   }
 
   /**
-   * Whether an unquoted `}` closes a group a placeholder's `{` opened: bash reads past the placeholder's
-   * own `}`, which ends no group without a comma, so `{owner},-XPUT}` is the words `owner}` and `-XPUT`.
+   * Notes an unquoted `,` after a placeholder's `{`: bash reads past the placeholder's own `}`, which ends no
+   * group without a comma, so `{owner},-XPUT}` is the words `owner}` and `-XPUT`. The note never resets within
+   * the word, so a later `{repo}` cannot hide the comma, and the word splits whatever follows it.
    */
-  private closesPlaceholderGroup(c: string): boolean {
+  private notePlaceholderComma(c: string): void {
+    if (this.afterPlaceholder === 'comma') return
     if (c === '{' && this.exemptPlaceholder()) this.afterPlaceholder = 'open'
     else if (c === ',' && this.afterPlaceholder === 'open') this.afterPlaceholder = 'comma'
-    else if (c === '}' && this.afterPlaceholder === 'comma') return true
-    return false
   }
 
   /** Appends an unquoted expansion, which the shell splits into words. */
@@ -1074,7 +1075,7 @@ class ShellLexer {
     const word = this.word
     const quoted = this.quoted
     const quoteStart = this.quoteStart
-    const splitting = this.splitting
+    const splitting = this.splitting || this.afterPlaceholder === 'comma'
     this.splitting = false
     this.afterPlaceholder = 'none'
     this.word = null

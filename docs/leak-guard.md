@@ -665,12 +665,21 @@ Everything else is denied: a group or verb off the list, such as `pr merge`, `pr
 `repo sync`, `alias set` or `workflow run`, and every other `gh api` write, whatever its URL
 spelling. A call fails closed with its own message when a flag is not in gh's table, when a word the
 guard cannot resolve stands where gh reads the group, verb or any `gh api` word, or when the call
-is graphql. A word the shell may split counts as unresolved, and that includes a word where a
-placeholder is followed by an unquoted `,` and a later `}`: bash reads past the placeholder's own
-`}`, so `{owner},-XPUT}` becomes the words `owner}` and `-XPUT`. In an implementer session, a command
+is graphql. A word the shell may split counts as unresolved, and that includes any word where a
+placeholder is followed by an unquoted `,`: bash reads past the placeholder's own `}`, so
+`{owner},-XPUT}` becomes the words `owner}` and `-XPUT`. A later placeholder in the same word does not
+undo that, so `{owner},-XPUT,-t{repo}}` is split too. In an implementer session, a command
 word the guard cannot resolve, such as `$(which gh)` or `"$GH_BIN"`, is denied before any other rule,
-because a hidden gh never reaches this one. So `gh api -X PUT repos/o/r/pulls/5/merge -X GET` is denied although gh sends GET, and
-`gh -R o/r api …` is denied as gh denies it. These are known over-denies. The rule claims parity with
+because a hidden gh never reaches this one. For the same reason an implementer line is denied as
+unresolved when it rebinds a command name, so that a later word may run gh under another name:
+`alias` with a definition (`alias g=gh`), `hash` with an operand or `-p` (zsh `hash g=/usr/bin/gh`,
+bash `hash -p /usr/bin/gh g`), and zsh's `enable` and `disable`. Listing or clearing (`alias`,
+`alias g`, `hash`, `hash -r`) stays allowed. An implementer line that holds an operator `${…}`
+expansion, such as `${X@P}`, which runs the `$(…)` in X's text, is denied as unresolved as well.
+These checks run wherever the guard parses shell code. So `gh api -X PUT repos/o/r/pulls/5/merge -X GET` is denied although gh sends GET, and
+`gh -R o/r api …` is denied as gh denies it. So is every implementer `alias`, `hash`, `enable` or
+`disable` line above, even one that binds no gh, and every operator expansion such as `${X:-x}`
+or `${#X}`. These are known over-denies. The rule claims parity with
 gh only on the rows its tests pin.
 
 What the rule claims: in an implementer session, the guard lets a gh call through only when

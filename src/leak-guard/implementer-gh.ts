@@ -3,7 +3,8 @@ import { ghCommand, mayWrite, parseGhApi, type Argv, type GhApiCall } from './gh
 /**
  * The gh calls an implementer session may make (CC-1120 e). It is an allowlist over gh-argv's
  * parse, so a call that does not parse to a known-safe shape is denied: 'deny' for a command off
- * the list, 'unread' for one the guard cannot resolve. Its scope is gh's argv in one Bash call.
+ * the list, 'unread' for one the guard cannot resolve. Where the guard sees a gh call at all is the
+ * claim in docs/leak-guard.md.
  */
 
 export type ImplementerVerdict = 'deny' | 'unread' | undefined
@@ -62,6 +63,18 @@ function allowed(group: string | undefined, verb: string | undefined): boolean {
   const list = ALLOWED.get(group)
   if (list === undefined) return false
   return list.has(ANY_VERB) || (verb !== undefined && list.has(verb))
+}
+
+/**
+ * Whether a builtin call may rebind a command name, so a later `g` runs gh under a word the guard reads as
+ * another program: an alias definition, a `hash` entry (zsh `hash g=/path`, bash `hash -p /path g`), or zsh's
+ * `enable`/`disable`. Listing or clearing (`alias`, `alias g`, `hash`, `hash -r`) rebinds nothing.
+ */
+export function rebindsName(name: string, args: readonly (string | undefined)[]): boolean {
+  if (name === 'enable' || name === 'disable') return true
+  if (name === 'alias') return args.some(arg => arg === undefined || arg.includes('='))
+  if (name === 'hash') return args.some(arg => arg === undefined || !arg.startsWith('-') || arg.includes('p'))
+  return false
 }
 
 /** The verdict on one gh call's words after `gh` (or after `agent-chat gh-write --`); undefined allows it. */
