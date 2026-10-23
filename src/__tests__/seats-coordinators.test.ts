@@ -74,8 +74,8 @@ describe('liveCoordinators', () => {
       ...liveSeat('a1', 'seat-a'),
       row('agent_spawned', 'w1', 'seat-a-impl-1', worker),
       row('agent_attached', 'w1', 'seat-a-impl-1'),
-      row('agent_spawned', 'w2', 'reviewer-coord', worker),
-      row('agent_attached', 'w2', 'reviewer-coord'),
+      row('agent_spawned', 'w2', 'seat-b', worker),
+      row('agent_attached', 'w2', 'seat-b'),
     ]
 
     expect(liveCoordinators(rows)).toEqual(['seat-a'])
