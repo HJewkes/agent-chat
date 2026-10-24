@@ -48,7 +48,8 @@ function runShim(shell: string, shimEntry: string) {
   })
 }
 
-const realGhRuns = (): string[] => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : [])
+const realGhRuns = (): string[] =>
+  fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : []
 
 describe.each(SHELLS)('the gh shim fallback under %s, its build gone', shell => {
   it('drops a symlink to its own dir from PATH and runs the real gh once', () => {
