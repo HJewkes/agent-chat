@@ -401,7 +401,7 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
 | `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
-| `PATH`, `LD_PRELOAD` or another loader variable set to a value the guard cannot read, on a line that may reach git (below)                                                                                                                      | `LD_PRELOAD="$X" git push` loads an unread library          |
+| `PATH`, zsh's `path`, `LD_PRELOAD` or another loader variable set to a value the guard cannot read, or `hash` given one, on a line that may reach git (below)                                                                                   | `LD_PRELOAD="$X" git push` loads an unread library          |
 | `git -c` or `--config-env` on `safe.directory` or `init.templateDir`, a `git config` write or section rename to either, `git init` or `clone --template=<dir>` (any prefix), or `git --exec-path=<dir>` (below)                                 | `git init --template=/t r` copies an unread hook or alias   |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
@@ -1005,6 +1005,16 @@ The deny ranks after the per-command checks, so `PATH="$X" git push --no-verify`
 `HOME` write before a `$HOME` or `~` entry (`HOME=/h LD_PRELOAD=$HOME/l.so git push`). Known gap: a
 relative literal entry after a `cd` the guard cannot read (`cd "$X"; PATH=.:$PATH git push`)
 resolves against that directory and stays allowed.
+
+zsh's lowercase `path` is the same variable as `PATH`, and the Bash tool's shell here is zsh, so any
+word that names it as a variable denies with the same reason on a line that may reach git, whatever
+its value: `path=($X $path)`, `path+=($X)`, `path[1]=$X`, `typeset path=(...)`, `read -A path`,
+`for path in ...` and `${path:=...}` (`ZSH_TIED_SEARCH_ENV`). A `path` inside a longer word, such as
+`src/path.ts`, is a file name and does not count; a bare `path` operand does (`cd path && git status`
+is a known false deny). `hash` picks the program a later `git` runs without naming `PATH`
+(`hash -p <file> git` in bash, `hash git=<file>` in zsh), so a `hash` given any word the guard cannot
+read denies too; a literal `hash -p /usr/bin/git git` names a file as a literal `PATH` does and stays
+allowed.
 
 **git options and config writes.** `safe.directory` makes git trust the config and hooks of a
 repository another user owns, and git reads it only from protected config: system, global and the

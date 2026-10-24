@@ -44,6 +44,13 @@ export const SEARCH_ENV: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * zsh's lowercase arrays tied to a SEARCH_ENV name: `path=($X $path)` sets PATH. The Bash tool's
+ * shell here is zsh, so they count on every line. Only a word that names one as a variable counts,
+ * since `path` is a common file name.
+ */
+export const ZSH_TIED_SEARCH_ENV: readonly string[] = ['path']
+
+/**
  * Regex sources for whole variable names a shell turns straight into code it runs, so they set a
  * shell's startup as BASH_ENV does. Patterns rather than names, to fail closed on kin: bash's
  * exported functions (`BASH_FUNC_f%%`, and `BASH_FUNC_f()` from older patches), its option lists

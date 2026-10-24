@@ -12,6 +12,13 @@ const ctx: GuardContext = {
   readIncludedHooksPath: () => false,
 }
 
+// Asserting defined first keeps a row failing where REASONS.searchPathEnv does not exist.
+function expectSearchDeny(command: string): void {
+  const reason = checkCommand(command, ctx)
+  expect(reason).toBeDefined()
+  expect(reason).toBe(REASONS.searchPathEnv)
+}
+
 describe('PATH or a loader variable set to a value the guard cannot read, on a line that may reach git (CC-1236)', () => {
   it.each([
     'LD_PRELOAD=$X git push',
@@ -32,7 +39,7 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'DYLD_LIBRARY_PATH=$X git push',
     'echo p | xargs env PATH="$X" git push origin --',
   ])('denies searchPathEnv: %s', command => {
-    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+    expectSearchDeny(command)
   })
 
   it.each([
@@ -47,7 +54,7 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     "HOME=$X bash -c 'PATH=~/bin git push'",
     'HOME=/h LD_PRELOAD=$HOME/l.so git push',
   ])('denies searchPathEnv when the line may write HOME: %s', command => {
-    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+    expectSearchDeny(command)
   })
 
   it.each([
@@ -57,7 +64,7 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'PWD=$X; PATH=~+ git push',
     'cd "$X"; LD_PRELOAD=~+/x.so git push',
   ])('denies searchPathEnv for a tilde prefix other than a bare ~: %s', command => {
-    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+    expectSearchDeny(command)
   })
 
   it.each([
@@ -67,7 +74,33 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'DYLD_FRAMEWORK_PATH=$X git push',
     'DYLD_FALLBACK_FRAMEWORK_PATH=$X git push',
   ])('denies searchPathEnv for every loader variable: %s', command => {
-    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+    expectSearchDeny(command)
+  })
+
+  it.each([
+    'path=($X $path); git push',
+    'path+=($X); git push',
+    'path[1]=$X; git push',
+    'path=(~+ $path); git push',
+    'path=(/usr/bin); git push',
+    'typeset path=($X); git push',
+    'read -A path; git push',
+    'for path in $X; do git push; done',
+    ': ${path:=/x}; git push',
+    'pa""th=($X); git push',
+    'cd path && git status',
+  ])("denies searchPathEnv for zsh's path, tied to PATH: %s", command => {
+    expectSearchDeny(command)
+  })
+
+  it.each([
+    'hash -p "$X" git; git push',
+    'hash git=$X; git push',
+    'builtin hash -p $X git; git push',
+    'command hash git=$X; git status',
+    'hash -p $(mktemp -d)/git git; gh pr create',
+  ])('denies searchPathEnv for hash given a value the guard cannot read: %s', command => {
+    expectSearchDeny(command)
   })
 
   it('lets a per-command reason win over an unreadable PATH on the same line', () => {
@@ -91,6 +124,12 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'PATH=$X make',
     "git commit -m 'set PATH and LD_PRELOAD'",
     'NODE_PATH=$X git status',
+    'git add src/path.ts lib/path/x.ts',
+    'cat docs/path.md; git status',
+    'git log -- path',
+    'hash -r; git push',
+    'hash -p /usr/bin/git git; git push',
+    'hash -p "$X" make',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

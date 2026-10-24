@@ -45,6 +45,7 @@ import {
   SHELL_CODE_ENV,
   templateOption,
   TRUST_ENV,
+  ZSH_TIED_SEARCH_ENV,
   trustConfigWrite,
   trustKey,
   type TrustEnv,
@@ -253,7 +254,7 @@ export const REASONS = {
   sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
   shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
   gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
-  searchPathEnv: `leak-guard: this line sets PATH, LD_PRELOAD or another variable that picks which program or library git loads to a value the guard cannot read (an expansion, a command substitution, read, env -S), and it may reach git. Write the value as a literal, using only the variable's own value, $HOME or ~ as in PATH=~/bin:$PATH, or put the setting on a line without git. ${DOCS}`,
+  searchPathEnv: `leak-guard: this line sets PATH, zsh's path, LD_PRELOAD or another variable that picks which program or library git loads to a value the guard cannot read (an expansion, a command substitution, read, env -S), or gives hash such a value, and it may reach git. Write the value as a literal, using only the variable's own value, $HOME or ~ as in PATH=~/bin:$PATH, or put the setting on a line without git. ${DOCS}`,
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
@@ -2627,7 +2628,11 @@ const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
 // `${NAME=x}`, `${NAME:=x}` and zsh's `${NAME::=x}` assign; `${NAME-x}` and the other operators only read.
 const nameAssign = (name: string): RegExp => new RegExp(`\\$\\{${name}(?:\\[[^\\]]*\\])?:{0,2}=`)
-const ENV_REFS = ENV_NAMES.map(name => ({ use: nameUse(name), assign: nameAssign(name) }))
+// A word that names a zsh tied array as a variable: `path=`, `path+=`, `path[1]=`, a bare `path`
+// operand of read, typeset or for, or glued to an option as in `print -vpath`.
+const tiedUse = (name: string): RegExp => new RegExp(`^(?:-[A-Za-z]*)?${name}(?:\\[[^\\]]*\\])?(?:\\+?=|$)`)
+const TIED_REFS = ZSH_TIED_SEARCH_ENV.map(name => ({ use: tiedUse(name), assign: nameAssign(name) }))
+const ENV_REFS = [...ENV_NAMES.map(name => ({ use: nameUse(name), assign: nameAssign(name) })), ...TIED_REFS]
 
 /** Whether a word uses a program env var other than by reading it. */
 const namesProgramEnv = (text: string): boolean =>
@@ -2637,7 +2642,9 @@ const namesProgramEnv = (text: string): boolean =>
 const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) => assign.test(text))
 
 // The same assigning expansion where the shell expands it, as marked: not inside single quotes.
-const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
+const LIVE_ASSIGNS = [...ENV_NAMES, ...ZSH_TIED_SEARCH_ENV].map(
+  name => new RegExp(LIVE + nameAssign(name).source),
+)
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
 /**
@@ -2684,7 +2691,10 @@ function trustOn(text: string, assignOnly = false): TrustOn | undefined {
   return ref === undefined ? undefined : { trust: ref.trust }
 }
 
-const SEARCH_REFS = [...SEARCH_ENV].map(name => ({ use: nameUse(name), assign: nameAssign(name) }))
+const SEARCH_REFS = [
+  ...[...SEARCH_ENV].map(name => ({ use: nameUse(name), assign: nameAssign(name) })),
+  ...TIED_REFS,
+]
 const searchOn = (text: string, assignOnly: boolean): boolean =>
   SEARCH_REFS.some(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
 
@@ -2828,17 +2838,33 @@ function operandsHideName(name: string, written: readonly string[]): boolean {
  * family. Such a name may be any program var or GIT_ALLOW_PROTOCOL, so it fails closed.
  */
 function hidesVariableName(words: readonly string[]): boolean {
+  const at = commandHeadAt(words)
+  if (at === undefined) return false
+  const name = path.basename(unmark(words[at] as string))
+  return name === 'env' ? envHidesName(words, at + 1) : operandsHideName(name, words.slice(at + 1))
+}
+
+/** Where the command past assignments, prefix words and wrappers starts, if any word is left. */
+function commandHeadAt(words: readonly string[]): number | undefined {
   for (let at = 0; at < words.length;) {
     const head = words[at] as string
-    const name = path.basename(unmark(head))
-    const next = wrapperEnd(words, at, name)
+    const next = wrapperEnd(words, at, path.basename(unmark(head)))
     if (ASSIGNMENT.test(head)) at++
     else if (PREFIX_WORDS.has(head)) at = dropOptions(words, at + 1)
     else if (next !== undefined) at = next
-    else if (name === 'env') return envHidesName(words, at + 1)
-    else return operandsHideName(name, words.slice(at + 1))
+    else return at
   }
-  return false
+  return undefined
+}
+
+/**
+ * Whether a `hash` builtin is given a word the guard cannot read (CC-1236): bash's `hash -p <file> git`
+ * and zsh's `hash git=<file>` pick the program a later `git` runs without naming PATH.
+ */
+function hashesUnread(words: readonly string[]): boolean {
+  const at = commandHeadAt(words)
+  if (at === undefined || unmark(words[at] as string) !== 'hash') return false
+  return words.slice(at + 1).some(word => word.includes(LIVE))
 }
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
@@ -2969,9 +2995,11 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
-  const hidden: EnvEvent[] = hidesVariableName(functionBody(cmd.marked)) ? [NAME_HIDDEN] : []
+  const body = functionBody(cmd.marked)
+  const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
+  const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
   return {
-    events: [...written.events, ...unwrapped.events, ...hidden],
+    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }
