@@ -53,18 +53,25 @@ describe('a usage window with its reset', () => {
 })
 
 describe('the readouts that print usage windows', () => {
-  const limits = { five_hour: { used_pct: 26, resets_at: NOW_S + 3600 }, seven_day: { used_pct: 90, resets_at: RESET_S } }
+  const limits = {
+    five_hour: { used_pct: 26, resets_at: NOW_S + 3600 },
+    seven_day: { used_pct: 90, resets_at: RESET_S },
+  }
 
   it('agent_list header carries each window’s countdown', () => {
     const line = accountUsageLines([account(limits)], undefined, NOW_MS)
-    expect(line).toMatch(/^Account usage on agents \(230s old\): five_hour 26% \(resets \d\d:\d\d \S+, in 1h0m\), /)
+    expect(line).toMatch(
+      /^Account usage on agents \(230s old\): five_hour 26% \(resets \d\d:\d\d \S+, in 1h0m\), /,
+    )
     expect(line).toMatch(/seven_day 90% \(resets \d\d:\d\d \S+, in 1h28m\)\.$/)
   })
 
   it('session_budget’s account line carries the same countdown', () => {
     const read = account(limits).read as Extract<AccountReading['read'], { found: true }>
     const out = formatBudget('You', read, account(limits), NOW_MS)
-    expect(out).toMatch(/^Account on agents \(230s old\): .*seven_day 90% \(resets \d\d:\d\d \S+, in 1h28m\)\.$/m)
+    expect(out).toMatch(
+      /^Account on agents \(230s old\): .*seven_day 90% \(resets \d\d:\d\d \S+, in 1h28m\)\.$/m,
+    )
   })
 
   it('a stale reading keeps its STALE line and shows no windows', () => {

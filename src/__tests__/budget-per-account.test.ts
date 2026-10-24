@@ -189,6 +189,8 @@ describe('the agent_list header', () => {
     expect(header[0]).toMatch(
       /^Account usage on workout \(30s old\): seven_day 79% \(resets \w{3} \d\d:\d\d \S+, in 3d0h\)\. · slots 3\/30$/,
     )
-    expect(header[1]).toBe(`Account usage on agents: STALE — newest reading is ${20 * 60}s old, not a current figure.`)
+    expect(header[1]).toBe(
+      `Account usage on agents: STALE — newest reading is ${20 * 60}s old, not a current figure.`,
+    )
   })
 })

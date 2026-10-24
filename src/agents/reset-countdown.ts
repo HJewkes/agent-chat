@@ -40,5 +40,10 @@ export function resetSuffix(resetsAt: number | undefined, nowMs: number, timeZon
 }
 
 /** One window, e.g. `seven_day 90% (resets 18:00 MDT, in 1h28m)`; the time zone defaults to the machine's. */
-export const formatUsageWindow = (name: string, window: UsageWindow, nowMs: number, timeZone?: string): string =>
+export const formatUsageWindow = (
+  name: string,
+  window: UsageWindow,
+  nowMs: number,
+  timeZone?: string,
+): string =>
   `${name} ${Math.round(window.used_pct * 10) / 10}%${resetSuffix(window.resets_at, nowMs, timeZone)}`
