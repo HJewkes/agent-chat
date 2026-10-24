@@ -1292,6 +1292,7 @@ Options:
   --state <state>    only agents showing this status, e.g. running, finished, retired (repeatable)
   --name <name>      only the agent with exactly this name
   --format <format>  line: one line per agent (name state profile id cwd)
+  --include-retired  also list retired agents, which carry retired: true in --json
   -h, --help         display help for command
 
 === agent-chat agent spawn
