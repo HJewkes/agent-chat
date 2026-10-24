@@ -314,6 +314,21 @@ export const MAX_COORDINATOR_DEPTH = 3
 /** How long a process gets to exit on SIGTERM before the ladder reaches SIGKILL. */
 const KILL_GRACE_MS = 3000
 
+/**
+ * CC-455: a headless launcher starts detached, so it leads a process group that claude shares.
+ * SIGKILL to the launcher's pid alone left a claude that ignored SIGTERM running with no parent.
+ */
+function killLauncherGroup(pid: number): void {
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, 'SIGKILL')
+      return
+    } catch {
+      // No such group, or the process exited on the polite signal, which is the good case.
+    }
+  }
+}
+
 /** How long to wait for a stopped agent's socket to go before reclaiming its name. */
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
@@ -3301,13 +3316,7 @@ export class Supervisor implements TeleportHost {
     }
     entry.cancelReason = 'exited after a cancellation request'
     this.shadow.requestCancellation(entry.executionId, 'kill')
-    setTimeout(() => {
-      try {
-        process.kill(pid, 'SIGKILL')
-      } catch {
-        // exited on the polite signal, which is the good case
-      }
-    }, KILL_GRACE_MS).unref?.()
+    setTimeout(() => killLauncherGroup(pid), KILL_GRACE_MS).unref?.()
     return { ok: true }
   }
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
@@ -798,7 +798,72 @@ describe('kill', () => {
   it('reports plainly when there is no such live agent', () => {
     expect(withStubbedSurface().kill('nobody').reason).toMatch(/no live agent named "nobody"/)
   })
+
+  /**
+   * CC-455. The fake launcher forwards SIGTERM, as run-agent does, to a child that ignores it.
+   * Kills the mutation that sends the escalating SIGKILL to the launcher's pid instead of its group.
+   */
+  it('escalates to a SIGKILL that reaches a child ignoring SIGTERM', async () => {
+    vi.useRealTimers()
+    const { launcher, childPid } = await startStubbornLauncher()
+    try {
+      vi.useFakeTimers()
+      const sup = withStubbedSurface()
+      liveOn(sup, 'headless', launcher.pid)
+
+      expect(sup.kill('scout').ok).toBe(true)
+      vi.advanceTimersByTime(3000)
+      vi.useRealTimers()
+
+      expect(await goneWithin(childPid, 5000)).toBe(true)
+    } finally {
+      for (const pid of [-launcher.pid!, childPid]) signalQuietly(pid)
+    }
+  }, 15_000)
 })
+
+const STUBBORN_CHILD = `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.stdout.write('ready')`
+const FORWARDING_LAUNCHER = `
+  const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(STUBBORN_CHILD)}], { stdio: ['ignore', 'pipe', 'ignore'] })
+  process.on('SIGTERM', () => child.kill('SIGTERM'))
+  child.stdout.once('data', () => process.stdout.write(String(child.pid)))
+`
+
+/** A detached launcher, like the headless surface starts, whose child ignores SIGTERM. */
+async function startStubbornLauncher(): Promise<{ launcher: ReturnType<typeof spawn>; childPid: number }> {
+  const launcher = spawn(process.execPath, ['-e', FORWARDING_LAUNCHER], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  const childPid = await new Promise<number>((resolve, reject) => {
+    launcher.stdout!.once('data', chunk => resolve(Number(String(chunk))))
+    launcher.once('exit', () => reject(new Error('fake launcher exited before its child was ready')))
+  })
+  return { launcher, childPid }
+}
+
+function signalQuietly(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // already gone
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function goneWithin(pid: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (isAlive(pid) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+  return !isAlive(pid)
+}
 
 describe('retire', () => {
   it('frees the name, which nothing else does', async () => {
