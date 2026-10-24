@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
@@ -29,6 +30,34 @@ const isRegenerable = (entry: string): boolean => {
   if (name !== undefined && REGENERABLE_FILE_SUFFIXES.some(suffix => name.endsWith(suffix))) return true
   if (name !== undefined && REGENERABLE_FILES.includes(name)) return true
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
+}
+
+/**
+ * CC-1582: a repo declares the ignored files its own build writes, one exact tree-relative path per
+ * line (`#` comments, no directories or globs). Only the copy committed at HEAD counts, so an ignored
+ * or uncommitted declaration waives nothing, and a failed read declares nothing.
+ */
+const GENERATED_DECLARATION = '.agent-chat/generated'
+
+function declaredGenerated(worktree: string): ReadonlySet<string> {
+  try {
+    const text = execFileSync('git', ['show', `HEAD:${GENERATED_DECLARATION}`], {
+      cwd: worktree,
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const lines = text.split('\n').map(line => line.trim())
+    return new Set(lines.filter(line => line !== '' && !line.startsWith('#') && !line.endsWith('/')))
+  } catch {
+    return new Set()
+  }
+}
+
+function withoutDeclaredGenerated(worktree: string, entries: string[]): string[] {
+  if (entries.length === 0) return entries
+  const generated = declaredGenerated(worktree)
+  return entries.filter(entry => !generated.has(entry))
 }
 
 /** Codewatch writes its graph index at the git toplevel only, so a nested copy is not matched. */
@@ -107,10 +136,12 @@ async function unregenerableIgnored(worktree: string, ignored: string): Promise<
   const kept = [
     ...new Set((await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()),
   ]
-  return withoutIndexOnlyGraphDb(
-    worktree,
-    kept.filter(entry => !isRegenerable(entry)),
-  )
+  return protectedIgnored(worktree, kept)
+}
+
+function protectedIgnored(worktree: string, entries: readonly string[]): string[] {
+  const kept = entries.filter(entry => !isRegenerable(entry))
+  return withoutIndexOnlyGraphDb(worktree, withoutDeclaredGenerated(worktree, kept))
 }
 
 /** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file the removal would take. */
@@ -136,17 +167,14 @@ function ignoredRefusal(worktree: string, kept: readonly string[], action: strin
   ]
   return (
     `ignored files in ${worktree} would be deleted (${kept.slice(0, 3).join(', ')}); ` +
-    `${action} removes only ignored ${regenerable.join(', ')}, a top-level .claude, and an index-only top-level ${CODEWATCH_INDEX}`
+    `${action} removes only ignored ${regenerable.join(', ')}, a top-level .claude, an index-only top-level ${CODEWATCH_INDEX}, ` +
+    `and paths listed in a committed ${GENERATED_DECLARATION}`
   )
 }
 
 /** The same policy for the package's park, which observes status and ignored files itself and asks only what to keep. */
 export const parkIgnoredFiles: ParkIgnoredFilesPolicy = {
   expandDirectories: true,
-  protectedEntries: ({ worktree, entries }) =>
-    withoutIndexOnlyGraphDb(
-      worktree,
-      entries.filter(entry => !isRegenerable(entry)),
-    ),
+  protectedEntries: ({ worktree, entries }) => protectedIgnored(worktree, entries),
   formatRefusal: ({ worktree, entries }) => ignoredRefusal(worktree, entries, 'park'),
 }

@@ -683,6 +683,73 @@ describe('refusing to park what the removal would lose', () => {
     expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
   })
 
+  describe('a repo-declared generated file (CC-1582)', () => {
+    async function withGeneratedGuide(declaration: string, extraIgnores = ''): Promise<AgentIdentity> {
+      const agent = await spawnIn('worker-a', makeRepo())
+      fs.writeFileSync(path.join(agent.cwd, '.gitignore'), `site/guides/capabilities.md\n${extraIgnores}`)
+      fs.mkdirSync(path.join(agent.cwd, '.agent-chat'))
+      fs.writeFileSync(path.join(agent.cwd, '.agent-chat', 'generated'), declaration)
+      git(['add', '.gitignore', '.agent-chat/generated'], agent.cwd)
+      git(['commit', '-q', '-m', 'declare generated'], agent.cwd)
+      fs.mkdirSync(path.join(agent.cwd, 'site', 'guides'), { recursive: true })
+      fs.writeFileSync(path.join(agent.cwd, 'site', 'guides', 'capabilities.md'), '# Capabilities\n')
+      return agent
+    }
+
+    it('parks a tree whose only ignored file is declared generated', async () => {
+      const agent = await withGeneratedGuide(
+        '# written by the capabilities check\nsite/guides/capabilities.md\n',
+      )
+      await exit(agent)
+
+      expect((await sup.park('worker-a')).ok).toBe(true)
+      expect(fs.existsSync(agent.cwd)).toBe(false)
+    })
+
+    it('refuses .env beside a declared generated file, naming only .env', async () => {
+      const agent = await withGeneratedGuide('site/guides/capabilities.md\n', '.env\n')
+      fs.writeFileSync(path.join(agent.cwd, '.env'), 'TOKEN=synthetic\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/would be deleted \(\.env\)/) })
+      expect(fs.existsSync(path.join(agent.cwd, '.env'))).toBe(true)
+    })
+
+    it('refuses a generated file the declaration does not list', async () => {
+      const agent = await withGeneratedGuide('site/guides/other.md\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('(site/guides/capabilities.md)'),
+      })
+    })
+
+    it('ignores a declaration that is not committed', async () => {
+      const agent = await spawnIn('worker-a', makeRepo())
+      fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.agent-chat/\nsite/\n')
+      git(['add', '.gitignore'], agent.cwd)
+      git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+      fs.mkdirSync(path.join(agent.cwd, '.agent-chat'))
+      fs.writeFileSync(
+        path.join(agent.cwd, '.agent-chat', 'generated'),
+        'site/notes.md\n.agent-chat/generated\n',
+      )
+      fs.mkdirSync(path.join(agent.cwd, 'site'))
+      fs.writeFileSync(path.join(agent.cwd, 'site', 'notes.md'), 'draft\n')
+      await exit(agent)
+
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('site/notes.md') })
+      expect(fs.existsSync(path.join(agent.cwd, 'site', 'notes.md'))).toBe(true)
+    })
+  })
+
   describe('a codewatch graph index (CC-1163)', () => {
     async function withCodewatchIgnored(extraIgnores = ''): Promise<AgentIdentity> {
       const agent = await spawnIn('worker-a', makeRepo())
