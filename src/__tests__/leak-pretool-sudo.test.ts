@@ -55,6 +55,8 @@ describe('the bypass guard reads the command behind sudo', () => {
     ['sudo -u root GIT_CONFIG_COUNT=0 git push', REASONS.gitConfigEnv],
     ['sudo git -c core.hooksPath=/dev/null push', REASONS.gitConfig],
     ['sudo env -i git push', REASONS.envClear],
+    ['sudo git push origin main', REASONS.privilegedPush],
+    ['sudo -u root git push origin main', REASONS.privilegedPush],
   ])('denies %s for what runs behind sudo', (line, reason) => {
     expect(checkCommand(line, ctx())).toBe(reason)
   })
@@ -105,8 +107,6 @@ describe('the bypass guard allows sudo lines that skip no hook', () => {
     'sudo apt-get update',
     "sudo -u postgres psql -c 'select 1'",
     'sudo git status',
-    'sudo git push origin main',
-    'sudo -u root git push origin main',
     'sudo -s git status',
     'sudo -i',
     "sudo -s <<< 'git status'",
