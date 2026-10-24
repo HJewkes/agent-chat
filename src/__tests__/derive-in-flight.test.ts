@@ -87,7 +87,9 @@ describe('deriveInFlight', () => {
   })
 
   it('builds a PR row from a shepherd run with its flags and ci', () => {
-    const rows = [flight({ nextAction: 'wait', pendingGate: 'gate-1', held: true, stalled: true, phase: 'fixing' })]
+    const rows = [
+      flight({ nextAction: 'wait', pendingGate: 'gate-1', held: true, stalled: true, phase: 'fixing' }),
+    ]
     expect(derive({ shepherd: rows }).prs).toEqual([
       {
         pr: 'acme/widgets#12',
@@ -119,13 +121,19 @@ describe('deriveInFlight', () => {
   })
 
   it('attaches the verdict for the exact head, matching the PR case-insensitively', () => {
-    const verdicts = [verdict('ACME/Widgets#12', OTHER_HEAD, 'WAIT'), verdict('acme/widgets#12', HEAD, 'MERGE')]
+    const verdicts = [
+      verdict('ACME/Widgets#12', OTHER_HEAD, 'WAIT'),
+      verdict('acme/widgets#12', HEAD, 'MERGE'),
+    ]
     const p = derive({ shepherd: [flight({})], verdicts }).prs[0]
     expect([p?.verdict, p?.verdictHead]).toEqual(['MERGE', null])
   })
 
   it('falls back to the newest verdict and names its head when none matches the head', () => {
-    const verdicts = [verdict('acme/widgets#12', OTHER_HEAD, 'FIX_FIRST'), verdict('acme/widgets#99', HEAD, 'MERGE')]
+    const verdicts = [
+      verdict('acme/widgets#12', OTHER_HEAD, 'FIX_FIRST'),
+      verdict('acme/widgets#99', HEAD, 'MERGE'),
+    ]
     const p = derive({ shepherd: [flight({})], verdicts }).prs[0]
     expect([p?.verdict, p?.verdictHead]).toEqual(['FIX_FIRST', OTHER_HEAD])
   })
@@ -137,7 +145,9 @@ describe('deriveInFlight', () => {
   })
 
   it('links a claim to its shepherd PR and labels it with its slice', () => {
-    const claims = [claim({ pr: 'https://github.com/acme/widgets/pull/12', agentName: 'sc-impl', slice: 'S1' })]
+    const claims = [
+      claim({ pr: 'https://github.com/acme/widgets/pull/12', agentName: 'sc-impl', slice: 'S1' }),
+    ]
     const p = derive({ shepherd: [flight({})], claims }).prs[0]
     expect([p?.agent, p?.claim]).toEqual(['sc-impl', 'T-1/S1 implementing'])
   })
@@ -175,7 +185,7 @@ describe('deriveInFlight', () => {
   it('lists agents by spawner or prefix, sorted, without those already on a PR', () => {
     const roster = [
       agent({ name: 'sc-zed' }),
-      agent({ name: 'sc-alpha', spawnedBy: undefined }),
+      agent({ name: 'sc-alpha', spawnedBy: 'nobody' }),
       agent({ name: 'sc-onpr' }),
       agent({ name: 'free-lance', spawnedBy: SEAT }),
       agent({ name: 'elsewhere', spawnedBy: 'someone' }),
@@ -187,12 +197,18 @@ describe('deriveInFlight', () => {
     expect(derive({ roster, claims, shepherd: [flight({})] }).agents).toEqual([
       { name: 'free-lance', profile: 'implementer', state: 'running', cwd: '/wt/one' },
       { name: 'sc-alpha', profile: 'implementer', state: 'running', cwd: '/wt/one' },
-      { name: 'sc-zed', profile: 'implementer', state: 'running', cwd: '/wt/one', claim: 'T-4/S2 implementing' },
+      {
+        name: 'sc-zed',
+        profile: 'implementer',
+        state: 'running',
+        cwd: '/wt/one',
+        claim: 'T-4/S2 implementing',
+      },
     ])
   })
 
   it('matches agents by prefix only when the seat has one', () => {
-    const roster = [agent({ name: 'sc-alpha', spawnedBy: undefined })]
+    const roster = [agent({ name: 'sc-alpha', spawnedBy: 'nobody' })]
     expect(derive({ roster, prefix: undefined }).agents).toEqual([])
   })
 
@@ -203,6 +219,9 @@ describe('deriveInFlight', () => {
       claim({ taskId: 'T-7', agentName: 'sc-gone', slice: 'S3' }),
       claim({ taskId: 'T-8', pr: 'acme/widgets#40' }),
     ]
-    expect(derive({ claims, roster: [agent({})] }).claims).toEqual(['T-5 implementing', 'T-7/S3 implementing'])
+    expect(derive({ claims, roster: [agent({})] }).claims).toEqual([
+      'T-5 implementing',
+      'T-7/S3 implementing',
+    ])
   })
 })
