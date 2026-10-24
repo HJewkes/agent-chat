@@ -172,6 +172,40 @@ describe('the lifecycle fold', () => {
   })
 })
 
+describe('the predecessor fold (CC-1579)', () => {
+  const recorded = { profile: 'reader', session_id: 'sess-1', coordinator_depth: '0' }
+  const predecessorOf = (meta: Record<string, string>, target = 'scout'): AgentIdentity | undefined =>
+    foldAgent([spawned({ target, meta })])
+
+  it('names the predecessor a spawn was given', () => {
+    expect(predecessorOf({ ...recorded, predecessor: 'old-scout' })?.predecessor).toBe('old-scout')
+  })
+
+  // Mutation caught: a teleport row read through `meta.predecessor`, which it never writes.
+  it('names a teleport successor after itself, the name it took over', () => {
+    const agent = predecessorOf({ ...recorded, teleport_from: 'a0', origin: 'adopted' }, 'planner')
+    expect(agent?.predecessor).toBe('planner')
+  })
+
+  // Mutation caught: the field absent for a plain spawn, so every reviewer reads as unproven.
+  it('records null for a spawn row that shows no predecessor was given', () => {
+    const agent = predecessorOf(recorded)
+    expect(agent).toHaveProperty('predecessor', null)
+  })
+
+  // Mutation caught: a missing record defaulted to null, which claims no takeover without proof.
+  it('leaves the field out for a spawn row older than the predecessor record', () => {
+    const agent = predecessorOf({ profile: 'reader', session_id: 'sess-1' })
+    expect(agent).not.toHaveProperty('predecessor')
+  })
+
+  // Mutation caught: adoption read as a plain spawn, though a handoff can continue work unrecorded.
+  it('leaves the field out for an adopted session', () => {
+    const agent = predecessorOf({ ...recorded, origin: 'adopted' })
+    expect(agent).not.toHaveProperty('predecessor')
+  })
+})
+
 describe('when an agent stopped', () => {
   it('falls back to the last detach while no exit is recorded, and ignores later rows', () => {
     const detached = row('agent_detached')

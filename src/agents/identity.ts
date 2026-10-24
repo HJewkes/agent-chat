@@ -105,7 +105,23 @@ const spawnedFields = (row: AgentEventRow, id: string): Omit<AgentIdentity, 'bri
   lastEventAt: row.ts,
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
+  ...predecessorOf(row),
 })
+
+/**
+ * CC-1579: whose work this agent took over, for independence checks. A teleport successor
+ * keeps its predecessor's name. A spawn row records `predecessor` only when one was asked for,
+ * so its absence means none only on rows from a binary that wrote it: `coordinator_depth`
+ * (CC-163) landed after `predecessor` (CC-133) and is on every spawn row since. An adopted
+ * session can take over through a handoff without a row saying so, so it stays unknown.
+ */
+function predecessorOf(row: AgentEventRow): { predecessor?: string | null } {
+  const { meta } = row
+  if (meta.teleport_from) return { predecessor: row.target ?? meta.name ?? '' }
+  if (meta.predecessor) return { predecessor: meta.predecessor }
+  if (originOf(row) === 'adopted' || meta.coordinator_depth === undefined) return {}
+  return { predecessor: null }
+}
 
 /** CC-1466: the automation that ran a human-requested spawn, beside `spawnedBy` and never in place of it. */
 function launchedByOf(row: AgentEventRow): { launchedBy?: Launcher } {

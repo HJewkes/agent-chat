@@ -1666,6 +1666,12 @@ export interface AgentIdentity {
   /** The immediate predecessor's agentId. The rest of the chain is a walk of these. */
   teleportFrom?: string
   /**
+   * CC-1579: the name of the agent whose work this one took over, which for a teleport
+   * successor is its own. `null` when the spawn row records none; absent when the row
+   * cannot say (an adopted session, or a spawn row older than the field).
+   */
+  predecessor?: string | null
+  /**
    * `failedToStart` (CC-95) separates "this agent ran and finished" from "this
    * agent never came up". Carried on the exit rather than as a sixth lifecycle
    * because the durable fact IS an exit — the process is gone and the identity is

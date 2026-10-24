@@ -100,6 +100,21 @@ describe('agent ls --json', () => {
     ])
   })
 
+  // CC-1579, catches: the field dropped, or an unknown record printed as null ("no takeover").
+  it('emits predecessor as recorded, null when none, and omits it when the row cannot say', async () => {
+    roster.agents = [
+      { ...liveAgent(), name: 'heir', predecessor: 'old-worker' },
+      { ...liveAgent(), name: 'plain', predecessor: null },
+      { ...liveAgent(), name: 'unknown' },
+    ]
+
+    const rows = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+
+    expect(rows[0]).toHaveProperty('predecessor', 'old-worker')
+    expect(rows[1]).toHaveProperty('predecessor', null)
+    expect(rows[2]).not.toHaveProperty('predecessor')
+  })
+
   it('reports a disconnected live agent as detached and an empty roster as []', async () => {
     roster.sessions = []
     const [row] = JSON.parse(await lsOutput('--json')) as { presence: string }[]
