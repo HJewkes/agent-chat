@@ -395,6 +395,34 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
 | `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
 | `git -c` or `--config-env` on `safe.directory` or `init.templateDir`, a `git config` write or section rename to either, `git init` or `clone --template=<dir>` (any prefix), or `git --exec-path=<dir>` (below)                                 | `git init --template=/t r` copies an unread hook or alias   |
+| a quoted or escaped `$(...)`, backtick or funsub inside `[ ]` in any word of any command, or in `(( ))`, `$(( ))`, `$[ ]`, `let`, `declare -i` or an `-eq`-style test operand; a `$'...'` in arithmetic (below, CC-1473)                        | `[[ 1 -eq 'a[$(cmd)]' ]]` runs `cmd` unseen                 |
+
+**Substitutions in subscripts (CC-1473).** bash evaluates an array subscript as arithmetic, and
+arithmetic runs a `$(...)` it holds even when the word was quoted: `[[ 1 -eq 'a[$(cmd)]' ]]`,
+`let 'a[$(cmd)]'` and `a['$(cmd)']=1` all run `cmd`. Which words the shell reads as a subscript
+turns on state the line does not show: an integer attribute set earlier (`declare -i y; y='a[$(cmd)]'`),
+a nameref, a builtin that takes a variable name (`printf -v`, `read`, `test -v`), an array literal
+key, or `RANDOM`, `OPTIND` and the like. So the guard does not try to tell. It denies any word of any
+command, at any position and behind any wrapper, that holds a substitution opener inside a `[ ]`
+after quote removal, backslashes and line continuations are taken out. It also denies one in a
+`(( ))`, `$(( ))` or `$[ ]` body, which bash runs with no subscript at all. A substitution the
+splitter reads as one (`a[$(cmd)]` unquoted) is checked as a command instead, as before.
+
+bash joins the text on either side of an expansion, and any expansion may be empty, so the guard
+takes each one out and joins the word the same way. That covers a substitution, `$x`, `${...}`,
+`$1`, `$@`, `$*`, `$?` and `$[...]`: `'a[$'"$(true)"'(cmd)]'` and `'a[$'"${x:+}"'(cmd)]'` are read
+as `a[$(cmd)]` and denied. What an expansion yields can also finish an opener the line only half
+shows, as in `'a[$'"$(printf '(')"'cmd)]'` or `'a[$'"${x:-(}"'cmd)]'`. So one inside or before a
+`[ ]` denies when a `$` or backtick sits right before it or anything but its closing `]` follows
+it; `a[$(cmd)]=1`, `a[$i]=1` and `"[$USER] done"` are still allowed.
+
+The cost is that plain text in that shape is denied too: `grep 'a[$(x)]' notes.txt`,
+`[[ x == 'a[$(y)]' ]]`, `awk '{ c[$(NF-1)]++ }'`, `grep -E '[$(]'`, a commit message that
+mentions `a[$(x)]`, a markdown body with inline code in link text (``[`a.ts`](u)``), and
+`a[$(x)+1]=1` all deny although nothing unseen runs. Move such text into a file, or write the `$`
+another way. Not covered: a value that reaches arithmetic as data rather than as text on the line,
+such as `read y` into an integer `y` from a here-string, pipe or file, a variable that already
+holds `a[$(cmd)]`, or the output of a substitution that prints one.
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
 denies any mention of `.agent-chat/profiles`, `.agent-chat/config.json`, `.agent-chat/hooks.json`

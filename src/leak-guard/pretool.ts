@@ -19,6 +19,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { hidesArithSubstitution } from './arith-subscript.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
@@ -251,6 +252,7 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
+  arithSubstitution: `leak-guard: a word here holds a quoted or escaped $(...), backtick or \${ ...;} inside [ ], or arithmetic ((( )), $(( )), $[ ], let, declare -i or an -eq style test operand) holds one, which the shell may run as a command when it evaluates a subscript or the arithmetic, and the guard does not read it. This applies to every command, grep 'a[$(x)]' included. Compute the value in an earlier Bash call, or write the substitution unquoted. ${DOCS}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -2952,7 +2954,9 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     at = settle(cmd, at)
     const fed = feeds(cmd, prev, at)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
-    const reason = checkSimple(cmd, ctx, at, depth)
+    const reason = hidesArithSubstitution(cmd, commandHead(cmd)?.words)
+      ? REASONS.arithSubstitution
+      : checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
