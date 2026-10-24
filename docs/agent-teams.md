@@ -1512,6 +1512,13 @@ session, which can pick up a handoff without a record of it, and a spawn row wri
 before the field was recorded (no `coordinator_depth` in its meta). A reader checking
 independence must treat an absent key as unknown, never as no predecessor.
 
+`agent ls` leaves retired agents out. `--include-retired` (TP-4132) lists them as well,
+so a lineage walk over `spawnedBy` and `predecessor` can reach a retired generation's
+spawner. A retired row carries the same fields as any other, including `spawnedBy`,
+`teleportFrom` and `predecessor` under the rules above, plus `retired: true`. Other rows
+have no `retired` key, so the default output is unchanged. `--state retired` asks for
+retired rows on its own.
+
 `agent ls` shows each live agent's context fill against its role's retire threshold, as
 `ctx=212k/200k` (CC-290). The thresholds are `DEFAULT_CONTEXT_HINTS`, overridable by
 `contextHints` in config. `retire-due` follows when the agent is past its threshold and has
