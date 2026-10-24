@@ -275,41 +275,58 @@ async function observeClaim(
   if (row === undefined && claim.agentName !== undefined && roster.partial !== undefined)
     return `no live row for ${claim.agentName} and ${roster.partial}`
   const obs: Observation = row === undefined ? {} : { agent: { id: row.agentId, state: row.state } }
-  if (claim.phase === 'parked' && claim.agentName !== undefined) {
-    const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
-    const inbox = await readInbox(deps, claim.agentName, Number.isInteger(afterId) ? afterId : 0)
-    if (typeof inbox === 'string') return inbox
-    obs.inbox = inbox
-  }
+  const unread = await withParkedInbox(obs, claim, deps)
+  if (unread !== undefined) return unread
   const spend = await claimSpend(claim, roster, deps)
   if (spend !== undefined) obs.spend = spend
   if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
-  if (row !== undefined && LIVE.has(row.state) && isAgentPhase(claim.phase))
-    obs.activity = { read: (deps.activity ?? defaultActivity)(row), spawnedAt: row.spawnedAt }
-  if (
-    row !== undefined &&
-    LIVE.has(row.state) &&
-    claim.phase === 'implementing' &&
-    claim.worktree !== undefined
-  )
-    obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
+  if (row !== undefined && LIVE.has(row.state)) addLiveReads(obs, claim, row, deps)
   if (row === undefined) return goneWork(obs, claim, deps, adjudicate)
   if (!FINISHED.has(row.state)) return obs
+  return finishedRead(obs, claim, row, deps, adjudicate)
+}
+
+/** The unread reason when a parked claim's inbox cannot be read; otherwise the inbox lands on `obs`. */
+async function withParkedInbox(
+  obs: Observation,
+  claim: Claim,
+  deps: ObserveDeps,
+): Promise<string | undefined> {
+  if (claim.phase !== 'parked' || claim.agentName === undefined) return undefined
+  const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
+  const inbox = await readInbox(deps, claim.agentName, Number.isInteger(afterId) ? afterId : 0)
+  if (typeof inbox === 'string') return inbox
+  obs.inbox = inbox
+  return undefined
+}
+
+function addLiveReads(obs: Observation, claim: Claim, row: AgentIdentity, deps: ObserveDeps): void {
+  if (isAgentPhase(claim.phase))
+    obs.activity = { read: (deps.activity ?? defaultActivity)(row), spawnedAt: row.spawnedAt }
+  if (claim.phase === 'implementing' && claim.worktree !== undefined)
+    obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
+}
+
+function finishedRead(
+  obs: Observation,
+  claim: Claim,
+  row: AgentIdentity,
+  deps: ObserveDeps,
+  adjudicate: Adjudicator | undefined,
+): Observation | string {
   const report = pickReport(deps.statusReport?.(row), (deps.finalText ?? defaultFinalText)(row))
   if (report !== undefined) obs.report = report
-  if (claim.phase === 'planning' && claim.briefer === true) {
+  if (claim.phase === 'planning') {
+    if (claim.briefer !== true) return withSlices(obs, claim, deps)
     obs.proposed = deps.proposed?.(claim.initiative, claim.taskId) ?? false
     return obs
   }
-  if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0)
-    Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
-  if (claim.phase === 'implementing' && claim.worktree !== undefined) {
-    obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-    return withPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
-  }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
-  return obs
+  if (claim.phase !== 'implementing') return obs
+  if ((claim.owns ?? []).length > 0) Object.assign(obs, ownedRead(claim, deps, adjudicate, obs.report))
+  if (claim.worktree === undefined) return obs
+  obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
+  return withPrOwns(withExitedWork(obs, claim.worktree, deps), claim, deps, adjudicate)
 }
 
 /**
