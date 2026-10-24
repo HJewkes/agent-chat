@@ -527,6 +527,50 @@ describe('git clone of a repository the guard cannot read (TP-2444)', () => {
   })
 })
 
+describe('a literal ext:: URL given to git, not left to the CC-1095 pin (TP-2505)', () => {
+  // Mutation caught: argument payloads not setting extPrograms' literal allows every row but the two -c ones.
+  // Mutation caught: config-word payloads not setting literal allows the git -c and git clone -c rows.
+  it.each([
+    "git remote add o 'ext::sh -c true'",
+    "git remote set-url o 'ext::sh -c true'",
+    "git config remote.x.url 'ext::sh -c true'",
+    "git config set remote.x.pushurl 'ext::sh -c true'",
+    "git config submodule.x.url 'ext::sh -c true'",
+    "git config --file .gitmodules submodule.x.url 'ext::sh -c true'",
+    "git submodule add 'ext::sh -c true' s",
+    "git fetch 'ext::sh -c true'",
+    "git clone 'ext::sh -c true' d",
+    "git ls-remote 'EXT::sh -c true'",
+    "git archive --remote='ext::sh -c true' HEAD",
+    "git -c remote.o.url='ext::sh -c true' fetch o",
+    "git clone -c remote.up.url='ext::sh -c true' https://github.com/o/r",
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.extProtocol)
+  })
+
+  // Mutation caught: returning extProtocol before checkPrograms checks the decoded scripts hides the noVerify reason.
+  it('still names the decoded command when it denies on its own', () => {
+    expect(hookReason("git fetch 'ext::sh -c git% push% --no-verify'")).toBe(REASONS.noVerify)
+  })
+
+  it('keeps configProgram for a payload it cannot read', () => {
+    expect(hookReason('git clone "ext::$C" d')).toBe(REASONS.configProgram)
+  })
+
+  it.each([
+    'git remote add o https://github.com/o/r',
+    'git remote add o git@github.com:o/r.git',
+    'git config remote.x.url ssh://git@github.com/o/r',
+    'git config --file .gitmodules submodule.x.url https://github.com/o/s',
+    'git fetch https://github.com/o/r',
+    'git clone https://github.com/o/r d',
+    'git -c remote.o.url=https://github.com/o/r fetch o',
+    'git config remote.x.url file:///srv/r.git',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
 describe('GIT_ALLOW_PROTOCOL on a line with no git (CC-1137 d)', () => {
   it.each([
     'GIT_ALLOW_PROTOCOL=ext make',

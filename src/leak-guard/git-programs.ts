@@ -500,24 +500,30 @@ export interface GitWords {
  * config value (every word `configWords` lists) git runs as an `ext::` URL, the URLs a `remote.<name>.vcs`
  * helper runs, and the command of `git remote-ext <name> <cmd>`.
  * `unreadable` when a word holding `ext::` has an expansion the guard cannot read, a span it cannot
- * pin down, or a payload it cannot decode; `enabled` when the config switches the transport on.
+ * pin down, or a payload it cannot decode; `enabled` when the config switches the transport on;
+ * `literal` when an argument or config value is itself an `ext::` URL (TP-2505).
  */
 export function extPrograms(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
   splits: readonly string[],
   at: number,
-): { scripts: string[]; unreadable: boolean; enabled: boolean } {
+): { scripts: string[]; unreadable: boolean; enabled: boolean; literal: boolean } {
   const scripts: string[] = []
   let unreadable = false
+  let literal = false
   const decode = (payload: string | null | undefined): void => {
     if (payload === null) return
     const script = payload === undefined ? undefined : decodeExt(payload)
     if (script === undefined) unreadable = true
     else scripts.push(script)
   }
+  const decodeUrl = (payload: string | null | undefined): void => {
+    if (typeof payload === 'string') literal = true
+    decode(payload)
+  }
   const config = configWords(resolved, marked, splits)
-  config.forEach(word => decode(configWordPayload(word)))
+  config.forEach(word => decodeUrl(configWordPayload(word)))
   const vcs = vcsPayloads(config, resolved[at])
   if (vcs === undefined) unreadable = true
   else vcs.forEach(decode)
@@ -525,12 +531,12 @@ export function extPrograms(
   marked.forEach((word, i) => {
     if (held.has(i) || !hasExt(unmark(word))) return
     const value = resolved[i]
-    decode(value === undefined ? undefined : argPayload(value))
+    decodeUrl(value === undefined ? undefined : argPayload(value))
   })
   if (resolved[at] === 'remote-ext') {
     const cmd = resolved[at + 2]
     if (cmd === undefined && marked[at + 2] !== undefined) unreadable = true
     else if (cmd !== undefined) decode(cmd)
   }
-  return { scripts, unreadable, enabled: enablesExt(config) }
+  return { scripts, unreadable, enabled: enablesExt(config), literal }
 }
