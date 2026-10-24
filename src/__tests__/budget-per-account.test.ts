@@ -185,9 +185,10 @@ describe('the agent_list header', () => {
     const out = await agentList.run({}, ctx)
 
     const header = out.split('\n').filter(line => line.startsWith('Account usage'))
-    expect(header).toEqual([
-      'Account usage on workout (30s old): seven_day 79%. · slots 3/30',
-      `Account usage on agents: STALE — newest reading is ${20 * 60}s old, not a current figure.`,
-    ])
+    expect(header).toHaveLength(2)
+    expect(header[0]).toMatch(
+      /^Account usage on workout \(30s old\): seven_day 79% \(resets \w{3} \d\d:\d\d \S+, in 3d0h\)\. · slots 3\/30$/,
+    )
+    expect(header[1]).toBe(`Account usage on agents: STALE — newest reading is ${20 * 60}s old, not a current figure.`)
   })
 })
