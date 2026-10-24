@@ -1678,8 +1678,17 @@ policy drops too: git checks it per transport, and children such as submodule cl
 `clone`, which never reads the cwd repo but writes its own `-c`/`--config` values into the new
 one, the shim also reads without a repo and reads those values alone, and keeps a protocol only
 if every read allows it. So `git -c protocol.allow=never ls-remote ssh://…` and `git clone -c
-protocol.allow=never ssh://…` are refused. Config that leaves a protocol alone keeps it, so with
-no `protocol.*` set the pinned list is unchanged. A config read that errors out empties the list.
+protocol.allow=never ssh://…` are refused. git also copies a template's `config` into every repo
+it creates, a submodule clone under any command included, so the shim narrows by the `config` in
+each template git might pick: clone's `--template`, `GIT_TEMPLATE_DIR` and `init.templateDir`
+(resolved under `-C`, `~/` expanded; a `~user`, `%(prefix)` or `:(optional)` value empties the list).
+A recursing command such as `git fetch --recurse-submodules` runs real git in each submodule with the
+exported list, so outside a clone the shim also narrows by the config of every git dir under the
+superproject's `.git/modules/`. A submodule whose git dir sits in its own work tree is not read; `git
+submodule absorbgitdirs` moves it under `.git/modules/`. Config that leaves a protocol alone keeps
+it, so with no `protocol.*` set the pinned list is unchanged. A config read that errors out empties
+the list. The narrowing is the shim's: the env pins below do not read protocol config, so real git
+run outside the shim with such an env can still be widened.
 The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
 `agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
 burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
