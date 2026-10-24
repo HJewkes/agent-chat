@@ -38,6 +38,7 @@ import {
   type ParallelInputs,
 } from './run-wrappers.js'
 import { JOB_WRAPPERS, jobRun, mayExpand } from './job-wrappers.js'
+import { dropPrivilegeOptions, PRIVILEGE_WRAPPERS } from './privilege-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -215,6 +216,7 @@ export const REASONS = {
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
+  privilegeOption: `leak-guard: doas, run0, pkexec or su with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
   privilegedPush: `leak-guard: git push under sudo, doas, run0, pkexec or su runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
   privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo, doas, run0, pkexec or su skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
@@ -274,6 +276,7 @@ const OPTION_WRAPPERS = [
   'xargs',
   'env',
   'sudo',
+  ...PRIVILEGE_WRAPPERS,
 ]
 /** A getopt_long option table: the short letters that take a value, and each long name with whether it takes one. */
 interface Getopt {
@@ -533,6 +536,21 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         at = 0
         viaShellVar ||= after.envShell
       } else at = after.at
+    } else if (PRIVILEGE_WRAPPERS.has(name)) {
+      const after = dropPrivilegeOptions(name, rest, at + 1)
+      if (after === undefined) return { reason: REASONS.privilegeOption }
+      // Like sudo, each resets HOME and may move the cwd.
+      chdir = true
+      privileged = true
+      if ('at' in after) at = after.at
+      // Words xargs adds may be another -c or the script itself.
+      else if (fed !== undefined) return { reason: REASONS.hiddenCommand }
+      else {
+        rest = after.shell
+        at = 0
+        // doas -s and su -m run $SHELL; reading every privileged shell that way only denies more (CC-1423).
+        viaShellVar = true
+      }
     } else if (JOB_WRAPPERS.has(name)) {
       const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
