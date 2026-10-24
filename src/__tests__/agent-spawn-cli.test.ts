@@ -18,6 +18,8 @@ vi.mock('../cli/client.js', async importOriginal => ({
   },
 }))
 
+import { SURFACE_NAMES } from '../protocol.js'
+
 const { agentSpawn } = await import('../cli/agents.js')
 
 class Exited extends Error {
@@ -76,11 +78,11 @@ describe('agentSpawn', () => {
       configDir: '/cfg',
       task: 'CC-1',
       role: 'implementer',
-      surface: 'headless' as never,
+      surface: SURFACE_NAMES[0],
       spawnedAs: 'shepherd',
       remoteControl: true,
       host: 'box',
-      launchedBy: undefined,
+      launchedBy: 'shepherd',
       launchReason: 'because',
     })
 
@@ -89,7 +91,8 @@ describe('agentSpawn', () => {
       configDir: '/cfg',
       task: 'CC-1',
       workRole: 'implementer',
-      surface: 'headless',
+      surface: SURFACE_NAMES[0],
+      launchedBy: 'shepherd',
       spawnedAs: 'shepherd',
       remoteControl: true,
       host: 'box',

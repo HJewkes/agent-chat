@@ -44,6 +44,7 @@ import {
   SURFACE_NAMES,
   type AgentIdentity,
   type Launcher,
+  type ClientMessage,
   type ServerMessage,
   type SurfaceName,
 } from '../protocol.js'
@@ -447,40 +448,88 @@ export function callerAgentField(env: NodeJS.ProcessEnv): { callerAgent?: string
   return callerAgent === undefined ? {} : { callerAgent }
 }
 
+/**
+ * CC-63: an active-work initiative slug (or "auto"), prepended to the brief
+ * as orientation. Optional, so every call site that predates it still works.
+ * CC-100: `--config-dir` names the Claude account the agent runs on. Absent, the
+ * shell's own `CLAUDE_CONFIG_DIR` is forwarded instead — there is no registry
+ * entry for the human to read one from, and their shell is where the account
+ * they think they are on actually lives.
+ * CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+ * CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
+ * CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
+ * CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
+ */
+type SpawnFrame = Extract<ClientMessage, { t: 'spawn' }>
+type SpawnResult = Extract<ServerMessage, { t: 'spawn_result' }>
+
+type SpawnOptions = {
+  briefing?: string
+  briefStdin?: boolean
+  configDir?: string
+  task?: string
+  role?: string
+  surface?: SurfaceName
+  spawnedAs?: SpawnedAs
+  remoteControl?: boolean
+  host?: string
+  launchedBy?: Launcher
+  launchReason?: string
+}
+
+/** The options-driven part of the spawn frame: a field is present only when its option was given. */
+function spawnOptionFields(options: SpawnOptions): Partial<SpawnFrame> {
+  return {
+    ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
+    ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+    ...(options.task === undefined ? {} : { task: options.task }),
+    ...(options.role === undefined ? {} : { workRole: options.role }),
+    ...(options.surface === undefined ? {} : { surface: options.surface }),
+    ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+    ...(options.launchedBy === undefined ? {} : { launchedBy: options.launchedBy }),
+    ...(options.launchReason === undefined ? {} : { launchReason: options.launchReason }),
+    ...(options.remoteControl === true ? { remoteControl: true } : {}),
+    ...(options.host === undefined ? {} : { host: options.host }),
+  }
+}
+
+/** The fields from the caller's own environment and host. */
+function spawnCallerFields(): Partial<SpawnFrame> {
+  return {
+    ...callerAgentField(process.env),
+    ...(process.env.CLAUDE_CONFIG_DIR === undefined
+      ? {}
+      : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
+    callerHost: os.hostname(),
+    ...launchHereFields(),
+  }
+}
+
+async function readSpawnBrief(words: string[], briefStdin: boolean): Promise<string> {
+  try {
+    return resolveBrief(words, briefStdin ? await readStdin() : undefined)
+  } catch (err) {
+    return fail((err as Error).message)
+  }
+}
+
+function spawnResultLines(res: SpawnResult): string[] {
+  const on = res.host === undefined ? '' : ` on ${res.host}`
+  const lines = [...(res.warnings ?? [])]
+  if (res.ok) return [...lines, `Spawned ${res.name} (${res.agentId})${on}.`]
+  lines.push(`Not spawned: ${res.reason}`)
+  if (res.code !== undefined)
+    lines.push(`code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`)
+  return lines
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
   words: string[],
-  // CC-63: an active-work initiative slug (or "auto"), prepended to the brief
-  // as orientation. Optional, so every call site that predates it still works.
-  // CC-100: `--config-dir` names the Claude account the agent runs on. Absent, the
-  // shell's own `CLAUDE_CONFIG_DIR` is forwarded instead — there is no registry
-  // entry for the human to read one from, and their shell is where the account
-  // they think they are on actually lives.
-  // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
-  // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
-  // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
-  // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
-  options: {
-    briefing?: string
-    briefStdin?: boolean
-    configDir?: string
-    task?: string
-    role?: string
-    surface?: SurfaceName
-    spawnedAs?: SpawnedAs
-    remoteControl?: boolean
-    host?: string
-    launchedBy?: Launcher
-    launchReason?: string
-  } = {},
+  options: SpawnOptions = {},
 ): Promise<void> {
-  let brief: string
-  try {
-    brief = resolveBrief(words, options.briefStdin === true ? await readStdin() : undefined)
-  } catch (err) {
-    fail((err as Error).message)
-  }
+  const brief = await readSpawnBrief(words, options.briefStdin === true)
   const res = await withBroker(b =>
     // The human holds no registry entry (§6.4), so the broker has no cwd or host to
     // read for them — send both, or the agent inherits the broker's arbitrary ones.
@@ -490,30 +539,11 @@ export async function agentSpawn(
       profile,
       brief,
       cwd: process.cwd(),
-      ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
-      ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
-      ...(options.task === undefined ? {} : { task: options.task }),
-      ...(options.role === undefined ? {} : { workRole: options.role }),
-      ...(options.surface === undefined ? {} : { surface: options.surface }),
-      ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
-      ...(options.launchedBy === undefined ? {} : { launchedBy: options.launchedBy }),
-      ...(options.launchReason === undefined ? {} : { launchReason: options.launchReason }),
-      ...callerAgentField(process.env),
-      ...(options.remoteControl === true ? { remoteControl: true } : {}),
-      ...(process.env.CLAUDE_CONFIG_DIR === undefined
-        ? {}
-        : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-      callerHost: os.hostname(),
-      ...launchHereFields(),
+      ...spawnOptionFields(options),
+      ...spawnCallerFields(),
     }),
   )
-
-  for (const warning of res.warnings ?? []) console.log(warning)
-  const on = res.host === undefined ? '' : ` on ${res.host}`
-  console.log(res.ok ? `Spawned ${res.name} (${res.agentId})${on}.` : `Not spawned: ${res.reason}`)
-  if (!res.ok && res.code !== undefined)
-    console.log(`code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`)
+  for (const line of spawnResultLines(res)) console.log(line)
   process.exit(res.ok ? 0 : 1)
 }
 
