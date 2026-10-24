@@ -40,6 +40,7 @@ const HUMAN_ONLY_ACTIONS = [
   'Bash(agent-chat port:*)',
   'Bash(agent-chat service:*)',
   'Bash(agent-chat teleport:*)',
+  'Bash(agent-chat debug send:*)',
   'Bash(agent-chat mirror:*)',
   'Bash(agent-chat lifecycle:*)',
   'Bash(agent-chat burndown:*)',
@@ -421,6 +422,33 @@ describe('the bd-reviewer profile', () => {
   // Mutation caught: `returnContract: "none"`, or granting Edit so the name rule yields none.
   it('takes the reviewer return contract', () => {
     expect(contractOf(profile)).toBe('reviewer')
+  })
+})
+
+// CC-1083. Mutation caught: deleting the literal line from a shipped file, which then loads only by
+// the derived deny and warns about it on every spawn.
+describe('debug send on every shipped profile that denies send', () => {
+  const shipped = fs
+    .readdirSync(PROFILES_DIR)
+    .filter(file => file.endsWith('.json'))
+    .map(file => file.replace(/\.json$/, ''))
+  const deniesSend = shipped.filter(name =>
+    (loadBdProfile(name).disallowedTools ?? []).includes('Bash(agent-chat send:*)'),
+  )
+
+  it('covers the burndown, decider and triager profiles', () => {
+    expect(deniesSend).toEqual(
+      expect.arrayContaining([...WORKER_PROFILES, 'bd-planner', 'decider', 'triager']),
+    )
+  })
+
+  it.each(deniesSend)('%s denies it outright and loads with no warning about it', name => {
+    const profile = loadBdProfile(name)
+    const denied = profile.disallowedTools ?? []
+
+    expect(isDenied('agent-chat debug send alice hi', denied)).toBe(true)
+    expect(isDenied('agent-chat debug history', denied)).toBe(false)
+    expect(profile.warnings ?? []).not.toContainEqual(expect.stringContaining('debug send'))
   })
 })
 

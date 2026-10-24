@@ -20,7 +20,11 @@ afterEach(() => fs.rmSync(agentHome, { recursive: true, force: true }))
 const bdImplementer = {
   model: 'opus',
   allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Write(//**)'],
-  disallowedTools: ['Bash(agent-chat send:*)', 'Bash(agent-chat teleport:*)'],
+  disallowedTools: [
+    'Bash(agent-chat send:*)',
+    'Bash(agent-chat teleport:*)',
+    'Bash(agent-chat debug send:*)',
+  ],
   isolation: 'worktree',
   surface: 'headless',
 }

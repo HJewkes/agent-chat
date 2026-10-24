@@ -69,6 +69,8 @@ import {
  * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
  * `ask` (CC-169) is here too: it puts a question to the human under a service
  * label, which an agent has its own `chat_ask` for and must not borrow.
+ * `debug send` (CC-1083) sends `human_send`, so its text arrives `from="human"`.
+ * Only that `debug` verb: `ps`, `claims` and `history` stay open as read-only diagnostics.
  */
 const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat endorse:*)',
@@ -79,6 +81,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat inbox:*)',
   'Bash(agent-chat ask:*)',
   'Bash(agent-chat teleport:*)',
+  'Bash(agent-chat debug send:*)',
 ]
 
 /**
@@ -335,6 +338,12 @@ const DERIVED_DENIES: DerivedDeny[] = [
     deny: 'Bash(agent-chat teleport:*)',
     when: ['Bash(agent-chat send:*)'],
     why: 'the file denies send, and teleport request sends a message as the human',
+  },
+  {
+    // CC-1083: `debug send` sends `human_send` on an unregistered connection, so it speaks as the human.
+    deny: 'Bash(agent-chat debug send:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and debug send sends a message as the human',
   },
 ]
 

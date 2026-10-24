@@ -23,6 +23,7 @@
     "Bash(agent-chat endorse:*)",
     "Bash(agent-chat dismiss:*)",
     "Bash(agent-chat send:*)",
+    "Bash(agent-chat debug send:*)",
     "Bash(agent-chat answer:*)",
     "Bash(agent-chat approve:*)",
     "Bash(agent-chat ask:*)",
