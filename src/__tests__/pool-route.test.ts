@@ -110,6 +110,17 @@ describe('routing a pick past the budget gate', () => {
     expect(route.refusal).toContain('every eligible pool is closed: alpha: ')
   })
 
+  // Kills: the refusing route dropping the pool the spawn falls back to.
+  it('names the pool the spawn falls back to when it refuses', () => {
+    const route = routePool(
+      read(['alpha', 'beta'], undefined, 'gamma'),
+      'enforce',
+      closedAt(ALPHA.configDir, BETA.configDir),
+    )
+
+    expect(route.billed).toBe('gamma')
+  })
+
   it('neither redirects nor refuses in shadow mode when the spawn bills off home', () => {
     const route = routePool(read(['alpha', 'beta'], undefined, 'gamma'), 'shadow', closedAt())
 
@@ -318,11 +329,13 @@ const SEAT: Seat = { name: 'alpha-coord', prefix: 'ac', pool: 'alpha', spend: {}
 describe('agent spawn under the pool pick', () => {
   let h: RestartHarness | undefined
   const dirs: string[] = []
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR
   afterEach(() => {
     h?.close()
     h = undefined
     vi.restoreAllMocks()
-    delete process.env.CLAUDE_CONFIG_DIR
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -518,6 +531,32 @@ describe('agent spawn under the pool pick', () => {
 
     expect(outcome).toMatchObject({ ok: false, code: 'seat_budget_stop', retryable: true })
     expect(outcome.reason).toContain('every eligible pool is closed: beta: ')
+  })
+
+  // Kills: the refusal naming only the eligible pools, not the closed home pool and its reason.
+  it('names the closed home pool and why when it refuses in enforce mode', async () => {
+    const { sup } = routed({ mode: 'enforce', order: ['beta'], closed: ['alpha', 'beta'] })
+
+    const outcome = await sup.spawnAgent('ac-home-named')
+
+    expect(outcome.reason).toMatch(/; home alpha is closed: seat budget stop: .+$/)
+  })
+
+  // Kills: logging pool_pick before the row's append, so the log names beta while the spawn bills home.
+  it('logs no pool_pick naming the redirect in enforce mode when writing the pick row throws', async () => {
+    const { sup, requests } = routed({ mode: 'enforce', order: ['beta', 'alpha'] })
+    const append = sup.core.append.bind(sup.core)
+    vi.spyOn(sup.core, 'append').mockImplementation(input => {
+      if (input.meta?.pool_pick !== undefined) throw new Error('database is locked')
+      return append(input)
+    })
+
+    const outcome = await sup.spawnAgent('ac-enforce-append-throws')
+
+    expect(outcome.reason).toBeUndefined()
+    expect(spawnMeta(sup, outcome.agentId)?.config_dir).toBe(requests[0]?.homeDir)
+    expect(brokerLog(sup)).toContain('"event":"pool_pick_failed","name":"ac-enforce-append-throws"')
+    expect(brokerLog(sup)).not.toContain('"event":"pool_pick","name":"ac-enforce-append-throws"')
   })
 
   it('keeps a pinned spawn on its config_dir in enforce mode, whatever the reader returns', async () => {

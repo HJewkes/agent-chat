@@ -204,6 +204,7 @@ import {
   worktreeProvenance,
 } from './spawn-provenance.js'
 import {
+  homeClosedRefusal,
   poolPickText,
   routePool,
   type PoolPickRead,
@@ -1929,8 +1930,12 @@ export class Supervisor implements TeleportHost {
 
   /** A pinned spawn's pick is logged only: its row would say nothing a shadow comparison needs. */
   private recordPoolPick(agent: string, record: PoolPickRecord, pinned: boolean): void {
+    if (!pinned) this.appendPoolPick(agent, record)
+    // CC-615: logged after the row, so a throwing append never leaves a line naming a pool the spawn does not bill.
     logEvent('pool_pick', { name: agent, ...record })
-    if (pinned) return
+  }
+
+  private appendPoolPick(agent: string, record: PoolPickRecord): void {
     this.core.append({
       kind: 'notice',
       actor: 'agent-chat',
@@ -1970,7 +1975,7 @@ export class Supervisor implements TeleportHost {
       rotates && !keepsAccount && route === undefined ? this.rotated(req, profile, account, gate) : account
     const overBudget = gate(billed.dir)
     if (overBudget === undefined) return { account: billed }
-    return { refusal: route?.refusal === undefined ? overBudget : `seat budget stop: ${route.refusal}` }
+    return { refusal: homeClosedRefusal(route, overBudget) }
   }
 
   /**
