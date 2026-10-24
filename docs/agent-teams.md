@@ -1558,7 +1558,9 @@ the listing fails it refuses too, since the agent's process may have outlived th
 its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
 `coverage`, `.turbo`, `.api-extractor-temp` (CC-1258), an `.eslintcache` file, a `*.tsbuildinfo`
 file at any depth (a directory so named is searched, not trusted), or a top-level `.claude`
-(CC-334).
+(CC-334). A repo can add its own generated files in a committed `.agent-chat/generated`: one exact
+tree-relative file path per line, `#` for comments, no globs or directories (CC-1582). Only the
+copy at HEAD counts, so an ignored or uncommitted declaration waives nothing.
 
 Park also refuses while the agent's Shepherd run is in a fix round (CC-754). Shepherd's own
 parks pass `--no-fix-round-check` (`noFixRoundCheck: true` on the `park` frame), so the

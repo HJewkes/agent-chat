@@ -9,6 +9,7 @@ const INBOX = 'Bash(agent-chat inbox:*)'
 const APPROVE = 'Bash(agent-chat approve:*)'
 const ENDORSE = 'Bash(agent-chat endorse:*)'
 const ASK = 'Bash(agent-chat ask:*)'
+const DEBUG_SEND = 'Bash(agent-chat debug send:*)'
 const SHIPPED = path.join(__dirname, '../../profiles')
 
 const valid = { model: 'sonnet', allowedTools: ['Read', 'Bash'], isolation: 'none', surface: 'headless' }
@@ -175,8 +176,44 @@ describe('the teleport deny (CC-951)', () => {
   })
 
   it('keeps teleport for a file that allows it by name', () => {
-    const profile = parsed({ allowedTools: ['Read', TELEPORT], disallowedTools: [SEND] })
+    const profile = parsed({ allowedTools: ['Read', TELEPORT], disallowedTools: [SEND, DEBUG_SEND] })
 
-    expect(profile.disallowedTools).toEqual([SEND])
+    expect(profile.disallowedTools).toEqual([SEND, DEBUG_SEND])
+  })
+})
+
+describe('the debug send deny (CC-1083)', () => {
+  const SEND = 'Bash(agent-chat send:*)'
+  const TELEPORT = 'Bash(agent-chat teleport:*)'
+
+  // Mutation caught: no derived deny, which left every installed bd-*/fable-*/ev-* profile able to speak as the human.
+  it('adds it to a file that denies send, and says so', () => {
+    const profile = parsed({ disallowedTools: [SEND] })
+
+    expect(profile.disallowedTools?.filter(tool => tool === DEBUG_SEND)).toEqual([DEBUG_SEND])
+    expect(deniedAtLaunch(profile)).toContain(DEBUG_SEND)
+    expect(profile.warnings).toContainEqual(expect.stringMatching(/fixture\.json.*agent-chat debug send/))
+  })
+
+  // Mutation caught: dropping the allowed-by-name escape for this rule, which overrides a file's explicit grant.
+  it('keeps debug send for a file that allows it by name', () => {
+    const profile = parsed({ allowedTools: ['Read', DEBUG_SEND], disallowedTools: [SEND, TELEPORT] })
+
+    expect(profile.disallowedTools).toEqual([SEND, TELEPORT])
+    expect(profile).not.toHaveProperty('warnings')
+  })
+
+  // Mutation caught: widening the pattern to `debug:*`, which takes the read-only diagnostics away too.
+  it('leaves debug ps and history open', () => {
+    const profile = parsed({ disallowedTools: [SEND] })
+
+    expect(profile.disallowedTools).not.toContain('Bash(agent-chat debug:*)')
+    expect(profile.disallowedTools?.filter(tool => tool.startsWith('Bash(agent-chat debug'))).toEqual([
+      DEBUG_SEND,
+    ])
+  })
+
+  it('leaves a file that does not deny send alone', () => {
+    expect(parsed({ disallowedTools: ['Write'] }).disallowedTools).toEqual(['Write'])
   })
 })
