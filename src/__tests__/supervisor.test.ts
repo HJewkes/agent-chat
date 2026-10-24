@@ -332,6 +332,18 @@ describe('spawning', () => {
       expect(row?.body).toBe('address the review')
     })
 
+    // CC-1579, catches: a spawn row without the marker the fold reads "none recorded" from.
+    it('puts the predecessor on the roster, and null on a plain spawn', async () => {
+      const sup = withStubbedSurface()
+      await sup.spawn(spawnReq({ name: 'first', requestedBy: 'coord' }))
+      await sup.spawn(spawnReq({ name: 'second', requestedBy: 'coord', predecessor: 'first' }))
+
+      const roster = core.agents.roster()
+
+      expect(roster.find(a => a.name === 'first')).toHaveProperty('predecessor', null)
+      expect(roster.find(a => a.name === 'second')).toHaveProperty('predecessor', 'first')
+    })
+
     it("refuses before taking a slot when the predecessor is not the requester's", async () => {
       const sup = withStubbedSurface()
       await sup.spawn(spawnReq({ name: 'first', requestedBy: 'other' }))

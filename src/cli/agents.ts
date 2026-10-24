@@ -270,6 +270,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     account: agent.configDir || null,
     generation: agent.generation,
     teleportFrom: agent.teleportFrom ?? null,
+    // CC-1579: never defaulted to null, which would claim "no takeover" for a row that cannot say.
+    ...(agent.predecessor === undefined ? {} : { predecessor: agent.predecessor }),
     inferred: agent.exit?.inferred === true,
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
     contextK: retire?.contextK ?? null,
