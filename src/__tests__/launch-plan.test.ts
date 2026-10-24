@@ -419,6 +419,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat inbox:*)',
       'Bash(agent-chat ask:*)',
       'Bash(agent-chat teleport:*)',
+      'Bash(agent-chat debug send:*)',
       'Bash(agent-chat agent:*)',
       'Bash(agent-chat port:*)',
       'AskUserQuestion',
@@ -471,6 +472,20 @@ describe('every builtin profile, on every surface', () => {
       expect(
         flag(buildLaunchPlan(input({ profile: builtin })).args, '--disallowed-tools')?.split(','),
       ).toContain('Bash(agent-chat approve:*)')
+    }
+  })
+
+  // CC-1083. Mutation caught: dropping the entry from HUMAN_ONLY_CLI_DENY, which lets any of
+  // these builtins send free text from="human" through `agent-chat debug send`.
+  it('denies debug send on every builtin that can run a shell', () => {
+    const shellCapable = BUILTIN_PROFILES.filter(p => !(p.disallowedTools ?? []).includes('Bash'))
+    expect(shellCapable.map(p => p.name)).toEqual(['reviewer', 'implementer', 'peer', 'planner'])
+
+    for (const builtin of shellCapable) {
+      expect(builtin.disallowedTools ?? []).toContain('Bash(agent-chat debug send:*)')
+      expect(
+        flag(buildLaunchPlan(input({ profile: builtin })).args, '--disallowed-tools')?.split(','),
+      ).toContain('Bash(agent-chat debug send:*)')
     }
   })
 

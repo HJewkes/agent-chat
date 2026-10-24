@@ -471,6 +471,7 @@ describe('spawning', () => {
       'Bash(agent-chat inbox:*)',
       'Bash(agent-chat ask:*)',
       'Bash(agent-chat teleport:*)',
+      'Bash(agent-chat debug send:*)',
       'Bash(agent-chat agent:*)',
       'Bash(agent-chat port:*)',
       'AskUserQuestion',
