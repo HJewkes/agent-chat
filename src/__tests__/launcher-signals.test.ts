@@ -11,7 +11,8 @@ const exited = (child: ChildProcess): Promise<void> =>
     child.once('exit', () => resolve())
   })
 
-const startQuietChild = (): ChildProcess => childProcess.spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+const startQuietChild = (): ChildProcess =>
+  childProcess.spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
 
 afterEach(() => {
   childProcess.spawn = originalSpawn
