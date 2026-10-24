@@ -437,7 +437,9 @@ describe('debug send on every shipped profile that denies send', () => {
   )
 
   it('covers the burndown, decider and triager profiles', () => {
-    expect(deniesSend).toEqual(expect.arrayContaining([...WORKER_PROFILES, 'bd-planner', 'decider', 'triager']))
+    expect(deniesSend).toEqual(
+      expect.arrayContaining([...WORKER_PROFILES, 'bd-planner', 'decider', 'triager']),
+    )
   })
 
   it.each(deniesSend)('%s denies it outright and loads with no warning about it', name => {

@@ -208,7 +208,9 @@ describe('the debug send deny (CC-1083)', () => {
     const profile = parsed({ disallowedTools: [SEND] })
 
     expect(profile.disallowedTools).not.toContain('Bash(agent-chat debug:*)')
-    expect(profile.disallowedTools?.filter(tool => tool.startsWith('Bash(agent-chat debug'))).toEqual([DEBUG_SEND])
+    expect(profile.disallowedTools?.filter(tool => tool.startsWith('Bash(agent-chat debug'))).toEqual([
+      DEBUG_SEND,
+    ])
   })
 
   it('leaves a file that does not deny send alone', () => {
