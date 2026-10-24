@@ -175,6 +175,46 @@ else
 fi
 export GIT_ALLOW_PROTOCOL="$pinned"`
 
+// Sets policy to the last protocol.<name>.allow on stdin, else the last protocol.allow, else unset.
+const POLICY_FN = `policy_of() {
+  policy=unset own=
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key=\${line%% *} value=\${line#*" "}
+    [ "$key" != "$line" ] || value=
+    case $key in
+    "protocol.$1.allow") policy=$value own=1 ;;
+    protocol.allow) [ -n "$own" ] || policy=$value ;;
+    esac
+  done
+}
+
+from_user() {
+  case \${GIT_PROTOCOL_FROM_USER-1} in 1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;; esac
+  return 1
+}`
+
+// git reads GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin drops each protocol the caller's own config denies (CC-1336).
+const NARROW_FN = `narrow_protocols() {
+  protocol_config=$(eval "\\"\\$real\\"$globals config --get-regexp '^protocol[.]'" 2>/dev/null)
+  case $? in 0 | 1) ;; *) export GIT_ALLOW_PROTOCOL=; return ;; esac
+  narrowed= rest=$GIT_ALLOW_PROTOCOL:
+  while [ -n "$rest" ]; do
+    protocol=\${rest%%:*} rest=\${rest#*:}
+    [ -n "$protocol" ] || continue
+    policy_of "$protocol" <<EOF
+$protocol_config
+EOF
+    case $policy in
+    unset | [Aa][Ll][Ww][Aa][Yy][Ss]) ;;
+    [Uu][Ss][Ee][Rr]) from_user || continue ;;
+    *) continue ;;
+    esac
+    narrowed=\${narrowed:+$narrowed:}$protocol
+  done
+  export GIT_ALLOW_PROTOCOL="$narrowed"
+}`
+
 // A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
 // GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
 const SHADOWED_FN = `shadowed() {
@@ -486,9 +526,12 @@ ${CLUSTER_FN}
 ${PUSH_REPOS_FN}
 ${SUBMODULES_OFF_FN}
 ${LOCAL_ONLY_FN}
+${POLICY_FN}
+${NARROW_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
 fi
+narrow_protocols
 ${RESTORE_GIT_CONFIG}
 exec "$real" "$@"
 `

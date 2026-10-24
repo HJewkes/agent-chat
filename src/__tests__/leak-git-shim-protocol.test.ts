@@ -109,6 +109,86 @@ describe('the agent git shim pinning GIT_ALLOW_PROTOCOL', () => {
   })
 })
 
+/** An ls-remote over ssh whose core.sshCommand leaves a marker, so the marker shows the transport ran. */
+function sshProbe(fx: Fixture, prefix: string, configs: string): { command: string; marker: string } {
+  const marker = path.join(fx.work, '..', 'ssh-ran')
+  const command = `${prefix} env -u GIT_SSH_COMMAND git -c 'core.sshCommand=touch ${marker}; false' ${configs} ls-remote ssh://x.invalid/r`
+  return { command, marker }
+}
+
+// CC-1336: git honours GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin must not widen a caller's config.
+describe("the pin under a caller's protocol config (CC-1336)", () => {
+  // Kills: exporting the pin without narrowing it by the caller's protocol.allow.
+  it.each([
+    ['protocol.allow=never, variable unset', 'env -u GIT_ALLOW_PROTOCOL', '-c protocol.allow=never'],
+    ['protocol.allow=never, variable pinned', 'GIT_ALLOW_PROTOCOL=ssh', '-c protocol.allow=never'],
+    // Kills: reading only protocol.allow and not protocol.<name>.allow.
+    ['protocol.ssh.allow=never', 'env -u GIT_ALLOW_PROTOCOL', '-c protocol.ssh.allow=never'],
+    // Kills: letting the general key win over the protocol's own key.
+    ['ssh never over allow always', '', '-c protocol.ssh.allow=never -c protocol.allow=always'],
+    // Kills: matching the policy word case-sensitively, as git does not.
+    ['protocol.allow=NEVER', '', '-c protocol.allow=NEVER'],
+    // Kills: ignoring GIT_PROTOCOL_FROM_USER for a user policy.
+    ['protocol.allow=user, not from the user', 'GIT_PROTOCOL_FROM_USER=0', '-c protocol.allow=user'],
+  ])('keeps ssh denied under %s', (_label, prefix, configs) => {
+    const fx = harness.fixture()
+    const probe = sshProbe(fx, prefix, configs)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: the narrowing dropping a protocol the caller left alone or allowed.
+  it.each([
+    ['no caller config', ''],
+    ['protocol.allow=never with protocol.ssh.allow=always', '-c protocol.allow=never -c protocol.ssh.allow=always'],
+    ['protocol.allow=user from the user', '-c protocol.allow=user'],
+    ['protocol.ext.allow=never', '-c protocol.ext.allow=never'],
+  ])('lets ssh run under %s', (_label, configs) => {
+    const fx = harness.fixture()
+    const probe = sshProbe(fx, 'env -u GIT_ALLOW_PROTOCOL', configs)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).not.toContain('not allowed')
+    expect(fs.existsSync(probe.marker)).toBe(true)
+  })
+
+  it('reads the policy from the repo -C names', () => {
+    const fx = harness.fixture()
+    git(fx.work, 'config', 'protocol.ssh.allow', 'never')
+    const probe = sshProbe(fx, 'cd .. &&', `-C '${fx.work}'`)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: a caller's protocol.ext.allow=always lifting the pin's ext ban.
+  it('keeps ext denied when the caller sets protocol.ext.allow=never or always', () => {
+    const { fx, marker } = extFixture()
+
+    const never = runScript(fx, 'GIT_ALLOW_PROTOCOL=ext git -c protocol.ext.allow=never fetch x')
+    const always = runScript(fx, 'env -u GIT_ALLOW_PROTOCOL git -c protocol.ext.allow=always fetch x')
+
+    expect(never.stderr).toContain("transport 'ext' not allowed")
+    expect(always.stderr).toContain("transport 'ext' not allowed")
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it('hands git the narrowed list', () => {
+    const { fx } = extFixture(['env'])
+    git(fx.work, 'config', 'alias.env', '!printenv GIT_ALLOW_PROTOCOL')
+
+    const run = runScript(fx, 'git -c protocol.file.allow=never -c protocol.git.allow=Never env')
+
+    expect(run.stdout.trim()).toBe('http:https:ssh')
+  })
+})
+
 const hasMake = spawnSync('make', ['--version']).status === 0
 
 /** Writes a script that fetches the ext remote, and a one-rule Makefile that runs it. */
