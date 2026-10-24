@@ -458,7 +458,13 @@ const acceptedContracts = (plan: Pick<SeatPlan, 'claims'>) =>
   plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
 
 const acceptedOwns = (plan: Pick<SeatPlan, 'claims'>) =>
-  plan.claims.map(c => ({ holder: c.agentName, repo: c.repo, owns: c.work.owns }))
+  plan.claims.map(c => ({
+    holder: c.agentName,
+    repo: c.repo,
+    owns: c.work.owns,
+    taskId: c.work.taskId,
+    ...(c.work.slice === undefined ? {} : { slice: c.work.slice }),
+  }))
 
 interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]

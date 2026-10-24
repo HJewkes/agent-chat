@@ -634,6 +634,21 @@ describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
   it("never refuses a work on its own held claim's owns", () => {
     expect(check([claim({ taskId: 'CC-2', slice: undefined })], ['src/a/x.ts'])).toBeUndefined()
   })
+
+  // CC-1303. Mutation caught: heldOwns dropping the claim's taskId, slice or pr, so no accept can match it.
+  it.each([
+    ['its slice', { task: 'CC-1', slice: 'a' }, {}],
+    ['its PR', { pr: 41 }, { pr: 'https://github.com/acme/demo/pull/41' }],
+  ])("passes a work whose overlapsAccepted names the held claim by %s", (_, names, over) => {
+    const accept = { ...names, path: 'src/a/x.ts', why: 'other lines' }
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims: [claim(over)] }, { names: [], claims: [] }, exec)
+
+    expect(run('/repo', work('CC-2', { owns: ['src/a/x.ts'], overlapsAccepted: [accept] }))).toBeUndefined()
+  })
 })
 
 describe("collisionCheck reads burndown agents' owns from the ledger, not their broker claim (CC-1276)", () => {

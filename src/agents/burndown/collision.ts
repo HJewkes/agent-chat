@@ -104,6 +104,10 @@ export interface HeldOwns {
   holder: string
   repo: string
   owns: string[]
+  /** CC-1303: the holder's task, slice and PR number, so an `overlapsAccepted` entry naming either one waives it. */
+  taskId?: string
+  slice?: string
+  pr?: number
 }
 
 /** `id` as a whole token, any case: TP-40 never matches TP-400, and a branch's `cc-202` matches CC-202. */
@@ -208,6 +212,15 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
 const accepted = (work: CollisionWork, pr: number, path: string): boolean =>
   (work.overlapsAccepted ?? []).some(a => a.pr === pr && a.path === path)
 
+/** As `accepted`, for a held claim: an entry naming its slice, or its PR once one is open. */
+const acceptedHeld = (work: CollisionWork, other: HeldOwns, path: string): boolean =>
+  (work.overlapsAccepted ?? []).some(
+    a =>
+      a.path === path &&
+      ((a.pr !== undefined && a.pr === other.pr) ||
+        (a.slice !== undefined && a.task === other.taskId && a.slice === other.slice)),
+  )
+
 /** Also the same-pass check: a seat passes the dispatches it has already accepted this pass as `held`. */
 export function liveOverlap(
   work: CollisionWork,
@@ -215,7 +228,10 @@ export function liveOverlap(
   held: readonly HeldOwns[],
 ): Collision | undefined {
   for (const other of held.filter(h => h.repo === repo)) {
-    const path = overlapping(work.owns, other.owns)
+    const path = overlapping(
+      work.owns.filter(own => !acceptedHeld(work, other, own)),
+      other.owns,
+    )
     if (path !== undefined) return { kind: 'file-overlap', reason: `${path} is under ${other.holder}'s owns` }
   }
   return undefined
@@ -490,7 +506,17 @@ const heldOwns = (ledger: Ledger, work: CollisionWork): HeldOwns[] =>
   heldClaims(ledger).flatMap(c => {
     const repo = claimRepo(c)
     if (!holdsOwns(c) || sameClaim(c, work) || repo === undefined) return []
-    return [{ holder: holderOf(c), repo, owns: c.owns ?? [] }]
+    const pr = shepherdTarget(c.pr)?.pr
+    return [
+      {
+        holder: holderOf(c),
+        repo,
+        owns: c.owns ?? [],
+        taskId: c.taskId,
+        ...(c.slice === undefined ? {} : { slice: c.slice }),
+        ...(pr === undefined ? {} : { pr }),
+      },
+    ]
   })
 
 /** The agents of every claim `heldOwns` reports; the work's own claim is left in, since `ours` skips it anyway. */
