@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProfileIndex } from '../agents/transcript.js'
 import type { AgentIdentity } from '../protocol.js'
 
-const roster = vi.hoisted(() => ({ agents: [] as unknown[], sessions: [] as unknown[] }))
+const roster = vi.hoisted(() => ({
+  agents: [] as unknown[],
+  sessions: [] as unknown[],
+  frames: [] as unknown[],
+}))
 const modelReads = vi.hoisted(() => ({
   read: undefined as ((cwd: string) => string | undefined) | undefined,
 }))
@@ -23,10 +27,16 @@ vi.mock('../cli/client.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../cli/client.js')>()),
   withBroker: async <T>(fn: (b: unknown) => Promise<T>): Promise<T> =>
     fn({
-      request: async (message: { t: string }) =>
-        message.t === 'agents'
-          ? { t: 'agents_result', agents: roster.agents }
-          : { t: 'list_result', sessions: roster.sessions },
+      request: async (message: { t: string; includeRetired?: boolean }) => {
+        roster.frames.push(message)
+        // As the broker does: retired rows only when the frame asks for them.
+        const agents = (roster.agents as { state: string }[]).filter(
+          a => message.includeRetired === true || a.state !== 'retired',
+        )
+        return message.t === 'agents'
+          ? { t: 'agents_result', agents }
+          : { t: 'list_result', sessions: roster.sessions }
+      },
     }),
 }))
 
@@ -63,6 +73,7 @@ const lsOutput = async (...flags: string[]): Promise<string> => {
 beforeEach(() => {
   roster.agents = [liveAgent()]
   roster.sessions = [{ name: 'worker' }]
+  roster.frames = []
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -122,6 +133,71 @@ describe('agent ls --json', () => {
 
     roster.agents = []
     expect(JSON.parse(await lsOutput('--json'))).toEqual([])
+  })
+})
+
+describe('agent ls --json --include-retired (TP-4132)', () => {
+  const retiredGen = (name: string, extra: Partial<AgentIdentity>): AgentIdentity => ({
+    ...liveAgent(),
+    name,
+    agentId: `id-${name}`,
+    state: 'retired',
+    ...extra,
+  })
+
+  beforeEach(() => {
+    roster.sessions = []
+    roster.agents = [
+      retiredGen('seat-coord', { spawnedBy: 'operator', predecessor: null }),
+      retiredGen('seat-heir', {
+        spawnedBy: 'seat-coord',
+        predecessor: 'seat-coord',
+        teleportFrom: 'seat-coord',
+        generation: 2,
+      }),
+      retiredGen('seat-adopted', { origin: 'adopted', spawnedBy: 'human' }),
+      liveAgent(),
+    ]
+  })
+
+  const rows = async (...flags: string[]): Promise<Record<string, unknown>[]> =>
+    JSON.parse(await lsOutput('--json', ...flags)) as Record<string, unknown>[]
+
+  // Mutation caught: the flag sent on every call, so the default listing grows retired rows.
+  it('leaves retired agents out by default and sends the bare frame', async () => {
+    const listed = await rows()
+
+    expect(listed.map(r => r.name)).toEqual(['worker'])
+    expect(listed[0]).not.toHaveProperty('retired')
+    expect(roster.frames[0]).toEqual({ t: 'agents' })
+  })
+
+  // Mutation caught: the option never put on the frame, so no retired row comes back.
+  // Mutation caught: the retired marker dropped, so a reader cannot tell a retired generation apart.
+  it('lists retired agents with their lineage fields and a retired marker', async () => {
+    const listed = await rows('--include-retired')
+
+    expect(roster.frames[0]).toEqual({ t: 'agents', includeRetired: true })
+    expect(listed.map(r => r.name)).toEqual(['seat-coord', 'seat-heir', 'seat-adopted', 'worker'])
+    expect(listed[1]).toMatchObject({
+      name: 'seat-heir',
+      spawnedBy: 'seat-coord',
+      predecessor: 'seat-coord',
+      teleportFrom: 'seat-coord',
+      generation: 2,
+      retired: true,
+    })
+    expect(listed[3]).not.toHaveProperty('retired')
+  })
+
+  // Mutation caught: retired rows defaulting predecessor to null, which claims "no takeover".
+  it('keeps the CC-1579 predecessor rules on retired rows', async () => {
+    const [coord, heir, adopted] = await rows('--include-retired')
+
+    expect(coord).toMatchObject({ predecessor: null, teleportFrom: null, retired: true })
+    expect(heir).toHaveProperty('predecessor', 'seat-coord')
+    expect(adopted).not.toHaveProperty('predecessor')
+    expect(adopted).toHaveProperty('retired', true)
   })
 })
 
@@ -205,6 +281,7 @@ describe('agent ls filters (CC-888)', () => {
     expect(await names('--state', 'running')).toEqual(['alpha'])
   })
 
+  // Mutation caught: --state retired not asking for retired rows, so it could only ever match nothing.
   it('accepts --state repeatedly and keeps agents in any of the states', async () => {
     expect(await names('--state', 'finished', '--state', 'retired')).toEqual(['beta', 'gamma'])
   })
@@ -225,7 +302,7 @@ describe('agent ls filters (CC-888)', () => {
   })
 
   it('prints one line per agent with --format line', async () => {
-    const text = await lsOutput('--format', 'line')
+    const text = await lsOutput('--format', 'line', '--include-retired')
 
     expect(text.split('\n')).toEqual([
       'alpha running implementer id-alpha /tmp/cc176-nowhere',
