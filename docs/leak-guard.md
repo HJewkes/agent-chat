@@ -394,6 +394,7 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
 | `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` used other than by a read or an unset, on a line that may reach git or gh (below)                                                                                           | `BASH_ENV=/tmp/rc bash -c "gh zz"` sources an unread file   |
+| `PATH`, `LD_PRELOAD` or another loader variable set to a value the guard cannot read, on a line that may reach git (below)                                                                                                                      | `LD_PRELOAD="$X" git push` loads an unread library          |
 | `git -c` or `--config-env` on `safe.directory` or `init.templateDir`, a `git config` write or section rename to either, `git init` or `clone --template=<dir>` (any prefix), or `git --exec-path=<dir>` (below)                                 | `git init --template=/t r` copies an unread hook or alias   |
 
 For a worker, any agent whose `AGENT_CHAT_ROLE` is not `coordinator` (CC-1094), the guard also
@@ -979,6 +980,19 @@ variable stay allowed. Known false deny: a bare `ENV` word on a line that reache
 `/bin/sh -p`, which ignores `BASH_ENV` and `ENV`; the rule is about a chained repo hook and about a
 `bash -c` or `zsh -c` that would hide git or gh from the guard.
 
+**Search path and loader variables (CC-1236).** `PATH` picks which `git` and which helpers run;
+`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES` and `DYLD_LIBRARY_PATH` pick
+the libraries the loader puts into git (`SEARCH_ENV` in `trust-inputs.ts`). A literal value names
+files the way any command line does, so it keeps its verdict: `PATH=/usr/bin:/bin git push`,
+`PATH+=:/opt/bin git push`, `PATH=~/bin:$PATH git push` and `export PATH=$HOME/bin:$PATH` stay
+allowed, as the value expands only the variable's own value, `$HOME` or `~`. Any other use on a
+line that may reach git denies with the `searchPathEnv` reason: a value with any other expansion
+(`LD_PRELOAD="$X" git push`, `PATH=$(mktemp -d) git push`), `read PATH`, `: ${PATH:=/x}`, and an
+`env -S` or `xargs` word. The deny ranks after the per-command checks, so
+`PATH="$X" git push --no-verify` keeps the `noVerify` reason. Known false denies: a bare `PATH` word
+on a line that reaches git (`echo PATH; git status`, `sudo --preserve-env=PATH git status`), the way
+`ENV` does.
+
 **git options and config writes.** `safe.directory` makes git trust the config and hooks of a
 repository another user owns, and git reads it only from protected config: system, global and the
 command line. `init.templateDir`, like `GIT_TEMPLATE_DIR`, makes `git init` (and its old name
@@ -1424,7 +1438,7 @@ Not covered, by design or by cost:
 - a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`). The
   option is off by default, and the splitter reads `#` as a literal character, so `gi#t` resolves
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
-- a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
+- a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 

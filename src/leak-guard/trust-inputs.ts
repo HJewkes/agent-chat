@@ -25,6 +25,20 @@ export const TRUST_ENV: ReadonlyMap<string, TrustEnv> = new Map([
 ])
 
 /**
+ * Variables that pick which program a command finds or which libraries the loader injects into
+ * git (CC-1236). A literal value names files as any command line does, so it keeps its verdict;
+ * a value the guard cannot read may point git anywhere, so it fails closed.
+ */
+export const SEARCH_ENV: ReadonlySet<string> = new Set([
+  'PATH',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+])
+
+/**
  * Regex sources for whole variable names a shell turns straight into code it runs, so they set a
  * shell's startup as BASH_ENV does. Patterns rather than names, to fail closed on kin: bash's
  * exported functions (`BASH_FUNC_f%%`, and `BASH_FUNC_f()` from older patches), its option lists

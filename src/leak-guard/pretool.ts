@@ -41,6 +41,7 @@ import { JOB_WRAPPERS, jobRun, mayExpand } from './job-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
+  SEARCH_ENV,
   SHELL_CODE_ENV,
   templateOption,
   TRUST_ENV,
@@ -248,6 +249,7 @@ export const REASONS = {
   sshProgram: `leak-guard: this ssh, scp or sftp call has an option that runs a local program the guard never reads: an -o keyword such as ProxyCommand, LocalCommand or KnownHostsCommand, a -F config file other than /dev/null, scp or sftp -S or -D, or an option word the guard cannot read. Use -J for a jump host, or -F /dev/null. ${DOCS}`,
   shellStartupEnv: `leak-guard: this line sets or exports a variable a shell turns into code it runs (BASH_ENV, ENV, ZDOTDIR, an exported BASH_FUNC_*, SHELLOPTS, BASHOPTS, a prompt such as PS4 or PROMPT_COMMAND, FPATH and the like), which the guard never reads, and it may reach git or gh. Drop the setting, or put it on a line without git or gh. ${DOCS}`,
   gitExecPath: `leak-guard: this line sets GIT_EXEC_PATH or passes git --exec-path=<dir>, which makes git run its helper programs, hooks included, from a directory the guard never reads. Drop the setting. ${DOCS}`,
+  searchPathEnv: `leak-guard: this line sets PATH, LD_PRELOAD or another variable that picks which program or library git loads to a value the guard cannot read (an expansion, a command substitution, read, env -S), and it may reach git. Write the value as a literal, using only the variable's own value, $HOME or ~ as in PATH=~/bin:$PATH, or put the setting on a line without git. ${DOCS}`,
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
@@ -2594,6 +2596,7 @@ const ENV_NAMES = [
   ...OPAQUE_PROGRAM_ENV,
   ...PROTOCOL_ENV,
   ...TRUST_NAMES.map(([name]) => name),
+  ...SEARCH_ENV,
 ]
 const ENV_NAME = new RegExp(`^(?:${ENV_NAMES.join('|')})$`)
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
@@ -2627,7 +2630,10 @@ const NAME_HIDDEN = Symbol('name-hidden')
 interface TrustOn {
   trust: TrustEnv
 }
-type EnvEvent = string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | TrustOn
+// A SEARCH_ENV name set to a value the guard cannot read (CC-1236): denied with its own reason.
+const SEARCH_UNREAD = Symbol('search-unread')
+type EnvEvent =
+  string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | typeof SEARCH_UNREAD | TrustOn
 
 const TRUST_REFS = TRUST_NAMES.map(([name, trust]) => ({
   use: nameUse(name),
@@ -2646,8 +2652,30 @@ function trustOn(text: string, assignOnly = false): TrustOn | undefined {
   return ref === undefined ? undefined : { trust: ref.trust }
 }
 
-/** A program-env name's event in a word: a trust input's own event, else null for a use the guard cannot read. */
-const nameEvent = (text: string, assignOnly = false): TrustOn | null => trustOn(text, assignOnly) ?? null
+const SEARCH_REFS = [...SEARCH_ENV].map(name => ({ use: nameUse(name), assign: nameAssign(name) }))
+const searchOn = (text: string, assignOnly: boolean): boolean =>
+  SEARCH_REFS.some(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
+
+/** A program-env name's event in a word: a trust or search input's own event, else null for a use the guard cannot read. */
+function nameEvent(text: string, assignOnly = false): TrustOn | typeof SEARCH_UNREAD | null {
+  const trust = trustOn(text, assignOnly)
+  if (trust !== undefined) return trust
+  return searchOn(text, assignOnly) ? SEARCH_UNREAD : null
+}
+
+// The expansions a SEARCH_ENV value may hold and stay readable: its own value, HOME and `~`.
+const searchReads = (name: string): RegExp =>
+  new RegExp(`${LIVE}(?:\\$(?:(?:${name}|HOME)(?![A-Za-z0-9_])|\\{(?:${name}|HOME)\\})|~)`, 'g')
+const SEARCH_ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
+
+/** A `NAME=value` or `NAME+=value` to a SEARCH_ENV name: 'none' when the value is readable, else SEARCH_UNREAD. */
+function plainSearchValue(word: string): typeof SEARCH_UNREAD | 'none' | undefined {
+  const match = SEARCH_ASSIGN.exec(word)
+  const name = match?.[1]
+  if (match === null || name === undefined || !SEARCH_ENV.has(name)) return undefined
+  const value = word.slice(match[0].length)
+  return value.replace(searchReads(name), '').includes(LIVE) ? SEARCH_UNREAD : 'none'
+}
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
@@ -2655,9 +2683,12 @@ const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => us
 /**
  * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
  * value, null when the value is unreadable, and for a protocol list EXT_LISTED when it lists `ext` or
- * no event at all. undefined when the word is no such assignment.
+ * no event at all, and for a SEARCH_ENV name what plainSearchValue says. undefined when the word is
+ * no such assignment.
  */
 function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
+  const search = plainSearchValue(word)
+  if (search !== undefined) return search
   const name = ASSIGNMENT.exec(word)?.[1]
   if (name === undefined || !word.startsWith(`${name}=`)) return undefined
   const protocol = PROTOCOL_ENV.has(name)
@@ -2815,7 +2846,7 @@ function envEvent(word: string, role: WordRole): EnvEvent | undefined {
   const plain = role === 'assign' ? plainProgramValue(word) : undefined
   if (plain === 'none') return undefined
   if (plain !== undefined) return plain
-  return namesProgramEnv(text) ? null : undefined
+  return namesProgramEnv(text) ? nameEvent(text) : undefined
 }
 
 /** A word's text for the git scan, with a program-env assignment's value blanked so a `git` in it does not count. */
@@ -2896,7 +2927,7 @@ function checkProgramEnvLine(
   ctx: GuardContext,
   scope: Scope,
   depth: number,
-): string | typeof NAME_HIDDEN | undefined {
+): string | DeferredEnv | undefined {
   const uses = parseShell(command).map(envUse)
   const events = uses.flatMap(use => use.events)
   if (events.length === 0) return undefined
@@ -2907,13 +2938,20 @@ function checkProgramEnvLine(
   for (const event of events) {
     if (event === null) return REASONS.programEnv
     if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
-    if (event === NAME_HIDDEN) continue
+    if (event === NAME_HIDDEN || event === SEARCH_UNREAD) continue
     if (typeof event === 'object') return TRUST_REASONS[event.trust]
     const reason = checkAt(event, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
-  return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
+  return events.find((event): event is DeferredEnv => event === NAME_HIDDEN || event === SEARCH_UNREAD)
 }
+
+// Line-wide denies ranked after the per-command checks, so a more specific reason such as --no-verify wins.
+type DeferredEnv = typeof NAME_HIDDEN | typeof SEARCH_UNREAD
+const DEFERRED_REASONS: ReadonlyMap<DeferredEnv, string> = new Map<DeferredEnv, string>([
+  [NAME_HIDDEN, REASONS.programEnv],
+  [SEARCH_UNREAD, REASONS.searchPathEnv],
+])
 
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
 function deniesExpansion(command: string): boolean {
@@ -2959,7 +2997,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
-  return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
+  return envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason)
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
