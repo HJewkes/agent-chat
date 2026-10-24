@@ -62,7 +62,9 @@ describe('overlapsAccepted naming a ledger slice (CC-1303)', () => {
   it('names the slice in a lint reason', () => {
     const reasons = lintSlices([slice([{ task: 'TP-9', slice: 'b', path: 'src/other.ts', why: 'x' }])])
 
-    expect(reasons).toEqual(['slice a: overlapsAccepted TP-9 slice b path src/other.ts is not an exact owns entry'])
+    expect(reasons).toEqual([
+      'slice a: overlapsAccepted TP-9 slice b path src/other.ts is not an exact owns entry',
+    ])
   })
 
   it.each([

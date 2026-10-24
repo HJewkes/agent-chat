@@ -639,7 +639,7 @@ describe('collisionCheck holds owns from live ledger claims (CC-952)', () => {
   it.each([
     ['its slice', { task: 'CC-1', slice: 'a' }, {}],
     ['its PR', { pr: 41 }, { pr: 'https://github.com/acme/demo/pull/41' }],
-  ])("passes a work whose overlapsAccepted names the held claim by %s", (_, names, over) => {
+  ])('passes a work whose overlapsAccepted names the held claim by %s', (_, names, over) => {
     const accept = { ...names, path: 'src/a/x.ts', why: 'other lines' }
     const exec: Runner = (bin, args) =>
       bin === 'gh'

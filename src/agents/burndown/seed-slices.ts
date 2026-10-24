@@ -240,7 +240,9 @@ const shown = (f: SliceFields): Record<keyof SliceFields, string> => ({
   dependsOn: JSON.stringify([...(f.dependsOn ?? [])].sort()),
   repo: JSON.stringify(f.repo ?? null),
   contracts: JSON.stringify((f.contracts ?? []).map(c => `${c.op} ${c.scope}`).sort()),
-  overlapsAccepted: JSON.stringify((f.overlapsAccepted ?? []).map(a => `${acceptedHolder(a)} ${a.path}`).sort()),
+  overlapsAccepted: JSON.stringify(
+    (f.overlapsAccepted ?? []).map(a => `${acceptedHolder(a)} ${a.path}`).sort(),
+  ),
 })
 
 const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts', 'overlapsAccepted'] as const
