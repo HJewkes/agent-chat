@@ -104,6 +104,8 @@ interface Budget {
   limits: Limits
   /** Only finding where a substitution ends, so arithmetic is not looked for. */
   probe?: boolean
+  /** An operator `${...}` off SAFE_BRACED was met; see `expansionEvaluates`. */
+  evaluates?: boolean
 }
 
 /**
@@ -117,6 +119,15 @@ export type ExpansionRisk = 'operator' | 'unreadable'
 // The only `${...}` forms the splitter reads as the shell does.
 const PLAIN_BRACED = /^\$\{(?:[A-Za-z_][A-Za-z0-9_]*|\d+)\}$/
 const UNREADABLE_BRACED = /^\$\{(?:\(|[\s\S]*\$)|['"`\\]/
+/**
+ * Operator forms that never evaluate a value as code: a length, or a default, assign, alternate, error,
+ * trim, replace or case operator on a plain name or a positional or special parameter. Left out: `@`
+ * transforms, `!` indirection, a subscript and a `:` offset, which bash may read as arithmetic and so run
+ * the `$(...)` in a value. A `:` before anything but `-`, `=`, `+` or `?` is an offset, so `${X: -1}` is one.
+ */
+const SAFE_NAME = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*|\d+|[@*?$])`
+const SAFE_OPERATOR = String.raw`(?::[-=+?]|[-=+?]|##?|%%?|\/[/#%]?|\^\^?|,,?)`
+const SAFE_BRACED = new RegExp(String.raw`^\$\{(?:#${SAFE_NAME}|${SAFE_NAME}(?:${SAFE_OPERATOR}[^}]*)?)\}$`)
 // Text that keeps one word whichever `}` closes the expansion.
 const SAME_WORD = /^[^\s'"`\\$#;&|<>()]*$/
 
@@ -326,6 +337,8 @@ class ShellLexer {
   private openGroups = 0
   /** The last text appended to the word is a live `{`. */
   private justOpened = false
+  /** How far the word has got toward `{owner},x`, which bash may expand since a group without a comma reads on (CC-1120). */
+  private afterPlaceholder: 'none' | 'open' | 'comma' = 'none'
   /** What each open `(` starts: only in a subshell can `{` and `}` still be reserved words. */
   private parens: ParenKind[] = []
   /*
@@ -883,6 +896,7 @@ class ShellLexer {
     }
     this.pos++
     const live = this.expands(c, next) || this.braceStructure(c)
+    this.notePlaceholderComma(c)
     this.splitting ||= live && (c === '$' || GLOB.includes(c))
     this.append(c, live)
     if (c === '{' && live) {
@@ -903,6 +917,17 @@ class ShellLexer {
     return !this.justOpened
   }
 
+  /**
+   * Notes an unquoted `,` after a placeholder's `{`: bash reads past the placeholder's own `}`, which ends no
+   * group without a comma, so `{owner},-XPUT}` is the words `owner}` and `-XPUT`. The note never resets within
+   * the word, so a later `{repo}` cannot hide the comma, and the word splits whatever follows it.
+   */
+  private notePlaceholderComma(c: string): void {
+    if (this.afterPlaceholder === 'comma') return
+    if (c === '{' && this.exemptPlaceholder()) this.afterPlaceholder = 'open'
+    else if (c === ',' && this.afterPlaceholder === 'open') this.afterPlaceholder = 'comma'
+  }
+
   /** Appends an unquoted expansion, which the shell splits into words. */
   private split(text: string): void {
     this.splitting = true
@@ -917,9 +942,14 @@ class ShellLexer {
   private expands(c: string, next: string | undefined): boolean {
     const starts = this.word === null
     if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
-    const inGroup = !starts && this.openGroups > 0
-    if (!inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
+    if (this.exemptPlaceholder()) return false
     return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
+  }
+
+  /** gh's `{owner}` at the cursor, outside any live group, which is text unless a comma and `}` follow it. */
+  private exemptPlaceholder(): boolean {
+    const inGroup = this.word !== null && this.openGroups > 0
+    return !inGroup && GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))
   }
 
   private braced(): string {
@@ -935,6 +965,7 @@ class ShellLexer {
     const risk = bracedRisk(this.src, this.pos, text)
     if (risk === 'unreadable') this.budget.expansion = risk
     else if (risk !== undefined) this.budget.expansion ??= risk
+    if (risk === 'operator' && !SAFE_BRACED.test(text)) this.budget.evaluates = true
     return text
   }
 
@@ -1056,8 +1087,9 @@ class ShellLexer {
     const word = this.word
     const quoted = this.quoted
     const quoteStart = this.quoteStart
-    const splitting = this.splitting
+    const splitting = this.splitting || this.afterPlaceholder === 'comma'
     this.splitting = false
+    this.afterPlaceholder = 'none'
     this.word = null
     this.quoted = false
     this.quoteStart = Infinity
@@ -1304,6 +1336,18 @@ export function expansionRisk(src: string): ExpansionRisk | undefined {
   const lexer = new ShellLexer(unmark(src))
   lexer.run()
   return lexer.expansion
+}
+
+/**
+ * Whether `src` holds an operator `${...}` off SAFE_BRACED, such as `${X@P}` or `${X:N}`, which may run
+ * the `$(...)` in a variable's value. A `$`, quote or backtick inside one already makes `expansionRisk`
+ * unreadable, so this only judges the operator and the name.
+ */
+export function expansionEvaluates(src: string): boolean {
+  if (src.includes(LIVE)) return true
+  const budget = newBudget()
+  new ShellLexer(unmark(src), 0, false, budget).run()
+  return budget.evaluates === true || budget.limits.capped
 }
 
 const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/

@@ -49,6 +49,8 @@ import {
   type TrustEnv,
 } from './trust-inputs.js'
 import { classifyApiRead } from './gh-api-read.js'
+import { trapActions } from './deferred-scripts.js'
+import { implementerGh, isImplementerProfile, rebindsName } from './implementer-gh.js'
 import {
   ghAliasReader,
   ghAliasSet,
@@ -95,6 +97,7 @@ import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } f
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
+  expansionEvaluates,
   expansionRisk,
   HOLE,
   LIVE,
@@ -177,6 +180,8 @@ const UNSURE = Symbol('unsure')
 type Setting = string | undefined | typeof UNSURE
 
 const DOCS = 'See docs/leak-guard.md.'
+const IMPLEMENTER_GH =
+  'An implementer session runs only the gh commands on its allowlist (docs/leak-guard.md#implementer-gh-allowlist-cc-1120-e). Shepherd merges: register the PR with titan-factory shepherd register. To open or edit a PR, use `agent-chat gh-write -- pr create|edit|comment` or `api repos/<o>/<r>/pulls`. Ask your coordinator if you need another.'
 
 // The one-call form the guard reads as it stands, and gh-write scans again when it runs (CC-887).
 const HEREDOC_POST =
@@ -251,6 +256,8 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
+  implementerGh: `leak-guard: ${IMPLEMENTER_GH}`,
+  implementerGhUnread: `leak-guard: the guard could not resolve this call's command, flags or endpoint, so it was not run (fail closed). ${IMPLEMENTER_GH}`,
 } as const
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
@@ -1817,6 +1824,37 @@ function unsureGh(
   return unread(cmd.substitutions.flatMap(sub => sub.commands))
 }
 
+/** An implementer's gh call, judged on gh-argv's parse before any other rule or the gh-write deferral (CC-1120 e). */
+function implementerGate(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return undefined
+  const args = marked.map(word =>
+    expandsToWords(word, cmd.splits) ? undefined : resolveWord(word, cmd, ctx, scope),
+  )
+  const verdict = implementerGh(args)
+  if (verdict === undefined) return undefined
+  return verdict === 'deny' ? REASONS.implementerGh : REASONS.implementerGhUnread
+}
+
+/** An implementer line that rebinds a command name, which would let a later word run gh unseen (CC-1120 e). */
+function implementerRebinds(
+  name: string,
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return undefined
+  const args = marked.map(word =>
+    expandsToWords(word, cmd.splits) ? undefined : resolveWord(word, cmd, ctx, scope),
+  )
+  return rebindsName(name, args) ? REASONS.implementerGhUnread : undefined
+}
+
 function checkGh(
   marked: readonly string[],
   assigns: readonly string[],
@@ -1825,6 +1863,8 @@ function checkGh(
   scope: Scope,
   defers = false,
 ): string | undefined {
+  const gate = implementerGate(marked, cmd, ctx, scope)
+  if (gate !== undefined) return gate
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   if (setsGhHome(assigns, ctx.env)) return REASONS.ghConfigHome
@@ -2250,6 +2290,19 @@ function checkEval(
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
+/** A trap action is shell code the shell runs later, so each is checked as eval's text is (CC-1567). */
+function checkTrap(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  return firstReason(trapActions(['trap', ...marked]), action =>
+    checkEval([action], cmd, ctx, { ...scope, deferrable: false }, depth),
+  )
+}
+
 /** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
 function commandHead(cmd: SimpleCommand): CommandHead | undefined {
   const body = functionBody(cmd.marked)
@@ -2453,17 +2506,22 @@ function checkSimple(
   const marked = words.slice(1)
   const head = testHead(words) ?? resolveWord(words[0] ?? '', cmd, ctx, at)
   if (head === undefined) {
+    // A hidden gh never reaches checkGh, so an implementer runs no command it cannot name (CC-1120 e).
+    if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE)) return REASONS.implementerGhUnread
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
+  const rebinds = implementerRebinds(name, marked, cmd, ctx, at)
+  if (rebinds !== undefined) return rebinds
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
+  if (name === 'trap') return checkTrap(marked, cmd, ctx, at, depth)
   const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked, ctx, at, depth) : undefined
   if (sourced !== undefined) return sourced
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
@@ -2959,6 +3017,9 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
+  // `${X@P}` and its kin may run text the splitter never reads as commands, so an implementer line holding one is unresolved.
+  if (isImplementerProfile(ctx.env.AGENT_CHAT_PROFILE) && expansionEvaluates(command))
+    return REASONS.implementerGhUnread
   return envReason === NAME_HIDDEN ? REASONS.programEnv : undefined
 }
 

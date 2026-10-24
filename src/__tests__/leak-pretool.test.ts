@@ -2908,3 +2908,33 @@ describe('an environment variable git runs as a program (TP-636)', () => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 })
+
+describe('a trap action is checked as the text eval runs (CC-1567)', () => {
+  const profiles = [undefined, 'reviewer', 'bd-implementer']
+  const withProfile = (profile?: string): GuardContext =>
+    ctx({ env: { HOME: '/srv/zq7', ...(profile === undefined ? {} : { AGENT_CHAT_PROFILE: profile }) } })
+
+  it.each(
+    profiles.flatMap(profile => [
+      [profile, 'git push --no-verify origin main'],
+      [profile, `gh pr create --title "Fix ${TERM}" --body ok`],
+    ]),
+  )('profile %s: a trap running %s gets the reason eval gets', (profile, action) => {
+    const evalReason = checkCommand(`eval '${action}'`, withProfile(profile))
+
+    expect(evalReason).toBeDefined()
+    expect(checkCommand(`trap '${action}' EXIT`, withProfile(profile))).toBe(evalReason)
+    // A live first operand makes every operand a possible action; `~` resolves, so the second is the one.
+    expect(checkCommand(`trap ~ '${action}' EXIT`, withProfile(profile))).toBe(evalReason)
+  })
+
+  it.each(
+    [undefined, 'bd-implementer'].flatMap(profile =>
+      [`trap 'rm -rf "$S"' EXIT`, 'trap - EXIT', "trap '' INT", 'trap -p', 'trap EXIT'].map(
+        (command): [string | undefined, string] => [profile, command],
+      ),
+    ),
+  )('profile %s: %s is allowed', (profile, command) => {
+    expect(checkCommand(command, withProfile(profile))).toBeUndefined()
+  })
+})

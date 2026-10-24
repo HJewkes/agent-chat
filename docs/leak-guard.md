@@ -603,7 +603,9 @@ second one for the work-tree top. The guard does not skip network verbs, and eac
 in a `!` body is looked up again.
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
-heredoc fed to a shell. It reads a backtick body as the shell does, skipping each backslash pair to
+heredoc fed to a shell. A `trap` action is checked as the text `eval` runs, for every profile, since
+the shell runs it later as code (CC-1567). When the action is a word the shell expands, every
+operand counts as a possible action. It reads a backtick body as the shell does, skipping each backslash pair to
 find the closing backtick and dropping the backslash before `$`, a backtick and `\`, so a nested
 `` \`...\` `` substitution is seen (CC-1350). `agent-chat gh-write -- <gh args>` is checked like `gh`. A gh called by
 path, such as `/opt/homebrew/bin/gh` or a `$GH` that expands to one, is denied outright: it skips the
@@ -625,6 +627,104 @@ or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: 
 piped from another command, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
+
+### Implementer gh allowlist (CC-1120 e)
+
+A session whose hook env has `AGENT_CHAT_PROFILE` set to `bd-implementer` or `bd-implementer-lite`
+runs only the gh calls on an allowlist. Shepherd merges its pull requests. The rule reads every
+`gh …` and `agent-chat gh-write -- …` call before any other gh rule and before the gh-write
+deferral. It reads the words through one parser, `src/leak-guard/gh-argv.ts`. That parser finds the
+group and verb the way cobra does, and parses `gh api`'s flags the way pflag does: a value flag takes
+the next word even when it starts with `-`, `-iXPUT` is `-i -X PUT`, and `--` ends flags.
+
+| group                       | verbs                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `pr`                        | `create` `view` `checks` `list` `diff` `status` `comment` `edit` `ready` `checkout` |
+| `issue`                     | `view` `list` `create` `comment` `edit`                                             |
+| `run`                       | `view` `list` `watch` `rerun` `download`                                            |
+| `workflow`                  | `view` `list`                                                                       |
+| `repo`                      | `view` `clone`                                                                      |
+| `search`, `help`            | any verb                                                                            |
+| `auth`                      | `status`                                                                            |
+| none (`gh`, `gh --version`) |                                                                                     |
+| `api`                       | see below                                                                           |
+
+Before the group or verb, only `-R`, `--repo`, `--repo=…`, `-h`, `--help` and `--version` may appear.
+A `gh api` call is allowed when it has exactly one endpoint, the endpoint does not contain `graphql`
+in any case, and either:
+
+- it reads: every `-X` or `--method` is `GET` or `HEAD`, no `-f`, `-F`, `--field`, `--raw-field`
+  or `--input` is among its flags, and no word anywhere, flag values included, looks like a write
+  (a method spelling with another value, a field or input spelling, or a word naming `method` or
+  `override`). The second check is deliberately over-broad, so a parser mistake costs a false deny;
+- or it writes to `repos/<o>/<r>/pulls`, `pulls/<n>`, `issues`, `issues/<n>` or
+  `issues/<n>/comments`, matched against the raw endpoint with no normalising. `<o>` and `<r>` are
+  `[A-Za-z0-9_.-]+` other than `.` and `..`, or `{owner}` and `{repo}`.
+
+Everything else is denied: a group or verb off the list, such as `pr merge`, `pr review`,
+`repo sync`, `alias set` or `workflow run`, and every other `gh api` write, whatever its URL
+spelling. A call fails closed with its own message when a flag is not in gh's table, when a word the
+guard cannot resolve stands where gh reads the group, verb or any `gh api` word, or when the call
+is graphql. A word the shell may split counts as unresolved, and that includes any word where a
+placeholder is followed by an unquoted `,`: bash reads past the placeholder's own `}`, so
+`{owner},-XPUT}` becomes the words `owner}` and `-XPUT`. A later placeholder in the same word does not
+undo that, so `{owner},-XPUT,-t{repo}}` is split too. In an implementer session, a command
+word the guard cannot resolve, such as `$(which gh)` or `"$GH_BIN"`, is denied before any other rule,
+because a hidden gh never reaches this one. For the same reason an implementer line is denied as
+unresolved when it rebinds a command name, so that a later word may run gh under another name:
+`alias` with a definition (`alias g=gh`), `hash` with an operand or `-p` (zsh `hash g=/usr/bin/gh`,
+bash `hash -p /usr/bin/gh g`), and zsh's `enable` and `disable`. Listing or clearing (`alias`,
+`alias g`, `hash`, `hash -r`) stays allowed. An implementer line that holds an operator `${…}`
+expansion off a safe list is denied as unresolved as well, since it may run the `$(…)` in a
+variable's value: `${X@P}` and every other `@` transform, `!` indirection (`${!N}`), a subscript
+(`${A[N]}`) and a substring offset (`${X:N}`, `${X: -1}`, `${X:0:2}`), where bash reads N's value as
+arithmetic. The safe list is `${#NAME}` and `${NAME<op>word}`, where NAME is a plain name, a
+positional parameter or one of `@ * ? $`, and `<op>` is one of `:- - := = :+ + :? ? # ## % %% / // /#
+/% ^ ^^ , ,,`. A `:` before anything but `-`, `=`, `+` or `?` is read as an offset. A `$`, quote or
+backtick inside any `${…}` already makes the line unreadable for every profile (`UNREADABLE_BRACED`
+in `shell-words.ts`), so a nested `$(…)` in the word is denied, not parsed.
+These checks run wherever the guard parses shell code. So `gh api -X PUT repos/o/r/pulls/5/merge -X GET` is denied although gh sends GET, and
+`gh -R o/r api …` is denied as gh denies it. So is every implementer `alias`, `hash`, `enable` or
+`disable` line above, even one that binds no gh, and every expansion off the safe list, even one on
+a variable with a harmless value, such as `${X:0:2}`, `${!prefix*}`, `${#-}` or `${X~}`. These are
+known over-denies. The rule claims parity with gh only on the rows its tests pin.
+
+What the rule claims: in an implementer session, the guard lets a gh call through only when
+`gh-argv.ts` parses it to an allowlisted group and verb, or to a `gh api` call with one endpoint that
+is a read or a write to one of the five endpoint patterns above. Anything unresolved, unknown-flagged
+or graphql is denied. The guard sees a gh call when it resolves a command word to `gh` or
+`agent-chat gh-write` in one of these places:
+
+- written directly;
+- behind a wrapper the guard unwraps (listed above);
+- after `xargs`, `parallel` or `find -exec`;
+- inside shell code the guard parses: `sh`/`bash`/`zsh -c`, a here-doc, here-string or pipe into a
+  shell, `eval`, a `trap` action, `$(…)`, a subshell or a function body.
+
+In an implementer session, a command word the guard cannot resolve is denied. Every other program is
+outside the claim, even when it runs gh.
+
+Not covered, each with its task:
+
+- a program the guard does not unwrap that runs its argv: `watch [-x] gh …`, `strace -f gh …`,
+  `ltrace`, `busybox sh -c` (CC-1569 for the leak scan; CC-1568 for implementers);
+- inline interpreters and code-running text tools (`python3 -c`, `node -e`, `perl -e`,
+  `awk 'BEGIN{system()}'`, `sed '1e …'`, `tclsh`, `vim -c '!…'`), and scripts or build tools run
+  in or after the call (`node scripts/x.js`, `npm run x`, `make x`, background jobs): the
+  exec-time implementer gh gate in the gh shim, CC-1568, when they run `gh` by name;
+- the real gh by path from inside another program, a symlink or copy of it, or a rewritten
+  `PATH`; HTTP with the token (`curl` with `$(gh auth token)`, `gh auth status -t`); and a
+  `git push` to the base branch (CC-1563);
+- an allowlisted write that is not a merge, such as
+  `gh api -X PATCH repos/o/r/pulls/5 -f state=closed` while `pr close` is denied (CC-1570);
+- arithmetic outside `${…}` on a variable whose value holds `$(…)`, such as
+  `N='a[$(gh pr merge 5)]'` then `$((N))`, `(( N ))`, `$[N]`, `let N`, `[[ N -eq 1 ]]` or an
+  assignment to a `declare -i` name (found in CC-1120 e, no task filed yet).
+
+The return contract still names `gh api` reads that the profile denies (CC-1562). The implementer
+profiles are named in code, not read from a role field (CC-1564). The leak scan reads gh's argv
+with its own code until CC-1560 and CC-1561 move it onto `gh-argv.ts`, and tool-guard keeps a
+separate parser (TP-4073).
 
 ### Words xargs adds (CC-1117)
 
