@@ -240,7 +240,7 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
-  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
+  extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol, or an ext:: URL given to git as an argument or config value. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
   xargsWrapper: `leak-guard: xargs fills an option word of env, nice, timeout or another wrapper here, which may become any option, such as env -i, -u GIT_CONFIG_COUNT or -S with a command, so the guard cannot tell what runs. Write the wrapper's options out. ${DOCS}`,
@@ -1094,6 +1094,7 @@ function checkFedPush(run: GitRun, scope: Scope): string | undefined {
  * Each value git runs as a program (TP-636), checked as a command line of its own: a `-c` config
  * value and an `ext::` transport payload. git passes its `-c` options on to each, so an include on
  * this git is a deny whatever the value holds. Program env vars are closed by `checkProgramEnvLine`.
+ * A literal `ext::` URL denies once its command is checked, rather than waiting on the CC-1095 pin (TP-2505).
  */
 function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
@@ -1101,7 +1102,7 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
   const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, subcommandAt(run, options))
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
-  const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
+  const extOn = run.tied ? extTransportReason(ext) : undefined
   if (scripts.length === 0) return extOn
   const params = options === UNSURE_CALL ? scope.gitParams : options.params
   if (includesConfig(params)) return REASONS.includePath
@@ -1112,6 +1113,9 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
   }
   return extOn
 }
+
+const extTransportReason = (ext: { enabled: boolean; literal: boolean }): string | undefined =>
+  ext.enabled ? REASONS.configProgram : ext.literal ? REASONS.extProtocol : undefined
 
 /** Where git's subcommand sits; past an option the guard cannot place, the first word that is not an option. */
 const subcommandAt = (run: GitRun, options: ReturnType<typeof gitOptions>): number =>

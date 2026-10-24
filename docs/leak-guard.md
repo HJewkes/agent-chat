@@ -389,7 +389,7 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | a program-running env var (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `MANPAGER` and kin, below) on a line that runs git: a plain literal assignment whose value a row above denies, or any other use but a read                             | git runs the value as a pager, editor or ssh command        |
 | an `ext::` transport in any git word or config value whose decoded shell command a row above denies (below)                                                                                                                                     | `protocol.ext.allow` lets `ext::` run a shell command       |
 | a gh alias whose body a row above denies, when `gh alias set` stores it or `gh <alias>` runs it; `gh alias import`, a body or argument the guard cannot read, or a line that writes gh config or moves its home (below)                         | `gh alias set x '!git push --no-verify'` runs git unseen    |
-| `GIT_ALLOW_PROTOCOL` listing `ext` on any line; unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; an unread remote URL or config key (below)                                   | a later git runs `ext::` as shell                           |
+| `GIT_ALLOW_PROTOCOL` listing `ext` on any line; unreadable or unset on a line that runs git; `git config` on `protocol.allow` or `protocol.ext.allow` but `never`; a literal `ext::` URL; an unread remote URL or config key (below)            | a later git runs `ext::` as shell                           |
 | a gh extension (`gh <word>` that is no gh command or alias, `gh extension exec`); `gh repo clone`, `gh repo fork --clone` or `gh gist clone` git flags after `--` that a row above denies as `git clone`, or that the guard cannot read (below) | `gh repo clone o/r -- -c core.pager=<push>` runs git unseen |
 | a git or gh command run by `xargs` that a row above denies with the words xargs adds read as unreadable; a `git push` there unless a literal `--` comes before those words (below)                                                              | `echo --no-verify \| xargs git push` skips the hook         |
 | `ssh`, `scp` or `sftp` with an `-o` keyword ending in `Command`, a `-F` file other than `/dev/null`, scp or sftp `-S` or `-D`, or an unread option word, anywhere, `GIT_SSH_COMMAND` and `core.sshCommand` included (below)                     | `ssh -oProxyCommand=<push> h` runs a command unseen         |
@@ -802,6 +802,11 @@ cannot know. The decoded argv is checked as a top-level Bash line, so
 `git push --no-verify` as one argument to `sh -c`. The round-1 example `ext::sh -c 'git push …'`
 was wrong, because git splits that on its spaces into separate arguments and never runs the push. A
 value the guard cannot read (`ext::$C`) or cannot decode (a trailing or unknown `%` escape) denies.
+A literal `ext::` URL whose decoded command passes still denies as `extProtocol`, whatever the
+subcommand (TP-2505): `git remote add o 'ext::…'`, `git config [--file .gitmodules]
+submodule.x.url 'ext::…'`, `git config remote.x.url 'ext::…'`, `git fetch 'ext::…'`,
+`git clone 'ext::…' d` and `-c remote.o.url=ext::…`. Nothing legitimate stores or runs one, so
+these no longer lean on the CC-1095 pin. An https, ssh or file URL stays allowed.
 
 What switches the transport on, or hides an `ext::` URL for a later git, is closed too (TP-2371).
 `GIT_ALLOW_PROTOCOL`, a colon list git honours over `protocol.*.allow`, follows the program env
