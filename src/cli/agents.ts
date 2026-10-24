@@ -69,16 +69,15 @@ export async function agentLs(
     state?: string[]
     name?: string
     format?: string
+    includeRetired?: boolean
   } = {},
 ): Promise<void> {
   const filter = rosterFilter(options)
   if (options.format !== undefined && options.format !== 'line') fail(`--format must be: line`)
   const states = stateFilter(options.state)
+  const frame = lsRosterFrame(options.includeRetired === true || states?.has('retired') === true)
   const [all, sessions] = await withBroker(async b => {
-    const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
-      ServerMessage,
-      { t: 'agents_result' }
-    >
+    const roster = (await b.request(frame, 'agents_result')) as Extract<ServerMessage, { t: 'agents_result' }>
     const live = (await b.request({ t: 'list' }, 'list_result')) as Extract<
       ServerMessage,
       { t: 'list_result' }
@@ -137,6 +136,14 @@ export async function agentLs(
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
   }
+}
+
+/**
+ * TP-4132: the broker leaves retired rows out unless asked, and a lineage walk needs
+ * them. The bare frame stays the default so an older broker sees the frame it knows.
+ */
+function lsRosterFrame(includeRetired: boolean): { t: 'agents'; includeRetired?: true } {
+  return includeRetired ? { t: 'agents', includeRetired: true } : { t: 'agents' }
 }
 
 type RetireRow = RetireReading & { retireDue: boolean }
@@ -272,6 +279,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     teleportFrom: agent.teleportFrom ?? null,
     // CC-1579: never defaulted to null, which would claim "no takeover" for a row that cannot say.
     ...(agent.predecessor === undefined ? {} : { predecessor: agent.predecessor }),
+    // TP-4132: only on retired rows, so the default listing, which has none, keeps its shape.
+    ...(agent.state === 'retired' ? { retired: true } : {}),
     inferred: agent.exit?.inferred === true,
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
     contextK: retire?.contextK ?? null,
