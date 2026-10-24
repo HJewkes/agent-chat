@@ -144,7 +144,10 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
   // Kills: the narrowing dropping a protocol the caller left alone or allowed.
   it.each([
     ['no caller config', ''],
-    ['protocol.allow=never with protocol.ssh.allow=always', '-c protocol.allow=never -c protocol.ssh.allow=always'],
+    [
+      'protocol.allow=never with protocol.ssh.allow=always',
+      '-c protocol.allow=never -c protocol.ssh.allow=always',
+    ],
     // Kills: matching the policy word case-sensitively, as git does not.
     ['protocol.ssh.allow=Always over never', '-c protocol.allow=never -c protocol.ssh.allow=Always'],
     ['protocol.allow=user from the user', '-c protocol.allow=user'],

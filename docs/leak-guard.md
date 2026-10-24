@@ -1669,6 +1669,13 @@ git reads this list over `protocol.*.allow` in every config scope, so a reposito
 `protocol.ext.allow=always` and an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
 `transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
 GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
+Because that list outranks config, the shim must not widen what the caller's config allows
+(CC-1336). Just before it execs git, it reads `protocol.*` once with the caller's global options.
+It then drops each listed protocol whose `protocol.<name>.allow` (or, failing that,
+`protocol.allow`) is anything but `always` or `user`. It drops `user` too when
+`GIT_PROTOCOL_FROM_USER` is off. So `git -c protocol.allow=never ls-remote ssh://…` is refused.
+Config that leaves a protocol alone keeps it, so with no `protocol.*` set the pinned list is
+unchanged. A config read that errors out empties the list.
 The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
 `agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
 burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
