@@ -981,17 +981,23 @@ variable stay allowed. Known false deny: a bare `ENV` word on a line that reache
 `bash -c` or `zsh -c` that would hide git or gh from the guard.
 
 **Search path and loader variables (CC-1236).** `PATH` picks which `git` and which helpers run;
-`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES` and `DYLD_LIBRARY_PATH` pick
-the libraries the loader puts into git (`SEARCH_ENV` in `trust-inputs.ts`). A literal value names
-files the way any command line does, so it keeps its verdict: `PATH=/usr/bin:/bin git push`,
-`PATH+=:/opt/bin git push`, `PATH=~/bin:$PATH git push` and `export PATH=$HOME/bin:$PATH` stay
-allowed, as the value expands only the variable's own value, `$HOME` or `~`. Any other use on a
-line that may reach git denies with the `searchPathEnv` reason: a value with any other expansion
-(`LD_PRELOAD="$X" git push`, `PATH=$(mktemp -d) git push`), `read PATH`, `: ${PATH:=/x}`, and an
-`env -S` or `xargs` word. The deny ranks after the per-command checks, so
-`PATH="$X" git push --no-verify` keeps the `noVerify` reason. Known false denies: a bare `PATH` word
-on a line that reaches git (`echo PATH; git status`, `sudo --preserve-env=PATH git status`), the way
-`ENV` does.
+`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `LD_ORIGIN_PATH`, `GCONV_PATH` and the `DYLD_*` library
+and framework paths pick the code the loader puts into git (`SEARCH_ENV` in `trust-inputs.ts`). A
+literal value names files the way any command line does, so it keeps its verdict:
+`PATH=/usr/bin:/bin git push`, `PATH+=:/opt/bin git push`, `PATH=~/bin:$PATH git push` and
+`export PATH=$HOME/bin:$PATH` stay allowed, as the value expands only the variable's own value,
+`$HOME` or a bare `~`. `$HOME` and `~` count only while no line around them names `HOME` other than
+by a plain read, so `HOME=$X PATH=$HOME/bin git push` and `read HOME; LD_PRELOAD=~/l.so git push`
+deny. Any other tilde prefix (`~+`, `~-`, `~1`, `~user`) is unread, since it is the current, previous
+or a stacked directory. Any other use on a line that may reach git denies with the `searchPathEnv`
+reason: a value with any other expansion (`LD_PRELOAD="$X" git push`, `PATH=$(mktemp -d) git push`,
+`PATH=$PWD/bin:$PATH git status`), `read PATH`, `: ${PATH:=/x}`, and an `env -S` or `xargs` word.
+The deny ranks after the per-command checks, so `PATH="$X" git push --no-verify` keeps the
+`noVerify` reason. Known false denies: a bare `PATH` word on a line that reaches git
+(`echo PATH; git status`, `sudo --preserve-env=PATH git status`), the way `ENV` does, and a literal
+`HOME` write before a `$HOME` or `~` entry (`HOME=/h LD_PRELOAD=$HOME/l.so git push`). Known gap: a
+relative literal entry after a `cd` the guard cannot read (`cd "$X"; PATH=.:$PATH git push`)
+resolves against that directory and stays allowed.
 
 **git options and config writes.** `safe.directory` makes git trust the config and hooks of a
 repository another user owns, and git reads it only from protected config: system, global and the

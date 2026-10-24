@@ -35,6 +35,41 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
   })
 
+  it.each([
+    'HOME=$X PATH=$HOME/bin git push',
+    'export HOME=$(mktemp -d); PATH=$HOME:$PATH git push',
+    'HOME=$X; PATH=~/bin:$PATH git push',
+    'HOME=$X; PATH=~ git push',
+    'HOME=$X LD_PRELOAD=$HOME/l.so git push',
+    'HOME=$X LD_PRELOAD=~/x.so git push',
+    'read HOME; LD_PRELOAD=~/l.so git push',
+    ': ${HOME:=/x}; PATH=~/bin git push',
+    "HOME=$X bash -c 'PATH=~/bin git push'",
+    'HOME=/h LD_PRELOAD=$HOME/l.so git push',
+  ])('denies searchPathEnv when the line may write HOME: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+  })
+
+  it.each([
+    'cd "$X"; PATH=~+ git push',
+    'cd "$X"; cd /; PATH=~- git push',
+    'pushd "$X"; pushd /; PATH=~1 git push',
+    'PWD=$X; PATH=~+ git push',
+    'cd "$X"; LD_PRELOAD=~+/x.so git push',
+  ])('denies searchPathEnv for a tilde prefix other than a bare ~: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+  })
+
+  it.each([
+    'LD_ORIGIN_PATH=$X git push',
+    'GCONV_PATH=$X git push',
+    'DYLD_FALLBACK_LIBRARY_PATH=$X git push',
+    'DYLD_FRAMEWORK_PATH=$X git push',
+    'DYLD_FALLBACK_FRAMEWORK_PATH=$X git push',
+  ])('denies searchPathEnv for every loader variable: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.searchPathEnv)
+  })
+
   it('lets a per-command reason win over an unreadable PATH on the same line', () => {
     expect(checkCommand('PATH="$X" git push --no-verify', ctx)).toBe(REASONS.noVerify)
   })
@@ -48,6 +83,9 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'PATH+=:/opt/bin git push',
     'PATH=~/bin:$PATH git push',
     'export PATH=$HOME/bin:$PATH; git fetch x',
+    'PATH=~:$PATH git push',
+    'echo "${HOME:-/h}"; LD_PRELOAD=~/l.so git status',
+    'XDG_CONFIG_HOME=$X PATH=~/bin git push',
     'echo "$PATH"; git status',
     'unset LD_PRELOAD; git push',
     'PATH=$X make',

@@ -2632,8 +2632,17 @@ interface TrustOn {
 }
 // A SEARCH_ENV name set to a value the guard cannot read (CC-1236): denied with its own reason.
 const SEARCH_UNREAD = Symbol('search-unread')
+// A SEARCH_ENV value readable only if HOME is the hook's own: SEARCH_UNREAD when the line may write HOME.
+const SEARCH_VIA_HOME = Symbol('search-via-home')
 type EnvEvent =
-  string | null | typeof EXT_ON | typeof EXT_LISTED | typeof NAME_HIDDEN | typeof SEARCH_UNREAD | TrustOn
+  | string
+  | null
+  | typeof EXT_ON
+  | typeof EXT_LISTED
+  | typeof NAME_HIDDEN
+  | typeof SEARCH_UNREAD
+  | typeof SEARCH_VIA_HOME
+  | TrustOn
 
 const TRUST_REFS = TRUST_NAMES.map(([name, trust]) => ({
   use: nameUse(name),
@@ -2663,19 +2672,48 @@ function nameEvent(text: string, assignOnly = false): TrustOn | typeof SEARCH_UN
   return searchOn(text, assignOnly) ? SEARCH_UNREAD : null
 }
 
-// The expansions a SEARCH_ENV value may hold and stay readable: its own value, HOME and `~`.
-const searchReads = (name: string): RegExp =>
-  new RegExp(`${LIVE}(?:\\$(?:(?:${name}|HOME)(?![A-Za-z0-9_])|\\{(?:${name}|HOME)\\})|~)`, 'g')
+const variableRead = (name: string): string => `\\$(?:${name}(?![A-Za-z0-9_])|\\{${name}\\})`
+const ownRead = (name: string): RegExp => new RegExp(LIVE + variableRead(name), 'g')
+const HOME_READ = new RegExp(LIVE + variableRead('HOME'), 'g')
+// The splitter marks `~` only at a word's start, but an assignment expands it after `=` and each `:`,
+// so any entry's leading `~` counts. Only a bare `~` is HOME; `~+`, `~-` and `~N` are PWD, OLDPWD and
+// the dir stack, and `~user` a passwd lookup.
+const TILDE = new RegExp(`^${LIVE}?~`)
+const HOME_TILDE = new RegExp(`^${LIVE}?~(?=/|$)`)
 const SEARCH_ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
 
-/** A `NAME=value` or `NAME+=value` to a SEARCH_ENV name: 'none' when the value is readable, else SEARCH_UNREAD. */
-function plainSearchValue(word: string): typeof SEARCH_UNREAD | 'none' | undefined {
+type SearchValue = typeof SEARCH_UNREAD | typeof SEARCH_VIA_HOME | 'none'
+
+/** What one `:` entry of a SEARCH_ENV value reads, with the variable's own expansions dropped. */
+function searchEntry(entry: string): SearchValue {
+  if (TILDE.test(entry) && !HOME_TILDE.test(entry)) return SEARCH_UNREAD
+  const rest = entry.replace(HOME_TILDE, '').replace(HOME_READ, '')
+  if (rest.includes(LIVE)) return SEARCH_UNREAD
+  return rest === entry ? 'none' : SEARCH_VIA_HOME
+}
+
+/**
+ * A `NAME=value` or `NAME+=value` to a SEARCH_ENV name: 'none' when the value expands only the
+ * variable's own value, SEARCH_VIA_HOME when it also expands `$HOME` or `~`, else SEARCH_UNREAD.
+ */
+function plainSearchValue(word: string): SearchValue | undefined {
   const match = SEARCH_ASSIGN.exec(word)
   const name = match?.[1]
   if (match === null || name === undefined || !SEARCH_ENV.has(name)) return undefined
-  const value = word.slice(match[0].length)
-  return value.replace(searchReads(name), '').includes(LIVE) ? SEARCH_UNREAD : 'none'
+  const entries = word.slice(match[0].length).replace(ownRead(name), '').split(':').map(searchEntry)
+  if (entries.includes(SEARCH_UNREAD)) return SEARCH_UNREAD
+  return entries.includes(SEARCH_VIA_HOME) ? SEARCH_VIA_HOME : 'none'
 }
+
+/** Whether the line, or a line around it, names HOME other than by a plain read, so may write it. */
+const mayWriteHome = (scope: Scope): boolean => mentions(scope.said.replace(READ_ONLY_REF, ' '), 'HOME')
+
+/** Resolves SEARCH_VIA_HOME: an unread value when HOME may be written, else no event. */
+const resolveHome = (
+  events: readonly EnvEvent[],
+  scope: Scope,
+): Exclude<EnvEvent, typeof SEARCH_VIA_HOME>[] =>
+  events.flatMap(event => (event !== SEARCH_VIA_HOME ? [event] : mayWriteHome(scope) ? [SEARCH_UNREAD] : []))
 
 const PROTOCOL_USES = [...PROTOCOL_ENV].map(nameUse)
 const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => use.test(text))
@@ -2929,7 +2967,10 @@ function checkProgramEnvLine(
   depth: number,
 ): string | DeferredEnv | undefined {
   const uses = parseShell(command).map(envUse)
-  const events = uses.flatMap(use => use.events)
+  const events = resolveHome(
+    uses.flatMap(use => use.events),
+    scope,
+  )
   if (events.length === 0) return undefined
   if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
