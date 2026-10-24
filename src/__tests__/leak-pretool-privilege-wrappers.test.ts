@@ -117,7 +117,7 @@ describe('the bypass guard fails closed on a privilege wrapper it cannot read', 
   })
 
   it('denies a privilege wrapper after a hidden command word', () => {
-    expect(checkCommand('$X doas git push', ctx())).toBeDefined()
+    deny('$X doas git push', REASONS.privilegedPush)
   })
 })
 

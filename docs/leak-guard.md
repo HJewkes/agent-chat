@@ -350,9 +350,11 @@ shell denies.
 
 Behind `sudo`, `doas`, `run0`, `pkexec` or `su`, a `git push` (any flags, through `sh -c`, `eval`,
 xargs, env or `find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright.
-Their `env_reset` and `secure_path` drop the `GIT_CONFIG_*` hooks path and the git and gh shim
+sudo's `env_reset` and `secure_path` drop the `GIT_CONFIG_*` hooks path and the git and gh shim
 directories, so the pre-push scan, the push-time shim and gh-write's scan never run, and gh reads
-the target user's config. A stronger reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still
+the target user's config. That `doas` (without `keepenv`), `run0`, `pkexec` and `su -` drop them
+the same way, through their own environment resets, is UNVERIFIED; plain `su` keeps most of the
+environment but still runs as the target user. The guard denies under all five either way. A stronger reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still
 reported first. A command beside the wrapped one on the line is not affected (CC-1218).
 
 util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
