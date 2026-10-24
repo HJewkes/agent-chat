@@ -290,6 +290,114 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
   })
 })
 
+/** A template dir beside the fixture's work tree, with `config` holding `body` when one is given. */
+function templateDir(fx: Fixture, body?: string): string {
+  const dir = path.join(fx.work, '..', 'tpl')
+  fs.mkdirSync(dir, { recursive: true })
+  if (body !== undefined) fs.writeFileSync(path.join(dir, 'config'), body)
+  return dir
+}
+
+const DENY_ALL = '[protocol]\n\tallow = never\n'
+const DENY_SSH = '[protocol "ssh"]\n\tallow = never\n'
+const homeConfig = (fx: Fixture): string => path.join(fx.work, '..', 'home', '.gitconfig')
+
+// CC-1336 review: clone copies its template's config into the new repo and honours it before it fetches.
+describe('the pin under a clone template config (CC-1336)', () => {
+  // Kills: never reading --template, so its protocol.allow is widened.
+  it.each([
+    ['--template=<dir> denying all', DENY_ALL, (dir: string) => `--template='${dir}'`],
+    ['--template <dir> denying ssh', DENY_SSH, (dir: string) => `--template '${dir}'`],
+    ['an abbreviated --templ', DENY_SSH, (dir: string) => `--templ '${dir}'`],
+    ['a relative --template under -C', DENY_SSH, () => '--template=tpl'],
+  ])('keeps ssh denied for a clone under %s', (label, body, option) => {
+    const fx = harness.fixture()
+    const dir = templateDir(fx, body)
+    const configs = label.includes('-C') ? `-C '${path.dirname(dir)}'` : ''
+    const probe = cloneProbe(fx, '', configs, option(dir))
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: reading only --template, not the env var or init.templateDir git falls back to.
+  it.each([
+    ['GIT_TEMPLATE_DIR', (dir: string) => `GIT_TEMPLATE_DIR='${dir}'`, () => undefined],
+    ['a global init.templateDir', () => '', (dir: string) => `[init]\n\ttemplateDir = ${dir}\n`],
+    ['an init.templateDir under ~/', () => '', () => '[init]\n\ttemplateDir = ~/../tpl\n'],
+  ])('keeps ssh denied for a clone under %s', (_label, prefix, global) => {
+    const fx = harness.fixture()
+    const dir = templateDir(fx, DENY_ALL)
+    const globalBody = global(dir)
+    if (globalBody !== undefined) fs.writeFileSync(homeConfig(fx), globalBody)
+    const probe = cloneProbe(fx, prefix(dir), '', '')
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: a template read failing closed when the template leaves protocols alone.
+  it.each([
+    ['a template with no config', undefined],
+    ['a template config that allows ssh', '[protocol "ssh"]\n\tallow = always\n'],
+  ])('lets a clone run ssh under %s', (_label, body) => {
+    const fx = harness.fixture()
+    const dir = templateDir(fx, body)
+    const probe = cloneProbe(fx, '', '', `--template='${dir}'`)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).not.toContain('not allowed')
+    expect(fs.existsSync(probe.marker)).toBe(true)
+  })
+})
+
+/** Adds the fixture's own repo as submodule `sub`, whose origin is an ssh URL; returns the submodule's work tree. */
+function withSubmodule(fx: Fixture): string {
+  const source = path.join(fx.work, '..', 'sub-source')
+  git(path.dirname(source), 'clone', '-q', fx.work, source)
+  git(fx.work, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'sub')
+  const sub = path.join(fx.work, 'sub')
+  git(sub, 'config', 'remote.origin.url', 'ssh://x.invalid/sub')
+  return sub
+}
+
+const recursingFetch = (marker: string): string =>
+  `env -u GIT_SSH_COMMAND -u GIT_ALLOW_PROTOCOL git -c 'core.sshCommand=touch ${marker}; false' fetch -q --recurse-submodules=yes origin`
+
+// CC-1336 review: a recursing fetch's children run real git in each submodule with the exported list.
+describe("the pin under a submodule's own protocol config (CC-1336)", () => {
+  // Kills: narrowing by the superproject's config alone, so the submodule's never is widened.
+  it.each([
+    ['protocol.ssh.allow=never', ['protocol.ssh.allow', 'never']],
+    ['protocol.allow=never', ['protocol.allow', 'never']],
+  ])('keeps ssh denied in a submodule setting %s', (_label, setting) => {
+    const fx = harness.fixture()
+    const sub = withSubmodule(fx)
+    git(sub, 'config', ...setting)
+    const marker = path.join(fx.work, '..', 'ssh-ran')
+
+    runScript(fx, recursingFetch(marker))
+
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  // Kills: the submodule read failing closed when the submodule leaves protocols alone.
+  it('lets the submodule fetch run ssh when its config is silent', () => {
+    const fx = harness.fixture()
+    withSubmodule(fx)
+    const marker = path.join(fx.work, '..', 'ssh-ran')
+
+    runScript(fx, recursingFetch(marker))
+
+    expect(fs.existsSync(marker)).toBe(true)
+  })
+})
+
 const hasMake = spawnSync('make', ['--version']).status === 0
 
 /** Writes a script that fetches the ext remote, and a one-rule Makefile that runs it. */

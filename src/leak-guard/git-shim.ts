@@ -203,32 +203,83 @@ EOF
 }
 
 narrow_by() {
-  dump=$({ eval "$1 -z --get-regexp '^protocol[.]'" 2>/dev/null; printf '\\0%s' "$?"; } | LC_ALL=C tr '\\n\\0' "$soh$nl")
-  case \${dump##*"$nl"} in 0 | 1) keep_allowed "\${dump%"$nl"*}" ;; *) GIT_ALLOW_PROTOCOL= ;; esac
+  dump=$({ eval "$1 -z --get-regexp '^(protocol[.]|init[.]templatedir\\$)'" 2>/dev/null; printf '\\0%s' "$?"; } | LC_ALL=C tr '\\n\\0' "$soh$nl")
+  case \${dump##*"$nl"} in 0 | 1) ;; *) GIT_ALLOW_PROTOCOL=; return ;; esac
+  keep_allowed "\${dump%"$nl"*}"
+  while IFS= read -r line; do
+    case $line in "init.templatedir$soh"*) add_template "\${line#*"$soh"}" ;; esac
+  done <<EOF
+$dump
+EOF
 }`
 
-// Sets clone_cfg to clone's own -c and --config values, which clone writes into the new repo before it fetches.
+// Adds a template dir, whose config git copies into each repo it creates, to templates; one it cannot place empties the list.
+// git expands ~/ and ~ itself; ~user, %(prefix) and :(optional) are not worth resolving in sh.
+const ADD_TEMPLATE_FN = `add_template() {
+  case $1 in
+  '') return ;;
+  *"$soh"* | '~'[!/]* | '%('* | ':('*) GIT_ALLOW_PROTOCOL=; return ;;
+  '~') quote "$HOME" ;;
+  '~/'*) quote "$HOME/\${1#'~/'}" ;;
+  *) quote "$1" ;;
+  esac
+  templates="$templates $q"
+}`
+
+// Sets clone_cfg to clone's own -c and --config values, which clone writes into the new repo before it fetches, and adds its --template dirs.
 // A c anywhere in a short cluster before a valued flag counts, so a misread narrows and never widens.
 const CLONE_CONFIGS_FN = `clone_configs() {
   cloning=1 clone_cfg=
   while [ $# -gt 0 ]; do
-    found= value=
+    kind= next= value=
     case $1 in
     --) return ;;
-    --co | --con | --conf | --confi | --config) found=next ;;
-    --co=* | --con=* | --conf=* | --confi=* | --config=*) found=1 value=\${1#*=} ;;
+    --co | --con | --conf | --confi | --config) kind=c next=1 ;;
+    --co=* | --con=* | --conf=* | --confi=* | --config=*) kind=c value=\${1#*=} ;;
+    --te | --tem | --temp | --templ | --templa | --templat | --template) kind=t next=1 ;;
+    --te=* | --tem=* | --temp=* | --templ=* | --templa=* | --templat=* | --template=*) kind=t value=\${1#*=} ;;
     --*) ;;
     -?*)
       rest=\${1#-}
       while [ -n "$rest" ]; do
         c=\${rest%"\${rest#?}"} rest=\${rest#?}
-        case $c in [obju]) break ;; c) found=1 value=$rest; [ -n "$rest" ] || found=next; break ;; esac
+        case $c in [obju]) break ;; c) kind=c value=$rest; [ -n "$rest" ] || next=1; break ;; esac
       done ;;
     esac
-    if [ "$found" = next ] && [ $# -ge 2 ]; then value=$2; shift; fi
-    [ -z "$found" ] || { quote "$value"; clone_cfg="$clone_cfg -c $q"; }
+    if [ -n "$next" ] && [ $# -ge 2 ]; then value=$2; shift; fi
+    case $kind in
+    c) quote "$value"; clone_cfg="$clone_cfg -c $q" ;;
+    t) add_template "$value" ;;
+    esac
     shift
   done
+}`
+
+// Every template a clone, or a submodule clone under any command, may copy: --template, GIT_TEMPLATE_DIR and init.templateDir.
+// The union narrows more than the one git picks, never less; a relative dir resolves under the caller's -C, as git's does.
+const NARROW_TEMPLATES_FN = `narrow_templates() {
+  add_template "\${GIT_TEMPLATE_DIR:-}"
+  eval "set -- $templates"
+  for dir; do
+    quote "$dir/config"
+    narrow_by "GIT_DIR=/dev/null \\"\\$real\\"$cdglobals config --includes --file $q"
+  done
+}`
+
+// A recursing command's children run real git in each submodule with the exported list, which outranks the submodule's own config.
+// Reads every git dir under the superproject's modules/; a submodule whose git dir sits in its own work tree is not read.
+const NARROW_SUBMODULES_FN = `narrow_submodules() {
+  super=$(eval "\\"\\$real\\"$globals rev-parse --path-format=absolute --git-common-dir" 2>/dev/null)
+  super=\${super%%"$nl"*}
+  [ -n "$super" ] && [ -d "$super/modules" ] || return 0
+  gitdirs=$(find "$super/modules" -type d -name objects -prune -print 2>/dev/null) || { GIT_ALLOW_PROTOCOL=; return; }
+  while IFS= read -r objects; do
+    case $objects in '') continue ;; "$super/modules/"*/objects) ;; *) GIT_ALLOW_PROTOCOL=; return ;; esac
+    quote "\${objects%/objects}"
+    narrow_by "\\"\\$real\\" --git-dir=$q config"
+  done <<EOF
+$gitdirs
+EOF
 }`
 
 // git reads GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin keeps only protocols every config git may consult allows outright (CC-1336).
@@ -239,7 +290,10 @@ const NARROW_FN = `narrow_protocols() {
     narrow_by "GIT_DIR=/dev/null \\"\\$real\\"$cfgglobals config"
     [ -z "$clone_cfg" ] ||
       narrow_by "GIT_DIR=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS= \\"\\$real\\"$clone_cfg config"
+  else
+    narrow_submodules
   fi
+  narrow_templates
   export GIT_ALLOW_PROTOCOL
 }`
 
@@ -257,13 +311,14 @@ const SHADOWED_FN = `shadowed() {
 
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
-  globals= fileglobals= cfgglobals= cloning= depth=0
+  globals= fileglobals= cfgglobals= cdglobals= cloning= depth=0
   while [ $# -gt 0 ]; do
     case $1 in
     ${VALUED_GLOBALS})
       [ $# -ge 2 ] || return 1
       quote "$1"; globals="$globals $q"; option=$q; quote "$2"; globals="$globals $q"
       case $1 in -c | --config-env) cfgglobals="$cfgglobals $option $q" ;; *) fileglobals="$fileglobals $option $q" ;; esac
+      [ "$1" != -C ] || cdglobals="$cdglobals $option $q"
       shift 2; continue ;;
     -*)
       quote "$1"; globals="$globals $q"
@@ -556,8 +611,12 @@ ${PUSH_REPOS_FN}
 ${SUBMODULES_OFF_FN}
 ${LOCAL_ONLY_FN}
 ${POLICY_FN}
+${ADD_TEMPLATE_FN}
 ${CLONE_CONFIGS_FN}
+${NARROW_TEMPLATES_FN}
+${NARROW_SUBMODULES_FN}
 ${NARROW_FN}
+templates=
 if resolve "$@"; then
 ${HOOKS_CHECK}
 fi
