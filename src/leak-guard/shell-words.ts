@@ -140,8 +140,9 @@ function unjoinAt(src: string, at: number): number {
 function rangeAt(src: string, at: number): string | undefined {
   let range = ''
   const take = (char: RegExp): boolean => {
-    if (at >= src.length || !char.test(src[at])) return false
-    range += src[at]
+    const c = src[at]
+    if (c === undefined || !char.test(c)) return false
+    range += c
     at = unjoinAt(src, at + 1)
     return true
   }
