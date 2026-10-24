@@ -528,6 +528,8 @@ describe('git clone of a repository the guard cannot read (TP-2444)', () => {
 })
 
 describe('a literal ext:: URL given to git, not left to the CC-1095 pin (TP-2505)', () => {
+  // Mutation caught: argument payloads not setting extPrograms' literal allows every row but the two -c ones.
+  // Mutation caught: config-word payloads not setting literal allows the git -c and git clone -c rows.
   it.each([
     "git remote add o 'ext::sh -c true'",
     "git remote set-url o 'ext::sh -c true'",
@@ -546,6 +548,7 @@ describe('a literal ext:: URL given to git, not left to the CC-1095 pin (TP-2505
     expect(hookReason(command)).toBe(REASONS.extProtocol)
   })
 
+  // Mutation caught: returning extProtocol before checkPrograms checks the decoded scripts hides the noVerify reason.
   it('still names the decoded command when it denies on its own', () => {
     expect(hookReason("git fetch 'ext::sh -c git% push% --no-verify'")).toBe(REASONS.noVerify)
   })
