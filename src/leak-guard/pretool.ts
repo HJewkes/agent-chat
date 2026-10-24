@@ -171,6 +171,8 @@ interface Scope {
   fed: Feed
   /** Fed texts the whole call may still check; nested shells draw on the same budget (CC-1393). */
   fedChecks: { left: number }
+  /** A privilege wrapper runs this command, so its env reset drops the hooks path and the PATH shims (CC-1218). */
+  privileged: boolean
 }
 
 const UNSURE = Symbol('unsure')
@@ -213,6 +215,8 @@ export const REASONS = {
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
+  privilegedPush: `leak-guard: git push under sudo, doas, run0, pkexec or su runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
+  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo, doas, run0, pkexec or su skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -409,6 +413,8 @@ type Unwrapped =
       siblings?: Sibling[]
       /** A wrapper runs the shell `$SHELL` names, read here as `sh`. */
       viaShellVar?: boolean
+      /** A privilege wrapper such as sudo runs the command. */
+      privileged?: boolean
     }
   | { reason: string }
 
@@ -417,6 +423,7 @@ interface Lead {
   assigns: readonly string[]
   chdir: boolean
   fed: Fed | undefined
+  privileged?: boolean
 }
 
 /** A find clause read apart from the find's first, under the wrappers that came before that find. */
@@ -451,6 +458,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   let fedCommand = false
   let siblings: Sibling[] | undefined
   let viaShellVar = false
+  let privileged = lead?.privileged ?? false
   const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
@@ -462,6 +470,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
           fed,
           ...(siblings && { siblings }),
           ...(viaShellVar && { viaShellVar }),
+          ...(privileged && { privileged }),
         }
   for (;;) {
     const head = rest[at]
@@ -498,7 +507,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (fed?.append === true || fed?.hidden === true) return { reason: REASONS.hiddenCommand }
       const run = findRun(rest, at)
       if (run === undefined) return done()
-      const before: Lead = { assigns: [...assigns], chdir, fed }
+      const before: Lead = { assigns: [...assigns], chdir, fed, privileged }
       fed = fed === undefined ? FIND_FED : nestedFed(fed, FIND_FED)
       // A find inside a clause keeps the outer find's later clauses alongside its own.
       siblings = [
@@ -514,6 +523,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (after === undefined) return { reason: REASONS.sudoOption }
       // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
       chdir = true
+      privileged = true
       if (after.shell) {
         const script = rest.slice(after.at)
         // Words xargs adds, or an expansion sudo then escapes, may hold anything the shell reads, such as $IFS.
@@ -1052,8 +1062,18 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkExtEnablers(run, scope) ??
     checkTrustWrites(run, scope) ??
     checkFedPush(run, scope) ??
+    checkPrivilegedPush(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/** A push, or a git whose subcommand the guard cannot read, under a privilege wrapper (CC-1218). */
+function checkPrivilegedPush(run: GitRun, scope: Scope): string | undefined {
+  if (!scope.privileged) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (at < 0 || at >= run.resolved.length) return undefined
+  const sub = run.resolved[at]
+  return sub === 'push' || (sub === undefined && run.tied) ? REASONS.privilegedPush : undefined
 }
 
 /** A `git push` option word whose expansion may complete it into `--no-verify` (CC-1438). */
@@ -2448,7 +2468,8 @@ function checkSimple(
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )
   if (sibling !== undefined) return sibling
-  const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
+  const privileged = scope.privileged || unwrapped.privileged === true
+  const at = unwrapped.chdir || privileged ? { ...scope, cwd: undefined, privileged } : scope
   const words = stdinArgs(unwrapped.words, unwrapped.fed)
   const marked = words.slice(1)
   const head = testHead(words) ?? resolveWord(words[0] ?? '', cmd, ctx, at)
@@ -2469,6 +2490,8 @@ function checkSimple(
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  if ((name === 'gh' || (name === 'agent-chat' && args[0] === 'gh-write')) && privileged)
+    return REASONS.privilegedGh
   if (name === 'gh')
     return head === 'gh'
       ? (checkGhRuns(marked, unwrapped.assigns, cmd, ctx, at, depth) ??
@@ -2983,6 +3006,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     fedChecks: { left: MAX_FED_CHECKS },
     stdin: NOTHING,
     fed: NOTHING,
+    privileged: false,
   }
   return checkAt(command, ctx, scope, 0)
 }

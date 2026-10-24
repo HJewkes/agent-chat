@@ -340,6 +340,13 @@ by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, s
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
 
+Behind `sudo`, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or `find -exec`) and any
+`gh` or `agent-chat gh-write`, reads included, deny outright. sudo's `env_reset` and `secure_path`
+drop the `GIT_CONFIG_*` hooks path and the git and gh shim directories, so the pre-push scan, the
+push-time shim and gh-write's scan never run, and gh reads the target user's config. A stronger
+reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still reported first. A command beside the
+`sudo` one on the line is not affected (CC-1218).
+
 util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
 are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
 from a table, an option word or option value the shell expands (a `flock -c` text included), or
@@ -1404,7 +1411,7 @@ Not covered, by design or by cost:
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
   sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
-  `find -exec gh ...`, `parallel git ...`, `sudo gh ...`, `watch gh ...`. The guard
+  `find -exec gh ...`, `parallel git ...`, `watch gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
