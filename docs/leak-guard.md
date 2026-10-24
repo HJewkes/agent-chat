@@ -1670,12 +1670,16 @@ git reads this list over `protocol.*.allow` in every config scope, so a reposito
 `transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
 GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
 Because that list outranks config, the shim must not widen what the caller's config allows
-(CC-1336). Just before it execs git, it reads `protocol.*` once with the caller's global options.
-It then drops each listed protocol whose `protocol.<name>.allow` (or, failing that,
-`protocol.allow`) is anything but `always` or `user`. It drops `user` too when
-`GIT_PROTOCOL_FROM_USER` is off. So `git -c protocol.allow=never ls-remote ssh://…` is refused.
-Config that leaves a protocol alone keeps it, so with no `protocol.*` set the pinned list is
-unchanged. A config read that errors out empties the list.
+(CC-1336). Just before it execs git, it reads `protocol.*` (with `-z`, so a value cannot fake a
+second line) with the caller's global options, and keeps only each listed protocol whose
+`protocol.<name>.allow` (or, failing that, `protocol.allow`) is unset or `always`. A `user`
+policy drops too: git checks it per transport, and children such as submodule clones run with
+`GIT_PROTOCOL_FROM_USER=0` and inherit the list, which cannot say "only from the user". For
+`clone`, which never reads the cwd repo but writes its own `-c`/`--config` values into the new
+one, the shim also reads without a repo and reads those values alone, and keeps a protocol only
+if every read allows it. So `git -c protocol.allow=never ls-remote ssh://…` and `git clone -c
+protocol.allow=never ssh://…` are refused. Config that leaves a protocol alone keeps it, so with
+no `protocol.*` set the pinned list is unchanged. A config read that errors out empties the list.
 The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
 `agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
 burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an

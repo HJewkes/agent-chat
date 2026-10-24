@@ -175,12 +175,12 @@ else
 fi
 export GIT_ALLOW_PROTOCOL="$pinned"`
 
-// Sets policy to the last protocol.<name>.allow on stdin, else the last protocol.allow, else unset.
+// Sets policy to the last protocol.<name>.allow in a dump on stdin (one "key SOH value" line each), else the last protocol.allow, else unset.
 const POLICY_FN = `policy_of() {
   policy=unset own=
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    key=\${line%% *} value=\${line#*" "}
+    key=\${line%%"$soh"*} value=\${line#*"$soh"}
     [ "$key" != "$line" ] || value=
     case $key in
     "protocol.$1.allow") policy=$value own=1 ;;
@@ -189,30 +189,58 @@ const POLICY_FN = `policy_of() {
   done
 }
 
-from_user() {
-  case \${GIT_PROTOCOL_FROM_USER-1} in 1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;; esac
-  return 1
-}`
-
-// git reads GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin drops each protocol the caller's own config denies (CC-1336).
-const NARROW_FN = `narrow_protocols() {
-  protocol_config=$(eval "\\"\\$real\\"$globals config --get-regexp '^protocol[.]'" 2>/dev/null)
-  case $? in 0 | 1) ;; *) export GIT_ALLOW_PROTOCOL=; return ;; esac
+keep_allowed() {
   narrowed= rest=$GIT_ALLOW_PROTOCOL:
   while [ -n "$rest" ]; do
     protocol=\${rest%%:*} rest=\${rest#*:}
     [ -n "$protocol" ] || continue
     policy_of "$protocol" <<EOF
-$protocol_config
+$1
 EOF
-    case $policy in
-    unset | [Aa][Ll][Ww][Aa][Yy][Ss]) ;;
-    [Uu][Ss][Ee][Rr]) from_user || continue ;;
-    *) continue ;;
-    esac
-    narrowed=\${narrowed:+$narrowed:}$protocol
+    case $policy in unset | [Aa][Ll][Ww][Aa][Yy][Ss]) narrowed=\${narrowed:+$narrowed:}$protocol ;; esac
   done
-  export GIT_ALLOW_PROTOCOL="$narrowed"
+  GIT_ALLOW_PROTOCOL=$narrowed
+}
+
+narrow_by() {
+  dump=$({ eval "$1 -z --get-regexp '^protocol[.]'" 2>/dev/null; printf '\\0%s' "$?"; } | LC_ALL=C tr '\\n\\0' "$soh$nl")
+  case \${dump##*"$nl"} in 0 | 1) keep_allowed "\${dump%"$nl"*}" ;; *) GIT_ALLOW_PROTOCOL= ;; esac
+}`
+
+// Sets clone_cfg to clone's own -c and --config values, which clone writes into the new repo before it fetches.
+// A c anywhere in a short cluster before a valued flag counts, so a misread narrows and never widens.
+const CLONE_CONFIGS_FN = `clone_configs() {
+  cloning=1 clone_cfg=
+  while [ $# -gt 0 ]; do
+    found= value=
+    case $1 in
+    --) return ;;
+    --co | --con | --conf | --confi | --config) found=next ;;
+    --co=* | --con=* | --conf=* | --confi=* | --config=*) found=1 value=\${1#*=} ;;
+    --*) ;;
+    -?*)
+      rest=\${1#-}
+      while [ -n "$rest" ]; do
+        c=\${rest%"\${rest#?}"} rest=\${rest#?}
+        case $c in [obju]) break ;; c) found=1 value=$rest; [ -n "$rest" ] || found=next; break ;; esac
+      done ;;
+    esac
+    if [ "$found" = next ] && [ $# -ge 2 ]; then value=$2; shift; fi
+    [ -z "$found" ] || { quote "$value"; clone_cfg="$clone_cfg -c $q"; }
+    shift
+  done
+}`
+
+// git reads GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin keeps only protocols every config git may consult allows outright (CC-1336).
+// A list cannot say "only from the user", so a user policy drops. clone reads no cwd repo but adds its own -c values.
+const NARROW_FN = `narrow_protocols() {
+  narrow_by "\\"\\$real\\"$globals config"
+  if [ -n "$cloning" ]; then
+    narrow_by "GIT_DIR=/dev/null \\"\\$real\\"$cfgglobals config"
+    [ -z "$clone_cfg" ] ||
+      narrow_by "GIT_DIR=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS= \\"\\$real\\"$clone_cfg config"
+  fi
+  export GIT_ALLOW_PROTOCOL
 }`
 
 // A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
@@ -229,19 +257,20 @@ const SHADOWED_FN = `shadowed() {
 
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
-  globals= fileglobals= depth=0
+  globals= fileglobals= cfgglobals= cloning= depth=0
   while [ $# -gt 0 ]; do
     case $1 in
     ${VALUED_GLOBALS})
       [ $# -ge 2 ] || return 1
       quote "$1"; globals="$globals $q"; option=$q; quote "$2"; globals="$globals $q"
-      case $1 in -c | --config-env) ;; *) fileglobals="$fileglobals $option $q" ;; esac
+      case $1 in -c | --config-env) cfgglobals="$cfgglobals $option $q" ;; *) fileglobals="$fileglobals $option $q" ;; esac
       shift 2; continue ;;
     -*)
       quote "$1"; globals="$globals $q"
-      case $1 in -c?* | --config-env=*) ;; *) fileglobals="$fileglobals $q" ;; esac
+      case $1 in -c?* | --config-env=*) cfgglobals="$cfgglobals $q" ;; *) fileglobals="$fileglobals $q" ;; esac
       shift; continue ;;
     push) break ;;
+    clone) shift; clone_configs "$@"; return 1 ;;
     remote-ext) refuse_ext ;;
     esac
     case " $builtins " in *" $1 "*) return 1 ;; esac
@@ -527,6 +556,7 @@ ${PUSH_REPOS_FN}
 ${SUBMODULES_OFF_FN}
 ${LOCAL_ONLY_FN}
 ${POLICY_FN}
+${CLONE_CONFIGS_FN}
 ${NARROW_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}

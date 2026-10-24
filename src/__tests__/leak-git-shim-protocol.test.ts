@@ -110,10 +110,21 @@ describe('the agent git shim pinning GIT_ALLOW_PROTOCOL', () => {
 })
 
 /** An ls-remote over ssh whose core.sshCommand leaves a marker, so the marker shows the transport ran. */
-function sshProbe(fx: Fixture, prefix: string, configs: string): { command: string; marker: string } {
+function sshProbe(
+  fx: Fixture,
+  prefix: string,
+  configs: string,
+  subcommand = 'ls-remote',
+): { command: string; marker: string } {
   const marker = path.join(fx.work, '..', 'ssh-ran')
-  const command = `${prefix} env -u GIT_SSH_COMMAND git -c 'core.sshCommand=touch ${marker}; false' ${configs} ls-remote ssh://x.invalid/r`
+  const command = `${prefix} env -u GIT_SSH_COMMAND git -c 'core.sshCommand=touch ${marker}; false' ${configs} ${subcommand} ssh://x.invalid/r`
   return { command, marker }
+}
+
+/** The same probe as a clone into ../cloned, with `options` after the subcommand, where clone takes its own -c. */
+const cloneProbe = (fx: Fixture, prefix: string, configs: string, options: string) => {
+  const probe = sshProbe(fx, prefix, configs, `clone -q ${options}`)
+  return { ...probe, command: `${probe.command} ../cloned` }
 }
 
 // CC-1336: git honours GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin must not widen a caller's config.
@@ -129,8 +140,15 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
     // Kills: dropping a protocol only on the exact word never, so a value git rejects keeps it.
     ['protocol.allow=NEVER', '', '-c protocol.allow=NEVER'],
     ['protocol.allow=bogus', '', '-c protocol.allow=bogus'],
-    // Kills: ignoring GIT_PROTOCOL_FROM_USER for a user policy.
+    // Kills: keeping a user policy, which a child setting GIT_PROTOCOL_FROM_USER=0 inherits as an outright allow.
     ['protocol.allow=user, not from the user', 'GIT_PROTOCOL_FROM_USER=0', '-c protocol.allow=user'],
+    ['protocol.allow=user from the user', '', '-c protocol.allow=user'],
+    // Kills: reading values split on newlines, so a second line fakes an always.
+    [
+      'a never value whose next line says always',
+      '',
+      `-c 'protocol.ssh.allow=never${'\n'}protocol.ssh.allow always'`,
+    ],
   ])('keeps ssh denied under %s', (_label, prefix, configs) => {
     const fx = harness.fixture()
     const probe = sshProbe(fx, prefix, configs)
@@ -150,7 +168,6 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
     ],
     // Kills: matching the policy word case-sensitively, as git does not.
     ['protocol.ssh.allow=Always over never', '-c protocol.allow=never -c protocol.ssh.allow=Always'],
-    ['protocol.allow=user from the user', '-c protocol.allow=user'],
     ['protocol.ext.allow=never', '-c protocol.ext.allow=never'],
   ])('lets ssh run under %s', (_label, configs) => {
     const fx = harness.fixture()
@@ -171,6 +188,84 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
 
     expect(run.stderr).toContain("transport 'ssh' not allowed")
     expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: reading only the options before the subcommand, so clone's own -c never narrows the pin.
+  it.each([
+    ['clone -c', '', '-c protocol.allow=never'],
+    ['clone -c<value>', '', '-cprotocol.ssh.allow=never'],
+    ['a short cluster ending in c', '', '-qc protocol.ssh.allow=never'],
+    ['clone --config=', '', '--config=protocol.ssh.allow=never'],
+    ['an abbreviated --conf', '', '--conf protocol.allow=never'],
+    ['clone -c after the URL', '', ''],
+  ])('keeps ssh denied for a clone under %s', (label, configs, options) => {
+    const fx = harness.fixture()
+    const probe = cloneProbe(fx, '', configs, options)
+    const command = label.endsWith('URL') ? `${probe.command} -c protocol.allow=never` : probe.command
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: taking a clone's policy from the cwd repo, whose config clone never reads.
+  it("keeps ssh denied for a clone whose cwd repo allows ssh that the caller's config denies", () => {
+    const fx = harness.fixture()
+    git(fx.work, 'config', 'protocol.ssh.allow', 'always')
+    fs.writeFileSync(path.join(fx.env.HOME, '.gitconfig'), '[protocol]\n\tallow = never\n')
+    const probe = cloneProbe(fx, '', '', '')
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: the clone reads failing closed on ordinary clones.
+  it.each([
+    ['no clone config', ''],
+    ['an unrelated clone -c', '-c core.autocrlf=false'],
+    ['clone -c protocol.ssh.allow=always', '-c protocol.ssh.allow=always'],
+  ])('lets a clone run ssh under %s', (_label, options) => {
+    const fx = harness.fixture()
+    const probe = cloneProbe(fx, '', '', options)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).not.toContain('not allowed')
+    expect(fs.existsSync(probe.marker)).toBe(true)
+  })
+
+  it('clones a local repo with a clone -c', () => {
+    const fx = harness.fixture()
+
+    const run = runScript(fx, `git clone -q -c core.autocrlf=false '${fx.work}' ../local`)
+
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+  })
+
+  // Kills: keeping a user protocol, which submodule clones (GIT_PROTOCOL_FROM_USER=0) take as an outright allow.
+  it('keeps an ssh submodule denied under protocol.allow=user', () => {
+    const fx = harness.fixture()
+    const head = git(fx.work, 'rev-parse', 'HEAD').trim()
+    fs.writeFileSync(
+      path.join(fx.work, '.gitmodules'),
+      '[submodule "sub"]\n\tpath = sub\n\turl = ssh://x.invalid/sub\n',
+    )
+    git(fx.work, 'add', '.gitmodules')
+    git(fx.work, 'update-index', '--add', '--cacheinfo', `160000,${head},sub`)
+    git(fx.work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'sub')
+    const marker = path.join(fx.work, '..', 'ssh-ran')
+
+    runScript(
+      fx,
+      `env -u GIT_SSH_COMMAND git -c 'core.sshCommand=touch ${marker}; false' -c protocol.allow=user -c protocol.file.allow=always clone -q --recurse-submodules '${fx.work}' ../super`,
+    )
+
+    expect(fs.existsSync(path.join(fx.work, '..', 'super', '.gitmodules'))).toBe(true)
+    expect(fs.existsSync(marker)).toBe(false)
   })
 
   // Kills: a caller's protocol.ext.allow=always lifting the pin's ext ban.
