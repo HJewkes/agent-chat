@@ -126,8 +126,9 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
     ['protocol.ssh.allow=never', 'env -u GIT_ALLOW_PROTOCOL', '-c protocol.ssh.allow=never'],
     // Kills: letting the general key win over the protocol's own key.
     ['ssh never over allow always', '', '-c protocol.ssh.allow=never -c protocol.allow=always'],
-    // Kills: matching the policy word case-sensitively, as git does not.
+    // Kills: dropping a protocol only on the exact word never, so a value git rejects keeps it.
     ['protocol.allow=NEVER', '', '-c protocol.allow=NEVER'],
+    ['protocol.allow=bogus', '', '-c protocol.allow=bogus'],
     // Kills: ignoring GIT_PROTOCOL_FROM_USER for a user policy.
     ['protocol.allow=user, not from the user', 'GIT_PROTOCOL_FROM_USER=0', '-c protocol.allow=user'],
   ])('keeps ssh denied under %s', (_label, prefix, configs) => {
@@ -144,6 +145,8 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
   it.each([
     ['no caller config', ''],
     ['protocol.allow=never with protocol.ssh.allow=always', '-c protocol.allow=never -c protocol.ssh.allow=always'],
+    // Kills: matching the policy word case-sensitively, as git does not.
+    ['protocol.ssh.allow=Always over never', '-c protocol.allow=never -c protocol.ssh.allow=Always'],
     ['protocol.allow=user from the user', '-c protocol.allow=user'],
     ['protocol.ext.allow=never', '-c protocol.ext.allow=never'],
   ])('lets ssh run under %s', (_label, configs) => {
