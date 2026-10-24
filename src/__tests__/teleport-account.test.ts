@@ -318,6 +318,19 @@ describe('an account move that goes through', () => {
     expect(kinds()).toContain('agent_handoff')
   })
 
+  it('records the target dir on the handoff row and restates no question there', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    writeSourceTranscript()
+    core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'merge #12?' })
+
+    const result = await humanMove()
+
+    const row = core.events.agentEvents().find(r => r.kind === 'agent_handoff')
+    expect(row?.meta).toMatchObject({ successor: result.agentId, account_to: toDir })
+    expect(row?.meta).not.toHaveProperty('questions')
+  })
+
   it('ends the predecessor before the successor is recorded, even with a surface asked for', async () => {
     startServer(fakeAccounts())
     const agentId = registerSubject()
