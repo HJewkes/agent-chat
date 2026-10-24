@@ -213,7 +213,7 @@ describe("the pin under a caller's protocol config (CC-1336)", () => {
   it("keeps ssh denied for a clone whose cwd repo allows ssh that the caller's config denies", () => {
     const fx = harness.fixture()
     git(fx.work, 'config', 'protocol.ssh.allow', 'always')
-    fs.writeFileSync(path.join(fx.env.HOME, '.gitconfig'), '[protocol]\n\tallow = never\n')
+    fs.writeFileSync(path.join(fx.work, '..', 'home', '.gitconfig'), '[protocol]\n\tallow = never\n')
     const probe = cloneProbe(fx, '', '', '')
 
     const run = runScript(fx, probe.command)
