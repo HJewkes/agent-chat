@@ -23,7 +23,11 @@ const deny = (line: string, reason: string | undefined): void => {
 const WRAPPERS = [
   {
     name: 'doas',
-    pushes: ['doas -u root git push origin main', 'doas -n git push origin main', '/usr/bin/doas git push origin main'],
+    pushes: [
+      'doas -u root git push origin main',
+      'doas -n git push origin main',
+      '/usr/bin/doas git push origin main',
+    ],
     gh: ['doas gh pr list', 'doas gh pr create --title t --body b'],
     noVerify: 'doas -u root git push --no-verify',
   },
@@ -86,12 +90,12 @@ describe('the bypass guard reads doas -s, run0 -i and su as the shell they run',
     },
   )
 
-  it.each([
-    `echo '${PY}' | SHELL=/usr/bin/python3 doas -s`,
-    `echo '${PY}' | SHELL=/usr/bin/python3 su -m`,
-  ])('denies %s, whose $SHELL the line sets', line => {
-    expect(checkCommand(line, ctx())).toMatch(/\$SHELL names/)
-  })
+  it.each([`echo '${PY}' | SHELL=/usr/bin/python3 doas -s`, `echo '${PY}' | SHELL=/usr/bin/python3 su -m`])(
+    'denies %s, whose $SHELL the line sets',
+    line => {
+      expect(checkCommand(line, ctx())).toMatch(/\$SHELL names/)
+    },
+  )
 })
 
 describe('the bypass guard fails closed on a privilege wrapper it cannot read', () => {

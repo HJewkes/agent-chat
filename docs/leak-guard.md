@@ -331,7 +331,7 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
+`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, `doas`, `run0`, `pkexec`, `su`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
 `if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
 `/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
 unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
@@ -340,12 +340,20 @@ by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, s
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
 
-Behind `sudo`, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or `find -exec`) and any
-`gh` or `agent-chat gh-write`, reads included, deny outright. sudo's `env_reset` and `secure_path`
-drop the `GIT_CONFIG_*` hooks path and the git and gh shim directories, so the pre-push scan, the
-push-time shim and gh-write's scan never run, and gh reads the target user's config. A stronger
-reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still reported first. A command beside the
-`sudo` one on the line is not affected (CC-1218).
+`doas`, `run0`, `pkexec` and `su` are stripped the same way, their options read from per-wrapper
+tables (`src/leak-guard/privilege-wrappers.ts`). An option a table does not know, an option missing
+its value, or an option word or value the shell expands denies. `su -c '<line>'` (options read
+anywhere among su's words, as util-linux permutes them), `doas -s`, `run0 -i` and `--via-shell`, and
+a bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin,
+with the `$SHELL` rule below; xargs input to one denies. `su -s` naming a program that is not a
+shell denies.
+
+Behind `sudo`, `doas`, `run0`, `pkexec` or `su`, a `git push` (any flags, through `sh -c`, `eval`,
+xargs, env or `find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright.
+Their `env_reset` and `secure_path` drop the `GIT_CONFIG_*` hooks path and the git and gh shim
+directories, so the pre-push scan, the push-time shim and gh-write's scan never run, and gh reads
+the target user's config. A stronger reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still
+reported first. A command beside the wrapped one on the line is not affected (CC-1218).
 
 util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
 are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
