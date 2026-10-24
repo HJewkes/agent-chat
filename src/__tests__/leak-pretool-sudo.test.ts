@@ -58,6 +58,7 @@ describe('the bypass guard reads the command behind sudo', () => {
     ['sudo git push origin main', REASONS.privilegedPush],
     ['sudo -u root git push origin main', REASONS.privilegedPush],
   ])('denies %s for what runs behind sudo', (line, reason) => {
+    expect(reason).toBeDefined()
     expect(checkCommand(line, ctx())).toBe(reason)
   })
 })

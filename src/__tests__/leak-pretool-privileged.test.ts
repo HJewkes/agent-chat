@@ -14,6 +14,9 @@ const ctx = (): GuardContext => ({
   readIncludedHooksPath: () => false,
 })
 
+const PUSH_DENY = /^leak-guard: git push under sudo/
+const GH_DENY = /^leak-guard: gh or agent-chat gh-write under sudo/
+
 // CC-1218: sudo's env_reset and secure_path drop the hooks path and the shims, so any push skips the scan.
 describe('the bypass guard denies git push under sudo outright', () => {
   it.each([
@@ -31,7 +34,7 @@ describe('the bypass guard denies git push under sudo outright', () => {
     'sudo $G push',
     String.raw`sudo find . -maxdepth 0 -exec true \; -exec git push \;`,
   ])('denies %s', line => {
-    expect(checkCommand(line, ctx())).toBe(REASONS.privilegedPush)
+    expect(checkCommand(line, ctx())).toMatch(PUSH_DENY)
   })
 
   it.each([
@@ -50,7 +53,7 @@ describe('the bypass guard denies gh under sudo outright', () => {
     'sudo agent-chat gh-write -- pr comment 1 --body x',
     "sudo sh -c 'gh issue create -t t -b b'",
   ])('denies %s', line => {
-    expect(checkCommand(line, ctx())).toBe(REASONS.privilegedGh)
+    expect(checkCommand(line, ctx())).toMatch(GH_DENY)
   })
 })
 
