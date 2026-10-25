@@ -536,6 +536,15 @@ option name, before any `=`. A brace after a long option's `=` only copies the o
 `git fetch --{upload-pack=x,y}` is denied. A short option word with a brace, such as
 `git log -S{foo}`, is denied.
 
+A glob may match a file named `--no-verify`, so the guard does not read `?` or `*` as written in a
+`git push` argument either (TP-4235). An unquoted glob or brace word before a literal `--` that may
+match `--no-verify` or its abbreviations is denied, whatever the directory holds: `--no-verif?`,
+`--no-verif*`, `--*-verify`, `-*` and a bare `*`. A command word tied to git whose brace or zsh
+group may expand to `push` or `--no-verify`, as in `{git,push,--no-verify}`, is denied too. Both
+hold at the top level, under `sh -c` and in the scripts git hands a shell, such as
+`git rebase -x 'git push --no-verif*'`. A quoted glob, as in `"--no-verif?"`, and a glob that cannot
+match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay allowed.
+
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
 `--no-veri`; and the private-use characters U+E000 to U+E002 in a git argument that holds a brace
