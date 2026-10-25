@@ -30,7 +30,13 @@ export type FileRecord =
       sha256?: string
     }
 
-export type Records = Record<string, FileRecord>
+/** The names a directory held at the baseline; a name that was not there is a mismatch. */
+export interface DirRecord {
+  kind: 'dir'
+  names: string[]
+}
+
+export type Records = Record<string, FileRecord | DirRecord>
 
 export interface Mismatch {
   file: string
@@ -113,6 +119,9 @@ const STARTUP_NAMES = [
   '.shrc',
 ]
 
+// zsh runs `<name>.zwc` in place of `<name>` when it is newer, or when `<name>` is absent.
+const ZWC_NAMES = STARTUP_NAMES.filter(name => name.startsWith('.z')).map(name => `${name}.zwc`)
+
 const absolute = (value: string | undefined): string | undefined =>
   value !== undefined && path.isAbsolute(value) ? value : undefined
 
@@ -129,7 +138,7 @@ export function startupSet(
   const dirs = new Set([home])
   const zdir = absolute(zdotdir)
   if (zdir !== undefined) dirs.add(zdir)
-  const files = [...dirs].flatMap(dir => STARTUP_NAMES.map(name => path.join(dir, name)))
+  const files = [...dirs].flatMap(dir => [...STARTUP_NAMES, ...ZWC_NAMES].map(name => path.join(dir, name)))
   for (const value of [absolute(env.BASH_ENV), absolute(env.ENV)]) {
     if (value !== undefined) files.push(value)
   }
@@ -144,6 +153,8 @@ export function sessionSet(configDir: string, sessionId: string, env: Env, io: R
   const dirs = [path.join(configDir, 'shell-snapshots'), path.join(configDir, 'session-env', sessionId)]
   const files = dirs.flatMap(dir => io.list(dir).map(name => path.join(dir, name)))
   const records = recordAll(files, 'session', io)
+  const own = dirs[1] as string
+  records[own] = { kind: 'dir', names: io.list(own) }
   const envFile = absolute(env.CLAUDE_ENV_FILE)
   if (envFile !== undefined) records[envFile] = recordOf(envFile, 'startup', io)
   return records
@@ -179,13 +190,28 @@ function changedField(base: FileRecord, now: FileRecord): string | undefined {
 
 /**
  * The first file of the baseline whose record changed, and the field that shows it. A file the
- * baseline never held is ignored, so another session's new snapshot passes. A baselined session
+ * baseline never held is ignored, so another session's new snapshot passes, except in this
+ * session's own `session-env` directory, where a new name is a mismatch. A baselined session
  * file that is gone passes; every other disappearance, and every appearance, does not.
  */
 export function compare(base: Records, now: Records): Mismatch | undefined {
   for (const [file, before] of Object.entries(base)) {
-    const field = changedField(before, now[file] ?? { kind: before.kind, state: 'absent' })
-    if (field !== undefined) return { file, field }
+    const after = now[file]
+    const found =
+      before.kind === 'dir'
+        ? addedName(before, after?.kind === 'dir' ? after : undefined, file)
+        : fileMismatch(file, before, after?.kind === 'dir' ? undefined : after)
+    if (found !== undefined) return found
   }
   return undefined
+}
+
+function fileMismatch(file: string, before: FileRecord, after: FileRecord | undefined): Mismatch | undefined {
+  const field = changedField(before, after ?? { kind: before.kind, state: 'absent' })
+  return field === undefined ? undefined : { file, field }
+}
+
+function addedName(before: DirRecord, after: DirRecord | undefined, dir: string): Mismatch | undefined {
+  const added = after?.names.find(name => !before.names.includes(name))
+  return added === undefined ? undefined : { file: path.join(dir, added), field: 'state' }
 }

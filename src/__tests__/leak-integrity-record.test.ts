@@ -93,6 +93,13 @@ describe('startup files', () => {
     expect(compare(base, startup())?.file).toBe(file)
   })
 
+  it('denies a compiled .zwc twin that appears, with or without the source file', () => {
+    const base = startup()
+    fs.writeFileSync(path.join(home, '.zshenv.zwc'), 'x\n')
+
+    expect(compare(base, startup())).toEqual({ file: path.join(home, '.zshenv.zwc'), field: 'state' })
+  })
+
   it('records BASH_ENV and ENV only when absolute', () => {
     const abs = path.join(home, 'benv')
     const records = startupSet(home, undefined, { BASH_ENV: abs, ENV: 'relative' })
@@ -160,6 +167,23 @@ describe('session files', () => {
     fs.appendFileSync(file, 'export B=2\n')
 
     expect(compare(base, session())?.file).toBe(file)
+  })
+
+  it('denies a new file in the session own session-env dir, even when it was empty', () => {
+    const base = session()
+    const file = path.join(sessionEnv, 'sessionstart-hook-9.sh')
+    fs.writeFileSync(file, 'export A=1\n')
+
+    expect(compare(base, session())).toEqual({ file, field: 'state' })
+  })
+
+  it('denies a new file in the session own dir when its directory was missing at the baseline', () => {
+    fs.rmSync(sessionEnv, { recursive: true })
+    const base = session()
+    fs.mkdirSync(sessionEnv)
+    fs.writeFileSync(path.join(sessionEnv, 'sessionstart-hook-1.sh'), 'x\n')
+
+    expect(compare(base, session())?.field).toBe('state')
   })
 
   it('denies a deleted CLAUDE_ENV_FILE', () => {
