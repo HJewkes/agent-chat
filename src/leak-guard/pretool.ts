@@ -98,7 +98,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -271,7 +271,7 @@ export const REASONS = {
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
@@ -2258,11 +2258,21 @@ function checkShell(
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
       : checkFed(fed.texts, ctx, scope, depth)
   if (reason !== undefined) return reason
-  const args = call.marked.map(unmark)
-  const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
   // A shell the `-c` string runs reads this shell's own stdin (CC-1408).
   const inner = fed === scope.stdin ? scope : { ...scope, stdin: fed }
-  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, inner, depth + 1) : undefined
+  return firstReason(commandTexts(call), text => checkAt(text, ctx, inner, depth + 1))
+}
+
+/**
+ * The texts a shell may run as its `-c` string, at the place its options leave it (`sh -c -e TEXT`,
+ * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, or belong to a shell whose
+ * grammar was never observed (mksh's `-T` takes an operand), every word may be it.
+ */
+function commandTexts({ name, marked, assigns }: ShellRun): string[] {
+  const { script } = readShellCall(name, marked, assigns)
+  if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
+  if (script.from !== 'command') return []
+  return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */
