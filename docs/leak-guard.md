@@ -1787,6 +1787,58 @@ Not covered, by design or by cost:
   `gh gist create` and `gh pr close --comment`;
 - a file that changes between the guard's read and gh's.
 
+## The no-rewrite push policy (CC-1633)
+
+A profile with `"pushPolicy": "no-rewrite"` (the bd implementer, implementer-lite and reviewer
+profiles) launches its agent with git pointed at a second guard dir, `<home>/git-hooks/no-rewrite`,
+instead of `<home>/git-hooks`. Its git shim dir is `<home>/git-hooks/git-bin`. Both sit under the
+guard's hooks root, so the PreToolUse hook's protected path covers them. Remote launch selects
+the same dir after `isPushPolicy` checks the carried field. No variable carries the policy: the
+broker bakes it into that dir's `pre-push` at each spawn, so nothing in the agent's environment
+switches it off.
+
+**Only the pre-push hook decides.** git hands it the ref updates it is about to make, after `-c`
+and `--config-env` options, config includes, `HOME` and `XDG_CONFIG_HOME`, `push.default`,
+refspec patterns, aliases and the dashed `git-push` name have all been resolved. The hook refuses
+the whole push when any update:
+
+- deletes a ref (an all-zero local sha), which includes a plain `--prune` deletion (observed on
+  git 2.53);
+- updates `refs/heads/main` or `refs/heads/master`;
+- names a remote ref outside `refs/heads/` and `refs/tags/`;
+- is not a fast-forward of the remote's tip, or its tip is not in the repository to check.
+
+It reads ancestry in a view of the repository's objects alone, with no replace refs, grafts or
+commit-graph, so the agent's repository state cannot fake a fast-forward. git leaves a mirror's
+deletions off the hook's input (observed on git 2.53). So the hook also reads
+`remote.<name>.mirror` with git's own env, which carries the push's `-c` options, includes and
+`HOME`, and refuses a mirror remote or a read that fails. A typed `--mirror` sets no config, but
+it pushes the local `refs/remotes/*` refs every clone holds, and the namespace check refuses those.
+
+The no-rewrite dir's git shim refuses a push whose resolved `core.hooksPath` is not that dir,
+the same equality check as for the shared dir; as there, a push whose every destination is a
+local path is let through. The PreToolUse hook has no push-policy rule of its own. It keeps its
+hook-integrity rules (`--no-verify`, `core.hooksPath`, `GIT_CONFIG_*`, aliases, and refusing what
+it cannot resolve), and it reads a dashed builtin such as `$(git --exec-path)/git-push` as
+`git push`.
+
+**Review boundary.** The policy is as strong as "the guard's hooks dir runs, and it is the
+no-rewrite dir". These routes defeat that, defeat the leak scan too, and are out of scope here:
+
+- GIT_CONFIG_* hook-path integrity: rewriting `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` or
+  `GIT_CONFIG_VALUE_0` with `read`, `for`, `printf -v`, `getopts`, `mapfile` or `let` (on main
+  for the leak scan as well), and `exec -c git push`, which clears the env;
+- the `--no-verify` spellings CC-1284 to CC-1287 track;
+- `git send-pack` and `git http-push`, which run no pre-push hook, and `gh api` ref writes
+  (CC-1636);
+- a `--mirror` push after the agent has deleted every non-branch, non-tag local ref, since git
+  hides mirror deletions from the hook.
+
+The only layer no agent input reaches is the server. One GitHub ruleset on `~ALL` branches, with
+"restrict deletions" and "block force pushes" and an empty bypass list, closes every row above.
+That is an owner ruleset write. The profile `disallowedTools` push rules remain a literal-text
+backstop.
+
 ## Owner override and its trust limit
 
 The owner's override today is a `git push` from their own shell. That shell carries no

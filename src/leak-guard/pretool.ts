@@ -2461,7 +2461,10 @@ const mayStartCommand = (word: string): boolean =>
   word.includes(LIVE) ||
   PREFIX_WORDS.has(word) ||
   ASSIGNMENT.test(word) ||
-  CHECKED_NAMES.has(path.basename(word))
+  CHECKED_NAMES.has(path.basename(word)) ||
+  DASHED_GIT.test(path.basename(word))
+
+const DASHED_GIT = /^git-(.+)$/
 
 const suffixCommand = (cmd: SimpleCommand, marked: readonly string[]): SimpleCommand => ({
   ...cmd,
@@ -2794,6 +2797,10 @@ function checkSimple(
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  // git runs its builtin when called by its dashed name (`$(git --exec-path)/git-push`), so read it as `git push` (CC-1633).
+  const dashed = DASHED_GIT.exec(name)?.[1]
+  if (dashed !== undefined)
+    return checkGitRun(gitRun([dashed, ...marked], unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if ((name === 'gh' || (name === 'agent-chat' && args[0] === 'gh-write')) && privileged)
     return REASONS.privilegedGh
   if (name === 'gh')
