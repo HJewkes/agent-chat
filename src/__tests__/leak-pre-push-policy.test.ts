@@ -98,11 +98,23 @@ const remoteAt = (f: Fixture, ref: string): string =>
 const REFUSED = /push refused by the no-rewrite push policy/
 
 /** Each route runs once on a fresh fixture; the origin must be as it was before. */
-const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
-  ['git push origin --delete feat/x', f => run(f, ['push', 'origin', '--delete', 'feat/x'])],
-  ['dashed git-push origin --delete feat/x', f => run(f, ['origin', '--delete', 'feat/x'], dashedPush())],
+type Route = [string, RegExp, (f: Fixture) => { code: number; stderr: string }]
+
+const DELETES = /: it deletes refs\/heads\/feat\/x;/
+const MIRROR = /: remote origin is a mirror/
+const MAIN = /: it updates refs\/heads\/main;/
+const NOT_FF = /: refs\/heads\/feat\/x is not a fast-forward/
+
+const ROUTES: Route[] = [
+  ['git push origin --delete feat/x', DELETES, f => run(f, ['push', 'origin', '--delete', 'feat/x'])],
+  [
+    'dashed git-push origin --delete feat/x',
+    DELETES,
+    f => run(f, ['origin', '--delete', 'feat/x'], dashedPush()),
+  ],
   [
     'git -c remote.origin.mirror=true push origin, which would prune feat/x',
+    MIRROR,
     f => {
       dropFeatX(f)
       return run(f, ['-c', 'remote.origin.mirror=true', 'push', 'origin'])
@@ -110,6 +122,7 @@ const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
   ],
   [
     'git -c include.path=<file setting remote.origin.mirror> push origin',
+    MIRROR,
     f => {
       dropFeatX(f)
       return run(f, [
@@ -122,6 +135,7 @@ const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
   ],
   [
     'git config remote.origin.mirror true, then git push origin',
+    MIRROR,
     f => {
       dropFeatX(f)
       git(f.work, 'config', 'remote.origin.mirror', 'true')
@@ -130,10 +144,12 @@ const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
   ],
   [
     'git -c remote.origin.push=+HEAD:refs/heads/main push origin',
+    MAIN,
     f => run(f, ['-c', 'remote.origin.push=+HEAD:refs/heads/main', 'push', 'origin']),
   ],
   [
     'git -c include.path=<file setting remote.origin.push to main> push origin',
+    MAIN,
     f => {
       const file = included(f, '[remote "origin"]\n\tpush = +refs/heads/feat/x:refs/heads/main\n')
       return run(f, ['-c', `include.path=${file}`, 'push', 'origin'])
@@ -141,6 +157,7 @@ const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
   ],
   [
     'git -c push.default=matching push origin, with main ahead',
+    MAIN,
     f => {
       commit(f.work, 'main', 'ahead.md')
       return run(f, ['-c', 'push.default=matching', 'push', 'origin'])
@@ -148,6 +165,7 @@ const ROUTES: [string, (f: Fixture) => { code: number; stderr: string }][] = [
   ],
   [
     'a forced non-fast-forward of feat/x',
+    NOT_FF,
     f => {
       git(f.work, 'reset', '-q', '--hard', 'main')
       commit(f.work, 'feat/x', 'rewritten.md')
@@ -174,13 +192,14 @@ function dashedPush(): string {
 }
 
 describe('pre-push no-rewrite policy against real git (CC-1633)', () => {
-  it.each(ROUTES)('refuses %s and leaves the origin as it was', (_name, route) => {
+  it.each(ROUTES)('refuses %s and leaves the origin as it was', (_name, why, route) => {
     const f = fixture()
     const before = ['refs/heads/main', 'refs/heads/feat/x'].map(ref => remoteAt(f, ref))
 
     const result = route(f)
 
     expect(result.stderr).toMatch(REFUSED)
+    expect(result.stderr).toMatch(why)
     expect(result.code).not.toBe(0)
     expect(['refs/heads/main', 'refs/heads/feat/x'].map(ref => remoteAt(f, ref))).toEqual(before)
   })
