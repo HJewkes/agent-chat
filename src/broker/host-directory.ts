@@ -45,6 +45,8 @@ interface Connected<K> {
   key: K
   entry: LauncherEntry
   send: (frame: HostRequest) => void
+  /** CC-1331: kept off `LauncherEntry`, which goes over the wire in `hosts_result`. */
+  proved: boolean
 }
 
 interface Outstanding<K> {
@@ -67,15 +69,17 @@ export class HostDirectory<K = unknown> {
    * machine is refused while the holder's connection is open, so it cannot take over the
    * probes and launches meant for the real one; a restarted launcher's old entry has already
    * gone with its connection. The holder may hello again, which replaces its own entry.
+   * `proved` is the broker's own verdict on this hello's key proof (CC-1331).
    */
-  hello(key: K, hello: LauncherHello, send: (frame: HostRequest) => void): HostAnswer {
+  hello(key: K, hello: LauncherHello, send: (frame: HostRequest) => void, proved: boolean): HostAnswer {
     const holder = this.find(hello.host)
     if (holder !== undefined && holder.key !== key)
       return { ok: false, reason: `a launcher for ${holder.entry.host} is already connected` }
     const current = this.hostOf(key)
     if (current !== undefined && !same(current, hello.host))
       return { ok: false, reason: `this connection is already the launcher for ${current}` }
-    this.byHost.set(hello.host.toLowerCase(), { key, entry: { ...hello, connectedAt: this.now() }, send })
+    const entry = { ...hello, connectedAt: this.now() }
+    this.byHost.set(hello.host.toLowerCase(), { key, entry, send, proved })
     logEvent('host_launcher_connected', { host: hello.host, platform: hello.platform })
     return { ok: true }
   }
@@ -120,7 +124,11 @@ export class HostDirectory<K = unknown> {
   }
 
   launchers(): ConnectedLauncher[] {
-    return this.list().map(({ host, platform }) => ({ host, platform }))
+    return [...this.byHost.values()].map(({ entry: { host, platform }, proved }) => ({
+      host,
+      platform,
+      proved,
+    }))
   }
 
   surfacesOn(host: string): readonly SurfaceName[] {
@@ -152,10 +160,16 @@ export class HostDirectory<K = unknown> {
     return true
   }
 
+  /**
+   * CC-1331: routing checked `proved` on a snapshot, but each frame looks the host up again, so a
+   * launcher that took the machine since then is refused here unless it proved its key too.
+   */
   private ask(host: string, frame: (id: string) => HostRequest, timeoutMs: number): Promise<HostAnswer> {
     const connected = this.find(host)
     if (connected === undefined)
       return Promise.resolve({ ok: false, reason: `no launcher connected on ${host}` })
+    if (!connected.proved)
+      return Promise.resolve({ ok: false, reason: `the launcher on ${host} has not proved its host key` })
     const id = randomUUID()
     return new Promise(resolve => {
       const timer = setTimeout(

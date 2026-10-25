@@ -522,7 +522,7 @@ describe('the broker-side checks of a host resume', () => {
   })
 
   it("routes the broker's own host here and an alias to its launcher, case-insensitively", () => {
-    const launchers = [{ host: MAC, platform: 'darwin' as const }]
+    const launchers = [{ host: MAC, platform: 'darwin' as const, proved: true }]
     const input = { brokerHost: 'linux-box', launchers, aliases: { mac: MAC } }
     expect(resumeRouteFor({ ...input, host: 'LINUX-BOX' })).toEqual({ site: 'broker' })
     expect(resumeRouteFor({ ...input, host: 'Mac' })).toEqual({

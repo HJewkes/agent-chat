@@ -75,11 +75,71 @@ describe('teleport destination', () => {
   })
 
   it('routes to a connected launcher with its reported platform', () => {
-    const launchers = [{ host: MAC, platform: 'darwin' as const }]
+    const launchers = [{ host: MAC, platform: 'darwin' as const, proved: true }]
 
     expect(resolveDestination(fromMac({ callerHost: BROKER, to: 'mac', launchers }))).toEqual({
       ok: true,
       destination: { site: 'launcher', host: MAC, platform: 'darwin' },
+    })
+  })
+})
+
+/** CC-1331: a launcher is chosen only on a configured machine whose hello proved its host key. */
+describe('teleport destination on a launcher', () => {
+  const ATTIC = 'attic-a.example'
+  const fromBroker = (proved: boolean, aliases: Record<string, string>): DestinationInput => ({
+    to: ATTIC,
+    callerHost: BROKER,
+    brokerHost: BROKER,
+    launchers: [{ host: ATTIC, platform: 'linux', proved }],
+    aliases,
+  })
+
+  it.each([
+    [true, { attic: ATTIC }, true],
+    [false, { attic: ATTIC }, false],
+    [true, {}, false],
+    [false, {}, false],
+  ])('proved %s with aliases %j routes to the launcher: %s', (proved, aliases, routed) => {
+    const result = resolveDestination(fromBroker(proved, aliases))
+
+    expect(result.ok && result.destination.site === 'launcher').toBe(routed)
+  })
+
+  it('never chooses a keyless launcher for an unconfigured host, even named by raw hostname', () => {
+    expect(resolveDestination(fromBroker(false, {}))).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/^attic-a\.example is not one of the configured machines/),
+    })
+  })
+
+  it('refuses an unconfigured host whose launcher proved its key, naming machines', () => {
+    expect(resolveDestination(fromBroker(true, {}))).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('is not one of the configured machines'),
+    })
+  })
+
+  it('refuses a configured machine whose launcher has not proved its key, naming which', () => {
+    expect(resolveDestination(fromBroker(false, { attic: ATTIC }))).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/^the launcher on attic-a\.example has not proved its host key/),
+    })
+  })
+
+  it('still resolves a raw hostname equal to the broker host with no aliases', () => {
+    expect(resolveDestination({ ...fromBroker(false, {}), to: BROKER, callerHost: MAC })).toEqual({
+      ok: true,
+      destination: { site: 'broker', host: BROKER },
+    })
+  })
+
+  it('leaves an unproved or unconfigured launcher out of the known machines', () => {
+    const input = { ...fromBroker(false, {}), to: 'nowhere' }
+
+    expect(resolveDestination(input)).toEqual({
+      ok: false,
+      reason: `unknown machine "nowhere"; known machines: ${BROKER}`,
     })
   })
 })
