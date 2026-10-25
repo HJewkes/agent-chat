@@ -197,7 +197,7 @@ describe('a seat started by another coordinator', () => {
     )
     sup.close()
     start()
-    const launcher = await launched('weak-coord', 'peer')
+    const launcher = await launched('launcher-a', 'peer')
 
     const outcome = await spawn(SEAT, 'opus-coordinator', launcher)
 
