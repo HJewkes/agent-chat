@@ -17,6 +17,9 @@ const ctx = (): GuardContext => ({
 // The quote split hides `git` from the raw-line prefilter, so only the parsed path can deny.
 const HIDDEN_PUSH = "; true; g''it push --no-verify origin x"
 const BIG = 1e6
+// The quadratic probe took 12-26 s here; linear runs take 1-3 s on a loaded CI runner, so these budgets leave margin both ways.
+const DENY_BUDGET_MS = 8000
+const PARSE_BUDGET_MS = 4000
 
 const timed = <T>(run: () => T): { value: T; ms: number } => {
   const start = performance.now()
@@ -25,22 +28,22 @@ const timed = <T>(run: () => T): { value: T; ms: number } => {
 }
 
 describe('carried redirects over attacker-sized input', () => {
-  it('denies a hidden push after 1M carried redirects in under 2 s', () => {
+  it('denies a hidden push after 1M carried redirects in under 8 s', () => {
     const command = `${'>a '.repeat(BIG)}${HIDDEN_PUSH}`
     const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
 
     const { value, ms } = timed(() => pretoolDecision(input, ctx))
 
     expect(value).toContain(REASONS.noVerify)
-    expect(ms).toBeLessThan(2000)
+    expect(ms).toBeLessThan(DENY_BUDGET_MS)
   })
 
   it.each(['>a ', '<a ', '&>a ', '2>a ', '>>a ', '<<<a ', '<1-9> '])(
-    'parses 1M %j units in under 1 s',
+    'parses 1M %j units in under 4 s',
     unit => {
       const { value, ms } = timed(() => parseShell(`${unit.repeat(BIG)}${HIDDEN_PUSH}`))
 
-      expect(ms).toBeLessThan(1000)
+      expect(ms).toBeLessThan(PARSE_BUDGET_MS)
       expect(unmark(value.at(-1)?.marked[0] ?? '')).toBe('git')
     },
   )
