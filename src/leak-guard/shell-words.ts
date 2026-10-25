@@ -585,9 +585,12 @@ class ShellLexer {
     this.noteStrayCase(word, quoted, stray)
   }
 
-  /** Where a bare `)` can end something: a nested lexer's `$( )`, `<( )` or backticks, or a subshell. */
+  /**
+   * Where a bare `)` can end something: a nested lexer's `$( )`, `<( )` or backticks, or a subshell.
+   * A funsub closes at a `}`, and one a `)` ends early is unreadable already; see `funsub`.
+   */
   private closable(): boolean {
-    return this.nested || this.depth > 0
+    return (this.nested && !this.closesOnBrace) || this.depth > 0
   }
 
   /**
@@ -691,7 +694,7 @@ class ShellLexer {
   private operator(c: string): void {
     const ahead = this.ahead(3)
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
-    // An `esac` touching the operator closes its case before the operator reads the cases.
+    // An `esac` touching the operator is taken first, so it cannot clear the pattern the operator makes due.
     this.endWord()
     // zsh's `;|` ends a pattern's commands; bash reads `;` and `|`, so the two shells disagree.
     if (op === ';|' && this.closable()) this.budget.expansion = 'unreadable'
