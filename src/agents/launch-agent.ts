@@ -10,7 +10,8 @@ import {
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
 import { gitMirrorDirFor } from '../leak-guard/git-mirror.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
-import { agentDir, distDir, ghShimDir, home } from '../paths.js'
+import { removeGhWriteKey, writeGhWriteKey } from '../gh-shim/write-key.js'
+import { agentDir, distDir, ghShimDir, ghWriteKeysDir, home } from '../paths.js'
 import { pinGitProtocols } from '../git.js'
 import { agentEnv, type AgentEnvOptions } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
@@ -52,7 +53,12 @@ function withGhShim(env: Record<string, string>): Record<string, string> {
   try {
     return withShimOnPath(
       env,
-      writeGhShim(ghShimDir(), process.execPath, path.join(distDir(), 'gh-shim', 'main.js')),
+      writeGhShim(
+        ghShimDir(),
+        process.execPath,
+        path.join(distDir(), 'gh-shim', 'main.js'),
+        ghWriteKeysDir(),
+      ),
     )
   } catch (err) {
     process.stderr.write(`agent-chat run-agent: gh shim not installed: ${(err as Error).message}\n`)
@@ -153,20 +159,38 @@ export function runAgentVerb(agentId: string): void {
   const options = launchOptions(agentId, name, { root })
   const plan = withScratchAddDir(shimmed, reviewerScratchDir({ ...options.baseEnv, ...shimmed.env }))
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
+  mintGhWriteKey(agentId)
   process.on('exit', launchExitHook(agentId, name, root))
   runAgent(plan, options)
+}
+
+/**
+ * CC-1644: minted here, after the held-launch check and from fresh dist, never in the broker's
+ * writeLaunchFiles, so a new key format needs no broker restart. A failure costs gh-write its ticket.
+ */
+function mintGhWriteKey(agentId: string): void {
+  try {
+    writeGhWriteKey(agentId)
+  } catch (err) {
+    process.stderr.write(`agent-chat run-agent: gh-write key not written: ${(err as Error).message}\n`)
+  }
 }
 
 export interface LaunchExitSteps {
   reap: typeof reapOwnLaunch
   removeTmp: typeof removeOwnTmpDir
+  removeKey: typeof removeGhWriteKey
 }
 
-const realExitSteps: LaunchExitSteps = { reap: reapOwnLaunch, removeTmp: removeOwnTmpDir }
+const realExitSteps: LaunchExitSteps = {
+  reap: reapOwnLaunch,
+  removeTmp: removeOwnTmpDir,
+  removeKey: removeGhWriteKey,
+}
 
 /**
- * Reaps the launch's orphans, then removes its TMPDIR from the same root it was made under, and
- * its Claude Code harness dir (CC-1266).
+ * Reaps the launch's orphans and removes its gh-write key, then removes its TMPDIR from the same
+ * root it was made under, and its Claude Code harness dir (CC-1266).
  */
 export function launchExitHook(
   agentId: string,
@@ -177,6 +201,7 @@ export function launchExitHook(
 ): () => void {
   return () => {
     steps.reap(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
+    steps.removeKey(agentId)
     if (name === undefined) return
     const deps = realExitTmpDeps(logEvent)
     steps.removeTmp(name, agentId, process.pid, deps, root)

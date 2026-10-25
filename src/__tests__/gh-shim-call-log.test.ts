@@ -51,7 +51,7 @@ beforeEach(() => {
   const fakeDir = path.join(dir, 'fake')
   fs.mkdirSync(fakeDir)
   fs.writeFileSync(path.join(fakeDir, 'gh'), FAKE_GH, { mode: 0o755 })
-  const shimDir = writeGhShim(path.join(dir, 'shim'), process.execPath, MAIN)
+  const shimDir = writeGhShim(path.join(dir, 'shim'), process.execPath, MAIN, path.join(dir, 'keys'))
   env = {
     PATH: [shimDir, fakeDir, '/usr/bin', '/bin'].join(':'),
     FAKE_GH_FIXTURES: path.join(dir, 'fixtures.json'),

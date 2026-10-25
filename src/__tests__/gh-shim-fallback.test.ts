@@ -30,7 +30,12 @@ beforeEach(() => {
   fakeDir = path.join(dir, 'fake')
   fs.mkdirSync(fakeDir)
   fs.writeFileSync(path.join(fakeDir, 'gh'), FAKE_GH, { mode: 0o755 })
-  shimDir = writeGhShim(path.join(dir, 'shim'), process.execPath, path.join(dir, 'gone', 'main.js'))
+  shimDir = writeGhShim(
+    path.join(dir, 'shim'),
+    process.execPath,
+    path.join(dir, 'gone', 'main.js'),
+    path.join(dir, 'keys'),
+  )
   logFile = path.join(dir, 'gh.log')
 })
 

@@ -6,7 +6,13 @@ const HOME = '/home/example'
 describe('the harness dir at run-agent exit (CC-1266)', () => {
   it('removes the scratch dir and the harness dir of the launch', () => {
     const removeTmp = vi.fn()
-    const hook = launchExitHook('a1', 'worker', '/tmp', { reap: vi.fn(), removeTmp }, HOME)
+    const hook = launchExitHook(
+      'a1',
+      'worker',
+      '/tmp',
+      { reap: vi.fn(), removeTmp, removeKey: vi.fn() },
+      HOME,
+    )
 
     hook()
 
@@ -19,7 +25,7 @@ describe('the harness dir at run-agent exit (CC-1266)', () => {
   it('removes neither when the launch has no name', () => {
     const removeTmp = vi.fn()
     const reap = vi.fn()
-    const hook = launchExitHook('a1', undefined, '/tmp', { reap, removeTmp }, HOME)
+    const hook = launchExitHook('a1', undefined, '/tmp', { reap, removeTmp, removeKey: vi.fn() }, HOME)
 
     hook()
 
