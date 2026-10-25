@@ -39,6 +39,7 @@ describe('git config writes that persist a program value a later git runs (TP-42
     'git config core.sshCommand "$(x)"',
     'git config rename-section user core',
   ])('denies configProgramWrite for %s', command => {
+    expect(checkCommand(command, ctx)).toBeDefined()
     expect(checkCommand(command, ctx)).toBe(REASONS.configProgramWrite)
   })
 
