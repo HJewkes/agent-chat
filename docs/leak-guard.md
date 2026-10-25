@@ -986,7 +986,8 @@ A `{NAME}>file` (or `{NAME[sub]}>file`) redirect writes the descriptor it opens 
 zsh does so before an external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a
 pager named by a number. The lexer records that `NAME` for any unquoted `{NAME}` word before a
 redirect operator, and it counts as any other write: a program var denies as `programEnv`, a
-search path as `searchPathEnv` and a shell startup variable as `shellStartupEnv` (CC-1630).
+search path as `searchPathEnv`, a shell startup variable as `shellStartupEnv`, and a
+`GIT_CONFIG_*` name as `gitConfigEnv` on any line, as a `GIT_CONFIG_*=` prefix does (CC-1630).
 `GIT_DIR` is no program var, so `exec {GIT_DIR}>/dev/null; git status` is allowed, as
 `GIT_DIR=x; git status` is.
 
