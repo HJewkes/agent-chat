@@ -877,6 +877,15 @@ git subcommand too, not only before one that runs a hook. So `git -c "$(cat k)" 
 is denied: the two files may set `core.pager` to a push and `core.hooksPath` for it. This replaces
 the TP-630 allowance for `git -c "$X" log`.
 
+A `git config` write to one of these keys persists the value for a later git, whose config the
+guard does not read, so the write is checked the same way (TP-4240). The written value is checked
+like a `-c` value: `git config core.pager '$X'`, ``git config core.editor '`x`'`` and
+`git config alias.p '!$X'` deny for the expansion, and a value the guard cannot read, as in
+`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename that moves
+keys from an inert section into one git may run, as in `git config rename-section user core`,
+denies too, since those keys were never checked. `git config user.name "$N"`,
+`git config core.pager less` and `git config alias.st 'status -s'` stay allowed.
+
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
 `protocol.allow=always`. A `-c`, `--config-env` or clone config word that sets either to anything
 but `never`, or to a value the guard cannot read, denies after the payloads below are checked,

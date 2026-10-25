@@ -106,9 +106,37 @@ export const listsExt = (value: string): boolean =>
 function scriptOf(word: ConfigWord): string | null | undefined {
   const pair = keyValue(word)
   if (pair === undefined) return undefined
-  if (!runsProgram(pair.key) || pair.value === null) return null
-  // A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
-  return pair.value?.startsWith('!') ? pair.value.slice(1) : pair.value
+  if (pair.value === null) return null
+  return pair.value === undefined ? (runsProgram(pair.key) ? undefined : null) : programScript(pair.key, pair.value)
+}
+
+/** The script a key's value runs: null when git runs none. */
+// A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
+const programScript = (key: string, value: string): string | null =>
+  !runsProgram(key) ? null : value.startsWith('!') ? value.slice(1) : value
+
+/** Whether a rename moves a section whose keys were never checked as programs into one git may run (TP-4240). */
+function renamesInertIntoProgram(names: readonly (string | undefined)[]): boolean {
+  const [from, to] = names
+  if (from === undefined || to === undefined) return true
+  const section = (name: string): string => (name.split('.')[0] as string).toLowerCase()
+  return INERT_SECTIONS.has(section(from)) && !INERT_SECTIONS.has(section(to))
+}
+
+/**
+ * The script a `git config` write, given its words after `config`, persists for a later git to run
+ * (TP-4240): null for none, undefined when the guard cannot read the key or the value of a key git
+ * may run, or a rename lands keys it never checked in a section git may run.
+ */
+export function configWriteScript(args: SubArgs): string | null | undefined {
+  const call = readConfigCall(args)
+  if (call.mode === 'option') return undefined
+  if (call.mode === 'rename') return renamesInertIntoProgram(call.names) ? undefined : null
+  if (call.mode === 'other') return null
+  const { key, value } = call
+  if (key === undefined) return undefined
+  if (value === undefined) return runsProgram(key) ? undefined : null
+  return programScript(key, value)
 }
 
 /** A config word's key and value: the value undefined when the guard cannot read it, null when the word sets none. */
