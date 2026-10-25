@@ -107,7 +107,10 @@ describe('startup files', () => {
     const base = startupSet(home, zdot, {})
     fs.writeFileSync(path.join(zdot, '.zshenv'), 'x\n')
 
-    expect(compare(base, startupSet(home, zdot, {}))).toEqual({ file: path.join(zdot, '.zshenv'), field: 'state' })
+    expect(compare(base, startupSet(home, zdot, {}))).toEqual({
+      file: path.join(zdot, '.zshenv'),
+      field: 'state',
+    })
   })
 })
 

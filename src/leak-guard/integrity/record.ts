@@ -89,7 +89,8 @@ export function recordOf(file: string, kind: FileKind, io: RecordFs = nodeFs): F
   const record: FileRecord = { kind, state: 'present', lstat: statRecord(lstat) }
   const stat = io.stat(file)
   if (stat !== undefined) record.stat = statRecord(stat)
-  if (lstat.isSymbolicLink()) record.link = io.readlink(file)
+  const link = lstat.isSymbolicLink() ? io.readlink(file) : undefined
+  if (link !== undefined) record.link = link
   const sha256 = io.hash(file)
   if (sha256 !== undefined) record.sha256 = sha256
   return record
@@ -119,7 +120,12 @@ const absolute = (value: string | undefined): string | undefined =>
  * The startup files in HOME and ZDOTDIR (absent ones recorded as absent), plus the absolute values of
  * BASH_ENV and ENV.
  */
-export function startupSet(home: string, zdotdir: string | undefined, env: Env, io: RecordFs = nodeFs): Records {
+export function startupSet(
+  home: string,
+  zdotdir: string | undefined,
+  env: Env,
+  io: RecordFs = nodeFs,
+): Records {
   const dirs = new Set([home])
   const zdir = absolute(zdotdir)
   if (zdir !== undefined) dirs.add(zdir)
