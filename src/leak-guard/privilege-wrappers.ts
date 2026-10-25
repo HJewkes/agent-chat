@@ -1,13 +1,14 @@
 /**
  * Option parsers for the privilege wrappers other than sudo: doas, run0 and systemd-run (one
- * binary), pkexec, su and su-rs, runuser, setpriv and machinectl shell (CC-1218).
+ * binary), pkexec, su and su-rs, runuser, setpriv and machinectl shell (CC-1218), sg and capsh (CC-1602).
  * Each returns where the command it runs starts, or the words of the shell it runs instead, so
  * the guard can read that command. An option a table here does not know, an option with no value,
  * and any option word or value the shell expands give undefined: the caller denies rather than
  * guess where the command starts (an empty unquoted `-u $U` shifts every word after it).
  * Tables: run0 and systemd-run (systemd 259), su, runuser and setpriv (util-linux) and su-rs
  * (sudo-rs) from `--help`, pkexec (polkit 127) from its usage, doas from the OpenBSD and opendoas
- * getopt string `+a:C:Lnsu:`, and machinectl from systemd's docs (doas and machinectl UNVERIFIED on this box).
+ * getopt string `+a:C:Lnsu:`, machinectl from systemd's docs (doas and machinectl UNVERIFIED on this box),
+ * sg (util-linux 2.41) from `--help` and runs, and capsh (libcap 2) from `--help`.
  */
 
 import { LIVE } from './shell-words.js'
@@ -218,6 +219,39 @@ const MACHINECTL: OptionTable = {
   read: readMachinectl,
 }
 
+const SG: OptionTable = {
+  shortValue: 'c',
+  shortFlag: 'hV',
+  shortShell: '',
+  longValue: new Set(),
+  longFlag: new Set(['--help', '--version']),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: true,
+  read: readSg,
+}
+
+/** capsh options are whole words, a value glued as `--name=value`; `--mode` comes in both forms and readCapsh reads `--shell=`. */
+const CAPSH: OptionTable = {
+  shortValue: '',
+  shortFlag: '',
+  shortShell: '',
+  longValue: new Set([
+    ...['--addamb', '--cap-uid', '--caps', '--chroot', '--decode', '--delamb', '--drop', '--explain'],
+    ...['--forkfor', '--gid', '--groups', '--has-a', '--has-b', '--has-i', '--has-p', '--iab', '--inh'],
+    ...['--inmode', '--is-uid', '--is-gid', '--keep', '--killit', '--mode', '--secbits'],
+    ...['--suggest', '--supports', '--uid', '--user'],
+  ]),
+  longFlag: new Set([
+    ...['--current', '--has-ambient', '--has-no-new-privs', '--help', '-h', '--license', '--mode'],
+    ...['--modes', '--no-new-privs', '--noamb', '--noenv', '--print', '--quiet', '--strict'],
+  ]),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: false,
+  read: readCapsh,
+}
+
 /** Every name of each user-switching binary, sudo's aside. */
 export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
   ['doas', DOAS],
@@ -229,6 +263,8 @@ export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
   ['runuser', RUNUSER],
   ['setpriv', SETPRIV],
   ['machinectl', MACHINECTL],
+  ['sg', SG],
+  ['capsh', CAPSH],
 ])
 
 export const PRIVILEGE_WRAPPERS: ReadonlySet<string> = new Set(PRIVILEGE_OPTIONS.keys())
@@ -427,4 +463,58 @@ function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): 
   if (shell !== undefined && !SHELLS.has(shell.split('/').pop() as string)) return undefined
   const command = values.get('c')
   return { shell: command === undefined ? ['sh', ...args] : ['sh', '-c', command, ...args] }
+}
+
+/**
+ * sg (util-linux and shadow) runs one command in the user's shell: the -c value, or the operand after
+ * the group. util-linux permutes and ignores later words; shadow does not permute, and what it does
+ * with later words is UNVERIFIED. So a second candidate denies, as does any word the shell expands.
+ */
+function readSg(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  if (words.slice(i).some(word => word.includes(LIVE))) return undefined
+  const commands: string[] = []
+  const operands: string[] = []
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') {
+      operands.push(...words.slice(i + 1))
+      break
+    }
+    if (!a.startsWith('-') || a === '-') {
+      // shadow's `-` asks for a login shell.
+      if (a !== '-') operands.push(a)
+      continue
+    }
+    const option = readOption(t, words, i)
+    if (option === undefined) return undefined
+    if (option.value !== undefined) commands.push(option.value)
+    i += option.width
+  }
+  commands.push(...operands.slice(1))
+  if (commands.length > 1) return undefined
+  return { shell: commands.length === 0 ? ['sh'] : ['sh', '-c', commands[0] as string] }
+}
+
+/**
+ * capsh acts on each word in turn and exits, unless `--` or `-+` hands the words after it to bash
+ * or the --shell= program. `==` and `=+` re-run capsh on the words after them, with bash again.
+ */
+function readCapsh(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  let shell = 'bash'
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a.includes(LIVE)) return undefined
+    if (a === '--' || a === '-+') return { shell: [shell, ...words.slice(i + 1)] }
+    if (a === '==' || a === '=+') shell = 'bash'
+    else if (a.startsWith('--shell=')) {
+      shell = a.slice('--shell='.length)
+      if (!SHELLS.has(shell.split('/').pop() as string)) return undefined
+    } else if (!capshOption(t, a)) return undefined
+  }
+  return { at: words.length }
+}
+
+function capshOption(t: OptionTable, word: string): boolean {
+  const end = word.indexOf('=')
+  return end < 0 ? t.longFlag.has(word) : t.longValue.has(word.slice(0, end))
 }

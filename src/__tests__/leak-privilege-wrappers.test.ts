@@ -387,6 +387,87 @@ describe('su-rs', () => {
   )
 })
 
+describe('sg', () => {
+  it.each([
+    [['sg', 'wheel', '-c', 'git push']],
+    [['sg', 'wheel', 'git push']],
+    [['sg', '-c', 'git push', 'wheel']],
+    [['sg', '-', 'wheel', '-c', 'git push']],
+    [['sg', 'wheel', '-cgit push']],
+    [['sg', 'wheel', '--', 'git push']],
+  ])('runs the one command of %j in a shell', words => {
+    expect(run(...words)).toEqual({ shell: ['sh', '-c', 'git push'] })
+  })
+
+  it('runs a shell on stdin with no command', () => {
+    expect(run('sg', 'wheel')).toEqual({ shell: ['sh'] })
+  })
+
+  it.each([
+    [['sg', 'wheel', 'ls', '-c', 'git push']],
+    [['sg', 'wheel', 'ls', 'git push']],
+    [['sg', '-c', 'ls', '-c', 'git push', 'wheel']],
+    [['sg', '--', 'wheel', '-c', 'git push']],
+    [['sg', 'wheel', '-c']],
+    [['sg', '--frob', 'wheel', '-c', 'ls']],
+    [['sg', live('$G'), '-c', 'ls']],
+    [['sg', 'wheel', '-c', 'ls', live('$X')]],
+  ])('%j fails closed', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
+describe('capsh', () => {
+  it.each([
+    [
+      ['capsh', '--', '-c', 'git push'],
+      ['bash', '-c', 'git push'],
+    ],
+    [
+      ['capsh', '--user=bob', '--addamb=cap_net_raw', '--', '-c', 'x'],
+      ['bash', '-c', 'x'],
+    ],
+    [
+      ['capsh', '-+', '-c', 'x'],
+      ['bash', '-c', 'x'],
+    ],
+    [
+      ['capsh', '--shell=/bin/sh', '--', '-c', 'x'],
+      ['/bin/sh', '-c', 'x'],
+    ],
+    [
+      ['capsh', '--shell=/bin/sh', '==', '--', '-c', 'x'],
+      ['bash', '-c', 'x'],
+    ],
+    [
+      ['capsh', '--caps=cap_chown+ep', '=+', '--print', '--', '-c', 'x'],
+      ['bash', '-c', 'x'],
+    ],
+    [['capsh', '--'], ['bash']],
+  ])('hands the words of %j to %j', (words, shell) => {
+    expect(run(...words)).toEqual({ shell })
+  })
+
+  it.each([[['capsh', '--print']], [['capsh', '--mode']], [['capsh', '--mode=PURE1E', '-h']], [['capsh']]])(
+    'runs no command for %j',
+    words => {
+      expect(run(...words)).toEqual({ at: words.length })
+    },
+  )
+
+  it.each([
+    [['capsh', '--frob', '--', '-c', 'x']],
+    [['capsh', '--uid', '0', '--', '-c', 'x']],
+    [['capsh', '--print=1']],
+    [['capsh', '--shell=/usr/bin/git', '--', 'push']],
+    [['capsh', '--shell=/usr/bin/python3', '--', '-c', 'x']],
+    [['capsh', `--user=${live('$U')}`, '--', '-c', 'x']],
+    [['capsh', '--', '-c', live('$CMD')]],
+  ])('%j fails closed', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
 describe('SUDO_NAMES', () => {
   it('names sudo, sudo-rs and sudo.ws', () => {
     expect([...SUDO_NAMES].sort()).toEqual(['sudo', 'sudo-rs', 'sudo.ws'])
