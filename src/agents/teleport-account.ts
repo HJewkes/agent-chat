@@ -45,6 +45,43 @@ export interface AccountMoves {
   move(move: TranscriptMove): TranscriptMoveResult
 }
 
+/** What a dry run reads of the session, as `Teleport.accountMove` reads it. */
+export interface AccountMoveSubject {
+  name: string
+  /** True when the session reports the broker's own host: a transcript moves only there. */
+  onBrokerHost: boolean
+  configDir: string | undefined
+  cwd: string
+  sessionId: string
+}
+
+/**
+ * CC-1592: every refusal `Teleport.accountMove` reads, through the same seam, with nothing recorded
+ * or ended. A dry run answers from this alone, so it refuses exactly as the move's own check does.
+ */
+export function accountMoveRefusal(
+  accounts: AccountMoves,
+  subject: AccountMoveSubject,
+  account: AccountMoveRequest,
+): string | undefined {
+  const kept = `${subject.name} was not ended.`
+  if (!subject.onBrokerHost) return `an account move runs only on the broker's host, and stays there. ${kept}`
+  const to = accounts.resolve(account.to)
+  if ('error' in to) return `${to.error}. ${kept}`
+  try {
+    const check = accounts.check({
+      from: sessionAccount(subject.configDir),
+      to,
+      cwd: subject.cwd,
+      sessionId: subject.sessionId,
+      ...(account.force === true ? { force: true } : {}),
+    })
+    return check.ok ? undefined : `${check.refusals.join('; ')}. ${kept}`
+  } catch (err) {
+    return `the move to ${account.to} could not be checked: ${(err as Error).message}. ${kept}`
+  }
+}
+
 /** The target pool's five_hour ceiling from the charter; a dir no pool names gets the hard limit. */
 function poolLimits(root: string, dir: string, home: string): { fiveHour?: number } {
   const charter = readText(path.join(root, 'charter.md'))
