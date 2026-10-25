@@ -760,7 +760,10 @@ describe('the descendant', () => {
   // Mutation caught: carrying `spawnedBy` subscriptions across a teleport again.
   it('does not carry a spawned-agents subscription, so the successor is not pushed its workers’ attaches', async () => {
     const agentId = await spawnAgent()
-    const legacy = { selector: { spawnedBy: 'self' as const }, kinds: ['agent_attached' as const, 'agent_exited' as const] }
+    const legacy = {
+      selector: { spawnedBy: 'self' as const },
+      kinds: ['agent_attached' as const, 'agent_exited' as const],
+    }
     const tagged = { selector: { tag: 'cc-20' }, kinds: ['registered' as const] }
 
     const result = await supervisor.teleport({
@@ -770,7 +773,13 @@ describe('the descendant', () => {
     await vi.advanceTimersByTimeAsync(0)
     const carried = JSON.parse(planFor(result.agentId as string).env.AGENT_CHAT_SUBSCRIPTIONS ?? '[]')
     const successor = fakeConn()
-    core.registry.register(successor, { name: 'seat', workingOn: 'w', cwd: workspace(), pid: 1, subscriptions: carried })
+    core.registry.register(successor, {
+      name: 'seat',
+      workingOn: 'w',
+      cwd: workspace(),
+      pid: 1,
+      subscriptions: carried,
+    })
     core.registry.recordSpawn(successor, 'worker')
 
     expect(carried).toEqual([tagged])
