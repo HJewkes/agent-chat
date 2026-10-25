@@ -2164,6 +2164,47 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   })
 
   it.each([
+    "git submodule foreach 'BASH_ENV=./f bash -c true'",
+    "git rebase -x 'BASH_ENV=./f bash -c true' main",
+    "git submodule foreach 'export BASH_ENV=./f; bash -c true'",
+    "git submodule foreach 'env BASH_ENV=./f bash -c true'",
+    "git submodule foreach 'ENV=./f sh -i'",
+    "git submodule foreach 'ZDOTDIR=. zsh -c true'",
+  ])('denies a startup variable in a shell git starts, which reaches git by itself (TP-4236): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellStartupEnv)
+  })
+
+  it.each([
+    "git submodule foreach 'bash --init-file ./f -c true'",
+    "git submodule foreach 'bash --rcfile ./f -i'",
+    "git submodule foreach 'bash -i'",
+    "git submodule foreach 'bash -ic true'",
+    "git submodule foreach 'bash -lc true'",
+    "git submodule foreach 'zsh -o interactive -c true'",
+    "git submodule foreach 'bash --login -c true'",
+    'git submodule foreach \'trap ". ./f" EXIT\'',
+  ])('denies a startup file or trap that sources a file in a shell git starts (TP-4236): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitShellFile)
+  })
+
+  it.each([
+    ['git submodule foreach \'trap "git push --no-verify" EXIT\'', REASONS.noVerify],
+    ['git submodule foreach \'trap "alias p=git" EXIT\'', REASONS.gitShellAlias],
+  ])('checks a trap action in a shell git starts as text that shell runs (TP-4236): %s', (command, reason) => {
+    expect(checkCommand(command, ctx())).toBe(reason)
+  })
+
+  it.each([
+    'git submodule foreach \'trap "echo done" EXIT; git status\'',
+    "git submodule foreach 'trap - EXIT'",
+    "git submodule foreach 'bash -e -c true'",
+    "bash -ic 'echo hi'; git status",
+    "trap 'echo hi' EXIT; git status",
+  ])('allows a plain trap or non-interactive shell git starts, and either at top level (TP-4236): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
     "git difftool -x '$X --no-verify' HEAD",
     "git difftool --extcmd='$X' HEAD",
     "git filter-branch --tree-filter '$X' HEAD",

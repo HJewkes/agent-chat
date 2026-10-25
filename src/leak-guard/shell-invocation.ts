@@ -35,7 +35,7 @@ export interface ShellCall {
  * What an option does to the script source: read stdin, run the operand, turn on history, end the
  * options, or hide the call where the shells a name may stand for read it differently.
  */
-type Effect = 'stdin' | 'command' | 'history' | 'end' | 'hidden'
+type Effect = 'stdin' | 'command' | 'history' | 'startup' | 'end' | 'hidden'
 
 /** A short letter: the option name it sets, and how its sign reads. */
 interface Letter {
@@ -81,18 +81,19 @@ const END = '-b'
 /**
  * One table for every shell, keyed by the zsh-normalised name. A shell that does not know a name
  * exits before it reads any script (`bash -o stdin`), so a name another shell owns fails closed.
- * `login` counts as history because the profile files it reads can run `set -o history`.
+ * `login` counts as history because the profile files it reads can run `set -o history`. `interactive`
+ * and `login` are `startup`: history, and a startup file the shell reads before its script.
  */
 const NAMES: Readonly<Record<string, Effect>> = {
   [COMMAND]: 'command',
   [END]: 'end',
   shinstdin: 'stdin',
   stdin: 'stdin',
-  interactive: 'history',
+  interactive: 'startup',
   history: 'history',
   histexpand: 'history',
   banghist: 'history',
-  login: 'history',
+  login: 'startup',
 }
 
 const COMMON_LETTERS: Readonly<Record<string, Letter>> = {
@@ -203,12 +204,18 @@ interface Options {
   ended: boolean
   /** The index of the last `--rcfile` or `--init-file` operand. */
   rcfile?: number
+  /** `-i`, `-l` or their long names: the shell reads a startup file before its script. */
+  startup: boolean
 }
 
 function apply(effect: Effect | undefined, opts: Options): void {
   if (effect === 'stdin') opts.stdin = true
   else if (effect === 'command') opts.command = true
   else if (effect === 'history') opts.history = true
+  else if (effect === 'startup') {
+    opts.history = true
+    opts.startup = true
+  }
   else if (effect === 'end') opts.ended = true
   else if (effect === 'hidden') opts.hidden = true
 }
@@ -261,6 +268,7 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
     stdin: false,
     history: false,
     ended: false,
+    startup: false,
   }
   let at = 0
   while (at < words.length && !opts.hidden && !opts.ended) {
@@ -289,6 +297,15 @@ export function readShellCall(
   const opts = readOptions(grammar, marked)
   const call = readScript(grammar, opts, marked, assigns)
   return opts.history && opts.rcfile !== undefined ? { ...call, rcfile: opts.rcfile } : call
+}
+
+/**
+ * Whether the shell may read a startup file before its script: `-i` or `-l` in any spelling, a
+ * `--rcfile` or `--init-file` operand, or options the walk cannot read.
+ */
+export function readsStartupFile(name: string, marked: readonly string[]): boolean {
+  const opts = readOptions(GRAMMARS[name] ?? UNOBSERVED, marked)
+  return opts.startup || opts.hidden || opts.rcfile !== undefined
 }
 
 function readScript(

@@ -20,7 +20,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
-import { aliasDefinitions } from './deferred-scripts.js'
+import { aliasDefinitions, trapActions } from './deferred-scripts.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
@@ -99,7 +99,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { observedShell, readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall, readsStartupFile } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -1346,13 +1346,24 @@ function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: 
  * In a shell git starts, a sourced or shell-run script file runs text the guard never reads, and an
  * alias turns a later command word into words it does not see (`alias p=git` then `p push`). git's
  * exec-path leaves the push shim off PATH there, so nothing catches either at run time (TP-4236, TP-4237).
+ * A shell's startup file counts as a script file, and a `trap` action is text the same shell runs later.
  */
-function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | undefined {
+function checkGitShellCommand(
+  { name, marked, assigns }: ShellRun,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
   if (name === 'source' || name === '.') return marked.length > 0 ? REASONS.gitShellFile : undefined
   if (SHELLS.has(name)) {
     const { from } = readShellCall(name, marked, assigns).script
-    return from === 'file' || from === 'hidden' ? REASONS.gitShellFile : undefined
+    const file = from === 'file' || from === 'hidden' || readsStartupFile(name, marked)
+    return file ? REASONS.gitShellFile : undefined
   }
+  if (name === 'trap')
+    return firstReason(trapActions(['trap', ...marked]), action =>
+      action.includes(LIVE) ? REASONS.shellExpansion : checkShellText(unmark(action), ctx, scope, depth),
+    )
   return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0
     ? REASONS.gitShellAlias
     : undefined
@@ -2421,7 +2432,9 @@ const wordMayBeGit = (word: string): boolean =>
 const withEnv = (word: string, env: Env): string =>
   word.replace(REFERENCE, ref => env[ref.replace(/[${}]/g, '')] ?? '')
 
+/** A shell git starts reaches git whatever its text says: git's exec-path is first on its PATH (TP-4236). */
 function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
+  if (scope.gitShell) return true
   scope.hiddenStarts.reachesGit ??= mayReachGit(scope.line, ctx.env)
   return scope.hiddenStarts.reachesGit
 }
@@ -2750,7 +2763,7 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
-  const nested = at.gitShell && checkGitShellCommand({ name, marked, assigns: unwrapped.assigns })
+  const nested = at.gitShell && checkGitShellCommand({ name, marked, assigns: unwrapped.assigns }, ctx, at, depth)
   if (nested) return nested
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
@@ -3351,7 +3364,8 @@ function checkProgramEnvLine(
   if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
   // A nested script cannot show the git its outer line runs, so it is judged by that line (TP-2499).
-  const reaches = mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
+  const reaches =
+    scope.gitShell === true || mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
   if (!reaches) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
