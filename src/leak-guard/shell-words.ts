@@ -89,11 +89,12 @@ const OPERATORS = new Set([';', '&', '|'])
 // Each also takes zsh's clobbering `|` or `!` after it; see `redirectKind`.
 const WRITE_OPERATORS = new Set(['>', '>>', '<>', '&>', '&>>'])
 const DUPLICATE_OPERATORS = new Set(['>&', '>>&'])
-// printf -v, test -v, `[[`, read and the declare family evaluate a NAME[subscript] operand as arithmetic.
-// `]]` ends the last command of a `[[` test an `&&` or `||` cut.
-const SUBSCRIPT_EVALUATORS = new Set(
-  'printf print test [ [[ ]] read vared let unset declare typeset local export readonly integer'.split(' '),
-)
+// Commands known to leave a NAME[subscript] operand as text; every other command may evaluate one.
+const INERT_OPERANDS = new Set(['echo', 'git', 'gh'])
+// These assign to a NAME[subscript] operand only when given an option, such as printf's or print's -v.
+const INERT_WITHOUT_OPTIONS = new Set(['printf', 'print'])
+// A function or alias may give an inert name another meaning.
+const REDEFINES = /\b(?:alias|function)\b|\(\s*\)/
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -114,8 +115,13 @@ interface Limits {
   capped: boolean
 }
 
-function newBudget(): Budget {
-  return { forks: MAX_FORKS, expansion: undefined, limits: { level: 0, capped: false } }
+function newBudget(src: string): Budget {
+  return {
+    forks: MAX_FORKS,
+    expansion: undefined,
+    limits: { level: 0, capped: false },
+    redefines: REDEFINES.test(src),
+  }
 }
 
 /**
@@ -128,6 +134,8 @@ interface Budget {
   limits: Limits
   /** Only finding where a substitution ends, so arithmetic is not looked for. */
   probe?: boolean
+  /** The line may define a function or alias, so no command name is known to be inert. */
+  redefines: boolean
 }
 
 /**
@@ -451,7 +459,7 @@ class ShellLexer {
     private readonly src: string,
     start = 0,
     private readonly nested = false,
-    private readonly budget: Budget = newBudget(),
+    private readonly budget: Budget = newBudget(src),
     private arith?: Arith,
   ) {
     this.pos = start
@@ -1341,14 +1349,15 @@ class ShellLexer {
   }
 
   /**
-   * A NAME[subscript] operand of printf -v, test -v, `[[`, read, declare and the like is evaluated as
-   * arithmetic, which runs a `$(...)` or backtick in the subscript even when it is quoted (TP-4257).
-   * Those are read as commands. The shell evaluates the output of one it expanded first, which the
-   * splitter cannot read, so that makes the line unreadable.
+   * A NAME[subscript] operand of printf -v, test -v, `[[`, read, declare, wait -p, getopts and many
+   * more is evaluated as arithmetic, which runs a `$(...)` or backtick in the subscript even when it
+   * is quoted (TP-4257). Those are read as commands on every command but a known-inert one. The shell
+   * evaluates the output of one it expanded first, which the splitter cannot read, so that makes the
+   * line unreadable.
    */
   private readSubscripts(cmd: SimpleCommand): void {
     // `&&`, `||` and parentheses inside `[[ ]]` cut it into commands, each still inside the test.
-    if (!this.testOpen && !cmd.words.some(word => SUBSCRIPT_EVALUATORS.has(word))) return
+    if (!this.testOpen && this.inertOperands(cmd)) return
     for (const marked of cmd.marked) {
       const open = SUBSCRIPT_OPEN.exec(marked)
       if (open === null) continue
@@ -1356,6 +1365,19 @@ class ShellLexer {
       if (expandsCommand(subscript)) this.budget.expansion = 'unreadable'
       else this.expandBody(unmark(subscript), cmd)
     }
+  }
+
+  /** A command named as written, and known to leave its operands as text: `echo`, or `printf` with no option. */
+  private inertOperands(cmd: SimpleCommand): boolean {
+    const [name, first] = cmd.marked
+    if (this.budget.redefines || name === undefined || name.includes(LIVE)) return false
+    if (INERT_OPERANDS.has(name)) return true
+    return (
+      INERT_WITHOUT_OPTIONS.has(name) &&
+      first !== undefined &&
+      !first.includes(LIVE) &&
+      !first.startsWith('-')
+    )
   }
 
   /** Text the shell expands beside the words: a redirect target, here-string, or an unquoted heredoc on any descriptor, whose body comes later. */
@@ -1462,6 +1484,7 @@ function substitutionEnd(src: string, from: number, limits: Limits): number {
     expansion: undefined,
     limits,
     probe: true,
+    redefines: true,
   })
   probe.run()
   return src[probe.pos] === ')' ? probe.pos + 1 : -1

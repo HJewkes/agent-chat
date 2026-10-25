@@ -124,12 +124,24 @@ const SUBSCRIPT_RUNS = [
   `a=(1 2); unset 'a[$(${PUSH})]'`,
 ]
 
+// Builtins outside any list the guard once kept; each runs the substitution in one shell only.
+const ONE_SHELL_RUNS: [string, 'bash' | 'zsh'][] = [
+  [`sleep 0 & wait -n -p 'a[$(${PUSH})]'`, 'bash'],
+  [`getopts x 'a[$(${PUSH})]' -x`, 'zsh'],
+  [`zmodload zsh/datetime; strftime -s 'a[$(${PUSH})]' %s 0`, 'zsh'],
+  [`zstyle :x y z; zstyle -s :x y 'a[$(${PUSH})]'`, 'zsh'],
+  [`zmodload zsh/param/private; private 'a[$(${PUSH})]'=1`, 'zsh'],
+]
+
 describe('a quoted subscript a builtin evaluates runs its substitution (TP-4257)', () => {
   // Mutation: return before the loop in readSubscripts, and no row reads the push.
-  it.each(SUBSCRIPT_RUNS)('reads the push in %j as a command', line => {
-    expect(runs(line, ['git', 'push', '--no-verify'])).toBe(true)
-    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
-  })
+  it.each([...SUBSCRIPT_RUNS, ...ONE_SHELL_RUNS.map(([line]) => line)])(
+    'reads the push in %j as a command',
+    line => {
+      expect(runs(line, ['git', 'push', '--no-verify'])).toBe(true)
+      expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+    },
+  )
 
   // The shell evaluates the substitution's output as arithmetic again. Mutation: drop the
   // expandsCommand check, and these allow.
@@ -140,8 +152,26 @@ describe('a quoted subscript a builtin evaluates runs its substitution (TP-4257)
     },
   )
 
+  // Only a known-inert command name skips the read. Mutation: return true from inertOperands for any
+  // name, and these allow.
+  it.each([
+    `getln 'a[$(${PUSH})]'`,
+    `some-new-builtin 'a[$(${PUSH})]'`,
+    `printf -- '%s' 'a[$(${PUSH})]'`,
+    `printf "$f" 'a[$(${PUSH})]'`,
+    `c=echo; $c 'a[$(${PUSH})]'`,
+    `echo() { read "$1"; }; echo 'a[$(${PUSH})]'`,
+    `function echo { read "$1"; }; echo 'a[$(${PUSH})]'`,
+    `alias echo=read\necho 'a[$(${PUSH})]'`,
+  ])('reads the push in %j, whose command is not known to be inert', line => {
+    expect(checkCommand(line, ctx)).not.toBeUndefined()
+  })
+
   it.each([
     `echo 'a[$(${PUSH})]'`,
+    `printf '%s' 'a[$(${PUSH})]'`,
+    `print 'a[$(${PUSH})]'`,
+    `git commit -m 'fix a[$(${PUSH})]'`,
     `printf '%s\\n' 'a=$(${PUSH})'`,
     '[[ "[$(date)]" == x ]]',
     `read -r 'a[1]' < /dev/null`,
@@ -239,6 +269,15 @@ describe.skipIf(real.shells.length === 0)('quoted subscripts against real shells
       ([shell, args]) => real.gitCalls(shell, args, line) === 'push --no-verify',
     )
     const expected = real.shells.filter(([shell]) => !shell.endsWith('zsh') || ZSH_RUNS.has(line))
+
+    expect(pushed.map(([shell]) => shell)).toEqual(expected.map(([shell]) => shell))
+  })
+
+  it.each(ONE_SHELL_RUNS)('%j pushes only under %s', (line, runner) => {
+    const pushed = real.shells.filter(
+      ([shell, args]) => real.gitCalls(shell, args, line) === 'push --no-verify',
+    )
+    const expected = real.shells.filter(([shell]) => shell.endsWith(runner))
 
     expect(pushed.map(([shell]) => shell)).toEqual(expected.map(([shell]) => shell))
   })
