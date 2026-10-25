@@ -681,6 +681,8 @@ export interface SpawnRequest {
   spawnedAs?: 'burndown' | 'shepherd'
   /** CC-1206: an agent the broker found behind an unregistered CLI spawn; such a spawn is not the human's. */
   callerAgent?: string
+  /** CC-1246: why an unregistered CLI spawn with no agent found is still not proven the human's. */
+  humanUnproven?: string
   /** CC-915: the task id this agent runs; required for a burndown spawn. */
   task?: string
   /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
@@ -723,8 +725,10 @@ export interface SpawnRequest {
 
 /** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
 /** CC-1206: the agent found behind a CLI spawn the row would otherwise credit to the human. */
-const callerAgentMeta = (req: { callerAgent?: string }): Record<string, string> =>
-  req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }
+const callerAgentMeta = (req: { callerAgent?: string; humanUnproven?: string }): Record<string, string> => ({
+  ...(req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }),
+  ...(req.humanUnproven === undefined ? {} : { human_unproven: req.humanUnproven }),
+})
 
 const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
   req.launchedBy === undefined
@@ -994,9 +998,13 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
 /**
  * Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`.
  * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
+ * CC-1246: and one the broker could not prove came from the human at a terminal (`humanUnproven`).
  */
 const isHumanSpawn = (req: SpawnRequest): boolean =>
-  req.requestedBy === HUMAN && req.spawnedAs === undefined && req.callerAgent === undefined
+  req.requestedBy === HUMAN &&
+  req.spawnedAs === undefined &&
+  req.callerAgent === undefined &&
+  req.humanUnproven === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -2088,16 +2096,18 @@ export class Supervisor implements TeleportHost {
     name: string,
     by: string | undefined,
     human: boolean,
+    humanUnproven?: string,
   ): AgentProfile | { error: string } {
     const { profile, source } = loadProfileSource(name)
     if ('error' in profile) return profile
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
     const refused = !human && this.profileDriftMode === 'refuse'
-    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
+    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused, humanUnproven })
+    const why = humanUnproven === undefined ? '' : ` (not proven human: ${humanUnproven})`
     if (refused)
       return {
-        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code`,
+        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code${why}`,
       }
     if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
@@ -2318,7 +2328,12 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
+    const profile = this.loadCheckedProfile(
+      req.profile,
+      req.requestedBy,
+      isHumanSpawn(req),
+      req.humanUnproven,
+    )
     if ('error' in profile) return this.refuse(req, profile.error)
     const harness = harnessRefusal(profile)
     if (harness) return this.refuse(req, harness, { code: HARNESS_UNSUPPORTED, retryable: false })
