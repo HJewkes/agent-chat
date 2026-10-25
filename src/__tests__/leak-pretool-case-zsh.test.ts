@@ -33,7 +33,12 @@ const LOOP_CASES: Row[] = [
   zshOnly('14 tick T2', inTick('case x { x) echo a;; }')),
   zshOnly('14 tick T2', inTick('case x;in x) :;; y) echo a;; esac')),
   zshOnly('14 tick T3', inTick('case x in x) {:;} ;; y) echo a;; esac')),
-  { line: `echo "$(echo \`case x in x) :;| y) echo 1;; esac\`; ${PUSH})"`, zsh: true, bash: true, row: '14 tick T1' },
+  {
+    line: `echo "$(echo \`case x in x) :;| y) echo 1;; esac\`; ${PUSH})"`,
+    zsh: true,
+    bash: true,
+    row: '14 tick T1',
+  },
   zshOnly('15 select T1', inSub('select v in a; do case x in x) :;| y) echo "a";; esac; break; done')),
   zshOnly('15 select T2', inSub('select v in a; { case x { x) echo "a";; }; break }')),
   zshOnly('15 select T3', inSub('select v (a) { case x in x) {:;} ;; y) echo "a";; esac; break }')),
