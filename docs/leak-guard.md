@@ -858,7 +858,9 @@ and `git -c core.pager="git push --no-verify" log` and
 so an `include.path` on the same git is a deny, as it is for a command git runs for its
 subcommand. A safe value stays allowed: `less`, `cat`, `"less -R"`, `vim`, `store`,
 `"ssh -i key"`, `true`, an empty value, and a plain word such as `main` or `false` for a key that
-does not run it.
+does not run it. git runs the value through a shell, so the TP-634 rule applies: any `$` expansion
+or backquote in it is a deny, as in `X=--no-verify git -c core.pager='git push $X' log`. An `ext::`
+payload is not a shell string (git-remote-ext splits it itself), so a `$` there stays literal.
 
 A value the guard cannot read for a key not on the inert list is a deny on every git subcommand, since any
 of them may start a pager or an editor: `-c core.pager="$P"`, `-c core.editor=$(cat e)`, and every
@@ -979,7 +981,13 @@ cover. On a line that runs git anywhere,
 each word is read for these names. A plain literal `NAME=value` to a name in the first list has
 its value checked as a top-level Bash line, but only where the shell reads the word as an assignment
 exactly once: a prefix assignment, an assignment right after a literal `env`, or an argument of
-`export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. Any other
+`export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. git runs
+that value through a shell, so by the TP-634 rule any `$` expansion or backquote in it denies:
+`X=--no-verify GIT_PAGER='git push $X' git log`. Accepted false denies follow from this rule:
+`GIT_PAGER='less -R $L' git log`, like `git rebase -x 'npm test -- $T' main` and
+`git submodule foreach 'git checkout $sha1'`. Letting the outer shell expand the value does not
+help, since the guard cannot read that value either; write it out literally
+(`GIT_PAGER='less -R -S'`). Any other
 use of any of these names denies with its own reason: the shell has too many ways to assign one to
 list them all, among them `NAME+=…`, a zsh subscript such as `GIT_PAGER[1,-1]=…`, a brace-expanded
 name (`export {GIT_EDITOR,Y}=…`), `read NAME`, `printf -v NAME`, `for NAME in`, a nameref, a bare

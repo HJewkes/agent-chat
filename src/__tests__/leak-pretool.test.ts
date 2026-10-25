@@ -2591,6 +2591,42 @@ describe('a git config value that runs a program (TP-636)', () => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 
+  it.each([
+    "X=--no-verify git -c diff.external='git push $X' diff",
+    "X=--no-verify git -c core.pager='git push $X' log",
+    "export X=--no-verify; git -c core.pager='git push $X' log",
+    "X=--no-verify git -c core.sshCommand='git push $X; ssh' fetch",
+    "X=--no-verify git -c sequence.editor='git push $X; true' rebase -i",
+    "X=--no-verify git -c core.editor='git push $X; true' commit",
+    "X=--no-verify GIT_SSH_COMMAND='git push $X; ssh' git fetch",
+    "X=--no-verify GIT_PAGER='git push $X' git log",
+    "X=--no-verify GIT_EDITOR='git push $X' git commit",
+  ])('denies a shell expansion in a program git runs from config or env (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    'git -c core.pager=cat log',
+    "git -c core.pager='less -R' log",
+    "git -c core.sshCommand='ssh -i k' fetch",
+    "GIT_SSH_COMMAND='ssh -o BatchMode=yes' git fetch",
+    'GIT_EDITOR=true git commit',
+    'GIT_PAGER=cat git log',
+    'EDITOR=vim git commit',
+    'git -c diff.external=difft diff',
+  ])('allows a program from config or env that expands nothing (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  // Accepted false denies: the value is harmless, but only the shell git starts can tell.
+  it.each([
+    "git submodule foreach 'git checkout $sha1'",
+    "git rebase -x 'npm test -- $T' main",
+    "GIT_PAGER='less -R $L' git log",
+  ])('denies an expansion only the shell git starts would read (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
   // Fix round 1: keys the first pass missed (reviewer ran or flagged these).
   it.each([
     'git -c trailer.sign.cmd="git push --no-verify" interpret-trailers',
