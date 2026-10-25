@@ -46,9 +46,11 @@ const SPLIT: [string, string, string[]][] = [
 
 const ZSH = ['/bin/zsh', ['-f']] as const
 const BASH = ['/bin/bash', ['--noprofile', '--norc']] as const
+// A shell, its flags and the line it runs.
+type Row = readonly [string, readonly string[], string]
 
 /** A `}` or `esac` touching a terminator, which once updated the case frames after the terminator read them. */
-const TOUCHING: [string, readonly string[], string][] = [
+const TOUCHING: Row[] = [
   // zsh has no `;;&`, and bash no `;|`.
   ...[';;', ';&', ';;&'].map(
     op => [...BASH, `echo "$(case x in x) { :; }${op} y) echo "a";; esac; ${PUSH})"`] as const,
@@ -60,7 +62,7 @@ const TOUCHING: [string, readonly string[], string][] = [
 ]
 
 /** A `case` zsh reads as a command where the splitter reads an argument: after `repeat N` and in `() {`. */
-const STRAY: [string, readonly string[], string][] = [
+const STRAY: Row[] = [
   [...ZSH, `echo "$(repeat 1 case x in x) echo "a";; esac; ${PUSH})"`],
   [...ZSH, `echo "$(repeat 1 case x { x) echo "a";; }; ${PUSH})"`],
   [...ZSH, `echo "$(repeat 1 { case x { x) echo "a";; } }; ${PUSH})"`],
