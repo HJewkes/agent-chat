@@ -816,7 +816,7 @@ export class SocketServer {
    */
   private async handleAccountMove(
     conn: Conn,
-    msg: Extract<ClientMessage, { t: 'account_move' }>,
+    msg: Extract<ClientMessage, { t: 'account_move' | 'account_move_check' }>,
   ): Promise<void> {
     const name = typeof msg.name === 'string' ? msg.name : 'unnamed'
     const turnedAway = (stage: RefusalStage, reason: string): void =>
@@ -832,12 +832,12 @@ export class SocketServer {
     const entry = target === undefined ? undefined : registry.entryFor(target)
     if (target === undefined || entry?.agentId === undefined)
       return turnedAway('identity', `no live session with a durable identity is named "${name}"`)
-    const outcome = await this.supervisor.teleport({
-      subject: this.teleportSubject(target, { ...entry, agentId: entry.agentId }),
-      handoff: '',
-      reason: 'account',
-      account: { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) },
-    })
+    const subject = this.teleportSubject(target, { ...entry, agentId: entry.agentId })
+    const account = { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) }
+    // CC-1592: answered before teleport is reached, so a dry run records no handoff and ends nothing.
+    if (msg.t === 'account_move_check')
+      return replyTeleport(conn, this.supervisor.checkAccountMove(subject, account))
+    const outcome = await this.supervisor.teleport({ subject, handoff: '', reason: 'account', account })
     replyTeleport(conn, outcome)
   }
 
@@ -2104,6 +2104,7 @@ export class SocketServer {
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
       case 'account_move':
+      case 'account_move_check':
         void this.handleAccountMove(conn, msg)
         return
       case 'codex_wake_capped':

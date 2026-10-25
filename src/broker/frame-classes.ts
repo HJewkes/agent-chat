@@ -23,6 +23,7 @@ export const FRAME_CLASSES: Readonly<Record<ClientMessage['t'], FrameClass>> = {
   teleport_abort: 1,
   service_ask: 1,
   account_move: 1,
+  account_move_check: 1,
 
   spawn: 2,
   resume: 2,

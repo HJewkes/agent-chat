@@ -270,10 +270,60 @@ describe('an account move refused before anything ends', () => {
   })
 })
 
+describe('an account move dry run (CC-1592)', () => {
+  const humanCheck = () => {
+    const { conn, replies } = connection()
+    return moveAs(conn, replies, { t: 'account_move_check', name: 'scout', to: 'server' })
+  }
+
+  it('answers an over-ceiling target’s refusal with no handoff row and no signal', async () => {
+    startServer(fakeAccounts(['five_hour 96% is at or over the ceiling of 95%']))
+    registerSubject()
+    writeSourceTranscript()
+
+    const result = await humanCheck()
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/five_hour 96% is at or over the ceiling of 95%.*scout was not ended/)
+    expect(kinds()).not.toContain('agent_handoff')
+    expect(signals).toEqual([])
+  })
+
+  it('answers a good target ok and ends, records and moves nothing', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    const source = writeSourceTranscript()
+
+    const result = await humanCheck()
+
+    expect(result).toMatchObject({ ok: true, name: 'scout' })
+    expect(checked).toBe(1)
+    expect(kinds()).not.toContain('agent_handoff')
+    expect(signals).toEqual([])
+    expect(fs.existsSync(source)).toBe(true)
+    expect(fs.existsSync(transcriptPath(cwd, SESSION, toDir))).toBe(false)
+  })
+
+  it('refuses the check from a registered connection without reading the target', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+
+    const result = await moveAs(subjectConn, subjectReplies, {
+      t: 'account_move_check',
+      name: 'scout',
+      to: 'server',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/human/)
+    expect(checked).toBe(0)
+  })
+})
+
 describe('an account move that goes through', () => {
   it('resumes the same session id on the target, carrying tags and subscriptions', async () => {
     startServer(fakeAccounts())
-    registerSubject()
+    const predecessor = registerSubject()
     const source = writeSourceTranscript()
 
     const result = await humanMove()
@@ -287,6 +337,8 @@ describe('an account move that goes through', () => {
     expect(JSON.parse(plan.env.AGENT_CHAT_SUBSCRIPTIONS ?? 'null')).toEqual(SUBSCRIPTIONS)
     const row = spawnRowFor(result.agentId as string)
     expect(row?.meta).toMatchObject({ session_id: SESSION, config_dir: toDir, account_from: fromDir })
+    // CC-1592: the subject is a hand-started session the broker adopted, with no spawn profile.
+    expect(spawnRowFor(predecessor)?.meta.origin).toBe('adopted')
     expect(fs.readFileSync(transcriptPath(cwd, SESSION, toDir), 'utf8')).toBe('{"turn":1}\n{"turn":2}\n')
     expect(fs.existsSync(source)).toBe(false)
     // A resumed pane opens on the conversation with no prompt typed into it.

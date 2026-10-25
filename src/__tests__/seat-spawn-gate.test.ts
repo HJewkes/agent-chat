@@ -414,7 +414,7 @@ describe('reading a seat spawn from the autonomy root', () => {
   it('skips a seat file the charter no longer lists, and ignores a retired seat file', () => {
     const { root: dir, home } = root()
 
-    expect(readSeatSpawn(dir, spawn('bc-task'), deps(home))).toEqual({
+    expect(readSeatSpawn(dir, { ...spawn('bc-task'), spawner: 'beta-coord' }, deps(home))).toEqual({
       kind: 'skip',
       reason: "seat beta-coord is not in the charter's seats",
     })

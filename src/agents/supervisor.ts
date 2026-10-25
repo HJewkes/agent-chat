@@ -1,4 +1,4 @@
-import { brokerHost, signalSessionPid } from '../broker/host-guard.js'
+import { brokerHost, isLocalHost, signalSessionPid } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -230,6 +230,7 @@ import {
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
+import { defaultAutonomyRoot } from './seats/io.js'
 import {
   isAdoptedSuccessor,
   SuccessorNotStarted,
@@ -242,9 +243,15 @@ import {
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
+  type TeleportSubject,
   type LauncherSite,
 } from './teleport.js'
-import type { AccountMoves } from './teleport-account.js'
+import {
+  accountMoveRefusal,
+  realAccountMoves,
+  type AccountMoveRequest,
+  type AccountMoves,
+} from './teleport-account.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
@@ -1229,6 +1236,8 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
+  private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
@@ -1283,6 +1292,8 @@ export class Supervisor implements TeleportHost {
           reason: err instanceof Error ? err.message : String(err),
         }),
     })
+    this.accountMoves =
+      options.accountMoves ?? realAccountMoves(options.seatTeleport?.autonomyRoot ?? defaultAutonomyRoot())
     this.teleporter = new Teleport(
       core,
       this,
@@ -1290,7 +1301,7 @@ export class Supervisor implements TeleportHost {
       options.argvReader,
       options.seatTeleport,
       options.hosts,
-      options.accountMoves,
+      this.accountMoves,
     )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
@@ -4589,6 +4600,27 @@ export class Supervisor implements TeleportHost {
   /** Hand off to a successor and end this session. See `teleport.ts`. */
   async teleport(req: TeleportRequest): Promise<TeleportOutcome> {
     return this.teleporter.start(req)
+  }
+
+  /**
+   * CC-1592: an account move's dry run. Reads what `Teleport.accountMove` reads, so it records no
+   * handoff and ends nothing; the profile and surface checks a real move runs after it are not run.
+   */
+  checkAccountMove(subject: TeleportSubject, account: AccountMoveRequest): TeleportOutcome {
+    const identity = this.core.agents.get(subject.agentId)
+    if (identity === undefined) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
+    const reason = accountMoveRefusal(
+      this.accountMoves,
+      {
+        name: subject.name,
+        onBrokerHost: isLocalHost(subject.host),
+        configDir: subject.configDir ?? this.core.agents.spawnMeta(subject.agentId).config_dir,
+        cwd: this.inheritedIsolation(subject.agentId)?.allocation.cwd ?? subject.cwd,
+        sessionId: identity.sessionId ?? '',
+      },
+      account,
+    )
+    return reason === undefined ? { ok: true, name: subject.name } : { ok: false, reason }
   }
 
   /** CC-881: what a session teleporting from another host waits on: the launch to run there. */

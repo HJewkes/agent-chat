@@ -23,6 +23,8 @@ import { seatSpend, type SeatSpend } from '../burndown/spend-meter.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { parseSeat, type HeartbeatSource } from './charter.js'
 import { readSeatFile } from './teleport-state.js'
+import { nextSpawnPool, type NextSpawnDeps, type NextSpawnPool } from './next-spawn-pool.js'
+import { frontmatterField } from '../active-work.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import type { WaitingPermission } from './waiting-permission.js'
 import {
@@ -104,6 +106,8 @@ export interface BudgetStatus {
   note: string | null
   /** CC-404: the day stop the gate used and its inputs; `reset-aware` only for a seat with `pacing: reset-aware`. */
   allowance: DayAllowance
+  /** CC-905: the pool the broker's pick bills the seat's next spawn on, when it is not `pool`; null otherwise. */
+  nextSpawnPool: string | null
 }
 
 export interface InboxReading {
@@ -207,6 +211,8 @@ export interface StatusDeps {
   contextOf?: (agent: AgentIdentity) => BudgetRead
   /** CC-317 b: the calling session's context reading, null when it has no session id. Absent: `self` is null. */
   selfContext?: () => BudgetRead | null
+  /** CC-905: the broker's pool pick and seat budget gate. Absent, or a throw: the stop is the home pool's alone. */
+  nextSpawn?: NextSpawnDeps
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -368,6 +374,8 @@ function seatHistory(
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
   /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
   staleOk?: AccountReading
+  /** The state file could not be read; this stop stands whatever the broker's pick, which reads such spend as unmetered. */
+  unknownSpend?: true
 }
 
 /** The seat's caps for `gatePool` given the pool's history, which only the saved meters can tell. */
@@ -409,7 +417,7 @@ function spendVerdict(
     doc = deps.loadDoc()
   } catch (err) {
     const why = `BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`
-    return { ...stopped(why), allowance: pace([]).allowance }
+    return { ...stopped(why), allowance: pace([]).allowance, unknownSpend: true }
   }
   const saved = seatMeters(doc, seat, name, now.getTime())
   const spend = seatHistory(deps, seat, configDir, saved, reading, now)
@@ -457,7 +465,18 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
   const pace = seatPace(policy, budget, read, reading, now)
-  const { staleOk, ...verdict } = spendVerdict(deps, budget, configDir ?? '', pace, seat, reading, now, plain)
+  const { staleOk, unknownSpend, ...home } = spendVerdict(
+    deps,
+    budget,
+    configDir ?? '',
+    pace,
+    seat,
+    reading,
+    now,
+    plain,
+  )
+  const next =
+    configDir === undefined || unknownSpend ? undefined : brokerPool(deps, policy, seat, configDir, now)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,
@@ -466,8 +485,49 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     ageSeconds: shown?.ageSeconds ?? null,
     stale: staleOk !== undefined || (read?.found === true ? read.stale : true),
     staleOk: staleOk !== undefined,
-    ...verdict,
+    ...withBrokerPool(home, next, name),
   }
+}
+
+/**
+ * CC-905: the broker's pick for the seat's next spawn. A sonnet probe asks whether the seat can spawn at all, as the
+ * home verdict's `sonnetOnly` already tells the band apart. Undefined without the readers or when they throw.
+ */
+function brokerPool(
+  deps: StatusDeps,
+  policy: Policy,
+  seat: string,
+  configDir: string,
+  now: Date,
+): NextSpawnPool | undefined {
+  if (deps.nextSpawn === undefined) return undefined
+  const cwd = frontmatterField(readSeatFile(deps.autonomyRoot, seat) ?? '', 'cwd')
+  const probe = {
+    name: `${policy.seat.prefix}-status`,
+    spawner: seat,
+    homeDir: expandHome(configDir, deps.homeDir),
+    cwd: cwd === undefined ? deps.homeDir : expandHome(cwd, deps.homeDir),
+    model: 'sonnet',
+    now,
+  }
+  try {
+    return nextSpawnPool(probe, deps.nextSpawn)
+  } catch {
+    return undefined
+  }
+}
+
+/** The broker's decision sets the stop; the home verdict keeps its figures when the spawn bills home. */
+function withBrokerPool(
+  home: Omit<Verdict, 'staleOk' | 'unknownSpend'> & { allowance: DayAllowance },
+  next: NextSpawnPool | undefined,
+  homePool: string | undefined,
+): Omit<BudgetStatus, 'pool' | 'sevenDay' | 'fiveHour' | 'ageSeconds' | 'stale' | 'staleOk'> {
+  if (next === undefined) return { ...home, nextSpawnPool: null }
+  if (!next.open) return { ...home, stop: home.stop ?? next.reason, nextSpawnPool: null }
+  if (next.redirect === undefined && home.stop === null) return { ...home, nextSpawnPool: null }
+  const margin = `next spawn: pool ${next.redirect ?? homePool}: ${next.reason}`
+  return { ...home, stop: null, margin, sonnetOnly: false, nextSpawnPool: next.redirect ?? null }
 }
 
 /** CC-1289: a pace row for one account, naming its other pools and the stops they disagree on. */
@@ -766,6 +826,9 @@ function agentLines(status: SeatStatus, brief: boolean): string[] {
   ]
 }
 
+const briefNone = ({ nextSpawnPool }: BudgetStatus): string =>
+  nextSpawnPool === null ? 'none' : `none; next spawn: pool ${nextSpawnPool}`
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox, parked } = status
@@ -773,7 +836,7 @@ export function renderBrief(status: SeatStatus): string[] {
     `seat ${status.seat} at ${status.at}`,
     ...agentLines(status, true),
     line('pool', poolReadingText(budget)),
-    line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
+    line('stop', status.machineStop?.reason ?? budget.stop ?? briefNone(budget)),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
     ...(parked === null ? [] : [line('parked', String(parked.count)), ...waitingPermissionLines(status)]),
   ]
