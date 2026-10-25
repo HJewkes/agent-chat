@@ -31,7 +31,9 @@ describe('GH_PATH on a gh command that writes the credential helper (TP-2946)', 
   })
 
   it('denies a prefix GH_PATH on a gh alias that runs setup-git', () => {
-    expect(checkCommand('GH_PATH=/opt/x gh sg', ctx({ sg: 'auth setup-git' }))).toBe(REASONS.ghCredentialHelper)
+    expect(checkCommand('GH_PATH=/opt/x gh sg', ctx({ sg: 'auth setup-git' }))).toBe(
+      REASONS.ghCredentialHelper,
+    )
   })
 
   it.each([

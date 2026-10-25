@@ -419,8 +419,11 @@ const WRITES_CREDENTIAL_HELPER = new Set(['setup-git', 'login', 'refresh'])
 export const GH_PATH = 'GH_PATH'
 
 /** Whether a gh command may persist `GH_PATH` as git's credential helper; an unresolved `auth` subcommand may. */
-export const ghWritesCredentialHelper = (verb: string | undefined, sub: string | undefined, unsure: boolean): boolean =>
-  verb === 'auth' && (unsure || (sub !== undefined && WRITES_CREDENTIAL_HELPER.has(sub)))
+export const ghWritesCredentialHelper = (
+  verb: string | undefined,
+  sub: string | undefined,
+  unsure: boolean,
+): boolean => verb === 'auth' && (unsure || (sub !== undefined && WRITES_CREDENTIAL_HELPER.has(sub)))
 
 /** `gh help <word>` runs extension `<word>` with the other words when it is no gh command (probed on gh 2.102). */
 export const ghHelpRunsExtension = (topic: string | undefined): boolean =>
