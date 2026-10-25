@@ -32,7 +32,7 @@ const BUILTINS: ReadonlySet<string> = new Set(
  */
 const INERT: ReadonlySet<string> = new Set(
   (
-    '- . : [ [[ alias bg break bye caller cd chdir command continue dirs disown echo echotc echoti ' +
+    '. : [ [[ alias bg break bye caller cd chdir command continue dirs disown echo echotc echoti ' +
     'eval exec exit false fg getconf getln getopts help history jobs kill let limit log logout ' +
     'mapfile noglob popd print printf pushd pushln pwd read readarray rehash return set setopt shift ' +
     'shopt source suspend test times trap true ttyctl type ulimit umask unalias unfunction unhash ' +

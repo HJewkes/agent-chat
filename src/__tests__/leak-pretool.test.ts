@@ -2244,6 +2244,47 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   )
 
   it.each([
+    ['git submodule foreach \'zsh -c "true; - . ./f"\'', REASONS.gitShellFile],
+    ['git submodule foreach \'zsh -c "true; - hash -p /usr/bin/git p"\'', REASONS.gitShellBuiltin],
+    ["git submodule foreach 'git-push --no-verify origin HEAD'", REASONS.noVerify],
+    ["git rebase -x 'git-push --no-verify origin HEAD' main", REASONS.noVerify],
+    ["git -c core.pager='git-push --no-verify origin HEAD; less' log", REASONS.noVerify],
+    ["git submodule foreach '/usr/lib/git-core/git-push --no-verify'", REASONS.noVerify],
+    ['git submodule foreach \'bash -c "exec -a git-push git --no-verify"\'', REASONS.noVerify],
+    ["git submodule foreach 'exec -agit-push git --no-verify'", REASONS.noVerify],
+    ["git submodule foreach 'exec -c -a git-push /usr/bin/git --no-verify'", REASONS.noVerify],
+    ["git submodule foreach 'exec -a git-push ./p --no-verify'", REASONS.noVerify],
+  ])(
+    'reads past zsh - and reads git-<sub> and exec -a git-<sub> as git in a shell git starts (TP-4236): %s',
+    (command, reason) => {
+      expect(checkCommand(command, ctx())).toBe(reason)
+    },
+  )
+
+  it.each([
+    'git submodule foreach \'zsh -c "true; - git status"\'',
+    "git submodule foreach 'exec -a git-push env git status'",
+    "git submodule foreach 'git-status'",
+    "git submodule foreach 'exec -a p git status'",
+  ])(
+    'allows a plain run past zsh - or under a git-<sub> name in a shell git starts (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+
+  // Each zsh, bash, dash and ksh precommand word: unwrap strips it, so none needs a place in INERT.
+  it.each(['-', 'builtin', 'command', 'exec', 'noglob', 'nocorrect', 'nohup', 'time', 'coproc'])(
+    'reads past the precommand word %s in a shell git starts (TP-4236)',
+    word => {
+      const inZsh = (line: string) => `git submodule foreach 'zsh -c "true; ${word} ${line}"'`
+      expect(checkCommand(inZsh('. ./f'), ctx())).toBe(REASONS.gitShellFile)
+      expect(checkCommand(inZsh('hash -p /usr/bin/git p'), ctx())).toBe(REASONS.gitShellBuiltin)
+      expect(checkCommand(inZsh('git-push --no-verify'), ctx())).toBe(REASONS.noVerify)
+    },
+  )
+
+  it.each([
     'hash -p /usr/bin/git p; p push --no-verify',
     'hash -p/usr/bin/git p; p push',
     'hash -t -p /usr/bin/git p q; git status',

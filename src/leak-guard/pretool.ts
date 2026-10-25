@@ -281,7 +281,8 @@ export const REASONS = {
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
-const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+// zsh's `-` precommand runs the next word with a dash before its argv[0].
+const PLAIN_WRAPPERS = new Set(['-', 'command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
 /** GNU parallel and its env_parallel front end, which run their command words as a shell script. */
 const PARALLELS: ReadonlySet<string> = new Set(['parallel', 'env_parallel'])
 const OPTION_WRAPPERS = [
@@ -441,6 +442,8 @@ type Unwrapped =
       viaShellVar?: boolean
       /** A privilege wrapper such as sudo runs the command. */
       privileged?: boolean
+      /** The marked `exec -a` name the command runs under, when exec is the last wrapper. */
+      argv0?: string
     }
   | { reason: string }
 
@@ -485,7 +488,9 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   let siblings: Sibling[] | undefined
   let viaShellVar = false
   let privileged = lead?.privileged ?? false
+  let named: { rest: readonly string[]; at: number; argv0: string | undefined } | undefined
   const assigns = [...(lead?.assigns ?? [])]
+  const argv0 = (): string | undefined => (named?.rest === rest && named.at === at ? named.argv0 : undefined)
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
       ? { reason: REASONS.hiddenCommand }
@@ -497,6 +502,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
           ...(siblings && { siblings }),
           ...(viaShellVar && { viaShellVar }),
           ...(privileged && { privileged }),
+          ...(argv0() !== undefined && { argv0: argv0() }),
         }
   for (;;) {
     const head = rest[at]
@@ -517,6 +523,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
+      if (name === 'exec') named = { rest, at: next, argv0: execArgv0(rest, at + 1, next) }
       at = next
     } else if (name === 'xargs') {
       const after = dropXargsOptions(rest, at + 1, splits)
@@ -679,6 +686,18 @@ function wrapperEnd(
   if (name === 'caffeinate') return dropGetopt(words, at + 1, CAFFEINATE_GETOPT, values)
   if (name === 'timeout' || name === 'repeat') return dropGetopt(words, at + 1, TIMEOUT_GETOPT, values) + 1
   return undefined
+}
+
+/** The name the last `-a` among exec's option words `from` to `to` gives its command, glued (`-agit-push`) or not. */
+function execArgv0(words: readonly string[], from: number, to: number): string | undefined {
+  let argv0: string | undefined
+  for (let i = from; i < to; i++) {
+    const cluster = (words[i] as string).startsWith('--') ? '' : (words[i] as string).slice(1)
+    const k = cluster.indexOf('a')
+    if (k < 0) continue
+    argv0 = k === cluster.length - 1 ? words[++i] : cluster.slice(k + 1)
+  }
+  return argv0
 }
 
 /**
@@ -2720,6 +2739,15 @@ function testHead(words: readonly string[]): string | undefined {
   return close !== undefined && words.indexOf(close, 1) === words.length - 1 ? name : undefined
 }
 
+/**
+ * The `<sub>` of a command run as `git-<sub>`, by name or by an `exec -a` argv0, which git runs as
+ * `git <sub>`. A `<sub>` git does not know is left to checkGitRun, which denies what it cannot match.
+ */
+function dashedGitSub(word: string | undefined): string | undefined {
+  if (word === undefined || word.includes(LIVE)) return undefined
+  return /^git-(.+)$/.exec(path.basename(word))?.[1]
+}
+
 function checkSimple(
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -2768,8 +2796,11 @@ function checkSimple(
   const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked, ctx, at, depth) : undefined
   if (sourced !== undefined) return sourced
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
-  if (name === 'git')
-    return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  const sub = dashedGitSub(unwrapped.argv0) ?? dashedGitSub(name)
+  if (name === 'git' || sub !== undefined) {
+    const gitWords = sub === undefined ? marked : [sub, ...marked]
+    return checkGitRun(gitRun(gitWords, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  }
   if ((name === 'gh' || (name === 'agent-chat' && args[0] === 'gh-write')) && privileged)
     return REASONS.privilegedGh
   if (name === 'gh')

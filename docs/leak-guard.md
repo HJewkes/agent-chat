@@ -847,10 +847,17 @@ builtin is held to an allow-list (`src/leak-guard/git-shell-builtins.ts`): the b
 `zmodload`, `autoload`, `functions`), or is a declaration with no option word (`export CI=1`, but
 not `export -f p` or `typeset -fu p`). So `hash -p /usr/bin/git p`, `autoload -Uz /d/p`, `enable -f
 ./x.so x`, `zmodload ./m`, `fc`, `emulate -c` and `sched` deny. `eval`, `trap` and `mapfile -C`
-are allowed because their text is read as this shell's own. Not read: a script file run by its
-path (`./f`), programs such as `npm test` or `make`, shells the guard does not know by name
-(`mksh`, `yash`, `fish`, `csh`, `tcsh`), ksh93's `builtin -f <lib>`, and the `~/.zshenv` every zsh
-reads, which the agent's own shell reads too. git passes its `-c` and `--config-env`
+are allowed because their text is read as this shell's own.
+
+In a shell git starts, the guard denies what it can read that loads code or rebinds a command word:
+`.`/`source`, a shell given a file or startup options, startup variables, `trap` text, `alias`
+definitions, and builtins outside the allow-list. It also reads past every precommand `unwrap`
+strips (including zsh `-`), and treats `git-<sub>` and `exec -a git-<sub>` as git. Not read, by
+design, and closed at run time by TP-4249: programs and files run by path or by name
+(`./f`, `make`, `npm test`, `python3 ./f`), and shells the guard does not know (`mksh`, `yash`,
+`fish`, `csh`). A finding in that set is a runtime-task row, not a FIX_FIRST here.
+
+git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard
