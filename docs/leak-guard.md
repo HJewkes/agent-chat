@@ -543,7 +543,11 @@ match `--no-verify` or its abbreviations is denied, whatever the directory holds
 group may expand to `push` or `--no-verify`, as in `{git,push,--no-verify}`, is denied too. Both
 hold at the top level, under `sh -c` and in the scripts git hands a shell, such as
 `git rebase -x 'git push --no-verif*'`. A quoted glob, as in `"--no-verif?"`, and a glob that cannot
-match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay allowed.
+match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay allowed. git reads a
+`--` after `-o`, `--push-option`, `--repo`, `--receive-pack` or `--exec` as that option's value and
+keeps reading options, so that `--` ends nothing: `git push -o -- --no-verif?` and
+`git push -o -- --no-verify` are denied. A word the guard cannot read, or a glob that may form such
+an option (`-?`), is read as taking the next word too, while `git push -o x -- --no-verif?` stays allowed.
 
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
