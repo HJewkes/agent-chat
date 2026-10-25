@@ -160,10 +160,16 @@ export class HostDirectory<K = unknown> {
     return true
   }
 
+  /**
+   * CC-1331: routing checked `proved` on a snapshot, but each frame looks the host up again, so a
+   * launcher that took the machine since then is refused here unless it proved its key too.
+   */
   private ask(host: string, frame: (id: string) => HostRequest, timeoutMs: number): Promise<HostAnswer> {
     const connected = this.find(host)
     if (connected === undefined)
       return Promise.resolve({ ok: false, reason: `no launcher connected on ${host}` })
+    if (!connected.proved)
+      return Promise.resolve({ ok: false, reason: `the launcher on ${host} has not proved its host key` })
     const id = randomUUID()
     return new Promise(resolve => {
       const timer = setTimeout(
