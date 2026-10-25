@@ -31,6 +31,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-pretool-shells.test.ts',
   'src/__tests__/leak-pretool-heredoc.test.ts',
   'src/__tests__/leak-pretool-piped-shell.test.ts',
+  'src/__tests__/shell-words-dup-subscript.test.ts',
   'src/__tests__/leak-pretool-stdin-sources.test.ts',
   'src/__tests__/leak-pretool-shell-command-word.test.ts',
   'src/__tests__/leak-pretool-hidden-sub.test.ts',
