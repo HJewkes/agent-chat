@@ -560,7 +560,36 @@ describe('a hidden variable name on a line whose command word is only an expansi
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
 
-  it.each(['read $A <<< ext; echo hi', '$G status'])('allows %j', command => {
+  it.each([
+    'export $A=ext; ${G:-x} fetch o',
+    'export $A=ext; ${G-} fetch o',
+    'export $A=ext; ${G%x} fetch o',
+    'read $A <<< ext; ${G/x/y} fetch o',
+    'export $A=ext; /usr/bin/$G fetch o',
+    'export $A=ext; ./$G fetch o',
+    'read $A <<< ext; ~/$G fetch o',
+  ])('denies a command word with an operator or a path around the expansion: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'export $A=ext; sudo $G fetch o',
+    'export $A=ext; env $G fetch o',
+    'export $A=ext; xargs $G fetch o',
+    'env $A=ext $G fetch o',
+    'export $A=ext; eval "$G fetch o"',
+    `export $A=ext; sh -c '$G fetch o'`,
+    `export $A=ext; sudo bash -c 'eval "$G fetch o"'`,
+  ])('denies an expanded command word behind a wrapper or in a nested script: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'read $A <<< ext; echo hi',
+    '$G status',
+    'export EDITOR=vim; "$EDITOR" notes.txt',
+    `read $A <<< ext; sh -c 'echo hi'`,
+  ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
   })
 })

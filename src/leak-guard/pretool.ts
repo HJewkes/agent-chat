@@ -3086,15 +3086,23 @@ interface EnvUse {
 }
 
 /**
- * Whether the command word past assignments and wrappers is only an expansion, such as `$G` or `"${G}"`.
- * It may run git though no git is written, which the git scan cannot see in the bare reference (TP-4231).
+ * Whether a command word holds an expansion, such as `$G`, `${G:-x}` or `./$G`, which may run git
+ * though no git is written (TP-4231). Every word from the written head to the head unwrap finds counts,
+ * since a wrapper's expanded word (`sudo $G`, `xargs $G`, `env $A=x $G`) may be the command; so does
+ * a head in the text eval or a shell runs.
  */
-function headOnlyExpansion(marked: readonly string[]): boolean {
+function runsExpandedHead(marked: readonly string[]): boolean {
   const body = functionBody(marked)
   const at = commandHeadAt(body)
   if (at === undefined) return false
-  const head = body[at] as string
-  return head.includes(LIVE) && unmark(head).replace(REFERENCE, '').replace(QUOTING, '') === ''
+  const unwrapped = unwrap(body)
+  const end = 'reason' in unwrapped ? at + 1 : body.length - unwrapped.words.length + 1
+  if (body.slice(at, Math.max(end, at + 1)).some(word => word.includes(LIVE))) return true
+  if ('reason' in unwrapped) return false
+  const [head = '', ...args] = unwrapped.words
+  const name = path.basename(unmark(head))
+  if (name !== 'eval' && !SHELLS.has(name)) return false
+  return args.some(arg => parseShell(unmark(arg)).some(inner => runsExpandedHead(inner.marked)))
 }
 
 /** Events from the command as written; only a word the shell reads as an assignment once has its value blanked for the scan. */
@@ -3104,7 +3112,7 @@ function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
       .filter((event): event is EnvEvent => event !== undefined),
-    scan: headOnlyExpansion(cmd.marked) ? [...scan, 'git'] : scan,
+    scan: runsExpandedHead(cmd.marked) ? [...scan, 'git'] : scan,
   }
 }
 
