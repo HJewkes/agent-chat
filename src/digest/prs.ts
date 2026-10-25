@@ -14,20 +14,10 @@ export const PR_PAGE = 50
 export type Search = (query: string) => { items: NamedItem[] } | { error: string }
 
 export const ghSearch: Search = query => {
+  const qs = new URLSearchParams({ q: query, per_page: String(PR_PAGE) })
   const res = spawnSync(
     'gh',
-    [
-      'api',
-      '-X',
-      'GET',
-      'search/issues',
-      '-f',
-      `q=${query}`,
-      '-f',
-      `per_page=${PR_PAGE}`,
-      '--jq',
-      '.items[] | [.html_url, .title] | @tsv',
-    ],
+    ['api', `search/issues?${qs}`, '--jq', '.items[] | [.html_url, .title] | @tsv'],
     { encoding: 'utf8', timeout: PR_TIMEOUT_MS },
   )
   if (res.error !== undefined) return { error: res.error.message }

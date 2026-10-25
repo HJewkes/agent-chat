@@ -162,7 +162,7 @@ describe('gh shim logging the commands it passes through', () => {
   })
 
   it('reads the status of a call without -i from gh’s error text and keeps its exit code', () => {
-    const args = ['api', 'graphql', '-f', 'query=x']
+    const args = ['api', 'repos/acme/widgets/pulls/7']
     const stderr = 'gh: API rate limit exceeded for user (HTTP 403)\n'
 
     const result = gh({ [args.join(' ')]: { stderr, code: 1 } }, ...args)
@@ -171,9 +171,9 @@ describe('gh shim logging the commands it passes through', () => {
     expect(result.stderr).toBe(stderr)
     expect(logged()).toEqual([
       expect.objectContaining({
-        api: 'graphql',
-        method: 'POST',
-        route: 'graphql',
+        api: 'rest',
+        method: 'GET',
+        route: 'repos/{o}/{r}/pulls/{n}',
         status: 403,
         limit: 'primary',
       }),
@@ -184,19 +184,19 @@ describe('gh shim logging the commands it passes through', () => {
     delete env.AGENT_CHAT_NAME
     gh({ '--version': { stdout: 'gh version 2\n' } }, '--version')
     const result = gh(
-      { 'pr create --fill': { stdout: 'https://github.com/acme/widgets/pull/8\n' } },
-      'pr',
-      'create',
-      '--fill',
+      { 'repo view acme/widgets': { stdout: 'acme/widgets\n' } },
+      'repo',
+      'view',
+      'acme/widgets',
     )
 
-    expect(result.stdout).toBe('https://github.com/acme/widgets/pull/8\n')
+    expect(result.stdout).toBe('acme/widgets\n')
     expect(logged()).toEqual([
       expect.objectContaining({
         caller: 'shim',
         api: 'graphql',
         method: 'CLI',
-        route: 'pr create',
+        route: 'repo view',
         status: 'ok',
       }),
     ])

@@ -128,7 +128,14 @@ export function hitOf(line: GhCallLine): Hit | undefined {
   }
 }
 
-const READ_SUBCOMMANDS = new Set(['view', 'list', 'status', 'checks', 'diff', 'watch'])
+export const READ_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'view',
+  'list',
+  'status',
+  'checks',
+  'diff',
+  'watch',
+])
 
 /** Reads fail fast during a cooldown; anything not known to be a read is a write and goes through. */
 export function isRead(argv: readonly string[], shape: CallShape): boolean {
