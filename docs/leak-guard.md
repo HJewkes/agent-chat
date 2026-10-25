@@ -454,6 +454,10 @@ the command was built (`no-verify`). Its limits: text that runs git by its absol
 (`/usr/bin/git`) skips the shim, and the owner's own sessions do not run it. Shim rows that prove
 these classes refused are follow-up CC-1641.
 
+A shell named by an expanded command word or a busybox applet is read as sh. Push is backstopped
+by the shim (observed, CC-1631 redesign 3), except git by absolute path, env -i, a reset PATH,
+command -p or sudo (CC-1645).
+
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`                                                                                                                                                                                                                                    | skips the pre-push hook                                     |
