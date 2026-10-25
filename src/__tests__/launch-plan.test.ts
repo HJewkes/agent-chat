@@ -1219,7 +1219,10 @@ describe('the built-in toolset a worker launches with (CC-1593)', () => {
   })
 
   it('keeps out a built-in the profile denies outright, but not one it only scopes', () => {
-    const tools = toolsFor({ allowedTools: ['Bash', 'Read'], disallowedTools: ['Monitor', 'Bash(git stash:*)'] })
+    const tools = toolsFor({
+      allowedTools: ['Bash', 'Read'],
+      disallowedTools: ['Monitor', 'Bash(git stash:*)'],
+    })
 
     expect(tools).toBe('Bash,Read,ToolSearch')
   })

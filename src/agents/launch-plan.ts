@@ -205,7 +205,9 @@ const WORKER_KEPT_TOOLS = ['ToolSearch', 'Monitor']
  */
 function workerTools(profile: AgentProfile): string[] {
   const denied = new Set(profile.disallowedTools ?? [])
-  const named = profile.allowedTools.filter(tool => !tool.startsWith('mcp__')).map(tool => tool.split('(')[0] ?? '')
+  const named = profile.allowedTools
+    .filter(tool => !tool.startsWith('mcp__'))
+    .map(tool => tool.split('(')[0] ?? '')
   return [...new Set([...named, ...WORKER_KEPT_TOOLS])].filter(tool => tool !== '' && !denied.has(tool))
 }
 
