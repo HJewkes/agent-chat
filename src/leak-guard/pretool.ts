@@ -264,7 +264,7 @@ export const REASONS = {
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
 } as const
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])

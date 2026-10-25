@@ -6,6 +6,8 @@
  * missing from a table fails closed, since these programs gain options between releases.
  */
 
+import path from 'node:path'
+
 import { expandsToWords } from './git-unresolved.js'
 import { LIVE } from './shell-words.js'
 
@@ -216,9 +218,21 @@ export function jobRun(
 const orShell = (words: readonly string[], end: number, chdir: boolean): JobRun =>
   end < words.length ? { at: end, chdir } : { script: undefined, chdir }
 
-/** busybox runs the applet its first word names; only setsid is read, and any other fails closed. */
+/**
+ * busybox 1.37's applets the guard reads as the command they name (CC-1342): its shells, and env,
+ * timeout and xargs, whose options are a subset of the GNU ones and which stop at the first operand.
+ */
+const BUSYBOX_COMMANDS: ReadonlySet<string> = new Set(['sh', 'ash', 'env', 'timeout', 'xargs'])
+
+/**
+ * busybox runs the applet its first word names, by basename (`busybox /bin/sh` runs sh). setsid is
+ * read here, BUSYBOX_COMMANDS run as the command they name, and any other applet fails closed.
+ */
 function busyboxRun(words: readonly string[], i: number, splits: readonly string[]): JobRun | undefined {
-  if (words[i] !== 'setsid') return undefined
+  const applet = words[i]
+  if (applet === undefined || mayExpand(applet, splits)) return undefined
+  if (BUSYBOX_COMMANDS.has(path.basename(applet))) return { at: i }
+  if (applet !== 'setsid') return undefined
   const parsed = readOptions(words, i + 1, BUSYBOX_SETSID, splits)
   return parsed && { at: parsed.end }
 }
