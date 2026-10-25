@@ -175,6 +175,9 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     "git -c 'core.pager=less *' log",
     'git -c "a{b}=x" push',
     'git --config-env=user.name=NAME push',
+    'git -C /tmp/example-repo show origin/main:src/a.ts',
+    'git -C /tmp/example-repo log --oneline origin/main',
+    'git -C /tmp/example-repo grep foo origin/main',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })

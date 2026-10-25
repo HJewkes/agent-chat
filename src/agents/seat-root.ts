@@ -1,5 +1,5 @@
 import type { IdentityBinding } from '../broker/registry.js'
-import type { AgentOrigin } from '../protocol.js'
+import type { AgentIdentity, AgentOrigin } from '../protocol.js'
 import { leasesName } from './seats/seat-target.js'
 import { seatPolicyPath, type SeatPolicy, type SeatPolicyEntry } from './seat-policy.js'
 
@@ -39,6 +39,24 @@ export function seatRootOf(
   })
     ? seat
     : undefined
+}
+
+/**
+ * CC-1616: the policy entry a listed identity would hold root under, for display. The roster does
+ * not carry how the connection registered, so this is the row-side half of {@link seatRootOf}; the
+ * broker still decides each spawn on the full proof.
+ */
+export function rootSeatEntry(
+  agent: Pick<AgentIdentity, 'name' | 'profile' | 'origin' | 'teleportFrom'>,
+  policy: SeatPolicy,
+): SeatPolicyEntry | undefined {
+  const entry = policySeat(policy, agent.name)
+  if (entry === undefined || !entry.launchProfiles.includes(agent.profile)) return undefined
+  const lease = {
+    origin: agent.origin,
+    ...(agent.teleportFrom === undefined ? {} : { teleportFrom: agent.teleportFrom }),
+  }
+  return leasesName(lease) ? entry : undefined
 }
 
 /** The policy entry a launch named `name` would take a seat under, whatever its profile. */

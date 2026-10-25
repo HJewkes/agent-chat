@@ -474,6 +474,8 @@ describe('spawning', () => {
       'Bash(agent-chat debug send:*)',
       'Bash(agent-chat agent:*)',
       'Bash(agent-chat port:*)',
+      'Bash(agent-chat seats:*)',
+      'Bash(agent-chat burndown:*)',
       'AskUserQuestion',
       ...workerConfigDenies(home()),
     ])
