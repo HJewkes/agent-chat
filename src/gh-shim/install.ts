@@ -10,6 +10,9 @@ export const GH_SHIM_DIR_ENV = 'AGENT_CHAT_GH_SHIM_DIR'
 /** `1` sends every command straight to the real gh, for when the shim itself is the suspect. */
 export const GH_SHIM_OFF_ENV = 'AGENT_CHAT_GH_SHIM_OFF'
 
+/** CC-1644: where the shim finds gh-write's launch keys; a literal on the exec line, so env cannot move it. */
+export const GH_KEY_ROOT_ENV = 'AGENT_CHAT_GH_KEY_ROOT'
+
 const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 /**
@@ -32,12 +35,18 @@ const dropOwnDirFromPath = (dir: string): string[] => [
 ]
 
 /** Falls back to the real gh when the node or the build it was written against has gone. */
-export const ghShimScript = (dir: string, node: string, main: string, shell = posixShell()): string =>
+export const ghShimScript = (
+  dir: string,
+  node: string,
+  main: string,
+  keyRoot: string,
+  shell = posixShell(),
+): string =>
   [
     `#!${shell}`,
     '# Written by agent-chat at each spawn (CC-395); answers read-only gh commands from REST.',
     `if [ -x ${quote(node)} ] && [ -f ${quote(main)} ]; then`,
-    `  ${GH_SHIM_DIR_ENV}=${quote(dir)} exec ${quote(node)} ${quote(main)} "$@"`,
+    `  ${GH_SHIM_DIR_ENV}=${quote(dir)} ${GH_KEY_ROOT_ENV}=${quote(keyRoot)} exec ${quote(node)} ${quote(main)} "$@"`,
     'fi',
     ...dropOwnDirFromPath(dir),
     'export PATH',
@@ -50,12 +59,12 @@ export const shimDirFor = (root: string, main: string): string =>
   path.join(root, createHash('sha256').update(main).digest('hex').slice(0, 12))
 
 /** Rewritten through a rename on every launch, so a concurrent spawn never execs a half-written file. */
-export function writeGhShim(root: string, node: string, main: string): string {
+export function writeGhShim(root: string, node: string, main: string, keyRoot: string): string {
   const dir = shimDirFor(root, main)
   fs.mkdirSync(dir, { recursive: true })
   const target = path.join(dir, 'gh')
   const temp = `${target}.${process.pid}.tmp`
-  fs.writeFileSync(temp, ghShimScript(dir, node, main), { mode: 0o755 })
+  fs.writeFileSync(temp, ghShimScript(dir, node, main, keyRoot), { mode: 0o755 })
   fs.renameSync(temp, target)
   return dir
 }

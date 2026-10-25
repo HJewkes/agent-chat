@@ -62,7 +62,7 @@ describe.each(SHELLS.map(shell => [path.basename(shell), shell]))(
       gitShim: gitShimScript(REAL_GIT, SCRATCH, [], '', shell),
       prePush: hookScripts(INPUTS, shell).get('pre-push') ?? '',
       chain: hookScripts(INPUTS, shell).get('pre-commit') ?? '',
-      gh: ghShimScript(SCRATCH, '/node', '/main.js', shell),
+      gh: ghShimScript(SCRATCH, '/node', '/main.js', '/keys', shell),
     })
 
     it('names the fixed interpreter on line 1, with -p wherever the interpreter takes it', () => {
