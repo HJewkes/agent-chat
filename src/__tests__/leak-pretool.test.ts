@@ -807,7 +807,7 @@ describe('a gh command the command line hides', () => {
 
   it.each([
     '$E gh pr create -t x --body-file /w/pr.md',
-    '"$(true)" gh pr create -t x --body-file /w/pr.md',
+    '$(true) gh pr create -t x --body-file /w/pr.md',
     '$E $F gh pr create -t x --body-file /w/pr.md',
     '$E command gh pr create -t x --body-file /w/pr.md',
     '$E agent-chat gh-write -- pr create -t x --body-file /w/pr.md',

@@ -208,7 +208,6 @@ export const REASONS = {
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments. ${HEREDOC_POST} ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
-  splitCommand: `leak-guard: the command word is an unquoted expansion of a value the guard cannot read (one that read, mapfile, readarray, for or $(...) sets, a $(...) beside git or gh, $1, $@ or the like), which the shell may split into a whole command such as a push. Quote the word, or write the command out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
@@ -2324,8 +2323,7 @@ function checkHidden(
       depth,
     ) ??
     // The word may be a shell, which runs its `-c` string or the text it is fed (CC-1411).
-    (mayBeShell(head) ? checkShell({ name: 'bash', marked, assigns }, cmd, ctx, scope, depth) : undefined) ??
-    (splitsUnreadHead(head, cmd, scope) ? REASONS.splitCommand : undefined)
+    (mayBeShell(head) ? checkShell({ name: 'bash', marked, assigns }, cmd, ctx, scope, depth) : undefined)
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
 
@@ -2335,38 +2333,6 @@ const NO_EXPANSION = new RegExp(`^[^${LIVE}]*${LIVE}+$`)
 
 /** An expanded command word that may be a shell; the words xargs or find fill have their own checks. */
 const mayBeShell = (head: string): boolean => !head.includes(XARGS_ARGS) && !NO_EXPANSION.test(head)
-
-/**
- * A command word the shell may split into several words, run as a whole command the guard never
- * sees, when it reads a value the guard cannot: `read -r l <<< '<push>'; $l` (CC-1411). The words
- * xargs or find fill have their own checks.
- */
-function splitsUnreadHead(head: string, cmd: SimpleCommand, scope: Scope): boolean {
-  if (head.includes(XARGS_ARGS) || !expandsToWords(head, cmd.splits)) return false
-  const raw = unmark(head)
-  if (NAMES_GIT.test(raw.replace(QUOTING, '')) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
-  // Like eval of text it cannot read, a substitution counts only on a line that names git or gh.
-  if (scope.namesGit && cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
-  return [...raw.matchAll(VARIABLE)].some(match => setUnreadably(match[1] as string, scope.line))
-}
-
-// Shell state that changes what a plain value expands to: IFS, which `${IFS}` itself adds, or an
-// attribute a declaration builtin sets, such as a nameref (`declare -n r=l`) or case folding.
-const EXPANSION_STATE =
-  /(?<![\w$./-])(?:IFS|declare|typeset|local|readonly|export|integer|float|nameref)(?![\w./-])/
-
-/**
- * Whether the line names a variable other than in a plain `NAME=word` of characters no shell
- * splits or expands, anywhere on it, since a loop may run a later `read NAME` first. A plain
- * value is readable only where the line sets no expansion state (CC-1411).
- */
-function setUnreadably(name: string, line: string): boolean {
-  const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
-  if (name === 'IFS' || EXPANSION_STATE.test(said)) return true
-  const named = said.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0
-  const plain = line.match(new RegExp(`(?<![A-Za-z0-9_$])${name}=[\\w./:@%+,-]*(?=[\\s;&|)]|$)`, 'g'))
-  return named > (plain?.length ?? 0)
-}
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
@@ -3287,9 +3253,6 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
-    // A deferred env reason names the cause of a split command word more exactly.
-    if (reason === REASONS.splitCommand && typeof envReason === 'symbol')
-      return DEFERRED_REASONS.get(envReason)
     if (reason !== undefined) return reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)

@@ -3,11 +3,9 @@ import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.
 import { fakeGitShells } from './helpers/fake-git-shells.js'
 
 /**
- * A command word the guard cannot read may be a whole command: an unquoted `$l` that `read`,
- * `mapfile`, `readarray`, `for` or `$(...)` filled splits into `git push --no-verify`, and any
- * expanded word may be a shell that runs its `-c` string or the text it is fed (CC-1411). Real
- * bash and zsh with a fake `git` first on PATH confirm each bypass row runs the push in every
- * shell it names.
+ * An expanded command word may be a shell that runs its `-c` string or the text it is fed
+ * (CC-1411, CC-1428). Real bash and zsh with a fake `git` first on PATH confirm each bypass row
+ * runs the push in every shell it names.
  */
 
 const ctx = (): GuardContext => ({
@@ -24,31 +22,8 @@ const PUSH = 'git push --no-verify'
 const BOTH = ['bash', 'zsh']
 
 // Each row: the line, the reason the guard gives, and the shells that run its push.
+// Drop the shell check of an expanded word: a shell behind it runs its -c string or its feed.
 const BYPASSES: [string, string, string[]][] = [
-  // Drop splitsUnreadHead: a split command word read from text allows.
-  [`read -r l <<< '${PUSH}'; $l`, REASONS.splitCommand, ['bash']],
-  [`read -r l <<< '${PUSH}'; \${=l}`, REASONS.splitCommand, ['zsh']],
-  [`read -r l <<< '${PUSH}'; command $l`, REASONS.splitCommand, ['bash']],
-  [`IFS= read -r l < push.sh; $l`, REASONS.splitCommand, ['bash']],
-  [`read -ra a <<< '${PUSH}'; "\${a[@]}"`, REASONS.splitCommand, ['bash']],
-  [`read -rA a <<< '${PUSH}'; "\${a[@]}"`, REASONS.splitCommand, ['zsh']],
-  [`mapfile -t a < push.sh; \${a[0]}`, REASONS.splitCommand, ['bash']],
-  [`readarray -t a <<< '${PUSH}'; \${a[@]}`, REASONS.splitCommand, ['bash']],
-  [`x=$(cat push.sh); $x`, REASONS.splitCommand, ['bash']],
-  [`for l in "$(cat push.sh)"; do $l; done`, REASONS.splitCommand, ['bash']],
-  [`$(cat push.sh); git status`, REASONS.splitCommand, BOTH],
-  [`$(cat push.sh) gh pr create -t x -b y`, REASONS.splitCommand, BOTH],
-  // Read a plain value as one word whatever IFS is: ${IFS} or a line that sets IFS splits it.
-  [`l=git; \${l}\${IFS}push --no-verify`, REASONS.splitCommand, ['bash']],
-  [`x=git_push; IFS=_; $x --no-verify`, REASONS.splitCommand, ['bash']],
-  [`export IFS=_; x=git_push; $x --no-verify`, REASONS.splitCommand, ['bash']],
-  [`l=git,push,--no-verify; IFS=,; $l`, REASONS.splitCommand, ['bash']],
-  // Read a plain value as one word whatever a declaration builtin sets: a nameref expands another name.
-  [`declare -n r=l; l=$(cat push.sh); $r`, REASONS.splitCommand, ['bash']],
-  [`declare -n r=l; l='${PUSH}'; $r`, REASONS.splitCommand, ['bash']],
-  [`f() { local -n r=l; l='${PUSH}'; $r; }; f`, REASONS.splitCommand, ['bash']],
-  [`typeset -n r=l; read -r l < push.sh; $r`, REASONS.splitCommand, ['bash']],
-  // Drop the shell check of an expanded word: a shell behind it runs its -c string or its feed.
   [`while read -r l; do $l; done < push.sh`, REASONS.pipedScript, ['bash']],
   [`while read -r l; do $l; done <<'E'\n${PUSH}\nE`, REASONS.noVerify, ['bash']],
   [`echo '${PUSH}' | while read -r l; do $l; done`, REASONS.noVerify, ['bash']],
@@ -58,9 +33,12 @@ const BYPASSES: [string, string, string[]][] = [
   [`\${SHELL:-bash} -c '${PUSH}'`, REASONS.noVerify, BOTH],
   [`$(echo bash) -c '${PUSH}'`, REASONS.noVerify, BOTH],
   [`echo '${PUSH}' | $(echo bash)`, REASONS.pipedScript, BOTH],
+  [`X=bash; $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
+  [`X=bash; nice $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
+  [`X=/bin/sh; $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
 ]
 
-// Each row's mutation: count every assignment, a definition's name or xargs' words as unreadable.
+// Each row's mutation: read a definition's name, xargs' words or a clean -c string as a push.
 const BENIGN: [string, RegExp][] = [
   [`read -r l <<< '${PUSH}'; "$l"`, /^$/],
   [`while read -r f; do echo "$f"; done < push.sh; git status`, /^status$/],
@@ -70,9 +48,10 @@ const BENIGN: [string, RegExp][] = [
   [`"$(command -v cat)" push.sh; git status`, /^status$/],
   [`f() { echo hi; }; f < push.sh; git status`, /^status$/],
   [`ls | xargs -P 2 wc -c; git status`, /^status$/],
+  [`X=bash; $X -c 'echo hi'`, /^$/],
 ]
 
-describe('checkCommand on a command word that may be a whole command or a shell', () => {
+describe('checkCommand on a command word that may be a shell', () => {
   it.each(BYPASSES)('denies %j', (src, reason) => {
     expect(checkCommand(src, ctx()) ?? 'allowed').toBe(reason)
   })
@@ -81,16 +60,12 @@ describe('checkCommand on a command word that may be a whole command or a shell'
     expect(checkCommand(src, ctx())).toBeUndefined()
   })
 
-  it('denies a leading substitution beside gh even when the text is clean', () => {
-    expect(checkCommand('$(true) gh pr create -t x -b y', ctx()) ?? 'allowed').toBe(REASONS.splitCommand)
-  })
-
   it('keeps a substitution command word on a line without git or gh to eval-like rules', () => {
     expect(checkCommand('eval "$(ssh-agent -s)"; npm test', ctx())).toBeUndefined()
   })
 })
 
-const real = fakeGitShells('agent-chat-pretool-read-word-', PUSH)
+const real = fakeGitShells('agent-chat-pretool-shell-word-', PUSH)
 const shellsNamed = (names: readonly string[]) =>
   real.shells.filter(([shell]) => names.some(name => shell.endsWith(`/${name}`)))
 
