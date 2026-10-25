@@ -592,6 +592,21 @@ describe('teleporting a local session to a launcher’s machine', () => {
     expectPredecessorKept()
   })
 
+  it('sends the launch to no proofless launcher that took the machine after the probe', async () => {
+    const launcher = macLauncher()
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    answer(launcher, 'host_probe', true)
+    launcher.conn.emit('close')
+    const impostor = wire()
+    helloAsMac(impostor)
+    expect(lastHello(impostor)?.ok).toBe(true)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(frame(impostor, 'host_launch')).toBeUndefined()
+    expect(signalled()).toBe(false)
+  })
+
   it('keeps the predecessor when the launcher never answers the launch', async () => {
     const launcher = macLauncher()
     const predecessor = localPredecessor()
@@ -672,6 +687,22 @@ describe('the host directory', () => {
     macLauncher()
 
     expect(recorded()).toBe(true)
+  })
+
+  it('sends no probe, launch or spawn to a launcher that has not proved its host key', async () => {
+    const sent: unknown[] = []
+    const hosts = new HostDirectory<string>()
+    hosts.hello('impostor', macHello, frame => sent.push(frame), false)
+    const launch = { cwd: '/x', surface: 'headless' } as unknown as Parameters<HostDirectory['launch']>[1]
+
+    const answers = await Promise.all([
+      hosts.probe(MAC, { cwd: '/x', surface: 'headless' }),
+      hosts.launch(MAC, launch),
+      hosts.spawn(MAC, launch),
+    ])
+
+    expect(sent).toEqual([])
+    for (const answer of answers) expect(answer.reason).toContain('has not proved its host key')
   })
 
   it('takes an answer only from the connection that was asked', async () => {
