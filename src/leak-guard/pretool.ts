@@ -3164,19 +3164,30 @@ function feeds(
 /** What the line holds that changes the stdin its nested commands inherit. */
 interface LineFeeds {
   processSubstitution: boolean
+  /** The commands a substitution runs inside a command with a stdin of its own. */
+  fedSubstitutions: ReadonlySet<SimpleCommand>
 }
+
+const ownsStdin = (cmd: SimpleCommand): boolean =>
+  cmd.before === '|' || cmd.stdin !== undefined || cmd.stdinLive
 
 const lineFeeds = (cmds: readonly SimpleCommand[]): LineFeeds => ({
   processSubstitution: cmds.some(cmd => cmd.marked.some(isProcessSubstitution)),
+  fedSubstitutions: new Set(
+    cmds.filter(ownsStdin).flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)),
+  ),
 })
 
 /**
  * The stdin a command with no pipe or heredoc of its own inherits. A process substitution's stdin
  * is the output of the command that writes to it (`echo P > >(bash)`, CC-1416), and the splitter
- * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'.
+ * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'. A
+ * command substitution's is that of the command it sits in (`echo P | $(bash)`, CC-1412), which
+ * the splitter reads only after it, so a pipe, heredoc or redirect there makes it 'unknown' too.
  */
 function inheritedFeed(cmd: SimpleCommand, scope: Scope, line: LineFeeds): Feed {
-  return line.processSubstitution && cmd.nested ? 'unknown' : scope.stdin
+  if (line.processSubstitution && cmd.nested) return 'unknown'
+  return line.fedSubstitutions.has(cmd) ? 'unknown' : scope.stdin
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
