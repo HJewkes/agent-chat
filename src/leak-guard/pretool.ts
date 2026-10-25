@@ -39,6 +39,7 @@ import {
   type ParallelInputs,
 } from './run-wrappers.js'
 import { JOB_WRAPPERS, jobRun, mayExpand } from './job-wrappers.js'
+import { dropPrivilegeOptions, PRIVILEGE_WRAPPERS, SUDO_NAMES } from './privilege-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
@@ -219,8 +220,9 @@ export const REASONS = {
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
-  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0, pkexec or su) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
-  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0, pkexec or su) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
+  privilegeOption: `leak-guard: a privilege wrapper (doas, run0, systemd-run, pkexec, su, runuser, setpriv or machinectl) with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
+  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
+  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -278,7 +280,8 @@ const OPTION_WRAPPERS = [
   'repeat',
   'xargs',
   'env',
-  'sudo',
+  ...SUDO_NAMES,
+  ...PRIVILEGE_WRAPPERS,
 ]
 /** A getopt_long option table: the short letters that take a value, and each long name with whether it takes one. */
 interface Getopt {
@@ -319,6 +322,10 @@ const TIMEOUT_GETOPT: Getopt = {
     version: false,
   },
 }
+// Apple caffeinate: getopt `dimsut:w:`, no long options.
+const CAFFEINATE_GETOPT: Getopt = { shortValue: 'tw', long: {} }
+// bash and zsh exec: `[-cl] [-a name]`, with clusters and a glued value.
+const EXEC_GETOPT: Getopt = { shortValue: 'a', long: {} }
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
@@ -523,7 +530,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       chdir ||= run.chdir
       rest = run.words.map(w => placeFed(w, '{}'))
       at = run.at
-    } else if (name === 'sudo') {
+    } else if (SUDO_NAMES.has(name)) {
       const after = dropSudoOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.sudoOption }
       // sudo resets HOME, and -D, -R and -i move the cwd, so git may read another config and other aliases.
@@ -538,6 +545,21 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         at = 0
         viaShellVar ||= after.envShell
       } else at = after.at
+    } else if (PRIVILEGE_WRAPPERS.has(name)) {
+      const after = dropPrivilegeOptions(name, rest, at + 1)
+      if (after === undefined) return { reason: REASONS.privilegeOption }
+      // Like sudo, each resets HOME and may move the cwd.
+      chdir = true
+      privileged = true
+      if ('at' in after) at = after.at
+      // Words xargs adds may be another -c or the script itself.
+      else if (fed !== undefined) return { reason: REASONS.hiddenCommand }
+      else {
+        rest = after.shell
+        at = 0
+        // doas -s and su -m run $SHELL; reading every privileged shell that way only denies more (CC-1423).
+        viaShellVar = true
+      }
     } else if (JOB_WRAPPERS.has(name)) {
       const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
@@ -623,11 +645,11 @@ function wrapperEnd(
   values: number[] = [],
 ): number | undefined {
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
-  if (name === 'exec') return dropOptions(words, at + 1, ['-a'], values)
+  if (name === 'exec') return dropGetopt(words, at + 1, EXEC_GETOPT, values)
   if (name === 'nice') return dropGetopt(words, at + 1, NICE_GETOPT, values)
   if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT, values)
   if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT, values)
-  if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'], values)
+  if (name === 'caffeinate') return dropGetopt(words, at + 1, CAFFEINATE_GETOPT, values)
   if (name === 'timeout' || name === 'repeat') return dropGetopt(words, at + 1, TIMEOUT_GETOPT, values) + 1
   return undefined
 }

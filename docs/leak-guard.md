@@ -331,26 +331,48 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
+`nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, the other privilege wrappers below, zsh's `noglob`, `nocorrect` and `repeat <n>`,
 `if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
-`/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
+`/usr/bin/nice` is stripped like `nice`. The options of `nice`, `timeout`, `stdbuf`, `ionice`,
+`caffeinate` and `exec` are read the way their getopt reads them (long-name prefixes, `--opt value`,
+short clusters such as `-it 5` whose value letter takes the next word), so a value is never read as
+the command. Under `sudo` the guard treats the directory and config as
 unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
 not know, an option word the shell expands, or a bare `-h` before another word (`--help` or `--host`,
 by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, so the guard checks
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
 
-Behind `sudo`, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or `find -exec`) and any
-`gh` or `agent-chat gh-write`, reads included, deny outright. sudo's `env_reset` and `secure_path`
-drop the `GIT_CONFIG_*` hooks path and the git and gh shim directories, so the pre-push scan, the
-push-time shim and gh-write's scan never run, and gh reads the target user's config. A stronger
-reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still reported first. A command beside the
-`sudo` one on the line is not affected (CC-1218).
+`sudo-rs` and `sudo.ws`, the names sudo has where sudo-rs is the default, are read as `sudo`.
+`doas`, `run0`, `systemd-run` (the binary `run0` links to), `pkexec`, `su`, `su-rs`, `runuser`,
+`setpriv` and `machinectl shell` are stripped the same way, their options read from per-wrapper
+tables (`src/leak-guard/privilege-wrappers.ts`). An option a table does not know, an option missing
+its value, or an option word or value the shell expands denies. A word holding `$` behind
+`systemd-run` denies, since systemd-run expands it from the unit's environment. On `systemd-run` and
+`run0` a `-p`/`--property` unit property denies unless it is on an allow-list of resource and timing
+properties (`MemoryMax`, `CPUQuota`, `Nice` and the like), since others such as `ExecStartPre` or
+`StandardInputText` set what runs or feed it; `--path-property`, `--socket-property` and
+`--timer-property` always deny. `runuser -u <user>` runs its words as the command, with no shell;
+without `-u` it reads as `su`. `machinectl shell [host] <command>` runs the words after the machine
+name; its other verbs run no command. `su -c '<line>'`, `doas -s`, `run0 -i` and `--via-shell`, and a
+bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin, with
+the `$SHELL` rule below; xargs input to one denies. `sg`, `gosu`, `su-exec`, `chpst`, `setuidgid`,
+`s6-setuidgid` and `capsh --user` are not covered.
 
-For the same reason, behind `sudo` the guard denies what it cannot read instead of leaving it to
-those run-time checks. A command word that is an expansion (`sudo $(echo git push)`,
-``sudo `echo git` push``, `CMD='git push'; sudo $CMD`, also inside `sudo sh -c` or after
-`sudo env` or `sudo nice`) denies on a line that may reach git or gh, so `sudo $EDITOR /etc/hosts`
+Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
+`find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright. sudo's
+`env_reset` and `secure_path` drop the `GIT_CONFIG_*` hooks path and the git and gh shim
+directories, so the pre-push scan, the push-time shim and gh-write's scan never run, and gh reads the
+target user's config. That the other wrappers drop them the same way through their own environment
+resets is UNVERIFIED; plain `su`, `systemd-run --scope` and `setpriv` without `--reset-env` keep most
+of the environment but still run as the target user. The guard denies under every one either way. A
+stronger reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still reported first. A command
+beside the wrapped one on the line is not affected (CC-1218).
+
+For the same reason, behind any of these wrappers the guard denies what it cannot read instead of
+leaving it to those run-time checks. A command word that is an expansion (`sudo $(echo git push)`,
+``sudo `echo git` push``, `CMD='git push'; doas $CMD`, also inside `sudo sh -c` or after
+`sudo env` or `sudo nice`) denies on a line that may reach git or gh, so `doas $EDITOR /etc/hosts`
 stays allowed. A literal git with no subcommand word, as in `sudo git --version`, runs none and is
 allowed (CC-1218).
 
@@ -847,7 +869,7 @@ denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh
 allowed. A literal list naming `ext` denies wherever it appears, on a script, make or npm line too
 (`GIT_ALLOW_PROTOCOL=ext make`, CC-1137 d), since nothing legitimate lists it. An unset, an unread
 value or a built name (`export $N=ext; make`) on a line that cannot reach git stays allowed and is
-left to the CC-1095 pin, which re-pins the list for every git the shim runs;
+left to the CC-1095 pin, which pins `ext` off for every git the shim runs;
 `leak-git-shim-protocol.test.ts` shows a script's and a make rule's git refusing `ext::` under each.
 A `git config` write, legacy or `git config set`, of `protocol.allow` or
 `protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
@@ -862,7 +884,7 @@ into place, so a rename whose target is under `protocol` denies as a protocol wr
 target is under `remote`, `url` or `submodule`, or that the guard cannot read, denies as a URL
 write. `git remote` with a verb the guard cannot read (`git remote "$V" x "$U"`) denies, and
 `git submodule add` or `set-url` and `submodule.<name>.url` writes follow the remote rules. A
-direct edit of `.git/config` or `.gitmodules` is not read here; the `GIT_ALLOW_PROTOCOL` pin
+direct edit of `.git/config` or `.gitmodules` is not read here; the shim's `ext` pin
 (CC-1095) is the backstop.
 
 git's parse-options accepts any unique prefix of a long option (`--ren` for `--rename-section`,
@@ -1469,7 +1491,7 @@ so a bug in the guard cannot block every command an agent runs.
 Not covered, by design or by cost:
 
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
-  sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
+  sees; its git still runs under the shim's `ext` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
   `find -exec gh ...`, `parallel git ...`, `watch gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
@@ -1731,21 +1753,42 @@ Every other command, and a push that passes,
 A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
 that is no alias up to two more for `help.autocorrect`.
 
-Before any of that, the shim pins `GIT_ALLOW_PROTOCOL` (CC-1095), so every git it runs, a `!`
-alias body included, gets the caller's list cut down to `file:git:http:https:ssh`. An unset
-variable gets that whole list, and an empty one stays empty, which git reads as no transport.
-git reads this list over `protocol.*.allow` in every config scope, so a repository with
-`protocol.ext.allow=always` and an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
-`transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
-GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
-The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
-`agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
-burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
-alias that expands to it, with exit 2 and `git-shim: refused (ext-transport)`, because that
-helper runs its argument as a shell command without the transport check. The list keeps `file`,
-so local clones, test fixtures and a `file` submodule still work; leaving it out would break
-local-path clones. A remote helper outside the list, such as `persistent-https::` or
-`gcrypt::`, is refused for agents.
+Before any of that, the shim pins `ext` off (CC-1095) for every git it runs, a `!` alias body
+included. git reads `GIT_ALLOW_PROTOCOL` over `protocol.*.allow` in every config scope, so the shim
+no longer exports it for a caller who did not set it (CC-1336): that widened a caller's own `-c
+protocol.allow=never`, a global deny, or a clone template's or submodule's. It unsets the variable
+when it is unset or exactly `file:git:http:https:ssh`, the list `agentEnv` and the launch plan
+still write. Any other value is the caller's and is cut down to that list; an empty one stays
+empty, which git reads as no transport. Then the shim appends `protocol.ext.allow=never` as the
+last `GIT_CONFIG_COUNT` pair, unless it already is the last one. A count that is not a number, or
+a key or value unset below it, refuses with exit 2 and `git-shim: refused (config-count)`.
+
+That pair is command scope, which git ranks over every config file and include, and a protocol's
+own key beats `protocol.allow`. So a repository or global `protocol.ext.allow=always` or
+`protocol.allow=always` with an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
+`transport 'ext' not allowed`, in a submodule child too. git resolves every other protocol from
+the config it reads at fetch time, so the shim reads none of it. Only `-c`, `--config-env` and
+`GIT_CONFIG_PARAMETERS` rank after the pair, so before it execs, the shim reads
+`protocol.ext.allow` under the caller's `-c` and `--config-env` options and refuses with exit 2
+and `git-shim: refused (ext-transport)` unless the last value is `never`, when a command-line
+`include.path` or `includeIf.*.path` is set (git evaluates its condition here, not in a repo the
+command creates), or when a read fails. That costs two `git config` starts a call. The shim also
+refuses `git remote-ext`, and an alias that expands to it, the same way, because that helper runs
+its argument as a shell command without the transport check.
+
+With no list exported, git's defaults apply, which changed two cases (CC-1607):
+
+- a `file://` or local-path submodule clone follows `protocol.file.allow=user`, which a submodule
+  child denies (CVE-2022-39253); a fixture that needs one passes `-c protocol.file.allow=always`;
+- a remote helper such as `persistent-https::` or `gcrypt::` follows `user`: it runs when the
+  agent names it, which could run the helper anyway, and is denied in a submodule.
+
+`pinGitProtocols` in `src/git.ts` still exports the list in every env agent-chat builds
+(`agentEnv`, the launch plan, `gitChildEnv`, the burndown tick, worktree setup), so git run
+outside the shim with that env is still widened until CC-1587. A real git that a shim-run git
+starts (a hook, `rebase -x`) inherits no list, so its own `-c protocol.ext.allow=always` runs
+`ext::`. That argv could set `GIT_ALLOW_PROTOCOL=ext` before with the same effect; CC-1095 covers
+`ext::` from config or a URL, and that stays denied in every file scope.
 
 Not covered:
 
