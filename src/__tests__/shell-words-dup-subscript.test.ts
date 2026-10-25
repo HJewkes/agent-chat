@@ -46,11 +46,38 @@ const DUP_WRITES = [
 describe('a >& redirect to a word writes it (TP-4257)', () => {
   // Mutation: return 'discard' from duplicateKind for every word, and these rows read no write.
   it.each(DUP_WRITES)('records x as written by %j', line => {
-    expect(writesOf(line)).toEqual(['x'])
+    expect(writesOf(line)).toContain('x')
   })
+
+  // bash reads zsh's `!` as the start of the file name. Mutation: drop noteBashBang, and these
+  // record zsh's target alone.
+  it.each([
+    ['cat f >!x', ['!x', 'x']],
+    ['cat f >! x', ['!', 'x']],
+    ['cat f >&!x', ['!x', 'x']],
+    ['cat f >>!"x"', ['!x', 'x']],
+    ['cat f >&!2', ['!2']],
+    ['cat f >!~/x', ['!~/x', '~/x']],
+  ])('records the targets bash and zsh write for %j', (line, writes) => {
+    expect(writesOf(line)).toEqual(writes)
+  })
+
+  it.each(['cat /tmp/rc >!b.md', 'cat /tmp/rc >&!b.md', 'cat /tmp/rc >>!b.md'])(
+    'denies the body file bash writes for %j',
+    write => {
+      const readFile = (): string => 'synthetic body\n'
+      expect(checkCommand(`${write}; gh pr create -t x --body-file '!b.md'`, { ...ctx, readFile })).toBe(
+        REASONS.writtenBody,
+      )
+    },
+  )
 
   it('records an expanded >& target, which may name a file', () => {
     expect(writesOf('cat f >&$y')).toEqual(['$y'])
+  })
+
+  it('records the file 1- zsh writes for 3>&1-, where bash moves a descriptor', () => {
+    expect(writesOf('cat f 3>&1-')).toEqual(['1-'])
   })
 
   // Mutation: return 'write' from duplicateKind for every word, and these rows read a write.
@@ -86,6 +113,10 @@ const SUBSCRIPT_RUNS = [
   `[[ -v 'a[$(${PUSH})]' ]]`,
   `[[ 'a[$(${PUSH})]' -eq 0 ]]`,
   `[[ -n x && 'b+a[$(${PUSH})]' -gt 0 ]]`,
+  `[[ -n x && 'a[$(${PUSH})]' -eq 0 && -n y ]]`,
+  `[[ -z x || 'a[$(${PUSH})]' -eq 0 || -n y ]]`,
+  `[[ ( 'a[$(${PUSH})]' -gt 0 ) ]]`,
+  `[[ ! ( 'a[$(${PUSH})]' -gt 0 ) ]]`,
   `test -v "a[\\$(${PUSH})]"`,
   `read 'a[$(${PUSH})]' < /dev/null`,
   `declare 'a[$(${PUSH})]=1'`,
@@ -134,8 +165,8 @@ const REAL_SHELLS = [
   ['bash', '/bin/bash', ['--noprofile', '--norc']],
 ] as const
 
-/** The text the shell leaves in `x` after running `line` in a scratch dir holding `f`, or undefined. */
-function writtenX(shell: string, flags: readonly string[], line: string): string | undefined {
+/** The files the shell creates running `line` in a scratch dir holding `f`. */
+function newFiles(shell: string, flags: readonly string[], line: string): string[] {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp4257-'))
   try {
     fs.writeFileSync(path.join(dir, 'f'), 'synthetic rc\n')
@@ -145,12 +176,19 @@ function writtenX(shell: string, flags: readonly string[], line: string): string
     } catch {
       // A shell that rejects the form writes nothing.
     }
-    const x = path.join(dir, 'x')
-    return fs.existsSync(x) ? fs.readFileSync(x, 'utf8') : undefined
+    return fs.readdirSync(dir).filter(file => file !== 'f')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 }
+
+// The files each shell writes for a form the two read apart; the guard records every one.
+const SPLIT_FILES: [string, { zsh: string[]; bash: string[] }][] = [
+  ['cat f >!x', { zsh: ['x'], bash: ['!x'] }],
+  ['cat f >! x', { zsh: ['x'], bash: ['!'] }],
+  ['cat f >&!x', { zsh: ['x'], bash: ['!x'] }],
+  ['cat f 3>&1-', { zsh: ['1-'], bash: [] }],
+]
 
 // Which shells write x for each form: zsh writes every one; bash only `>&` and `1>&` to a word.
 const BASH_WRITES = new Set(['cat f >& x', 'cat f >&x', 'cat f 1>& x', 'cat f >&"x"', '< f >& x'])
@@ -160,14 +198,23 @@ describe('the >& family against real shells (TP-4257)', () => {
     it.skipIf(!fs.existsSync(shell)).each(DUP_WRITES)(
       `${name} writes x or rejects %j as the guard reads it`,
       line => {
-        expect(writtenX(shell, flags, line) !== undefined).toBe(name === 'zsh' || BASH_WRITES.has(line))
+        expect(newFiles(shell, flags, line).includes('x')).toBe(name === 'zsh' || BASH_WRITES.has(line))
       },
     )
 
     it.skipIf(!fs.existsSync(shell)).each(['cat f >&2', 'cat f >& -', 'cat f >&"1"'])(
       `${name} writes no file for %j`,
       line => {
-        expect(writtenX(shell, flags, line)).toBeUndefined()
+        expect(newFiles(shell, flags, line)).toEqual([])
+      },
+    )
+
+    it.skipIf(!fs.existsSync(shell)).each(SPLIT_FILES)(
+      `${name} writes only recorded targets for %j`,
+      (line, files) => {
+        const written = newFiles(shell, flags, line)
+        expect(written).toEqual(files[name])
+        expect(writesOf(line)).toEqual(expect.arrayContaining(written))
       },
     )
   }

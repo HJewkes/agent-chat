@@ -90,7 +90,7 @@ const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '<>', '&>', '&>>'])
 const DUPLICATE_OPERATORS = new Set(['>&', '>>&'])
 // printf -v, test -v, `[[`, read and the declare family evaluate a NAME[subscript] operand as arithmetic.
-// `]]` stands for a `[[` an `&&` or `||` inside the test cut off.
+// `]]` ends the last command of a `[[` test an `&&` or `||` cut.
 const SUBSCRIPT_EVALUATORS = new Set(
   'printf print test [ [[ ]] read vared let unset declare typeset local export readonly integer'.split(' '),
 )
@@ -358,9 +358,14 @@ function redirectKind(op: string): Pending {
  * on any descriptor (TP-4257).
  */
 function duplicateKind(word: string, marked: string): 'discard' | 'write' {
+  // bash moves descriptor 1 to 3 for `3>&1-`, where zsh writes a file named `1-`.
   const descriptor = word === '-' || (word !== '' && [...word].every(c => c >= '0' && c <= '9'))
   return descriptor && !marked.includes(LIVE) ? 'discard' : 'write'
 }
+
+/** bash's target for a zsh `>!word`: `!word`, where a leading `~` or `=` no longer expands. */
+const bangTarget = (marked: string): string =>
+  `!${marked.startsWith(`${LIVE}~`) || marked.startsWith(`${LIVE}=`) ? marked.slice(1) : marked}`
 
 /** A `$(...)` or backtick the shell expands in the marked text, whose output it would read again. */
 const expandsCommand = (marked: string): boolean =>
@@ -377,6 +382,8 @@ class ShellLexer {
   private splitting = false
   private quoted = false
   private pending: Pending | null = null
+  /** The pending target follows zsh's `!` with no blank, so bash writes it with the `!` in front. */
+  private bashBang = false
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -999,6 +1006,7 @@ class ShellLexer {
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
+    this.bashBang = false
     this.pending = redirectKind(this.redirectOperator())
   }
 
@@ -1016,8 +1024,16 @@ class ShellLexer {
     if (this.peek(this.pos) === '!' && (op.endsWith('>') || op.endsWith('>&'))) {
       op += '!'
       this.advance(1)
+      this.noteBashBang()
     }
     return op
+  }
+
+  /** bash writes `!` for `>! x`, and `!x` for `>!x`, which `endWord` records beside zsh's `x`. */
+  private noteBashBang(): void {
+    const next = this.peek(this.pos)
+    if (next === undefined || METACHAR.test(next)) this.cur.writes.push('!')
+    else this.bashBang = true
   }
 
   /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
@@ -1279,6 +1295,8 @@ class ShellLexer {
     this.localeAt = []
     const pending = this.pending === 'duplicate' ? duplicateKind(word, this.marked) : this.pending
     this.pending = null
+    if (pending !== null && this.bashBang) this.cur.writes.push(bangTarget(this.marked))
+    this.bashBang = false
     if (pending === null) {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
@@ -1329,7 +1347,8 @@ class ShellLexer {
    * splitter cannot read, so that makes the line unreadable.
    */
   private readSubscripts(cmd: SimpleCommand): void {
-    if (!cmd.words.some(word => SUBSCRIPT_EVALUATORS.has(word))) return
+    // `&&`, `||` and parentheses inside `[[ ]]` cut it into commands, each still inside the test.
+    if (!this.testOpen && !cmd.words.some(word => SUBSCRIPT_EVALUATORS.has(word))) return
     for (const marked of cmd.marked) {
       const open = SUBSCRIPT_OPEN.exec(marked)
       if (open === null) continue
