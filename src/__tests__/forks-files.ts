@@ -26,6 +26,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/launch-plan.test.ts',
   'src/__tests__/leak-pre-push.test.ts',
   'src/__tests__/leak-pre-push-policy.test.ts',
+  'src/__tests__/leak-git-config-routes.test.ts',
   'src/__tests__/leak-pretool-shells.test.ts',
   'src/__tests__/leak-pretool-heredoc.test.ts',
   'src/__tests__/leak-pretool-piped-shell.test.ts',

@@ -1,4 +1,3 @@
-import { parseTerms } from '@titan-design/egress-scan'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -6,7 +5,6 @@ import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { findRealGit, writeGitShim } from '../leak-guard/git-shim.js'
 import { gitHooksEnv, noRewriteHooksDir, termsFileFor, writeGitHooks } from '../leak-guard/hooks-dir.js'
-import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 /**
  * CC-1640: every route that sets git config around a push (-c, --config-env, exec -c, GIT_CONFIG_*
@@ -96,7 +94,10 @@ const ROUTES: Route[] = [
     (f, push) => `V=${f.evil} ${push.replace('git push', 'git --config-env=core.hooksPath=V push')}`,
   ],
   ['exec -c git push (bash clears the env)', (_f, push) => `exec -c ${push}`],
-  ['export of a built GIT_CONFIG_VALUE_0 name', (f, push) => `n=GIT_CONFIG_VALUE_; export "\${n}0=${f.evil}"; ${push}`],
+  [
+    'export of a built GIT_CONFIG_VALUE_0 name',
+    (f, push) => `n=GIT_CONFIG_VALUE_; export "\${n}0=${f.evil}"; ${push}`,
+  ],
   ['declare -x of a built name', (f, push) => `n=GIT_CONFIG_VALUE_; declare -x "\${n}0=${f.evil}"; ${push}`],
   ['printf -v of a built name', (f, push) => `i=0; printf -v "GIT_CONFIG_VALUE_$i" %s ${f.evil}; ${push}`],
   ['read into a built name', (f, push) => `n=GIT_CONFIG_VALUE_0; read -r "$n" <<< ${f.evil}; ${push}`],
@@ -104,19 +105,18 @@ const ROUTES: Route[] = [
   ['getopts into GIT_CONFIG_COUNT', (_f, push) => `getopts 0 GIT_CONFIG_COUNT -0; ${push}`],
   ['(( GIT_CONFIG_COUNT = 0 ))', (_f, push) => `(( GIT_CONFIG_COUNT = 0 )); ${push}`],
   ['export of a built GIT_CONFIG_COUNT name', (_f, push) => `n=GIT_CONFIG_; export "\${n}COUNT=0"; ${push}`],
-  ['export of a built GIT_CONFIG_KEY_0 name', (_f, push) => `n=GIT_CONFIG_KEY_; export "\${n}0=core.editor"; ${push}`],
   [
-    'GIT_CONFIG_PARAMETERS',
-    (f, push) => `GIT_CONFIG_PARAMETERS="'core.hookspath'='${f.evil}'" ${push}`,
+    'export of a built GIT_CONFIG_KEY_0 name',
+    (_f, push) => `n=GIT_CONFIG_KEY_; export "\${n}0=core.editor"; ${push}`,
   ],
+  ['GIT_CONFIG_PARAMETERS', (f, push) => `GIT_CONFIG_PARAMETERS="'core.hookspath'='${f.evil}'" ${push}`],
   [
     'GIT_CONFIG_GLOBAL file, after a built-name GIT_CONFIG_COUNT=0',
     (f, push) => `n=GIT_CONFIG_; export "\${n}COUNT=0"; GIT_CONFIG_GLOBAL=${f.file} ${push}`,
   ],
   [
     'GIT_CONFIG_SYSTEM file, after a built-name GIT_CONFIG_COUNT=0',
-    (f, push) =>
-      `n=GIT_CONFIG_; export "\${n}COUNT=0" "\${n}NOSYSTEM="; GIT_CONFIG_SYSTEM=${f.file} ${push}`,
+    (f, push) => `n=GIT_CONFIG_; export "\${n}COUNT=0" "\${n}NOSYSTEM="; GIT_CONFIG_SYSTEM=${f.file} ${push}`,
   ],
   ['git -c include.path=<file>', (f, push) => push.replace('git push', `git -c include.path=${f.file} push`)],
 ]
@@ -129,7 +129,11 @@ interface Outcome {
 }
 
 function runLine(f: Fixture, line: string, shimmed: boolean): Outcome {
-  const env = { ...baseEnv(), ...gitHooksEnv(f.guard), PATH: shimmed ? `${f.shimDir}:${REAL_PATH}` : REAL_PATH }
+  const env = {
+    ...baseEnv(),
+    ...gitHooksEnv(f.guard),
+    PATH: shimmed ? `${f.shimDir}:${REAL_PATH}` : REAL_PATH,
+  }
   const out = spawnSync(BASH, ['-c', line], { cwd: f.work, env, encoding: 'utf8' })
   const ref = spawnSync(REAL_GIT, ['rev-parse', '--verify', '-q', 'refs/heads/landed'], {
     cwd: f.remote,
@@ -138,19 +142,6 @@ function runLine(f: Fixture, line: string, shimmed: boolean): Outcome {
   })
   return { landed: ref.status === 0, stderr: out.stderr }
 }
-
-const ctx: GuardContext = {
-  terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
-  cwd: '/work',
-  env: {},
-  protectedPaths: ['titan-egress/private-terms', '.agent-chat/git-hooks'],
-  readFile: () => undefined,
-  readAlias: () => undefined,
-  readIncludedHooksPath: () => false,
-}
-
-const reasonName = (reason: string | undefined): string =>
-  reason === undefined ? 'allowed' : (Object.entries(REASONS).find(([, text]) => text === reason)?.[0] ?? 'other')
 
 describe('git config routes around a push, against real git (CC-1640)', () => {
   it('runs the guard hook for a plain push, so a landed ref means the route skipped it', () => {
@@ -162,14 +153,13 @@ describe('git config routes around a push, against real git (CC-1640)', () => {
     expect(result.landed).toBe(false)
   })
 
-  it.each(ROUTES)('%s: lands without the shim, and the shim refuses it', (name, route) => {
+  it.each(ROUTES)('%s: lands without the shim, and the shim refuses it', (_name, route) => {
     const control = fixture()
     const guarded = fixture()
 
     const bypass = runLine(control, route(control, pushLine(control)), false)
     const result = runLine(guarded, route(guarded, pushLine(guarded)), true)
 
-    console.log(`ROW ${name} | pretool: ${reasonName(checkCommand(route(guarded, pushLine(guarded)), ctx))}`)
     expect(bypass).toMatchObject({ landed: true })
     expect(result.stderr).toMatch(/git-shim: push refused \(hooks-path\)/)
     expect(result.landed).toBe(false)
@@ -221,19 +211,31 @@ function guardedRepo(noRewrite: boolean): GuardedRepo {
   writeGitHooks(hooks, { missingTermsRefuses: true, home: owner, path: `${bin}:/usr/bin:/bin` })
   const shimDir = at('git-bin')
   writeGitShim(shimDir, hooks, REAL_PATH)
-  return { work, remote, env: { ...baseEnv(), ...gitHooksEnv(hooks), PATH: `${shimDir}:${REAL_PATH}` }, scanEnv }
+  return {
+    work,
+    remote,
+    env: { ...baseEnv(), ...gitHooksEnv(hooks), PATH: `${shimDir}:${REAL_PATH}` },
+    scanEnv,
+  }
 }
 
 const remoteRef = (repo: GuardedRepo, ref: string): string =>
-  spawnSync(REAL_GIT, ['rev-parse', '--verify', '-q', ref], { cwd: repo.remote, env: baseEnv(), encoding: 'utf8' })
-    .stdout.trim()
+  spawnSync(REAL_GIT, ['rev-parse', '--verify', '-q', ref], {
+    cwd: repo.remote,
+    env: baseEnv(),
+    encoding: 'utf8',
+  }).stdout.trim()
 
 const pushConfigByLoop = (pairs: string): string =>
   `for n in GIT_CONFIG_COUNT=2 ${pairs}; do export "$n"; done; git push origin`
 
 describe('GIT_CONFIG_* set through a name operand, with the hooks path left alone (CC-1640)', () => {
   it.each([
-    ['remote.origin.mirror=true', 'GIT_CONFIG_KEY_1=remote.origin.mirror GIT_CONFIG_VALUE_1=true', /is a mirror/],
+    [
+      'remote.origin.mirror=true',
+      'GIT_CONFIG_KEY_1=remote.origin.mirror GIT_CONFIG_VALUE_1=true',
+      /is a mirror/,
+    ],
     [
       'remote.origin.push=+HEAD:refs/heads/main',
       'GIT_CONFIG_KEY_1=remote.origin.push GIT_CONFIG_VALUE_1=+HEAD:refs/heads/main',
@@ -243,7 +245,11 @@ describe('GIT_CONFIG_* set through a name operand, with the hooks path left alon
     const repo = guardedRepo(true)
     const before = ['refs/heads/main', 'refs/heads/feat/x'].map(ref => remoteRef(repo, ref))
 
-    const out = spawnSync(BASH, ['-c', pushConfigByLoop(pairs)], { cwd: repo.work, env: repo.env, encoding: 'utf8' })
+    const out = spawnSync(BASH, ['-c', pushConfigByLoop(pairs)], {
+      cwd: repo.work,
+      env: repo.env,
+      encoding: 'utf8',
+    })
 
     expect(out.stderr).toMatch(why)
     expect(out.status).not.toBe(0)
