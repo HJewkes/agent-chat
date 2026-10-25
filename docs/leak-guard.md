@@ -1548,8 +1548,17 @@ Not covered, by design or by cost:
   A shell behind `setsid`, `flock`, `taskset`, `chrt`, `script -c` or `unshare` reads the feed
   as above (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`, `echo P | script -qc bash f`.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412
-  and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
+  A shell in a process substitution reads what the command before it writes (CC-1416):
+  `echo P > >(bash)`, `printf P > >(zsh)`, `echo P | tee >(sh) > /dev/null`, also inside a
+  `$( )`. The guard keeps no bounds for a process substitution, so on a line that holds one,
+  every command in parentheses or a substitution reads text the guard cannot read. That denies
+  harmless text too (`echo hi > >(bash)`, and a subshell `( bash )` beside a process
+  substitution), since a process substitution makes every line count as one that may reach git.
+  `diff <(git show a:f) <(git show b:f)` and a process substitution running no shell stay
+  allowed.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 and
+  CC-1412 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
@@ -1559,8 +1568,6 @@ Not covered, by design or by cost:
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
-  - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and
-    real zsh both run the push;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the
