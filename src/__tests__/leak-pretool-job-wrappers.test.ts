@@ -186,11 +186,12 @@ describe('job and namespace wrappers run the command after their options (CC-141
     expect(checkCommand(line, ctx)).toBe(REASONS.jobOption)
   })
 
-  it('denies script when the hook runs a $SHELL that is no shell it reads', () => {
-    expect(
-      checkCommand(`script -qc 'git status' /dev/null`, { ...ctx, env: { SHELL: '/usr/bin/fish' } }),
-    ).toBe(REASONS.jobShell)
-  })
+  it.each([`script -qc 'git status' /dev/null`, `script -qc 'echo hi' /dev/null`])(
+    'denies %s when the hook runs a $SHELL that is no shell it reads (CC-1631)',
+    line => {
+      expect(checkCommand(line, { ...ctx, env: { SHELL: '/usr/bin/fish' } })).toBe(REASONS.foreignShell)
+    },
+  )
 
   it.each([
     'setsid --frob git push',

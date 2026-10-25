@@ -94,14 +94,16 @@ describe('a busybox applet is checked as the command it runs (CC-1342)', () => {
   })
 })
 
-// ksh has no observed grammar, so the guard reads none of its words (CC-1631).
-describe('a shell without an observed grammar denies on a line that may reach git (CC-1342)', () => {
-  it.each([`ksh -T - -c '${P}'`, `ksh -T /dev/tty2 -c '${P}'`, `ksh -c 'git status'`])('denies %s', line => {
+// ksh has no observed grammar, so the guard reads none of its words and denies it on every line (CC-1631).
+describe('a shell without an observed grammar denies (CC-1342)', () => {
+  it.each([
+    `ksh -T - -c '${P}'`,
+    `ksh -T /dev/tty2 -c '${P}'`,
+    `ksh -c 'git status'`,
+    `ksh -T - -c 'echo hi'`,
+    'ksh script.ksh',
+  ])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.foreignShell)
-  })
-
-  it.each([`ksh -T - -c 'echo hi'`, 'ksh script.ksh'])('allows %s', line => {
-    expect(checkCommand(line, ctx)).toBeUndefined()
   })
 })
 

@@ -155,7 +155,6 @@ describe('the bypass guard fails closed on a privilege wrapper it cannot read', 
     "su --frob -c 'git push'",
     'su -c "$CMD"',
     'run0 --user=$U git push',
-    'su -s /usr/bin/git root -c push',
     'echo x | xargs su -c',
     "systemd-run --user -E P=push git '$P'",
     "systemd-run --user git '${P}'",
@@ -230,7 +229,6 @@ describe('the bypass guard reads the -c script of sg and capsh (CC-1602)', () =>
     'sg wheel -c "$CMD"',
     "sg wheel ls -c 'git push'",
     "capsh --frob -- -c 'git push'",
-    'capsh --shell=/usr/bin/git -- push',
     'capsh -- -c "$CMD"',
     // zsh expands a word that starts with `=`, so `==` is a word the guard cannot read.
     "capsh == -- -c 'git push'",
@@ -262,8 +260,11 @@ describe('the bypass guard reads ash behind a privilege wrapper (CC-1629)', () =
     "su -s /bin/csh -c 'git status'",
     "su --shell=/bin/mksh -c 'git status'",
     "capsh --shell=/bin/csh -- -c 'git status'",
-  ])('denies %s, whose shell the guard does not read', line => {
-    deny(line, REASONS.privilegeOption)
+    'su -s /usr/bin/git root -c push',
+    'capsh --shell=/usr/bin/git -- push',
+    "su -s /bin/csh -c 'echo hi'",
+  ])('denies %s, whose shell the guard does not read, on every line (CC-1631)', line => {
+    deny(line, REASONS.foreignShell)
   })
 
   it.each(["SHELL=/bin/csh doas -s <<< 'git status'", "SHELL=/bin/mksh doas -s <<< 'git status'"])(

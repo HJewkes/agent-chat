@@ -222,7 +222,7 @@ export const REASONS = {
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
-  jobShell: `leak-guard: flock, script, unshare or sudo -s runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
+  jobShell: `leak-guard: flock, script, unshare, sudo -s or doas -s runs the program $SHELL names, and this line sets SHELL to a value the guard cannot read, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
   jobOption: `leak-guard: an exec wrapper (setsid, flock, taskset, chrt, script, unshare, prlimit, time, numactl, nsenter, chroot, setarch, enosys, uclampset, coresched, busybox or scriptlive) with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
@@ -273,7 +273,7 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
-  foreignShell: `leak-guard: this line runs a shell whose text the guard does not read, since it parses it unlike sh, ash, bash, dash and zsh, the only shells the guard reads, and this line may reach git or gh. Run the text with one of those. ${DOCS}`,
+  foreignShell: `leak-guard: this line runs a shell whose text the guard does not read, by name or as the shell su -s, capsh --shell= or $SHELL names. The guard reads only sh, ash, bash, dash and zsh, and any other shell denies on every line. Run the text with one of those. ${DOCS}`,
 } as const
 
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -563,6 +563,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       // Like sudo, each resets HOME and may move the cwd.
       chdir = true
       privileged = true
+      if ('foreign' in after) return { reason: REASONS.foreignShell }
       if ('at' in after) at = after.at
       // Words xargs adds may be another -c or the script itself.
       else if (fed !== undefined) return { reason: REASONS.hiddenCommand }
@@ -2721,21 +2722,32 @@ const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
 
 /**
- * Whether `$SHELL`, which script and unshare run, may name a program other than a shell the guard
- * reads, derived as aliasEnv derives git's env. Unset, they run /bin/sh.
+ * Why `$SHELL`, which script and unshare run, denies, derived as aliasEnv derives git's env: a value
+ * the guard cannot resolve, or a shell it does not read, listed or not (CC-1631). Unset, they run /bin/sh.
  */
-function shellUnknown(
+function shellVarReason(
   assigns: readonly string[],
   cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
-): boolean {
+): string | undefined {
   const shell = settingOf(settingsFor(assigns, cmd, ctx, scope), 'SHELL', scope)
-  return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
+  if (shell === UNSURE) return REASONS.jobShell
+  return shell !== undefined && !SHELLS.has(path.basename(shell)) ? REASONS.foreignShell : undefined
 }
 
-/** Reasons unwrap gives for a wrapper it cannot read, which deny only on a line that may reach git or gh. */
-const GATED_REASONS: ReadonlySet<string> = new Set([REASONS.jobOption, REASONS.wrapperValue])
+/**
+ * Reasons for a wrapper the guard cannot read, which deny only on a line that may reach git or gh.
+ * foreignShell is never one: the gate's scan reads the line as sh, which a foreign shell does not (CC-1631).
+ */
+const GATED_REASONS: ReadonlySet<string> = new Set([
+  REASONS.jobOption,
+  REASONS.wrapperValue,
+  REASONS.jobShell,
+])
+
+const gated = (reason: string | undefined, scope: Scope, ctx: GuardContext): string | undefined =>
+  reason === undefined || !GATED_REASONS.has(reason) || lineMayReachGit(scope, ctx) ? reason : undefined
 
 // A bare `[` has no closing bracket to glob with and `[[` is a reserved word, so both run the test builtin (CC-1467).
 const TEST_WORDS: ReadonlyMap<string, readonly [string, string]> = new Map([
@@ -2758,14 +2770,10 @@ function checkSimple(
   lead?: Lead,
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
-  if ('reason' in unwrapped)
-    return !GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx) ? unwrapped.reason : undefined
-  if (
-    unwrapped.viaShellVar === true &&
-    shellUnknown(unwrapped.assigns, cmd, ctx, scope) &&
-    lineMayReachGit(scope, ctx)
-  )
-    return REASONS.jobShell
+  if ('reason' in unwrapped) return gated(unwrapped.reason, scope, ctx)
+  const shellVar =
+    unwrapped.viaShellVar === true ? shellVarReason(unwrapped.assigns, cmd, ctx, scope) : undefined
+  if (gated(shellVar, scope, ctx) !== undefined) return shellVar
   const sibling = firstReason(unwrapped.siblings ?? [], s =>
     checkSimple(suffixCommand(cmd, s.words), ctx, scope, depth, outermost, s),
   )
@@ -2784,7 +2792,8 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
-  if (FOREIGN_SHELLS.has(name)) return lineMayReachGit(at, ctx) ? REASONS.foreignShell : undefined
+  // No text is read, not even the gate's: its scan reads the line as sh (CC-1631).
+  if (FOREIGN_SHELLS.has(name)) return REASONS.foreignShell
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)

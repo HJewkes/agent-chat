@@ -480,12 +480,22 @@ describe('capsh', () => {
     [['capsh', '--frob', '--', '-c', 'x']],
     [['capsh', '--uid', '0', '--', '-c', 'x']],
     [['capsh', '--print=1']],
-    [['capsh', '--shell=/usr/bin/git', '--', 'push']],
-    [['capsh', '--shell=/usr/bin/python3', '--', '-c', 'x']],
     [['capsh', `--user=${live('$U')}`, '--', '-c', 'x']],
     [['capsh', '--', '-c', live('$CMD')]],
   ])('%j fails closed', words => {
     expect(run(...words)).toBeUndefined()
+  })
+
+  it.each([
+    [['capsh', '--shell=/usr/bin/git', '--', 'push']],
+    [['capsh', '--shell=/usr/bin/python3', '--', '-c', 'x']],
+    [['capsh', '--shell=/bin/fish', '--', '-c', 'x']],
+  ])('%j runs a foreign shell (CC-1631)', words => {
+    expect(run(...words)).toEqual({ foreign: true })
+  })
+
+  it('runs nothing when a --shell= with no -- names a foreign shell', () => {
+    expect(run('capsh', '--shell=/bin/fish')).toEqual({ at: 2 })
   })
 })
 
@@ -526,9 +536,9 @@ describe('su', () => {
     expect(run('su', '-', 'root')).toEqual({ shell: ['sh'] })
   })
 
-  it('fails closed when -s names a program that is not a shell', () => {
-    expect(run('su', '-s', '/usr/bin/git', 'root', '-c', 'push')).toBeUndefined()
-    expect(run('su', '--shell=git', '-c', 'push')).toBeUndefined()
+  it('reports a foreign shell when -s names a program that is not a shell the guard reads', () => {
+    expect(run('su', '-s', '/usr/bin/git', 'root', '-c', 'push')).toEqual({ foreign: true })
+    expect(run('su', '--shell=git', '-c', 'push')).toEqual({ foreign: true })
   })
 
   it('fails closed on an expanded word anywhere, since su reads options past the user', () => {

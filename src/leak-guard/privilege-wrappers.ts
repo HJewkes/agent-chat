@@ -14,8 +14,11 @@
 import { SHELLS } from './shell-invocation.js'
 import { LIVE } from './shell-words.js'
 
-/** The command's first word, or the argv of the shell the wrapper hands the command to. */
-export type PrivilegeRun = { at: number } | { shell: string[] }
+/**
+ * The command's first word, the argv of the shell the wrapper hands the command to, or a shell named
+ * by value whose text the guard does not read (CC-1631).
+ */
+export type PrivilegeRun = { at: number } | { shell: string[] } | { foreign: true }
 
 export interface OptionTable {
   shortValue: string
@@ -461,12 +464,14 @@ function readSuWords(t: OptionTable, words: readonly string[], i: number): SuWor
 }
 
 function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): PrivilegeRun | undefined {
-  const shell = values.get('s')
-  if (shell !== undefined && !SHELLS.has(shell.split('/').pop() as string)) return undefined
   const command = values.get('c')
   // The -s shell is read as itself, since its grammar may differ from sh's (zsh's `-b`, bash's `--rcfile`).
-  const name = shell ?? 'sh'
-  return { shell: command === undefined ? [name, ...args] : [name, '-c', command, ...args] }
+  return namedShell(values.get('s') ?? 'sh', command === undefined ? args : ['-c', command, ...args])
+}
+
+/** A shell named by value runs as itself when the guard reads it; any other is foreign, listed or not. */
+function namedShell(shell: string, args: readonly string[]): PrivilegeRun {
+  return SHELLS.has(shell.split('/').pop() as string) ? { shell: [shell, ...args] } : { foreign: true }
 }
 
 /**
@@ -508,12 +513,10 @@ function readCapsh(t: OptionTable, words: readonly string[], i: number): Privile
   for (; i < words.length; i++) {
     const a = words[i] as string
     if (a.includes(LIVE)) return undefined
-    if (a === '--' || a === '-+') return { shell: [shell, ...words.slice(i + 1)] }
+    if (a === '--' || a === '-+') return namedShell(shell, words.slice(i + 1))
     if (a === '==' || a === '=+') shell = 'bash'
-    else if (a.startsWith('--shell=')) {
-      shell = a.slice('--shell='.length)
-      if (!SHELLS.has(shell.split('/').pop() as string)) return undefined
-    } else if (!capshOption(t, a)) return undefined
+    else if (a.startsWith('--shell=')) shell = a.slice('--shell='.length)
+    else if (!capshOption(t, a)) return undefined
   }
   return { at: words.length }
 }

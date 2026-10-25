@@ -7,9 +7,9 @@ import { fakeGitShells } from './helpers/fake-git-shells.js'
 
 /**
  * The guard reads only shells with an observed grammar: sh, ash, bash, dash and zsh. Any other shell
- * it knows by name denies on a line that may reach git or gh, whatever its text (CC-1631). Where a
- * shell is on PATH, the real one with a fake `git` first on PATH confirms each push row pushes.
- * Observed in ksh93u+m 1.0.10, mksh 59c, bsd-csh 20240808 and tcsh 6.24.
+ * it knows by name, and any shell named by value that it does not read, denies on every line, whatever
+ * its text (CC-1631). Where a shell is on PATH, the real one with a fake `git` first on PATH confirms
+ * each push row pushes. Observed in ksh93u+m 1.0.10, mksh 59c, bsd-csh 20240808 and tcsh 6.24.
  */
 
 const ctx: GuardContext = {
@@ -53,6 +53,19 @@ const FIX_FIRST = [
   `ksh --rcfile x -c '${P}'`,
 ]
 
+// None spells git where an sh scan would see it, so a deny gated on that scan let each through.
+const CSH_HISTORY = `csh -c 'echo xit pxsh --no-verxfy ; !#:1:s/x/g/ !#:2:s/x/u/ !#:3:s/x/i/ origin HEAD:main'`
+const FISH_PIECES = `fish -c '(printf gi)t (printf pu)sh --no-(printf ver)ify origin HEAD:main'`
+const TCSH_EDITS = `tcsh -c '$shell:t:s/tcsh/gi/t $shell:t:s/tc/pu/ --no-ve$shell:t:s/tcsh/rify/ origin HEAD:main'`
+const NO_GIT_WORD = [
+  FISH_PIECES,
+  `rc -c 'gi^t pu^sh --no-ver^ify origin HEAD:main'`,
+  `printf 'gi\npu\nver\n' | csh -c '"$<"t "$<"sh --no-"$<"ify origin HEAD:main'`,
+  CSH_HISTORY,
+  TCSH_EDITS,
+  `fish -c 'eval (string join "" g i t) (string join "" p u s h) (string join -- "" --no- ver ify) origin HEAD:main'`,
+]
+
 // The shell is the resolved program word's base name, past wrappers and quotes; argv0 never counts.
 const BY_NAME = [
   `tcsh -c '${P}'`,
@@ -72,30 +85,42 @@ const BY_NAME = [
   `find . -exec csh -c 'hup ${P}' \\;`,
 ]
 
-// A shell named by value that the guard does not read fails closed, under the wrapper's own reason.
-const BY_VALUE: [string, string][] = [
-  [`su -s /bin/csh -c 'nice +5 ${P}'`, REASONS.privilegeOption],
-  [`su -s /bin/ksh93 -c '${P}'`, REASONS.privilegeOption],
-  [`capsh --shell=/bin/csh -- -c 'hup ${P}'`, REASONS.privilegeOption],
-  [`SHELL=/bin/tcsh script -c '${P}'`, REASONS.jobShell],
+// A shell named by value that the guard does not read denies the same way, listed or not.
+const BY_VALUE = [
+  `su -s /bin/csh -c 'nice +5 ${P}'`,
+  `su -s /bin/ksh93 -c '${P}'`,
+  `capsh --shell=/bin/csh -- -c 'hup ${P}'`,
+  `SHELL=/bin/tcsh script -c '${P}'`,
+  `su -s /bin/csh -c '${CSH_HISTORY.slice("csh -c '".length, -1)}'`,
+  `capsh --shell=/bin/fish -- -c '${FISH_PIECES.slice("fish -c '".length, -1)}'`,
+  `SHELL=/bin/tcsh script -qc '${TCSH_EDITS.slice("tcsh -c '".length, -1)}' /dev/null`,
+  `su -s /usr/bin/elvish -c 'echo hi'`,
+  `SHELL=/usr/bin/elvish doas -s <<< 'echo hi'`,
 ]
 
-// No text is read, so a foreign shell on any line that may reach git denies.
+// No text is read, so a foreign shell denies on any line, with git or without.
 const OVER_DENY = [
   `ksh -c 'git status'`,
   `csh -c 'git log -1'`,
   `git status && ksh -c 'echo hi'`,
   `echo 'git status' | ksh`,
   'mksh build.mksh && git status',
-]
-
-const ALLOWED = [
   `csh -c 'echo hi'`,
   `ksh -c 'echo hi'`,
   `tcsh -c 'ls -la'`,
   `fish -c 'echo hi'`,
   'ksh --version',
+]
+
+// A $SHELL the guard cannot resolve keeps its reason, which denies only on a line that may reach git.
+const UNRESOLVED_SHELL_VAR = [
+  `SHELL=$X script -qc 'echo hi' /dev/null`,
+  `SHELL=$X script -qc 'git status' /dev/null`,
+]
+
+const ALLOWED = [
   'which ksh csh; git status',
+  UNRESOLVED_SHELL_VAR[0] as string,
   `bash -c 'git status'`,
   `zsh -c 'git log -1'`,
   `sh -c 'git status'`,
@@ -103,13 +128,13 @@ const ALLOWED = [
   `ash -c 'git push -n origin HEAD:main'`,
 ]
 
-describe('a shell the guard has no grammar for denies on a line that may reach git (CC-1631)', () => {
-  it.each([...FIX_FIRST, ...BY_NAME, ...OVER_DENY])('denies %s', line => {
+describe('a shell the guard has no grammar for denies on every line (CC-1631)', () => {
+  it.each([...FIX_FIRST, ...NO_GIT_WORD, ...BY_NAME, ...BY_VALUE, ...OVER_DENY])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.foreignShell)
   })
 
-  it.each(BY_VALUE)('denies %s', (line, reason) => {
-    expect(checkCommand(line, ctx)).toBe(reason)
+  it('denies a $SHELL it cannot resolve only on a line that may reach git', () => {
+    expect(checkCommand(UNRESOLVED_SHELL_VAR[1] as string, ctx)).toBe(REASONS.jobShell)
   })
 
   it.each([`sh -c '${P}'`, `bash -c '${P}'`])('still reads %s as sh', line => {
