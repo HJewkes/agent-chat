@@ -2294,11 +2294,12 @@ function checkHidden(
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
 
-// The `name` of a `name()` definition, marked LIVE after it, runs nothing.
-const DEFINITION = new RegExp(`^[^${LIVE}]+${LIVE}+$`)
+// LIVE marks only at the end expand nothing: the `name` of a `name()` definition, or the empty
+// word the splitter leaves beside a process substitution, runs nothing.
+const NO_EXPANSION = new RegExp(`^[^${LIVE}]*${LIVE}+$`)
 
 /** An expanded command word that may be a shell; the words xargs or find fill have their own checks. */
-const mayBeShell = (head: string): boolean => !head.includes(XARGS_ARGS) && !DEFINITION.test(head)
+const mayBeShell = (head: string): boolean => !head.includes(XARGS_ARGS) && !NO_EXPANSION.test(head)
 
 /**
  * A command word the shell may split into several words, run as a whole command the guard never
