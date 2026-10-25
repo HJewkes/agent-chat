@@ -121,6 +121,33 @@ describe('a glob or brace word that may form push or --no-verify (TP-4235)', () 
   })
 })
 
+/** zsh's EXTENDED_GLOB operators, which the same line can switch on, so `--no-veri#fy` may match `--no-verify`. */
+const EXTENDED = [
+  'touch -- --no-verify; setopt extendedglob; git push --no-veri#fy origin main',
+  'setopt extendedglob; git push origin ^x',
+  'zsh -o extendedglob -c "git push --no-verify#"',
+  'git push --no-verif~x',
+  'git push -o -- --no-verif#y',
+  "sh -c 'git push origin ^main'",
+]
+
+describe('a zsh extended glob that may form --no-verify (TP-4235)', () => {
+  it.each(EXTENDED)('denies it: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.globPush)
+  })
+
+  it.each([
+    'git push origin fix#12',
+    'git push origin main~1:refs/heads/rel',
+    'git push origin HEAD^:main',
+    'git push ~/repo main',
+    'git push -- ^x',
+    'git commit -m fix#12',
+  ])('allows an operator that cannot form the flag, or one after the --: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})
+
 describe('the built guard on the done_when rows (TP-4235)', () => {
   const decide = (command: string): { permissionDecision?: string; permissionDecisionReason?: string } => {
     const out = execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
@@ -141,6 +168,12 @@ describe('the built guard on the done_when rows (TP-4235)', () => {
     const decisions = SWALLOWED_END.map(command => decide(command).permissionDecisionReason)
 
     expect(decisions).toEqual(SWALLOWED_END.map(() => REASONS.globPush))
+  })
+
+  it('denies a zsh extended glob through the hook', () => {
+    const decisions = EXTENDED.map(command => decide(command).permissionDecisionReason)
+
+    expect(decisions).toEqual(EXTENDED.map(() => REASONS.globPush))
   })
 
   it('allows a quoted glob through the hook', () => {

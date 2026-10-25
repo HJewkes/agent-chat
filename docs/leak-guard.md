@@ -548,6 +548,11 @@ match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay a
 keeps reading options, so that `--` ends nothing: `git push -o -- --no-verif?` and
 `git push -o -- --no-verify` are denied. A word the guard cannot read, or a glob that may form such
 an option (`-?`), is read as taking the next word too, while `git push -o x -- --no-verif?` stays allowed.
+zsh's `EXTENDED_GLOB` operators count as glob marks in these words too, since the same line may run
+`setopt extendedglob` or `zsh -o extendedglob -c`: `--no-veri#fy` and `--no-verif~x` are denied, and
+so is `^x`, which matches every file but `x`. The splitter cannot tell a quoted `#`, `^` or `~` from
+an unquoted one, so either counts; a word they cannot turn into the flag, such as `fix#12`,
+`main~1` or `HEAD^:main`, stays allowed.
 
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
@@ -1571,7 +1576,8 @@ Not covered, by design or by cost:
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
-- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`). The
+- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`); a
+  `git push` argument they may turn into `--no-verify` is denied (TP-4235). The
   option is off by default, and the splitter reads `#` as a literal character, so `gi#t` resolves
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;

@@ -1,4 +1,4 @@
-import { mayExpandToWord } from './git-word.js'
+import { EXTENDED_GLOB, mayExpandToWord } from './git-word.js'
 import { pushOptionsEnd } from './push-words.js'
 import { LIVE, unmark } from './shell-words.js'
 
@@ -6,12 +6,14 @@ import { LIVE, unmark } from './shell-words.js'
  * Whether a glob or brace word on a git run may form a push that skips the hook (TP-4235). The guard
  * reads `--no-verif?` as written, but the shell may match it to a file named `--no-verify`, and
  * `{git,push,--no-verify}` expands to all three words. It fails closed: an unquoted glob or brace
- * that may match the word denies whatever the directory holds. A quoted glob stays literal. A glob
+ * that may match the word denies whatever the directory holds, as does a zsh `#`, `^` or `~` that
+ * `setopt extendedglob` on the same line may make a glob. A quoted glob stays literal. A glob
  * command word is left to TP-721, since `*` there would match push in every `case` pattern.
  */
 
 const HOOK_SKIPS = ['--no-veri', '--no-verif', '--no-verify']
-const GLOB_OR_GROUP = new RegExp(`${LIVE}[*?[{(]`)
+// The splitter cannot say whether an extended glob operator was quoted, so any one counts as live.
+const GLOB_OR_GROUP = new RegExp(`${LIVE}[*?[{(]|${EXTENDED_GLOB.source}`)
 const GROUP = new RegExp(`${LIVE}[{(]`)
 
 const mayExpandToAny = (marked: string, names: readonly string[], live = GLOB_OR_GROUP): boolean =>

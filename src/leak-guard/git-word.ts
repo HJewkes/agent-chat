@@ -17,6 +17,8 @@ const DEFAULT = '\x02'
 const BRACKET = String.raw`\[[!^]?\]?(?:\[:\w+:\]|[^\]/])*\]`
 const SEGMENT = new RegExp(String.raw`(?:[\w.?*#-]|${BRACKET})+`, 'g')
 const PIECE = new RegExp(String.raw`${BRACKET}|[\s\S]`, 'g')
+/** zsh's EXTENDED_GLOB operators, which a line may switch on with `setopt extendedglob`; the splitter leaves them unmarked. */
+export const EXTENDED_GLOB = /[#^~]/
 const INNERMOST_GROUP = /[{(]([^{}()]*)[})]/
 const RANGE = /^(?:(-?\d+)\.\.(-?\d+)|([A-Za-z])\.\.([A-Za-z]))(?:\.\.-?\d+)?$/
 const MAX_LENGTH = 1024
@@ -91,9 +93,19 @@ function pieceSource(piece: string, previous: string | undefined): string {
   return piece.length > 1 ? bracketClass(piece) : escapeRegExp(piece)
 }
 
+/**
+ * Whether a glob segment may match `name`. zsh's `^x` (anything but x) and `x~y` (x but not y) are
+ * read as `*` from the operator on, which matches at least as much; a leading `~` is the home directory.
+ */
 function segmentMatches(segment: string, name: string): boolean {
   const source: string[] = []
-  for (const piece of segment.match(PIECE) ?? []) source.push(pieceSource(piece, source.at(-1)))
+  for (const piece of segment.match(PIECE) ?? []) {
+    if (piece === '^' || (piece === '~' && source.length > 0)) {
+      source.push('.*')
+      break
+    }
+    source.push(pieceSource(piece, source.at(-1)))
+  }
   try {
     return new RegExp(`^${source.join('')}$`).test(name)
   } catch {
