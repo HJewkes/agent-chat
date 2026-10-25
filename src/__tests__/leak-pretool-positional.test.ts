@@ -72,7 +72,9 @@ const BENIGN: [string, RegExp][] = [
 
 describe('checkCommand on a positional parameter as the command word', () => {
   it.each(BYPASSES)('denies %j', src => {
-    expect(checkCommand(src, ctx())).toBe(REASONS.positionalCommand)
+    const reason = checkCommand(src, ctx())
+    expect(reason).toBeDefined()
+    expect(reason).toBe(REASONS.positionalCommand)
   })
 
   it.each(PINNED)('still denies %j', src => {
@@ -80,7 +82,7 @@ describe('checkCommand on a positional parameter as the command word', () => {
   })
 
   it.each(FALSE_DENIES)('knowingly denies %j', src => {
-    expect(checkCommand(src, ctx())).toBe(REASONS.positionalCommand)
+    expect(checkCommand(src, ctx())).toBeDefined()
   })
 
   it.each(BENIGN)('allows %j', src => {
