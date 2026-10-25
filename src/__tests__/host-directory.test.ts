@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { HostDirectory, LAUNCH_TIMEOUT_MS, PROBE_TIMEOUT_MS } from '../broker/host-directory.js'
-import { ensureBrokerKey, helloProof } from '../broker/launcher-key.js'
+import { ensureBrokerKey, helloProof, registerMachineAlias } from '../broker/launcher-key.js'
 import { logPath } from '../paths.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
@@ -180,6 +180,7 @@ describe('announcing a host launcher', () => {
   })
 
   it('refuses a second connection claiming a held machine even with a valid proof, and the real launcher keeps it', async () => {
+    configureMac()
     const launcher = macLauncher()
     const impostor = wire()
     impostor.send({
@@ -345,12 +346,23 @@ describe('announcing a host launcher', () => {
     expect(listed()).toEqual([])
   })
 
-  it('with machines empty and hostProof enforce, accepts and routes to a host with a minted key and a valid proof', async () => {
+  it('with machines empty and hostProof enforce, accepts a host with a minted key and a valid proof but routes no teleport to it', async () => {
     configureNoMachines('enforce')
     const launcher = macLauncher()
 
     expect(lastHello(launcher)).toEqual({ t: 'host_hello_result', ok: true })
     expect(listed()).toEqual([MAC])
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('is not one of the configured machines')
+    expect(frame(launcher, 'host_probe')).toBeUndefined()
+  })
+
+  it('with machines empty, routes to a proved launcher whose host key-new registered', async () => {
+    configureNoMachines('enforce')
+    registerMachineAlias('mac', MAC)
+    const launcher = macLauncher()
+
     await teleportToMac(localPredecessor())
     expect(frame(launcher, 'host_probe')).toBeDefined()
   })
@@ -407,7 +419,35 @@ describe('announcing a host launcher', () => {
   })
 })
 
+describe('choosing a launcher for a teleport (CC-1331)', () => {
+  it('never probes a keyless launcher for an unconfigured host', async () => {
+    configureNoMachines('off')
+    const launcher = wire()
+    helloAsMac(launcher)
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+
+    expect(lastHello(launcher)?.ok).toBe(true)
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('is not one of the configured machines')
+    expect(frame(launcher, 'host_probe')).toBeUndefined()
+  })
+
+  it('never probes a proofless launcher for a configured host under hostProof off', async () => {
+    configureMac('off')
+    const launcher = wire()
+    helloAsMac(launcher)
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+
+    expect(lastHello(launcher)?.ok).toBe(true)
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('has not proved its host key')
+    expect(frame(launcher, 'host_probe')).toBeUndefined()
+  })
+})
+
 describe('teleporting a local session to a launcher’s machine', () => {
+  beforeEach(() => configureMac('off'))
+
   it('probes, launches there with the cwd, and ends the predecessor only after the successor attaches', async () => {
     const launcher = macLauncher()
     const predecessor = localPredecessor()
@@ -591,9 +631,52 @@ describe('teleporting a local session to a launcher’s machine', () => {
 })
 
 describe('the host directory', () => {
+  const macHello = { host: MAC, platform: 'darwin' as const, surfaces: ['headless' as const] }
+  const recorded = (): boolean | undefined =>
+    (server as unknown as { hosts: HostDirectory }).hosts.launchers().find(l => l.host === MAC)?.proved
+
+  it.each([true, false])('reports a launcher as proved only when the broker said so (%s)', proved => {
+    const hosts = new HostDirectory<string>()
+    hosts.hello('launcher', macHello, () => undefined, proved)
+
+    expect(hosts.launchers()).toEqual([{ host: MAC, platform: 'darwin', proved }])
+  })
+
+  it('replaces the proved flag on a re-hello', () => {
+    const hosts = new HostDirectory<string>()
+    hosts.hello('launcher', macHello, () => undefined, true)
+    hosts.hello('launcher', macHello, () => undefined, false)
+
+    expect(hosts.launchers()).toEqual([{ host: MAC, platform: 'darwin', proved: false }])
+  })
+
+  it('records a proofless hello accepted under hostProof off as not proved', () => {
+    configureMac('off')
+    helloAsMac(wire())
+
+    expect(recorded()).toBe(false)
+  })
+
+  it('records a bad-proof hello accepted under hostProof off as not proved', () => {
+    configureMac('off')
+    ensureBrokerKey(MAC)
+    const launcher = wire()
+    helloAsMac(launcher, helloProof('f'.repeat(64), MAC, challenge(launcher)))
+
+    expect(lastHello(launcher)?.ok).toBe(true)
+    expect(recorded()).toBe(false)
+  })
+
+  it.each(['off', 'enforce'] as const)('records a valid-proof hello under hostProof %s as proved', mode => {
+    configureMac(mode)
+    macLauncher()
+
+    expect(recorded()).toBe(true)
+  })
+
   it('takes an answer only from the connection that was asked', async () => {
     const hosts = new HostDirectory<string>()
-    hosts.hello('launcher', { host: MAC, platform: 'darwin', surfaces: ['headless'] }, () => undefined)
+    hosts.hello('launcher', macHello, () => undefined, true)
     const pending = hosts.probe(MAC, { cwd: '/x', surface: 'headless' })
     const [id] = [...(hosts as unknown as { outstanding: Map<string, unknown> }).outstanding.keys()]
 
