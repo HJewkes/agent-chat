@@ -100,7 +100,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { observedShell, readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall, UNOBSERVED_SHELL } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -2297,7 +2297,9 @@ function checkShell(
  */
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
-  if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
+  // Each text is checked in the same scope, so a repeated word is checked once (CC-1411: a long run of
+  // operands to an expanded command word stays within the hook timeout).
+  if (script.from === 'hidden' || !observedShell(name)) return [...new Set(marked.map(unmark))]
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
@@ -2380,11 +2382,16 @@ function checkHidden(
   scope: Scope,
   depth: number,
   outermost: boolean,
+  fed?: Fed,
 ): string | undefined {
   const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
   const unseen = { ...scope, cwd: undefined, env: undefined }
-  const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
+  // The words xargs adds in place of its input are checked by its own rules (CC-1219), never as a shell.
+  const xargsTail = fed?.append === true ? marked.length - 1 : -1
+  const starts = outermost
+    ? marked.flatMap((word, i) => (i !== xargsTail && mayStartCommand(word) ? [i] : []))
+    : []
   scope.hiddenStarts.left -= starts.length
   const spent = scope.hiddenStarts.left < 0
   if (spent && lineMayReachGit(scope, ctx)) return REASONS.hiddenStarts
@@ -2397,9 +2404,28 @@ function checkHidden(
       ctx,
       scope,
       depth,
-    )
+    ) ??
+    // The word may be any shell, which runs its `-c` string or the text it is fed (CC-1411), so its
+    // options are read as an unobserved shell's and every word may be its script.
+    (readsAsShell(cmd, fed)
+      ? checkShell(
+          { name: UNOBSERVED_SHELL, marked, assigns },
+          cmd,
+          ctx,
+          { ...scope, deferrable: false },
+          depth,
+        )
+      : undefined)
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
+
+/**
+ * Whether an unresolved command word is read as a shell. Only where the word came from exempts it,
+ * never its text: the words xargs places, a `name()` definition, and the path a `<(…)` leaves.
+ * A missing provenance only over-denies.
+ */
+const readsAsShell = (cmd: SimpleCommand, fed: Fed | undefined): boolean =>
+  fed?.hidden !== true && cmd.defines === undefined && cmd.substitutionPath !== true
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
@@ -2751,7 +2777,7 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
-    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost, unwrapped.fed)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
