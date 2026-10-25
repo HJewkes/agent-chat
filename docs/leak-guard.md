@@ -443,7 +443,7 @@ Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                                                                                                                      | `$E gh pr create` runs gh when `E` is empty                 |
 | a command word that is an expansion, then an expansion where git's subcommand sits, or a command word that may split (`${=X}`, unquoted `$X`), with a word anywhere after, even past a `--`, that is or may expand to `--no-verify` or a `core.hooksPath`, `alias.*`, `include.path` or `includeIf.*.path` key (`core.hooks$K`) (CC-1322) | `$X $Y --no-verify` is a push that skips the hook           |
 | a command word that is an expansion run as a shell, whose `-c` string or fed text a row above denies, or whose fed text the guard cannot read                                                                                                                                                                                             | `b=bash; echo '<push>' \| $b` runs it                       |
-| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                                                                                                                                                                                                                                    | the text may be a push or a gh command                      |
+| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`; a `trap` action or `mapfile -C` callback it cannot read, on a line that may reach either                                                                                                                                                          | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                                                                                                                      | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                                                                                                          | git passes it on to every git that command runs             |
 | `git -c` on a key whose value git runs as a program, when the value is a line a row above denies (below)                                                                                                                                                                                                                                  | `core.pager="git push --no-verify"` runs on `git log`       |
@@ -505,6 +505,16 @@ unreadable, so it is denied, whatever it runs:
   redirection included, is unreadable (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+These rules hold for a case inside backticks, `$(( ))` and `$[ ]`, and in `select`, `repeat` and zsh's
+short `for`, `foreach`, `while` and `until` bodies (CC-1610).
+
+Inside such a span, an argument-position `(` group that is not plain makes the line unreadable
+(CC-1610). That covers a group with no close on its line, one holding any unquoted `#`, or one holding a
+quote, escape, blank, `$`, backtick or operator. zsh parses the group or short loop's list itself. It
+reads past a line (`for v (a` and a newline, then `)`), past a comment (`(a;# )`), and past a nested
+case pattern's `)` (`(a $(case x in x) …;; esac) b)`). So the `)` the splitter would take for the
+span's end may be the group's. Plain groups such as `*(.N)` are still read. One-line lists such as
+`for v (a b)` are refused there too; that is an accepted cost.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
@@ -973,10 +983,39 @@ command head along the wrapper chain, and fails closed on any expansion there (T
 `env G$X=ext`, `env -- $A`), a `-u` or `-S` value or an option the guard cannot read; any operand
 of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion; the `printf -v`
 name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
-`local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
-line that may reach git it denies as `programEnv`, after the line's other checks so a more
-specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
-that `find -exec` adds are not read here.
+`local` and `readonly` family. `declare`, `typeset` and `local` pass only the attribute letters
+`aAfFgilprtux`, so any `-n` (alone or in a cluster such as `-gn`) or other option fails closed,
+since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
+variable `X` names (TP-2499). These rules also read a command's redirect targets, here-strings
+and unquoted heredoc bodies on any descriptor, where a program var's `${NAME:=x}` denies too. The
+lexer drops none of that text: it keeps a redirect-only command that holds any, whose assignments
+bash keeps, as a `)` command wherever it stands, at the end of the line and before a heredoc body
+included. Such a name may be any program var or
+`GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
+other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
+
+1. A hidden name in any script the line runs counts when the outer line may reach git. That
+   covers `eval`, `trap` and `mapfile -C` below, the text fed to `source /dev/stdin` or `.`, a
+   `sh -c` string, parallel's script, git's `-x` and alias scripts. A child shell cannot pass a
+   variable back, so `bash -c 'declare -n R=$A; R=x'; git fetch o` is a deny the guard accepts.
+2. The scripts a builtin hands the current shell are read as the shells read them, and checked
+   as nested scripts. Each is the whole text the shell evaluates, with the words the shell adds
+   read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
+   that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
+
+| builtin                | script                                                                                                             | not a script                                         | unreadable                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
+| `eval`                 | its operands joined, past one `--` (zsh's `-` too)                                                                 |                                                      | an option or expansion as the first word |
+| `trap`                 | its action, the first operand past one `--`                                                                        | `-p`, `-l`, zsh's `-P`; an action `-`; a lone signal | an expanded action or another option     |
+| `mapfile`, `readarray` | the `-C` callback followed by the index and line bash adds, read as unread words; bash runs it every quantum lines | no `-C`                                              | an expanded `-C` value                   |
+
+Not read by these rules, each a follow-up: assignments in arithmetic, `let`, `(( ))` and
+`declare -i` (TP-2507); zsh `print -v`, `set -A` and `vared` (TP-4224); `PS4` and `${x@P}`
+prompt expansion under `set -x` (TP-4227); zsh's `-` precommand modifier as a wrapper (TP-4225);
+ksh's `nameref` alias and zsh's `typeset -U` (TP-4226); a command word that is only an expansion
+counting as git (TP-4231; the `declare -n` and `${!A:=}` rows are TP-4234); and the contents of a file that `source` or `.` reads,
+unread by design. Words that `xargs` adds are read as unreadable (CC-1117, above); words that
+`find -exec` adds are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.

@@ -107,3 +107,20 @@ describe('the <n-m> glob probe against the old regex', () => {
     }
   })
 })
+
+describe('a redirect-only command keeps the text the shell expands where it stands (TP-2499)', () => {
+  it.each([
+    'git fetch o; > ${!A:=ext}',
+    'trap "git fetch o" EXIT && > ${!A:=ext}',
+    'trap "git fetch o" EXIT; 2> ${!A:=ext}',
+    'trap "git fetch o" EXIT; 3<<<${!A:=ext}',
+    'trap "git fetch o" EXIT\n> ${!A:=ext}',
+    'trap "git fetch o" EXIT; 3<<E\n${!A:=ext}\nE',
+    '3<<E\n${!A:=ext}\nE\ngit fetch o',
+    'trap "git fetch o" EXIT; cat <<E; > ${!A:=ext}\nE',
+  ])('returns a command whose expanded text holds the assignment: %j', line => {
+    const expanded = parseShell(line).flatMap(command => command.expanded.map(unmark))
+
+    expect(expanded.some(text => text.includes('${!A:=ext}'))).toBe(true)
+  })
+})
