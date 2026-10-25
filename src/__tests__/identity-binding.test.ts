@@ -152,7 +152,12 @@ describe('requests carry the requester binding', () => {
   it('passes no binding for the human at the CLI', async () => {
     const spawn = vi.spyOn(supervisorOf(), 'spawn').mockResolvedValue({ ok: false, reason: 'stub' })
 
-    server.handleMessage(newConn(), { t: 'spawn', name: 'child', profile: 'peer', brief: 'b' } as ClientMessage)
+    server.handleMessage(newConn(), {
+      t: 'spawn',
+      name: 'child',
+      profile: 'peer',
+      brief: 'b',
+    } as ClientMessage)
     await vi.waitFor(() => expect(spawn).toHaveBeenCalled())
 
     expect(spawn.mock.calls[0]?.[0]).not.toHaveProperty('requesterBinding')
