@@ -21,7 +21,14 @@ import {
   swapPercent,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
-import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
+import {
+  resolveMachineLimits,
+  resolveMachineStopLimits,
+  resolvePoolPickMode,
+  resolvePoolProbe,
+} from '../../config.js'
+import { readPoolPick } from '../../agents/seats/pool-route.js'
+import { readSeatSpawn } from '../../agents/seats/spawn-gate-read.js'
 import { machineStop, type MachineStop, type MachineStopReadings } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { EventLog } from '../../broker/event-log.js'
@@ -592,6 +599,11 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     selfContext: () => {
       const { sessionId } = hostIdentity()
       return sessionId === undefined ? null : readBudget(sessionId)
+    },
+    nextSpawn: {
+      mode: resolvePoolPickMode(),
+      pick: spawn => readPoolPick(root, spawn),
+      gate: spawn => readSeatSpawn(root, spawn),
     },
   }
 }
