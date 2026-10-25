@@ -107,8 +107,46 @@ function scriptOf(word: ConfigWord): string | null | undefined {
   const pair = keyValue(word)
   if (pair === undefined) return undefined
   if (!runsProgram(pair.key) || pair.value === null) return null
-  // A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
-  return pair.value?.startsWith('!') ? pair.value.slice(1) : pair.value
+  return pair.value === undefined ? undefined : programScript(pair.key, pair.value)
+}
+
+/** The script a key's value runs: null when git runs none. */
+// A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
+const programScript = (key: string, value: string): string | null =>
+  !runsProgram(key) ? null : value.startsWith('!') ? value.slice(1) : value
+
+// Sections holding a key the write check skips: a whole inert section, or one with an entry in INERT_KEYS.
+const UNCHECKED_SECTIONS = new Set([
+  ...INERT_SECTIONS,
+  ...[...INERT_KEYS].map(key => key.split('.')[0] as string),
+])
+
+/**
+ * Whether a rename may move a key whose value was never checked as a program into a section git may
+ * run it in (TP-4240): `credential.username` renamed into `alias`, or `merge.log` into `pager`. Only
+ * a target inert as a whole keeps such a value unrun.
+ */
+function renamesUncheckedIntoProgram(names: readonly (string | undefined)[]): boolean {
+  const [from, to] = names
+  if (from === undefined || to === undefined) return true
+  const section = (name: string): string => (name.split(/[."\s]/)[0] as string).toLowerCase()
+  return UNCHECKED_SECTIONS.has(section(from)) && !INERT_SECTIONS.has(section(to))
+}
+
+/**
+ * The script a `git config` write, given its words after `config`, persists for a later git to run
+ * (TP-4240): null for none, undefined when the guard cannot read the key or the value of a key git
+ * may run, or a rename lands keys it never checked in a section git may run.
+ */
+export function configWriteScript(args: SubArgs): string | null | undefined {
+  const call = readConfigCall(args)
+  if (call.mode === 'option') return undefined
+  if (call.mode === 'rename') return renamesUncheckedIntoProgram(call.names) ? undefined : null
+  if (call.mode === 'other') return null
+  const { key, value } = call
+  if (key === undefined) return undefined
+  if (value === undefined) return runsProgram(key) ? undefined : null
+  return programScript(key, value)
 }
 
 /** A config word's key and value: the value undefined when the guard cannot read it, null when the word sets none. */
