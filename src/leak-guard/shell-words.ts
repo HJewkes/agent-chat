@@ -202,6 +202,9 @@ const ARITH_FOR_EXPRS = 'ARITH_FOR_EXPRS'
 const OPERATOR_TOKENS = [';;&', ';;', ';&', ';|', '&&', '||', '|&']
 // `;|` is zsh's; bash reads it as `;` and `|`, a syntax error.
 const CASE_ENDS = new Set<Token>([';;', ';&', ';;&', ';|'])
+// What may follow a `(`-led pattern's `)` inside a span a `)` can end; see `notePatternTail`.
+const PATTERN_TAIL_GLUED = /^[\n;]$/
+const PATTERN_TAIL_SPACED = /^[\n;#\w$"'`\\/.:!~*@%+=,^[\]-]$/
 
 /**
  * The tokens after which bash 5.3 recognises a reserved word: reserved_word_acceptable, parse.y 5896-5947.
@@ -787,19 +790,21 @@ class ShellLexer {
   }
 
   /**
-   * After a pattern that began with `(`, zsh reads on past its `)` when text is glued to it, as in
-   * `(x)y)`, or when a `|` or `)` follows blanks, as in `(x) |y)` and `(x) )`. Where a `)` can end the
-   * span those lines are unreadable.
+   * After a pattern that began with `(`, zsh reads on past its `)` in forms bash rejects, as in `(x)y)`,
+   * `(x) |y)` and `(x) )`. Where a `)` can end the span, the `)` must be followed, with line joins
+   * removed as `step` removes them, by a newline, a `;` or the end, or by blanks and then one of those,
+   * a comment or a command word. Anything else makes the line unreadable.
    */
   private notePatternTail(): void {
     const leading = this.parenPattern
     this.parenPattern = false
     if (!leading || this.cases.at(-1) !== true) return
-    let at = this.pos + 1
-    const glued = this.src[at]
-    if (glued !== undefined && !' \t\n;'.includes(glued)) this.budget.expansion = 'unreadable'
-    while (this.src[at] === ' ' || this.src[at] === '\t') at++
-    if (this.src[at] === '|' || this.src[at] === ')') this.budget.expansion = 'unreadable'
+    const glued = this.unjoin(this.pos + 1)
+    let at = glued
+    while (this.src[at] === ' ' || this.src[at] === '\t') at = this.unjoin(at + 1)
+    const next = this.src[at] ?? ''
+    const allowed = at === glued ? PATTERN_TAIL_GLUED : PATTERN_TAIL_SPACED
+    if (next !== '' && !allowed.test(next)) this.budget.expansion = 'unreadable'
   }
 
   private endPattern(): void {

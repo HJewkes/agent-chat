@@ -67,6 +67,9 @@ const BYPASSES: Row[] = [
     zshOnly('12', inSub(`case x in ${pattern} :;; z) echo "a";; esac`)),
   ),
   zshOnly('12', inSub('case x in x) :;; (z)) echo "a";; esac')),
+  ...['(x) \\\n|y)', '(x) \\\n)', '(x)\t\\\n |y)', '(x) \\\n\\\n|y)', '(x)  \\\n\t |y)'].map(pattern =>
+    zshOnly('13', inSub(`case x in ${pattern} :;; z) echo "a";; esac`)),
+  ),
   zshOnly('12', `echo $(case x in (x)) :;; z) echo "a";; esac; ${PUSH})`),
   zshOnly('12', `echo "\`case x in (x)) :;; z) echo a;; esac; ${PUSH}\`"`),
 ]
@@ -84,6 +87,7 @@ const ALLOWED = [
   'x="$(case "$a" in (foo|bar) echo 1;; (*) ;; esac)"',
   'x="$(case "$a" in (foo) echo 1 ;; (*)\n echo 2;; esac)"',
   'case x in (x|(y))) echo a;; esac',
+  'x="$(case "$a" in (foo) \\\n echo 1;; (*) "$b" # c\n;; esac)"',
   'echo "$(echo case)"',
   'echo "$(grep -c case f)"',
 ]
