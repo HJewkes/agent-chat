@@ -7,7 +7,8 @@ import { jobNodePath } from '../../mirror/node-path.js'
 import { jobEnv, launchdJobRefusals, renderPlist, type JobSpec } from '../../mirror/plist.js'
 import { renderUnits, unitName } from '../../mirror/systemd-unit.js'
 import { shellQuote } from '@titan-design/agent-surface'
-import { cliEntry, linuxJobLogDir, socketPath, systemdUserUnitDir } from '../../paths.js'
+import { assertMachineAlias, ensureBrokerKey, registerMachineAlias } from '../../broker/launcher-key.js'
+import { cliEntry, launcherKeyPath, linuxJobLogDir, socketPath, systemdUserUnitDir } from '../../paths.js'
 import type { HostLauncherInfo, ServerMessage } from '../../protocol.js'
 import { defaultLauncherDeps, hostSurfaces, serveHost } from '../../server/host-launcher.js'
 import { ago } from '../client.js'
@@ -156,6 +157,46 @@ export const hostInstallVerb = defineVerb({
   },
 })
 
+/** Pure but for the key mint: never puts the key in the report, only where it is and how to pull it. */
+export function hostKeyNewReport(host: string, alias: string | undefined, brokerHost: string): Report {
+  try {
+    const file = launcherKeyPath(host)
+    if (alias !== undefined) assertMachineAlias(alias)
+    ensureBrokerKey(host)
+    if (alias !== undefined) registerMachineAlias(alias, host)
+    const remote = path.relative(os.homedir(), file)
+    return {
+      ok: true,
+      lines: [
+        `launcher key: ${file}${alias === undefined ? '' : ` (alias ${alias.toLowerCase()})`}`,
+        'on the launcher machine, pull it and restrict it:',
+        `scp ${brokerHost}:${remote} ~/.agent-chat/launcher.key`,
+        'chmod 600 ~/.agent-chat/launcher.key',
+      ],
+    }
+  } catch (err) {
+    return { ok: false, lines: [], errors: [err instanceof Error ? err.message : String(err)] }
+  }
+}
+
+export const hostKeyNewVerb = defineVerb({
+  name: 'host.key-new',
+  description:
+    'mint the broker-side launcher key for a host (idempotent) and optionally record a destination alias ' +
+    'for it (CC-1646); prints the key path and the pull command for the launcher machine, never the key',
+  args: z.object({ host: z.string(), alias: z.string().optional() }),
+  result: Report,
+  cli: {
+    positional: ['host'],
+    options: {
+      alias: { long: '--alias <name>', description: 'destination name for agent_teleport, e.g. mac' },
+    },
+  },
+  async run({ host, alias }) {
+    return hostKeyNewReport(host, alias, os.hostname())
+  },
+})
+
 export function addHostCommands(program: Commander): void {
   const host = program
     .command('host')
@@ -163,4 +204,5 @@ export function addHostCommands(program: Commander): void {
   addVerb(host, hostServeVerb)
   addVerb(host, hostListVerb)
   addVerb(host, hostInstallVerb)
+  addVerb(host, hostKeyNewVerb)
 }

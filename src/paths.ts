@@ -37,6 +37,9 @@ export const launcherKeyPath = (host: string): string => {
   return path.join(launcherKeysDir(), `${host.toLowerCase()}.key`)
 }
 
+/** CC-1646: destination alias -> host name for hosts provisioned with `host key-new`. */
+export const launcherAliasesPath = (): string => path.join(launcherKeysDir(), 'aliases.json')
+
 /** The launcher machine's own copy of its secret, copied there out of band by the owner. */
 export const ownLauncherKeyPath = (): string => path.join(home(), 'launcher.key')
 

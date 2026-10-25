@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import fs from 'node:fs'
-import { launcherKeyPath, launcherKeysDir, ownLauncherKeyPath } from '../paths.js'
+import { launcherAliasesPath, launcherKeyPath, launcherKeysDir, ownLauncherKeyPath } from '../paths.js'
 import { ensureToken } from './token.js'
 
 /**
@@ -62,6 +62,38 @@ export const brokerKeyFor = (host: string): string | null => {
   } catch {
     return null
   }
+}
+
+const ALIAS_SHAPE = /^[a-z0-9][a-z0-9-]*$/i
+
+export const assertMachineAlias = (alias: string): void => {
+  if (!ALIAS_SHAPE.test(alias)) throw new Error(`not a machine alias: ${alias}`)
+}
+
+/** Alias -> host as recorded, read with the same no-symlink, owner-only discipline as a key. Empty when unusable. */
+export const readMachineAliases = (): Record<string, string> => {
+  const raw = readLauncherKey(launcherAliasesPath())
+  if (raw === null) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([, host]) => typeof host === 'string'))
+  } catch {
+    return {}
+  }
+}
+
+/** Records `alias -> host` beside the keys; rewriting the same pair is a no-op. */
+export const registerMachineAlias = (alias: string, host: string): void => {
+  assertMachineAlias(alias)
+  launcherKeyPath(host)
+  const next = { ...readMachineAliases(), [alias.toLowerCase()]: host.toLowerCase() }
+  const file = launcherAliasesPath()
+  fs.mkdirSync(launcherKeysDir(), { recursive: true, mode: 0o700 })
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
+  fs.chmodSync(tmp, 0o600)
+  fs.renameSync(tmp, file)
 }
 
 export const ownKey = (): string | null => readLauncherKey(ownLauncherKeyPath())
