@@ -730,12 +730,13 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
   })
 
   // bash keeps {NAME} before &> as an argument where zsh assigns NAME.
-  it.each(['gh pr view 1 {GH_PAGER}&>/dev/null', 'git fetch o {GIT_SSH_COMMAND}&>>/dev/null'])(
-    'denies %j',
-    command => {
-      expect(hookReason(command)).toBeDefined()
-    },
-  )
+  it.each([
+    'gh pr view 1 {GH_PAGER}&>/dev/null',
+    'git fetch o {GIT_SSH_COMMAND}&>>/dev/null',
+    'gh pr view 1 {fd}&>/dev/null',
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBeDefined()
+  })
 
   it.each([
     'gh pr view 1 {fd}>/dev/null',
