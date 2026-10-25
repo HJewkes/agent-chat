@@ -109,11 +109,13 @@ const IMPLEMENTER_RULES = [
   'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
 ]
 
+/** CC-1591: 15 uncapped reports cost a coordinator ~12k tokens, mostly a copy of each PR body. */
 const ciTail = (ciAt: string): string[] => [
   `${ciAt}, never "green" alone. \`gh run watch\` covers only one`,
   'workflow; a skipped check (std / compat) is no failure, and "required" means the required contexts on',
   'the default branch. Then `Concerns:` (what <spawner> must act on, or none; DONE_WITH_CONCERNS needs',
-  'one) and `Notes:` (the rest).',
+  'one) and `Notes:`, each at most 3 one-line items. Keep the report to ~10 lines; detail goes in the',
+  'PR body or the task note.',
 ]
 
 const implementerBlock = (handoff: string[], ciAt: string): string =>

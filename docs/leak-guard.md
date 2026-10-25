@@ -357,8 +357,13 @@ properties (`MemoryMax`, `CPUQuota`, `Nice` and the like), since others such as 
 without `-u` it reads as `su`. `machinectl shell [host] <command>` runs the words after the machine
 name; its other verbs run no command. `su -c '<line>'`, `doas -s`, `run0 -i` and `--via-shell`, and a
 bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin, with
-the `$SHELL` rule below; xargs input to one denies. `sg`, `gosu`, `su-exec`, `chpst`, `setuidgid`,
-`s6-setuidgid` and `capsh --user` are not covered.
+the `$SHELL` rule below; xargs input to one denies. `sg <group> [-c] <command>` runs its one command
+in a shell, so the guard checks it as a script; a second candidate command (util-linux and shadow
+pick differently) or any word the shell expands denies. `newgrp`, the binary `sg` links to, is read
+the same way; with no command it runs a shell on stdin, which the guard checks. `capsh` runs nothing unless `--` or `-+`
+hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
+not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `gosu`, `su-exec`,
+`chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
 `find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright. sudo's
@@ -674,6 +679,9 @@ backslash escapes, and it splits on more blanks than space and tab. So a split v
 backslash or any whitespace other than space and tab is denied, as is one with an expansion. The
 guard finds `-S` alone, as `--split-string` or `--split-string=`, and at the end of a short-option
 cluster such as `-vS` (any `-[a-zA-Z]*S`), where the rest of the word or the next word is the value.
+env splits only on blanks and quotes, so a `;`, `&`, `|`, `<`, `>`, `(` or `)` in the value is part
+of a word, not a command break: `env -S 'find . -exec true ; -exec git push --no-verify ;'` is read
+as one find with two clauses, and its second clause denies (CC-1307).
 
 The PR pre-check runs egress-scan's rules on each line of the title, the body, a `--body-file`
 or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: its `--subject`,
@@ -1560,8 +1568,17 @@ Not covered, by design or by cost:
   A shell behind `setsid`, `flock`, `taskset`, `chrt`, `script -c` or `unshare` reads the feed
   as above (CC-1414): `echo P | setsid bash`, `echo P | flock f bash`, `echo P | script -qc bash f`.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411, CC-1412
-  and CC-1416 track them, with a CC-1408 follow-up for the shells outside the list:
+  A shell in a process substitution reads what the command before it writes (CC-1416):
+  `echo P > >(bash)`, `printf P > >(zsh)`, `echo P | tee >(sh) > /dev/null`, also inside a
+  `$( )`. The guard keeps no bounds for a process substitution, so on a line that holds one,
+  every command in parentheses or a substitution reads text the guard cannot read. That denies
+  harmless text too (`echo hi > >(bash)`, and a subshell `( bash )` beside a process
+  substitution), since a process substitution makes every line count as one that may reach git.
+  `diff <(git show a:f) <(git show b:f)` and a process substitution running no shell stay
+  allowed.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 and
+  CC-1412 track them, with a CC-1408 follow-up for the shells outside the list:
   - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
     the backtick form, and `x=$( bash )`;
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
@@ -1571,8 +1588,6 @@ Not covered, by design or by cost:
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
-  - process substitution (CC-1416): `echo P > >(bash)`. The guard allows it, and real bash and
-    real zsh both run the push;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the
