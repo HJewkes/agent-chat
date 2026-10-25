@@ -33,9 +33,66 @@ const SPEC = {
       ...['--pty', '--no-pty', '--help', '--version'],
     ],
   },
+  'systemd-run': {
+    value: [
+      ...['-H', '-M', '-E', '-p', '-u', '--host', '--machine', '--unit', '--property', '--description'],
+      ...['--slice', '--expand-environment', '--service-type', '--uid', '--gid', '--nice'],
+      ...['--working-directory', '--root-directory', '--setenv', '--json', '--job-mode', '--background'],
+      ...['--path-property', '--socket-property', '--timer-property', '--on-active', '--on-boot'],
+      ...['--on-startup', '--on-unit-active', '--on-unit-inactive', '--on-calendar'],
+    ],
+    flag: [
+      ...['-h', '-r', '-t', '-T', '-P', '-q', '-v', '-G', '-d', '-R', '--help', '--version'],
+      ...['--no-ask-password', '--user', '--system', '--scope', '--slice-inherit', '--no-block'],
+      ...['--remain-after-exit', '--wait', '--send-sighup', '--same-dir', '--same-root-dir', '--pty'],
+      ...['--pty-late', '--pipe', '--quiet', '--verbose', '--collect', '--ignore-failure', '--no-pager'],
+      ...['--on-timezone-change', '--on-clock-change'],
+    ],
+  },
+  runuser: {
+    value: [
+      ...['-c', '-g', '-G', '-s', '-u', '-w', '--command', '--session-command', '--shell', '--group'],
+      ...['--supp-group', '--whitelist-environment', '--user'],
+    ],
+    flag: [
+      ...['-l', '-f', '-m', '-p', '-P', '-T', '-h', '-V', '--login', '--fast', '--preserve-environment'],
+      ...['--pty', '--no-pty', '--help', '--version'],
+    ],
+  },
+  setpriv: {
+    value: [
+      ...['--ambient-caps', '--inh-caps', '--bounding-set', '--ruid', '--euid', '--rgid', '--egid'],
+      ...['--reuid', '--regid', '--groups', '--securebits', '--pdeathsig', '--ptracer', '--selinux-label'],
+      ...['--apparmor-profile', '--landlock-access', '--landlock-rule', '--seccomp-filter'],
+    ],
+    flag: [
+      ...['-d', '-h', '-V', '--dump', '--nnp', '--no-new-privs', '--clear-groups', '--keep-groups'],
+      ...['--init-groups', '--reset-env', '--help', '--version'],
+    ],
+  },
+  machinectl: {
+    value: [
+      ...['-p', '-s', '-H', '-M', '-n', '-o', '-E', '--property', '--signal', '--kill-whom', '--host'],
+      ...['--machine', '--lines', '--output', '--setenv', '--uid', '--format', '--max-addresses', '--verify'],
+    ],
+    flag: [
+      ...['-h', '-a', '-l', '-q', '-V', '--help', '--version', '--no-pager', '--no-legend'],
+      ...['--no-ask-password', '--value', '--all', '--full', '--quiet', '--read-only', '--mkdir'],
+      ...['--force', '--now'],
+    ],
+  },
 } as const
 
-const SHELL_OPTIONS = { doas: ['-s'], run0: ['-i', '--via-shell'], pkexec: [], su: [] } as const
+const SHELL_OPTIONS = {
+  doas: ['-s'],
+  run0: ['-i', '--via-shell'],
+  pkexec: [],
+  su: [],
+  'systemd-run': ['-S', '--shell'],
+  runuser: [],
+  setpriv: [],
+  machinectl: [],
+} as const
 
 type Wrapper = keyof typeof SPEC
 const WRAPPERS = Object.keys(SPEC) as Wrapper[]
@@ -45,12 +102,22 @@ const tableOptions = (name: Wrapper, kind: 'Value' | 'Flag' | 'Shell') => {
   return [...[...t[`short${kind}`]].map(c => `-${c}`), ...t[`long${kind}`]].sort()
 }
 
-/** Rows for every option the spec lists; su's -s takes a shell, so its decoy cannot look like an option. */
-const valueRows = WRAPPERS.flatMap(w =>
-  SPEC[w].value.filter(o => !['-s', '--shell'].includes(o)).map(o => [w, o] as const),
-)
+/** su and runuser read their words alike: a `-c` value runs in a shell, wherever it sits. */
+const SU_LIKE: readonly Wrapper[] = ['su', 'runuser']
+/** The words after the option under test, and what the wrapper runs from them. */
+const tail = (w: Wrapper) => (SU_LIKE.includes(w) ? ['-c', 'git push'] : ['git', 'push'])
+const expected = (w: Wrapper, at: number) =>
+  SU_LIKE.includes(w) ? { shell: ['sh', '-c', 'git push'] } : { at }
+
+/**
+ * Rows for every option the spec lists. su's -s takes a shell, so its decoy cannot look like an option;
+ * runuser's -u clashes with -c; machinectl's -s is a signal and takes the decoy like any value.
+ */
+const decoyless = (w: Wrapper, o: string) =>
+  (SU_LIKE.includes(w) && ['-s', '--shell'].includes(o)) || (w === 'runuser' && ['-u', '--user'].includes(o))
+const valueRows = WRAPPERS.flatMap(w => SPEC[w].value.filter(o => !decoyless(w, o)).map(o => [w, o] as const))
 const flagRows = WRAPPERS.flatMap(w => SPEC[w].flag.map(o => [w, o] as const))
-const gluedRows = valueRows.filter(([w, o]) => w !== 'pkexec' && o !== '-s')
+const gluedRows = valueRows.filter(([w]) => w !== 'pkexec')
 
 describe('the option tables', () => {
   it.each(WRAPPERS)('%s lists exactly the spec options', w => {
@@ -62,16 +129,12 @@ describe('the option tables', () => {
 
 describe('a value option takes the next word even when it looks like an option', () => {
   it.each(valueRows)('%s %s -c', (w, o) => {
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 3 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, o, '-c', ...tail)).toEqual(expected)
+    expect(run(w, o, '-c', ...tail(w))).toEqual(expected(w, 3))
   })
 
   it.each(gluedRows)('%s %s glued to -c', (w, o) => {
     const glued = isLong(o) ? `${o}=-c` : `${o}-c`
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 2 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, glued, ...tail)).toEqual(expected)
+    expect(run(w, glued, ...tail(w))).toEqual(expected(w, 2))
   })
 
   it('su -s and --shell take the shell path', () => {
@@ -90,9 +153,7 @@ describe('a value option takes the next word even when it looks like an option',
 
 describe('a flag consumes nothing', () => {
   it.each(flagRows)('%s %s', (w, o) => {
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 2 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, o, ...tail)).toEqual(expected)
+    expect(run(w, o, ...tail(w))).toEqual(expected(w, 2))
   })
 
   it('su - is a flag', () => {
@@ -125,6 +186,56 @@ describe('run0', () => {
     expect(run('run0', '-i', 'git', 'push')).toEqual({ shell: ['sh', '-c', 'git push'] })
     expect(run('run0', '--via-shell')).toEqual({ shell: ['sh'] })
     expect(run('run0', '--via-shell', 'echo', 'a b')).toEqual({ shell: ['sh', '-c', 'echo a\\ b'] })
+  })
+})
+
+describe('systemd-run', () => {
+  it('runs a shell for -S', () => {
+    expect(run('systemd-run', '-t', '-S')).toEqual({ shell: ['sh'] })
+  })
+
+  it('fails closed on a $ it would expand, and on an Exec property', () => {
+    expect(run('systemd-run', '-E', 'P=push', 'git', '$P')).toBeUndefined()
+    expect(run('systemd-run', '-pExecStartPre=/usr/bin/git push', 'true')).toBeUndefined()
+    expect(run('systemd-run', '--timer-property=ExecStart=x', 'true')).toBeUndefined()
+    expect(run('run0', '--property', 'ExecStopPost=x', 'true')).toBeUndefined()
+  })
+})
+
+describe('runuser', () => {
+  it.each([
+    [['runuser', '-u', 'root', 'git', 'push']],
+    [['runuser', '-u', 'root', '--', 'git', 'push']],
+    [['runuser', '--user=root', 'git', 'push']],
+  ])('runs the words of %j with no shell', words => {
+    expect(run(...words)).toEqual({ shell: ['sh', '-c', 'git push'] })
+  })
+
+  it('reads as su without -u, and fails closed on -c or -s with it', () => {
+    expect(run('runuser', '-l', 'root', '-c', 'git push')).toEqual({ shell: ['sh', '-c', 'git push'] })
+    expect(run('runuser', '-u', 'root', '-c', 'git push')).toBeUndefined()
+    expect(run('runuser', '-u', 'root', '-s', '/bin/sh')).toBeUndefined()
+  })
+})
+
+describe('machinectl', () => {
+  it.each([
+    [['machinectl', 'shell', 'root@', 'git', 'push'], 3],
+    [['machinectl', '-q', 'shell', '--uid', 'root', '.host', 'git', '-c', 'x'], 6],
+    [['machinectl', 'list', '-a'], 1],
+    [['machinectl'], 1],
+  ])('finds the command in %j at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it('runs a shell for shell with no command', () => {
+    expect(run('machinectl', 'shell')).toEqual({ shell: ['sh'] })
+    expect(run('machinectl', 'shell', 'root@')).toEqual({ shell: ['sh'] })
+  })
+
+  it('fails closed on an expanded verb or machine name', () => {
+    expect(run('machinectl', live('$V'), 'root@', 'git')).toBeUndefined()
+    expect(run('machinectl', 'shell', live('$H'), 'git')).toBeUndefined()
   })
 })
 
