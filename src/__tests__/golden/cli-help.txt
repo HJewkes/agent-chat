@@ -1125,9 +1125,11 @@ run this machine as a host launcher (CC-951): announce it to the broker, answer 
 launch teleport successors here with the cwd and account the spec names; reconnects after a drop
 
 Options:
-  --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
-                 report it
-  -h, --help     display help for command
+  --host <name>    the machine name to announce; defaults to this machine's hostname, as sessions
+                   report it
+  --landing <dir>  where a successor lands when its cwd is missing on this machine (CC-1646);
+                   defaults to ~/agent-landing, and is announced only while it exists under home
+  -h, --help       display help for command
 
 === agent-chat host list
 Usage: agent-chat host list [options]

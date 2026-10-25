@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { ConnectedLauncher } from '../agents/teleport-destination.js'
-import type { HostProbe, RemoteLaunch, SurfaceName } from '../protocol.js'
+import type { HostProbe, HostProbeMissing, RemoteLaunch, SurfaceName } from '../protocol.js'
 import { logEvent } from './log.js'
 
 /**
@@ -18,6 +18,8 @@ export interface LauncherHello {
   platform: NodeJS.Platform
   /** The surfaces it can open on its own machine. */
   surfaces: SurfaceName[]
+  /** CC-1646: where a successor whose cwd is missing on that machine lands instead. */
+  landing?: string
 }
 
 export interface LauncherEntry extends LauncherHello {
@@ -30,6 +32,8 @@ export interface HostAnswer {
   reason?: string
   /** CC-1472: where a probe looked for the session it was asked to resume, and whether it was there. */
   transcript?: { path: string; found: boolean }
+  /** CC-1646: the probed path the launcher found missing on its machine. */
+  missing?: HostProbeMissing
 }
 
 /** A frame the broker asks a launcher to act on; `id` pairs it with the answer. */
@@ -135,6 +139,10 @@ export class HostDirectory<K = unknown> {
     return this.find(host)?.entry.surfaces ?? []
   }
 
+  landingOn(host: string): string | undefined {
+    return this.find(host)?.entry.landing
+  }
+
   find(host: string): Connected<K> | undefined {
     return [...this.byHost.values()].find(connected => same(connected.entry.host, host))
   }
@@ -168,8 +176,10 @@ export class HostDirectory<K = unknown> {
     const connected = this.find(host)
     if (connected === undefined)
       return Promise.resolve({ ok: false, reason: `no launcher connected on ${host}` })
-    if (!connected.proved)
+    if (!connected.proved) {
+      logEvent('launcher_unproved', { host: connected.entry.host })
       return Promise.resolve({ ok: false, reason: `the launcher on ${host} has not proved its host key` })
+    }
     const id = randomUUID()
     return new Promise(resolve => {
       const timer = setTimeout(

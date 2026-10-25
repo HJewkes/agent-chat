@@ -18,6 +18,7 @@ import {
   SURFACE_NAMES,
   type ClientMessage,
   type HostProbe,
+  type HostProbeMissing,
   type RemoteLaunch,
   type ServerMessage,
   type SurfaceName,
@@ -49,6 +50,8 @@ export interface LauncherIdentity {
   host: string
   platform: NodeJS.Platform
   surfaces: SurfaceName[]
+  /** CC-1646: the dir a successor lands in when its own cwd is missing here; announced only if usable. */
+  landing?: string
 }
 
 export interface LauncherDeps {
@@ -161,11 +164,21 @@ function resumeAnswer(paths: LocalPaths, sessionId: string, host: string, homeDi
   return { ok: false, reason: transcriptRefusal(transcript, sessionId, host), transcript }
 }
 
+/** CC-1646: the probed path that is not here at all, as against one refused for where it resolves. */
+function missingPath(probe: HostProbe): HostProbeMissing | undefined {
+  if (realDir(probe.cwd) === undefined) return 'cwd'
+  if (probe.configDir !== undefined && realDir(probe.configDir) === undefined) return 'configDir'
+  return undefined
+}
+
 export function answerProbe(probe: HostProbe, identity: LauncherIdentity, deps: LauncherDeps): HostAnswer {
   const surface = surfaceReason(probe.surface, identity)
   if (surface !== undefined) return refused(surface)
   const paths = resolvePaths(probe, deps.homeDir)
-  if (typeof paths === 'string') return refused(paths)
+  if (typeof paths === 'string') {
+    const missing = missingPath(probe)
+    return missing === undefined ? refused(paths) : { ...refused(paths), missing }
+  }
   if (probe.resumeSession === undefined) return { ok: true }
   return resumeAnswer(paths, probe.resumeSession, identity.host, deps.homeDir)
 }
@@ -310,11 +323,24 @@ type Log = (line: string) => void
 /** A broker older than CC-1063 ignores `host_challenge`; give up rather than wait forever. */
 export const CHALLENGE_TIMEOUT_MS = 10_000
 
+/**
+ * CC-1646: the landing dir by its real path, checked on every connect so one made after the launcher
+ * started is announced on its next connect; one missing, outside home or under a credential dir is not.
+ */
+export function announcedLanding(identity: LauncherIdentity, homeDir: string): string | undefined {
+  if (identity.landing === undefined) return undefined
+  const local = localPath('landing dir', identity.landing, homeDir)
+  return 'real' in local ? local.real : undefined
+}
+
 /** The hello for this nonce, proved with the key on disk now, so a rotated key needs no restart. */
 function provedHello(identity: LauncherIdentity, deps: LauncherDeps, nonce: string): ClientMessage {
+  const { landing: _requested, ...announced } = identity
+  const landing = announcedLanding(identity, deps.homeDir)
+  const hello = { t: 'host_hello' as const, ...announced, ...(landing === undefined ? {} : { landing }) }
   const key = deps.readKey()
-  if (key === null) return { t: 'host_hello', ...identity }
-  return { t: 'host_hello', ...identity, proof: helloProof(key, identity.host, nonce) }
+  if (key === null) return hello
+  return { ...hello, proof: helloProof(key, identity.host, nonce) }
 }
 
 /**

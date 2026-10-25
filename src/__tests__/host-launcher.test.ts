@@ -344,7 +344,66 @@ describe('a host_probe', () => {
 
     const answer = answerProbe({ cwd: missing, surface: 'headless' }, LINUX, deps)
 
-    expect(answer).toEqual({ ok: false, reason: `its cwd ${missing} is not a directory on this machine` })
+    expect(answer).toEqual({
+      ok: false,
+      reason: `its cwd ${missing} is not a directory on this machine`,
+      missing: 'cwd',
+    })
+  })
+
+  it('says the config dir is what is missing when the cwd exists (CC-1646)', () => {
+    const { deps } = fakeDeps()
+    const gone = path.join(home, '.claude-profiles', 'gone')
+
+    const answer = answerProbe({ cwd, configDir: gone, surface: 'headless' }, LINUX, deps)
+
+    expect(answer).toMatchObject({ ok: false, missing: 'configDir' })
+  })
+
+  it('names nothing missing when an existing cwd is refused for another reason', () => {
+    const { deps } = fakeDeps()
+    const outside = fs.realpathSync(os.tmpdir())
+
+    const answer = answerProbe({ cwd: outside, surface: 'headless' }, LINUX, deps)
+
+    expect(answer.ok).toBe(false)
+    expect(answer).not.toHaveProperty('missing')
+  })
+})
+
+describe('the landing dir a launcher announces (CC-1646)', () => {
+  async function helloFor(landing: string): Promise<ClientMessage | undefined> {
+    const stub = await brokerStub(refuseHello)
+    const { deps } = fakeDeps()
+    await serveConnection(await stub.connect(), { ...LINUX, landing }, deps, () => undefined)
+    stub.close()
+    return stub.received.find(f => f.t === 'host_hello')
+  }
+
+  it('is announced by its real path', async () => {
+    const real = path.join(home, 'agent-landing')
+    fs.mkdirSync(real)
+    const link = path.join(home, 'landing-link')
+    fs.symlinkSync(real, link)
+
+    expect(await helloFor(link)).toMatchObject({ t: 'host_hello', landing: real })
+  })
+
+  it('is not announced when it resolves outside home', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-landing-out-'))
+
+    const hello = await helloFor(outside)
+
+    fs.rmSync(outside, { recursive: true, force: true })
+    expect(hello?.t).toBe('host_hello')
+    expect(hello).not.toHaveProperty('landing')
+  })
+
+  it('is not announced when it does not exist', async () => {
+    const hello = await helloFor(path.join(home, 'no-such-landing'))
+
+    expect(hello?.t).toBe('host_hello')
+    expect(hello).not.toHaveProperty('landing')
   })
 })
 

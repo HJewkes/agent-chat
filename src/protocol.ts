@@ -54,6 +54,9 @@ export interface HostProbe {
   resumeSession?: string
 }
 
+/** CC-1646: which of a probe's paths a launcher found missing, so teleport can try its landing dir. */
+export type HostProbeMissing = 'cwd' | 'configDir'
+
 /** CC-1151: the jobs a `job_kick` frame may name; a closed set, so the frame selects and never configures. */
 export const JOB_KICK_NAMES = ['burndown_tick', 'seats_watchdog', 'seats_heartbeat_check'] as const
 export type JobKickName = (typeof JOB_KICK_NAMES)[number]
@@ -64,6 +67,8 @@ export interface HostLauncherInfo {
   platform: string
   surfaces: PackageSurfaceName[]
   connectedAt: number
+  /** CC-1646: the landing dir its hello announced. */
+  landing?: string
 }
 
 /** What a spawn, resume or retire answers with, and a remote spawn's placement (CC-1059) too. */
@@ -1349,7 +1354,15 @@ export type ClientMessage =
    * CC-951: a host launcher announces the machine it launches on. Refused from a registered
    * session connection: a launcher is its own connection, never a session's.
    */
-  | { t: 'host_hello'; host: string; platform: string; surfaces: string[]; proof?: string }
+  | {
+      t: 'host_hello'
+      host: string
+      platform: string
+      surfaces: string[]
+      proof?: string
+      /** CC-1646: where a successor lands when its cwd is missing on this machine; absent from older launchers. */
+      landing?: string
+    }
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
   /** CC-951: a launcher's answer to `host_probe`, `host_launch` or `host_spawn`, paired by `id`. */
@@ -1360,6 +1373,8 @@ export type ClientMessage =
       reason?: string
       /** CC-1472: the launcher's verdict on a probe's `resumeSession`; absent from a launcher older than it. */
       transcript?: { path: string; found: boolean }
+      /** CC-1646: the probed path that does not exist on the launcher's machine. */
+      missing?: HostProbeMissing
     }
   | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
   /** CC-951: the connected host launchers. */
