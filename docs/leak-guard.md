@@ -1543,14 +1543,18 @@ Two cases of this check are denied outright, so the check stays fast (CC-347):
   see, the accepted gap above;
 - an `env -S` split behind another expansion, such as `$E env -S '$W -n 5 gh ...'`.
 
-A command word that reads a positional parameter (`"$@"`, `$1`, `"$*"`, `${@:2}`, `${!#}`, zsh's
-`$argv` and its flagged forms such as `$=@`, `${~*}` and `$^@`) runs the words a `set --` or a function call put there, as in `set -- git push --no-verify; "$@"`
-or `f() { "$@"; }; f git push --no-verify`. The guard does not follow those words to the head, so
-when no other rule denies the line it denies a command word holding any parameter other than a
-plain name (every positional or special parameter, with or without a zsh flag) on a line whose other words may reach git
-or gh, by the test above without its positional clause (CC-1624). `f() { "$@"; }; f ls` stays
-allowed. Known false denies: `f() { "$@"; }; f ls; git status` and `set -- ls; "$@"; git status`.
-Run the git command in a Bash call of its own.
+A command word that is an expansion may run the words a positional parameter holds: directly, as
+in `set -- git push --no-verify; "$@"` or `f() { "$@"; }; f git push --no-verify`, or through a
+variable, as in `f() { x="$*"; $x; }; f git push --no-verify`. The guard does not follow a
+`set --` or a function call, so when no other rule denies the line it denies an expansion as the
+command word on a line that reads a positional anywhere and whose other words may reach git or gh
+(CC-1624). A positional read is any spelling the `sh -c` fill reads (`$@`, `$1`, `${@:2}`,
+`${!#}`, zsh's `$=@`, `$argv`, bash's `${BASH_ARGV[@]}`). The reach test is the one above without
+its positional clause, since a `set --` or a call fills the positionals from the line's own words.
+A line that names `argv` or `BASH_ARGV` as a word keeps the clause, because zsh's `read -A argv < f`
+fills them from a file. `f() { "$@"; }; f ls` stays allowed. Known false denies:
+`f() { "$@"; }; f ls; git status` and `set -- ls; "$@"; git status`. Run the git command in a Bash
+call of its own.
 
 ### Known false deny: eval beside git or gh
 

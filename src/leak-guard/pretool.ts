@@ -98,6 +98,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
+import { readsPositional } from './shell-args.js'
 import { observedShell, readShellCall } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -211,7 +212,7 @@ export const REASONS = {
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments. ${HEREDOC_POST} ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
-  positionalCommand: `leak-guard: the command word is a positional parameter ("$@", $1, "$*", or zsh's $argv), which runs the words a set -- or a function call put there, on a command line that may reach git or gh. Write the command out literally. ${DOCS}`,
+  positionalCommand: `leak-guard: the command word is an expansion on a line that reads a positional parameter ("$@", $1, "$*", zsh's $argv), so it may run the words a set -- or a function call put there, directly or through a variable, on a command line that may reach git or gh. Write the command out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: a script (eval, trap, mapfile -C, parallel) the guard cannot read, on a command line that may reach git or gh. Run the command directly. ${DOCS}`,
@@ -2382,16 +2383,20 @@ function checkHidden(
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
+// The positionals as arrays, which zsh's `read -A argv`, `argv=(...)` or `set -A argv` fill from text the line never shows.
+const POSITIONAL_ARRAYS = ['argv', 'BASH_ARGV']
+
 /**
  * Whether any word of the line names git or gh, may expand to either, or reads a variable the line or
  * the hook ties to them (CC-478). With `positionals` false, a positional parameter alone does not
- * count, since its words are the line's own and are tested as such.
+ * count, since a `set --` or a call fills it from the line's own words, which are tested as such;
+ * unless the line names the positionals as an array, which fills them from elsewhere.
  */
 function mayReachGit(line: string, env: Env, positionals = true): boolean {
   if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line) || ANSI_C.test(line)) return true
-  if ((positionals ? UNNAMED_SET : UNNAMED_SET_BUT_POSITIONAL).test(line) || HIDDEN_NAME.test(line))
-    return true
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
+  const counted = positionals || POSITIONAL_ARRAYS.some(name => mentions(said, name))
+  if ((counted ? UNNAMED_SET : UNNAMED_SET_BUT_POSITIONAL).test(line) || HIDDEN_NAME.test(line)) return true
   const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
   if (names.some(name => mentions(said, name) || wordMayBeGit(env[name] ?? ''))) return true
   return line.split(/[\s;&<>]+/).some(word => wordMayBeGit(word) || wordMayBeGit(withEnv(word, env)))
@@ -2671,18 +2676,14 @@ function checkParallel(
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
 
-// Any parameter that is not a plain name, so every spelling of a positional (`$@`, `$*`, `$1`, `${@:2}`,
-// `${!#}`, zsh's `$=@`, `${~*}`, `$^@`) and zsh's `$argv`, which hold the words a `set --` or a call gave.
-// A command substitution and a `$'...'` or `$"..."` string have rules of their own.
-const POSITIONAL = new RegExp(`${LIVE}\\$${LIVE}?(?:[^A-Za-z_({'"]|\\{(?![A-Za-z_])|\\{?argv\\b)`)
-
 /**
- * Whether `head`, the command word before xargs adds any, reads a positional parameter on a line whose
- * other words may reach git or gh. Its words come from a `set --` or a function call the guard does not
- * follow, so it fails closed (CC-1624).
+ * Whether `head`, an expansion the guard cannot resolve, may run words a positional holds, on a line whose
+ * other words may reach git or gh (CC-1624). A positional read anywhere on the line counts, by the
+ * spellings the `sh -c` fill reads, since its words reach the head directly (`"$@"`) or through a
+ * variable (`x="$*"; $x`). The guard does not follow a `set --` or a function call, so this fails closed.
  */
 const runsPositional = (head: string, scope: Scope, ctx: GuardContext): boolean =>
-  POSITIONAL.test(head) && mayReachGit(scope.line, ctx.env, false)
+  head.includes(`${LIVE}$`) && readsPositional(scope.line) && mayReachGit(scope.line, ctx.env, false)
 
 /** `function f { gh ...; }` runs nothing yet, but its body is checked as if it ran now. */
 const functionBody = (marked: readonly string[]): readonly string[] =>

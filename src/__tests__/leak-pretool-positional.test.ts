@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 import { fakeGitShells } from './helpers/fake-git-shells.js'
@@ -54,6 +56,22 @@ const BYPASSES: [string, string[]][] = [
   [`set -- ${PUSH}; \${~*}`, ['zsh']],
   [`set -- ${PUSH}; $^@`, ['zsh']],
   [`f() { \${!#}; }; f "${PUSH}"`, ['bash']],
+  // Second review of #1240: bash's own positional array, and the positionals copied into a variable.
+  [`shopt -s extdebug; f() { \${BASH_ARGV[@]}; }; f --no-verify push git`, ['bash']],
+  [`shopt -s extdebug; f() { \${BASH_ARGV[*]}; }; f --no-verify push git`, ['bash']],
+  [`set -- ${PUSH}; x="$*"; $x`, ['bash']],
+  [`f() { x="$*"; $x; }; f ${PUSH}`, ['bash']],
+  [`f() { local x="$*"; $x; }; f ${PUSH}`, ['bash']],
+  [`f() { x=$@; $x; }; f ${PUSH}`, ['bash']],
+  [`f() { printf -v x %s "$*"; $x; }; f ${PUSH}`, ['bash']],
+]
+
+// zsh fills the positionals from a file through `read -A argv`, so they are not the line's own words.
+const FILED: [string, string[]][] = [
+  [`read -A argv < f; "$@"`, ['zsh']],
+  [`read -rA argv < f; "$@"`, ['zsh']],
+  [`read -A argv < f; $@`, ['zsh']],
+  [`argv=($(<f)); "$@"`, ['zsh']],
 ]
 
 // The guard does not follow which words fill a positional, so any other word that may reach git denies.
@@ -86,6 +104,10 @@ describe('checkCommand on a positional parameter as the command word', () => {
     expect(reason).toBe(REASONS.positionalCommand)
   })
 
+  it.each(FILED)('denies %j, whose positionals a file fills', src => {
+    expect(checkCommand(src, ctx())).toBeDefined()
+  })
+
   it.each(PINNED)('still denies %j', src => {
     expect(checkCommand(src, ctx())).toBeDefined()
   })
@@ -100,13 +122,15 @@ describe('checkCommand on a positional parameter as the command word', () => {
 })
 
 const real = fakeGitShells('agent-chat-pretool-positional-', PUSH)
+// A name that does not say push, so only the read itself can tie the line to git.
+fs.writeFileSync(path.join(real.root, 'f'), `${PUSH}\n`)
 const shellsNamed = (names: readonly string[]) =>
   real.shells.filter(([shell]) => names.some(name => shell.endsWith(`/${name}`)))
 
 afterAll(real.cleanup)
 
 describe.skipIf(real.shells.length === 0)('real shells run the positional command word', () => {
-  it.each([...BYPASSES, ...PINNED])('each named shell pushes for %j', (src, names) => {
+  it.each([...BYPASSES, ...FILED, ...PINNED])('each named shell pushes for %j', (src, names) => {
     for (const [shell, args] of shellsNamed(names))
       expect(real.gitCalls(shell, args, src)).toBe('push --no-verify')
   })
