@@ -3127,10 +3127,30 @@ function feeds(
   cmd: SimpleCommand,
   prev: { cmd: SimpleCommand; output: Feed } | undefined,
   scope: Scope,
+  line: LineFeeds,
 ): Pick<Scope, 'stdin' | 'fed'> {
-  if (cmd.before !== '|') return { stdin: scope.stdin, fed: ownFeed(cmd, undefined, scope.stdin) }
+  if (cmd.before !== '|')
+    return { stdin: scope.stdin, fed: ownFeed(cmd, undefined, inheritedFeed(cmd, scope, line)) }
   const pipe = pipeFeed(prev?.cmd, prev?.output ?? 'unknown', cmd)
   return { stdin: joinFeeds(scope.stdin, pipe), fed: ownFeed(cmd, pipe, scope.stdin) }
+}
+
+/** What the line holds that changes the stdin its nested commands inherit. */
+interface LineFeeds {
+  processSubstitution: boolean
+}
+
+const lineFeeds = (cmds: readonly SimpleCommand[]): LineFeeds => ({
+  processSubstitution: cmds.some(cmd => cmd.marked.some(isProcessSubstitution)),
+})
+
+/**
+ * The stdin a command with no pipe or heredoc of its own inherits. A process substitution's stdin
+ * is the output of the command that writes to it (`echo P > >(bash)`, CC-1416), and the splitter
+ * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'.
+ */
+function inheritedFeed(cmd: SimpleCommand, scope: Scope, line: LineFeeds): Feed {
+  return line.processSubstitution && cmd.nested ? 'unknown' : scope.stdin
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -3145,10 +3165,11 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const cmds = parseShell(command)
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
+  const line = lineFeeds(cmds)
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
   for (const cmd of cmds) {
     at = settle(cmd, at)
-    const fed = feeds(cmd, prev, at)
+    const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
