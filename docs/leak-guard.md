@@ -1142,7 +1142,10 @@ Unchanged, and not findings against this rule:
 
 - eval or source of text the guard cannot read, with no visible hidden name and no command word that
   is an expansion (`eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). With one (`eval "$A=ext"; $G …`) it
-  denies, since the script may set that word to git (TP-4245).
+  denies, since the script may set that word to git (TP-4245). Any expanded word other than an
+  assignment counts, behind a program the guard does not know (`watch $G`, `npx $G`, `sh -c "$G …"`,
+  `xargs $G`), except as an operand of `echo`, `printf`, `cat`, `tee`, `cd`, `export` and the
+  other variable builtins, `read`, `eval`, `trap` and `mapfile`, which never run it.
 - SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
 - Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
   `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
@@ -1168,8 +1171,8 @@ script, the same script-file gap as below. Also not covered: a program key writt
 global config with `git config` in one call and used by a later git in another, and text read from
 a file at run time by `bash -c "$(cat f)"` or `eval "$(cat f)"`. The guard reads a `sh -c` string
 as written, and `eval` of text it cannot read is denied only when the line names `git` or `gh` or
-runs a command word that is an expansion. A command word inside a `sh -c` string on such a line
-counts only once the guard reads that string, after the eval. A
+runs a word that is an expansion (above). An expansion inside a single-quoted `sh -c` string on such
+a line counts only once the guard reads that string, after the eval. A
 program env var whose value is already in the agent's environment, set by a shell startup file or
 an earlier tool call rather than on this command line, is not read, the same gap as any such
 variable.

@@ -1011,6 +1011,32 @@ describe('a gh command the command line hides', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.hiddenScript)
   })
 
+  // A program the guard does not know may run any of its words, as a literal git there names git.
+  it.each([
+    'watch $G push o',
+    'ssh-agent $G push o',
+    'npx $G push o',
+    'unbuffer $G push o',
+    'chronic $G push o',
+    'entr $G push o',
+    'dbus-run-session $G push o',
+    'sh -c "$G push o"',
+    'xargs $G fetch o </dev/null',
+  ])('denies eval of unread text before %s, as with git written out', command => {
+    const literal = command.replace('$G', 'git')
+
+    expect(checkCommand(`eval "$(cat f)"; ${literal}`, ctx())).toBeDefined()
+    expect(checkCommand(`eval "$(cat f)"; ${command}`, ctx())).toBe(REASONS.hiddenScript)
+  })
+
+  it.each([
+    'eval "$(ssh-agent -s)"; echo $X',
+    'eval "$(ssh-agent -s)"; cd $D && npm test',
+    'eval "$(ssh-agent -s)"; export K=$D/key; read -r L < "$K"; npm test',
+  ])('allows %s: an expansion only where no command runs it', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
   it.each(['. /dev/stdin <<< "$S"; $G fetch o', 'cat f | . /dev/stdin; $G fetch o'])(
     'denies %s: source of unread text on a line with an expanded command word',
     command => {

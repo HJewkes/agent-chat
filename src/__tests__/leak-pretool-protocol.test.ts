@@ -932,7 +932,6 @@ describe('a hidden variable name on a line with no git, where no command is prov
     'read $A <<< ext; watch -n1 $G fetch o',
     'read $A <<< ext; watch "$C"',
     'read $A <<< ext; parallel $G ::: fetch',
-    'read $A <<< ext; parallel ::: $G',
     `read $A <<< ext; trap '$G fetch o' EXIT`,
     'read $A <<< ext; trap "$G fetch o" EXIT',
     `read $A <<< ext; bash -c 'trap "\\$G fetch o" EXIT'`,
@@ -942,6 +941,11 @@ describe('a hidden variable name on a line with no git, where no command is prov
     'read $A <<< ext; let "$X"',
   ])('denies a command that may run a word as code: %j', command => {
     expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // TP-4245: parallel's input is a script the guard cannot read, on a line that runs an expanded word.
+  it('denies parallel running an expanded input before the hidden name is reported', () => {
+    expect(hookReason('read $A <<< ext; parallel ::: $G')).toBe(REASONS.hiddenScript)
   })
 
   // TP-4234: a nameref to a built name hides the name its assignment writes.

@@ -2466,11 +2466,29 @@ function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
 const scriptMayReachGit = (scope: Scope, ctx: GuardContext): boolean =>
   scope.hiddenHead || lineMayReachGit(scope, ctx)
 
-/** Whether the command's word past its wrappers is an expansion, or unwrap refuses it, so the guard cannot tell what it runs. */
+/**
+ * Whether the command may run a word the shell expands: its command word past its wrappers is an
+ * expansion, unwrap refuses it, or it is not one that never runs its arguments and any word other
+ * than an assignment is one. A program the guard does not know (`watch`, `npx`, `sh -c "$G …"`) may
+ * run any of them as a command, as a literal git there would set namesGit, and a wrapper may have
+ * dropped one as an option (`xargs $G fetch`). The words of eval, trap and mapfile are the script
+ * checkShellScript gates, so they do not count here.
+ */
 function runsHiddenHead(cmd: SimpleCommand): boolean {
   const head = commandHead(cmd)
-  return head === undefined || (head.words[0] ?? '').includes(LIVE)
+  if (head === undefined) return true
+  const word = head.words[0] ?? ''
+  if (word.includes(LIVE)) return true
+  if (runsNoArgument(path.basename(word))) return false
+  return cmd.marked.some(marked => marked.includes(LIVE) && !ASSIGNMENT.test(marked))
 }
+
+const runsNoArgument = (name: string): boolean =>
+  PLAIN_COMMANDS.has(name) ||
+  CD_WORDS.has(name) ||
+  ENV_EDITS.has(name) ||
+  NAME_OPERAND_BUILTINS.has(name) ||
+  CURRENT_SHELL_SCRIPTS.has(name)
 
 const mayStartCommand = (word: string): boolean =>
   word.includes(LIVE) ||
