@@ -599,7 +599,8 @@ class ShellLexer {
   private reservedWord(word: string, header: Header | undefined): boolean {
     if (this.testOpen) return word === ']]'
     if (header !== undefined && (word === 'in' || (word === 'do' && header !== 'case'))) return true
-    if (this.patternNext) return (word === 'esac' || word === '}') && this.patternEsac()
+    if (this.patternNext)
+      return this.patternEsac() && (word === 'esac' || (word === '}' && this.patternBraceCloses()))
     if (word === 'time' && !timeCommandAcceptable(this.lastToken, this.beforeLast)) return false
     return this.wordStartOk && RESERVED.has(word)
   }
@@ -625,9 +626,6 @@ class ShellLexer {
    */
   private trackCase(word: string, header: Header | undefined): void {
     const top = this.cases.at(-1)
-    if (word === '}' && this.patternNext && top === 'in' && this.braceCloseSplits()) {
-      this.budget.expansion = 'unreadable'
-    }
     if (word === 'in' && header === 'case') this.cases.push('in')
     else if (word === '{' && top !== undefined) this.cases.push('group')
     else if (word === '}' || (word === 'esac' && isCase(top))) this.cases.pop()
@@ -650,10 +648,17 @@ class ShellLexer {
   }
 
   /**
-   * Where a pattern is due, bash reads `})` and `}|y)` as a pattern and zsh closes the case at the `}`,
-   * so the two shells end the case, and maybe a `$( )`, in different places.
+   * Whether a `}` where a pattern is due closes the case. zsh closes there; bash fails, except that after
+   * `in` it reads `})` and `}|y)` as a pattern. zsh then needs that `)` to close a `$( )` or subshell, or
+   * it fails too, so bash's reading is kept and only where zsh's runs is the line unreadable.
    */
-  private braceCloseSplits(): boolean {
+  private patternBraceCloses(): boolean {
+    if (this.cases.at(-1) !== 'in' || !this.beforePatternEnd()) return true
+    if (this.depth > 0 || (this.nested && !this.closesOnBrace)) this.budget.expansion = 'unreadable'
+    return false
+  }
+
+  private beforePatternEnd(): boolean {
     let at = this.unjoin(this.pos)
     while (this.src[at] === ' ' || this.src[at] === '\t') at = this.unjoin(at + 1)
     return this.src[at] === ')' || this.src[at] === '|'

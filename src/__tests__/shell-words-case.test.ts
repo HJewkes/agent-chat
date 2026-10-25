@@ -61,7 +61,7 @@ describe('a } where a pattern is due, before ) or |', () => {
   it.each([
     'echo "$(case q in q) :;; })"',
     'echo "$(case q in q) :;; } )"',
-    'case q in q) :;; }|r) :;; esac',
+    '(case q in q) :;; }|r) :;; esac)',
   ])('is unreadable after in, since bash reads a pattern and zsh a close: %s', line => {
     expect(expansionRisk(line)).toBe('unreadable')
   })
@@ -70,7 +70,9 @@ describe('a } where a pattern is due, before ) or |', () => {
     'echo "$(case q { q) :;; })"',
     'echo "$(case q in q) :;; };)"',
     'echo "$(case q in (}) :;; esac)"',
-  ])('is read the one way the shells agree on: %s', line => {
+    'case q in q) :;; }|r) :;; esac',
+    'echo "${ case q in q) :;; }) :;; esac; }"',
+  ])('is read the one way that runs: %s', line => {
     expect(expansionRisk(line)).toBeUndefined()
   })
 })
