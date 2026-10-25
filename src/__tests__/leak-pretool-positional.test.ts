@@ -43,6 +43,8 @@ const BYPASSES: [string, string[]][] = [
   [`f() { "\${argv[@]}"; }; f ${PUSH}`, ['zsh']],
   [`bash -c 'set -- ${PUSH}; "$@"'`, BOTH],
   [`f() { "$@"; }; f g''it push --no-verify`, BOTH],
+  [`bash -c '"$@"' _ ${PUSH}`, BOTH],
+  [`f() { bash -c '"$@"' _ "$@"; }; f ${PUSH}`, BOTH],
 ]
 
 // The guard does not follow which words fill a positional, so any other word that may reach git denies.
@@ -55,9 +57,7 @@ const PINNED: [string, string[]][] = [
   [`set -- "${PUSH}"; eval "$*"`, BOTH],
   [`f() { $1 $2 $3; }; f ${PUSH}`, BOTH],
   [`f() { "$@" push --no-verify; }; f git`, BOTH],
-  [`bash -c '"$@"' _ ${PUSH}`, BOTH],
   [`sh -c '$1 "$2" $3' _ ${PUSH}`, BOTH],
-  [`f() { bash -c '"$@"' _ "$@"; }; f ${PUSH}`, BOTH],
 ]
 
 // Each row: the line and the git calls every shell makes for it.
