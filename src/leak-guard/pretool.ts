@@ -934,6 +934,30 @@ function splitString(a: string, next: string | undefined): { value: string; widt
 // env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
 const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
+const SHELL_OPERATOR = /[;&|<>()]/
+
+/**
+ * The words of an `env -S` value. env splits on blanks and quotes only, so a `;` or `|` outside
+ * quotes is part of a word, as find's `-exec … ;` needs (CC-1307). Each is quoted for parseShell,
+ * and a value it still reads as more than one command fails closed, as does an unclosed quote, which
+ * env refuses but the shell lexer would read on to the end.
+ */
+function envSplitWords(value: string): string[] | undefined {
+  let quote = ''
+  let text = ''
+  for (const c of value) {
+    if (quote === '' && SHELL_OPERATOR.test(c)) text += `'${c}'`
+    else {
+      text += c
+      if (quote === '' && (c === "'" || c === '"')) quote = c
+      else if (c === quote) quote = ''
+    }
+  }
+  if (quote !== '') return undefined
+  const commands = parseShell(text)
+  return commands.length > 1 ? undefined : [...(commands[0]?.marked ?? [])]
+}
+
 const ENV_VALUE_OPTIONS_FED = new Set(['-u', '--unset', '-C', '--chdir', '-P', '-S', '--split-string'])
 const nameOf = (word: string): string => word.split('=')[0] as string
 
@@ -968,7 +992,9 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
     if (split !== undefined) {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
-      const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
+      const value = envSplitWords(split.value)
+      if (value === undefined) return { reason: REASONS.hiddenCommand }
+      const words = [...value, ...args.slice(i + split.width)]
       const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }

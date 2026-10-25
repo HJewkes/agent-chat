@@ -662,6 +662,9 @@ backslash escapes, and it splits on more blanks than space and tab. So a split v
 backslash or any whitespace other than space and tab is denied, as is one with an expansion. The
 guard finds `-S` alone, as `--split-string` or `--split-string=`, and at the end of a short-option
 cluster such as `-vS` (any `-[a-zA-Z]*S`), where the rest of the word or the next word is the value.
+env splits only on blanks and quotes, so a `;`, `&`, `|`, `<`, `>`, `(` or `)` in the value is part
+of a word, not a command break: `env -S 'find . -exec true ; -exec git push --no-verify ;'` is read
+as one find with two clauses, and its second clause denies (CC-1307).
 
 The PR pre-check runs egress-scan's rules on each line of the title, the body, a `--body-file`
 or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: its `--subject`,
