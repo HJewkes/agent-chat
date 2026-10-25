@@ -1078,47 +1078,30 @@ name uses and the git scan also read the command the guard's own unwrap says run
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
 
-A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`,
-`declare -n R=$A; R=…`, `${!A:=…}`) may be any name, and a call that shows no git may still
-run it. So on such a call the hidden name denies as `programEnv` unless every command of the
-call is proven inert (TP-4231). A command is proven inert when its head, after the guard's own
-unwrap and read with no env value (the hidden name may have changed any of them), is in a closed
-allowlist of commands that never run a word or their stdin as a program or shell text: the
-declaration and name-operand builtins, `echo`, `printf`, `test`, `[`, `cd`, `ls`, `cat`, `grep`,
-`tee`, `cp` and a few more. Literal `eval` and `trap` text is inert when every command parsed
-from it is, checked recursively, and so are the commands of each substitution. A function
-definition is never inert. No new shell is inert, whatever text it is given and behind any
-wrapper: the hidden name may be `BASH_ENV`, `ENV` or `ZDOTDIR`, exported on the line or already
-exported in the environment, and the shell then runs a file. So `export $A=/x.sh; sh -c 'echo hi'`
-and `read $A <<< /x.sh; sh -c 'echo hi'` deny. The rule asks which commands are known safe, not
-where a command may start, so a command missing from the allowlist over-denies and never lets a
-line through. So `read $A <<< ext; $G fetch o`, `watch $G fetch o`, `parallel ::: $G`,
-`trap '$G fetch o' EXIT`, `sort --compress-program=$G f` and `declare -n R=$A; R=ext; $G fetch o`
-deny, while `read $A <<< ext; ls $D`, `eval 'echo hi'` and `trap 'echo bye' EXIT` stay allowed.
-A nested script is judged against every command of the outer call, so `eval 'read $A <<< ext';
-$G fetch o` denies too.
+A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`, `declare -n R=$A`
+then `R=`, `${!A:=…}`, `unset $A`, `mapfile "$A"`, `getopts … "$A"`) denies as `programEnv` wherever
+the guard parses it: the outer line, and eval, trap, `mapfile -C`, `sh -c` and fed-script text. It
+denies whether or not the line shows git, because the name may be any variable (a git program env, BASH_ENV,
+LD_PRELOAD) and its own operand may run code through an array subscript. No command is proven inert
+after it (TP-4231).
 
-An allowlist entry may be added only for a command that never runs a word or its stdin as code
-(`sed`, `awk`, `find`, `sort`, `env`, `xargs`, `watch`, `timeout`, `let` and shells never qualify).
-Each addition needs a test row.
+Unchanged, and not findings against this rule:
 
-The rule's boundary. It closes one class: a variable whose name the shell builds, set in a Bash
-call that shows no git, denies unless every command of the call is proven inert. It does not
-change:
+- eval or source of text the guard cannot read, with no visible hidden name (`eval "$A=ext"; $G …`,
+  `eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). This is redesign-1 follow-up 1.
+- SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
+- Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
+  `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
+- Files and programs run by path.
+- Lines that show git, where main's rules are unchanged.
 
-- Unread eval/source. Lines that set no hidden name but `eval` or `source` text the guard cannot
-  read (`eval "$A=ext"; $G …`, `eval "$(cat f)"; $G …`, `. /dev/stdin <<< "$S"; $G …`) are
-  allowed, and the pinned `eval "$(ssh-agent -s)"; npm test` allow constrains a fix.
-- `SEARCH_UNREAD` (the CC-1236 pins `PATH=$X make` and `hash -p "$X" make`).
-- Programs that run git from a file's content (`./x.sh`, `. ./x.sh`, a PATH-hijacked `ls` after
-  `read $A $B`). The one exception is a new shell after a hidden name, which denies because the
-  name may be `BASH_ENV`, `ENV` or `ZDOTDIR`.
-- Any line where git already shows. The rules above are unchanged there.
+Accepted over-denies. Each needs a name the shell builds, on the same call:
 
-These over-denies are accepted, and each one needs a hidden-name write on the same call:
-`read $A; python x.py`, `make` and any other command not on the allowlist; any new shell, even
-`read $A <<< ext; sh -c 'echo hi'`; `env -C /x $X q`, where env may read `$X` as a name or run
-it; `bash -c 'read $A'; $G x`, since a child shell cannot pass a name back; and `trap - EXIT`.
+- `export $A=ext; echo hi` and any other command after one
+- the #1187 pins `declare -n R=$A; R=x; ls` and `trap 'declare -n R=$A; R=x' DEBUG; ls`
+- `env -C /x $X q` and `status`
+- `bash -c 'read $A'; $G x`
+- a lone `read $A <<< ext`
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of
