@@ -162,18 +162,54 @@ const HIDE_GIT_CONFIG = `unset caller_git_config
 case \${GIT_CONFIG+set} in set) caller_git_config=$GIT_CONFIG; unset GIT_CONFIG ;; esac`
 const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CONFIG="$caller_git_config"`
 
-// pinGitProtocols in sh: git reads GIT_ALLOW_PROTOCOL over every protocol.*.allow scope, so `ext::` never runs (CC-1095).
-const PIN_PROTOCOLS = `safe_protocols=${shQuote(SAFE_GIT_PROTOCOLS.join(':'))}
-if [ -n "\${GIT_ALLOW_PROTOCOL+set}" ]; then
+// agentEnv and launch-agent still export this exact list (CC-1587), so the shim reads it as unset.
+const LEGACY_PIN = 'file:git:http:https:ssh'
+
+// CC-1095 without overriding config (CC-1336): an exported list outranks every protocol.*.allow, so
+// the shim exports only a caller's own list, cut to the safe ones. It appends protocol.ext.allow=never
+// as the last GIT_CONFIG_COUNT pair instead, which git ranks over every config file and include and
+// over protocol.allow, and git reads every other protocol policy itself.
+const PIN_PROTOCOLS = `refuse_pin() {
+  printf '%s\\n' "git-shim: refused ($1): $2 ${DOCS}" >&2
+  exit 2
+}
+safe_protocols=${shQuote(SAFE_GIT_PROTOCOLS.join(':'))}
+case \${GIT_ALLOW_PROTOCOL+set}:\${GIT_ALLOW_PROTOCOL-} in
+: | set:${LEGACY_PIN}) unset GIT_ALLOW_PROTOCOL ;;
+*)
   pinned= rest=$GIT_ALLOW_PROTOCOL:
   while [ -n "$rest" ]; do
     protocol=\${rest%%:*} rest=\${rest#*:}
     case :$safe_protocols: in *":$protocol:"*) [ -z "$protocol" ] || pinned=\${pinned:+$pinned:}$protocol ;; esac
   done
-else
-  pinned=$safe_protocols
-fi
-export GIT_ALLOW_PROTOCOL="$pinned"`
+  export GIT_ALLOW_PROTOCOL="$pinned" ;;
+esac
+count=\${GIT_CONFIG_COUNT:-0}
+case $count in *[!0-9]* | ??????????*) refuse_pin config-count "GIT_CONFIG_COUNT is not a count git reads." ;; esac
+count=\${count#"\${count%%[!0]*}"} count=\${count:-0} i=0 last_key= last_value=
+while [ "$i" -lt "$count" ]; do
+  eval "[ -n \\"\\\${GIT_CONFIG_KEY_$i+set}\\" ] && [ -n \\"\\\${GIT_CONFIG_VALUE_$i+set}\\" ]" ||
+    refuse_pin config-count "GIT_CONFIG_COUNT is $count but GIT_CONFIG_KEY_$i or GIT_CONFIG_VALUE_$i is unset."
+  eval "last_key=\\$GIT_CONFIG_KEY_$i last_value=\\$GIT_CONFIG_VALUE_$i"
+  i=$((i + 1))
+done
+if [ "$last_key" != protocol.ext.allow ] || [ "$last_value" != never ]; then
+  eval "export GIT_CONFIG_KEY_$count=protocol.ext.allow GIT_CONFIG_VALUE_$count=never"
+  export GIT_CONFIG_COUNT=$((count + 1))
+fi`
+
+// Only -c, --config-env and GIT_CONFIG_PARAMETERS rank after the pin's pair, and git evaluates a
+// command-line includeIf against this cwd, not a repo the command creates, so either refuses.
+const EXT_CHECK = `ext=$(eval "\\"\\$real\\"$cmdglobals config --get protocol.ext.allow" 2>/dev/null) ||
+  refuse_pin ext-transport "git could not read its command-line config, so the shim cannot tell whether ext:: may run."
+case $ext in [Nn][Ee][Vv][Ee][Rr]) ;; *)
+  refuse_pin ext-transport "-c, --config-env or GIT_CONFIG_PARAMETERS sets protocol.ext.allow, and ext:: runs its URL as a shell command." ;;
+esac
+includes=$(eval "\\"\\$real\\"$cmdglobals config --show-scope --name-only --get-regexp '^include(if\\\\..*)?\\\\.path\\$'" 2>/dev/null)
+case $? in 0 | 1) ;; *) refuse_pin ext-transport "git could not list its command-line includes." ;; esac
+case $nl$includes in *"$nl"command"$tab"*)
+  refuse_pin ext-transport "a command-line include or includeIf could set protocol.ext.allow where the shim cannot read it." ;;
+esac`
 
 // A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
 // GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
@@ -189,17 +225,17 @@ const SHADOWED_FN = `shadowed() {
 
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
-  globals= fileglobals= depth=0
+  globals= fileglobals= cmdglobals= depth=0
   while [ $# -gt 0 ]; do
     case $1 in
     ${VALUED_GLOBALS})
       [ $# -ge 2 ] || return 1
       quote "$1"; globals="$globals $q"; option=$q; quote "$2"; globals="$globals $q"
-      case $1 in -c | --config-env) ;; *) fileglobals="$fileglobals $option $q" ;; esac
+      case $1 in -c | --config-env) cmdglobals="$cmdglobals $option $q" ;; *) fileglobals="$fileglobals $option $q" ;; esac
       shift 2; continue ;;
     -*)
       quote "$1"; globals="$globals $q"
-      case $1 in -c?* | --config-env=*) ;; *) fileglobals="$fileglobals $q" ;; esac
+      case $1 in -c?* | --config-env=*) cmdglobals="$cmdglobals $q" ;; *) fileglobals="$fileglobals $q" ;; esac
       shift; continue ;;
     push) break ;;
     remote-ext) refuse_ext ;;
@@ -489,6 +525,7 @@ ${LOCAL_ONLY_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
 fi
+${EXT_CHECK}
 ${RESTORE_GIT_CONFIG}
 exec "$real" "$@"
 `

@@ -835,7 +835,7 @@ denies, since that lifts the list agent-chat pins. `GIT_ALLOW_PROTOCOL=https:ssh
 allowed. A literal list naming `ext` denies wherever it appears, on a script, make or npm line too
 (`GIT_ALLOW_PROTOCOL=ext make`, CC-1137 d), since nothing legitimate lists it. An unset, an unread
 value or a built name (`export $N=ext; make`) on a line that cannot reach git stays allowed and is
-left to the CC-1095 pin, which re-pins the list for every git the shim runs;
+left to the CC-1095 pin, which pins `ext` off for every git the shim runs;
 `leak-git-shim-protocol.test.ts` shows a script's and a make rule's git refusing `ext::` under each.
 A `git config` write, legacy or `git config set`, of `protocol.allow` or
 `protocol.ext.allow` to anything but `never` denies; `--get`, `get`, `--unset` and a bare key read
@@ -850,7 +850,7 @@ into place, so a rename whose target is under `protocol` denies as a protocol wr
 target is under `remote`, `url` or `submodule`, or that the guard cannot read, denies as a URL
 write. `git remote` with a verb the guard cannot read (`git remote "$V" x "$U"`) denies, and
 `git submodule add` or `set-url` and `submodule.<name>.url` writes follow the remote rules. A
-direct edit of `.git/config` or `.gitmodules` is not read here; the `GIT_ALLOW_PROTOCOL` pin
+direct edit of `.git/config` or `.gitmodules` is not read here; the shim's `ext` pin
 (CC-1095) is the backstop.
 
 git's parse-options accepts any unique prefix of a long option (`--ren` for `--rename-section`,
@@ -1457,7 +1457,7 @@ so a bug in the guard cannot block every command an agent runs.
 Not covered, by design or by cost:
 
 - a script file (`bash push.sh`, `make push`, an npm script), whose commands the guard never
-  sees; its git still runs under the shim's `GIT_ALLOW_PROTOCOL` pin (CC-1095);
+  sees; its git still runs under the shim's `ext` pin (CC-1095);
 - any other program that runs the command it is given and is not in the wrapper list above:
   `find -exec gh ...`, `parallel git ...`, `watch gh ...`. The guard
   reads the program's name, not gh's, and checks nothing;
@@ -1719,21 +1719,42 @@ Every other command, and a push that passes,
 A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
 that is no alias up to two more for `help.autocorrect`.
 
-Before any of that, the shim pins `GIT_ALLOW_PROTOCOL` (CC-1095), so every git it runs, a `!`
-alias body included, gets the caller's list cut down to `file:git:http:https:ssh`. An unset
-variable gets that whole list, and an empty one stays empty, which git reads as no transport.
-git reads this list over `protocol.*.allow` in every config scope, so a repository with
-`protocol.ext.allow=always` and an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
-`transport 'ext' not allowed`. That holds under `GIT_ALLOW_PROTOCOL=ext`, `env -u
-GIT_ALLOW_PROTOCOL` or `unset` in a script, and a caller's narrower list, such as `https`, is kept.
-The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
-`agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
-burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
-alias that expands to it, with exit 2 and `git-shim: refused (ext-transport)`, because that
-helper runs its argument as a shell command without the transport check. The list keeps `file`,
-so local clones, test fixtures and a `file` submodule still work; leaving it out would break
-local-path clones. A remote helper outside the list, such as `persistent-https::` or
-`gcrypt::`, is refused for agents.
+Before any of that, the shim pins `ext` off (CC-1095) for every git it runs, a `!` alias body
+included. git reads `GIT_ALLOW_PROTOCOL` over `protocol.*.allow` in every config scope, so the shim
+no longer exports it for a caller who did not set it (CC-1336): that widened a caller's own `-c
+protocol.allow=never`, a global deny, or a clone template's or submodule's. It unsets the variable
+when it is unset or exactly `file:git:http:https:ssh`, the list `agentEnv` and the launch plan
+still write. Any other value is the caller's and is cut down to that list; an empty one stays
+empty, which git reads as no transport. Then the shim appends `protocol.ext.allow=never` as the
+last `GIT_CONFIG_COUNT` pair, unless it already is the last one. A count that is not a number, or
+a key or value unset below it, refuses with exit 2 and `git-shim: refused (config-count)`.
+
+That pair is command scope, which git ranks over every config file and include, and a protocol's
+own key beats `protocol.allow`. So a repository or global `protocol.ext.allow=always` or
+`protocol.allow=always` with an `ext::` remote, or `-c remote.<name>.vcs=ext`, fails with
+`transport 'ext' not allowed`, in a submodule child too. git resolves every other protocol from
+the config it reads at fetch time, so the shim reads none of it. Only `-c`, `--config-env` and
+`GIT_CONFIG_PARAMETERS` rank after the pair, so before it execs, the shim reads
+`protocol.ext.allow` under the caller's `-c` and `--config-env` options and refuses with exit 2
+and `git-shim: refused (ext-transport)` unless the last value is `never`, when a command-line
+`include.path` or `includeIf.*.path` is set (git evaluates its condition here, not in a repo the
+command creates), or when a read fails. That costs two `git config` starts a call. The shim also
+refuses `git remote-ext`, and an alias that expands to it, the same way, because that helper runs
+its argument as a shell command without the transport check.
+
+With no list exported, git's defaults apply, which changed two cases (CC-1607):
+
+- a `file://` or local-path submodule clone follows `protocol.file.allow=user`, which a submodule
+  child denies (CVE-2022-39253); a fixture that needs one passes `-c protocol.file.allow=always`;
+- a remote helper such as `persistent-https::` or `gcrypt::` follows `user`: it runs when the
+  agent names it, which could run the helper anyway, and is denied in a submodule.
+
+`pinGitProtocols` in `src/git.ts` still exports the list in every env agent-chat builds
+(`agentEnv`, the launch plan, `gitChildEnv`, the burndown tick, worktree setup), so git run
+outside the shim with that env is still widened until CC-1587. A real git that a shim-run git
+starts (a hook, `rebase -x`) inherits no list, so its own `-c protocol.ext.allow=always` runs
+`ext::`. That argv could set `GIT_ALLOW_PROTOCOL=ext` before with the same effect; CC-1095 covers
+`ext::` from config or a URL, and that stays denied in every file scope.
 
 Not covered:
 
