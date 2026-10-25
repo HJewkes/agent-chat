@@ -18,91 +18,132 @@ const ctx = (env: Record<string, string> = ENV): GuardContext => ({
   }),
 })
 
-describe('a gh helper or config variable written into a file a later shell sources (TP-4232)', () => {
-  it.each([
-    `echo 'export GH_PATH=/opt/x' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'export PATH=/opt/bin' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'export GH_CONFIG_DIR=/opt/c' >> "$CLAUDE_ENV_FILE"`,
-    `printf 'export GH_PATH=/opt/x\\n' >> ~/.bashrc`,
-    `echo 'GH_PATH=/opt/x' > ~/.profile`,
-    `echo 'export XDG_CONFIG_HOME=/opt/c' >> ~/.zshenv`,
-    `echo 'path=(/opt/bin $path)' >> ~/.zshrc`,
-    `cat >> ~/.zshenv <<'EOF'\nexport GH_PATH=/opt/x\nEOF`,
-    `echo 'export GH_PATH=/opt/x' >> /srv/agent/env.sh`,
-    `echo 'export GH_PATH=/opt/x' >> ~/.claude/session-env/s1/sessionstart-hook-0.sh`,
-  ])('denies %s, since it names the variable', command => {
-    expect(checkCommand(command, ctx({ ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }))).toBe(
-      REASONS.ghHelperEnvFile,
-    )
-  })
+const SNAPSHOT = '/srv/agent/.claude-profiles/agents/shell-snapshots/snapshot-zsh-1.sh'
+
+describe('a file a later shell sources is owner-only (TP-4232)', () => {
+  const denies = (command: string, env: Record<string, string> = ENV) =>
+    expect(checkCommand(command, ctx(env))).toBe(REASONS.ghHelperEnvFile)
 
   it.each([
-    `echo 'export GH_""PATH=/opt/x' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'export GH_\\PATH=/opt/x' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'export GH_PATH=/opt/x' >> ~/.ba""shrc`,
-    `echo 'export GH_PATH=/opt/x' >> ~/.BASHRC`,
-  ])('denies %s, since quoting and case do not hide a name', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
-  })
-
-  it.each([
-    `echo 'export G\${E}H_CONFIG_DIR=/opt/c' >> ~/.zshenv`,
-    `printf 'export GH_CONFIG_%sDIR=/opt/c\\n' '' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'export GH_CONFIG_\\x44IR=/opt/c' >> "$CLAUDE_ENV_FILE"`,
-    `printf 'export GH_CONFIG_' >> "$CLAUDE_ENV_FILE"`,
-    `echo -n 'export GH_CONFIG_' >> "$CLAUDE_ENV_FILE"`,
-    `echo "$X" >> "$CLAUDE_ENV_FILE"`,
-    `echo * >> ~/.bashrc`,
-    `cat >> ~/.zshenv <<'EOF'\nexport GH_CONFIG_\\\nDIR=/opt/c\nEOF`,
-    `cat >> ~/.zshenv <<EOF\n$X\nEOF`,
-    `cat /tmp/rc >> "$CLAUDE_ENV_FILE"`,
-    `echo x | cat >> ~/.bashrc`,
-  ])('denies %s, since the line does not show the whole text it writes', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
-  })
-
-  it.each([
-    'cp /tmp/rc ~/.zshenv',
-    'tee -a ~/.bash_profile < /tmp/rc',
-    `sed -i 's/^#//' ~/.bashrc`,
-    `bash -c 'cat /tmp/rc >> ~/.bashrc'`,
-    'mv /tmp/rc "$CLAUDE_ENV_FILE"',
     `LESSOPEN='|cp /tmp/rc %s' less ~/.zshenv`,
     'less ~/.zshenv',
     `rg --pre /tmp/x '' ~/.zshenv`,
     'GREP_OPTIONS=-r grep x ~/.bashrc',
-  ])('denies %s, since a command other than a read or echo may write it', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
+  ])('denies %s, since a prefix or a reader that runs a program is no plain read (rows 1, 2)', command => {
+    denies(command)
+  })
+
+  it.each([
+    `echo 'export GH_PATH=/opt/x' >> ~/.claude-profiles/agents/session-env/s1/sessionstart-hook-0.sh`,
+    `cd ~/.claude/session-env && echo 'export GH_PATH=/x' >> abc/sessionstart-hook-9.sh`,
+    `echo 'export GH_PATH=/opt/x' >> /srv/agent/env.sh`,
+  ])('denies %s, a write into Claude session-env (rows 4, 7)', command => {
+    denies(command, { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' })
   })
 
   it.each([
     `echo 'source /tmp/rc' >> "$CLAUDE_ENV_FILE"`,
-    `echo '. /tmp/rc' >> ~/.bashrc`,
     `echo 'alias gh=/tmp/x/gh' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'alias ll="ls -l"' >> ~/.bashrc`,
-    `echo 'eval "$(/tmp/x/gh completion)"' >> ~/.zshenv`,
-    `echo 'export FOO=1; source /tmp/rc' >> ~/.zshenv`,
-    `echo 'f() { gh auth setup-git; }' >> ~/.bashrc`,
+    `echo 'alias gh=/tmp/x/gh' >> ~/.zshenv`,
+    `echo '. /tmp/rc' >> ~/.bashrc`,
     `cat >> ~/.zshenv <<'EOF'\nsource /tmp/rc\nEOF`,
-    `cd ~/.claude/session-env && echo 'source /tmp/rc' >> abc/sessionstart-hook-9.sh`,
-  ])('denies %s, since the file sourced runs it and the text is no plain assignment', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
+  ])('denies %s, a source or alias append (rows 5, 6)', command => {
+    denies(command)
+  })
+
+  it.each([
+    `echo 'export BASH_ENV=/tmp/rc' >> "$CLAUDE_ENV_FILE"`,
+    `echo 'ENV=/tmp/rc' >> ~/.profile`,
+    `echo 'export ZDOTDIR=/tmp/z' >> ~/.zshenv`,
+    `echo 'export GIT_SSH_COMMAND=/tmp/x' >> "$CLAUDE_ENV_FILE"`,
+    `echo 'PROMPT_COMMAND=x' >> ~/.bashrc`,
+  ])('denies %s, an assignment whose later reader the guard cannot know (rows 8, 9)', command => {
+    denies(command)
+  })
+
+  it.each([
+    `echo 'export GH_PATH=/opt/x' >> ${SNAPSHOT}`,
+    'cp /tmp/rc ~/.claude/shell-snapshots/snapshot-bash-1.sh',
+    `printf 'export GH_PATH=/x\\n' > ~/.claude/shell-snapshots/snapshot-zsh-1.sh`,
+  ])('denies %s, a write into the shell snapshot the Bash tool sources (rows 10, 11)', command => {
+    denies(command)
+  })
+
+  it.each(['< /tmp/rc >> ~/.zshenv', '>> ~/.zshenv < /tmp/rc'])(
+    'denies %s, a bare redirection zsh runs as cat (row 13)',
+    command => {
+      denies(command)
+    },
+  )
+
+  it.each(['echo hi; < /tmp/rc >> ~/.zshenv', 'echo hi && >> ~/.zshenv < /tmp/rc'])(
+    'denies %s, a bare redirection after a plain command (row 14)',
+    command => {
+      denies(command)
+    },
+  )
+
+  it.each(['/tmp/x/cat /tmp/rc ~/.zshenv', './cat /tmp/rc ~/.zshenv'])(
+    'denies %s, since a reader named by path may be any program (row 15)',
+    command => {
+      denies(command)
+    },
+  )
+
+  it.each([
+    `echo 'export GH_""PATH=/opt/x' >> "$CLAUDE_ENV_FILE"`,
+    `printf 'export GH_CONFIG_%sDIR=/opt/c\\n' '' >> "$CLAUDE_ENV_FILE"`,
+    `cat /tmp/rc >> "$CLAUDE_ENV_FILE"`,
+    'cp /tmp/rc ~/.zshenv',
+    'cat /tmp/rc | tee -a ~/.bash_profile',
+    `echo 'export GH_PATH=/opt/x' >> ~/.ba""shrc`,
+    `echo 'export GH_PATH=/opt/x' >> ~/.BASHRC`,
+    `sed -i 's/^#//' ~/.bashrc`,
+    'mv /tmp/rc "$CLAUDE_ENV_FILE"',
+  ])('denies %s, a write or a writer (row 16)', command => {
+    denies(command)
+  })
+
+  it.each([
+    '{ echo a; } >> ~/.bashrc',
+    'exec 3>>~/.bashrc; echo x >&3',
+    'f() { cat > ~/.zshenv; }; f < /tmp/rc',
+    'cat ~/.zshrc <(cp /tmp/rc ~/.zshenv)',
+    `bash -c 'cat /tmp/rc >> ~/.bashrc'`,
+  ])('denies %s, a group, exec, function or substitution (row 17)', command => {
+    denies(command)
   })
 
   it.each([
     `echo 'export FOO=1' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'FOO=1' >> ~/.bashrc`,
-    `echo 'export MYPATH=/opt/bin' >> ~/.zshrc`,
-    `echo '# a comment' >> ~/.bashrc`,
-    `printf 'export FOO=1\\n' >> ~/.zshenv`,
-    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nexport BAR=2\nEOF`,
+    `printf 'export FOO=1\\n' >> ~/.bashrc`,
+    `echo 'alias ll="ls -l"' >> ~/.bashrc`,
+    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nEOF`,
+    'grep alias ~/.zshrc > /tmp/aliases.txt',
+  ])('denies %s, an accepted over-deny: only the owner changes these files (row 22)', command => {
+    denies(command)
+  })
+
+  it.each([
     'cat ~/.bashrc',
-    'grep -n alias ~/.zshrc > /tmp/aliases.txt',
+    'cat ~/.zshrc 2>/dev/null || true',
+    'grep x ~/.zshrc 2>&1 | head -5',
+    'ls ~/.claude-profiles/agents/shell-snapshots',
+    'test -f ~/.zshenv && echo y',
+    'echo x # >> ~/.zshenv',
     'echo "$CLAUDE_ENV_FILE"',
+  ])('allows %s, a plain read (row 20)', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
     'gh auth setup-git',
     'echo "$PATH"',
+    'gh sg',
+    'gcloud auth login',
+    'echo auth setup-git',
     'bash scripts/build.bash',
-  ])('allows %s', command => {
+  ])('allows %s, which names no sourced file (row 21)', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 
@@ -111,7 +152,9 @@ describe('a gh helper or config variable written into a file a later shell sourc
     { file: '/srv/agent/.zshenv', tool: 'Edit' },
     { file: '/srv/agent/env.sh', tool: 'MultiEdit' },
     { file: '/srv/agent/.claude/session-env/s1/sessionstart-hook-0.sh', tool: 'Write' },
-  ])('denies the $tool tool on $file', ({ file, tool }) => {
+    { file: SNAPSHOT, tool: 'Write' },
+    { file: SNAPSHOT, tool: 'Edit' },
+  ])('denies the $tool tool on $file (rows 4, 12)', ({ file, tool }) => {
     const env = { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }
     expect(checkToolCall(tool, { file_path: file, content: 'export FOO=1\n' }, ctx(env))).toBe(
       REASONS.ghHelperEnvFileEdit,
@@ -123,7 +166,7 @@ describe('a gh helper or config variable written into a file a later shell sourc
   })
 })
 
-describe('GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME carried to a gh alias by a wrapper (TP-4232)', () => {
+describe('GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME carried to a gh alias by a wrapper (TP-4232 row 18)', () => {
   it.each([
     `unset GH_CONFIG_DIR; GH_CONFIG_DIR=/opt/c bash -c 'gh sg'`,
     'unset GH_CONFIG_DIR; function f { gh sg; }; GH_CONFIG_DIR=/opt/c f',
@@ -139,7 +182,7 @@ describe('GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME carried to a gh alias by a wrap
   })
 })
 
-describe('a renamed copy of gh writing its own path as the credential helper (TP-4232)', () => {
+describe('a renamed copy of gh writing its own path as the credential helper (TP-4232 rows 3, 19)', () => {
   it.each([
     './x auth setup-git',
     `cp "$(command -v gh)" ./x; ./x auth setup-git`,
@@ -161,6 +204,12 @@ describe('a renamed copy of gh writing its own path as the credential helper (TP
     'export GH_CONFIG_DIR=/opt/c; ./x a',
   ])('denies %s, since a renamed gh expands the alias the guard does not (adversary on #1233)', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghRenamed)
+  })
+
+  it('denies ./x a setup-git after gh alias set a auth (row 3)', () => {
+    const aliases = new Map([['a', { shell: false, body: 'auth' }]])
+    const withAlias = { ...ctx(), readGhAliases: () => ({ kind: 'ok' as const, aliases }) }
+    expect(checkCommand('./x a setup-git', withAlias)).toBe(REASONS.ghRenamed)
   })
 
   it.each([

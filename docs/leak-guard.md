@@ -1316,6 +1316,39 @@ option; one before `--` is gh's (the repository, a directory, or a flag gh rejec
 may sit past that `--` denies. With a `repo` or `gist` subcommand the guard cannot resolve
 (`gh repo "$S" ...`), the words are read as `clone`'s.
 
+### Files a later shell sources are owner-only (TP-4232)
+
+`gh auth setup-git`, `login` and `refresh` write the gh path they find from `GH_PATH` or `PATH`
+into git config as the credential helper. A file a later shell sources can set that path, or the
+gh config, in a shell the guard never reads, and whether a `NAME=value` line there is inert
+depends on who reads `NAME` later (`BASH_ENV`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND` and so on). So
+the guard never judges what is written; it keeps agents from writing these files at all
+(`src/leak-guard/env-files.ts`).
+
+This PR makes the files a later shell sources owner-only. Those are the shell startup files,
+`CLAUDE_ENV_FILE`, Claude Code's `session-env` and `shell-snapshots`, and the hook's `BASH_ENV`/`ENV`
+values. A Bash line that names one is allowed only if every parsed command is a bare plain reader
+with no prefix assignment and no write other than `/dev/null`. Edit tools on them deny. The rule
+never judges what is written. It also keeps the `changesGhHome` mention rule and the renamed-gh rule
+as they stand. It does **not** cover:
+
+- a sourced file named only by a glob, a brace or a built name (`~/.[bz]*`, `~/${F}shrc`);
+- files that the startup files or the snapshot source in turn (`~/.aliases`, oh-my-zsh `custom/`,
+  `~/.config/zsh/*.zsh`, direnv `.envrc`, mise/asdf hooks): follow-up 2;
+- bare redirections on lines that name no sourced file (zsh NULLCMD elsewhere in the guard):
+  follow-up 1;
+- a `HOME=` prefix in front of a renamed gh copy: follow-up 3;
+- hash/`commands[]` rebinding (TP-2706).
+
+The plain readers are `cat`, `grep`, `egrep`, `fgrep`, `head`, `tail`, `wc`, `ls`, `stat`,
+`file`, `diff`, `cmp`, `test`, `[`, `[[`, `true`, `:`, `cd`, `echo` and `printf`, named bare:
+`/tmp/x/cat` may be any program. `less` runs `LESSOPEN` and `rg` runs `--pre`, so neither is one.
+A line that parses to no command at all denies, since zsh runs a bare redirection
+(`< /tmp/rc >> ~/.zshenv`) as `cat`. So `cat ~/.bashrc`, `cat ~/.zshrc 2>/dev/null || true` and
+`grep x ~/.zshrc | head -5` stay allowed, while `echo 'export FOO=1' >> ~/.bashrc`, an alias
+append and `grep alias ~/.zshrc > /tmp/aliases.txt` deny: accepted over-denies, since only the
+owner changes these files.
+
 ### Config the guard cannot read (TP-630)
 
 A `-c` or `--config-env` word that the shell expands in a way the guard cannot tell (`$(cat k)`,
