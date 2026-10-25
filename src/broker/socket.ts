@@ -1145,6 +1145,15 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
+  /** CC-1138: a registered requester's id and binding, for the retire ownership rule. */
+  private ownershipOf(conn: Conn): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
+    const requester = this.core.registry.entryFor(conn)
+    return {
+      ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
+    }
+  }
+
   /** CC-1505: a switch that throws answers the caller; left unhandled, the rejection ended the broker. */
   private answerSwitch(conn: Conn, switching: Promise<void>): void {
     switching.catch((err: unknown) => {
@@ -2164,10 +2173,16 @@ export class SocketServer {
         return
       }
       case 'retire_finished': {
-        const { t: _kind, ...req } = msg
+        // CC-1138: the requester fields come from the connection only, never from the frame.
+        const {
+          t: _kind,
+          requesterAgentId: _id,
+          requesterBinding: _binding,
+          ...req
+        } = msg as typeof msg & Record<'requesterAgentId' | 'requesterBinding', unknown>
         const caller = this.core.registry.nameOf(conn)
         void this.supervisor
-          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }) })
+          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(conn) })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {
@@ -2183,10 +2198,11 @@ export class SocketServer {
       case 'retire': {
         const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
         const agentId = msg.agentId
+        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(conn) }
         void (
           agentId === undefined
-            ? this.supervisor.retire(msg.name, msg.force === true, actor)
-            : this.supervisor.retireStale(agentId, msg.name, actor)
+            ? this.supervisor.retire(msg.name, msg.force === true, actor, claim)
+            : this.supervisor.retireStale(agentId, msg.name, actor, claim)
         ).then(result =>
           reply(conn, {
             t: 'spawn_result',

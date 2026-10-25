@@ -13,7 +13,7 @@ import type {
   TranscriptResponse,
   VerdictResponse,
 } from '../api-contract.js'
-import { TOKEN_HEADER } from '../api-contract.js'
+import { OWNER_CHANNEL_HEADER, TOKEN_HEADER } from '../api-contract.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { APPROVAL_TTL_MS, EventLog } from '../broker/event-log.js'
 import { buildHttpApp } from '../broker/http.js'
@@ -486,11 +486,11 @@ describe('write routes', () => {
   })
 
   /**
-   * PERMANENT, not "not yet". A permission verdict is answerable only from the
-   * 0600 socket (CC-96), where reaching the socket is what stands in for being
-   * the human; a bearer token on a network surface cannot make that claim. This
-   * assertion is the guard that makes adding one a test failure rather than a
-   * review comment.
+   * Meant to stay green. Owner verdicts over HTTP exist only as the guarded
+   * routes under `/api/queue/:msgId/` (TP-1989, owner decisions 72 and 151),
+   * which need the ui token and `X-Owner-Channel: console` and record the
+   * channel. A bare, unguarded approve route would skip both, so adding one
+   * is a test failure rather than a review comment.
    */
   it('does not serve POST /api/approve, and never will', async () => {
     const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/api/approve', WELL_FORMED_POST))
@@ -526,6 +526,148 @@ describe('write routes', () => {
 
     expect(((await res.json()) as VerdictResponse).ok).toBe(true)
     expect(core.events.humanQueue()).toHaveLength(0)
+  })
+})
+
+describe('owner-console verdict routes (TP-1989)', () => {
+  const TOKEN = 's3cret'
+  const OWNER_HEADERS = {
+    'Content-Type': 'application/json',
+    Origin: OWN_ORIGIN,
+    [TOKEN_HEADER]: TOKEN,
+    [OWNER_CHANNEL_HEADER]: 'console',
+  }
+
+  function makeEndorseCore(): { core: BrokerCore; delivered: string[] } {
+    const delivered: string[] = []
+    const core = new BrokerCore((_conn, m) => void delivered.push(m.text), {
+      events: new EventLog(path.join(tmpDir('agent-chat-endorse-http-'), 'events.db')),
+      registry: new Registry<Conn>(),
+    })
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'agent-2',
+      cwd: '/x',
+      workingOn: 'w',
+      pid: 1,
+      sessionId: 's-2',
+    })
+    return { core, delivered }
+  }
+
+  function requestEndorsement(core: BrokerCore, body: string): string {
+    const agentId = core.registry.entryFor(core.registry.connFor('agent-2')!)?.agentId
+    const meta = { recipient: 'agent-2', ...(agentId === undefined ? {} : { recipient_agent_id: agentId }) }
+    return core.append({ kind: 'endorse_request', actor: 'agent-1', target: HUMAN, body, meta }).msgId
+  }
+
+  const endorse = (
+    core: BrokerCore,
+    msgId: string,
+    body: unknown,
+    headers: Record<string, string> = OWNER_HEADERS,
+  ) =>
+    app(core, { token: TOKEN }).fetch(
+      new Request(`http://127.0.0.1/api/queue/${encodeURIComponent(msgId)}/endorse`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      }),
+    )
+
+  const rowsFor = (core: BrokerCore, ref: string, kind: string) =>
+    core.events.since(0, 1000).filter(e => e.kind === kind && e.ref === ref)
+
+  const withoutHeader = (name: string): Record<string, string> =>
+    Object.fromEntries(Object.entries(OWNER_HEADERS).filter(([key]) => key !== name))
+
+  it('delivers on the exact bytes and records owner-console on the resolution', async () => {
+    const { core, delivered } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'ship it')
+
+    const res = await endorse(core, msgId, { text: 'ship it', to: 'agent-2' })
+
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as VerdictResponse).ok).toBe(true)
+    expect(delivered).toEqual(['ship it'])
+    expect(rowsFor(core, msgId, 'resolution')[0]?.meta.channel).toBe('owner-console')
+  })
+
+  it.each([
+    ['text', { text: 'ship it!', to: 'agent-2' }],
+    ['to', { text: 'ship it', to: 'agent-3' }],
+  ])('refuses a mismatched %s as a 200 ok:false and leaves the item open', async (_field, body) => {
+    const { core, delivered } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'ship it')
+
+    const res = await endorse(core, msgId, body)
+
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as VerdictResponse).ok).toBe(false)
+    expect(delivered).toHaveLength(0)
+    expect(core.events.isOpen(msgId)).toBe(true)
+    expect(rowsFor(core, msgId, 'verdict_refused')[0]?.meta.channel).toBe('owner-console')
+  })
+
+  it('delivers a stored text with trailing whitespace only when sent those exact bytes', async () => {
+    const { core, delivered } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'hello \n')
+
+    const trimmed = (await (
+      await endorse(core, msgId, { text: 'hello', to: 'agent-2' })
+    ).json()) as VerdictResponse
+    expect(trimmed.ok).toBe(false)
+    expect(core.events.isOpen(msgId)).toBe(true)
+
+    const exact = (await (
+      await endorse(core, msgId, { text: 'hello \n', to: 'agent-2' })
+    ).json()) as VerdictResponse
+    expect(exact.ok).toBe(true)
+    expect(delivered).toEqual(['hello \n'])
+  })
+
+  it.each([
+    ['a missing text', { to: 'agent-2' }],
+    ['an empty text', { text: '', to: 'agent-2' }],
+    ['a non-string to', { text: 'ship it', to: 7 }],
+  ])('400s on %s and leaves the item open', async (_case, body) => {
+    const { core } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'ship it')
+
+    expect((await endorse(core, msgId, body)).status).toBe(400)
+    expect(core.events.isOpen(msgId)).toBe(true)
+  })
+
+  it('403s without the ui token and leaves the item open', async () => {
+    const { core } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'ship it')
+
+    const res = await endorse(core, msgId, { text: 'ship it', to: 'agent-2' }, withoutHeader(TOKEN_HEADER))
+
+    expect(res.status).toBe(403)
+    expect(core.events.isOpen(msgId)).toBe(true)
+  })
+
+  it.each([
+    ['without the owner-channel header', withoutHeader(OWNER_CHANNEL_HEADER)],
+    ['with another channel', { ...OWNER_HEADERS, [OWNER_CHANNEL_HEADER]: 'dashboard' }],
+  ])('403s %s and leaves the item open', async (_case, headers) => {
+    const { core, delivered } = makeEndorseCore()
+    const msgId = requestEndorsement(core, 'ship it')
+
+    const res = await endorse(core, msgId, { text: 'ship it', to: 'agent-2' }, headers)
+
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as ErrorResponse).error).toContain(OWNER_CHANNEL_HEADER)
+    expect(delivered).toHaveLength(0)
+    expect(core.events.isOpen(msgId)).toBe(true)
+  })
+
+  it('still does not serve a bare POST /api/approve', async () => {
+    const res = await app(makeCore(), { token: TOKEN }).fetch(
+      new Request('http://127.0.0.1/api/approve', { method: 'POST', headers: OWNER_HEADERS, body: '{}' }),
+    )
+    expect(res.status).toBe(404)
   })
 })
 

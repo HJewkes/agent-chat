@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import { loadProfile, roleOf, selectProfileNames } from '../../agents/profiles.js'
+import { loadSeatPolicy, type SeatPolicyEntry } from '../../agents/seat-policy.js'
+import { policySeat, rootSeatEntry } from '../../agents/seat-root.js'
 import type { AgentProfile } from '../../agents/types.js'
-import { defineTool } from '../command.js'
+import type { ServerMessage } from '../../protocol.js'
+import { defineTool, type ToolContext } from '../command.js'
 
 /** CC-1597: past this a compact row's description is cut, so the whole listing stays under 8k chars. */
 const SUMMARY_CHARS = 100
@@ -34,6 +37,25 @@ function compactRow(name: string, profile: AgentProfile): string {
   return `${heading(name, profile)} ${summary(profile.description)} (${counts.join(', ')})`
 }
 
+/**
+ * CC-1616: the caller's seat ceiling, when the owner's policy lists its name and its live row is the
+ * one the policy gives root. The broker still decides each spawn on the connection's own proof.
+ */
+async function ceilingLine(ctx: ToolContext): Promise<string> {
+  const name = ctx.registeredName
+  if (name === null || name === undefined) return ''
+  const policy = loadSeatPolicy()
+  if (policySeat(policy, name) === undefined) return ''
+  const res = (await ctx.broker.request(
+    { t: 'agents', view: { prefix: name, includeFinished: false, includeRetired: false } },
+    'agents_result',
+  )) as Extract<ServerMessage, { t: 'agents_result' }>
+  const held = res.agents.some(a => a.name === name && a.state === 'live' && rootSeatEntry(a, policy))
+  const entry: SeatPolicyEntry | undefined = held ? policySeat(policy, name) : undefined
+  if (entry === undefined) return ''
+  return `\nYou hold root seat "${name}" (seat-policy.json). Spawn ceiling, by profile name: ${entry.ceiling.join(', ') || 'none'}`
+}
+
 export const agentProfiles = defineTool({
   name: 'agent_profiles',
   description:
@@ -47,7 +69,7 @@ export const agentProfiles = defineTool({
     verbose: z.boolean().optional().describe('Every profile with its tools and denies.'),
   }),
   result: z.string(),
-  async run({ name: only, verbose }) {
+  async run({ name: only, verbose }, ctx) {
     const render = only !== undefined || verbose === true ? detailRow : compactRow
     const rows = selectProfileNames(only).map(name => {
       const profile = loadProfile(name)
@@ -55,6 +77,6 @@ export const agentProfiles = defineTool({
     })
     if (rows.length === 0) return 'No profiles available.'
     const hint = render === compactRow ? ' (pass name for its tools and denies)' : ''
-    return `Profiles for agent_spawn${hint}:\n${rows.join('\n')}`
+    return `Profiles for agent_spawn${hint}:\n${rows.join('\n')}${await ceilingLine(ctx)}`
   },
 })
