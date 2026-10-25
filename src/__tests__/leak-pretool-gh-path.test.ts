@@ -67,11 +67,32 @@ describe('GH_PATH on a gh command that writes the credential helper (TP-2946)', 
   })
 
   it.each([
+    `unset GH_PATH; GH_PATH="/tmp/x';echo probe;'" bash -c 'gh auth setup-git'`,
+    `export PATH="$PATH"; PATH="/tmp/q';echo probe;':$PATH" bash -c 'gh auth setup-git'`,
+    'unset GH_PATH; function f { gh auth setup-git; }; GH_PATH=/x f',
+  ])('denies %s, since the wrapper carries its prefix to gh (adversary round 2 on #1219)', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghCredentialHelper)
+  })
+
+  it.each([
+    `unset GH_PATH; GH_PATH=/x sh -c 'gh auth setup-git'`,
+    'unset GH_PATH; GH_PATH=/x eval gh auth setup-git',
+    'unset GH_PATH; gh auth setup-git',
+    'export GH_""PATH=/x; gh auth setup-git',
+    'echo "${PATH:=/x}"; gh auth setup-git',
+  ])(
+    'denies %s, since a wrapper or obfuscation may carry the name to gh (adversary round 2 on #1219)',
+    command => {
+      expect(checkCommand(command, ctx())).toBeDefined()
+    },
+  )
+
+  it.each([
     'gh auth setup-git',
     'echo "$PATH"; gh auth setup-git',
+    'echo "${GH_PATH}"; gh auth setup-git',
     'PATH=/opt/bin gh auth status',
     'gh auth setup-git --hostname github.com',
-    'unset GH_PATH; gh auth setup-git',
     'GH_PATH=/opt/x gh auth status',
     'GH_PATH=/opt/x gh pr view 1',
     'gh sg',

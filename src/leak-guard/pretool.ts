@@ -2030,16 +2030,24 @@ const HELPER_VARS: ReadonlySet<string> = new Set(GH_HELPER_VARS)
 const assignsHelperPath = (assigns: readonly string[]): boolean =>
   assigns.some(word => HELPER_VARS.has(ASSIGNMENT.exec(word)?.[1] ?? ''))
 
+// A plain `$NAME` or `${NAME}` only reads the variable.
+const HELPER_READ = /\$(?:\{(?:GH_)?PATH\}|(?:GH_)?PATH(?![A-Za-z0-9_]))/g
+
 /**
  * Whether the gh path written into git's credential helper may be one the guard cannot trust
- * (TP-2946): the hook's own `GH_PATH` or `PATH` is unsafe, or the line may change either, judged as
- * `changesGhHome` judges gh's home: a lost environment, a prefix assignment, an earlier export or
- * unset that differs, or a use of the name the guard does not model.
+ * (TP-2946): a lost environment, an unsafe `GH_PATH` or `PATH` in the hook's own environment, an
+ * earlier export or unset that differs, or the name anywhere on the whole line but a plain read.
+ * The whole line counts, whatever the exports say, because a prefix assignment on an enclosing
+ * `bash -c`, function call or wrapper reaches gh without passing through this scope's exports.
  */
 function changesHelperPath(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
   if (scope.env === undefined || unsafeHelperEnv(ctx.env) || assignsHelperPath(assigns)) return true
-  return GH_HELPER_VARS.some(name =>
-    scope.exports.has(name) ? scope.exports.get(name) !== ctx.env[name] : mentions(scope.said, name),
+  const line = scope.line.replace(HELPER_READ, '')
+  return GH_HELPER_VARS.some(
+    name =>
+      (scope.exports.has(name) && scope.exports.get(name) !== ctx.env[name]) ||
+      mentions(scope.said, name) ||
+      mentions(line, name),
   )
 }
 
