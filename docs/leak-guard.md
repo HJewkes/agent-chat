@@ -416,8 +416,14 @@ are read the same way, each from its own binary's getopt string (CC-1424). `nsen
 and `setarch` with no command run a shell, read as one reading stdin. `coresched` permutes, so its
 command is read only when it ends the line with no option among it, and a `chroot` command word
 starting with `-` denies, since uutils' chroot may read it as an option. `scriptlive`, which types a
-log file into what it runs, and `busybox` with any applet but `setsid`, deny on a line that may
+log file into what it runs, and `busybox` with an applet other than `setsid` and those below, deny on a line that may
 reach git or gh.
+
+`busybox` runs the applet its first word names, by basename, so `busybox /bin/sh` runs `sh`. Its
+`sh`, `ash`, `env`, `timeout` and `xargs` applets are checked as the command they name, each of
+which stops at its first operand and takes a subset of the GNU options: `busybox sh -c TEXT` and
+`busybox env git push` read as `sh -c TEXT` and `env git push` do. `ash`, busybox's shell and
+Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -811,8 +817,10 @@ It reads the command from:
   `archive`, and `--to-cmd`, `--cc-cmd`, `--header-cmd` and `--sendmail-cmd` on `send-email`.
 
 A git alias that expands to one of these is checked the same way. The command runs in another
-directory, and for `submodule foreach` in each submodule with variables git sets, so the guard
-trusts neither the directory nor any variable inside it. git passes its `-c` and `--config-env`
+directory, and for `submodule foreach` in each submodule with variables git sets. Any `$`
+expansion or backquote in the command is a deny, `$sha1` and the other variables foreach sets
+included: their values come from `.gitmodules`, commit data or the script itself, which the guard
+cannot see. git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard
@@ -856,7 +864,9 @@ and `git -c core.pager="git push --no-verify" log` and
 so an `include.path` on the same git is a deny, as it is for a command git runs for its
 subcommand. A safe value stays allowed: `less`, `cat`, `"less -R"`, `vim`, `store`,
 `"ssh -i key"`, `true`, an empty value, and a plain word such as `main` or `false` for a key that
-does not run it.
+does not run it. git runs the value through a shell, so the TP-634 rule applies: any `$` expansion
+or backquote in it is a deny, as in `X=--no-verify git -c core.pager='git push $X' log`. An `ext::`
+payload is not a shell string (git-remote-ext splits it itself), so a `$` there stays literal.
 
 A value the guard cannot read for a key not on the inert list is a deny on every git subcommand, since any
 of them may start a pager or an editor: `-c core.pager="$P"`, `-c core.editor=$(cat e)`, and every
@@ -977,7 +987,13 @@ cover. On a line that runs git anywhere,
 each word is read for these names. A plain literal `NAME=value` to a name in the first list has
 its value checked as a top-level Bash line, but only where the shell reads the word as an assignment
 exactly once: a prefix assignment, an assignment right after a literal `env`, or an argument of
-`export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. Any other
+`export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. git runs
+that value through a shell, so by the TP-634 rule any `$` expansion or backquote in it denies:
+`X=--no-verify GIT_PAGER='git push $X' git log`. Accepted false denies follow from this rule:
+`GIT_PAGER='less -R $L' git log`, like `git rebase -x 'npm test -- $T' main` and
+`git submodule foreach 'git checkout $sha1'`. Letting the outer shell expand the value does not
+help, since the guard cannot read that value either; write it out literally
+(`GIT_PAGER='less -R -S'`). Any other
 use of any of these names denies with its own reason: the shell has too many ways to assign one to
 list them all, among them `NAME+=…`, a zsh subscript such as `GIT_PAGER[1,-1]=…`, a brace-expanded
 name (`export {GIT_EDITOR,Y}=…`), `read NAME`, `printf -v NAME`, `for NAME in`, a nameref, a bare
@@ -1561,7 +1577,7 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`; `SHELLS` in
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`; `SHELLS` in
   `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
   stdin source in scope, on a line that may reach git or gh (as for command starts above). The
   guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
@@ -1628,7 +1644,7 @@ Not covered, by design or by cost:
     `echo P | $(echo bash)`;
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
-    `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
+    `echo P | mksh`, `echo P | fish`;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the

@@ -2022,6 +2022,109 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     },
   )
 
+  it.each([
+    "git rebase --exec '$X' main",
+    "git rebase -x '$X' main",
+    "git rebase --exec='npm test; $X' main",
+    "git rebase -x 'git push $F' main",
+    "git rebase -x '`cat s`' main",
+    "git rebase -x '$name' main",
+    "git submodule foreach '$CMD'",
+    "git submodule foreach '$CMD --no-verify'",
+    "git submodule foreach 'git push ${F:-x}'",
+    "git bisect run sh -c '$S'",
+    "git bisect run '$S'",
+  ])('denies a shell expansion in the command (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach '$sha1x'",
+    "git submodule foreach '${sha1}x'",
+    "git submodule foreach '$sha12 push'",
+    "git submodule foreach '$names'",
+    "git submodule foreach '${name}x'",
+  ])('denies a near-miss of a variable foreach sets (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach 'echo $name'",
+    "git submodule foreach '$name'",
+    "git submodule foreach '$sm_path push'",
+    "git submodule foreach 'git push $sm_path'",
+    "git submodule foreach 'echo $toplevel $displaypath'",
+    'git submodule foreach \'echo "${name}: $sm_path"\'',
+  ])('denies a foreach variable read from files the agent writes (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach 'sha1=git; $sha1 push --no-verify'",
+    "git submodule foreach 'read sha1; $sha1 push'",
+    "git submodule foreach 'for sha1 in git; do $sha1 push; done'",
+  ])('still denies a foreach variable the script sets itself (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach 'echo $sha1'",
+    "git submodule foreach 'git log -1 ${sha1}'",
+    "git submodule foreach 'git push $sha1'",
+  ])('denies the object id foreach sets, which the script may rebind (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach '. ./f; $sha1 --no-verify'",
+    'git submodule foreach \'read s""ha1 < f; $sha1 --no-verify\'',
+    "git submodule foreach 'read s\\ha1 < f; git push $sha1'",
+    'git submodule foreach \'export s""ha1="git push"; $sha1 --no-verify\'',
+    'git submodule foreach \'export s\\ha1="git push"; $sha1 --no-verify\'',
+    'git submodule foreach \'export s""ha1=--no-verify; git push $sha1\'',
+    "git submodule foreach 'export s\\ha1=--no-verify; git push origin $sha1'",
+  ])('denies a $sha1 the script rebinds through a split name or a file (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git filter-branch --msg-filter 'cat; echo $GIT_COMMIT' HEAD",
+    "git filter-branch --env-filter 'echo $GIT_AUTHOR_NAME' HEAD",
+    "git filter-branch --msg-filter '$GIT_AUTHOR_NAME; cat' HEAD",
+    "git filter-branch --env-filter 'GIT_COMMIT=git' --tree-filter '$GIT_COMMIT push --no-verify' HEAD",
+  ])('denies a filter-branch variable that holds commit data (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git rebase --exec 'npm test' main",
+    "git rebase -x 'npm test && npm run lint' main",
+    "git submodule foreach 'git status'",
+    "git bisect run sh -c 'npm test'",
+    "git filter-branch --msg-filter 'cat' HEAD",
+  ])('allows an ordinary quoted command (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    "git difftool -x '$X --no-verify' HEAD",
+    "git difftool --extcmd='$X' HEAD",
+    "git filter-branch --tree-filter '$X' HEAD",
+    "git filter-branch --setup '$X' HEAD",
+    "git filter-branch --msg-filter '$GIT_COMMITX' HEAD",
+    "git grep -O'$X' x",
+    "git push --receive-pack '$X' origin main",
+    "git push --exec='$X' origin main",
+    "git fetch --upload-pack '$X' origin",
+    "git pull --upload-pack '$X' origin",
+    "git clone -u '$X' ../r",
+    "git ls-remote --upload-pack '$X' origin",
+    "git archive --exec '$X' --remote=origin HEAD",
+    "git send-email --to-cmd '$X' x.patch",
+  ])('denies a shell expansion in every script option (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
   it('denies a plain alias that expands to a rebase exec', () => {
     const readAlias = (word: string) =>
       word === 'rx' ? { value: 'rebase -x "git push --no-verify"', runsIn: '/work' } : undefined
@@ -2486,6 +2589,42 @@ describe('a git config value that runs a program (TP-636)', () => {
     'git --config-env=user.name=NAME log',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    "X=--no-verify git -c diff.external='git push $X' diff",
+    "X=--no-verify git -c core.pager='git push $X' log",
+    "export X=--no-verify; git -c core.pager='git push $X' log",
+    "X=--no-verify git -c core.sshCommand='git push $X; ssh' fetch",
+    "X=--no-verify git -c sequence.editor='git push $X; true' rebase -i",
+    "X=--no-verify git -c core.editor='git push $X; true' commit",
+    "X=--no-verify GIT_SSH_COMMAND='git push $X; ssh' git fetch",
+    "X=--no-verify GIT_PAGER='git push $X' git log",
+    "X=--no-verify GIT_EDITOR='git push $X' git commit",
+  ])('denies a shell expansion in a program git runs from config or env (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    'git -c core.pager=cat log',
+    "git -c core.pager='less -R' log",
+    "git -c core.sshCommand='ssh -i k' fetch",
+    "GIT_SSH_COMMAND='ssh -o BatchMode=yes' git fetch",
+    'GIT_EDITOR=true git commit',
+    'GIT_PAGER=cat git log',
+    'EDITOR=vim git commit',
+    'git -c diff.external=difft diff',
+  ])('allows a program from config or env that expands nothing (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  // Accepted false denies: the value is harmless, but only the shell git starts can tell.
+  it.each([
+    "git submodule foreach 'git checkout $sha1'",
+    "git rebase -x 'npm test -- $T' main",
+    "GIT_PAGER='less -R $L' git log",
+  ])('denies an expansion only the shell git starts would read (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   // Fix round 1: keys the first pass missed (reviewer ran or flagged these).
