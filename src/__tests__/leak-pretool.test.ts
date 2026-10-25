@@ -16,7 +16,7 @@ import {
   type GuardContext,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
-import { agentDir } from '../paths.js'
+import { agentDir, agentsDir } from '../paths.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
 import { includedHooksPathReader } from '../leak-guard/git-include.js'
 import { parseShell } from '../leak-guard/shell-words.js'
@@ -3091,13 +3091,22 @@ describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
   })
 
   it.each([
-    (file: string) => `printf '{}' > ${file}`,
-    (file: string) => `sed -i s/a/b/ ${file}`,
-    (file: string) => `rm ${file}`,
-    (file: string) => `mv /tmp/x ${file}`,
-  ])("denies a Bash command writing an agent's settings.json (%#)", build => {
-    const own = path.join(agentDir('a1-synthetic'), 'settings.json')
-    expect(checkCommand(build(own), guard())).toBe(REASONS.protectedPath)
+    "printf '{}' > ABS/a1-synthetic/settings.json",
+    'rm ~/.agent-chat/agents/a1-synthetic/settings.json',
+    'printf {} > "$HOME/.agent-chat/agents/a1-synthetic/settings.json"',
+    'rm /srv/example/.agent-chat/agents/a1-synthetic//settings.json',
+    'rm /srv/example/.agent-chat/agents/a1-synthetic/./settings.json',
+    'rm /srv/example/.agent-chat/agents/x/../a1-synthetic/settings.json',
+    'rm -r ~/.agent-chat/agents/a1-synthetic',
+    'sed -i s/a/b/ ABS/a2-synthetic/settings.json',
+    'mv /tmp/x ABS/a2-synthetic/settings.json',
+  ])('denies a Bash command touching an agent settings.json: %s', command => {
+    expect(checkCommand(command.replace('ABS', agentsDir()), guard())).toBe(REASONS.protectedPath)
+  })
+
+  it('leaves a coordinator free to inspect the agents directory', () => {
+    const ctx = guardContext({ AGENT_CHAT_ROLE: 'coordinator' }, '/work', '/home/example')
+    expect(checkCommand('ls ~/.agent-chat/agents/a1-synthetic', ctx)).toBeUndefined()
   })
 
   it('denies a case variant of the file name', () => {
