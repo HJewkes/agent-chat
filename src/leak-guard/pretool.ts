@@ -3291,6 +3291,10 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   }
 }
 
+/** A `{NAME}>file` redirect writes a descriptor number to NAME, so it counts as any other write (CC-1630). */
+const fdNameEvents = (cmd: SimpleCommand): EnvEvent[] =>
+  cmd.fdNames.map(name => envEvent(name, 'arg')).filter((event): event is EnvEvent => event !== undefined)
+
 /** Every program-env event on one command, read from the words as written and from the unwrapped command. */
 function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
@@ -3299,8 +3303,9 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const body = functionBody(cmd.marked)
   const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
+  const beside = [...expandedEvents(cmd), ...fdNameEvents(cmd)]
   return {
-    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed, ...expandedEvents(cmd)],
+    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed, ...beside],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }

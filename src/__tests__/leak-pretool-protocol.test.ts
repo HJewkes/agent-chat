@@ -622,6 +622,54 @@ describe('a hidden name in a script the line runs, on a line that runs git (TP-2
   })
 })
 
+describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1630)', () => {
+  // zsh assigns NAME before an external command starts, so gh itself runs a pager named 11.
+  it.each([
+    'gh {GH_PAGER}>/dev/null pr view 1',
+    'agent-chat gh-write {GH_PAGER}>/dev/null -- pr view 1',
+    'gh pr view 1 {GH_PAGER[0]}>/dev/null',
+    'gh pr view 1 {GIT_ALLOW_PROTOCOL}>&-',
+    'git fetch o {GIT_SSH_COMMAND}>/dev/null',
+    'exec {GIT_SSH_COMMAND}>/dev/null; git fetch o',
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies writing a command search path', () => {
+    expect(hookReason(': {path}>/dev/null; git fetch o')).toBe(REASONS.searchPathEnv)
+  })
+
+  it('denies writing a shell startup variable', () => {
+    expect(hookReason('gh pr view 1 {BASH_ENV}>/dev/null')).toBe(REASONS.shellStartupEnv)
+  })
+
+  it.each([
+    'gh pr view 1 {fd}>/dev/null',
+    'exec {fd}>/dev/null; git fetch o',
+    'gh pr view 1 "{GH_PAGER}">/dev/null',
+    // GIT_DIR is no program var: a literal GIT_DIR=x before git status is allowed too.
+    'export GIT_DIR; exec {GIT_DIR}>/dev/null; git status',
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
+describe('a double-quoted trap action on a line that runs git (CC-1630)', () => {
+  it.each([`trap "rm -f tmp" EXIT; git fetch o`, `trap "rm -f \\$tmp" EXIT; git fetch o`])(
+    'allows %j, which expands nothing when the trap is set',
+    command => {
+      expect(hookReason(command)).toBeUndefined()
+    },
+  )
+
+  it.each([`trap "rm -f $tmp" EXIT; git fetch o`, `trap "git fetch $R" EXIT`])(
+    'denies %j, whose value becomes script text',
+    command => {
+      expect(hookReason(command)).toBe(REASONS.hiddenScript)
+    },
+  )
+})
+
 describe('git clone of a repository the guard cannot read (TP-2444)', () => {
   it.each([
     'git clone "$U"',

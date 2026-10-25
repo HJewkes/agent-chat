@@ -37,6 +37,11 @@ export interface SimpleCommand {
    * command, which is kept as `)` wherever it stands (TP-2499).
    */
   expanded: string[]
+  /**
+   * The NAME of each `{NAME}>file` redirect, to which bash and zsh assign the descriptor they open.
+   * zsh assigns it before an external command starts, so the command sees it (CC-1630).
+   */
+  fdNames: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
@@ -428,6 +433,7 @@ class ShellLexer {
       substitutions: [],
       writes: [],
       expanded: [],
+      fdNames: [],
       ...unsure,
       before: '',
       after: '',
@@ -940,6 +946,7 @@ class ShellLexer {
     // In `2&>f` the 2 is an argument, not a descriptor.
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
+    this.noteFdName()
     this.endWord()
     const ahead = this.ahead(3)
     if (ahead === '<<<') return this.expect(aside ? 'discard' : 'herestring', 3)
@@ -971,6 +978,13 @@ class ShellLexer {
     const fd = Number(this.word)
     this.word = null
     return fd
+  }
+
+  /** Records the NAME of an unquoted `{NAME}` or bash's `{NAME[sub]}` word before a redirect operator. */
+  private noteFdName(): void {
+    if (this.word === null || this.quoteStart !== Infinity) return
+    const name = FD_NAME.exec(this.word)?.[1]
+    if (name !== undefined) this.cur.fdNames.push(name)
   }
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
@@ -1415,6 +1429,7 @@ export function parseShell(src: string): SimpleCommand[] {
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
+const FD_NAME = new RegExp(`^\\{(${NAME})(?:\\[[^\\]]*\\])?\\}$`)
 // zsh reads `$NAME:h` and `$NAME[1]` as a modifier and a subscript, even inside double quotes.
 const BARE = `\\$(${NAME})(?![A-Za-z0-9_]|${LIVE}?[:\\[])`
 const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|${BARE}|~(?=/|$))`, 'g')

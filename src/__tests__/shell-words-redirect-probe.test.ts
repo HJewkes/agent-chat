@@ -124,3 +124,16 @@ describe('a redirect-only command keeps the text the shell expands where it stan
     expect(expanded.some(text => text.includes('${!A:=ext}'))).toBe(true)
   })
 })
+
+describe('a {NAME} word before a redirect operator names the variable the shell assigns (CC-1630)', () => {
+  it.each([
+    ['exec {GH_PAGER}>/dev/null', ['GH_PAGER']],
+    ['gh pr view 1 {fd}>&-', ['fd']],
+    [': {a[1]}<f {b}>>g', ['a', 'b']],
+    ['gh pr view 1 "{GH_PAGER}">/dev/null', []],
+    ['echo {GH_PAGER} >/dev/null', []],
+    ['echo x{GH_PAGER}>/dev/null', []],
+  ])('reads %j as assigning %j', (line, names) => {
+    expect(parseShell(line).flatMap(command => command.fdNames)).toEqual(names)
+  })
+})
