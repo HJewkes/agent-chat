@@ -168,8 +168,12 @@ interface Scope {
   targets: readonly (string | undefined)[]
   /** Every command before this one on the line is from a short set that cannot change what `agent-chat` resolves to. */
   deferrable: boolean
-  /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
-  hiddenStarts: { left: number; reachesGit?: boolean }
+  /**
+   * Command starts after an expansion the whole call may still check; nested shells draw on the same budget.
+   * `unread` records that some command ran that the guard could not name, and `scripts` every script it
+   * parsed, for the hidden-name rule at the end of the call (TP-4231).
+   */
+  hiddenStarts: { left: number; reachesGit?: boolean; unread?: boolean; scripts?: SimpleCommand[][] }
   /** What a command with no pipe or heredoc of its own reads: the stdin of the shell running the line. */
   stdin: Feed
   /** What this command reads on stdin. */
@@ -2248,8 +2252,10 @@ function checkUnknownFeed(
   if (written !== undefined) return written
   const { script } = readShellCall(name, marked, assigns)
   const fromStdin = script.from === 'stdin' || script.from === 'hidden'
-  if (fromStdin || (script.from === 'file' && mayReadStdin(marked[script.at])))
+  if (fromStdin || (script.from === 'file' && mayReadStdin(marked[script.at]))) {
+    scope.hiddenStarts.unread = true
     return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  }
   return undefined
 }
 
@@ -2266,6 +2272,7 @@ function checkSourcedStdin(
   const fed = scope.fed
   if (!operands.some(mayReadStdin) || isNothing(fed)) return undefined
   if (fed !== 'unknown') return checkFed(fed.texts, ctx, scope, depth)
+  scope.hiddenStarts.unread = true
   return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
 }
 
@@ -2578,8 +2585,11 @@ function checkSimple(
   lead?: Lead,
 ): string | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
-  if ('reason' in unwrapped)
-    return !GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx) ? unwrapped.reason : undefined
+  if ('reason' in unwrapped) {
+    if (!GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx)) return unwrapped.reason
+    scope.hiddenStarts.unread = true
+    return undefined
+  }
   if (
     unwrapped.viaShellVar === true &&
     shellUnknown(unwrapped.assigns, cmd, ctx, scope) &&
@@ -2600,6 +2610,7 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
+    at.hiddenStarts.unread = true
     return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
   }
   const args = marked.map(unmark)
@@ -3085,34 +3096,13 @@ interface EnvUse {
   scan: string[]
 }
 
-/**
- * Whether a command word holds an expansion, such as `$G`, `${G:-x}` or `./$G`, which may run git
- * though no git is written (TP-4231). Every word from the written head to the head unwrap finds counts,
- * since a wrapper's expanded word (`sudo $G`, `xargs $G`, `env $A=x $G`) may be the command; so does
- * a head in the text eval or a shell runs.
- */
-function runsExpandedHead(marked: readonly string[]): boolean {
-  const body = functionBody(marked)
-  const at = commandHeadAt(body)
-  if (at === undefined) return false
-  const unwrapped = unwrap(body)
-  const end = 'reason' in unwrapped ? at + 1 : body.length - unwrapped.words.length + 1
-  if (body.slice(at, Math.max(end, at + 1)).some(word => word.includes(LIVE))) return true
-  if ('reason' in unwrapped) return false
-  const [head = '', ...args] = unwrapped.words
-  const name = path.basename(unmark(head))
-  if (name !== 'eval' && !SHELLS.has(name)) return false
-  return args.some(arg => parseShell(unmark(arg)).some(inner => runsExpandedHead(inner.marked)))
-}
-
 /** Events from the command as written; only a word the shell reads as an assignment once has its value blanked for the scan. */
 function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
-  const scan = cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word)))
   return {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
       .filter((event): event is EnvEvent => event !== undefined),
-    scan: runsExpandedHead(cmd.marked) ? [...scan, 'git'] : scan,
+    scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
   }
 }
 
@@ -3256,6 +3246,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
   const cmds = parseShell(command)
+  ;(scope.hiddenStarts.scripts ??= []).push(cmds)
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)
@@ -3271,7 +3262,24 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
-  return envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason)
+  if (envReason !== undefined) return DEFERRED_REASONS.get(envReason)
+  return depth === 0 ? unreadRunEnv(scope.hiddenStarts) : undefined
+}
+
+/**
+ * The hidden-name deny on a line that ran a command the guard could not name (TP-4231): a command
+ * word it cannot resolve (`$G`, `${G:-x}`, `./$G`), a wrapper it cannot read, or a script fed from a
+ * stdin it cannot read, anywhere the line runs, eval, `sh -c` and fed scripts included. That command
+ * may be git though no git shows, so a hidden name anywhere in the call's scripts denies as it does
+ * beside git. Read once the whole call is walked, since the two may sit in different scripts.
+ */
+function unreadRunEnv({ unread, scripts = [] }: Scope['hiddenStarts']): string | undefined {
+  if (unread !== true) return undefined
+  const event = scripts
+    .flat()
+    .flatMap(cmd => envUse(cmd).events)
+    .find((e): e is DeferredEnv => e === NAME_HIDDEN || e === SEARCH_UNREAD)
+  return event === undefined ? undefined : DEFERRED_REASONS.get(event)
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {

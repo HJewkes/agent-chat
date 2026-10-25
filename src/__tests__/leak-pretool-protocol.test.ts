@@ -585,6 +585,25 @@ describe('a hidden variable name on a line whose command word is only an expansi
   })
 
   it.each([
+    'export $A=ext; setsid $G fetch o',
+    'read $A <<< ext; linux64 $G fetch o',
+    'export $A=ext; unshare $G fetch o',
+    'export $A=ext; setarch x86_64 $G fetch o',
+  ])('denies a wrapper the guard cannot read before an expanded command word: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `export $A=ext; eval "x='" "';\\$G fetch o"`,
+    `export $A=ext; sh <<< '$G fetch o'`,
+    `export $A=ext; echo '$G fetch o' | bash`,
+    'export $A=ext; cat f | bash',
+    `eval 'read $A <<< ext'; $G fetch o`,
+  ])('denies a command word it cannot name in a script the line runs: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
     'read $A <<< ext; echo hi',
     '$G status',
     'export EDITOR=vim; "$EDITOR" notes.txt',
