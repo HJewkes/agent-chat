@@ -939,7 +939,8 @@ const SHELL_OPERATOR = /[;&|<>()]/
 /**
  * The words of an `env -S` value. env splits on blanks and quotes only, so a `;` or `|` outside
  * quotes is part of a word, as find's `-exec … ;` needs (CC-1307). Each is quoted for parseShell,
- * and a value it still reads as more than one command fails closed.
+ * and a value it still reads as more than one command fails closed, as does an unclosed quote, which
+ * env refuses but the shell lexer would read on to the end.
  */
 function envSplitWords(value: string): string[] | undefined {
   let quote = ''
@@ -952,6 +953,7 @@ function envSplitWords(value: string): string[] | undefined {
       else if (c === quote) quote = ''
     }
   }
+  if (quote !== '') return undefined
   const commands = parseShell(text)
   return commands.length > 1 ? undefined : [...(commands[0]?.marked ?? [])]
 }

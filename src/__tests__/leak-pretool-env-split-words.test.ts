@@ -31,6 +31,10 @@ describe('an env -S value read as env splits it, operators kept as words (CC-130
     deny("env GH_CONFIG_DIR=/x -S 'find . -exec true ; -exec gh pr create --body ok ;'", REASONS.ghConfigHome)
   })
 
+  it('denies a value with an unclosed quote, which env refuses to split', () => {
+    deny('env -S "echo \'x"', REASONS.hiddenCommand)
+  })
+
   // Both already deny before CC-1307: xargs words may be any command, and env -S refuses a backslash.
   it.each([
     "xargs env -S 'find . -exec true ; -exec git push'",
@@ -42,6 +46,7 @@ describe('an env -S value read as env splits it, operators kept as words (CC-130
   it.each([
     "env -S 'find . -name x -exec true ;'",
     "env -S 'echo a;b'",
+    'env -S "git commit -m \'a;b\'"',
     "env -S 'git status; git log'",
     'env -S \'echo "git push --no-verify;"\'',
   ])('allows a value whose words run nothing checked: %s', command => {
