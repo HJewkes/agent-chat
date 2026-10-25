@@ -269,9 +269,10 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
+  cshHistory: `leak-guard: csh rewrites ! history in the text it reads (!#:1 repeats a word of the line) before it runs it, which the guard never replays, and this line may reach git or gh. Drop the !, or run the text with sh. ${DOCS}`,
 } as const
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
@@ -2253,6 +2254,7 @@ function checkShell(
   depth: number,
 ): string | undefined {
   const fed = scope.fed
+  if (cshHistory(call, fed) && lineMayReachGit(scope, ctx)) return REASONS.cshHistory
   const reason =
     fed === 'unknown'
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
@@ -2271,8 +2273,16 @@ function checkShell(
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
   if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
+  if (script.from === 'file' && script.missingRuns === true)
+    return [marked.slice(script.at).map(unmark).join(' ')]
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
+}
+
+/** csh substitutes `!` history in its `-c` string and stdin (observed: `!#:1` repeats a word), which the guard never replays. */
+function cshHistory(call: ShellRun, fed: Feed): boolean {
+  const texts = [...commandTexts(call), ...(fed === 'unknown' ? [] : fed.texts)]
+  return call.name === 'csh' && texts.some(text => text.includes('!'))
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */

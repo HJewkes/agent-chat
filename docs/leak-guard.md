@@ -425,6 +425,18 @@ which stops at its first operand and takes a subset of the GNU options: `busybox
 `busybox env git push` read as `sh -c TEXT` and `env git push` do. `ash`, busybox's shell and
 Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 
+`mksh` and `csh` are checked shells too, and `ksh`, `mksh` and `csh` have their options read as
+observed in mksh 59c, ksh93u+m 1.0.10, bsd-csh 20240808 and tcsh 6.24 (CC-1631), so the guard
+checks the `-c` string where the shell finds it: `mksh -T - -c TEXT` and `ksh -o errexit -c TEXT`
+run `TEXT`, and `ksh -c 'echo hi' TEXT` does not. `ksh` may be ksh93, which runs a script operand no
+file has as a command line (`ksh 'git push' --no-verify` pushes), so the operands are checked as
+one. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
+csh runs the word after the one holding `c`, whatever it starts with, and a letter neither csh
+knows hides the call, since bsd-csh ignores it (`csh --c TEXT` runs `TEXT`). A hidden call has every
+word checked as its `-c` string. csh rewrites `!` history in the text it reads (`!#:1` repeats a
+word of the line), so a csh `-c` string or fed text holding `!` denies (cshHistory) on a line that
+may reach git or gh.
+
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`                                                                                                                                                                                                                                    | skips the pre-push hook                                     |
@@ -1565,7 +1577,7 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`; `SHELLS` in
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`, `mksh`, `csh`; `SHELLS` in
   `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
   stdin source in scope, on a line that may reach git or gh (as for command starts above). The
   guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
@@ -1632,7 +1644,7 @@ Not covered, by design or by cost:
     `echo P | $(echo bash)`;
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
-    `echo P | mksh`, `echo P | fish`;
+    `echo P | tcsh`, `echo P | ksh93`, `echo P | fish`;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the

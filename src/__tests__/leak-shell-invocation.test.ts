@@ -86,7 +86,6 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     ['zsh + -i', 1, false],
     ['zsh +- -i s.sh', 1, false],
     ['bash + -i s.sh', 2, true],
-    ['ksh +i s.sh', 1, true],
     ['zsh -O s.sh', 1, false],
     ['zsh +O x', 1, false],
   ])('%s reads the file at %i', (line, at, history) => {
@@ -121,19 +120,9 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
     'bash -o $X',
     'bash -o$X',
     'zsh --emulate $E -i',
-    'ksh -ox pipefail s.sh',
-    'ksh -oemacs s.sh',
-    'ksh -ointeractive s.sh',
-    'ksh -oposix s.sh',
-    "ksh -oemacs <<'EOF'\necho hi\nEOF",
     'bash -e "$X" <<<x',
     'bash *.sh',
-    'ksh + -c x',
-    'ksh +- -c x',
-    'ksh + -i s.sh',
-    'ksh -e + -c x',
-    'mksh + -c x',
-    'csh +- -c x',
+    'tcsh + -c x',
     'ash -s -c x',
     'ash +s f.sh',
     'ash --rcfile -c x',
@@ -145,10 +134,8 @@ describe("a shell's options and the script it reads (CC-1288)", () => {
   })
 
   it.each([
-    ['ksh -ic x', 1],
-    ['ksh -c x', 1],
+    ['tcsh -ic x', 1],
     ['tcsh -c x', 1],
-    ['csh -c x', 1],
   ])('%s runs the string at %s and reports history, as an unobserved shell', (line, at) => {
     expect(call(line)).toEqual({ script: { from: 'command', at }, history: true })
   })
@@ -317,8 +304,6 @@ describe('where dash and bash read the script source differently (CC-1288)', () 
     "dash -o stdin -c 'x'",
     "sh -s -c 'x'",
     "sh -sc 'x'",
-    'ksh -s -c x',
-    'ksh -sc x',
   ])('%s runs two scripts, so it hides the call', line => {
     expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
   })
@@ -343,5 +328,84 @@ describe('a startup file bash runs when interactive (CC-1288)', () => {
     ['bash --rcfile rc f.sh', { script: { from: 'file', at: 2 }, history: false }],
   ])('%s', (line, expected) => {
     expect(call(line)).toEqual(expected)
+  })
+})
+
+// Observed in mksh 59c and ksh93u+m 1.0.10, either of which `ksh` may be.
+describe('ksh and mksh options, as observed (CC-1631)', () => {
+  it.each([
+    ['ksh -c x', 1],
+    ['ksh -ic x', 1],
+    ['ksh -s -c x', 2],
+    ['ksh -sc x', 1],
+    ['ksh +- -c x', 2],
+    ['mksh -c -e x', 2],
+    ['mksh -co errexit x', 2],
+    ['mksh -T - -c x', 3],
+    ['mksh -T- -c x', 2],
+    ['mksh -cT /dev/tty2 x', 2],
+  ])('%s runs the string at %s', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'command', at }, history: false })
+  })
+
+  // ksh93 runs a script operand no file has as a command line.
+  it.each([
+    ['ksh +i s.sh', 1, false],
+    ['ksh +c x', 1, false],
+    ['ksh -ox pipefail s.sh', 1, false],
+    ['ksh -oemacs s.sh', 1, false],
+    ['ksh -ointeractive s.sh', 1, true],
+    ['ksh + -c x', 1, false],
+    ['ksh -e + -c x', 2, false],
+  ])('%s reads the file at %i, or runs it where none exists', (line, at, history) => {
+    expect(call(line)).toEqual({ script: { from: 'file', at, missingRuns: true }, history })
+  })
+
+  it.each([
+    ['mksh + -c x', 1],
+    ['mksh +c x', 1],
+    ['mksh -o errexit s.sh', 2],
+  ])('%s reads the file at %i', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'file', at }, history: false })
+  })
+
+  it("reads ksh -oemacs <<'EOF' as stdin", () => {
+    expect(call("ksh -oemacs <<'EOF'\necho hi\nEOF")).toEqual({ script: { from: 'stdin' }, history: false })
+  })
+
+  // mksh reads `-o -c` as the letter c, and ksh93 reads -c as the next option word.
+  it.each(['mksh -o -c x', 'ksh -o +c x', 'mksh -o-s x', 'ksh -T $X -c x'])('%s hides the call', line => {
+    expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
+  })
+})
+
+// Observed in bsd-csh 20240808 and tcsh 6.24, either of which `csh` may be. csh substitutes `!` history.
+describe('csh options, as observed (CC-1631)', () => {
+  it.each([
+    ['csh -c x', 1],
+    ['csh -fc x', 1],
+    ['csh -x -c x', 2],
+    ['csh -c -x x', 1],
+    ['csh -s -c x', 2],
+    ['csh -c', undefined],
+  ])('%s runs the string at %s', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'command', at }, history: true })
+  })
+
+  it.each([
+    ['csh +- -c x', 0],
+    ['csh -b -c x', 1],
+    ['csh - x', 0],
+  ])('%s reads the file at %i', (line, at) => {
+    expect(call(line)).toEqual({ script: { from: 'file', at }, history: true })
+  })
+
+  it.each(['csh', 'csh -s x', 'csh -f'])('%s reads stdin', line => {
+    expect(call(line)).toEqual({ script: { from: 'stdin' }, history: true })
+  })
+
+  // bsd-csh ignores a letter it does not know and tcsh exits on it.
+  it.each(['csh --c x', 'csh -Z -c x', 'csh -$X -c x', 'csh $X'])('%s hides the call', line => {
+    expect(call(line)).toEqual({ script: { from: 'hidden' }, history: true })
   })
 })

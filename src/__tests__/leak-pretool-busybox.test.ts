@@ -94,8 +94,8 @@ describe('a busybox applet is checked as the command it runs (CC-1342)', () => {
   })
 })
 
-// ksh has no observed grammar, and mksh's `-T` takes an operand, so `-c` may come after it.
-describe('a shell without an observed grammar has every word checked as its -c string (CC-1342)', () => {
+// `ksh` may be mksh, whose `-T` takes an operand, so `-c` may come after it (CC-1631).
+describe("ksh reads -c after mksh's -T operand (CC-1342)", () => {
   it.each([`ksh -T - -c '${P}'`, `ksh -T /dev/tty2 -c '${P}'`, `ksh -c '${P}'`])('denies %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
   })

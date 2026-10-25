@@ -18,11 +18,12 @@ export interface FakeGitShells {
   cleanup(): void
 }
 
-export function fakeGitShells(prefix: string, script: string): FakeGitShells {
+/** `dirs` go on PATH after the fake git and before /usr/bin and /bin, for shells installed elsewhere. */
+export function fakeGitShells(prefix: string, script: string, dirs: readonly string[] = []): FakeGitShells {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
   const bin = path.join(root, 'bin')
   const record = path.join(root, 'git-calls')
-  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: root, RECORD: record }
+  const env = { PATH: [bin, ...dirs, '/usr/bin', '/bin'].join(':'), HOME: root, RECORD: record }
   fs.mkdirSync(bin)
   fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$RECORD"\n', { mode: 0o755 })
   fs.writeFileSync(path.join(root, 'push.sh'), `${script}\n`)
