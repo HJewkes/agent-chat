@@ -2701,6 +2701,8 @@ function checkSimple(
   outermost = true,
   lead?: Lead,
 ): string | undefined {
+  // A `{GIT_CONFIG_*}>file` redirect writes the variable as a `GIT_CONFIG_*=` prefix does (CC-1630).
+  if (cmd.fdNames.some(isGitConfigVar)) return REASONS.gitConfigEnv
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped)
     return !GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx) ? unwrapped.reason : undefined

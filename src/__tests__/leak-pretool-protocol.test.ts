@@ -644,6 +644,16 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
   })
 
   it.each([
+    'git fetch o {GIT_CONFIG_GLOBAL}>/dev/null',
+    'git fetch o {GIT_CONFIG_NOSYSTEM}>/dev/null',
+    'git fetch o {GIT_CONFIG_SYSTEM}>/dev/null',
+    'git fetch o {GIT_CONFIG_COUNT}>/dev/null',
+    'git fetch o {GIT_CONFIG_PARAMETERS}>/dev/null',
+  ])('denies %j, as a GIT_CONFIG_* assignment is', command => {
+    expect(hookReason(command)).toBe(REASONS.gitConfigEnv)
+  })
+
+  it.each([
     'gh pr view 1 {fd}>/dev/null',
     'exec {fd}>/dev/null; git fetch o',
     'gh pr view 1 "{GH_PAGER}">/dev/null',
