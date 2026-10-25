@@ -1,7 +1,9 @@
 import { invokeCommand } from '@titan-design/registry'
+import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrokerClient } from '../client/broker-client.js'
-import type { Report, VerbContext } from '../cli/command.js'
+import type { AccountUsage } from '../agents/account-budget.js'
+import type { AccountPool, Report, VerbContext } from '../cli/command.js'
 import { agentMoveAccount } from '../cli/verbs/agent-move-account.js'
 import type { ClientMessage, ServerMessage, SessionInfo } from '../protocol.js'
 
@@ -111,5 +113,47 @@ describe('agent move-account with flags', () => {
 
     expect(report.ok).toBe(false)
     expect(report.lines).toEqual(['Not moved: five_hour 96% is at or over the ceiling'])
+  })
+})
+
+describe('agent move-account to least-used', () => {
+  const usage = (dir: string, pct: number, over: Partial<AccountUsage> = {}): AccountUsage => ({
+    account: path.basename(dir),
+    config_dir: dir,
+    source: 'usage-poller',
+    five_hour: { used_pct: pct, resets_at: 0 },
+    seven_day: { used_pct: pct, resets_at: 0 },
+    age_seconds: 10,
+    stale: false,
+    auth_fail: false,
+    ...over,
+  })
+  const pool = (readings: AccountUsage[]): AccountPool => ({
+    readings: () => readings,
+    config: () => ({ enabled: true, ceilingPct: 90, exclude: [] }),
+  })
+
+  it('moves to the logged-in account with the lowest usage, dry run included', async () => {
+    const { ctx, sent } = broker([], { name: 'scout' })
+    ctx.accountPool = pool([
+      usage('/srv/demo/alpha', 80),
+      usage('/srv/demo/personal', 20),
+      usage('/srv/demo/beta', 5, { auth_fail: true }),
+    ])
+
+    await run({ account: 'least-used', name: 'scout', dryRun: true }, ctx)
+
+    expect(sent).toEqual([{ t: 'account_move_check', name: 'scout', to: 'personal' }])
+  })
+
+  it('refuses with nothing sent when no account is usable', async () => {
+    const { ctx, sent } = broker([], { name: 'scout' })
+    ctx.accountPool = pool([usage('/srv/demo/alpha', 5, { auth_fail: true }), usage('/srv/demo/beta', 95)])
+
+    const report = await run({ account: 'least-used', name: 'scout' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors?.join('\n')).toContain('Not moved')
+    expect(sent).toEqual([])
   })
 })
