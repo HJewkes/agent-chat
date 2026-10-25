@@ -5,8 +5,9 @@ import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.
 import { fakeGitShells } from './helpers/fake-git-shells.js'
 
 /**
- * A positional parameter as the command word (`"$@"`, `$1`, `"$*"`, zsh's `$argv`) runs the words a
- * `set --` or a function call put there, which the guard never reads as a command (CC-1624). Real
+ * An unresolved command word may run the positionals however the line reads them (`"$@"`, `$x` after
+ * `x="$*"`, `$OPTARG`, a backtick), so the guard keys on where they are filled: a `set` with operands,
+ * a call to a function the line defines, shell `-c` arguments and a zsh `argv` write (CC-1624). Real
  * bash and zsh with a fake `git` first on PATH confirm each bypass row runs the push in every shell
  * it names.
  */
@@ -24,7 +25,7 @@ const ctx = (): GuardContext => ({
 const PUSH = 'git push --no-verify'
 const BOTH = ['bash', 'zsh']
 
-// Each row: the line and the shells that run its push. Drop runsPositional and every row allows.
+// Each row: the line and the shells that run its push.
 const BYPASSES: [string, string[]][] = [
   [`set -- ${PUSH}; "$@"`, BOTH],
   [`set -- ${PUSH}; $@`, BOTH],
@@ -66,6 +67,38 @@ const BYPASSES: [string, string[]][] = [
   [`f() { printf -v x %s "$*"; $x; }; f ${PUSH}`, ['bash']],
 ]
 
+// Readers no spelling list held (rounds 3 and 4 of #1240): a loop with no list, getopts, a backtick, an array copy.
+const READERS: [string, string[]][] = [
+  [`f() { for a; do x="$x $a"; done; $x; }; f ${PUSH}`, ['bash']],
+  [`f() { getopts x: o; $OPTARG; }; f -x "${PUSH}"`, ['bash']],
+  [`f() { \`echo "$@"\`; }; f ${PUSH}`, BOTH],
+  [`f() { \`printf '%s ' "$@"\`; }; f ${PUSH}`, BOTH],
+  [`f() { for x; do $x; done; }; f '${PUSH}'`, ['bash']],
+  [`set -- '${PUSH}'; for x; do $x; done`, ['bash']],
+  [`f() { for x; do a+=($x); done; "\${a[@]}"; }; f ${PUSH}`, BOTH],
+  [`f() { for x do a="$a $x"; done; $a; }; f ${PUSH}`, ['bash']],
+  [`f() { getopts x: o; $OPTARG; }; f "-x${PUSH}"`, ['bash']],
+  [`f() { while getopts x: o; do $OPTARG; done; }; f "-x${PUSH}"`, ['bash']],
+  [`set -- ${PUSH}; for x; do a+=($x); done; "\${a[@]}"`, BOTH],
+  [`bash -c 'for x; do a+=($x); done; "\${a[@]}"' _ ${PUSH}`, BOTH],
+  [`f() { select x; do $x; break; done <<< 1; }; f "${PUSH}"`, ['bash']],
+  // Controls from the reviews of #1240.
+  [`f() { \${(@)argv}; }; f ${PUSH}`, ['zsh']],
+  [`set -- ${PUSH}; "\${@:-x}"`, BOTH],
+  [`f() { $argv[1,-1]; }; f ${PUSH}`, ['zsh']],
+  [`f() { $(echo "$@"); }; f ${PUSH}`, BOTH],
+  [`f() { a=@; "\${!a}"; }; f ${PUSH}`, ['bash']],
+  [`f() { "$@"; }; f "$(printf g%s it)" push --no-verify`, BOTH],
+  [`f() { nice "$@"; }; f ${PUSH}`, BOTH],
+  [`f() { exec "$@"; }; f ${PUSH}`, BOTH],
+  // A call the line makes inside a script it runs fills the positionals of a function it defined.
+  [`f() { "$@"; }; eval 'f ${PUSH}'`, BOTH],
+  [`f() { "$@"; }; export -f f; bash -c 'f ${PUSH}'`, ['bash']],
+  // A shell whose options the guard cannot read may take any word as a positional.
+  [`o=-c; bash $o '"$@"' _ ${PUSH}`, BOTH],
+  [`b=bash; $b -c '"$@"' _ ${PUSH}`, BOTH],
+]
+
 // zsh fills the positionals from a file through `read -A argv`, so they are not the line's own words.
 const FILED: [string, string[]][] = [
   [`read -A argv < f; "$@"`, ['zsh']],
@@ -74,8 +107,9 @@ const FILED: [string, string[]][] = [
   [`argv=($(<f)); "$@"`, ['zsh']],
 ]
 
-// The guard does not follow which words fill a positional, so any other word that may reach git denies.
-const FALSE_DENIES = [`f() { "$@"; }; f ls; git status`, `set -- ls; "$@"; git status`]
+// The fill reaches git, so a hidden word that ignores the positionals denies too; and a fill word the
+// guard cannot read may hold git, since `"$@"` alone may reach it.
+const FALSE_DENIES = [`f() { $EDITOR x; }; f git status`, `f() { "$@"; }; f "$X"`]
 
 // Denied on main already, through the hidden-command rules that read the words after the head.
 const PINNED: [string, string[]][] = [
@@ -95,6 +129,10 @@ const BENIGN: [string, RegExp][] = [
   [`set -- a; git status`, /^status$/],
   [`f() { echo "$@"; }; f ${PUSH}`, /^$/],
   [`bash -c '"$@"' _ ls`, /^$/],
+  [`"$@"`, /^$/],
+  // The positionals hold only ls, so git elsewhere on the line no longer denies (#1240's false denies).
+  [`f() { "$@"; }; f ls; git status`, /^status$/],
+  [`set -- ls; "$@"; git status`, /^status$/],
 ]
 
 describe('checkCommand on a positional parameter as the command word', () => {
@@ -102,6 +140,10 @@ describe('checkCommand on a positional parameter as the command word', () => {
     const reason = checkCommand(src, ctx())
     expect(reason).toBeDefined()
     expect(reason).toBe(REASONS.positionalCommand)
+  })
+
+  it.each(READERS)('denies %j, however it reads the positionals', src => {
+    expect(checkCommand(src, ctx())).toBeDefined()
   })
 
   it.each(FILED)('denies %j, whose positionals a file fills', src => {
@@ -130,7 +172,7 @@ const shellsNamed = (names: readonly string[]) =>
 afterAll(real.cleanup)
 
 describe.skipIf(real.shells.length === 0)('real shells run the positional command word', () => {
-  it.each([...BYPASSES, ...FILED, ...PINNED])('each named shell pushes for %j', (src, names) => {
+  it.each([...BYPASSES, ...READERS, ...FILED, ...PINNED])('each named shell pushes for %j', (src, names) => {
     for (const [shell, args] of shellsNamed(names))
       expect(real.gitCalls(shell, args, src)).toBe('push --no-verify')
   })

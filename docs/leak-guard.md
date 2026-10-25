@@ -1632,18 +1632,25 @@ Two cases of this check are denied outright, so the check stays fast (CC-347):
   see, the accepted gap above;
 - an `env -S` split behind another expansion, such as `$E env -S '$W -n 5 gh ...'`.
 
-A command word that is an expansion may run the words a positional parameter holds: directly, as
-in `set -- git push --no-verify; "$@"` or `f() { "$@"; }; f git push --no-verify`, or through a
-variable, as in `f() { x="$*"; $x; }; f git push --no-verify`. The guard does not follow a
-`set --` or a function call, so when no other rule denies the line it denies an expansion as the
-command word on a line that reads a positional anywhere and whose other words may reach git or gh
-(CC-1624). A positional read is any spelling the `sh -c` fill reads (`$@`, `$1`, `${@:2}`,
-`${!#}`, zsh's `$=@`, `$argv`, bash's `${BASH_ARGV[@]}`). The reach test is the one above without
-its positional clause, since a `set --` or a call fills the positionals from the line's own words.
-A line that names `argv` or `BASH_ARGV` as a word keeps the clause, because zsh's `read -A argv < f`
-fills them from a file. `f() { "$@"; }; f ls` stays allowed. Known false denies:
-`f() { "$@"; }; f ls; git status` and `set -- ls; "$@"; git status`. Run the git command in a Bash
-call of its own.
+A command word that is an expansion may run the words the positional parameters hold, however
+the line reads them: `"$@"`, `$x` after `x="$*"`, `$OPTARG` after `getopts`, a loop with no list,
+or a backtick that echoes them. So the guard keys on where the positionals are filled, not on how
+they are read (CC-1624). The fill sites are a `set` with operands, a call to a function the line
+defines (`name()` or `function name`), the words after a shell's `-c` string and `$0`, and a zsh
+`argv` write (`argv=(...)`, `read -A argv`), which fills them from text the line need not show.
+When a fill may reach git or gh, by the reach test above, any expansion as a command word on the
+line denies. A function the line defines may be called inside an `eval` or an exported `bash -c`,
+so the `set`, call and `argv` fills count for the whole command line. A `-c` fill counts only for
+the script that shell runs, and only for a shell whose grammar was observed: an unobserved one's
+words are read as commands already. `f() { "$@"; }; f ls; git status` and
+`set -- ls; "$@"; git status` stay allowed, since the positionals hold only `ls`. Known false
+denies: an expansion that ignores the positionals, as in `f() { $EDITOR x; }; f git status`, and
+a fill word the guard cannot read on a line that may reach git, as in `f() { "$@"; }; f "$X"`.
+Run the git command in a Bash call of its own.
+
+Not covered: a sourced script (`. ./f; "$@"`), `${BASH_EXECUTION_STRING:...}` as the command word,
+a wrapper the guard does not know (`strace -f "$@"`), and a `for x do` loop with no `;` before `do`,
+which the splitter reads as one command.
 
 ### Known false deny: eval beside git or gh
 

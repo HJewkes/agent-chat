@@ -157,17 +157,6 @@ function positionalUses(script: string): Use[] | string {
   return quote === undefined ? uses : 'unclosed quote'
 }
 
-/**
- * Whether any `$` in `text` reads a positional by the spellings the fill knows (`$@`, `${!#}`,
- * `$=1`, `$argv`, `${BASH_ARGV[@]}`...). Quoting is ignored, so a read inside single quotes counts too.
- */
-export function readsPositional(text: string): boolean {
-  for (let i = text.indexOf('$'); i >= 0; i = text.indexOf('$', i + 1)) {
-    if (useAt(text, i, false) !== undefined) return true
-  }
-  return false
-}
-
 /** A `$(` inside double quotes, or a `${` whose text before its `}` holds a quote. */
 function nestsQuotes(script: string, i: number): boolean {
   if (script.startsWith('$(', i)) return true

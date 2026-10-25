@@ -100,7 +100,6 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { readsPositional } from './shell-args.js'
 import { observedShell, readShellCall, UNOBSERVED_SHELL } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -184,6 +183,21 @@ interface Scope {
   fedChecks: { left: number }
   /** A privilege wrapper runs this command, so its env reset drops the hooks path and the PATH shims (CC-1218). */
   privileged: boolean
+  /** What the whole call fills the positionals with and whether an unresolved word may run them; nested shells share it. */
+  positionals: Positionals
+}
+
+/**
+ * The guard keys on where the positionals are filled, never on how a line reads them (CC-1624): a
+ * `set` with operands, a call to a function the call defines and a zsh `argv` write fill those of the
+ * whole call, since a call inside an eval or a `bash -c` runs a function the line defined. Shell `-c`
+ * arguments fill only the script the shell runs (withFill).
+ */
+interface Positionals {
+  functions: Set<string>
+  fillReachesGit: boolean
+  /** An unresolved command word, which may run the positionals however the line reads them. */
+  hiddenHead: boolean
 }
 
 const UNSURE = Symbol('unsure')
@@ -215,7 +229,7 @@ export const REASONS = {
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments. ${HEREDOC_POST} ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
-  positionalCommand: `leak-guard: the command word is an expansion on a line that reads a positional parameter ("$@", $1, "$*", zsh's $argv), so it may run the words a set -- or a function call put there, directly or through a variable, on a command line that may reach git or gh. Write the command out literally. ${DOCS}`,
+  positionalCommand: `leak-guard: the command word is an expansion, so it may run the positionals this line fills (a set with operands, a call to a function the line defines, a bash -c's arguments, zsh's argv), and they may reach git or gh. Write the command out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: a script (eval, trap, mapfile -C, parallel) the guard cannot read, on a command line that may reach git or gh. Run the command directly. ${DOCS}`,
@@ -1110,8 +1124,6 @@ const NAMES_GIT = /\bgit\b/
 const VARIABLE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g
 // Positional and special parameters, REPLY, argv, reply and MAPFILE are set without naming them.
 const UNNAMED_SET = /\$\{?(?:[0-9*@]|(?:_|REPLY|argv|reply|MAPFILE)(?![A-Za-z0-9_]))/
-// The same less the positional parameters, which only a `set --` or a call on the line itself fills.
-const UNNAMED_SET_BUT_POSITIONAL = /\$\{?(?:_|REPLY|reply|MAPFILE)(?![A-Za-z0-9_])/
 // `${!y}`, a zsh flag such as `${(P)y}` or `${=x}`, and zsh's bare `$=x`, `$~x` and `$^x` hide the name.
 const HIDDEN_NAME = /\$\{(?![A-Za-z_])|\$[=~^]/
 // `${NAME:-default}` and its kin read NAME without assigning it, unlike `${NAME:=default}`.
@@ -2053,10 +2065,7 @@ function checkGhAliasSet(
     depth + 1,
   )
   // The arguments arrive later, and a positional inside double quotes is one the guard cannot fill.
-  const unfillable = shell && unfillableAtSet(body)
-  return unfillable && (reason === undefined || reason === REASONS.positionalCommand)
-    ? REASONS.ghAliasHidden
-    : reason
+  return reason ?? (shell && unfillableAtSet(body) ? REASONS.ghAliasHidden : undefined)
 }
 
 /** gh config writes the guard does not read before an alias in the same line runs. */
@@ -2287,14 +2296,90 @@ function checkShell(
   depth: number,
 ): string | undefined {
   const fed = scope.fed
-  const reason =
+  const reason = withFill(stdinFill(call), ctx, scope, () =>
     fed === 'unknown'
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
-      : checkFed(fed.texts, ctx, scope, depth)
+      : checkFed(fed.texts, ctx, scope, depth),
+  )
   if (reason !== undefined) return reason
   // A shell the `-c` string runs reads this shell's own stdin (CC-1408).
   const inner = fed === scope.stdin ? scope : { ...scope, stdin: fed }
-  return firstReason(commandTexts(call), text => checkAt(text, ctx, inner, depth + 1))
+  return firstReason(commandTexts(call), ({ text, fill }) =>
+    withFill(fill, ctx, scope, () => checkAt(text, ctx, inner, depth + 1)),
+  )
+}
+
+/**
+ * Runs the check of a script a shell call runs with `fill` as its positionals, the shell `-c`
+ * fill site (CC-1624): an unresolved command word in the script may run them.
+ */
+function withFill(
+  fill: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  check: () => string | undefined,
+): string | undefined {
+  const { positionals } = scope
+  const outer = positionals.hiddenHead
+  positionals.hiddenHead = false
+  const reason = check()
+  const hidden = positionals.hiddenHead
+  positionals.hiddenHead ||= outer
+  if (reason !== undefined || !hidden) return reason
+  return fillReachesGit(fill, ctx, scope) ? REASONS.positionalCommand : undefined
+}
+
+// Commands that write the words they read into the array a non-head word names.
+const ARRAY_READERS = new Set(['read', 'vared', 'mapfile', 'readarray'])
+
+const writesArgv = (word: string): boolean => ASSIGNMENT.exec(word)?.[1] === 'argv'
+
+/**
+ * What a command puts in the positionals: the words after a `set` with operands or after a call to a
+ * function the line defines, 'unknown' where it writes zsh's `argv` from text the line need not
+ * show, and undefined where it fills none.
+ */
+function positionalFill(
+  cmd: SimpleCommand,
+  defined: ReadonlySet<string>,
+  ctx: GuardContext,
+  scope: Scope,
+): readonly string[] | 'unknown' | undefined {
+  const unwrapped = unwrap(functionBody(cmd.marked))
+  if ('reason' in unwrapped) return undefined
+  const [first = '', ...rest] = unwrapped.words
+  if (unwrapped.assigns.some(writesArgv) || rest.some(writesArgv)) return 'unknown'
+  const head = resolveWord(first, cmd, ctx, scope)
+  if (head === undefined) return undefined
+  if (ARRAY_READERS.has(head) && rest.some(word => word === 'argv')) return 'unknown'
+  if (head === 'set') return rest.every(arg => PLAIN_SET.test(arg)) ? undefined : rest
+  return defined.has(head) ? rest : undefined
+}
+
+/** The function a `name()` or `function name` command defines; a Bash call starts with none. */
+const definedFunction = (cmd: SimpleCommand): string | undefined =>
+  cmd.defines ??
+  (cmd.marked[0] === 'function' && cmd.marked[1] !== undefined ? unmark(cmd.marked[1]) : undefined)
+
+/** Records the functions the line defines and whether any fill site on it may put git or gh in the positionals. */
+function noteFills(cmds: readonly SimpleCommand[], ctx: GuardContext, scope: Scope): void {
+  const { positionals } = scope
+  for (const cmd of cmds) {
+    const name = definedFunction(cmd)
+    if (name !== undefined) positionals.functions.add(name)
+  }
+  positionals.fillReachesGit ||= cmds.some(cmd => {
+    const fill = positionalFill(cmd, positionals.functions, ctx, scope)
+    if (fill === 'unknown') return lineMayReachGit(scope, ctx)
+    return fill !== undefined && fillReachesGit(fill, ctx, scope)
+  })
+}
+
+/** The fill's plain words read as a line; a word the guard cannot read may hold git where the line may reach it. */
+function fillReachesGit(fill: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  const plain = fill.filter(word => !unreadable(word))
+  if (mayReachGit(plain.map(unmark).join(' '), ctx.env)) return true
+  return plain.length < fill.length && lineMayReachGit(scope, ctx)
 }
 
 /**
@@ -2302,14 +2387,40 @@ function checkShell(
  * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, or belong to a shell whose
  * grammar was never observed (mksh's `-T` takes an operand), every word may be it.
  */
-function commandTexts({ name, marked, assigns }: ShellRun): string[] {
+function commandTexts({ name, marked, assigns }: ShellRun): ShellText[] {
   const { script } = readShellCall(name, marked, assigns)
-  // Each text is checked in the same scope, so a repeated word is checked once (CC-1411: a long run of
-  // operands to an expanded command word stays within the hook timeout).
-  if (script.from === 'hidden' || !observedShell(name)) return [...new Set(marked.map(unmark))]
+  if (script.from === 'hidden' || !observedShell(name))
+    return everyText(marked, stdinFill({ name, marked, assigns }))
   if (script.from !== 'command') return []
-  return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
+  if (script.at === undefined) return [{ text: '', fill: [] }]
+  return [{ text: unmark(marked[script.at] as string), fill: marked.slice(script.at + 2) }]
 }
+
+/**
+ * The positionals of a script the shell reads from stdin or a `-c` string it hides: after a `-c` string
+ * and `$0`, else any word. An unobserved shell fills none, since checkHidden reads each of its words as
+ * a command.
+ */
+function stdinFill({ name, marked, assigns }: ShellRun): readonly string[] {
+  if (!observedShell(name)) return []
+  const { script } = readShellCall(name, marked, assigns)
+  if (script.from !== 'command' || script.at === undefined) return marked
+  return marked.slice(script.at + 2)
+}
+
+/** A text a shell may run as its `-c` string, and the words after it and `$0`, which it takes as positionals. */
+interface ShellText {
+  text: string
+  fill: readonly string[]
+}
+
+/**
+ * Every word as a script, each with the same fill. Each text is checked in the same scope, so a
+ * repeated word is checked once (CC-1411: a long run of operands to an expanded command word stays
+ * within the hook timeout).
+ */
+const everyText = (marked: readonly string[], fill: readonly string[]): ShellText[] =>
+  [...new Set(marked.map(unmark))].map(text => ({ text, fill }))
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */
 interface ShellRun {
@@ -2436,20 +2547,11 @@ const readsAsShell = (cmd: SimpleCommand, fed: Fed | undefined): boolean =>
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
-// The positionals as arrays, which zsh's `read -A argv`, `argv=(...)` or `set -A argv` fill from text the line never shows.
-const POSITIONAL_ARRAYS = ['argv', 'BASH_ARGV']
-
-/**
- * Whether any word of the line names git or gh, may expand to either, or reads a variable the line or
- * the hook ties to them (CC-478). With `positionals` false, a positional parameter alone does not
- * count, since a `set --` or a call fills it from the line's own words, which are tested as such;
- * unless the line names the positionals as an array, which fills them from elsewhere.
- */
-function mayReachGit(line: string, env: Env, positionals = true): boolean {
+/** Whether any word of the line names git or gh, may expand to either, or reads a variable the line or the hook ties to them (CC-478). */
+function mayReachGit(line: string, env: Env): boolean {
   if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line) || ANSI_C.test(line)) return true
+  if (UNNAMED_SET.test(line) || HIDDEN_NAME.test(line)) return true
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
-  const counted = positionals || POSITIONAL_ARRAYS.some(name => mentions(said, name))
-  if ((counted ? UNNAMED_SET : UNNAMED_SET_BUT_POSITIONAL).test(line) || HIDDEN_NAME.test(line)) return true
   const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
   if (names.some(name => mentions(said, name) || wordMayBeGit(env[name] ?? ''))) return true
   return line.split(/[\s;&<>]+/).some(word => wordMayBeGit(word) || wordMayBeGit(withEnv(word, env)))
@@ -2729,15 +2831,6 @@ function checkParallel(
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
 
-/**
- * Whether `head`, an expansion the guard cannot resolve, may run words a positional holds, on a line whose
- * other words may reach git or gh (CC-1624). A positional read anywhere on the line counts, by the
- * spellings the `sh -c` fill reads, since its words reach the head directly (`"$@"`) or through a
- * variable (`x="$*"; $x`). The guard does not follow a `set --` or a function call, so this fails closed.
- */
-const runsPositional = (head: string, scope: Scope, ctx: GuardContext): boolean =>
-  head.includes(`${LIVE}$`) && readsPositional(scope.line) && mayReachGit(scope.line, ctx.env, false)
-
 /** `function f { gh ...; }` runs nothing yet, but its body is checked as if it ran now. */
 const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
@@ -2802,10 +2895,8 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
-    return (
-      checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost, unwrapped.fed) ??
-      (outermost && runsPositional(unwrapped.words[0] ?? '', at, ctx) ? REASONS.positionalCommand : undefined)
-    )
+    if (outermost && cmd.defines === undefined) at.positionals.hiddenHead = true
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost, unwrapped.fed)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
@@ -3493,23 +3584,21 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const cmds = parseShell(command)
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
+  noteFills(cmds, ctx, at)
   const line = lineFeeds(cmds)
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
-  // A positional command word denies only when no later command on the line names a closer reason.
-  let positional: string | undefined
   for (const cmd of cmds) {
     at = settle(cmd, at)
     const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
-    if (reason === REASONS.positionalCommand) positional = reason
-    else if (reason !== undefined) return reason
+    if (reason !== undefined) return reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
-  return positional ?? (envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason))
+  return envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason)
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
@@ -3534,8 +3623,13 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     stdin: NOTHING,
     fed: NOTHING,
     privileged: false,
+    positionals: { functions: new Set(), fillReachesGit: false, hiddenHead: false },
   }
-  return checkAt(command, ctx, scope, 0)
+  // Any fill may reach any hidden word: a call inside an eval or a `bash -c` runs a function the line defined.
+  const { positionals } = scope
+  const reason = checkAt(command, ctx, scope, 0)
+  if (reason !== undefined || !(positionals.hiddenHead && positionals.fillReachesGit)) return reason
+  return REASONS.positionalCommand
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
