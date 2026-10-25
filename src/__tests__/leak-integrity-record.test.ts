@@ -104,7 +104,7 @@ describe('startup files', () => {
     const abs = path.join(home, 'benv')
     const records = startupSet(home, undefined, { BASH_ENV: abs, ENV: 'relative' })
 
-    expect(records[abs]?.state).toBe('absent')
+    expect(records[abs]).toEqual({ kind: 'startup', state: 'absent' })
     expect(Object.keys(records)).not.toContain('relative')
   })
 
