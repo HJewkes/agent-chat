@@ -436,6 +436,15 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
+A case pattern's `)` never ends a `$( )` (CC-1324). The splitter reads a pattern after `in` and after
+each of `;;`, `;&`, `;;&` and zsh's `;|`. It opens a case on `case W in` and on zsh's `case W {`, also
+with a `;` or newline before the `in` or `{` and with the `{` touching the first pattern. A sole
+`esac` or `}` closes either form, and a `{ }` group inside a case is counted so its `}` closes no
+case. Where a pattern is due in a case opened by `in`, bash reads `})` and `}|y)` as a pattern and zsh
+closes the case at the `}`, so such a line is unreadable and denied. zsh also closes a case at a
+trailing `echo a }`; the splitter does not, which only leaves the case open, so a later `)` still
+ends the `$( )` where it would.
+
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
 `git fetch --upload-pac{k..k}=<cmd>` or `git init --templat{e..e}=<dir>`: a comma list or a
