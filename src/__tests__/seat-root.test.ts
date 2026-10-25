@@ -8,7 +8,7 @@ import { Registry, type IdentityBinding } from '../broker/registry.js'
 import * as log from '../broker/log.js'
 import { Supervisor, type SpawnOutcome, type SpawnRequest } from '../agents/supervisor.js'
 import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
-import type { RegisterMessage } from '../protocol.js'
+import type { ClientMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -131,7 +131,14 @@ function registerAs(
   sessionId: string,
 ): { conn: Conn; agentId: string; binding: IdentityBinding } {
   const conn = { write: () => true } as unknown as Conn
-  const frame: RegisterMessage = { t: 'register', name, workingOn: 'testing', cwd: '/tmp', pid: 1, sessionId }
+  const frame: Extract<ClientMessage, { t: 'register' }> = {
+    t: 'register',
+    name,
+    workingOn: 'testing',
+    cwd: '/tmp',
+    pid: 1,
+    sessionId,
+  }
   expect(core.register(conn, frame).ok).toBe(true)
   const entry = core.registry.entryFor(conn)
   return { conn, agentId: entry?.agentId as string, binding: entry?.binding as IdentityBinding }
