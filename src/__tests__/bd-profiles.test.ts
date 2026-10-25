@@ -565,17 +565,23 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     expect(isDenied(`git ${word} origin --delete x`, denied)).toBe(true)
   })
 
-  it.each(BRACE_PUSHES)('denies the brace `git %s origin --delete x`, first word and after an option', word => {
-    for (const git of ['git', ...GLOBAL_PRELUDES]) {
-      expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
-    }
-  })
+  it.each(BRACE_PUSHES)(
+    'denies the brace `git %s origin --delete x`, first word and after an option',
+    word => {
+      for (const git of ['git', ...GLOBAL_PRELUDES]) {
+        expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+      }
+    },
+  )
 
-  it.each(OPTION_ARG_BRACES)('denies `git -C %s origin --delete x`, the brace finishing the option arg', brace => {
-    for (const opt of ['-C', '-c']) {
-      expect(isDenied(`git ${opt} ${brace} origin --delete x`, denied)).toBe(true)
-    }
-  })
+  it.each(OPTION_ARG_BRACES)(
+    'denies `git -C %s origin --delete x`, the brace finishing the option arg',
+    brace => {
+      for (const opt of ['-C', '-c']) {
+        expect(isDenied(`git ${opt} ${brace} origin --delete x`, denied)).toBe(true)
+      }
+    },
+  )
 
   it.each(PUSH_THEN_EXPANSION)('denies `git <opt> %s origin --delete x` under every global option', word => {
     for (const git of GLOBAL_PRELUDES) {
