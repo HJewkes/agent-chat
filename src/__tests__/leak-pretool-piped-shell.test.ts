@@ -169,10 +169,12 @@ const PROCESS_SUBSTITUTIONS = [
 // Denied though no shell runs the text: bash's operand is a path echo prints and never writes to.
 const UNWRITTEN = [`echo '${PUSH}' >(bash)`, `echo '${PUSH}' >(sh)`]
 
-// Mutation: make every process substitution deny, or every subshell read 'unknown'.
+// Mutation: make every process substitution deny, every subshell read 'unknown', or every command
+// on a line with a process substitution read 'unknown'.
 const PROCESS_BENIGN: [string, RegExp][] = [
   [`diff <(git show HEAD:a) <(git show HEAD:b)`, /^show HEAD:a\nshow HEAD:b$|^show HEAD:b\nshow HEAD:a$/],
   [`git log --oneline > >(wc -l)`, /^log --oneline$/],
+  [`git status > >(cat); bash`, /^status$/],
   [`echo '${PUSH}' > >(cat > /dev/null)`, /^$/],
   [`f() ( bash ); git status`, /^status$/],
 ]
