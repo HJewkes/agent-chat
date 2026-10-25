@@ -560,6 +560,45 @@ describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', 
   })
 })
 
+describe('a hidden name in a script the line runs, on a line that runs git (TP-2499 redesign)', () => {
+  it.each([
+    `A=GIT_ALLOW_PROTO; trap 'declare -n R=\${A}COL; R=ext' DEBUG; git fetch o`,
+    `trap 'read $A <<< ext' DEBUG; git fetch o`,
+    `trap ': \${!A:=ext}' DEBUG; git fetch o`,
+    `trap -- ': \${!A:=ext}' DEBUG; git fetch o`,
+    `trap 'declare -n R=$A; R=ext' RETURN; git fetch o`,
+    `bash -c "trap ': \\\${!A:=ext}' DEBUG; git fetch o"`,
+    `source /dev/stdin <<< 'declare -n R=$A; R=ext'; git fetch o`,
+    `. /dev/stdin <<< 'declare -n R=$A; R=ext'; git fetch o`,
+    `mapfile -C 'declare -n R=$A; :' -c 1 a < f; git fetch o`,
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a trap action it cannot read', () => {
+    expect(hookReason('trap "$T" DEBUG; git fetch o')).toBe(REASONS.hiddenScript)
+  })
+
+  it('checks a trap action as a script', () => {
+    expect(hookReason(`trap 'git push --no-verify' EXIT`)).toBe(REASONS.noVerify)
+  })
+
+  it('denies a nameref in a child shell on a git line, which cannot pass it back', () => {
+    expect(hookReason(`bash -c 'declare -n R=$A; R=x'; git fetch o`)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `trap 'rm -f "$tmp"' EXIT; git fetch o`,
+    'trap - EXIT; git status',
+    'trap -p; git status',
+    `trap 'declare -n R=$A; R=x' DEBUG; ls`,
+    'eval "$(ssh-agent -s)"; npm test',
+    'mapfile -t a < f; git status',
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
 describe('git clone of a repository the guard cannot read (TP-2444)', () => {
   it.each([
     'git clone "$U"',
