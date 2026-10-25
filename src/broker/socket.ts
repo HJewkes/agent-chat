@@ -564,6 +564,7 @@ export class SocketServer {
       // registration, which the broker observed rather than took on trust. The
       // frame's copy exists for the human at the CLI, who holds no entry to read.
       ...(msg.configDir === undefined ? {} : { configDir: msg.configDir }),
+      ...(typeof msg.account === 'string' && msg.account !== '' ? { account: msg.account } : {}),
       ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
       // CC-156: an observed Claude session id proves the requester is a session, whose unset var means ~/.claude.
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
