@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { loadProfile } from '../agents/profiles.js'
 import type { AgentProfile } from '../agents/types.js'
 
@@ -62,5 +63,72 @@ describe('the triager profile (CC-650)', () => {
     }
 
     expect((triager().disallowedTools ?? []).filter(matches)).toEqual([])
+  })
+})
+
+function beatBuilderTsx(): AgentProfile {
+  const profile = loadProfile('beat-builder-tsx', REPO_PROFILES)
+  if ('error' in profile) throw new Error(profile.error)
+  return profile
+}
+
+describe('the beat-builder-tsx profile (TP-2608)', () => {
+  it('loads as a headless sonnet worker in the cwd it is given, with no warnings', () => {
+    const profile = beatBuilderTsx()
+
+    expect(profile).toMatchObject({ model: 'sonnet', surface: 'headless', isolation: 'none' })
+    expect(profile.warnings).toBeUndefined()
+  })
+
+  // Mutation caught: granting Bash or a search tool, which lets the worker build, fetch or roam.
+  it('allows Read, Write and Edit inside its cwd and nothing else', () => {
+    expect(beatBuilderTsx().allowedTools).toEqual(['Read(./**)', 'Write(./**)', 'Edit(./**)'])
+  })
+
+  // Mutation caught: a bare grant, which a headless call outside the scratch cwd matches instead of being refused.
+  it('grants no file tool without a path scope', () => {
+    for (const tool of ['Read', 'Write', 'Edit']) expect(beatBuilderTsx().allowedTools).not.toContain(tool)
+  })
+
+  it('still launches with exactly Read, Write and Edit as its tool set', () => {
+    const { args } = buildLaunchPlan({
+      agentId: 'ag000001',
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      name: 'layer-repair',
+      profile: beatBuilderTsx(),
+      brief: 'repair the module',
+      cwd: '/scratch',
+      cwdHoldsUserSettings: false,
+      adopted: false,
+      mcpConfigPath: '/state/agents/ag000001/mcp.json',
+    })
+
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Write,Edit')
+  })
+
+  // Mutation caught: dropping ToolSearch from the denies, which reaches every deferred MCP tool.
+  it('denies the shell, the web, MCP discovery and the human-authority verbs', () => {
+    expect(beatBuilderTsx().disallowedTools).toEqual(
+      expect.arrayContaining([
+        'Bash',
+        'WebSearch',
+        'WebFetch',
+        'ToolSearch',
+        'AskUserQuestion',
+        'Bash(agent-chat send:*)',
+        'Bash(agent-chat endorse:*)',
+        'Bash(agent-chat approve:*)',
+        'Bash(agent-chat agent:*)',
+        'mcp__plugin_agent-chat_agent-chat__chat_send',
+        'mcp__plugin_agent-chat_agent-chat__agent_spawn',
+      ]),
+    )
+  })
+
+  it('pins the gate contract in its prelude', () => {
+    const prelude = beatBuilderTsx().promptPrelude
+
+    for (const rule of ['`react`', '`@titan-design/react-ui/motion`', 'Math.random', 'DATA', 'stop.'])
+      expect(prelude).toContain(rule)
   })
 })
