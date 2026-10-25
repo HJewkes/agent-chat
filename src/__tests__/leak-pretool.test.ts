@@ -1289,7 +1289,6 @@ describe('a git alias already in config', () => {
       ['zsh alternation on a path', '/usr/bin/g(i|x)t pnv'],
       ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
       ['a default joined to the text after it', '${x:-gi}t pnv'],
-      ['zsh alternation before a glob qualifier', 'g(i|x)t(N) pnv'],
       ['a glob qualifier closing a default', '${x:-/usr/bin/g?t(N)} pnv'],
       ['a group and a qualifier closing a default', '${x:-/usr/bin/gi(t)(N)} pnv'],
       ['a group and a . qualifier closing a default', '${x:-/usr/bin/g(i)t(.)} pnv'],
@@ -1299,6 +1298,11 @@ describe('a git alias already in config', () => {
         expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasHidden)
       },
     )
+
+    // The `t(N)` reading of the word is untied, so its alias is read where the hook runs (CC-1315).
+    it('denies zsh alternation before a glob qualifier where it cannot look (TP-721)', () => {
+      expect(checkCommand('source /dev/null; g(i|x)t(N) pnv', inAliased())).toBe(REASONS.noVerify)
+    })
 
     it.each([
       'g(i|x)t pnv',
