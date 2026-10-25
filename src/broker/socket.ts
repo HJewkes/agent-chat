@@ -1156,9 +1156,10 @@ export class SocketServer {
   }
 
   /** CC-1138: the requester's id and binding, for the ownership rule. */
-  private ownershipOf(
-    requester: Class2Requester | undefined,
-  ): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
+  private ownershipOf(requester: Class2Requester | undefined): {
+    requesterAgentId?: string
+    requesterBinding?: IdentityBinding
+  } {
     return {
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...requesterBindingOf(requester),
@@ -2167,7 +2168,8 @@ export class SocketServer {
         return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {
         const requester = this.class2RequesterOf(conn)
-        if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+        if (isRefusal(requester))
+          return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
         void this.supervisor
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
@@ -2202,7 +2204,11 @@ export class SocketServer {
           })
         const caller = requester?.name
         void this.supervisor
-          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(requester) })
+          .retireFinished({
+            ...req,
+            ...(caller === undefined ? {} : { caller }),
+            ...this.ownershipOf(requester),
+          })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {
@@ -2217,10 +2223,14 @@ export class SocketServer {
       }
       case 'retire': {
         const requester = this.class2RequesterOf(conn)
-        if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+        if (isRefusal(requester))
+          return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
         const actor = requester?.name ?? (msg.caller || undefined)
         const agentId = msg.agentId
-        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(requester) }
+        const claim = {
+          ...(actor === undefined ? {} : { requestedBy: actor }),
+          ...this.ownershipOf(requester),
+        }
         void (
           agentId === undefined
             ? this.supervisor.retire(msg.name, msg.force === true, actor, claim)

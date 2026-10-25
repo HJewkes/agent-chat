@@ -114,7 +114,13 @@ const retiredRow = (id: string) =>
 function installCoordinatorProfile(name: string): void {
   const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
   fs.mkdirSync(dir, { recursive: true })
-  const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless', role: 'coordinator' }
+  const body = {
+    model: 'opus',
+    allowedTools: ['Read'],
+    isolation: 'none',
+    surface: 'headless',
+    role: 'coordinator',
+  }
   fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(body))
 }
 
@@ -126,7 +132,14 @@ describe('Class 2 frames from a declared worker', () => {
 
     const result = await ask(
       worker,
-      { t: 'spawn', name: 'helper', profile: 'lead', brief: 'synthetic', cwd: tmp('agent-chat-ws-'), isolation: 'none' },
+      {
+        t: 'spawn',
+        name: 'helper',
+        profile: 'lead',
+        brief: 'synthetic',
+        cwd: tmp('agent-chat-ws-'),
+        isolation: 'none',
+      },
       'spawn_result',
     )
 
@@ -144,7 +157,9 @@ describe('Class 2 frames from a declared worker', () => {
 
     const result = await ask(worker, frame, 'spawn_result')
 
-    expect(result.reason).toMatch(new RegExp(`wk is a worker \\(profile explorer\\) and can ${verb} only agents it spawned`))
+    expect(result.reason).toMatch(
+      new RegExp(`wk is a worker \\(profile explorer\\) and can ${verb} only agents it spawned`),
+    )
   })
 
   it("refuses surface of a peer's agent through checkOwnership", async () => {
@@ -154,7 +169,9 @@ describe('Class 2 frames from a declared worker', () => {
     const result = await ask(worker, { t: 'surface', name: 'peer' }, 'switch_result')
 
     expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(/wk is a worker \(profile explorer\) and can surface only agents it spawned/)
+    expect(result.reason).toMatch(
+      /wk is a worker \(profile explorer\) and can surface only agents it spawned/,
+    )
   })
 
   it("retires none of a peer's agents on retire_finished", async () => {
@@ -228,7 +245,10 @@ describe('Class 2 frames from an unknown declared id', () => {
 
     const result = await ask(declaredAs('nobody-1'), frame, t)
 
-    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/nobody-1 .*names no live agent/) })
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/nobody-1 .*names no live agent/),
+    })
     expect(stateOf('peer-1')).toBe('exited')
   })
 
@@ -276,6 +296,10 @@ describe('class2RequesterOf', () => {
   })
 
   it('gives a claimable declared agent the launch binding', () => {
-    expect(class2RequesterOf(undefined, declared, () => true)).toEqual({ name: 'scout', agentId: 'a1', binding: 'launch' })
+    expect(class2RequesterOf(undefined, declared, () => true)).toEqual({
+      name: 'scout',
+      agentId: 'a1',
+      binding: 'launch',
+    })
   })
 })
