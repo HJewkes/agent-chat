@@ -1,7 +1,7 @@
 import { parseTerms } from '@titan-design/egress-scan'
 import { describe, expect, it } from 'vitest'
 import { pretoolDecision, REASONS, type GuardContext } from '../leak-guard/pretool.js'
-import { LIVE, parseShell, unmark } from '../leak-guard/shell-words.js'
+import { expansionRisk, LIVE, parseShell, unmark } from '../leak-guard/shell-words.js'
 
 // The `<n-m>` glob probe once copied the rest of the line at every `<` and `>`, so carried redirects took quadratic time (CC-1379).
 const ctx = (): GuardContext => ({
@@ -135,6 +135,25 @@ describe('a {NAME} word before a redirect operator names the variable the shell 
     ['echo x{GH_PAGER}>/dev/null', []],
   ])('reads %j as assigning %j', (line, names) => {
     expect(parseShell(line).flatMap(command => command.fdNames)).toEqual(names)
+  })
+
+  it('reads a {NAME[sub]} word, which zsh globs and bash assigns, as unreadable', () => {
+    expect(expansionRisk(': {a[1]}<f {b}>>g')).toBe('unreadable')
+  })
+
+  it.each([
+    'printf %s a {fd}>/dev/null b',
+    'printf %s a {fd}<&0 b',
+  ])('takes the {fd} word of %j out of the arguments', line => {
+    expect(parseShell(line)[0]?.words).toEqual(['fd=$$', 'printf', '%s', 'a', 'b'])
+  })
+
+  it('reads the same arguments for a 3> redirect, with no prefix', () => {
+    expect(parseShell('printf %s a 3>/dev/null b')[0]?.words).toEqual(['printf', '%s', 'a', 'b'])
+  })
+
+  it('keeps the target of a {fd}> redirect in its writes', () => {
+    expect(parseShell(': {fd}>out')[0]?.writes).toEqual(['out'])
   })
 
   it('leads the command with each name as a prefix assignment it cannot read', () => {

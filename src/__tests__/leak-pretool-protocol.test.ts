@@ -662,11 +662,11 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
   })
 
   // Every rule that reads assignment words sees the fd name as one with a value it cannot read: the
-  // decision matches a NAME=$$ prefix with the same {NAME} word left as a plain argument.
+  // decision matches a NAME=$$ prefix, and the {NAME} word is no argument.
   it.each([
     ['GH_HOST', 'gh api "repos/o/r/commits/$SHA/check-runs"'],
     ['HTTPS_PROXY', 'gh api "repos/o/r/commits/$SHA/check-runs"'],
-    ['GH_PATH', 'gh pr create -t x -b ok'],
+    ['GH_PATH', 'gh auth setup-git'],
     ['HOME', 'gh pr create -t x -b ok'],
     ['GIT_CONFIG_GLOBAL', 'git fetch o'],
     ['GH_PAGER', 'gh pr view 1'],
@@ -675,8 +675,67 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
     const reason = hookReason(`${command} {${name}}>/dev/null`)
 
     expect(reason).toBeDefined()
-    expect(reason).toBe(hookReason(`${name}=$$ ${command} {${name}} >/dev/null`))
+    expect(reason).toBe(hookReason(`${name}=$$ ${command} >/dev/null`))
   })
+
+  // The {fd} word leaves the argument list as the 3 of 3> does, so the words after it are read in place.
+  it.each([
+    'agent-chat {fd}>/dev/null gh-write {GH_CONFIG_DIR}>/dev/null -- pr comment 1 --body ok',
+    'agent-chat {fd}<&0 gh-write {GH_CONFIG_DIR}>/dev/null -- pr comment 1 --body ok',
+    '{fd}>/dev/null agent-chat gh-write {GH_CONFIG_DIR}>/dev/null -- pr comment 1 --body ok',
+  ])('denies %j, which may point gh at another config', command => {
+    expect(hookReason(command)).toBe(REASONS.ghConfigHome)
+  })
+
+  it.each([
+    'agent-chat X gh-write -- pr comment 1 --body zq7privateseat',
+    'agent-chat X gh-write -- pr comment 1 --body "$(cat f)"',
+  ])('decides %j with X a {fd}> redirect as with X a 3> redirect', line => {
+    const reason = hookReason(line.replace('X', '{fd}>/dev/null'))
+
+    expect(reason).toBeDefined()
+    expect(reason).toBe(hookReason(line.replace('X', '3>/dev/null')))
+  })
+
+  it('decides a write to a protected file as a 3> redirect does', () => {
+    const reason = hookReason('git status {fd}>.agent-chat/git-hooks/pre-push')
+
+    expect(reason).toBe(REASONS.protectedPath)
+    expect(reason).toBe(hookReason('git status 3>.agent-chat/git-hooks/pre-push'))
+  })
+
+  // zsh runs NAME as a brace group where bash opens a descriptor, so the line is unreadable.
+  it.each([
+    '{fd}>/dev/null trap "$X" EXIT; git fetch o',
+    '{fd}>/dev/null declare -n R=$A; R=ext; git fetch o',
+    '{fd}>/dev/null hash -p "$X" git; git push',
+    '{fd}>/dev/null GIT_ALLOW_PROTOCOL=ext make',
+    'A=1 {fd}>/dev/null git fetch o',
+    'if true; then {fd}>/dev/null git fetch o; fi',
+    '! {fd}>/dev/null git fetch o',
+    '{sh}<s.txt',
+  ])('denies %j, a {NAME} word in command position', command => {
+    expect(hookReason(command)).toBeDefined()
+  })
+
+  // bash assigns an array element where zsh globs the word.
+  it.each([
+    ': {GIT_CONFIG_COUNT[b[0]]}>/dev/null; git push o main',
+    ': {GIT_CONFIG_COUNT["0"]}>/dev/null; git push o main',
+    'exec {GIT_CONFIG_COUNT[c[d[0]]]}>/dev/null; git push o main',
+    ': {GIT_CONFIG_GLOBAL[b[0]]}>/dev/null; git fetch o',
+    ': {X[c[d[0]]]}>/dev/null',
+  ])('denies %j, a {NAME[sub]} word', command => {
+    expect(hookReason(command)).toBeDefined()
+  })
+
+  // bash keeps {NAME} before &> as an argument where zsh assigns NAME.
+  it.each(['gh pr view 1 {GH_PAGER}&>/dev/null', 'git fetch o {GIT_SSH_COMMAND}&>>/dev/null'])(
+    'denies %j',
+    command => {
+      expect(hookReason(command)).toBeDefined()
+    },
+  )
 
   it.each([
     'gh pr view 1 {fd}>/dev/null',
@@ -684,6 +743,10 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
     'gh pr view 1 "{GH_PAGER}">/dev/null',
     // GIT_DIR is no program var: a literal GIT_DIR=x before git status is allowed too.
     'export GIT_DIR; exec {GIT_DIR}>/dev/null; git status',
+    // Both shells read a quoted, escaped or glued {NAME} as a plain word.
+    'gh pr view 1 {GH_PAGE""R}>/dev/null',
+    'gh pr view 1 {GH_PAGER}2>/dev/null',
+    'gh pr view 1 \\{GH_PAGER}>/dev/null',
   ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
   })

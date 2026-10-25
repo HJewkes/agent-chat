@@ -989,11 +989,32 @@ class ShellLexer {
     return fd
   }
 
-  /** Records the NAME of an unquoted `{NAME}` or bash's `{NAME[sub]}` word before a redirect operator. */
+  /**
+   * Records the NAME of a `{NAME}` word before a redirect operator and consumes the word, as
+   * descriptor() does the 3 of `3>` (CC-1630). Where bash and zsh read the word apart, the line is
+   * unreadable: in command position zsh runs NAME as a brace group, zsh globs a `{NAME[sub]}` that
+   * bash assigns, and before `&>` bash keeps the word as an argument.
+   */
   private noteFdName(): void {
-    if (this.word === null || this.quoteStart !== Infinity) return
-    const name = FD_NAME.exec(this.word)?.[1]
-    if (name !== undefined) this.cur.fdNames.push(name)
+    // zsh writes the file `{fd}` for `>{fd}>x`, which bash refuses to parse.
+    if (this.word === null || this.pending !== null) return
+    const subscript = FD_SUBSCRIPT.exec(this.word.slice(0, this.quoteStart))?.[1]
+    const plain = this.quoteStart === Infinity ? FD_NAME.exec(this.word)?.[1] : undefined
+    const name = subscript ?? plain
+    if (name === undefined) return
+    if (subscript !== undefined || this.assignmentAcceptable() || this.src[this.pos] === '&')
+      this.budget.expansion = 'unreadable'
+    this.cur.fdNames.push(name)
+    this.dropWord()
+  }
+
+  /** Forgets the word being read, which a redirect took as its descriptor. */
+  private dropWord(): void {
+    this.word = null
+    this.quoted = false
+    this.quoteStart = Infinity
+    this.splitting = false
+    this.localeAt = []
   }
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
@@ -1439,7 +1460,8 @@ export function parseShell(src: string): SimpleCommand[] {
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
-const FD_NAME = new RegExp(`^\\{(${NAME})(?:\\[[^\\]]*\\])?\\}$`)
+const FD_NAME = new RegExp(`^\\{(${NAME})\\}$`)
+const FD_SUBSCRIPT = new RegExp(`^\\{(${NAME})\\[`)
 
 /**
  * Puts each `{NAME}>file` name in front of the command as `NAME=$$`, a prefix assignment of a value

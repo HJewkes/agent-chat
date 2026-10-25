@@ -992,11 +992,14 @@ other checks so a more specific reason wins. Two rules carry this into the scrip
    read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
    that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
 
-A `{NAME}>file` (or `{NAME[sub]}>file`) redirect writes the descriptor it opens to `NAME`, and
-zsh does so before an external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a
-pager named by a number. For any unquoted `{NAME}` word before a redirect operator, the lexer
-puts a prefix assignment `NAME=$$` in front of the command, with a value the guard cannot read.
-Every rule that reads assignment words then sees the write, with no rule of its own (CC-1630). A
+A `{NAME}>file` redirect writes the descriptor it opens to `NAME`, and zsh does so before an
+external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a pager named by a number.
+An unquoted `{NAME}` word after the command word and before a redirect operator leaves the
+argument list, as the `3` of `3>` does, and becomes a prefix assignment `NAME=$$` with a value the
+guard cannot read. Every rule that reads assignment words then sees the write, with no rule of its
+own (CC-1630). Three spellings the shells read differently make the line unreadable: a `{NAME}`
+word in command position, which zsh runs as a brace group, a `{NAME[sub]}` word, which bash
+assigns and zsh globs, and `{NAME}&>`, where bash keeps the word as an argument. A
 program var denies as `programEnv`, a search path as `searchPathEnv`, a shell startup variable as
 `shellStartupEnv`, a `GIT_CONFIG_*` name as `gitConfigEnv`, and gh's `HOME`, `XDG_CONFIG_HOME` or
 `GH_CONFIG_DIR` as `ghConfigHome`.
