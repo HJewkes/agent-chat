@@ -33,6 +33,13 @@ export type CacheTtl = (typeof CACHE_TTLS)[number]
 
 export const isCacheTtl = (value: unknown): value is CacheTtl => CACHE_TTLS.includes(value as never)
 
+/** CC-1633: what the pre-push hook refuses; `no-rewrite` denies deletes, non-fast-forwards, mirrors and main or master. */
+export const PUSH_POLICIES = ['no-rewrite'] as const
+
+export type PushPolicy = (typeof PUSH_POLICIES)[number]
+
+export const isPushPolicy = (value: unknown): value is PushPolicy => PUSH_POLICIES.includes(value as never)
+
 /**
  * The default for a profile that does not say, and for every profile file
  * written before the field existed.
@@ -108,6 +115,8 @@ export interface AgentProfile {
   effort?: EffortLevel
   /** Sets `CLAUDE_CODE_PROMPT_CACHE_TTL`, over any value in `env`; unset leaves the harness default. */
   cacheTtl?: CacheTtl
+  /** Selects the guard's no-rewrite hooks dir, whose pre-push hook bakes the policy in; unset leaves pushes to the leak scan alone. */
+  pushPolicy?: PushPolicy
   /** Appended via --append-system-prompt, after the standard peer preamble. */
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */

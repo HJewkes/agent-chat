@@ -1,5 +1,5 @@
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
-import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
+import { gitHooksEnv, noRewriteHooksDir } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import { inboxSpoolDir } from '../server/inbox-spool.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
@@ -126,6 +126,18 @@ const RESERVED_ENV =
 const profileEnv = (profile: AgentProfile): Record<string, string> =>
   Object.fromEntries(Object.entries(profile.env ?? {}).filter(([key]) => !RESERVED_ENV.test(key)))
 
+/**
+ * The leak guard's pre-push hook (CC-268), in every repo the agent pushes from, with no repo config
+ * written, and the push-time git shim (TP-596) that checks that same hooks path; AGENT_CHAT_ keeps a
+ * profile from moving it. A no-rewrite profile gets the dir whose hook also bakes in the push policy (CC-1633).
+ */
+function guardEnv(input: LaunchPlanInput): Record<string, string> {
+  if (input.gitHooksDir === undefined) return {}
+  const dir =
+    input.profile.pushPolicy === 'no-rewrite' ? noRewriteHooksDir(input.gitHooksDir) : input.gitHooksDir
+  return { ...gitHooksEnv(dir), [GIT_SHIM_DIR_ENV]: gitShimDirFor(dir) }
+}
+
 const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...profileEnv(input.profile),
   // CC-1553: the typed field wins over a raw `env` entry, and the variable outranks Claude Code's own settings.
@@ -159,10 +171,7 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...(input.configDir === undefined || input.configDirUnset === true
     ? {}
     : { CLAUDE_CONFIG_DIR: input.configDir }),
-  // The leak guard's pre-push hook (CC-268), in every repo the agent pushes from, with no repo config written.
-  ...(input.gitHooksDir === undefined ? {} : gitHooksEnv(input.gitHooksDir)),
-  // The push-time git shim (TP-596) checks that same hooks path; AGENT_CHAT_ keeps a profile from moving it.
-  ...(input.gitHooksDir === undefined ? {} : { [GIT_SHIM_DIR_ENV]: gitShimDirFor(input.gitHooksDir) }),
+  ...guardEnv(input),
   // CC-1346: a Playwright install's GC prunes browsers other checkouts still use from the shared cache.
   PLAYWRIGHT_SKIP_BROWSER_GC: '1',
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
