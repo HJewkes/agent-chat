@@ -975,8 +975,10 @@ name, are allowed too.
 
 "Runs git anywhere" is the guard's own may-reach-git test (CC-478), the one the hidden-command
 budget uses, not a search for the word `git`: a command word that may expand to git counts, such as
-`${G}t` after `G=gi`, `g{i,}t` or `$'g\x69t'`, or one that is only an expansion, such as `$G` or
-`"$G"` behind any wrapper, so `read $A <<< ext; $G fetch o` and `LESS=-R $P f` deny (TP-4231). So
+`${G}t` after `G=gi`, `g{i,}t` or `$'g\x69t'`. For this rule any expansion in a command word counts
+too (TP-4231): `$G`, `${G:-x}` or `./$G`, any word of a wrapper chain such as `sudo $G`, `xargs $G`
+or `env $A=x $G`, and a command word in the text `eval` or `sh -c` runs. So
+`read $A <<< ext; $G fetch o`, `export $A=ext; sh -c '$G fetch o'` and `LESS=-R $P f` deny. So
 does any `$(…)` substitution or a variable
 the line or the hook ties to git or gh. It includes a nested `sh -c`/`bash -c`/`eval` that runs
 git, and a prefix env on such a shell (`GIT_EDITOR=… sh -c 'git commit'`) counts as reaching git. So
