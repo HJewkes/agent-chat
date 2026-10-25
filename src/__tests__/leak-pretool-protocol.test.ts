@@ -136,7 +136,7 @@ describe('section renames and unreadable verbs at the hook entry point (TP-2371 
   })
 
   it.each([
-    'git config foo.url "$U"; git config --rename-section foo remote.x',
+    'git config user.url "$U"; git config --rename-section user remote.x',
     'git config rename-section foo url.x',
     'git config --rename-section foo submodule.s',
     'git config --rename-section foo REMOTE.origin',
@@ -154,7 +154,7 @@ describe('section renames and unreadable verbs at the hook entry point (TP-2371 
 
   it.each([
     'git config --rename-section foo bar',
-    'git config --rename-section protocol old-protocol',
+    'git config --rename-section protocol user',
     'git config --remove-section protocol',
     'git config set --comment="$C" protocol.ext.allow never',
     'git config --comment "$C" protocol.ext.allow never',
@@ -507,7 +507,6 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     'local -r sha=$(git rev-parse HEAD)',
     'typeset -i n; git fetch o',
     'declare -p; git status',
-    'declare -n R=$A; R=x; ls',
     'echo "${!A:-none}"; git status',
     'echo "${!A}"; git status',
     'echo "${!A#=x}"; git status',
@@ -516,6 +515,11 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     'mapfile -t a < f; git status',
   ])('allows %s', command => {
     expect(hookReason(command)).toBeUndefined()
+  })
+
+  // TP-4231: no command is proven safe after a name the shell builds.
+  it('denies a nameref to a built name before a command with no git', () => {
+    expect(hookReason('declare -n R=$A; R=x; ls')).toBe(REASONS.programEnv)
   })
 })
 
@@ -614,11 +618,15 @@ describe('a hidden name in a script the line runs, on a line that runs git (TP-2
     `trap 'rm -f "$tmp"' EXIT; git fetch o`,
     'trap - EXIT; git status',
     'trap -p; git status',
-    `trap 'declare -n R=$A; R=x' DEBUG; ls`,
     'eval "$(ssh-agent -s)"; npm test',
     'mapfile -t a < f; git status',
   ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
+  })
+
+  // TP-4231: no command is proven safe after a name the shell builds.
+  it('denies a nameref in a trap action before a command with no git', () => {
+    expect(hookReason(`trap 'declare -n R=$A; R=x' DEBUG; ls`)).toBe(REASONS.programEnv)
   })
 })
 
@@ -703,5 +711,169 @@ describe('GIT_ALLOW_PROTOCOL on a line with no git (CC-1137 d)', () => {
     'echo $GIT_ALLOW_PROTOCOL',
   ])('leaves an unset or unread list off a git line to the CC-1095 pin: %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})
+
+describe('a hidden variable name on a line whose command word is only an expansion (TP-4231)', () => {
+  it.each([
+    'read $A <<< ext; $G fetch o',
+    'export $A=ext; $G fetch o',
+    'export $A=ext; $G push o',
+    'printf -v $A ext; "$G" fetch o',
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'export $A=ext; ${G:-x} fetch o',
+    'export $A=ext; ${G-} fetch o',
+    'export $A=ext; ${G%x} fetch o',
+    'read $A <<< ext; ${G/x/y} fetch o',
+    'export $A=ext; /usr/bin/$G fetch o',
+    'export $A=ext; ./$G fetch o',
+    'read $A <<< ext; ~/$G fetch o',
+  ])('denies a command word with an operator or a path around the expansion: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'export $A=ext; sudo $G fetch o',
+    'export $A=ext; env $G fetch o',
+    'export $A=ext; xargs $G fetch o',
+    'env $A=ext $G fetch o',
+    'export $A=ext; eval "$G fetch o"',
+    `export $A=ext; sh -c '$G fetch o'`,
+    `export $A=ext; sudo bash -c 'eval "$G fetch o"'`,
+  ])('denies an expanded command word behind a wrapper or in a nested script: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'export $A=ext; setsid $G fetch o',
+    'read $A <<< ext; linux64 $G fetch o',
+    'export $A=ext; unshare $G fetch o',
+    'export $A=ext; setarch x86_64 $G fetch o',
+  ])('denies a wrapper the guard cannot read before an expanded command word: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `export $A=ext; eval "x='" "';\\$G fetch o"`,
+    `export $A=ext; sh <<< '$G fetch o'`,
+    `export $A=ext; echo '$G fetch o' | bash`,
+    'export $A=ext; cat f | bash',
+    'export $A=ext; cat f | source /dev/stdin',
+    `eval 'read $A <<< ext'; $G fetch o`,
+    // A child shell cannot pass the name back; the guard accepts this false deny.
+    `bash -c 'read $A'; $G x`,
+  ])('denies a command word it cannot name in a script the line runs: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a hidden name before a command with no git', () => {
+    expect(hookReason('read $A <<< ext; echo hi')).toBe(REASONS.programEnv)
+  })
+
+  it.each(['$G status', 'export EDITOR=vim; "$EDITOR" notes.txt'])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
+describe('a hidden variable name on a line with no git, where no command is proven safe (TP-4231)', () => {
+  it.each([
+    'read $A <<< ext; watch $G fetch o',
+    'read $A <<< ext; watch -n1 $G fetch o',
+    'read $A <<< ext; watch "$C"',
+    'read $A <<< ext; parallel $G ::: fetch',
+    'read $A <<< ext; parallel ::: $G',
+    `read $A <<< ext; trap '$G fetch o' EXIT`,
+    'read $A <<< ext; trap "$G fetch o" EXIT',
+    `read $A <<< ext; bash -c 'trap "\\$G fetch o" EXIT'`,
+    'read $A <<< ext; sort --compress-program=$G f',
+    'read $A <<< ext; python x.py',
+    'read $A <<< ext; make',
+    'read $A <<< ext; let "$X"',
+  ])('denies a command that may run a word as code: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // TP-4234: a nameref to a built name hides the name its assignment writes.
+  it.each([
+    'declare -n R=$A; R=ext; $G fetch o',
+    'typeset -n R=$A; R=ext; $G fetch o',
+    'declare -n R=$A; R=ext; watch $G fetch o',
+    ': ${!A:=ext}; $G push o',
+  ])('denies a nameref or indirect default before a command it cannot prove inert: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // A hidden name may be BASH_ENV, ENV or ZDOTDIR, exported on the line or already, so a new shell runs a file.
+  it.each([
+    `read $A <<< /x.sh; sh -c 'echo hi'`,
+    `printf -v "$A" /x.sh; bash -c 'echo hi'`,
+    `read $A <<< /x.sh; zsh -c 'echo hi'`,
+    // The accepted over-deny: a shell after any hidden name, though this one may be harmless.
+    `read $A <<< ext; sh -c 'echo hi'`,
+  ])('denies a shell started after a hidden name, which may already be exported: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `export $A=/x.sh; bash -c 'echo hi'`,
+    `export $A=/x.sh; sh -c 'echo hi'`,
+    `declare -x $A=/x.sh; sh -c 'echo hi'`,
+    `printf -v "$A" /x.sh; export "$A"; sh -c 'echo hi'`,
+    `set -a; read $A <<< /x.sh; sh -c 'echo hi'`,
+    `export $A=/x.sh; nice sh -c 'echo hi'`,
+    `export $A=/x.sh; eval "sh -c 'echo hi'"`,
+    `eval 'export $A=/x.sh'; sh -c 'echo hi'`,
+  ])('denies a shell started after a hidden name may be exported: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // The accepted over-deny: the hidden name may be any variable, so even these commands may run code.
+  it.each([
+    'export $A=ext; echo hi',
+    'printf -v "$A" ext; cat f',
+    'read $A <<< ext; ls $D',
+    'read $A <<< ext; [ -n "$B" ] && echo y',
+    `read $A <<< ext; eval 'echo hi'`,
+    `read $A <<< ext; trap 'echo bye' EXIT`,
+  ])('denies a command after a hidden name: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `read $A <<< ext; mapfile -C '$G fetch o;:' -c 1 x <<< y`,
+    `export $A=ext; readarray -C"$G fetch o #" -c1 X <<< y`,
+    `export $A=/x.sh; mapfile -C 'sh -c true #' -c 1 X <<< y`,
+  ])('denies a mapfile or readarray callback after a hidden name: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // An array subscript in a name operand is evaluated as arithmetic, which may run a substitution.
+  it.each([
+    'read $A <<< ext; [ -v "$C" ]',
+    'read $A <<< ext; printf -v "$C" x',
+    'export $A=ext; declare -i n="z[$C]"',
+    'read $A <<< ext; read b[X] <<< 1',
+    'read $A <<< ext',
+  ])('denies a name operand after or in a hidden-name write: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a program after a hidden name that may be LD_PRELOAD', () => {
+    expect(hookReason('export $A=/x.so; ls')).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'PATH=$X make',
+    'hash -p "$X" make',
+    'eval "$(ssh-agent -s)"; npm test',
+    'mapfile -t a < f',
+    'read -r line; echo "$line"',
+    `printf -v line '%s' "$x"; echo "$line"`,
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
   })
 })

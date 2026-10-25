@@ -546,6 +546,24 @@ option name, before any `=`. A brace after a long option's `=` only copies the o
 `git fetch --{upload-pack=x,y}` is denied. A short option word with a brace, such as
 `git log -S{foo}`, is denied.
 
+A glob may match a file named `--no-verify`, so the guard does not read `?` or `*` as written in a
+`git push` argument either (TP-4235). An unquoted glob or brace word before a literal `--` that may
+match `--no-verify` or its abbreviations is denied, whatever the directory holds: `--no-verif?`,
+`--no-verif*`, `--*-verify`, `-*` and a bare `*`. A command word tied to git whose brace or zsh
+group may expand to `push` or `--no-verify`, as in `{git,push,--no-verify}`, is denied too. Both
+hold at the top level, under `sh -c` and in the scripts git hands a shell, such as
+`git rebase -x 'git push --no-verif*'`. A quoted glob, as in `"--no-verif?"`, and a glob that cannot
+match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay allowed. git reads a
+`--` after `-o`, `--push-option`, `--repo`, `--receive-pack` or `--exec` as that option's value and
+keeps reading options, so that `--` ends nothing: `git push -o -- --no-verif?` and
+`git push -o -- --no-verify` are denied. A word the guard cannot read, or a glob that may form such
+an option (`-?`), is read as taking the next word too, while `git push -o x -- --no-verif?` stays allowed.
+zsh's `EXTENDED_GLOB` operators count as glob marks in these words too, since the same line may run
+`setopt extendedglob` or `zsh -o extendedglob -c`: `--no-veri#fy` and `--no-verif~x` are denied, and
+so is `^x`, which matches every file but `x`. The splitter cannot tell a quoted `#`, `^` or `~` from
+an unquoted one, so either counts; a word they cannot turn into the flag, such as `fix#12`,
+`main~1` or `HEAD^:main`, stays allowed.
+
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
 `--no-veri`; and the private-use characters U+E000 to U+E002 in a git argument that holds a brace
@@ -887,6 +905,17 @@ git subcommand too, not only before one that runs a hook. So `git -c "$(cat k)" 
 is denied: the two files may set `core.pager` to a push and `core.hooksPath` for it. This replaces
 the TP-630 allowance for `git -c "$X" log`.
 
+A `git config` write to one of these keys persists the value for a later git, whose config the
+guard does not read, so the write is checked the same way (TP-4240). The written value is checked
+like a `-c` value: `git config core.pager '$X'`, ``git config core.editor '`x`'`` and
+`git config alias.p '!$X'` deny for the expansion, and a value the guard cannot read, as in
+`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename can turn a
+key the write check skipped into one git runs, so a rename out of an inert section, or out of one
+holding an inert key, into any section not inert as a whole denies too: `git config rename-section
+user core`, `rename-section credential alias` (`credential.username` becomes `alias.username`) and
+`rename-section merge pager` (`merge.log` becomes `pager.log`). `git config user.name "$N"`,
+`git config core.pager less` and `git config alias.st 'status -s'` stay allowed.
+
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
 `protocol.allow=always`. A `-c`, `--config-env` or clone config word that sets either to anything
 but `never`, or to a value the guard cannot read, denies after the payloads below are checked,
@@ -1066,6 +1095,31 @@ as an assignment once, so `GIT_EDITOR='git push' ls`, which runs no git, stays a
 name uses and the git scan also read the command the guard's own unwrap says runs: its
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
+
+A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`, `declare -n R=$A`
+then `R=`, `${!A:=…}`, `unset $A`, `mapfile "$A"`, `getopts … "$A"`) denies as `programEnv` wherever
+the guard parses it: the outer line, and eval, trap, `mapfile -C`, `sh -c` and fed-script text. It
+denies whether or not the line shows git, because the name may be any variable (a git program env, BASH_ENV,
+LD_PRELOAD) and its own operand may run code through an array subscript. No command is proven inert
+after it (TP-4231).
+
+Unchanged, and not findings against this rule:
+
+- eval or source of text the guard cannot read, with no visible hidden name (`eval "$A=ext"; $G …`,
+  `eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). This is redesign-1 follow-up 1.
+- SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
+- Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
+  `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
+- Files and programs run by path.
+- Lines that show git, where main's rules are unchanged.
+
+Accepted over-denies. Each needs a name the shell builds, on the same call:
+
+- `export $A=ext; echo hi` and any other command after one
+- the #1187 pins `declare -n R=$A; R=x; ls` and `trap 'declare -n R=$A; R=x' DEBUG; ls`
+- `env -C /x $X q` and `status`
+- `bash -c 'read $A'; $G x`
+- a lone `read $A <<< ext`
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of
@@ -1597,7 +1651,8 @@ Not covered, by design or by cost:
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
-- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`). The
+- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`); a
+  `git push` argument they may turn into `--no-verify` is denied (TP-4235). The
   option is off by default, and the splitter reads `#` as a literal character, so `gi#t` resolves
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;
