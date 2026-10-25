@@ -21,7 +21,7 @@ import type { ExitJudgement } from './subscriptions.js'
 import { StrandedReports } from './stranded-reports.js'
 import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
-import { Registry } from './registry.js'
+import { Registry, type IdentityBinding } from './registry.js'
 import { ClaimLedger } from './claims.js'
 import { pushHoldFor } from './push-hold.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
@@ -258,10 +258,10 @@ export class BrokerCore<C = Conn> {
     // the identity it already has. Minting happens only here, after a successful
     // registration: mint any earlier and a name that turned out to be held leaves
     // an identity behind with nothing able to attach to it.
-    const known = msg.agentId ?? this.agents.bySession(msg.sessionId ?? '')?.agentId
-    const agentId = known ?? this.adopt(msg)
-    if (agentId !== undefined) {
-      this.registry.bindIdentity(conn, agentId)
+    const bound = this.resolveIdentity(msg)
+    if (bound !== undefined) {
+      const { agentId, binding } = bound
+      this.registry.bindIdentity(conn, agentId, binding)
       this.append({
         kind: 'agent_attached',
         actor: msg.name,
@@ -271,6 +271,15 @@ export class BrokerCore<C = Conn> {
       })
     }
     return { ok: true }
+  }
+
+  /** CC-1614: `launch` only for an id `claimable()` accepted above; a session-id match is not checked against the name. */
+  private resolveIdentity(msg: RegisterMessage): { agentId: string; binding: IdentityBinding } | undefined {
+    if (msg.agentId !== undefined) return { agentId: msg.agentId, binding: 'launch' }
+    const known = this.agents.bySession(msg.sessionId ?? '')?.agentId
+    if (known !== undefined) return { agentId: known, binding: 'session' }
+    const adopted = this.adopt(msg)
+    return adopted === undefined ? undefined : { agentId: adopted, binding: 'adopted' }
   }
 
   private attachMeta(msg: RegisterMessage, agentId: string): { meta?: Record<string, string> } {

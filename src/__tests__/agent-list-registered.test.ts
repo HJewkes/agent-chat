@@ -30,7 +30,7 @@ const workerRow = async (agent: AgentIdentity, sessionNames: string[]): Promise<
           : { t: 'agents_result', agents: [agent] },
     },
   } as never
-  const out = await agentList.run({ include_finished: true }, ctx)
+  const out = await agentList.run({ include_finished: true, verbose: true }, ctx)
   return out.split('\n').find(line => line.startsWith('- worker ')) ?? ''
 }
 

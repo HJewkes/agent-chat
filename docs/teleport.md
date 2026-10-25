@@ -149,7 +149,8 @@ around). The broker:
 5. once the countdown (if any) resolves without an abort: appends
    `agent_stood_down` for the predecessor, shuts the predecessor down (§4.3),
    then launches the descendant (§5) carrying the tags, subscriptions and
-   allocation read in step 2, and registers it **under the predecessor's own
+   allocation read in step 2 (except a `spawned` subscription, which the
+   descendant sets again if it wants it, CC-1611), and registers it **under the predecessor's own
    name** (§5.1) — no generation suffix, because by the time registration
    happens the name is actually free.
 

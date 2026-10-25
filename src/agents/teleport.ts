@@ -309,6 +309,13 @@ const withCarried = (profile: AgentProfile, carried: CarriedFlags): AgentProfile
   ...(profile.model === '' && carried.model !== undefined ? { model: carried.model } : {}),
 })
 
+/**
+ * CC-1611: a `spawned` subscription is not carried. The successor starts with no spawns of its own, and
+ * carrying the rule kept the pre-CC-1500 spawn-time opt-in alive in every later generation of a seat.
+ */
+const carriedSubscriptions = (subscriptions: Subscription[]): Subscription[] =>
+  subscriptions.filter(sub => !('spawnedBy' in sub.selector))
+
 /** CC-881: a reported host that is not the broker's; its pid and its terminal are that host's to act on. */
 const onAnotherHost = (subject: TeleportSubject): boolean =>
   subject.host !== undefined && !isLocalHost(subject.host)
@@ -1501,6 +1508,7 @@ export class Teleport {
         : { configDir: childConfigDir(resume.target), unset: resume.target.unset === true }
     // CC-951: a remote predecessor's pane is on its own host, so a successor launched here opens fresh.
     const anchor = landsBesidePredecessor(entry) ? subject.anchor : undefined
+    const subscriptions = carriedSubscriptions(subject.subscriptions)
     return {
       agentId: entry.descendantId,
       name: subject.name,
@@ -1532,7 +1540,7 @@ export class Teleport {
       ...(entry.carried.channels.length > 0 ? { channels: entry.carried.channels } : {}),
       ...(entry.carried.permissionMode === undefined ? {} : { permissionMode: entry.carried.permissionMode }),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
-      ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
+      ...(subscriptions.length > 0 ? { subscriptions } : {}),
       ...(anchor === undefined ? {} : { anchor }),
       ...(paneFree ? { reuseAnchor: true } : {}),
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),

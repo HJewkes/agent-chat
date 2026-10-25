@@ -199,6 +199,79 @@ describe('the bypass guard allows privilege-wrapped lines that skip no hook', ()
   })
 })
 
+describe('the bypass guard reads the -c script of sg and capsh (CC-1602)', () => {
+  it.each([
+    "sg wheel -c 'git push --no-verify'",
+    "capsh -- -c 'git push --no-verify'",
+    "sg wheel 'git push --no-verify'",
+    "capsh --user=bob --shell=/bin/sh -- -c 'git push --no-verify'",
+  ])('denies %s', line => {
+    deny(line, REASONS.noVerify)
+  })
+
+  it.each([
+    "sg wheel -c 'git push origin main'",
+    "/usr/bin/sg wheel -c 'git push'",
+    "capsh -- -c 'git push origin main'",
+    "sg wheel <<< 'git push'",
+    "capsh -- <<< 'git push'",
+  ])('denies %s as a privileged push', line => {
+    deny(line, REASONS.privilegedPush)
+  })
+
+  it.each(["sg wheel -c 'gh pr list'", "capsh -- -c 'gh pr create --title t --body b'"])(
+    'denies %s as a privileged gh',
+    line => {
+      deny(line, REASONS.privilegedGh)
+    },
+  )
+
+  it.each([
+    'sg wheel -c "$CMD"',
+    "sg wheel ls -c 'git push'",
+    "capsh --frob -- -c 'git push'",
+    'capsh --shell=/usr/bin/git -- push',
+    'capsh -- -c "$CMD"',
+    // zsh expands a word that starts with `=`, so `==` is a word the guard cannot read.
+    "capsh == -- -c 'git push'",
+  ])('denies %s as an option the wrapper reader refuses', line => {
+    deny(line, REASONS.privilegeOption)
+  })
+
+  it.each(['sg wheel -c ls', "sg wheel -c 'git status'", 'capsh --print', 'capsh -- -c ls'])(
+    'allows %s',
+    line => {
+      expect(checkCommand(line, ctx())).toBeUndefined()
+    },
+  )
+})
+
+describe('the bypass guard reads newgrp, the binary sg links to (CC-1602)', () => {
+  it.each([
+    "newgrp wheel <<< 'git push --no-verify'",
+    "printf 'git push --no-verify' | newgrp wheel",
+    "newgrp - wheel <<< 'git push --no-verify'",
+    "newgrp wheel -c 'git push --no-verify'",
+  ])('denies %s', line => {
+    deny(line, REASONS.noVerify)
+  })
+
+  it.each(["newgrp wheel <<< 'git push'", "/usr/bin/newgrp wheel -c 'gh pr list'"])(
+    'denies %s as privileged',
+    line => {
+      expect([REASONS.privilegedPush, REASONS.privilegedGh]).toContain(checkCommand(line, ctx()))
+    },
+  )
+
+  it.each(['newgrp $G <<< ls', "newgrp --frob wheel <<< 'git push'"])('denies %s as unreadable', line => {
+    deny(line, REASONS.privilegeOption)
+  })
+
+  it.each(['newgrp wheel -c ls', 'newgrp wheel <<< ls'])('allows %s', line => {
+    expect(checkCommand(line, ctx())).toBeUndefined()
+  })
+})
+
 const PRIVILEGED_HIDDEN = REASONS.privilegedHidden
 
 describe('the bypass guard denies an expanded command word behind every privilege wrapper', () => {

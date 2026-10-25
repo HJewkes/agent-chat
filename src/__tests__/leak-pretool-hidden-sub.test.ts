@@ -42,6 +42,20 @@ const BYPASSES: [string, string, string, string[]][] = [
   ['X="git -c"; ${=X} core.hooksPath=/dev/null push', H, '', ['zsh']],
   ['X="git push"; $X --no-verify', H, '', ['bash']],
   ['source /dev/null; ${=X} --no-verify', H, 'X="git push"', ['zsh']],
+  // An include key, whose file may set core.hooksPath.
+  ['$X $Y include.path=/w/hp push', H, 'X=git; Y=-c', BOTH],
+  ['git status; $X $Y include.path=/w/hp push', H, 'X=git; Y=-c', BOTH],
+  ['$X $Y include.path /w/hp', H, 'X=git; Y=config', BOTH],
+  ['git status; $X $Y include.path /w/hp', H, 'X=git; Y=config', BOTH],
+  ['$X $Y includeIf.onbranch:main.path=/w/hp push', H, 'X=git; Y=-c', BOTH],
+  // A key or flag the shell finishes from an expansion.
+  ['$X $Y core.hooks$K /dev/null', H, 'X=git; Y=config; K=Path', BOTH],
+  ['$X $Y core.hooks$K=/dev/null push', H, 'X=git; Y=-c; K=Path', BOTH],
+  ['$X $Y core.$K=/dev/null push', H, 'X=git; Y=-c; K=hooksPath', BOTH],
+  ['$X $Y "core.hooks${K}" /dev/null', H, 'X=git; Y=config; K=Path', BOTH],
+  // Writes an alias, which a later git runs; no push of its own.
+  ['$X $Y alias.$A x', H, 'X=git; Y=config; A=p', []],
+  ['$X $Y "--no-veri$V"', H, 'X=git; Y=push; V=fy', BOTH],
 ]
 
 const ALLOWED = [
@@ -50,6 +64,9 @@ const ALLOWED = [
   '$E $F gh pr view 1',
   '$X $Y status',
   '"$X" status --no-verify',
+  '$X $Y origin $Z',
+  '$X $Y $K /dev/null',
+  '$X $Y "$B" --body-file pr.md',
 ]
 
 describe('checkCommand on a hidden git subcommand beside a word that skips the hook', () => {
@@ -86,7 +103,7 @@ describe('checkCommand on a hidden git subcommand beside a word that skips the h
 
 const real = fakeGitShells('agent-chat-pretool-hidden-sub-', 'git push --no-verify')
 const SKIPS_HOOK =
-  /^(?:--namespace -- )?(?:push .*--no-verify|-c core\.hooksPath=\/dev\/null push|config core\.hooksPath \/dev\/null)$/m
+  /^(?:--namespace -- )?(?:push .*--no-verify|-c (?:core\.hooksPath=\/dev\/null|include(?:If\.\S+)?\.path=\/w\/hp) push|config (?:core\.hooksPath \/dev\/null|include\.path \/w\/hp))$/m
 
 afterAll(real.cleanup)
 
