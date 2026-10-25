@@ -25,30 +25,36 @@ export const TRUST_ENV: ReadonlyMap<string, TrustEnv> = new Map([
 ])
 
 /**
- * Variables that pick which program a command finds or which libraries the loader injects into
- * git (CC-1236). A literal value names files as any command line does, so it keeps its verdict;
- * a value the guard cannot read may point git anywhere, so it fails closed.
+ * One piece of shell state that picks the file a command name runs or the code the loader puts
+ * into it (CC-1236). `name` is a regex source for whole names, as in SHELL_CODE_ENV. A `literal`
+ * entry keeps a literal value's verdict, since a literal names files as any command line does; any
+ * other entry denies every write on a line that may reach git, whatever its value. A lowercase name
+ * is zsh's and a common word, so it counts only where a word names it as a variable.
  */
-export const SEARCH_ENV: ReadonlySet<string> = new Set([
-  'PATH',
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'LD_AUDIT',
-  'LD_ORIGIN_PATH',
-  'GCONV_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'DYLD_FALLBACK_LIBRARY_PATH',
-  'DYLD_FRAMEWORK_PATH',
-  'DYLD_FALLBACK_FRAMEWORK_PATH',
-])
+export interface CommandLookup {
+  name: string
+  literal: boolean
+}
 
-/**
- * zsh's lowercase arrays tied to a SEARCH_ENV name: `path=($X $path)` sets PATH. The Bash tool's
- * shell here is zsh, so they count on every line. Only a word that names one as a variable counts,
- * since `path` is a common file name.
- */
-export const ZSH_TIED_SEARCH_ENV: readonly string[] = ['path']
+/** Every shell state that controls command lookup: the search and loader variables, their tied arrays and the command tables. */
+export const COMMAND_LOOKUP: readonly CommandLookup[] = [
+  { name: 'PATH', literal: true },
+  { name: 'LD_[A-Z0-9_]+', literal: true },
+  { name: 'DYLD_[A-Z0-9_]+', literal: true },
+  { name: 'GCONV_PATH', literal: true },
+  // zsh's array tied to PATH.
+  { name: 'path', literal: false },
+  // The command hash tables `hash` writes: zsh's `commands[git]=<file>` and bash's `BASH_CMDS[git]=<file>`.
+  { name: 'commands', literal: false },
+  { name: 'BASH_CMDS', literal: false },
+  // A function or alias named git runs before any file: zsh's `functions[git]=<code>` and alias tables.
+  { name: 'functions', literal: false },
+  { name: 'aliases', literal: false },
+  { name: 'BASH_ALIASES', literal: false },
+]
+
+/** Builtins that write the command hash table: bash's `hash -p <file> git` and zsh's `hash git=<file>`. */
+export const COMMAND_LOOKUP_BUILTINS: ReadonlySet<string> = new Set(['hash'])
 
 /**
  * Regex sources for whole variable names a shell turns straight into code it runs, so they set a

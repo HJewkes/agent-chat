@@ -1,6 +1,7 @@
 import { parseTerms } from '@titan-design/egress-scan'
 import { describe, expect, it } from 'vitest'
 import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.js'
+import { COMMAND_LOOKUP, COMMAND_LOOKUP_BUILTINS } from '../leak-guard/trust-inputs.js'
 
 const ctx: GuardContext = {
   terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
@@ -89,6 +90,7 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     ': ${path:=/x}; git push',
     'pa""th=($X); git push',
     'cd path && git status',
+    'cd functions && git status',
   ])("denies searchPathEnv for zsh's path, tied to PATH: %s", command => {
     expectSearchDeny(command)
   })
@@ -100,6 +102,54 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'command hash git=$X; git status',
     'hash -p $(mktemp -d)/git git; gh pr create',
   ])('denies searchPathEnv for hash given a value the guard cannot read: %s', command => {
+    expectSearchDeny(command)
+  })
+
+  // A family pattern such as LD_[A-Z0-9_]+ stands for any member, so one member stands in for it.
+  const member = (name: string): string => name.replace('[A-Z0-9_]+', 'VERSIONED_LIBRARY_PATH')
+  const lookupRows = (name: string): string[] => [
+    `${name}=$X git push`,
+    `${name}="$X"; gh pr create`,
+    `${name}+=($X); git push`,
+    `${name}[git]=$X; git push`,
+    `${name}[git]=$X git push`,
+    `typeset ${name}=$X; git push`,
+    `read -A ${name}; git push`,
+    `: \${${name}:=/x}; git push`,
+  ]
+
+  it.each(COMMAND_LOOKUP.flatMap(({ name }) => lookupRows(member(name))))(
+    'denies searchPathEnv for every COMMAND_LOOKUP entry given an unread value: %s',
+    command => {
+      expectSearchDeny(command)
+    },
+  )
+
+  it.each(
+    COMMAND_LOOKUP.filter(({ literal }) => !literal).map(({ name }) => `${name}[git]=/bin/echo; git push`),
+  )('denies searchPathEnv for a command table or tied array even given a literal: %s', command => {
+    expectSearchDeny(command)
+  })
+
+  it.each(
+    [...COMMAND_LOOKUP_BUILTINS].flatMap(builtin => [
+      `${builtin} -p "$X" git; git push`,
+      `${builtin} git=$X; gh pr create`,
+    ]),
+  )('denies searchPathEnv for every COMMAND_LOOKUP_BUILTINS entry given an unread value: %s', command => {
+    expectSearchDeny(command)
+  })
+
+  it.each([
+    'commands[git]=$X; git push',
+    'commands[git]=$X git push',
+    'BASH_CMDS[git]=$X; git push',
+    'functions[git]=$X; git push',
+    'aliases[git]=$X; git push',
+    'DYLD_VERSIONED_LIBRARY_PATH=$X git push',
+    'DYLD_VERSIONED_FRAMEWORK_PATH=$X git push',
+    'DYLD_IMAGE_SUFFIX=$X git push',
+  ])('denies searchPathEnv for the forms the second review found: %s', command => {
     expectSearchDeny(command)
   })
 
@@ -130,6 +180,9 @@ describe('PATH or a loader variable set to a value the guard cannot read, on a l
     'hash -r; git push',
     'hash -p /usr/bin/git git; git push',
     'hash -p "$X" make',
+    'git add src/functions/x.ts',
+    'BUILD_DIR=$X git status',
+    'LD_BIND_NOW=1 git push',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

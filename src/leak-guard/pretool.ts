@@ -41,11 +41,11 @@ import { JOB_WRAPPERS, jobRun, mayExpand } from './job-wrappers.js'
 import { SSH_PROGRAMS, sshRunsLocalProgram } from './ssh-options.js'
 import {
   execPathOption,
-  SEARCH_ENV,
+  COMMAND_LOOKUP,
+  COMMAND_LOOKUP_BUILTINS,
   SHELL_CODE_ENV,
   templateOption,
   TRUST_ENV,
-  ZSH_TIED_SEARCH_ENV,
   trustConfigWrite,
   trustKey,
   type TrustEnv,
@@ -2620,7 +2620,7 @@ const ENV_NAMES = [
   ...OPAQUE_PROGRAM_ENV,
   ...PROTOCOL_ENV,
   ...TRUST_NAMES.map(([name]) => name),
-  ...SEARCH_ENV,
+  ...COMMAND_LOOKUP.map(({ name }) => name),
 ]
 const ENV_NAME = new RegExp(`^(?:${ENV_NAMES.join('|')})$`)
 // A use of the name that is not a `$NAME` or `${NAME...}` read, or the name glued to an option as in `printf -vNAME`.
@@ -2628,11 +2628,20 @@ const nameUse = (name: string): RegExp =>
   new RegExp(`(?:^-[A-Za-z]*|(?<![A-Za-z0-9_$])(?<!\\$\\{)(?<!\\$\\{[#!]))${name}(?![A-Za-z0-9_])`)
 // `${NAME=x}`, `${NAME:=x}` and zsh's `${NAME::=x}` assign; `${NAME-x}` and the other operators only read.
 const nameAssign = (name: string): RegExp => new RegExp(`\\$\\{${name}(?:\\[[^\\]]*\\])?:{0,2}=`)
-// A word that names a zsh tied array as a variable: `path=`, `path+=`, `path[1]=`, a bare `path`
-// operand of read, typeset or for, or glued to an option as in `print -vpath`.
-const tiedUse = (name: string): RegExp => new RegExp(`^(?:-[A-Za-z]*)?${name}(?:\\[[^\\]]*\\])?(?:\\+?=|$)`)
-const TIED_REFS = ZSH_TIED_SEARCH_ENV.map(name => ({ use: tiedUse(name), assign: nameAssign(name) }))
-const ENV_REFS = [...ENV_NAMES.map(name => ({ use: nameUse(name), assign: nameAssign(name) })), ...TIED_REFS]
+// A word that names a variable as one: `path=`, `path+=`, `path[1]=`, a bare `path` operand of read,
+// typeset or for, or glued to an option as in `print -vpath`.
+const variableUse = (name: string): RegExp =>
+  new RegExp(`^(?:-[A-Za-z]*)?${name}(?:\\[[^\\]]*\\])?(?:\\+?=|$)`)
+// A lowercase COMMAND_LOOKUP name is zsh's and a common word (`src/path.ts`), so only a variable use counts.
+const lookupUse = (name: string): RegExp => (/^[a-z]/.test(name) ? variableUse(name) : nameUse(name))
+const SEARCH_REFS = COMMAND_LOOKUP.map(({ name }) => ({ use: lookupUse(name), assign: nameAssign(name) }))
+const ENV_REFS = [
+  ...ENV_NAMES.filter(name => !COMMAND_LOOKUP.some(lookup => lookup.name === name)).map(name => ({
+    use: nameUse(name),
+    assign: nameAssign(name),
+  })),
+  ...SEARCH_REFS,
+]
 
 /** Whether a word uses a program env var other than by reading it. */
 const namesProgramEnv = (text: string): boolean =>
@@ -2642,9 +2651,7 @@ const namesProgramEnv = (text: string): boolean =>
 const expandsProgramEnv = (text: string): boolean => ENV_REFS.some(({ assign }) => assign.test(text))
 
 // The same assigning expansion where the shell expands it, as marked: not inside single quotes.
-const LIVE_ASSIGNS = [...ENV_NAMES, ...ZSH_TIED_SEARCH_ENV].map(
-  name => new RegExp(LIVE + nameAssign(name).source),
-)
+const LIVE_ASSIGNS = ENV_NAMES.map(name => new RegExp(LIVE + nameAssign(name).source))
 const liveExpandsProgramEnv = (marked: string): boolean => LIVE_ASSIGNS.some(assign => assign.test(marked))
 
 /**
@@ -2660,9 +2667,9 @@ const NAME_HIDDEN = Symbol('name-hidden')
 interface TrustOn {
   trust: TrustEnv
 }
-// A SEARCH_ENV name set to a value the guard cannot read (CC-1236): denied with its own reason.
+// A COMMAND_LOOKUP name set to a value the guard cannot read (CC-1236): denied with its own reason.
 const SEARCH_UNREAD = Symbol('search-unread')
-// A SEARCH_ENV value readable only if HOME is the hook's own: SEARCH_UNREAD when the line may write HOME.
+// A COMMAND_LOOKUP value readable only if HOME is the hook's own: SEARCH_UNREAD when the line may write HOME.
 const SEARCH_VIA_HOME = Symbol('search-via-home')
 type EnvEvent =
   | string
@@ -2691,10 +2698,6 @@ function trustOn(text: string, assignOnly = false): TrustOn | undefined {
   return ref === undefined ? undefined : { trust: ref.trust }
 }
 
-const SEARCH_REFS = [
-  ...[...SEARCH_ENV].map(name => ({ use: nameUse(name), assign: nameAssign(name) })),
-  ...TIED_REFS,
-]
 const searchOn = (text: string, assignOnly: boolean): boolean =>
   SEARCH_REFS.some(({ use, assign }) => assign.test(text) || (!assignOnly && use.test(text)))
 
@@ -2717,7 +2720,7 @@ const SEARCH_ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
 
 type SearchValue = typeof SEARCH_UNREAD | typeof SEARCH_VIA_HOME | 'none'
 
-/** What one `:` entry of a SEARCH_ENV value reads, with the variable's own expansions dropped. */
+/** What one `:` entry of a COMMAND_LOOKUP value reads, with the variable's own expansions dropped. */
 function searchEntry(entry: string): SearchValue {
   if (TILDE.test(entry) && !HOME_TILDE.test(entry)) return SEARCH_UNREAD
   const rest = entry.replace(HOME_TILDE, '').replace(HOME_READ, '')
@@ -2725,14 +2728,19 @@ function searchEntry(entry: string): SearchValue {
   return rest === entry ? 'none' : SEARCH_VIA_HOME
 }
 
+const LOOKUP_NAMES = COMMAND_LOOKUP.map(lookup => ({ ...lookup, whole: new RegExp(`^(?:${lookup.name})$`) }))
+
 /**
- * A `NAME=value` or `NAME+=value` to a SEARCH_ENV name: 'none' when the value expands only the
- * variable's own value, SEARCH_VIA_HOME when it also expands `$HOME` or `~`, else SEARCH_UNREAD.
+ * A `NAME=value` or `NAME+=value` to a COMMAND_LOOKUP name: for a literal entry, 'none' when the
+ * value expands only the variable's own value, SEARCH_VIA_HOME when it also expands `$HOME` or `~`,
+ * else SEARCH_UNREAD; for any other entry, SEARCH_UNREAD.
  */
 function plainSearchValue(word: string): SearchValue | undefined {
   const match = SEARCH_ASSIGN.exec(word)
   const name = match?.[1]
-  if (match === null || name === undefined || !SEARCH_ENV.has(name)) return undefined
+  const lookup = name === undefined ? undefined : LOOKUP_NAMES.find(({ whole }) => whole.test(name))
+  if (match === null || name === undefined || lookup === undefined) return undefined
+  if (!lookup.literal) return SEARCH_UNREAD
   const entries = word.slice(match[0].length).replace(ownRead(name), '').split(':').map(searchEntry)
   if (entries.includes(SEARCH_UNREAD)) return SEARCH_UNREAD
   return entries.includes(SEARCH_VIA_HOME) ? SEARCH_VIA_HOME : 'none'
@@ -2754,7 +2762,7 @@ const namesProtocolEnv = (text: string): boolean => PROTOCOL_USES.some(use => us
 /**
  * The event of a plain `NAME=value` to a PROGRAM_ENV or PROTOCOL_ENV name: a program's literal
  * value, null when the value is unreadable, and for a protocol list EXT_LISTED when it lists `ext` or
- * no event at all, and for a SEARCH_ENV name what plainSearchValue says. undefined when the word is
+ * no event at all, and for a COMMAND_LOOKUP name what plainSearchValue says. undefined when the word is
  * no such assignment.
  */
 function plainProgramValue(word: string): EnvEvent | 'none' | undefined {
@@ -2863,7 +2871,7 @@ function commandHeadAt(words: readonly string[]): number | undefined {
  */
 function hashesUnread(words: readonly string[]): boolean {
   const at = commandHeadAt(words)
-  if (at === undefined || unmark(words[at] as string) !== 'hash') return false
+  if (at === undefined || !COMMAND_LOOKUP_BUILTINS.has(unmark(words[at] as string))) return false
   return words.slice(at + 1).some(word => word.includes(LIVE))
 }
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
