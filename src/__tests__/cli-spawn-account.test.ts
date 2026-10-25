@@ -58,7 +58,10 @@ describe('agent spawn --account', () => {
     await run('spawn', 'pilot', 'coordinator', 'coordinate it', '--account', 'least-used')
 
     expect(spawnFrame()).toMatchObject({ t: 'spawn', account: 'least-used' })
-    expect(log.mock.calls.map(call => call[0])).toEqual([`account: ${PICKED}`, 'Spawned pilot (a1).'])
+    expect(log.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      `account: ${PICKED}`,
+      'Spawned pilot (a1).',
+    ])
   })
 
   it('prints the readings and the code when every account is exhausted', async () => {
