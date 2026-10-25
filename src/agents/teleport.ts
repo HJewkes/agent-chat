@@ -34,7 +34,7 @@ import {
 import type { Allocation } from './isolation/index.js'
 import { recordedRole } from './profiles.js'
 import { seatSurfaceFor } from './seats/charter.js'
-import { teleportConfig } from './teleport-config.js'
+import { teleportConfig, type TeleportConfig } from './teleport-config.js'
 import { shepherdRowsAsync } from '../shepherd-client.js'
 import { latestTeleportSection } from './seats/boot-read.js'
 import { defaultAutonomyRoot } from './seats/io.js'
@@ -521,6 +521,34 @@ interface PendingMove {
   cwd: string
 }
 
+type Refusal = { ok: false; reason: string }
+
+/** The identity, destination and account move `begin` settles first. */
+interface Placed {
+  identity: AgentIdentity
+  configDir: string | undefined
+  route: Destination
+  move: PendingMove | undefined
+}
+
+/** What `begin` knows once every refusal it can make has passed. */
+interface Cleared {
+  identity: AgentIdentity
+  route: Destination
+  move: PendingMove | undefined
+  config: TeleportConfig
+  remote: boolean
+  worker: boolean
+}
+
+/** What the handoff write hands the pending entry. */
+interface Started {
+  descendantId: string
+  handoffId: number
+  restated: string[]
+  read: ArgvReader
+}
+
 /** CC-892: the account a successor resumes on, and the one it left when the move went through. */
 interface ResumeOn {
   target: AccountTarget
@@ -637,8 +665,35 @@ export class Teleport {
   }
 
   private async begin(req: TeleportRequest, restated: string[]): Promise<TeleportOutcome> {
-    const { subject } = req
+    const cleared = await this.clearFor(req)
+    if ('reason' in cleared) return cleared
+    const entry = this.enter(req, restated, cleared)
+    return this.commit(entry, cleared)
+  }
 
+  /** Every refusal `begin` makes, in order, before the handoff is written. */
+  private async clearFor(req: TeleportRequest): Promise<Cleared | Refusal> {
+    const { subject } = req
+    const placed = this.placeFor(req)
+    if ('reason' in placed) return placed
+    const { identity, configDir, route, move } = placed
+    const remote = onAnotherHost(subject)
+    const config = this.configFor(req, identity, route)
+    if ('reason' in config) return config
+    const blocked = await this.blockedAt(subject, route, config.surface, configDir)
+    if (blocked !== undefined) return blocked
+    const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
+    if (worker && req.remoteControl === true)
+      return refused(
+        subject,
+        'config',
+        `${subject.name} is a worker, so its successor cannot run with Remote Control; only a coordinator may`,
+      )
+    return { identity, route, move, config, remote, worker }
+  }
+
+  private placeFor(req: TeleportRequest): Placed | Refusal {
+    const { subject } = req
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return refused(subject, 'identity', `no durable identity for ${subject.agentId}`)
     const { configDir } = this.configDirOf(subject)
@@ -646,8 +701,15 @@ export class Teleport {
     if (!route.ok) return refused(subject, 'route', `${route.reason}. ${subject.name} was not ended.`)
     const move = req.account === undefined ? undefined : this.accountMove(req, route, req.account)
     if (move !== undefined && 'reason' in move) return refused(subject, 'account', move.reason)
+    return { identity, configDir, route, move }
+  }
 
-    const remote = onAnotherHost(subject)
+  private configFor(
+    req: TeleportRequest,
+    identity: AgentIdentity,
+    route: Destination,
+  ): TeleportConfig | Refusal {
+    const { subject } = req
     const config = teleportConfig({
       identity,
       subject,
@@ -658,27 +720,50 @@ export class Teleport {
       // Who asked, as resume records its requester: the human on an account move, else the session itself.
       loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
-    if ('error' in config) return refused(subject, 'config', config.error)
-    const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
+    return 'error' in config ? refused(subject, 'config', config.error) : config
+  }
+
+  private async blockedAt(
+    subject: TeleportSubject,
+    route: Destination,
+    surface: SurfaceName,
+    configDir: string | undefined,
+  ): Promise<Refusal | undefined> {
+    const impossible = await this.blockerAt(route, surface, { cwd: subject.cwd, configDir })
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
-    if (gone !== undefined) return refused(subject, 'blocker', gone)
-    const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
-    if (worker && req.remoteControl === true)
-      return refused(
-        subject,
-        'config',
-        `${subject.name} is a worker, so its successor cannot run with Remote Control; only a coordinator may`,
-      )
+    return gone === undefined ? undefined : refused(subject, 'blocker', gone)
+  }
 
+  /** Writes the handoff and holds the entry pending, the first step that cannot be refused after. */
+  private enter(req: TeleportRequest, restated: string[], cleared: Cleared): Pending {
+    const { subject } = req
     const descendantId = newMsgId()
     const read = readOnce(this.readArgv)
+    const handoffId = this.recordHandoff(req, descendantId, restated, cleared.move)
+    const entry = this.pendingEntry(req, { descendantId, handoffId, restated, read }, cleared)
+    this.pending.set(subject.agentId, entry)
+    logEvent('teleport_started', {
+      name: subject.name,
+      from: subject.agentId,
+      to: descendantId,
+      ...(req.reason === undefined ? {} : { reason: req.reason }),
+    })
+    return entry
+  }
+
+  private recordHandoff(
+    req: TeleportRequest,
+    descendantId: string,
+    restated: string[],
+    move: PendingMove | undefined,
+  ): number {
     // Stored verbatim, and the broker templates nothing: the moment it does, a
     // handoff becomes a form to fill in and stops being what the session knew.
-    const handoffRow = this.core.append({
+    return this.core.append({
       kind: 'agent_handoff',
-      actor: subject.name,
-      ref: subject.agentId,
+      actor: req.subject.name,
+      ref: req.subject.agentId,
       body: req.handoff,
       meta: {
         successor: descendantId,
@@ -686,14 +771,21 @@ export class Teleport {
         ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
         ...(move === undefined ? {} : { account_to: move.to.dir }),
       },
-    })
+    }).id
+  }
 
-    const entry: Pending = {
+  private pendingEntry(
+    req: TeleportRequest,
+    { descendantId, handoffId, restated, read }: Started,
+    { identity, route, move, config, remote, worker }: Cleared,
+  ): Pending {
+    const { subject } = req
+    return {
       subject,
       descendantId,
       handoff: req.handoff,
       restated,
-      handoffId: handoffRow.id,
+      handoffId,
       profile: config.profile,
       surface: config.surface,
       surfaceRequested: config.requested,
@@ -717,19 +809,16 @@ export class Teleport {
       ...(req.reason === undefined ? {} : { reason: req.reason }),
       ...(move === undefined ? {} : { account: move }),
     }
-    this.pending.set(subject.agentId, entry)
-    logEvent('teleport_started', {
-      name: subject.name,
-      from: subject.agentId,
-      to: descendantId,
-      ...(req.reason === undefined ? {} : { reason: req.reason }),
-    })
+  }
 
+  /** Answers the caller, and starts the countdown or, with no one to veto it, the sequence itself. */
+  private commit(entry: Pending, { identity, move, config, remote }: Cleared): TeleportOutcome {
+    const { subject } = entry
     const warnings = this.warningsFor(identity, subject.name)
     const result: TeleportOutcome = {
       ok: true,
       name: subject.name,
-      agentId: descendantId,
+      agentId: entry.descendantId,
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(remote ? { remote: true } : {}),
       placement: placementOf(entry),
