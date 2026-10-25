@@ -15,15 +15,21 @@ import {
 import type { SessionAnalytics } from '../agents/analytics/types.js'
 import { parseSessionFile } from '../agents/analytics/parser.js'
 import { findTranscript } from '../agents/transcript.js'
-import { ANSWER_CHANNELS, isAnswerChannel } from '../protocol.js'
+import {
+  ANSWER_CHANNELS,
+  isAnswerChannel,
+  PERMISSION_BEHAVIORS,
+  type PermissionBehavior,
+} from '../protocol.js'
 import type { BrokerCore } from './core.js'
 
 /**
  * The read model over HTTP, plus a small set of writes.
  *
  * `POST /api/answer` and `POST /api/dismiss` call `core.answer()` /
- * `core.dismiss()` and nothing else, and `POST /api/queue/:msgId/endorse` calls
- * `core.endorse()`. Those are the ONLY verdict paths, shared with the socket
+ * `core.dismiss()` and nothing else, `POST /api/queue/:msgId/endorse` calls
+ * `core.endorse()`, and `POST /api/queue/:msgId/permission` calls the socket
+ * server's `permissionVerdict()`. Those are the ONLY verdict paths, shared with the socket
  * handler the CLI talks to, and they own the open-item and exact-bytes checks
  * that make a second or altered verdict lose deterministically. This file must
  * not re-check them — a duplicate check here would be a second arbiter, and the
@@ -51,7 +57,7 @@ import type { BrokerCore } from './core.js'
  * reason the HTTP layer lives in the broker instead of in the MCP subprocess.
  */
 
-export function apiRoutes(core: BrokerCore): Hono {
+export function apiRoutes(core: BrokerCore, verdicts?: OwnerVerdicts): Hono {
   const api = new Hono()
 
   api.get('/queue', c => {
@@ -184,8 +190,36 @@ export function apiRoutes(core: BrokerCore): Hono {
     return c.json(result)
   })
 
+  /**
+   * The owner answering a relayed permission prompt from the console (TP-1989).
+   *
+   * The arbiter is the socket server's, not core's: the hook waits and the
+   * prompting session's connection live there. 503 when the app was built
+   * without it, so a test or bare bind never reads as "no such prompt".
+   */
+  api.post('/queue/:msgId/permission', requireOwnerChannel, async c => {
+    const behavior = rawStringField(await readJson(c), 'behavior')
+    if (behavior === null || !isPermissionBehavior(behavior))
+      return badRequest(c, `behavior must be one of ${PERMISSION_BEHAVIORS.join(', ')}`)
+    if (verdicts === undefined) {
+      const error: ErrorResponse = { error: 'permission verdicts are not wired' }
+      return c.json(error, 503)
+    }
+
+    const result: VerdictResponse = verdicts.permission(c.req.param('msgId'), behavior, 'owner-console')
+    return c.json(result)
+  })
+
   return api
 }
+
+/** The socket server's permission arbiter, the one `approve_permission` runs (TP-1989). */
+export interface OwnerVerdicts {
+  permission(msgId: string, behavior: PermissionBehavior, channel: string): VerdictResponse
+}
+
+const isPermissionBehavior = (value: string): value is PermissionBehavior =>
+  (PERMISSION_BEHAVIORS as readonly string[]).includes(value)
 
 const OWNER_CONSOLE = 'console'
 
