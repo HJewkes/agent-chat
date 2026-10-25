@@ -2772,6 +2772,93 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
     expect(refusals()).toEqual([expect.objectContaining({ name: 'scout', stage: 'route' })])
   })
 
+  /**
+   * CC-1646 D2: a predecessor that landed on the Mac in its launcher's landing dir, via a handoff
+   * recording the workspace it left. `meta` is that handoff's, so a chain without an origin can be built.
+   */
+  function landedChain(landing: string, meta: Record<string, string>): string {
+    const first = core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'scout',
+      body: 'brief',
+      meta: { name: 'scout', profile: 'explorer' },
+    }).msgId
+    const second = core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'scout',
+      body: 'brief',
+      meta: { name: 'scout', profile: 'explorer', teleport_from: first, generation: '2' },
+    }).msgId
+    core.append({
+      kind: 'agent_handoff',
+      actor: 'scout',
+      ref: first,
+      body: 'h',
+      meta: { successor: second, landed_cwd: landing, ...meta },
+    })
+    connectFromAway(second, landing)
+    return second
+  }
+
+  const returnFrom = (agentId: string, cwd: string) =>
+    supervisor.teleport({
+      subject: subject(agentId, { cwd, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+      endsSelf: true,
+    })
+
+  it("lands the return leg in the chain's origin_cwd when the landing dir is missing here", async () => {
+    const landing = path.join(workspace(), 'agent-landing')
+    const origin = workspace()
+    const unrelated = workspace()
+    core.append({
+      kind: 'agent_handoff',
+      actor: 'other',
+      ref: 'someone-else',
+      body: 'h',
+      meta: { successor: 'x', origin_cwd: unrelated, landed_cwd: landing },
+    })
+    const agentId = landedChain(landing, { origin_cwd: origin })
+    core.append({
+      kind: 'agent_handoff',
+      actor: 'other',
+      ref: 'someone-else',
+      body: 'h',
+      meta: { successor: 'y', origin_cwd: unrelated, landed_cwd: landing },
+    })
+
+    const result = await returnFrom(agentId, landing)
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(result).toMatchObject({ ok: true, remote: true })
+    expect(planFor(result.agentId as string).cwd).toBe(origin)
+  })
+
+  it('refuses the return leg, naming both dirs, when neither exists here', async () => {
+    const landing = path.join(workspace(), 'agent-landing')
+    const origin = path.join(workspace(), 'example-workspace')
+    const agentId = landedChain(landing, { origin_cwd: origin })
+
+    const result = await returnFrom(agentId, landing)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(landing)
+    expect(result.reason).toContain(origin)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+  })
+
+  it('refuses unchanged when the chain recorded no origin_cwd', async () => {
+    const landing = path.join(workspace(), 'agent-landing')
+    const agentId = landedChain(landing, {})
+
+    const result = await returnFrom(agentId, landing)
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/working directory .* does not exist/) })
+  })
+
   it('refuses a caller whose agent-chat cannot end itself, and ends nothing', async () => {
     const cwd = workspace()
     const agentId = await spawnAgent()

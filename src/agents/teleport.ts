@@ -348,7 +348,7 @@ export function refused(
   return { ok: false, reason }
 }
 
-type Route = ({ ok: true } & Destination) | { ok: false; reason: string }
+type Route = ({ ok: true; cwd?: string } & Destination) | { ok: false; reason: string }
 
 /** CC-951: fail closed on a path a launcher would otherwise be handed unchecked. */
 const launchPathsBlocker = (cwd: string, configDir: string | undefined): string | undefined =>
@@ -378,6 +378,9 @@ export interface LauncherSite {
   spawn?(host: string, launch: RemoteLaunch, timeoutMs?: number): Promise<LauncherAnswer>
 }
 
+/** CC-1646: how far back a chain is searched for the workspace it left. */
+const MAX_CHAIN_HOPS = 16
+
 const NO_LAUNCHERS: LauncherSite = {
   launchers: () => [],
   surfacesOn: () => [],
@@ -402,6 +405,7 @@ function routeFor(
   isolation: string,
   configDir: string | undefined,
   launchers: ConnectedLauncher[],
+  originCwd: () => string | undefined,
 ): Route {
   const { subject } = req
   const resolved = resolveDestination({
@@ -427,9 +431,15 @@ function routeFor(
     }
   // A launcher checks its own machine in `probeLauncher`; only this host's disk can be read here.
   const missing = site === 'launcher' ? undefined : missingHere(subject.cwd, configDir)
-  if (missing !== undefined) return { ok: false, reason: `${missing} does not exist on ${host}` }
-  return { ok: true, ...resolved.destination }
+  if (missing === undefined) return { ok: true, ...resolved.destination }
+  const origin = fs.existsSync(subject.cwd) ? undefined : originCwd()
+  if (origin === undefined || missingHere(origin, configDir) !== undefined)
+    return { ok: false, reason: `${missing} does not exist on ${host}${neitherNote(subject.cwd, origin)}` }
+  return { ok: true, ...resolved.destination, cwd: origin }
 }
+
+const neitherNote = (landing: string, origin: string | undefined): string =>
+  origin === undefined ? '' : `, nor does ${origin}, where its chain began before landing in ${landing}`
 
 /** What teleport borrows from the supervisor: process control and the launch path. */
 export interface TeleportHost {
@@ -523,6 +533,13 @@ interface ProbePaths {
   cwd: string
   configDir: string | undefined
 }
+
+/** A return leg records only where it landed: its `subject.cwd` is a landing dir, not a workspace to go back to. */
+const landedMeta = (left: string, landed: string, returning: boolean): Record<string, string> =>
+  returning ? { landed_cwd: landed } : { origin_cwd: left, landed_cwd: landed }
+
+const returnNote = (origin: string): string =>
+  `Your predecessor's landing dir does not exist here, so you were launched in ${origin}, the working directory your chain left.`
 
 /** CC-1646: the cwd the successor runs in at the destination, or why it cannot run there. */
 type Placement = { cwd: string } | { reason: string }
@@ -664,7 +681,9 @@ export class Teleport {
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return refused(subject, 'identity', `no durable identity for ${subject.agentId}`)
     const { configDir } = this.configDirOf(subject)
-    const route = routeFor(req, identity.isolation, configDir, this.hosts.launchers())
+    const route = routeFor(req, identity.isolation, configDir, this.hosts.launchers(), () =>
+      this.chainOriginCwd(subject.agentId),
+    )
     if (!route.ok) return refused(subject, 'route', `${route.reason}. ${subject.name} was not ended.`)
     const move = req.account === undefined ? undefined : this.accountMove(req, route, req.account)
     if (move !== undefined && 'reason' in move) return refused(subject, 'account', move.reason)
@@ -681,7 +700,7 @@ export class Teleport {
       loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
     if ('error' in config) return refused(subject, 'config', config.error)
-    const placed = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
+    const placed = await this.blockerAt(route, config.surface, { cwd: route.cwd ?? subject.cwd, configDir })
     if ('reason' in placed) return this.cannotComplete(subject, placed.reason)
     const landed = placed.cwd === subject.cwd ? undefined : placed.cwd
     const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
@@ -708,7 +727,7 @@ export class Teleport {
         ...(req.reason === undefined ? {} : { reason: req.reason }),
         ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
         ...(move === undefined ? {} : { account_to: move.to.dir }),
-        ...(landed === undefined ? {} : { origin_cwd: subject.cwd, landed_cwd: landed }),
+        ...(landed === undefined ? {} : landedMeta(subject.cwd, landed, route.cwd !== undefined)),
       },
     })
 
@@ -746,7 +765,7 @@ export class Teleport {
     if (landed !== undefined)
       this.attachNotes.set(descendantId, {
         name: subject.name,
-        note: landingNote(subject.cwd, landed, route.host),
+        note: route.cwd === undefined ? landingNote(subject.cwd, landed, route.host) : returnNote(landed),
       })
     logEvent('teleport_started', {
       name: subject.name,
@@ -846,6 +865,24 @@ export class Teleport {
       ...(paths.configDir ? { configDir: paths.configDir } : {}),
     }
     return this.hosts.probe(host, probe)
+  }
+
+  /**
+   * CC-1646 D2: the workspace this chain left when a handoff landed it in a launcher's landing dir,
+   * found by walking `teleport_from` back to the nearest handoff that recorded one.
+   */
+  private chainOriginCwd(agentId: string): string | undefined {
+    let id = agentId
+    for (let hops = 0; hops < MAX_CHAIN_HOPS; hops++) {
+      const from = this.core.agents.get(id)?.teleportFrom
+      if (from === undefined) return undefined
+      const handoff = this.core.events
+        .agentEventsFor(from)
+        .findLast(row => row.kind === 'agent_handoff' && row.meta.successor === id)
+      if (handoff?.meta.origin_cwd !== undefined) return handoff.meta.origin_cwd
+      id = from
+    }
+    return undefined
   }
 
   /** CC-863: the handoff is already stored when this runs, so a failed read drops the cursor and never the teleport. */
