@@ -39,7 +39,9 @@ function setup(): { core: BrokerCore; server: SocketServer; wire: () => Wire } {
   core.append({ kind: 'agent_spawned', actor: 'coord', target: 'peer', msgId: 'a2', body: 'work' })
   const wire = (): Wire => {
     const frames: ServerMessage[] = []
-    const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
+    const conn = {
+      write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
+    } as unknown as Conn
     return { conn, frames }
   }
   return { core, server: new SocketServer(core), wire }
