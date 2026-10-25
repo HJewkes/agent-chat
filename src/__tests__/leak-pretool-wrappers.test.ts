@@ -86,12 +86,12 @@ describe('caffeinate and exec read option clusters as getopt does (CC-1300)', ()
     expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
   })
 
-  it.each(['caffeinate -it 5 env GIT_CONFIG_COUNT=0 git push', 'exec -la x env -u GIT_CONFIG_COUNT git push'])(
-    'denies a git config variable it carries: %s',
-    command => {
-      expect(checkCommand(command, ctx)).toBe(REASONS.gitConfigEnv)
-    },
-  )
+  it.each([
+    'caffeinate -it 5 env GIT_CONFIG_COUNT=0 git push',
+    'exec -la x env -u GIT_CONFIG_COUNT git push',
+  ])('denies a git config variable it carries: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.gitConfigEnv)
+  })
 
   it.each(['caffeinate -"$O" 5 git push --no-verify', 'exec -l"$A" x git push --no-verify'])(
     'denies an option word it cannot read: %s',
