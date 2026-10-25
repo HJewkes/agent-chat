@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { GH_GROUPS } from '../gh-write/gh-groups.js'
 import { AGENT_ID_ENV } from '../launch-identity.js'
 import { callShape } from './call-shape.js'
@@ -46,19 +47,51 @@ export function refusalShape(argv: readonly string[]): string {
   return `api ${METHOD.test(shape.method) ? shape.method : '?'} ${route.join('/')}`
 }
 
-function logRefusal(file: string, argv: readonly string[]): void {
+/** A name or a path's basename, when it cannot be free text; otherwise `?`. */
+const NAME = /^[A-Za-z0-9_.+-]{1,64}$/
+const safeName = (word: string | undefined): string =>
+  word !== undefined && NAME.test(path.basename(word)) ? path.basename(word) : '?'
+
+/** The calling process's argv from `/proc`; undefined where there is none (macOS), so the field is left out. */
+export function procParentArgv(ppid: number = process.ppid): readonly string[] | undefined {
   try {
-    fs.appendFileSync(file, `${new Date().toISOString()} ${REFUSED}: ${refusalShape(argv)}\n`)
+    return fs.readFileSync(`/proc/${ppid}/cmdline`, 'utf8').split('\0')
   } catch {
-    // The refusal stands without its log line.
+    return undefined
   }
 }
+
+/** Who ran the command: the agent's name and the basenames of the parent's first two argv words, never text. */
+export function callerFields(env: NodeJS.ProcessEnv, parent: readonly string[] | undefined): string {
+  const caller = `caller=${safeName(env.AGENT_CHAT_NAME)}`
+  return parent === undefined ? caller : `${caller} parent=${safeName(parent[0])} ${safeName(parent[1])}`
+}
+
+function logLine(file: string, line: string): void {
+  try {
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    // The decision stands without its log line.
+  }
+}
+
+/**
+ * CC-1644 staged rollout: in `log` a call the gate would refuse still runs, and leaves a
+ * `would-refuse` line naming its caller; `enforce` refuses it. A source constant, never env or a
+ * file, so no agent can switch it: going to `enforce` is its own reviewed one-line change.
+ */
+export type GateMode = 'log' | 'enforce'
+export const GATE_MODE: GateMode = 'log'
+
+export const WOULD_REFUSE = 'gh-shim: would-refuse (write)'
 
 export interface GateIo {
   env: NodeJS.ProcessEnv
   now: number
   logFile: string
   stderr: (text: string) => void
+  mode: GateMode
+  parentArgv: () => readonly string[] | undefined
 }
 
 /**
@@ -69,7 +102,12 @@ export function gateWrite(argv: readonly string[], io: GateIo): number | undefin
   const ticket = io.env[GH_WRITE_TICKET_ENV]
   delete io.env[GH_WRITE_TICKET_ENV]
   if (isKnownRead(argv) || ticketHolds(argv, io.env, ticket, io.now)) return undefined
-  logRefusal(io.logFile, argv)
+  const fields = `${refusalShape(argv)} ${callerFields(io.env, io.parentArgv())}`
+  if (io.mode === 'log') {
+    logLine(io.logFile, `${WOULD_REFUSE}: ${fields}`)
+    return undefined
+  }
+  logLine(io.logFile, `${REFUSED}: ${fields}`)
   io.stderr(`${REFUSED}: ${FIX}\n`)
   return 1
 }

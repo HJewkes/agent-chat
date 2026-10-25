@@ -110,7 +110,8 @@ describe('dispatching a stacked slice', () => {
   it('briefs the PR onto the parent branch, merges instead of rebasing, and registers after the parent', () => {
     const { brief } = dispatched(dispatch({ stackedOn: STACKED })).frame
 
-    expect(brief).toContain(`gh pr create --base ${PARENT_BRANCH}`)
+    expect(brief).toContain(`agent-chat gh-write -- pr create --base ${PARENT_BRANCH}`)
+    expect(brief).not.toMatch(/`gh pr create/)
     expect(brief).toContain(`git merge origin/${PARENT_BRANCH}`)
     expect(brief).toContain('never rebase or force-push')
     expect(brief).toContain(`--after ${REPO_SLUG}#10`)

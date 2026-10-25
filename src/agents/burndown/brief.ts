@@ -170,7 +170,7 @@ const syncStep = (defaultBranch: string): string =>
  */
 const stackedSyncStep = ({ pr, branch }: { pr: string; branch: string }, defaultBranch: string): string =>
   `First step: \`git fetch origin && git merge origin/${branch}\`; you are stacked on PR ${pr}. ` +
-  `Open with \`gh pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push. ` +
+  `Open with \`agent-chat gh-write -- pr create --base ${branch}\`; Shepherd retargets it. Merge the parent again for its later commits; never rebase or force-push. ` +
   mergedParentLine(pr, defaultBranch)
 
 /** The parent can merge, and its branch be deleted, before the child opens its PR. */
