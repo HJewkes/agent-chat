@@ -51,3 +51,27 @@ describe('slice lint on overlapsAccepted (CC-1259)', () => {
     expect(readSlices(planWith(slice([entry]))).slices?.[0]?.overlapsAccepted).toEqual([entry])
   })
 })
+
+describe('overlapsAccepted naming a ledger slice (CC-1303)', () => {
+  it('carries a task and slice entry through readSlices', () => {
+    const entry = { task: 'TP-9', slice: 'b', path: INDEX, why: 'line 3 only' }
+
+    expect(readSlices(planWith(slice([entry]))).slices?.[0]?.overlapsAccepted).toEqual([entry])
+  })
+
+  it('names the slice in a lint reason', () => {
+    const reasons = lintSlices([slice([{ task: 'TP-9', slice: 'b', path: 'src/other.ts', why: 'x' }])])
+
+    expect(reasons).toEqual([
+      'slice a: overlapsAccepted TP-9 slice b path src/other.ts is not an exact owns entry',
+    ])
+  })
+
+  it.each([
+    ['neither a pr nor a slice', { path: INDEX, why: 'x' }],
+    ['a slice with no task', { slice: 'b', path: INDEX, why: 'x' }],
+    ['both a pr and a slice', { pr: 1083, task: 'TP-9', slice: 'b', path: INDEX, why: 'x' }],
+  ])('rejects an entry with %s at the schema', (_, entry) => {
+    expect(readSlices(planWith(slice([entry as AcceptedOverlap]))).problems).toHaveLength(1)
+  })
+})

@@ -67,13 +67,30 @@ export const Contract = z.object({
 })
 export type Contract = z.infer<typeof Contract>
 
-/** CC-1259: one open PR the slice may share one exact owns path with, because the planner read both edits as line-local. */
-export const AcceptedOverlap = z.object({
-  pr: z.number().int().positive(),
-  path: z.string().min(1),
-  why: z.string().trim().min(1),
-})
+/**
+ * CC-1259: one open PR the slice may share one exact owns path with, because the planner read both edits as line-local.
+ * CC-1303: or one ledger slice, named by `task` and `slice`, whose owns hold the path before its PR opens.
+ */
+export const AcceptedOverlap = z
+  .object({
+    pr: z.number().int().positive().optional(),
+    task: z.string().min(1).optional(),
+    slice: z.string().min(1).optional(),
+    path: z.string().min(1),
+    why: z.string().trim().min(1),
+  })
+  .refine(
+    a =>
+      a.pr !== undefined
+        ? a.task === undefined && a.slice === undefined
+        : a.task !== undefined && a.slice !== undefined,
+    { message: 'name either pr, or task and slice' },
+  )
 export type AcceptedOverlap = z.infer<typeof AcceptedOverlap>
+
+/** `#<pr>`, or `<task> slice <slice>`: the holder an accepted overlap names, for reason lines. */
+export const acceptedHolder = (a: AcceptedOverlap): string =>
+  a.pr !== undefined ? `#${a.pr}` : `${a.task} slice ${a.slice}`
 
 const PlannedSlice = z.object({
   n: z.string().min(1),

@@ -76,3 +76,40 @@ describe('file-overlap gate with a planner-accepted overlap', () => {
     })
   })
 })
+
+/** CC-1303: the same waiver for a dispatched ledger slice's owns, named by task and slice or by its PR. */
+describe('ledger-owns gate with a planner-accepted overlap', () => {
+  const HELD = { holder: 'TP-9 slice b', repo: TITAN, owns: [INDEX], taskId: 'TP-9', slice: 'b' }
+  const ACCEPT_TP9_B: AcceptedOverlap = { task: 'TP-9', slice: 'b', path: INDEX, why: 'line 3 only' }
+  const REFUSED = { kind: 'file-overlap', reason: `${INDEX} is under TP-9 slice b's owns` }
+
+  // Mutation caught: liveOverlap comparing work.owns without the acceptedHeld filter.
+  it("dispatches when the slice accepts the held slice's owned file", () => {
+    expect(collision(work([ACCEPT_TP9_B]), facts({}, { heldOwns: [HELD] }))).toBeUndefined()
+  })
+
+  it('dispatches when the accept names the held slice by its PR', () => {
+    const heldOwns = [{ ...HELD, pr: 1083 }]
+
+    expect(collision(work([ACCEPT_1083]), facts({}, { heldOwns }))).toBeUndefined()
+  })
+
+  it('refuses the same overlap when the plan does not declare it', () => {
+    expect(collision(work(), facts({}, { heldOwns: [HELD] }))).toEqual(REFUSED)
+  })
+
+  it('refuses when the accept names another slice of the same task', () => {
+    const other: AcceptedOverlap = { ...ACCEPT_TP9_B, slice: 'c' }
+
+    expect(collision(work([other]), facts({}, { heldOwns: [HELD] }))).toEqual(REFUSED)
+  })
+
+  it('refuses when the held slice also owns another owned file', () => {
+    const heldOwns = [{ ...HELD, owns: [INDEX, CONDITIONS] }]
+
+    expect(collision(work([ACCEPT_TP9_B]), facts({}, { heldOwns }))).toEqual({
+      kind: 'file-overlap',
+      reason: `${CONDITIONS} is under TP-9 slice b's owns`,
+    })
+  })
+})

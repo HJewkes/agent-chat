@@ -1,6 +1,6 @@
 import { patternsOverlap } from '../../broker/claims.js'
 import { HUMAN_OPS, opsHits } from './ops.js'
-import type { PlannedSlice } from './report.js'
+import { acceptedHolder, type PlannedSlice } from './report.js'
 
 /**
  * CC-631: the planning-phase lint over a planner's slices. Each failing slice and
@@ -42,11 +42,13 @@ const GLOB_CHARS = /[*?[{]/
 
 /** CC-1259: an accepted overlap waives one exact owns path; a glob would waive more than the planner read. */
 function unacceptableOverlaps(slice: PlannedSlice): string[] {
-  return (slice.overlapsAccepted ?? []).flatMap(({ pr, path }) => {
+  return (slice.overlapsAccepted ?? []).flatMap(accept => {
+    const { path } = accept
+    const holder = acceptedHolder(accept)
     if (GLOB_CHARS.test(path))
-      return [`slice ${slice.n}: overlapsAccepted #${pr} path ${path} is a glob; name one exact owns path`]
+      return [`slice ${slice.n}: overlapsAccepted ${holder} path ${path} is a glob; name one exact owns path`]
     if (!slice.owns.includes(path))
-      return [`slice ${slice.n}: overlapsAccepted #${pr} path ${path} is not an exact owns entry`]
+      return [`slice ${slice.n}: overlapsAccepted ${holder} path ${path} is not an exact owns entry`]
     return []
   })
 }

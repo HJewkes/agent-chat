@@ -15,7 +15,7 @@ import {
   type SliceRuns,
 } from './off-ledger-adopt.js'
 import { defaultAutonomyRoot } from './policy.js'
-import { readSlices, type PlannedSlice } from './report.js'
+import { acceptedHolder, readSlices, type PlannedSlice } from './report.js'
 import { mergedFlagKey, slicesReleasedUnclaimed, slicesSettled } from './slices-complete.js'
 
 /**
@@ -240,7 +240,9 @@ const shown = (f: SliceFields): Record<keyof SliceFields, string> => ({
   dependsOn: JSON.stringify([...(f.dependsOn ?? [])].sort()),
   repo: JSON.stringify(f.repo ?? null),
   contracts: JSON.stringify((f.contracts ?? []).map(c => `${c.op} ${c.scope}`).sort()),
-  overlapsAccepted: JSON.stringify((f.overlapsAccepted ?? []).map(a => `#${a.pr} ${a.path}`).sort()),
+  overlapsAccepted: JSON.stringify(
+    (f.overlapsAccepted ?? []).map(a => `${acceptedHolder(a)} ${a.path}`).sort(),
+  ),
 })
 
 const FIELDS = ['owns', 'dependsOn', 'repo', 'contracts', 'overlapsAccepted'] as const
