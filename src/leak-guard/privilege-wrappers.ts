@@ -1,12 +1,13 @@
 /**
  * Option parsers for the privilege wrappers other than sudo: doas, run0 and systemd-run (one
- * binary), pkexec and su (CC-1218).
+ * binary), pkexec, su and su-rs, runuser, setpriv and machinectl shell (CC-1218).
  * Each returns where the command it runs starts, or the words of the shell it runs instead, so
  * the guard can read that command. An option a table here does not know, an option with no value,
  * and any option word or value the shell expands give undefined: the caller denies rather than
  * guess where the command starts (an empty unquoted `-u $U` shifts every word after it).
- * Tables: run0 and systemd-run (systemd 259) and su (util-linux) from `--help`, pkexec (polkit 127)
- * from its usage, doas from the OpenBSD and opendoas getopt string `+a:C:Lnsu:` (UNVERIFIED on this box).
+ * Tables: run0 and systemd-run (systemd 259), su, runuser and setpriv (util-linux) and su-rs
+ * (sudo-rs) from `--help`, pkexec (polkit 127) from its usage, doas from the OpenBSD and opendoas
+ * getopt string `+a:C:Lnsu:`, and machinectl from systemd's docs (doas and machinectl UNVERIFIED on this box).
  */
 
 import { LIVE } from './shell-words.js'
@@ -166,15 +167,74 @@ const SU: OptionTable = {
   read: readSu,
 }
 
+/** sudo-rs's su: util-linux su's words less -f, -T and --session-command, which it refuses. */
+const SU_RS: OptionTable = {
+  ...SU,
+  shortFlag: 'lmpPhV',
+  longValue: new Set(['--command', '--shell', '--group', '--supp-group', '--whitelist-environment']),
+  longFlag: new Set(['--login', '--preserve-environment', '--pty', '--help', '--version']),
+}
+
+const RUNUSER: OptionTable = {
+  ...SU,
+  shortValue: `${SU.shortValue}u`,
+  longValue: new Set([...SU.longValue, '--user']),
+  read: readRunuser,
+}
+
+const SETPRIV: OptionTable = {
+  shortValue: '',
+  shortFlag: 'dhV',
+  shortShell: '',
+  longValue: new Set([
+    ...['--ambient-caps', '--inh-caps', '--bounding-set', '--ruid', '--euid', '--rgid', '--egid'],
+    ...['--reuid', '--regid', '--groups', '--securebits', '--pdeathsig', '--ptracer', '--selinux-label'],
+    ...['--apparmor-profile', '--landlock-access', '--landlock-rule', '--seccomp-filter'],
+  ]),
+  longFlag: new Set([
+    ...['--dump', '--nnp', '--no-new-privs', '--clear-groups', '--keep-groups', '--init-groups'],
+    ...['--reset-env', '--help', '--version'],
+  ]),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: false,
+}
+
+const MACHINECTL: OptionTable = {
+  shortValue: 'psHMnoE',
+  shortFlag: 'halqV',
+  shortShell: '',
+  longValue: new Set([
+    ...['--property', '--signal', '--kill-whom', '--host', '--machine', '--lines', '--output'],
+    ...['--setenv', '--uid', '--format', '--max-addresses', '--verify'],
+  ]),
+  longFlag: new Set([
+    ...['--help', '--version', '--no-pager', '--no-legend', '--no-ask-password', '--value', '--all'],
+    ...['--full', '--quiet', '--read-only', '--mkdir', '--force', '--now'],
+  ]),
+  longShell: new Set(),
+  gluedLong: true,
+  bareShell: false,
+  read: readMachinectl,
+}
+
+/** Every name of each user-switching binary, sudo's aside. */
 export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
   ['doas', DOAS],
   ['run0', RUN0],
   ['systemd-run', SYSTEMD_RUN],
   ['pkexec', PKEXEC],
   ['su', SU],
+  ['su-rs', SU_RS],
+  ['runuser', RUNUSER],
+  ['setpriv', SETPRIV],
+  ['machinectl', MACHINECTL],
 ])
 
 export const PRIVILEGE_WRAPPERS: ReadonlySet<string> = new Set(PRIVILEGE_OPTIONS.keys())
+
+/** The names sudo is installed under: sudo-rs's own, and sudo.ws beside it where sudo-rs is the default. */
+export const SUDO_NAMES: ReadonlySet<string> = new Set(['sudo', 'sudo-rs', 'sudo.ws'])
 
 /** What `name` (one of PRIVILEGE_WRAPPERS) runs when its options start at `words[i]`. */
 export function dropPrivilegeOptions(
@@ -267,10 +327,49 @@ function readSystemdRun(t: OptionTable, words: readonly string[], i: number): Pr
   return words.slice(i).some(word => word.includes('$')) ? undefined : readGetopt(t, words, i)
 }
 
+/**
+ * machinectl permutes its options, except that for `shell` it stops at the machine name and hands
+ * every later word to the command. Any other verb runs no command, so its words are left as they are.
+ */
+function readMachinectl(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  const verb = nextOperand(t, words, i, false)
+  if (verb === undefined || words[verb.at] !== 'shell')
+    return verb === undefined ? undefined : { at: verb.at }
+  const host = nextOperand(t, words, verb.at + 1, verb.ended)
+  if (host === undefined) return undefined
+  return host.at + 1 >= words.length ? { shell: ['sh'] } : { at: host.at + 1 }
+}
+
+interface Operand {
+  at: number
+  /** Whether a `--` ended the options, so every later word is an operand. */
+  ended: boolean
+}
+
+/** The first operand at or after `words[i]`, past the options, or undefined when one cannot be read. */
+function nextOperand(
+  t: OptionTable,
+  words: readonly string[],
+  i: number,
+  ended: boolean,
+): Operand | undefined {
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a.includes(LIVE)) return undefined
+    if (ended || !a.startsWith('-') || a === '-') return { at: i, ended }
+    if (a === '--') return nextOperand(t, words, i + 1, true)
+    const option = readOption(t, words, i)
+    if (option === undefined) return undefined
+    i += option.width
+  }
+  return { at: i, ended }
+}
+
 const SU_KEYS: ReadonlyMap<string, string> = new Map([
   ['--command', 'c'],
   ['--session-command', 'c'],
   ['--shell', 's'],
+  ['--user', 'u'],
 ])
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 
@@ -279,6 +378,25 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
  * the rest are arguments to the shell, which runs -c's value when one is given.
  */
 function readSu(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  const read = readSuWords(t, words, i)
+  return read === undefined ? undefined : suShell(read.values, read.operands.slice(1))
+}
+
+/** runuser reads su's words; with -u its operands are the command, run with no shell, and -c and -s clash with -u. */
+function readRunuser(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  const read = readSuWords(t, words, i)
+  if (read === undefined) return undefined
+  const { values, operands } = read
+  if (!values.has('u')) return suShell(values, operands.slice(1))
+  return values.has('c') || values.has('s') ? undefined : { shell: joinedShell(operands) }
+}
+
+interface SuWords {
+  values: ReadonlyMap<string, string>
+  operands: readonly string[]
+}
+
+function readSuWords(t: OptionTable, words: readonly string[], i: number): SuWords | undefined {
   const values = new Map<string, string>()
   const operands: string[] = []
   for (; i < words.length; i++) {
@@ -301,7 +419,7 @@ function readSu(t: OptionTable, words: readonly string[], i: number): PrivilegeR
     if (option.value !== undefined) values.set(SU_KEYS.get(option.key) ?? option.key, option.value)
     i += option.width
   }
-  return suShell(values, operands.slice(1))
+  return { values, operands }
 }
 
 function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): PrivilegeRun | undefined {
