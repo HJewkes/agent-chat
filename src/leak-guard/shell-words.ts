@@ -340,8 +340,9 @@ class ShellLexer {
   private closed = false
   /** Open `case` statements and the `{ }` groups inside them, and whether a pattern, whose `)` ends no group, comes next. */
   private cases: CaseFrame[] = []
-  /** The last word was an unreserved `case` inside a `$( )` or subshell; see `opensStrayCase`. */
+  /** The last word was an unreserved `case` inside a `$( )` or subshell, or `expectIn` is its subject's; see `noteStrayCase`. */
   private strayCase = false
+  private straySubject = false
   private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
@@ -441,6 +442,7 @@ class ShellLexer {
   private step(): void {
     const c = this.src[this.pos] as string
     if (c === '\\' && this.src[this.pos + 1] === '\n') return void (this.pos += 2)
+    this.noteStrayBrace(c)
     if (c === '{' && this.opensCaseBrace()) return this.skip(() => this.openCaseBrace())
     if (this.braceWord(c)) return
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
@@ -566,8 +568,9 @@ class ShellLexer {
     const before = this.lastToken
     const header = this.expectIn
     const stray = this.strayCase
+    if (this.straySubject && !quoted && word === 'in') this.budget.expansion = 'unreadable'
     this.expectIn = undefined
-    this.strayCase = false
+    this.strayCase = this.straySubject = false
     if (!quoted && this.reservedWord(word, header)) return this.takeReserved(word, header)
     const named = !quoted && this.wordStartNames && !word.includes('=')
     const token = this.wordToken(word, quoted, quoteStart)
@@ -576,21 +579,24 @@ class ShellLexer {
     this.lastPlain = true
     this.named = named
     if (isHeader(before)) this.expectIn = before
-    if (stray && this.opensStrayCase()) this.budget.expansion = 'unreadable'
-    this.strayCase = !quoted && word === 'case' && (this.nested || this.depth > 0)
+    this.noteStrayCase(word, quoted, stray)
   }
 
   /**
-   * zsh reads a `case` the splitter takes for an argument as a command after `repeat N` and in `() {`.
-   * Inside a `$( )` or subshell its first pattern's `)` would end that, so `in` or `{` after the subject
-   * makes the line unreadable.
+   * zsh reads a `case` the splitter takes for an argument as a command, after `repeat N` and in `() {`.
+   * Inside a `$( )` or subshell its first pattern's `)` would end that. Its subject is then pending, as
+   * a case's subject is in `expectIn`, and if the next word the lexer itself reads, past comments,
+   * joined lines and separators, is `in` or starts with `{`, the line is unreadable. The reading of the
+   * line is left as it is.
    */
-  private opensStrayCase(): boolean {
-    let at = this.unjoin(this.pos)
-    while (/[ \t\n;]/.test(this.src[at] ?? '')) at = this.unjoin(at + 1)
-    let text = ''
-    for (let i = at; i < this.src.length && text.length < 3; i = this.unjoin(i + 1)) text += this.src[i]
-    return text.startsWith('{') || /^in(?:[ \t\n;&|()<>]|$)/.test(text)
+  private noteStrayCase(word: string, quoted: boolean, stray: boolean): void {
+    this.straySubject = stray
+    this.strayCase = !quoted && word === 'case' && (this.nested || this.depth > 0)
+  }
+
+  private noteStrayBrace(c: string): void {
+    if (c === '{' && this.straySubject && this.word === null && this.pending === null)
+      this.budget.expansion = 'unreadable'
   }
 
   /** The token bash's read_token_word gives a word that is not reserved: parse.y 3471-3481 and 5784-5847. */

@@ -38,6 +38,8 @@ const BYPASSES = [
 
 /** Where a pattern is due, zsh closes the case at `}` and bash reads `})` or `}|y)` as a pattern. */
 const SPLIT: [string, string, string[]][] = [
+  // bash allows only blanks between a pattern and its `)`, so here only zsh's close runs.
+  ['/bin/zsh', `echo "$(case x in x) :;; } # c\n)"; ${PUSH}`, ['-f']],
   ['/bin/zsh', `echo "$(case x { x) :;; })"; ${PUSH}`, ['-f']],
   ['/bin/zsh', `echo "$(case x in x) :;; } )"; ${PUSH}`, ['-f']],
   ['/bin/bash', `echo "$(case } in x) :;; }) echo "b";; esac; ${PUSH})"`, ['--noprofile', '--norc']],
@@ -63,6 +65,11 @@ const TOUCHING: Row[] = [
 
 /** A `case` zsh reads as a command where the splitter reads an argument: after `repeat N` and in `() {`. */
 const STRAY: Row[] = [
+  [...ZSH, `echo "$(repeat 1 case x # c\nin x) :;; y) echo "a";; esac; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 1 case x # c\n{ x) :;; y) echo "a";; }; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 2 case x #\nin x) :;; y) echo "a";; esac; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 1 case x\n# c\nin x) :;; y) echo "a";; esac; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 1 case x \\\nin x) :;; y) echo "a";; esac; ${PUSH})"`],
   [...ZSH, `echo "$(repeat 1 case x in x) echo "a";; esac; ${PUSH})"`],
   [...ZSH, `echo "$(repeat 1 case x { x) echo "a";; }; ${PUSH})"`],
   [...ZSH, `echo "$(repeat 1 { case x { x) echo "a";; } }; ${PUSH})"`],

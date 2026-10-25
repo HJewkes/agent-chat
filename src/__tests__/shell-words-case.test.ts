@@ -90,6 +90,10 @@ describe('a case word the splitter reads as an argument', () => {
     'echo "$(() { case q in q) :;; esac })"',
     'echo "$(() { case q\nin q) :;; esac })"',
     '(repeat 1 case q;in q) :;; esac)',
+    'echo "$(repeat 1 case q # c\nin q) :;; esac)"',
+    'echo "$(repeat 1 case q #\n{ q) :;; })"',
+    'echo "$(repeat 1 case q\n# c\n\nin q) :;; esac)"',
+    'echo "$(repeat 1 case q \\\n{ q) :;; })"',
   ])('is unreadable in a $( ) or subshell when in or { follows its subject: %s', line => {
     expect(expansionRisk(line)).toBe('unreadable')
   })
