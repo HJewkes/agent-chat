@@ -44,8 +44,9 @@ const BYPASSES: [string, string, string[]][] = [
   [`X=bash; nice $X -c -- '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
   // The word may be any shell, so read its options by no one grammar: these mutants read them as bash's.
   // zsh takes -O as a flag and -o's name from the rest of the word, so the string after it is the script.
-  [`b=zsh; $b -c -O '${PUSH}' x`, REASONS.noVerify, BOTH],
-  [`b=zsh; $b -oerrexit -c '${PUSH}' x`, REASONS.noVerify, BOTH],
+  // Only an installed zsh runs these, so they run under the zsh shell alone.
+  [`b=zsh; $b -c -O '${PUSH}' x`, REASONS.noVerify, ['zsh']],
+  [`b=zsh; $b -oerrexit -c '${PUSH}' x`, REASONS.noVerify, ['zsh']],
   [`b='bash -c'; $b '${PUSH}'`, REASONS.noVerify, ['bash']],
   [`E=eval; $E '${PUSH}'`, REASONS.noVerify, BOTH],
 ]
