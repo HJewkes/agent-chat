@@ -92,8 +92,14 @@ function launchedGitEnv(profile: AgentProfile, root: string): NodeJS.ProcessEnv 
   return { ...baseEnv(), ...Object.fromEntries(gitKeys) }
 }
 
+interface PushOutcome {
+  code: number
+  stderr: string
+  landed: boolean
+}
+
 /** A work repo one commit ahead of a bare origin's main, pushing `main` by name. */
-function pushMainByName(profile: AgentProfile): { code: number; stderr: string; landed: boolean } {
+function pushMainByName(profile: AgentProfile): PushOutcome {
   const root = fs.mkdtempSync(path.join(SCRATCH, `${profile.name}-`))
   const [work, remote] = [path.join(root, 'work'), path.join(root, 'remote.git')]
   git(root, 'init', '-q', '--bare', '-b', 'main', remote)
@@ -107,6 +113,25 @@ function pushMainByName(profile: AgentProfile): { code: number; stderr: string; 
   const out = spawnSync('git', ['push', 'origin', 'main'], { cwd: work, env, encoding: 'utf8' })
   return { code: out.status ?? -1, stderr: out.stderr, landed: git(remote, 'rev-parse', 'main') !== before }
 }
+
+/** The same repo, tagging the ahead commit and pushing the tag by name, as a coordinator publishes a release. */
+function pushTagByName(profile: AgentProfile, tag: string): PushOutcome {
+  const root = fs.mkdtempSync(path.join(SCRATCH, `${profile.name}-tag-`))
+  const [work, remote] = [path.join(root, 'work'), path.join(root, 'remote.git')]
+  git(root, 'init', '-q', '--bare', '-b', 'main', remote)
+  git(root, 'init', '-q', '-b', 'main', work)
+  git(work, 'remote', 'add', 'origin', remote)
+  commit(work, 'README.md')
+  git(work, 'push', '-q', 'origin', 'main')
+  commit(work, 'release.md')
+  git(work, 'tag', tag)
+  const env = launchedGitEnv(profile, root)
+  const out = spawnSync('git', ['push', 'origin', tag], { cwd: work, env, encoding: 'utf8' })
+  const landed = git(remote, 'tag', '--list', tag) === tag
+  return { code: out.status ?? -1, stderr: out.stderr, landed }
+}
+
+const POLICY_REFUSED = /push refused by the no-rewrite push policy \(CC-1633\): it updates refs\/heads\/main;/
 
 describe('every shipped profile launches with the no-rewrite push policy (CC-1649)', () => {
   it('finds the repo profiles and the builtins', () => {
@@ -128,9 +153,51 @@ describe('every shipped profile launches with the no-rewrite push policy (CC-164
 
       expect(outcome.landed).toBe(false)
       expect(outcome.code).not.toBe(0)
-      expect(outcome.stderr).toMatch(
-        /push refused by the no-rewrite push policy \(CC-1633\): it updates refs\/heads\/main;/,
-      )
+      expect(outcome.stderr).toMatch(POLICY_REFUSED)
     },
   )
+})
+
+/**
+ * CC-1650: a profile that omits the field, such as a coordinator or seat file in the user's
+ * profiles dir, gets the no-rewrite hook too. Only the explicit `scan-only` value keeps the shared dir.
+ */
+describe('a profile without pushPolicy defaults to no-rewrite (CC-1650)', () => {
+  const synthetic = (name: string, extra: Partial<AgentProfile> = {}): AgentProfile => ({
+    name,
+    description: 'synthetic',
+    model: 'sonnet',
+    allowedTools: ['Read'],
+    isolation: 'none',
+    surface: 'headless',
+    promptPrelude: '',
+    ...extra,
+  })
+
+  // Mutation caught: guardEnv defaulting an absent field back to the shared dir.
+  it('refuses a by-name push to main and leaves origin main unchanged', () => {
+    const outcome = pushMainByName(synthetic('no-field'))
+
+    expect(outcome.landed).toBe(false)
+    expect(outcome.code).not.toBe(0)
+    expect(outcome.stderr).toMatch(POLICY_REFUSED)
+  })
+
+  // Mutation caught: the policy refusing every refs/tags/ update, which would stop release tags.
+  it('still lands a by-name tag push', () => {
+    const outcome = pushTagByName(synthetic('no-field-tag'), 'v1.2.3')
+
+    expect(outcome.stderr).not.toMatch(/push refused/)
+    expect(outcome.code).toBe(0)
+    expect(outcome.landed).toBe(true)
+  })
+
+  // Mutation caught: guardEnv ignoring the opt-out, so scan-only also gets the no-rewrite dir.
+  it('keeps the shared dir for an explicit scan-only opt-out, where a push to main lands', () => {
+    const outcome = pushMainByName(synthetic('opt-out', { pushPolicy: 'scan-only' }))
+
+    expect(outcome.stderr).not.toMatch(/push refused/)
+    expect(outcome.code).toBe(0)
+    expect(outcome.landed).toBe(true)
+  })
 })

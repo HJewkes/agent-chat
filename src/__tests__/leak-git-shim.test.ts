@@ -489,6 +489,8 @@ describe('where the agent git shim is put on PATH', () => {
     allowedTools: ['Read'],
     isolation: 'none',
     surface: 'headless',
+    // The shared dir's shim; an absent field gets the no-rewrite dir's (CC-1650).
+    pushPolicy: 'scan-only',
     promptPrelude: '',
   }
   const input = (over: Partial<LaunchPlanInput> = {}): LaunchPlanInput => ({

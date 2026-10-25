@@ -1902,9 +1902,19 @@ Not covered, by design or by cost:
 
 ## The no-rewrite push policy (CC-1633)
 
-A profile with `"pushPolicy": "no-rewrite"` (every profile in the repo's `profiles/` and every
-builtin, CC-1649) launches its agent with git pointed at a second guard dir, `<home>/git-hooks/no-rewrite`,
-instead of `<home>/git-hooks`. Its git shim dir is `<home>/git-hooks/git-bin`. Both sit under the
+Every profile launches its agent with git pointed at a second guard dir, `<home>/git-hooks/no-rewrite`,
+instead of `<home>/git-hooks`. Every profile in the repo's `profiles/` and every builtin sets
+`"pushPolicy": "no-rewrite"` (CC-1649), and a profile that omits the field gets the same dir
+(CC-1650), so a profile file in `~/.agent-chat/profiles/`, coordinators and seats included, fails
+closed. A push that creates a new tag passes the policy, so coordinators still publish release
+tags. Only `"pushPolicy": "scan-only"` keeps the shared dir, where the leak scan alone decides.
+In-repo uses of `scan-only`, each with its reason:
+
+| Profile | Reason |
+| ------- | ------ |
+| none    |        |
+
+Its git shim dir is `<home>/git-hooks/git-bin`. Both sit under the
 guard's hooks root, so the PreToolUse hook's protected path covers them. Remote launch selects
 the same dir after `isPushPolicy` checks the carried field. No variable carries the policy: the
 broker bakes it into that dir's `pre-push` at each spawn, so nothing in the agent's environment
@@ -1945,11 +1955,7 @@ no-rewrite dir". These routes defeat that, defeat the leak scan too, and are out
 - `git send-pack` and `git http-push`, which run no pre-push hook, and `gh api` ref writes
   (CC-1636);
 - a `--mirror` push after the agent has deleted every non-branch, non-tag local ref, since git
-  hides mirror deletions from the hook;
-- a profile file in `~/.agent-chat/profiles/` without the field, coordinators and seats included,
-  which stays on the shared dir. Whether those profiles get the policy, or it becomes the default,
-  is owner-pending (CC-1649). `profile-push-policy.test.ts` fails when a repo profile or builtin
-  lacks it.
+  hides mirror deletions from the hook.
 
 The only layer no agent input reaches is the server. One GitHub ruleset on `~ALL` branches, with
 "restrict deletions" and "block force pushes" and an empty bypass list, closes every row above.

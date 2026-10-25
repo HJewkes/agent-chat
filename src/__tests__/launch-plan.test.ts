@@ -151,7 +151,7 @@ describe('the argv every surface shares', () => {
     expect(plan.env).toMatchObject({
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'core.hooksPath',
-      GIT_CONFIG_VALUE_0: '/state/git-hooks',
+      GIT_CONFIG_VALUE_0: '/state/git-hooks/no-rewrite',
     })
     expect('GIT_CONFIG_COUNT' in buildLaunchPlan(input()).env).toBe(false)
   })
@@ -167,7 +167,7 @@ describe('the argv every surface shares', () => {
       encoding: 'utf8',
     })
 
-    expect(run.stdout.trim()).toBe('/state/git-hooks')
+    expect(run.stdout.trim()).toBe('/state/git-hooks/no-rewrite')
   })
 
   it('writes the guard hooks when the plan points git at them', () => {
@@ -178,8 +178,9 @@ describe('the argv every surface shares', () => {
 
     writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
 
-    expect(fs.statSync(path.join(hooks, 'pre-push')).mode & 0o777).toBe(0o755)
-    expect(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8')).toContain('titan-egress-scan pre-push')
+    const prePush = path.join(hooks, 'no-rewrite', 'pre-push')
+    expect(fs.statSync(prePush).mode & 0o777).toBe(0o755)
+    expect(fs.readFileSync(prePush, 'utf8')).toContain('titan-egress-scan pre-push')
   })
 
   it('passes isolation extra dirs through as --add-dir', () => {
@@ -1368,7 +1369,7 @@ describe('per-profile env (CC-259)', () => {
     const plan = buildLaunchPlan(input({ profile: hostile, gitHooksDir: '/state/git-hooks' }))
 
     expect(plan.env.GIT_CONFIG_COUNT).toBe('1')
-    expect(plan.env.GIT_CONFIG_VALUE_0).toBe('/state/git-hooks')
+    expect(plan.env.GIT_CONFIG_VALUE_0).toBe('/state/git-hooks/no-rewrite')
     for (const key of ['GIT_CONFIG_KEY_1', 'GIT_CONFIG_VALUE_1', 'GIT_CONFIG_PARAMETERS'])
       expect(key in plan.env).toBe(false)
   })
@@ -1454,10 +1455,20 @@ describe('per-profile env (CC-259)', () => {
     expect(plan.env).not.toHaveProperty('AGENT_CHAT_PUSH_POLICY')
   })
 
-  it('keeps a profile without a push policy on the shared hooks dir', () => {
-    const plan = buildLaunchPlan(input({ gitHooksDir: '/state/git-hooks' }))
+  // Mutation caught: guardEnv defaulting an absent field to the shared dir, or ignoring the opt-out.
+  it('gives a profile without a push policy the no-rewrite dir, and only a scan-only one the shared dir (CC-1650)', () => {
+    const omitted = parseProfile('p', base) as AgentProfile
+    const optOut = parseProfile('p', { ...base, pushPolicy: 'scan-only' }) as AgentProfile
 
-    expect(plan.env).toMatchObject({
+    const defaulted = buildLaunchPlan(input({ profile: omitted, gitHooksDir: '/state/git-hooks' }))
+    const shared = buildLaunchPlan(input({ profile: optOut, gitHooksDir: '/state/git-hooks' }))
+
+    expect(omitted).not.toHaveProperty('pushPolicy')
+    expect(defaulted.env).toMatchObject({
+      GIT_CONFIG_VALUE_0: '/state/git-hooks/no-rewrite',
+      AGENT_CHAT_GIT_SHIM_DIR: '/state/git-hooks/git-bin',
+    })
+    expect(shared.env).toMatchObject({
       GIT_CONFIG_VALUE_0: '/state/git-hooks',
       AGENT_CHAT_GIT_SHIM_DIR: '/state/git-bin',
     })
