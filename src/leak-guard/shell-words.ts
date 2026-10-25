@@ -29,7 +29,7 @@ export interface SimpleCommand {
   stdin?: string
   /** The shell expands `stdin`, reads it from a redirect the splitter does not follow, or has two sources for it. */
   stdinLive: boolean
-  /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
+  /** The marked targets of its output redirects (`>`, `>>`, `&>`); a redirect-only `)` command keeps its own. */
   writes: string[]
   /**
    * Marked text the shell expands beside the words, where an assigning expansion sticks for a builtin:
@@ -346,8 +346,6 @@ class ShellLexer {
   private splitting = false
   private quoted = false
   private pending: Pending | null = null
-  /** Output redirects of a command with no words, which the next command inherits. */
-  private carried: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -1281,7 +1279,6 @@ class ShellLexer {
     this.caseOpening = undefined
     assignFdNames(this.cur)
     const bare = this.cur.words.length === 0
-    if (bare) appendAll(this.carried, this.cur.writes)
     if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
   }
@@ -1291,9 +1288,12 @@ class ShellLexer {
     return cmd.expanded.length > 0 || this.heredocs.some(doc => doc.target === cmd && !doc.quoted)
   }
 
+  /**
+   * A redirect-only command is kept as `)` with its own writes: zsh runs it as NULLCMD, which is `cat`,
+   * so it writes where it stands and never through the command after it (TP-4250).
+   */
   private keep(cmd: SimpleCommand, bare: boolean): void {
-    if (bare) Object.assign(cmd, { words: [')'], marked: [')'], writes: [] })
-    else cmd.writes = [...this.carried.splice(0), ...cmd.writes]
+    if (bare) Object.assign(cmd, { words: [')'], marked: [')'] })
     cmd.before = this.joiner
     this.joiner = ''
     this.last = cmd

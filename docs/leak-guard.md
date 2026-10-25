@@ -1047,7 +1047,9 @@ variable `X` names (TP-2499). These rules also read a command's redirect targets
 and unquoted heredoc bodies on any descriptor, where a program var's `${NAME:=x}` denies too. The
 lexer drops none of that text: it keeps a redirect-only command that holds any, whose assignments
 bash keeps, as a `)` command wherever it stands, at the end of the line and before a heredoc body
-included. Such a name may be any program var or
+included. That `)` command keeps its own write targets too: zsh runs a redirect-only command as
+NULLCMD, which is `cat`, so `< f >> x` writes `x` where it stands and never through the command
+after it (TP-4250). Such a name may be any program var or
 `GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
 other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
 
