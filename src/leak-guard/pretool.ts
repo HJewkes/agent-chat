@@ -1276,7 +1276,9 @@ function checkProgramWrites(run: GitRun, ctx: GuardContext, scope: Scope, depth:
   if (run.resolved[at] !== 'config') return undefined
   const script = configWriteScript({ resolved: run.resolved.slice(at + 1), written: run.args.slice(at + 1) })
   if (script === undefined) return REASONS.configProgramWrite
-  return script === null ? undefined : checkShellText(script, ctx, { ...scope, cwd: undefined, env: undefined }, depth)
+  return script === null
+    ? undefined
+    : checkShellText(script, ctx, { ...scope, cwd: undefined, env: undefined }, depth)
 }
 
 const unresolvedReason = (run: GitRun): string =>

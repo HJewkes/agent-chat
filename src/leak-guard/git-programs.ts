@@ -106,8 +106,8 @@ export const listsExt = (value: string): boolean =>
 function scriptOf(word: ConfigWord): string | null | undefined {
   const pair = keyValue(word)
   if (pair === undefined) return undefined
-  if (pair.value === null) return null
-  return pair.value === undefined ? (runsProgram(pair.key) ? undefined : null) : programScript(pair.key, pair.value)
+  if (!runsProgram(pair.key) || pair.value === null) return null
+  return pair.value === undefined ? undefined : programScript(pair.key, pair.value)
 }
 
 /** The script a key's value runs: null when git runs none. */
