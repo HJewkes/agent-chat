@@ -141,12 +141,12 @@ describe('a {NAME} word before a redirect operator names the variable the shell 
     expect(expansionRisk(': {a[1]}<f {b}>>g')).toBe('unreadable')
   })
 
-  it.each([
-    'printf %s a {fd}>/dev/null b',
-    'printf %s a {fd}<&0 b',
-  ])('takes the {fd} word of %j out of the arguments', line => {
-    expect(parseShell(line)[0]?.words).toEqual(['fd=$$', 'printf', '%s', 'a', 'b'])
-  })
+  it.each(['printf %s a {fd}>/dev/null b', 'printf %s a {fd}<&0 b'])(
+    'takes the {fd} word of %j out of the arguments',
+    line => {
+      expect(parseShell(line)[0]?.words).toEqual(['fd=$$', 'printf', '%s', 'a', 'b'])
+    },
+  )
 
   it('reads the same arguments for a 3> redirect, with no prefix', () => {
     expect(parseShell('printf %s a 3>/dev/null b')[0]?.words).toEqual(['printf', '%s', 'a', 'b'])
