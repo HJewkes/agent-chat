@@ -319,6 +319,8 @@ interface DerivedDeny {
   deny: string
   when: string[]
   why: string
+  /** Derived only for a worker-role file: a coordinator runs these verbs itself. */
+  workersOnly?: true
 }
 
 const DERIVED_DENIES: DerivedDeny[] = [
@@ -351,16 +353,24 @@ const DERIVED_DENIES: DerivedDeny[] = [
     deny: 'Bash(agent-chat burndown:*)',
     when: ['Bash(agent-chat send:*)'],
     why: 'the file denies send, and the burndown verbs spawn and retire agents as the human',
+    workersOnly: true,
   },
   {
     // CC-1138: the seat verbs spawn and retire seats, and the watchdog sends `human_send`.
     deny: 'Bash(agent-chat seats:*)',
     when: ['Bash(agent-chat send:*)'],
     why: 'the file denies send, and the seats verbs spawn seats and message them as the human',
+    workersOnly: true,
   },
 ]
 
-const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
+const needs = (
+  { deny, when, workersOnly }: DerivedDeny,
+  denied: string[],
+  allowed: string[],
+  role: unknown,
+): boolean =>
+  (workersOnly !== true || role !== 'coordinator') &&
   when.some(verb => denied.includes(verb)) &&
   !denied.includes(deny) &&
   !allowed.some(tool => tool.startsWith(deny.slice(0, deny.indexOf(':'))))
@@ -369,7 +379,7 @@ const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[])
 function fileDenies(file: string, body: Record<string, unknown>): { denied?: string[]; warnings: string[] } {
   const listed = [...((body.disallowedTools as string[]) ?? []), ...((body[DENY_ALIAS] as string[]) ?? [])]
   const denied = [...new Set(listed)]
-  const added = DERIVED_DENIES.filter(rule => needs(rule, denied, body.allowedTools as string[]))
+  const added = DERIVED_DENIES.filter(rule => needs(rule, denied, body.allowedTools as string[], body.role))
   const warnings = added.map(({ deny, why }) => `${file}: "${deny}" is denied too; ${why}`)
   const named = body.disallowedTools !== undefined || body[DENY_ALIAS] !== undefined
   if (!named && added.length === 0) return { warnings }

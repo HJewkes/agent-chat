@@ -247,6 +247,17 @@ describe('the burndown and seats denies (CC-1138)', () => {
     expect(profile.warnings?.filter(w => w.includes('agent-chat seats'))).toHaveLength(1)
   })
 
+  // Mutation caught: dropping the role check, which takes `seats status` and seat ticks from every coordinator.
+  it.each([
+    ['a coordinator', 'coordinator', []],
+    ['a worker', 'worker', [BURNDOWN, SEATS]],
+    ['a file with no role', undefined, [BURNDOWN, SEATS]],
+  ])('derives them for %s that denies send only when it is a worker', (_shape, role, expected) => {
+    const profile = parsed({ ...(role === undefined ? {} : { role }), disallowedTools: [SEND] })
+
+    expect(profile.disallowedTools?.filter(tool => tool === BURNDOWN || tool === SEATS)).toEqual(expected)
+  })
+
   // Mutation caught: dropping the prefix escape in `needs`, which takes `burndown release` from the triager.
   it('keeps the shipped triager its burndown release and status allows', () => {
     const triager = loadProfile('triager', SHIPPED) as AgentProfile
