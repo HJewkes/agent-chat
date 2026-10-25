@@ -31,7 +31,6 @@ describe('the bypass guard denies git push under sudo outright', () => {
     'sudo -s git push',
     'echo o | sudo xargs git push origin --',
     'sudo env A=1 git push',
-    'sudo $G push',
     String.raw`sudo find . -maxdepth 0 -exec true \; -exec git push \;`,
   ])('denies %s', line => {
     expect(checkCommand(line, ctx())).toMatch(PUSH_DENY)
@@ -57,6 +56,44 @@ describe('the bypass guard denies gh under sudo outright', () => {
   })
 })
 
+const PRIVILEGED_HIDDEN = REASONS.privilegedHidden
+
+const deny = (line: string, reason: string | undefined): void => {
+  expect(reason).toBeDefined()
+  expect(checkCommand(line, ctx())).toBe(reason)
+}
+
+// Under sudo nothing catches a hidden git or gh at run time, so a word the guard cannot read denies.
+describe('the bypass guard denies an expanded command word under sudo', () => {
+  it.each([
+    'sudo $(echo git push)',
+    'sudo `echo git` push',
+    "CMD='git push'; sudo $CMD",
+    "CMD='git push'; sudo $CMD origin main",
+    "G='git -C /x push'; sudo -E $G",
+    'sudo $G push',
+    'sudo -u root $(echo gh pr list)',
+    `CMD='gh pr create --title t --body ${TERM}'; sudo $CMD`,
+    "sudo sh -c '$(echo git push)'",
+    'sudo env A=1 $(echo git push)',
+    'sudo nice $(echo git push)',
+  ])('denies %s', line => {
+    deny(line, PRIVILEGED_HIDDEN)
+  })
+
+  // An unread -c value is a config bypass in its own right, so that reason fires first.
+  it('keeps the config reason for an unread -c under sudo', () => {
+    deny('sudo git -c "$X" push', REASONS.gitConfigUnresolved)
+  })
+
+  it.each(['sudo git $X', 'sudo git "$X"', 'sudo git -C /x $X'])(
+    'denies a git under sudo whose subcommand it cannot read: %s',
+    line => {
+      deny(line, REASONS.privilegedPush)
+    },
+  )
+})
+
 describe('the bypass guard leaves commands beside or without sudo alone', () => {
   it.each([
     'sudo apt-get update',
@@ -66,6 +103,10 @@ describe('the bypass guard leaves commands beside or without sudo alone', () => 
     'sudo ls; git push origin main',
     'sudo ls && gh pr list',
     'echo "sudo git push"',
+    'sudo $EDITOR /etc/hosts',
+    'sudo git --version',
+    'sudo git',
+    "echo 'sudo $(echo git push)'",
   ])('allows %s', line => {
     expect(checkCommand(line, ctx())).toBeUndefined()
   })

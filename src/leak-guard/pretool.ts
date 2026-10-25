@@ -217,8 +217,9 @@ export const REASONS = {
   jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
-  privilegedPush: `leak-guard: git push under sudo, doas, run0, pkexec or su runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
-  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo, doas, run0, pkexec or su skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
+  privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
+  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0, pkexec or su) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
+  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0, pkexec or su) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -1074,8 +1075,9 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 function checkPrivilegedPush(run: GitRun, scope: Scope): string | undefined {
   if (!scope.privileged) return undefined
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  if (at < 0 || at >= run.resolved.length) return undefined
-  const sub = run.resolved[at]
+  // Only a literal git with no subcommand word runs no subcommand (`sudo git --version`).
+  if (run.literal && at >= run.resolved.length) return undefined
+  const sub = at < 0 ? undefined : run.resolved[at]
   return sub === 'push' || (sub === undefined && run.tied) ? REASONS.privilegedPush : undefined
 }
 
@@ -2479,6 +2481,8 @@ function checkSimple(
   if (head === undefined) {
     // An `env -S` split behind another expansion would rescan every suffix at each level.
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
+    // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
+    if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
     return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
   }
   const args = marked.map(unmark)
