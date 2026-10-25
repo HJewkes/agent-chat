@@ -2107,6 +2107,54 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   })
 
   it.each([
+    "git submodule foreach '. ./f'",
+    "git submodule foreach 'source ./f'",
+    "git submodule foreach 'sh ./f'",
+    "git submodule foreach 'bash -e ./f'",
+    "git submodule foreach 'git status; . ./f'",
+    'git submodule foreach \'sh -c ". ./f"\'',
+    "git rebase -x 'sh ./f' main",
+    'git bisect run sh ./f',
+    "git -c core.pager='sh ./f' log",
+    "GIT_PAGER='. ./f' git log",
+  ])('denies a script file a shell git starts reads (TP-4236): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitShellFile)
+  })
+
+  it.each([
+    "git submodule foreach 'alias p=\"git push --no-verify\"\np'",
+    "git submodule foreach 'alias p=\"git push --no-verify\"; p'",
+    "git submodule foreach 'alias -- p=\"git push --no-verify\"\np'",
+    'git submodule foreach \'sh -c "alias p=\\"git push --no-verify\\"\np"\'',
+  ])('denies an alias a shell git starts defines for a later line (TP-4237): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    "git submodule foreach 'sh -c \"npm test\"'",
+    "git submodule foreach 'bash -c \"git status\"'",
+    "git submodule foreach 'alias l=\"ls -l\"\nl'",
+    'git submodule foreach alias',
+    "git rebase -x 'npm test' main",
+    'sh ./f; git status',
+    '. ./f; git status',
+  ])('allows a shell git starts that reads no file, and a script file run at top level (TP-4236): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    ["git submodule foreach 'sh ./f'", REASONS.gitShellFile],
+    ["git submodule foreach 'alias p=\"git push --no-verify\"\np'", REASONS.noVerify],
+  ])('denies a nested script file or alias from the built CLI (TP-4236, TP-4237): %s', (command, reason) => {
+    const out = execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: SCRATCH }),
+      env: { PATH: process.env.PATH ?? '', HOME: SCRATCH, XDG_CONFIG_HOME: path.join(SCRATCH, 'none') },
+      encoding: 'utf8',
+    })
+    expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toBe(reason)
+  })
+
+  it.each([
     "git difftool -x '$X --no-verify' HEAD",
     "git difftool --extcmd='$X' HEAD",
     "git filter-branch --tree-filter '$X' HEAD",
