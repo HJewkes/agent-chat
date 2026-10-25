@@ -211,6 +211,7 @@ export const REASONS = {
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments. ${HEREDOC_POST} ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
+  positionalCommand: `leak-guard: the command word is a positional parameter ("$@", $1, "$*", or zsh's $argv), which runs the words a set -- or a function call put there, on a command line that may reach git or gh. Write the command out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: a script (eval, trap, mapfile -C, parallel) the guard cannot read, on a command line that may reach git or gh. Run the command directly. ${DOCS}`,
@@ -1104,6 +1105,8 @@ const NAMES_GIT = /\bgit\b/
 const VARIABLE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g
 // Positional and special parameters, REPLY, argv, reply and MAPFILE are set without naming them.
 const UNNAMED_SET = /\$\{?(?:[0-9*@]|(?:_|REPLY|argv|reply|MAPFILE)(?![A-Za-z0-9_]))/
+// The same less the positional parameters, which only a `set --` or a call on the line itself fills.
+const UNNAMED_SET_BUT_POSITIONAL = /\$\{?(?:_|REPLY|reply|MAPFILE)(?![A-Za-z0-9_])/
 // `${!y}`, a zsh flag such as `${(P)y}` or `${=x}`, and zsh's bare `$=x`, `$~x` and `$^x` hide the name.
 const HIDDEN_NAME = /\$\{(?![A-Za-z_])|\$[=~^]/
 // `${NAME:-default}` and its kin read NAME without assigning it, unlike `${NAME:=default}`.
@@ -2022,7 +2025,10 @@ function checkGhAliasSet(
     depth + 1,
   )
   // The arguments arrive later, and a positional inside double quotes is one the guard cannot fill.
-  return reason ?? (shell && unfillableAtSet(body) ? REASONS.ghAliasHidden : undefined)
+  const unfillable = shell && unfillableAtSet(body)
+  return unfillable && (reason === undefined || reason === REASONS.positionalCommand)
+    ? REASONS.ghAliasHidden
+    : reason
 }
 
 /** gh config writes the guard does not read before an alias in the same line runs. */
@@ -2376,10 +2382,15 @@ function checkHidden(
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
-/** Whether any word of the line names git or gh, may expand to either, or reads a variable the line or the hook ties to them (CC-478). */
-function mayReachGit(line: string, env: Env): boolean {
+/**
+ * Whether any word of the line names git or gh, may expand to either, or reads a variable the line or
+ * the hook ties to them (CC-478). With `positionals` false, a positional parameter alone does not
+ * count, since its words are the line's own and are tested as such.
+ */
+function mayReachGit(line: string, env: Env, positionals = true): boolean {
   if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line) || ANSI_C.test(line)) return true
-  if (UNNAMED_SET.test(line) || HIDDEN_NAME.test(line)) return true
+  if ((positionals ? UNNAMED_SET : UNNAMED_SET_BUT_POSITIONAL).test(line) || HIDDEN_NAME.test(line))
+    return true
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
   const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
   if (names.some(name => mentions(said, name) || wordMayBeGit(env[name] ?? ''))) return true
@@ -2660,6 +2671,17 @@ function checkParallel(
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
 
+// `$@`, `$*`, `$1`, `${@:2}`, `${!1}` and zsh's `$argv`, which hold the words a `set --` or a function call gave.
+const POSITIONAL = new RegExp(`${LIVE}\\$${LIVE}?(?:[@*0-9]|\\{[!#]?(?:[@*0-9]|argv\\b)|argv\\b)`)
+
+/**
+ * Whether `head`, the command word before xargs adds any, reads a positional parameter on a line whose
+ * other words may reach git or gh. Its words come from a `set --` or a function call the guard does not
+ * follow, so it fails closed (CC-1624).
+ */
+const runsPositional = (head: string, scope: Scope, ctx: GuardContext): boolean =>
+  POSITIONAL.test(head) && mayReachGit(scope.line, ctx.env, false)
+
 /** `function f { gh ...; }` runs nothing yet, but its body is checked as if it ran now. */
 const functionBody = (marked: readonly string[]): readonly string[] =>
   marked[0] === 'function' ? marked.slice(2) : marked
@@ -2724,7 +2746,10 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
-    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return (
+      checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost) ??
+      (outermost && runsPositional(unwrapped.words[0] ?? '', at, ctx) ? REASONS.positionalCommand : undefined)
+    )
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
@@ -3413,18 +3438,21 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
+  // A positional command word denies only when no later command on the line names a closer reason.
+  let positional: string | undefined
   for (const cmd of cmds) {
     at = settle(cmd, at)
     const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
-    if (reason !== undefined) return reason
+    if (reason === REASONS.positionalCommand) positional = reason
+    else if (reason !== undefined) return reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
   if (mixesParenAndGuarded(command)) return REASONS.parenMixed
   if (deniesExpansion(command)) return REASONS.operatorExpansion
-  return envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason)
+  return positional ?? (envReason === undefined ? undefined : DEFERRED_REASONS.get(envReason))
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
