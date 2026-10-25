@@ -31,6 +31,12 @@ export interface SimpleCommand {
   stdinLive: boolean
   /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
   writes: string[]
+  /**
+   * Marked text the shell expands beside the words, where an assigning expansion sticks for a builtin:
+   * every redirect target, here-string and unquoted heredoc body, including those of a redirect-only
+   * command, which is kept as `)` wherever it stands (TP-2499).
+   */
+  expanded: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
@@ -421,6 +427,7 @@ class ShellLexer {
       splits: [],
       substitutions: [],
       writes: [],
+      expanded: [],
       ...unsure,
       before: '',
       after: '',
@@ -1192,7 +1199,10 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       this.afterWord(word, quoteStart)
-    } else if (pending === 'write') this.cur.writes.push(this.marked)
+      return
+    }
+    if (typeof pending === 'string') this.cur.expanded.push(this.marked)
+    if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') {
       const zshDelim = localeAt.length > 0 ? withDollars(word, localeAt) : undefined
@@ -1222,8 +1232,13 @@ class ShellLexer {
     this.caseOpening = undefined
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
-    if (!bare || this.readsStdin(this.cur)) this.keep(this.cur, bare)
+    if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
+  }
+
+  /** Text the shell expands beside the words: a redirect target, here-string, or an unquoted heredoc on any descriptor, whose body comes later. */
+  private expandsBeside(cmd: SimpleCommand): boolean {
+    return cmd.expanded.length > 0 || this.heredocs.some(doc => doc.target === cmd && !doc.quoted)
   }
 
   private keep(cmd: SimpleCommand, bare: boolean): void {
@@ -1241,7 +1256,10 @@ class ShellLexer {
       const body = this.heredocBody(doc)
       if (zshEnd !== undefined && zshEnd !== this.pos) this.readAsZsh(zshEnd)
       // The shell expands an unquoted body whatever the descriptor, so `3<<E` runs its substitutions too.
-      if (!doc.quoted) this.expandBody(body, doc.target)
+      if (!doc.quoted) {
+        this.expandBody(body, doc.target)
+        doc.target.expanded.push(body.replaceAll('$', `${LIVE}$`))
+      }
       if (doc.aside) continue
       const backslash = doc.quoted ? this.nested && JOINED.test(body) : body.includes('\\')
       doc.target.backslash ||= backslash
