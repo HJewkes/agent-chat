@@ -2478,12 +2478,7 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const loaded = this.loadCheckedProfile(
-      req.profile,
-      req.requestedBy,
-      isHumanSpawn(req),
-      req.humanUnproven,
-    )
+    const loaded = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req), req.humanUnproven)
     if ('error' in loaded) return this.refuse(req, loaded.error)
     const { profile, startsRoot } = this.seatLaunchOf(req, loaded)
     const harness = harnessRefusal(profile)
