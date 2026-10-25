@@ -3,6 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseProfile } from '../agents/profiles.js'
 import { contractOf } from '../agents/return-contract.js'
+import { REPO_SKILLS_RULE } from '../agents/skill-self-grant.js'
 import type { AgentProfile } from '../agents/types.js'
 
 /**
@@ -403,6 +404,18 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     // The broad denial a naive fix would reach for — it would also block the
     // worker's own `git push -u origin agent-chat/*`.
     expect(denied).not.toContain('Bash(git push:*)')
+  })
+})
+
+// CC-694: the approved rule is the switch that arms the permission-hook self-grant.
+describe('the repo-skills write opt-in', () => {
+  it.each(['bd-implementer', 'bd-implementer-lite'])('is granted to %s', name => {
+    expect(loadBdProfile(name).allowedTools).toContain(REPO_SKILLS_RULE)
+  })
+
+  // Mutation caught: adding the rule to a profile that should never write repo skills.
+  it.each(['bd-reviewer', 'bd-planner'])('is not granted to %s', name => {
+    expect(loadBdProfile(name).allowedTools).not.toContain(REPO_SKILLS_RULE)
   })
 })
 
