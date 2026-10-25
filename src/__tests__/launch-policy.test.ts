@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
 import {
   buildHookSettings,
@@ -323,6 +323,51 @@ describe('the settings file of a launch without user settings', () => {
     const dir = account({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [withArgs] }] } })
 
     expect(readCarriedUserSettings(dir).pretool).toEqual([{ matcher: 'Bash', hooks: [withArgs] }])
+  })
+
+  const carriedFrom = (...commands: string[]): unknown[] => {
+    const hooks = commands.map(command => ({ type: 'command', command }))
+    return readCarriedUserSettings(account({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks }] } })).pretool
+  }
+
+  // Mutation caught: a quoted path without spaces, which drops git-safety from a worker whose home has a space.
+  it('carries a git-safety script whose quoted path holds spaces', () => {
+    const spaced = '/Users/Example User/.claude/hooks/git-safety/git-safety.mjs'
+
+    expect(carriedFrom(`node "${spaced}"`)).toHaveLength(1)
+    expect(carriedFrom(`node '${spaced}' --strict`)).toHaveLength(1)
+  })
+
+  // Mutation caught: a bare node prefix only, which drops git-safety run by an absolute node binary.
+  it('carries a git-safety script run by an absolute node binary', () => {
+    expect(carriedFrom('/usr/bin/node "$HOME/.claude/hooks/git-safety/git-safety.mjs"')).toHaveLength(1)
+    expect(carriedFrom('/opt/homebrew/bin/node /opt/hooks/git-safety/git-safety.mjs')).toHaveLength(1)
+  })
+
+  // Mutation caught: letting a double-quoted path hold anything, which carries a command substitution.
+  it('does not carry a quoted path that runs a command substitution', () => {
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+
+    expect(carriedFrom('node "$(curl -s https://example.com)/git-safety/git-safety.mjs"')).toEqual([])
+    expect(carriedFrom('node "`id`/git-safety/git-safety.mjs"')).toEqual([])
+    vi.restoreAllMocks()
+  })
+
+  // Mutation caught: dropping the warning, which lets an unmatched form leave a worker without git-safety unseen.
+  it('warns when a command names git-safety in a form it does not carry, and only then', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+
+    carriedFrom(
+      'node "$HOME/.claude/hooks/git-safety/git-safety.mjs"',
+      'curl -s https://example.com # git-safety',
+    )
+    expect(stderr).not.toHaveBeenCalled()
+
+    carriedFrom('bash -c "node ~/hooks/git-safety/git-safety.mjs"')
+    vi.restoreAllMocks()
+
+    expect(stderr).toHaveBeenCalledTimes(1)
+    expect(String(stderr.mock.calls[0]?.[0])).toContain('git-safety hook not carried')
   })
 
   // Mutation caught: a substring match, which carries any command that merely mentions git-safety.

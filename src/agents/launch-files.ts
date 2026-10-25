@@ -253,19 +253,41 @@ export function buildHookSettings(
   }
 }
 
-/** The owner's git-safety hook: the command's script, run by node or directly, ends in this path. */
-const GIT_SAFETY_COMMAND = /^(?:node\s+)?["']?[^\s"']*\/git-safety\/git-safety\.mjs["']?(?:\s|$)/
+/**
+ * The owner's git-safety hook: the command's script, run directly or by `node` (bare or an
+ * absolute path such as /usr/bin/node), ends in this path. A quoted path may hold spaces; a
+ * double-quoted one holds no backtick or parenthesis, so no command substitution rides along.
+ */
+const GIT_SAFETY_SCRIPT = String.raw`\/git-safety\/git-safety\.mjs`
+const GIT_SAFETY_COMMAND = new RegExp(
+  String.raw`^(?:(?:\/[^\s"']*\/)?node\s+)?` +
+    String.raw`(?:"[^"\x60()]*${GIT_SAFETY_SCRIPT}"|'[^']*${GIT_SAFETY_SCRIPT}'|[^\s"']*${GIT_SAFETY_SCRIPT})` +
+    String.raw`(?:\s|$)`,
+)
+
+const commandOf = (hook: unknown): string | undefined => {
+  const command =
+    typeof hook === 'object' && hook !== null ? (hook as { command?: unknown }).command : undefined
+  return typeof command === 'string' ? command : undefined
+}
 
 const isGitSafety = (hook: unknown): hook is Record<string, unknown> =>
-  typeof hook === 'object' &&
-  hook !== null &&
-  typeof (hook as { command?: unknown }).command === 'string' &&
-  (hook as { command: string }).command.match(GIT_SAFETY_COMMAND) !== null
+  commandOf(hook)?.match(GIT_SAFETY_COMMAND) != null
+
+/** A command naming the script in a form the match does not take would drop git-safety unseen. */
+function warnUncarried(hook: unknown): void {
+  const command = commandOf(hook)
+  if (command === undefined || !command.includes('git-safety.mjs') || isGitSafety(hook)) return
+  process.stderr.write(
+    `agent-chat: git-safety hook not carried into a worker launch, unrecognised form: ${command}\n`,
+  )
+}
 
 /** Each user PreToolUse entry with only its git-safety commands, and no entry that has none. */
 function gitSafetyEntries(pretool: unknown): HookEntry[] {
   if (!Array.isArray(pretool)) return []
   return pretool.flatMap((entry: { matcher?: unknown; hooks?: unknown } | null) => {
+    if (Array.isArray(entry?.hooks)) entry.hooks.forEach(warnUncarried)
     const hooks = Array.isArray(entry?.hooks) ? entry.hooks.filter(isGitSafety) : []
     if (hooks.length === 0) return []
     return [{ ...(typeof entry?.matcher === 'string' ? { matcher: entry.matcher } : {}), hooks }]
