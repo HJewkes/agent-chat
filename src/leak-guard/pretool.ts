@@ -267,8 +267,6 @@ export const REASONS = {
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
-/** unwrap reads `time` as GNU time, whose options cover the keyword's -p, since `command time` runs that program. */
-const SKIPPED_PREFIXES: ReadonlySet<string> = new Set([...PREFIX_WORDS].filter(word => word !== 'time'))
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
 /** GNU parallel and its env_parallel front end, which run their command words as a shell script. */
 const PARALLELS: ReadonlySet<string> = new Set(['parallel', 'env_parallel'])
@@ -473,6 +471,9 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   let siblings: Sibling[] | undefined
   let viaShellVar = false
   let privileged = lead?.privileged ?? false
+  // Whether only prefix words came before, where `time` is the keyword; behind a wrapper or assignment it is GNU time.
+  // The keyword takes only -p and --, so a later `-o` is a command that may run the rest: every option word is skipped.
+  let atKeyword = lead === undefined
   const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
@@ -495,6 +496,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const values: number[] = []
     const next = wrapperEnd(rest, at, name, values)
+    const keyword = atKeyword && PREFIX_WORDS.has(head)
+    atKeyword = keyword
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
     if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
       return { reason: REASONS.xargsWrapper }
@@ -502,7 +505,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
-    } else if (SKIPPED_PREFIXES.has(head)) at = dropOptions(rest, at + 1)
+    } else if (keyword || (PREFIX_WORDS.has(head) && head !== 'time')) at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
       at = next

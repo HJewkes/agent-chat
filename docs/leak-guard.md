@@ -402,7 +402,9 @@ exports, and the hook env. A `SHELL` outside the guard's shell list, or one it c
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
-`prlimit`, `time` (GNU time, also for the `time` keyword, since `command time` runs the program),
+`prlimit`, `time` behind a path, wrapper or assignment (GNU time: `command time` runs the program;
+the keyword at a command's start still skips every option word, since a word such as `-o` after it
+is a command that may run the rest),
 `numactl`, `nsenter`, `chroot <root>`, `setarch [<arch>]` and its `linux32`, `linux64`, `i386`,
 `x86_64` and `uname26` names, `enosys`, `uclampset`, `coresched <function>` and `busybox setsid`
 are read the same way, each from its own binary's getopt string (CC-1424). `nsenter`, `chroot`

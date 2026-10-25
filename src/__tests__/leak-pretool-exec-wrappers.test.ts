@@ -52,6 +52,12 @@ const BYPASSES: [string, string][] = [
   [`/usr/bin/time -qf %e -o /dev/null ${P}`, 'time'],
   [`/usr/bin/time --output=/dev/null ${P}`, 'time'],
   [`command time -o /dev/null ${P}`, 'time'],
+  [`X=1 time -o /dev/null ${P}`, 'time'],
+  // The keyword takes only -p and --, so `-o` is a command, here a function that runs the rest.
+  [`function -o { "$@"; }; time -o ${P}`, 'time'],
+  [`function -o { "$@"; }; time -p -o ${P}`, 'time'],
+  [`function -o { "$@"; }; if time -o ${P}; then :; fi`, 'time'],
+  [`function -f { "$@"; }; ! time -f ${P}`, 'time'],
   [`numactl -l ${P}`, 'numactl'],
   [`numactl --localalloc -- ${P}`, 'numactl'],
   [`numactl -C 0 ${P}`, 'numactl'],
@@ -120,7 +126,7 @@ describe('exec wrappers run the command after their options (CC-1424)', () => {
 
   it.each([
     'prlimit --bogus git push',
-    'time -x git push',
+    'command time -x git push',
     'numactl -x git push',
     'nsenter --frob git push',
     'chroot / --userspec=0:0 git push',
@@ -153,7 +159,15 @@ describe('exec wrappers run the command after their options (CC-1424)', () => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })
 
-  it.each([`time -p ${P}`, `time -- ${P}`, `setsid ${P}`])('still denies the control %s', line => {
+  it.each([
+    `time -p ${P}`,
+    `time -- ${P}`,
+    `setsid ${P}`,
+    `time -o ${P}`,
+    `time --output ${P}`,
+    `time --f ${P}`,
+    `time -qo ${P}`,
+  ])('still denies the control %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
   })
 })
