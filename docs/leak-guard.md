@@ -909,7 +909,10 @@ command head along the wrapper chain, and fails closed on any expansion there (T
 `env G$X=ext`, `env -- $A`), a `-u` or `-S` value or an option the guard cannot read; any operand
 of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion; the `printf -v`
 name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
-`local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
+`local` and `readonly` family. `declare`, `typeset` and `local` pass only the attribute letters
+`aAfFgilprtux`, so any `-n` (alone or in a cluster such as `-gn`) or other option fails closed,
+since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
+variable `X` names (TP-2499). Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
 line that may reach git it denies as `programEnv`, after the line's other checks so a more
 specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
 that `find -exec` adds are not read here.
