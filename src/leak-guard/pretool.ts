@@ -3667,13 +3667,6 @@ const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
   return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
-// Every agent's hooks live under <agents dir>/<id>/settings.json. The Bash route matches protectedPaths
-// as substrings of the command, so the whole directory is listed by its `.agent-chat/agents/` fragment
-// (which holds for `~`, `$HOME`, `//`, `./`, `..` and `rm -r <dir>`) and by its absolute path when
-// AGENT_CHAT_HOME relocates it. A coordinator is exempt, as for the worker config files.
-const agentsDirPaths = (env: NodeJS.ProcessEnv): string[] =>
-  env.AGENT_CHAT_ROLE === 'coordinator' ? [] : ['.agent-chat/agents/', path.join(agentsDir(), path.sep)]
-
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -3695,7 +3688,6 @@ export function guardContext(
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
       ...ownerOnlyPaths(env),
-      ...agentsDirPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

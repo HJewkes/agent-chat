@@ -97,6 +97,25 @@ describe('settings-watch', () => {
     expect(check()).toMatchObject({ ok: false, reason: 'quarantined', file: settings })
   })
 
+  it("detects a rewrite of a sibling's settings.json made outside pretool and quarantines the sibling", () => {
+    const { settings, check, notices, server } = setup()
+    const sibling = path.join(path.dirname(settings), 'sibling-settings.json')
+    const siblingNonce = 'f'.repeat(64)
+    fs.copyFileSync(settings, sibling)
+    server.integrity.registerLaunch(siblingNonce, 'a1', { [ZSHRC]: zshrc })
+    server.settingsWatch.register(siblingNonce, sibling)
+
+    fs.appendFileSync(sibling, ' ')
+    server.settingsWatch.sweep()
+
+    expect(server.integrity.check(siblingNonce, 's1', { [ZSHRC]: zshrc })).toMatchObject({
+      reason: 'quarantined',
+      file: sibling,
+    })
+    expect(notices()).toHaveLength(1)
+    expect(check()).toEqual({ t: 'integrity_result', ok: true })
+  })
+
   it('leaves an unchanged file alone', () => {
     const { check, notices } = setup()
 

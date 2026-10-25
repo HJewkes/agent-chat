@@ -1474,6 +1474,17 @@ hook value is compared exactly, so `ENV=dev` leaves `src/dev/x.ts` alone. The fi
 symlink points at, edited under its own name, is TP-4256's. The renamed-gh rule leaves a `HOME=`
 prefix in front of a renamed gh copy, and hash/`commands[]` rebinding (TP-2706).
 
+### Agent hook settings (TP-4256 A5)
+
+Each agent's hooks live in `<agents dir>/<id>/settings.json`. The Edit, Write, MultiEdit and
+NotebookEdit tools are refused on any such file, matched by its resolved real path (basename
+`settings.json`, parent of the parent equal to the real agents dir). A Bash write to one is **not**
+refused up front, because the guard does not match command text against path spellings (CC-1643).
+The broker's settings watch (`src/broker/settings-watch.ts`) catches it at run time instead: it keeps
+the sha256 of each `settings.json` it wrote, re-hashes on every `integrity_check` and on a 60 s timer,
+and a changed or deleted file quarantines that launch and files one owner notice. The agent is not
+stopped, and a change reverted between two sweeps is not seen.
+
 ### Config the guard cannot read (TP-630)
 
 A `-c` or `--config-env` word that the shell expands in a way the guard cannot tell (`$(cat k)`,

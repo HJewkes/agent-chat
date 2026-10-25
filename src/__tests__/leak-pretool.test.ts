@@ -16,7 +16,7 @@ import {
   type GuardContext,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
-import { agentDir, agentsDir } from '../paths.js'
+import { agentDir } from '../paths.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
 import { includedHooksPathReader } from '../leak-guard/git-include.js'
 import { parseShell } from '../leak-guard/shell-words.js'
@@ -3090,25 +3090,6 @@ describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
     }
   })
 
-  it.each([
-    "printf '{}' > ABS/a1-synthetic/settings.json",
-    'rm ~/.agent-chat/agents/a1-synthetic/settings.json',
-    'printf {} > "$HOME/.agent-chat/agents/a1-synthetic/settings.json"',
-    'rm /srv/example/.agent-chat/agents/a1-synthetic//settings.json',
-    'rm /srv/example/.agent-chat/agents/a1-synthetic/./settings.json',
-    'rm /srv/example/.agent-chat/agents/x/../a1-synthetic/settings.json',
-    'rm -r ~/.agent-chat/agents/a1-synthetic',
-    'sed -i s/a/b/ ABS/a2-synthetic/settings.json',
-    'mv /tmp/x ABS/a2-synthetic/settings.json',
-  ])('denies a Bash command touching an agent settings.json: %s', command => {
-    expect(checkCommand(command.replace('ABS', agentsDir()), guard())).toBe(REASONS.protectedPath)
-  })
-
-  it('leaves a coordinator free to inspect the agents directory', () => {
-    const ctx = guardContext({ AGENT_CHAT_ROLE: 'coordinator' }, '/work', '/home/example')
-    expect(checkCommand('ls ~/.agent-chat/agents/a1-synthetic', ctx)).toBeUndefined()
-  })
-
   it('denies a case variant of the file name', () => {
     const file = path.join(agentDir('a2-synthetic'), 'Settings.json')
     expect(checkToolCall('Write', { file_path: file }, guard())).toBe(REASONS.protectedPath)
@@ -3117,8 +3098,8 @@ describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
   it.each([
     ['another file in an agent dir', () => path.join(agentDir('a2-synthetic'), 'notes.txt')],
     ['a settings.json one level too deep', () => path.join(agentDir('a2-synthetic'), 'sub', 'settings.json')],
-  ])('denies %s, since the whole agents directory is protected', (_name, file) => {
-    expect(checkToolCall('Write', { file_path: file() }, guard())).toBe(REASONS.protectedPath)
+  ])('leaves %s alone', (_name, file) => {
+    expect(checkToolCall('Write', { file_path: file() }, guard())).toBeUndefined()
   })
 
   it('leaves a settings.json outside the agents directory alone', () => {
