@@ -3116,9 +3116,12 @@ describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
 
   it.each([
     ['another file in an agent dir', () => path.join(agentDir('a2-synthetic'), 'notes.txt')],
-    ['a settings.json elsewhere', () => '/work/project/settings.json'],
     ['a settings.json one level too deep', () => path.join(agentDir('a2-synthetic'), 'sub', 'settings.json')],
-  ])('leaves %s alone', (_name, file) => {
-    expect(checkToolCall('Write', { file_path: file() }, guard())).toBeUndefined()
+  ])('denies %s, since the whole agents directory is protected', (_name, file) => {
+    expect(checkToolCall('Write', { file_path: file() }, guard())).toBe(REASONS.protectedPath)
+  })
+
+  it('leaves a settings.json outside the agents directory alone', () => {
+    expect(checkToolCall('Write', { file_path: '/work/project/settings.json' }, guard())).toBeUndefined()
   })
 })
