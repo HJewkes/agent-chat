@@ -40,6 +40,24 @@ describe('checkCommand on a hidden git subcommand beside a word that skips the h
   it.each(ALLOWED)('allows %j', src => {
     expect(checkCommand(src, ctx())).toBeUndefined()
   })
+
+  // `p` is a push --no-verify alias where the hook runs.
+  const aliased = (): GuardContext => ({
+    ...ctx(),
+    readAlias: (word, dir) =>
+      word === 'p' && dir === '/work' ? { value: 'push --no-verify', runsIn: '/work' } : undefined,
+  })
+
+  it.each([
+    ['$X $Y p', REASONS.noVerify],
+    ['env -C /x $X $Y p', REASONS.noVerify],
+    ['sudo $X $Y p', REASONS.noVerify],
+    ['$X $Y p --no-verify', REASONS.noVerify],
+    ['env -C /x $X $Y p --no-verify', REASONS.noVerify],
+    ['sudo $X $Y p --no-verify', REASONS.privilegedHidden],
+  ])('keeps denying a hidden subcommand filled by an alias: %j', (src, reason) => {
+    expect(checkCommand(src, aliased())).toBe(reason)
+  })
 })
 
 const real = fakeGitShells('agent-chat-pretool-hidden-sub-', 'git push --no-verify')

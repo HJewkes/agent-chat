@@ -235,6 +235,7 @@ export const REASONS = {
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
+  hiddenSubcommand: `leak-guard: this command may be git with a subcommand the guard cannot read, beside --no-verify or core.hooksPath, so it may be a push that skips the hook or a config write that drops it. Write git and its subcommand out literally. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
@@ -1118,8 +1119,25 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkTrustWrites(run, scope) ??
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
+    checkHiddenSubcommand(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/**
+ * An expanded git whose subcommand the guard cannot read, beside a word that skips the hook: `$X $Y
+ * --no-verify` may be a push, `$X $Y core.hooksPath /dev/null` a config write or a `-c` (CC-1322).
+ * Literal git is left to the alias lookup, which already denies a subcommand it cannot read.
+ */
+function checkHiddenSubcommand(run: GitRun, scope: Scope): string | undefined {
+  if (run.literal) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (at >= 0 && run.resolved[at] !== undefined) return undefined
+  const rest = run.args.slice(Math.max(at, 0) + 1)
+  const opts = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
+  return opts.some(word => NO_VERIFY.test(word) || overridesGuard(word))
+    ? REASONS.hiddenSubcommand
+    : undefined
 }
 
 /** A push, or a git whose subcommand the guard cannot read, under a privilege wrapper (CC-1218). */
