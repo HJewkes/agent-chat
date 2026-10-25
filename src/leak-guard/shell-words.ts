@@ -846,9 +846,11 @@ class ShellLexer {
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
-    if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
-    // zsh reads on to a `)` past the line, as in `for v (a` and a newline, which then could end the span (CC-1610).
-    if (end < 0 && this.closable()) this.budget.expansion = 'unreadable'
+    const settled = end >= 0 && PLAIN_GROUP.test(this.src.slice(this.pos, end))
+    if (!settled) this.unsettled()
+    // zsh parses the group itself, past a line, a comment or a nested case pattern's `)`, so where a `)`
+    // can end the span, a close the splitter cannot be sure of could be the span's end (CC-1610).
+    if (!settled && this.closable()) this.budget.expansion = 'unreadable'
     if (end < 0) {
       this.split('(')
       this.pos++

@@ -83,6 +83,9 @@ const GROUPS_PAST_LINE: Row[] = [
   zshOnly('19 comment', inSub('repeat 1 (:>/dev/null;# )\n)')),
   zshOnly('19 comment', inSub('select v (a;# )\n) break')),
   zshOnly('19 comment', inTick('for v (a;# )\n) echo b')),
+  zshOnly('19 nested', inSub('for v (a $(case x in x) echo;; esac) b) echo c')),
+  { line: inSub('echo *(a $(case x in x) echo;; esac) b) '), zsh: false, bash: false, row: '19 nested' },
+  zshOnly('19 nested', inSub('for v (a ${x:-)} b) echo c')),
 ]
 
 /** Lines the guard may allow, as neither shell runs their push: a `)` hidden in a group's substitution. */
@@ -163,7 +166,6 @@ const ALLOWED = [
   'x="$(case "$a" in (foo) \\\n echo 1;; (*) "$b" # c\n;; esac)"',
   'echo "$(echo case)"',
   'echo "$(grep -c case f)"',
-  'x="$(for v (a b) echo "$v")"',
   'x="$(print -l *(.N))"',
   'for v (a\n) echo "$v"',
 ]
@@ -175,6 +177,7 @@ const FALSE_DENIES = [
   'x=$(case $a\nin x) echo a;; esac)',
   'echo "$(case x in x) echo a;| y) echo b;; esac)"',
   'echo $(echo case x in y)',
+  'x="$(for v (a b) echo "$v")"',
   'x="$(for v (a\nb) echo "$v")"',
   'x="$(for v (a # list\n) echo "$v")"',
 ]
