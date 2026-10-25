@@ -1402,6 +1402,32 @@ option; one before `--` is gh's (the repository, a directory, or a flag gh rejec
 may sit past that `--` denies. With a `repo` or `gist` subcommand the guard cannot resolve
 (`gh repo "$S" ...`), the words are read as `clone`'s.
 
+### Files a later shell sources are owner-only (TP-4232)
+
+`gh auth setup-git`, `login` and `refresh` write the gh path they find from `GH_PATH` or `PATH`
+into git config as the credential helper. A file a later shell sources can set that path, or the
+gh config, in a shell the guard never reads, and whether a `NAME=value` line there is inert
+depends on who reads `NAME` later (`BASH_ENV`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND` and so on). So
+the guard never judges what is written; it keeps the Edit tools off these files
+(`src/leak-guard/env-files.ts`).
+
+This PR denies the Edit, Write, MultiEdit and NotebookEdit tools on a file a later shell sources:
+the shell startup files, `CLAUDE_ENV_FILE`, Claude Code's `session-env` and `shell-snapshots`, and
+the hook's `BASH_ENV`/`ENV` values when they are absolute paths. The target is matched by its
+resolved real path. It also adds the `changesGhHome` mention rule and the renamed-gh rule. It does
+**not** judge Bash lines that write these files: whether a line writes a file is not decidable from
+its text (naming through variables, globs, symlinks or `cd`; write operators and programs the parser
+doesn't model). The runtime integrity check in TP-4256 enforces that. A Bash-line bypass of a
+sourced file is a finding against TP-4256, not a FIX_FIRST here. Neither covers files sourced in turn
+(TP-4251).
+
+The target counts both as given and by its real path: the real path of its nearest existing parent
+plus the rest, following a dangling symlink, so a symlink to `~/.zshenv` or to an absent
+`~/.zlogin` denies, and so does a `~/.zshenv` that is itself a symlink into a dotfiles checkout. A
+hook value is compared exactly, so `ENV=dev` leaves `src/dev/x.ts` alone. The file a dotfiles
+symlink points at, edited under its own name, is TP-4256's. The renamed-gh rule leaves a `HOME=`
+prefix in front of a renamed gh copy, and hash/`commands[]` rebinding (TP-2706).
+
 ### Config the guard cannot read (TP-630)
 
 A `-c` or `--config-env` word that the shell expands in a way the guard cannot tell (`$(cat k)`,
